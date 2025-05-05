@@ -1,16 +1,13 @@
 import os
-import time  # Import time for sleep
 from httpx import (
     Client,
     Auth,
     BasicAuth,
-    Headers,
     Request,
     Response,
-    HTTPStatusError,
-)  # Import HTTPStatusError
+)
 import logging
-
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +36,7 @@ class NextcloudClient:
             auth=auth,
             event_hooks={"request": [log_request], "response": [log_response]},
         )
+        HTTPXClientInstrumentor.instrument_client(self._client)
 
     @classmethod
     def from_env(cls):
@@ -116,16 +114,19 @@ class NextcloudClient:
             body.update({"category": category})
 
         logger.info(
-            "Attempting to update note %s with etag %s. Body: %s",
+            "Attempting to update note %s with etag %s, Body: %s, Category: %s",
             note_id,
             etag,  # This was current_etag in the loop
             body,
+            category,
         )
         # Ensure conditional PUT using If-Match header is active
         response = self._client.put(
             url=f"/apps/notes/api/v1/notes/{note_id}",
             json=body,
-            headers={"If-Match": f'"{etag}"'},  # This was current_etag in the loop
+            headers={
+                "If-Match": f'"{etag}"'  # NOTE: The `etag` needs to be surrounded by quotes `""`
+            },
         )
         logger.info(
             "Update response for note %s: Status %s, Headers %s",

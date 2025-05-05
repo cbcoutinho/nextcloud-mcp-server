@@ -83,7 +83,7 @@ def nc_notes_update_note(
     category: str | None,
     ctx: Context,
 ):
-    logger.info("Updating note %s", note_id)
+    ctx.session.send_log_message("info", "Updating note %s".format(note_id))
     client: NextcloudClient = ctx.request_context.lifespan_context.client
     return client.notes_update_note(
         note_id=note_id,
@@ -103,7 +103,7 @@ def nc_notes_search_notes(query: str, ctx: Context):
 
 @mcp.tool()
 def nc_notes_delete_note(note_id: int, ctx: Context):
-    logger.info("Deleting note %s", note_id)
+    ctx.session.send_log_message("info", "Deleting note %s".format(note_id))
     client: NextcloudClient = ctx.request_context.lifespan_context.client
     return client.notes_delete_note(note_id=note_id)
 
