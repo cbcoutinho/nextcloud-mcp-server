@@ -13,6 +13,8 @@ Currently, the server primarily interacts with the Nextcloud Notes API, providin
 *   `nc_notes_create_note`: Create a new note.
 *   `nc_notes_update_note`: Update an existing note by ID.
 *   `nc_notes_delete_note`: Delete a note by ID.
+*   `nc_notes_search_notes`: Search notes by title or content.
+*   `nc_get_note`: Get a specific note by ID.
 
 ### Available Resources
 
@@ -20,6 +22,15 @@ Currently, the server primarily interacts with the Nextcloud Notes API, providin
 *   `notes://all`: Access all notes.
 *   `notes://settings`: Access note settings.
 *   `nc://capabilities`: Access Nextcloud server capabilities.
+*   `nc://Notes/{note_id}/attachments/{attachment_filename}`: Access attachments for notes.
+
+### Note Attachments
+
+This server supports adding and retrieving note attachments via WebDAV. Please note the following behavior regarding attachments:
+
+* When a note is deleted, its attachments remain in the system. This matches the behavior of the official Nextcloud Notes app.
+* Orphaned attachments (attachments whose parent notes have been deleted) may accumulate over time.
+* WebDAV permissions must be properly configured for attachment operations to work correctly.
 
 ## Installation
 

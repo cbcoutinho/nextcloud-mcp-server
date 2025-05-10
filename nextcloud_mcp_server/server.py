@@ -7,6 +7,7 @@ from mcp.server.fastmcp import FastMCP, Context
 from mcp.server import Server
 from collections.abc import AsyncIterator
 from nextcloud_mcp_server.client import NextcloudClient
+import asyncio  # Import asyncio
 
 setup_logging()
 
@@ -24,6 +25,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     # Initialize on startup
     logger.info("Creating Nextcloud client")
     client = NextcloudClient.from_env()
+    # Add a small delay to allow client initialization to complete
+    logger.info("Waiting 2 seconds for client initialization...")
+    logger.info("Client initialization wait complete.")
     try:
         yield AppContext(client=client)
     finally:
@@ -106,6 +110,28 @@ def nc_notes_delete_note(note_id: int, ctx: Context):
     logger.info("Deleting note %s", note_id)
     client: NextcloudClient = ctx.request_context.lifespan_context.client
     return client.notes_delete_note(note_id=note_id)
+
+
+@mcp.resource("nc://Notes/{note_id}/attachments/{attachment_filename}")
+def nc_notes_get_attachment(note_id: int, attachment_filename: str):
+    """Get a specific attachment from a note"""
+    ctx = mcp.get_context()
+    client: NextcloudClient = ctx.request_context.lifespan_context.client
+    # Assuming a method get_note_attachment exists in the client
+    # This method should return the raw content and determine the mime type
+    content, mime_type = client.get_note_attachment(
+        note_id=note_id, filename=attachment_filename
+    )
+    return {
+        "contents": [
+            {
+                # Use uppercase 'Notes' to match the decorator
+                "uri": f"nc://Notes/{note_id}/attachments/{attachment_filename}",
+                "mimeType": mime_type,  # Client needs to determine this
+                "data": content,  # Return raw bytes/data
+            }
+        ]
+    }
 
 
 def run():

@@ -9,13 +9,17 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "mcp[cli] (>=1.7,<1.8)",
-    "httpx (>=0.28.1,<0.29.0)"
+    "httpx (>=0.28.1,<0.29.0)",
+    "pillow (>=11.2.1,<12.0.0)"
 ]
 
 [project.scripts]
 nc-mcp-server = "nextcloud_mcp_server.server:run"
 
 [tool.pytest.ini_options]
+log_cli = 1
+log_cli_level = "WARN"
+log_level = "WARN"
 markers = [
     "integration: marks tests as slow (deselect with '-m \"not slow\"')"
 ]
@@ -29,3 +33,4 @@ build-backend = "poetry.core.masonry.api"
 black = "25.1.0"
 ipython = "9.2.0"
 pytest = "8.3.5"
+pytest-cov = "^6.1.1"
