@@ -21,7 +21,7 @@ services:
     restart: always
 
   app:
-    image: nextcloud@sha256:f610d9089039d664e9a09ef69f16775bd8ed9505af163dcdde69006b2e7e825f
+    image: nextcloud:31.0.5-fpm-alpine
     #user: www-data:www-data
     restart: always
     #post_start:
