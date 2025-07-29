@@ -1,3 +1,18 @@
+## v0.6.0 (2025-07-29)
+
+### Feat
+
+- **calendar**: add comprehensive Calendar app support via CalDAV protocol
+
+### Fix
+
+- apply ruff formatting to pass CI checks
+- **calendar**: address PR feedback from maintainer
+
+### Refactor
+
+- **calendar**: optimize logging for production readiness
+
 ## v0.5.0 (2025-07-26)
 
 ### Feat
