@@ -24,7 +24,6 @@ async def test_mcp_connectivity(nc_mcp_client: ClientSession):
 
     # Verify expected tools are present
     expected_tools = [
-        "nc_get_note",
         "nc_notes_create_note",
         "nc_notes_update_note",
         "nc_notes_append_content",
@@ -137,11 +136,9 @@ async def test_mcp_notes_crud_workflow(
 
         # 3. Read note via MCP
         logger.info(f"Reading note via MCP: {note_id}")
-        read_result = await nc_mcp_client.call_tool("nc_get_note", {"note_id": note_id})
-        assert read_result.isError is False, (
-            f"MCP note read failed: {read_result.content}"
-        )
-        read_note_data = json.loads(read_result.content[0].text)
+        read_result = await nc_mcp_client.read_resource(f"nc://Notes/{note_id}")
+        assert len(read_result.contents) == 1, "Expected exactly one content item"
+        read_note_data = json.loads(read_result.contents[0].text)
 
         assert read_note_data["title"] == test_title
         assert read_note_data["content"] == test_content
@@ -199,14 +196,23 @@ async def test_mcp_notes_crud_workflow(
         )
         search_notes_text = search_result.content[0].text
         logger.info(f"Search result text: {search_notes_text}")
-        search_notes = json.loads(search_notes_text)
+        search_response = json.loads(search_notes_text)
 
-        # Ensure search_notes is a list
-        if not isinstance(search_notes, list):
-            logger.warning(
-                f"Expected search results to be a list, got: {type(search_notes)}"
-            )
-            search_notes = [search_notes] if search_notes else []
+        # Expect structured response with Pydantic format
+        assert isinstance(search_response, dict), (
+            f"Expected search response to be a dict with structured format, got: {type(search_response)}"
+        )
+        assert "results" in search_response, (
+            f"Expected 'results' field in search response, got keys: {list(search_response.keys())}"
+        )
+        assert "success" in search_response and search_response["success"], (
+            f"Expected successful search response, got: {search_response}"
+        )
+
+        search_notes = search_response["results"]
+        assert isinstance(search_notes, list), (
+            f"Expected results to be a list, got: {type(search_notes)}"
+        )
 
         # Find our note in search results
         found_note = None
@@ -216,7 +222,7 @@ async def test_mcp_notes_crud_workflow(
                 break
 
         assert found_note is not None, (
-            f"Created note not found in search results. Search returned: {search_notes}"
+            f"Created note not found in search results. Search returned: {search_response}"
         )
         assert found_note["title"] == updated_title
 
@@ -431,21 +437,33 @@ async def test_mcp_calendar_workflow(
             f"MCP calendar listing failed: {calendars_result.content}"
         )
 
-        calendars_data = json.loads(calendars_result.content[0].text)
+        calendars_response = json.loads(calendars_result.content[0].text)
 
         # Debug output to understand the structure
-        logger.info(f"calendars_data type: {type(calendars_data)}")
-        logger.info(f"calendars_data content: {calendars_data}")
+        logger.info(f"calendars_response type: {type(calendars_response)}")
+        logger.info(f"calendars_response content: {calendars_response}")
 
-        # Handle the case where MCP tool returns a single dict instead of a list
-        if isinstance(calendars_data, dict):
-            # Single calendar returned as dict instead of list
-            calendar_name = calendars_data["name"]
-        elif isinstance(calendars_data, list) and calendars_data:
-            # Normal case - list of calendars
-            calendar_name = calendars_data[0]["name"]
-        else:
+        # Expect structured response with Pydantic format
+        assert isinstance(calendars_response, dict), (
+            f"Expected calendar response to be a dict with structured format, got: {type(calendars_response)}"
+        )
+        assert "calendars" in calendars_response, (
+            f"Expected 'calendars' field in response, got keys: {list(calendars_response.keys())}"
+        )
+        assert "success" in calendars_response and calendars_response["success"], (
+            f"Expected successful calendar response, got: {calendars_response}"
+        )
+
+        calendars_list = calendars_response["calendars"]
+        assert isinstance(calendars_list, list), (
+            f"Expected calendars to be a list, got: {type(calendars_list)}"
+        )
+
+        if not calendars_list:
             pytest.skip("No calendars available for testing")
+
+        # Use the first available calendar
+        calendar_name = calendars_list[0]["name"]
         logger.info(f"Using calendar: {calendar_name}")
 
         # 2. Create event via MCP

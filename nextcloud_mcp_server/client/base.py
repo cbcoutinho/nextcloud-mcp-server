@@ -39,6 +39,13 @@ def retry_on_429(func):
                         f"429 Client Error: Too Many Requests, Number of attempts: {retries}"
                     )
                     time.sleep(5)
+                elif e.response.status_code == 404:
+                    # 404 errors are often expected (e.g., checking if attachments exist)
+                    # Log as debug instead of warning
+                    logger.debug(
+                        f"HTTPStatusError {e.response.status_code}: {e}, Number of attempts: {retries}"
+                    )
+                    raise
                 else:
                     logger.warning(
                         f"HTTPStatusError {e.response.status_code}: {e}, Number of attempts: {retries}"

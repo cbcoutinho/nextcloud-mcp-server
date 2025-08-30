@@ -31,7 +31,7 @@ class WebDAVClient(BaseNextcloudClient):
             # First try a PROPFIND to verify resource exists
             propfind_headers = {"Depth": "0", "OCS-APIRequest": "true"}
             try:
-                propfind_resp = await self._client.request(
+                propfind_resp = await self._make_request(
                     "PROPFIND", webdav_path, headers=propfind_headers
                 )
                 logger.debug(
@@ -44,8 +44,7 @@ class WebDAVClient(BaseNextcloudClient):
                 # For other errors, continue with deletion attempt
 
             # Proceed with deletion
-            response = await self._client.delete(webdav_path, headers=headers)
-            response.raise_for_status()
+            response = await self._make_request("DELETE", webdav_path, headers=headers)
             logger.debug(f"Successfully deleted WebDAV resource '{path}'")
             return {"status_code": response.status_code}
 
@@ -127,7 +126,7 @@ class WebDAVClient(BaseNextcloudClient):
             # First check if we can access WebDAV at all
             notes_dir_path = f"{webdav_base}/Notes"
             propfind_headers = {"Depth": "0", "OCS-APIRequest": "true"}
-            notes_dir_response = await self._client.request(
+            notes_dir_response = await self._make_request(
                 "PROPFIND", notes_dir_path, headers=propfind_headers
             )
 
@@ -146,7 +145,7 @@ class WebDAVClient(BaseNextcloudClient):
 
             # Ensure the parent directory exists using MKCOL
             mkcol_headers = {"OCS-APIRequest": "true"}
-            mkcol_response = await self._client.request(
+            mkcol_response = await self._make_request(
                 "MKCOL", parent_dir_path, headers=mkcol_headers
             )
 
@@ -158,8 +157,8 @@ class WebDAVClient(BaseNextcloudClient):
                 mkcol_response.raise_for_status()
 
             # Proceed with the PUT request
-            response = await self._client.put(
-                attachment_path, content=content, headers=headers
+            response = await self._make_request(
+                "PUT", attachment_path, content=content, headers=headers
             )
             response.raise_for_status()
             logger.debug(
@@ -190,7 +189,7 @@ class WebDAVClient(BaseNextcloudClient):
         logger.debug(f"Fetching attachment '{filename}' for note {note_id}")
 
         try:
-            response = await self._client.get(attachment_path)
+            response = await self._make_request("GET", attachment_path)
             response.raise_for_status()
 
             content = response.content
@@ -237,7 +236,7 @@ class WebDAVClient(BaseNextcloudClient):
         headers = {"Depth": "1", "Content-Type": "text/xml", "OCS-APIRequest": "true"}
 
         try:
-            response = await self._client.request(
+            response = await self._make_request(
                 "PROPFIND", webdav_path, content=propfind_body, headers=headers
             )
             response.raise_for_status()
@@ -320,7 +319,7 @@ class WebDAVClient(BaseNextcloudClient):
         logger.debug(f"Reading file: {path}")
 
         try:
-            response = await self._client.get(webdav_path)
+            response = await self._make_request("GET", webdav_path)
             response.raise_for_status()
 
             content = response.content
@@ -354,8 +353,8 @@ class WebDAVClient(BaseNextcloudClient):
         headers = {"Content-Type": content_type, "OCS-APIRequest": "true"}
 
         try:
-            response = await self._client.put(
-                webdav_path, content=content, headers=headers
+            response = await self._make_request(
+                "PUT", webdav_path, content=content, headers=headers
             )
             response.raise_for_status()
 
@@ -382,7 +381,7 @@ class WebDAVClient(BaseNextcloudClient):
         headers = {"OCS-APIRequest": "true"}
 
         try:
-            response = await self._client.request("MKCOL", webdav_path, headers=headers)
+            response = await self._make_request("MKCOL", webdav_path, headers=headers)
             response.raise_for_status()
 
             logger.debug(f"Successfully created directory '{path}'")

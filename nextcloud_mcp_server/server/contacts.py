@@ -17,7 +17,7 @@ def configure_contacts_tools(mcp: FastMCP):
 
     @mcp.tool()
     async def nc_contacts_list_contacts(ctx: Context, *, addressbook: str):
-        """List all addressbooks for the user."""
+        """List all contacts in the specified addressbook."""
         client: NextcloudClient = ctx.request_context.lifespan_context.client
         return await client.contacts.list_contacts(addressbook=addressbook)
 

@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 
 [[package]]
@@ -512,6 +512,7 @@ dependencies = [
     { name = "icalendar" },
     { name = "mcp", extra = ["cli"] },
     { name = "pillow" },
+    { name = "pydantic" },
     { name = "pythonvcard4" },
 ]
 
@@ -531,6 +532,7 @@ requires-dist = [
     { name = "icalendar", specifier = ">=6.0.0,<7.0.0" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.10,<1.11" },
     { name = "pillow", specifier = ">=11.2.1,<12.0.0" },
+    { name = "pydantic", specifier = ">=2.11.4" },
     { name = "pythonvcard4", specifier = ">=0.2.0" },
 ]
 

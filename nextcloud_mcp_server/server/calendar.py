@@ -5,6 +5,10 @@ from typing import Optional
 from mcp.server.fastmcp import Context, FastMCP
 
 from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.models.calendar import (
+    Calendar,
+    ListCalendarsResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -12,10 +16,13 @@ logger = logging.getLogger(__name__)
 def configure_calendar_tools(mcp: FastMCP):
     # Calendar tools
     @mcp.tool()
-    async def nc_calendar_list_calendars(ctx: Context):
+    async def nc_calendar_list_calendars(ctx: Context) -> ListCalendarsResponse:
         """List all available calendars for the user"""
         client: NextcloudClient = ctx.request_context.lifespan_context.client
-        return await client.calendar.list_calendars()
+        calendars_data = await client.calendar.list_calendars()
+
+        calendars = [Calendar(**cal_data) for cal_data in calendars_data]
+        return ListCalendarsResponse(calendars=calendars, total_count=len(calendars))
 
     @mcp.tool()
     async def nc_calendar_create_event(
