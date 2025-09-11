@@ -18,6 +18,7 @@ from .deck import DeckClient
 from .notes import NotesClient
 from .tables import TablesClient
 from .webdav import WebDAVClient
+from .users import UsersClient
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ class NextcloudClient:
         self.calendar = CalendarClient(self._client, username)
         self.contacts = ContactsClient(self._client, username)
         self.deck = DeckClient(self._client, username)
+        self.users = UsersClient(self._client, username)
 
         # Initialize controllers
         self._notes_search = NotesSearchController()
