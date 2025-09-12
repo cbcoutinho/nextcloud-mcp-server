@@ -6,7 +6,8 @@ from contextlib import asynccontextmanager, AsyncExitStack
 from dataclasses import dataclass
 
 from starlette.applications import Starlette
-from starlette.routing import Mount
+from starlette.routing import Mount, Route
+from starlette.responses import JSONResponse
 
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -44,7 +45,11 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         await client.close()
 
 
-def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
+async def heartbeat(request):
+    return JSONResponse({"status": "ok"})
+
+
+def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None = None):
     setup_logging()
 
     # Create an MCP server
@@ -84,9 +89,11 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             )
 
     if transport == "sse":
+        mcp.settings.sse_path = "/"
         mcp_app = mcp.sse_app()
         lifespan = None
     else:
+        mcp.settings.streamable_http_path = "/"
         mcp_app = mcp.streamable_http_app()
 
         @asynccontextmanager
@@ -95,7 +102,13 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 await stack.enter_async_context(mcp.session_manager.run())
                 yield
 
-    app = Starlette(routes=[Mount("/", app=mcp_app)], lifespan=lifespan)
+    app = Starlette(
+        routes=[
+            Route("/heartbeat", endpoint=heartbeat),
+            Mount("/sse" if transport == "sse" else "/mcp", app=mcp_app),
+        ],
+        lifespan=lifespan,
+    )
 
     return app
 
