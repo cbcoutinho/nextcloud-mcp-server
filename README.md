@@ -248,6 +248,10 @@ You can then connect to and interact with the server's tools and resources throu
 
 Contributions are welcome! Please feel free to submit issues or pull requests on the [GitHub repository](https://github.com/cbcoutinho/nextcloud-mcp-server).
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=cbcoutinho/nextcloud-mcp-server&type=Date)](https://www.star-history.com/#cbcoutinho/nextcloud-mcp-server&Date)
+
 ## License
 
 This project is licensed under the AGPL-3.0 License. See the [LICENSE](./LICENSE) file for details.
