@@ -21,7 +21,7 @@ services:
     restart: always
 
   app:
-    image: nextcloud:32.0.0@sha256:54f7a04123643af5de16c40e57fbe7cf4dca162af432412780c78b328d5b83f1
+    image: docker.io/library/nextcloud:32.0.0@sha256:5413182349f878ed178874d72d028e6140eca7b9a8a8fe04ae3072adce9f23d8
     #user: www-data:www-data
     restart: always
     #post_start:
