@@ -19,6 +19,8 @@ uv run pytest --cov
 uv run pytest -m "not integration"
 ```
 
+! Hint: If the tests are failing due to missing environment variables, then usually the correct .env has not been created or not correctly configured yet.
+
 ### Code Quality
 ```bash
 # Format and lint code

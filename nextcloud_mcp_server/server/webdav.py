@@ -3,6 +3,8 @@ import logging
 from mcp.server.fastmcp import Context, FastMCP
 
 from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.utils.document_parser import is_parseable_document, parse_document
+from nextcloud_mcp_server.config import is_unstructured_parsing_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +39,20 @@ def configure_webdav_tools(mcp: FastMCP):
             path: Full path to the file to read
 
         Returns:
-            Dict with path, content, content_type, size, and encoding (if binary)
-            Text files are decoded to UTF-8, binary files are base64 encoded
+            Dict with path, content, content_type, size, and optional parsing metadata
+            - Text files are decoded to UTF-8
+            - Documents (PDF, DOCX, etc.) are parsed and text is extracted
+            - Other binary files are base64 encoded
 
         Examples:
             # Read a text file
             result = await nc_webdav_read_file("Documents/readme.txt")
             logger.info(result['content'])  # Decoded text content
+
+            # Read a PDF document (automatically parsed)
+            result = await nc_webdav_read_file("Documents/report.pdf")
+            logger.info(result['content'])  # Extracted text from PDF
+            logger.info(result['parsing_metadata'])  # Document parsing info
 
             # Read a binary file
             result = await nc_webdav_read_file("Images/photo.jpg")
@@ -51,6 +60,27 @@ def configure_webdav_tools(mcp: FastMCP):
         """
         client: NextcloudClient = ctx.request_context.lifespan_context.client
         content, content_type = await client.webdav.read_file(path)
+
+        # Check if this is a parseable document (PDF, DOCX, etc.)
+        if (is_unstructured_parsing_enabled() and is_parseable_document(content_type)):
+            try:
+                logger.info(f"Parsing document '{path}' of type '{content_type}'")
+                parsed_text, metadata = await parse_document(
+                    content, content_type, filename=path
+                )
+                return {
+                    "path": path,
+                    "content": parsed_text,
+                    "content_type": content_type,
+                    "size": len(content),
+                    "parsed": True,
+                    "parsing_metadata": metadata,
+                }
+            except Exception as e:
+                logger.warning(
+                    f"Failed to parse document '{path}', falling back to base64: {e}"
+                )
+                # Fall through to base64 encoding on parse failure
 
         # For text files, decode content for easier viewing
         if content_type and content_type.startswith("text/"):

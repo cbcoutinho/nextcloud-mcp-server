@@ -48,6 +48,7 @@ dev = [
     "pytest-asyncio>=1.0.0",
     "pytest-cov>=6.1.1",
     "ruff>=0.11.13",
+    "reportlab>=4.0.0",
 ]
 
 [project.scripts]
