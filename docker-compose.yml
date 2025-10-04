@@ -44,15 +44,27 @@ services:
       - MYSQL_USER=nextcloud
       - MYSQL_HOST=db
 
+  unstructured:
+    image: downloads.unstructured.io/unstructured-io/unstructured-api:latest
+    restart: always
+    ports:
+      - 127.0.0.1:8002:8000
+    # Unstructured API runs on port 8000 internally
+    # We expose it on 8002 externally to avoid conflict
+
   mcp:
     build: .
     command: ["--transport", "streamable-http"]
     ports:
       - 127.0.0.1:8000:8000
+    depends_on:
+      - unstructured
     environment:
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_USERNAME=admin
       - NEXTCLOUD_PASSWORD=admin
+      - ENABLE_UNSTRUCTURED_PARSING=true
+      - UNSTRUCTURED_API_URL=http://unstructured:8000
     #volumes:
       #- ./nextcloud_mcp_server:/app/nextcloud_mcp_server:ro
 
