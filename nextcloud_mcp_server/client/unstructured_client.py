@@ -6,7 +6,11 @@ from typing import Optional, Tuple
 
 import httpx
 
-from nextcloud_mcp_server.config import get_unstructured_api_url
+from nextcloud_mcp_server.config import (
+    get_unstructured_api_url,
+    get_unstructured_languages,
+    get_unstructured_strategy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +47,7 @@ class UnstructuredClient:
         content: bytes,
         filename: str,
         content_type: Optional[str] = None,
-        strategy: str = "auto",
+        strategy: Optional[str] = None,
         languages: Optional[list[str]] = None,
         extract_image_block_types: Optional[list[str]] = None,
     ) -> Tuple[str, dict]:
@@ -53,8 +57,10 @@ class UnstructuredClient:
             content: The document content as bytes
             filename: The filename (used for format detection)
             content_type: Optional MIME type
-            strategy: Parsing strategy - "auto", "fast", or "hi_res" (OCR-based)
-            languages: List of language codes for OCR (e.g., ["eng", "deu"])
+            strategy: Parsing strategy - "auto", "fast", or "hi_res" (OCR-based).
+                     If None, uses the value from UNSTRUCTURED_STRATEGY env var.
+            languages: List of language codes for OCR (e.g., ["eng", "deu"]).
+                      If None, uses the value from UNSTRUCTURED_LANGUAGES env var.
             extract_image_block_types: Types of elements to extract from images
             
         Returns:
@@ -66,8 +72,12 @@ class UnstructuredClient:
             httpx.HTTPError: If the API request fails
             Exception: If parsing fails
         """
+        # Use environment configuration as defaults
+        if strategy is None:
+            strategy = get_unstructured_strategy()
+        
         if languages is None:
-            languages = ["eng"]  # Default to English
+            languages = get_unstructured_languages()
         
         # Prepare the multipart form data
         files = {

@@ -86,11 +86,12 @@ async def parse_document(
         try:
             from nextcloud_mcp_server.client.unstructured_client import UnstructuredClient
             client = UnstructuredClient()
+            # The client will automatically use environment configuration
+            # (UNSTRUCTURED_STRATEGY and UNSTRUCTURED_LANGUAGES)
             return await client.partition_document(
                 content=content,
                 filename=filename or f"document.{doc_type}",
                 content_type=content_type,
-                strategy="auto"
             )
         except Exception as e:
             logger.error(f"Unstructured API parsing failed: {e}")

@@ -65,6 +65,8 @@ services:
       - NEXTCLOUD_PASSWORD=admin
       - ENABLE_UNSTRUCTURED_PARSING=true
       - UNSTRUCTURED_API_URL=http://unstructured:8000
+      - UNSTRUCTURED_STRATEGY=hi_res
+      - UNSTRUCTURED_LANGUAGES=deu,eng
     #volumes:
       #- ./nextcloud_mcp_server:/app/nextcloud_mcp_server:ro
 
