@@ -35,56 +35,61 @@ PARSEABLE_MIME_TYPES = {
     "image/bmp": "image",
 }
 
+
 def is_parseable_document(content_type: Optional[str]) -> bool:
     """Check if a document type can be parsed.
-    
+
     Args:
         content_type: The MIME type of the document
-         
+
     Returns:
         True if the document can be parsed, False otherwise
     """
     if not content_type:
         return False
-    
+
     # Handle content types with additional parameters (e.g., "application/pdf; charset=utf-8")
     base_content_type = content_type.split(";")[0].strip().lower()
     return base_content_type in PARSEABLE_MIME_TYPES
 
+
 async def parse_document(
-    content: bytes,
-    content_type: Optional[str],
-    filename: Optional[str] = None
+    content: bytes, content_type: Optional[str], filename: Optional[str] = None
 ) -> Tuple[str, dict]:
     """Parse a document using the Unstructured API.
-    
+
     Args:
         content: The document content as bytes
         content_type: The MIME type of the document
         filename: Optional filename to help with format detection
-         
+
     Returns:
         Tuple of (parsed_text, metadata) where:
         - parsed_text: The extracted text content
         - metadata: Additional metadata about the parsing
-         
+
     Raises:
         ValueError: If the document type is not supported
         Exception: If parsing fails
     """
     if not is_parseable_document(content_type):
         raise ValueError(f"Document type '{content_type}' is not supported for parsing")
-    
-    base_content_type = content_type.split(";")[0].strip().lower() if content_type else ""
+
+    base_content_type = (
+        content_type.split(";")[0].strip().lower() if content_type else ""
+    )
     doc_type = PARSEABLE_MIME_TYPES.get(base_content_type, "unknown")
-    
+
     logger.debug(f"Parsing document of type '{doc_type}' (MIME: {content_type})")
-    
+
     # Check if unstructured parsing is enabled via environment
     if is_unstructured_parsing_enabled():
         logger.debug("Using Unstructured API for parsing")
         try:
-            from nextcloud_mcp_server.client.unstructured_client import UnstructuredClient
+            from nextcloud_mcp_server.client.unstructured_client import (
+                UnstructuredClient,
+            )
+
             client = UnstructuredClient()
             # The client will automatically use environment configuration
             # (UNSTRUCTURED_STRATEGY and UNSTRUCTURED_LANGUAGES)
@@ -97,6 +102,7 @@ async def parse_document(
             logger.error(f"Unstructured API parsing failed: {e}")
             # If unstructured parsing fails, return base64 as fallback
             import base64
+
             parsed_text = f"Document could not be parsed. Base64 content: {base64.b64encode(content).decode('ascii')[:200]}..."
             metadata = {
                 "document_type": doc_type,
@@ -104,18 +110,21 @@ async def parse_document(
                 "element_count": 0,
                 "text_length": len(parsed_text),
                 "parsing_method": "fallback_base64",
-                "error": str(e)
+                "error": str(e),
             }
             return parsed_text, metadata
     else:
-        logger.debug("Unstructured parsing is disabled, returning base64 encoded content as fallback")
+        logger.debug(
+            "Unstructured parsing is disabled, returning base64 encoded content as fallback"
+        )
         import base64
+
         parsed_text = f"Document could not be parsed. Base64 content: {base64.b64encode(content).decode('ascii')[:200]}..."
         metadata = {
             "document_type": doc_type,
             "mime_type": content_type,
             "element_count": 0,
             "text_length": len(parsed_text),
-            "parsing_method": "fallback_base64"
+            "parsing_method": "fallback_base64",
         }
         return parsed_text, metadata
