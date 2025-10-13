@@ -794,3 +794,307 @@ async def interactive_oauth_token(oauth_callback_server) -> str:
         access_token = token_data.get("access_token")
 
         return access_token
+
+
+@pytest.fixture(scope="session")
+async def playwright_oauth_token(browser) -> str:
+    """
+    Fixture to obtain an OAuth access token using Playwright headless browser automation.
+
+    This fully automates the OAuth flow by:
+    1. Discovering OIDC endpoints
+    2. Registering an OAuth client
+    3. Navigating to authorization URL in headless browser
+    4. Programmatically filling in login form
+    5. Handling OAuth consent
+    6. Extracting auth code from redirect
+    7. Exchanging code for access token
+
+    Environment variables required:
+    - NEXTCLOUD_HOST: Nextcloud instance URL
+    - NEXTCLOUD_USERNAME: Username for login
+    - NEXTCLOUD_PASSWORD: Password for login
+
+    Playwright Configuration:
+    - Configure browser via pytest CLI args: --browser firefox --headed
+    - Browser fixture provided by pytest-playwright-asyncio
+    - See: https://playwright.dev/python/docs/test-runners
+    """
+    from urllib.parse import urlparse, parse_qs
+
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    username = os.getenv("NEXTCLOUD_USERNAME")
+    password = os.getenv("NEXTCLOUD_PASSWORD")
+
+    if not all([nextcloud_host, username, password]):
+        pytest.skip(
+            "Playwright OAuth requires NEXTCLOUD_HOST, NEXTCLOUD_USERNAME, and NEXTCLOUD_PASSWORD"
+        )
+
+    logger.info("Starting Playwright-based OAuth flow...")
+
+    # Use async httpx for all HTTP operations
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        # OIDC Discovery
+        discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
+        logger.debug(f"Fetching OIDC discovery from: {discovery_url}")
+
+        discovery_response = await http_client.get(discovery_url)
+        discovery_response.raise_for_status()
+        oidc_config = discovery_response.json()
+
+        token_endpoint = oidc_config.get("token_endpoint")
+        registration_endpoint = oidc_config.get("registration_endpoint")
+        authorization_endpoint = oidc_config.get("authorization_endpoint")
+
+        if not all([token_endpoint, registration_endpoint, authorization_endpoint]):
+            raise ValueError("OIDC discovery missing required endpoints")
+
+        logger.debug(f"Authorization endpoint: {authorization_endpoint}")
+        logger.debug(f"Token endpoint: {token_endpoint}")
+
+        # Register OAuth client with a callback that won't actually be used
+        # (we'll extract the code from the browser URL instead)
+        callback_url = "http://localhost:9999/oauth/callback"
+
+        # Register client asynchronously
+        client_metadata = {
+            "client_name": "Nextcloud MCP Server - Playwright Tests",
+            "redirect_uris": [callback_url],
+            "token_endpoint_auth_method": "client_secret_post",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "scope": "openid profile email",
+        }
+
+        reg_response = await http_client.post(
+            registration_endpoint,
+            json=client_metadata,
+            headers={"Content-Type": "application/json"},
+        )
+        reg_response.raise_for_status()
+        client_info_dict = reg_response.json()
+
+        client_id = client_info_dict["client_id"]
+        client_secret = client_info_dict["client_secret"]
+
+        # Construct authorization URL
+        auth_url = (
+            f"{authorization_endpoint}?"
+            f"response_type=code&"
+            f"client_id={client_id}&"
+            f"redirect_uri={callback_url}&"
+            f"scope=openid%20profile%20email"
+        )
+
+        logger.info("Opening browser for OAuth authorization...")
+
+        # Async browser automation using pytest-playwright's browser fixture
+        context = await browser.new_context(ignore_https_errors=True)
+        page = await context.new_page()
+
+        try:
+            # Navigate to authorization URL
+            logger.debug(f"Navigating to: {auth_url}")
+            await page.goto(auth_url, wait_until="networkidle", timeout=30000)
+
+            # Check if we need to login first
+            current_url = page.url
+            logger.debug(f"Current URL after navigation: {current_url}")
+
+            # If we're on a login page, fill in credentials
+            if "/login" in current_url or "/index.php/login" in current_url:
+                logger.info("Login page detected, filling in credentials...")
+
+                # Wait for login form
+                await page.wait_for_selector('input[name="user"]', timeout=10000)
+
+                # Fill in username and password
+                await page.fill('input[name="user"]', username)
+                await page.fill('input[name="password"]', password)
+
+                logger.debug("Credentials filled, submitting login form...")
+
+                # Submit the form
+                await page.click('button[type="submit"]')
+
+                # Wait for navigation after login
+                await page.wait_for_load_state("networkidle", timeout=30000)
+                current_url = page.url
+                logger.info(f"After login, current URL: {current_url}")
+
+            # Now we should be on the OAuth authorization/consent page or already redirected
+            # Check if there's an authorize button to click
+            try:
+                # Look for common authorization button patterns
+                authorize_button = await page.query_selector(
+                    'button:has-text("Authorize"), button:has-text("Allow"), input[type="submit"][value*="uthoriz"]'
+                )
+
+                if authorize_button:
+                    logger.info(
+                        "Authorization consent page detected, clicking authorize..."
+                    )
+                    await authorize_button.click()
+                    await page.wait_for_load_state("networkidle", timeout=10000)
+                    current_url = page.url
+                    logger.debug(f"After authorization, current_url: {current_url}")
+            except Exception as e:
+                logger.debug(
+                    f"No authorization button found or already authorized: {e}"
+                )
+
+            # Wait for redirect to callback URL (which will fail to load, but we just need the URL)
+            try:
+                # The redirect might fail since localhost:9999 isn't actually running
+                # But we can still extract the code from the URL
+                await page.wait_for_url(f"{callback_url}*", timeout=10000)
+            except Exception as e:
+                # Expected - the callback URL won't load, but we should have the URL
+                logger.debug(f"Callback redirect (expected to fail): {e}")
+
+            # Extract auth code from URL
+            final_url = page.url
+            logger.debug(f"Final URL: {final_url}")
+
+            parsed_url = urlparse(final_url)
+            query_params = parse_qs(parsed_url.query)
+            auth_code = query_params.get("code", [None])[0]
+
+            if not auth_code:
+                # Take a screenshot for debugging
+                screenshot_path = "/tmp/playwright_oauth_error.png"
+                await page.screenshot(path=screenshot_path)
+                logger.error(f"Screenshot saved to {screenshot_path}")
+                raise ValueError(
+                    f"No authorization code found in redirect URL: {final_url}"
+                )
+
+            logger.info(
+                f"Successfully extracted authorization code: {auth_code[:20]}..."
+            )
+
+        finally:
+            await context.close()
+
+        # Exchange authorization code for access token
+        logger.info("Exchanging authorization code for access token...")
+        token_response = await http_client.post(
+            token_endpoint,
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": callback_url,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+        )
+
+        token_response.raise_for_status()
+        token_data = token_response.json()
+        access_token = token_data.get("access_token")
+
+        if not access_token:
+            raise ValueError(f"No access_token in response: {token_data}")
+
+        logger.info("Successfully obtained OAuth access token via Playwright")
+        return access_token
+
+
+# Alternative fixtures using Playwright token (for automated/CI testing)
+
+
+@pytest.fixture(scope="session")
+async def nc_oauth_client_playwright(
+    playwright_oauth_token: str,
+) -> AsyncGenerator[NextcloudClient, Any]:
+    """
+    Fixture to create a NextcloudClient instance using automated Playwright OAuth authentication.
+    This fixture uses headless browser automation and is suitable for CI/CD pipelines.
+
+    For interactive testing, use nc_oauth_client fixture instead.
+    """
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    username = os.getenv("NEXTCLOUD_USERNAME")
+
+    if not all([nextcloud_host, username]):
+        pytest.skip(
+            "Playwright OAuth client fixture requires NEXTCLOUD_HOST and USERNAME"
+        )
+
+    logger.info(f"Creating OAuth NextcloudClient (Playwright) for user: {username}")
+    client = NextcloudClient.from_token(
+        base_url=nextcloud_host,
+        token=playwright_oauth_token,
+        username=username,
+    )
+
+    # Verify the OAuth client works
+    try:
+        await client.capabilities()
+        logger.info(
+            "OAuth NextcloudClient (Playwright) initialized and capabilities checked."
+        )
+        yield client
+    except Exception as e:
+        logger.error(f"Failed to initialize Playwright OAuth NextcloudClient: {e}")
+        pytest.fail(f"Failed to connect to Nextcloud with Playwright OAuth token: {e}")
+    finally:
+        await client.close()
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_oauth_client_playwright(
+    playwright_oauth_token: str,
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    Fixture to create an MCP client session for OAuth integration tests using Playwright automation.
+    Connects to the OAuth-enabled MCP server on port 8001 with OAuth authentication.
+
+    This fixture uses headless browser automation and is suitable for CI/CD pipelines.
+    For interactive testing, use nc_mcp_oauth_client fixture instead.
+    """
+    logger.info("Creating Streamable HTTP client for OAuth MCP server (Playwright)")
+
+    # Pass OAuth token as Bearer token in headers
+    headers = {"Authorization": f"Bearer {playwright_oauth_token}"}
+    streamable_context = streamablehttp_client(
+        "http://127.0.0.1:8001/mcp", headers=headers
+    )
+    session_context = None
+
+    try:
+        read_stream, write_stream, _ = await streamable_context.__aenter__()
+        session_context = ClientSession(read_stream, write_stream)
+        session = await session_context.__aenter__()
+        await session.initialize()
+        logger.info("OAuth MCP client session (Playwright) initialized successfully")
+
+        yield session
+
+    finally:
+        # Clean up in reverse order, ignoring task scope issues
+        if session_context is not None:
+            try:
+                await session_context.__aexit__(None, None, None)
+            except RuntimeError as e:
+                if "cancel scope" in str(e):
+                    logger.debug(f"Ignoring cancel scope teardown issue: {e}")
+                else:
+                    logger.warning(f"Error closing Playwright OAuth session: {e}")
+            except Exception as e:
+                logger.warning(f"Error closing Playwright OAuth session: {e}")
+
+        try:
+            await streamable_context.__aexit__(None, None, None)
+        except RuntimeError as e:
+            if "cancel scope" in str(e):
+                logger.debug(f"Ignoring cancel scope teardown issue: {e}")
+            else:
+                logger.warning(
+                    f"Error closing Playwright OAuth streamable HTTP client: {e}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"Error closing Playwright OAuth streamable HTTP client: {e}"
+            )

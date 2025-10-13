@@ -30,6 +30,7 @@ jobs:
         uses: hoverkraft-tech/compose-action@3846bcd61da338e9eaaf83e7ed0234a12b099b72 # v2.4.1
         with:
           compose-file: "./docker-compose.yml"
+
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@3259c6206f993105e3a61b142c2d97bf4b9ef83d # v7.1.0
 
@@ -56,4 +57,5 @@ jobs:
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
         run: |
-          uv run --frozen python -m pytest -m 'not oauth'
+          uv run playwright install --with-deps
+          uv run --frozen python -m pytest

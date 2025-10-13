@@ -48,9 +48,11 @@ build-backend = "poetry.core.masonry.api"
 dev = [
     "commitizen>=4.8.2",
     "ipython>=9.2.0",
+    "playwright>=1.49.1",
     "pytest>=8.3.5",
     "pytest-asyncio>=1.0.0",
     "pytest-cov>=6.1.1",
+    "pytest-playwright-asyncio>=0.7.1",
     "ruff>=0.11.13",
 ]
 
