@@ -105,22 +105,27 @@ class TestOAuthTokenValidation:
 class TestOAuthMCPIntegration:
     """Test OAuth integration with MCP server."""
 
-    @pytest.mark.skip(
-        reason="OAuth MCP server integration requires full OAuth flow implementation"
-    )
     async def test_mcp_oauth_server_connection(self, nc_mcp_oauth_client):
         """Test connection to OAuth-enabled MCP server."""
-        # This test is currently skipped because the OAuth MCP server
-        # requires the full OAuth authorization flow to be implemented
-        # in the MCP SDK and app.py
-
-        # Once implemented, this test should:
-        # 1. Connect to the OAuth MCP server
-        # 2. Verify tools are available
-        # 3. Call a tool and verify it works with OAuth auth
-
         result = await nc_mcp_oauth_client.list_tools()
         assert result is not None
         assert len(result.tools) > 0
 
         logger.info(f"OAuth MCP server has {len(result.tools)} tools available")
+
+    async def test_mcp_oauth_tool_execution(self, nc_mcp_oauth_client):
+        """Test executing a tool on the OAuth-enabled MCP server."""
+        import json
+
+        # Example: Execute the 'nc_tables_list_tables' tool
+        result = await nc_mcp_oauth_client.call_tool("nc_tables_list_tables")
+
+        assert result.isError is False, f"Tool execution failed: {result.content}"
+        assert result.content is not None
+        notes_list = json.loads(result.content[0].text)
+
+        assert isinstance(notes_list, list)
+
+        logger.info(
+            f"Successfully executed 'nc_tables_list_tables' tool on OAuth MCP server and got {len(notes_list)} notes."
+        )

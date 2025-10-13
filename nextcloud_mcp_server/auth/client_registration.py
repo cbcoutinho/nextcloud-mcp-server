@@ -211,7 +211,7 @@ async def load_or_register_client(
     storage_path: str | Path,
     client_name: str = "Nextcloud MCP Server",
     redirect_uris: list[str] | None = None,
-    force_register: bool = False,
+    force_register: bool = True,
 ) -> ClientInfo:
     """
     Load client from storage or register a new one if not found/expired.

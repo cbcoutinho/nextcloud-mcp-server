@@ -274,18 +274,20 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     # Determine authentication mode
     oauth_enabled = is_oauth_mode()
 
-    # WARNING: This is a synchronous function but OAuth setup requires async
-    # For now, OAuth configuration will be handled differently
-    # We'll need to restructure this or use a factory pattern
-
     if oauth_enabled:
         logger.info("Configuring MCP server for OAuth mode")
-        logger.warning(
-            "OAuth mode requires async initialization - use factory pattern or separate setup"
+        # Asynchronously get the OAuth configuration
+        import asyncio
+
+        nextcloud_host, token_verifier, auth_settings = asyncio.run(
+            setup_oauth_config()
         )
-        # For now, fall back to a simplified OAuth setup
-        # TODO: This needs to be restructured to support async initialization
-        mcp = FastMCP("Nextcloud MCP", lifespan=app_lifespan_oauth)
+        mcp = FastMCP(
+            "Nextcloud MCP",
+            lifespan=app_lifespan_oauth,
+            token_verifier=token_verifier,
+            auth=auth_settings,
+        )
     else:
         logger.info("Configuring MCP server for BasicAuth mode")
         mcp = FastMCP("Nextcloud MCP", lifespan=app_lifespan_basic)

@@ -25,7 +25,8 @@ log_cli = 1
 log_cli_level = "INFO"
 log_level = "INFO"
 markers = [
-    "integration: marks tests as slow (deselect with '-m \"not slow\"')"
+    "integration: marks tests as slow (deselect with '-m \"not slow\"')",
+    "interactive: marks tests as interactive (deselect with '-m \"not interactive\"')"
 ]
 
 [tool.commitizen]

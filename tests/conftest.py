@@ -454,7 +454,7 @@ async def temporary_board_with_card(
 
 async def get_oauth_token(nextcloud_url: str, username: str, password: str) -> str:
     """
-    Get an OAuth access token from Nextcloud OIDC using Resource Owner Password flow.
+    Get an OAuth access token from Nextcloud OIDC using Client Credentials flow.
 
     This is a helper function for testing only - it bypasses the normal OAuth flow
     to directly obtain a token for automated testing.
@@ -501,16 +501,13 @@ async def get_oauth_token(nextcloud_url: str, username: str, password: str) -> s
             redirect_uris=["http://localhost:8000/oauth/callback"],
         )
 
-        # Use client credentials to get a token via password grant
-        # Note: This requires the OIDC app to support Resource Owner Password flow
+        # Use client credentials to get a token via client_credentials grant
         token_response = await http_client.post(
             token_endpoint,
             data={
-                "grant_type": "password",
+                "grant_type": "client_credentials",
                 "client_id": client_info.client_id,
                 "client_secret": client_info.client_secret,
-                "username": username,
-                "password": password,
                 "scope": "openid profile email",
             },
         )
@@ -590,43 +587,103 @@ async def nc_oauth_client(oauth_token: str) -> AsyncGenerator[NextcloudClient, A
 
 
 @pytest.fixture(scope="session")
-async def nc_mcp_oauth_client() -> AsyncGenerator[ClientSession, Any]:
+async def nc_mcp_oauth_client_interactive() -> AsyncGenerator[ClientSession, Any]:
     """
-    Fixture to create an MCP client session for OAuth integration tests.
-    Connects to the OAuth-enabled MCP server on port 8001.
+    Fixture to create an MCP client session for interactive OAuth integration tests.
+    Performs an interactive OAuth flow to obtain an access token.
     """
-    logger.info("Creating Streamable HTTP client for OAuth MCP server")
-    streamable_context = streamablehttp_client("http://127.0.0.1:8001/mcp")
-    session_context = None
+    import webbrowser
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+    from urllib.parse import urlparse, parse_qs
 
-    try:
-        read_stream, write_stream, _ = await streamable_context.__aenter__()
-        session_context = ClientSession(read_stream, write_stream)
-        session = await session_context.__aenter__()
-        await session.initialize()
-        logger.info("OAuth MCP client session initialized successfully")
+    import time
 
-        yield session
+    auth_code = None
 
-    finally:
-        # Clean up in reverse order, ignoring task scope issues
-        if session_context is not None:
-            try:
-                await session_context.__aexit__(None, None, None)
-            except RuntimeError as e:
-                if "cancel scope" in str(e):
-                    logger.debug(f"Ignoring cancel scope teardown issue: {e}")
-                else:
-                    logger.warning(f"Error closing OAuth session: {e}")
-            except Exception as e:
-                logger.warning(f"Error closing OAuth session: {e}")
+    class OAuthCallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            nonlocal auth_code
+            if self.path.startswith("/shutdown"):
+                self.send_response(200)
+                self.send_header("Content-type", "text/html")
+                self.end_headers()
+                self.wfile.write(
+                    b"<html><body><h1>Server shutting down...</h1></body></html>"
+                )
+                threading.Thread(target=httpd.shutdown).start()
+                return
 
+            parsed_path = urlparse(self.path)
+            query = parse_qs(parsed_path.query)
+            auth_code = query.get("code", [None])[0]
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(
+                b"<html><body><h1>Authentication successful!</h1><p>You can close this window.</p></body></html>"
+            )
+
+    httpd = HTTPServer(("localhost", 8081), OAuthCallbackHandler)
+    server_thread = threading.Thread(target=httpd.serve_forever)
+    server_thread.daemon = True
+    server_thread.start()
+
+    from nextcloud_mcp_server.auth.client_registration import load_or_register_client
+
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    async with httpx.AsyncClient() as http_client:
+        discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
+        discovery_response = await http_client.get(discovery_url)
+        oidc_config = discovery_response.json()
+        token_endpoint = oidc_config.get("token_endpoint")
+        registration_endpoint = oidc_config.get("registration_endpoint")
+        authorization_endpoint = oidc_config.get("authorization_endpoint")
+
+        client_info = await load_or_register_client(
+            nextcloud_url=nextcloud_host,
+            registration_endpoint=registration_endpoint,
+            storage_path=".nextcloud_oauth_test_client.json",
+            redirect_uris=["http://localhost:8081"],
+            force_register=True,
+        )
+
+        auth_url = f"{authorization_endpoint}?response_type=code&client_id={client_info.client_id}&redirect_uri=http://localhost:8081&scope=openid%20profile%20email"
+        webbrowser.open(auth_url)
+
+        while not auth_code:
+            logger.info("Sleeping until auth_code available")
+            time.sleep(1)
+
+        token_response = await http_client.post(
+            token_endpoint,
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": "http://localhost:8081",
+                "client_id": client_info.client_id,
+                "client_secret": client_info.client_secret,
+            },
+        )
+
+        logger.info(f"Token response: {token_response.text}")
+
+        # Shut down the server
+        token_data = token_response.json()
+        logger.info(f"Token data: {token_data}")
+        access_token = token_data.get("access_token")
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    logger.info(f"Headers: {headers}")
+    async with streamablehttp_client("http://127.0.0.1:8001/mcp", headers=headers) as (
+        read_stream,
+        write_stream,
+        _,
+    ):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
         try:
-            await streamable_context.__aexit__(None, None, None)
-        except RuntimeError as e:
-            if "cancel scope" in str(e):
-                logger.debug(f"Ignoring cancel scope teardown issue: {e}")
-            else:
-                logger.warning(f"Error closing OAuth streamable HTTP client: {e}")
-        except Exception as e:
-            logger.warning(f"Error closing OAuth streamable HTTP client: {e}")
+            yield session
+        finally:
+            # Shut down the server
+            await http_client.get("http://localhost:8081/shutdown")

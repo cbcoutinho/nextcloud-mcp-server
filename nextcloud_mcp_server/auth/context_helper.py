@@ -30,6 +30,7 @@ def get_client_from_context(ctx: Context, base_url: str) -> NextcloudClient:
         ValueError: If username cannot be extracted from token
     """
     try:
+        logger.info(f"Inspecting session object: {dir(ctx.request_context.session)}")
         # Get AccessToken from MCP session (set by TokenVerifier)
         access_token: AccessToken = ctx.request_context.session.access_token
 
