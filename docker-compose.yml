@@ -47,6 +47,7 @@ services:
   mcp:
     build: .
     command: ["--transport", "streamable-http"]
+    restart: always
     depends_on:
       - app
     ports:
@@ -61,6 +62,7 @@ services:
   mcp-oauth:
     build: .
     command: ["--transport", "streamable-http", "--oauth", "--port", "8001"]
+    restart: always
     depends_on:
       - app
     ports:
