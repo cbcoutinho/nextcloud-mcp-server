@@ -602,13 +602,17 @@ async def interactive_oauth_token() -> str:
     from urllib.parse import urlparse, parse_qs
     import time
 
-    auth_code = None
+    # Use a mutable container to share state across threads
+    auth_state = {"code": None}
     httpd = None
     server_thread = None
 
     class OAuthCallbackHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            # Suppress default HTTP logging
+            pass
+
         def do_GET(self):
-            nonlocal auth_code
             if self.path.startswith("/shutdown"):
                 self.send_response(200)
                 self.send_header("Content-type", "text/html")
@@ -621,7 +625,11 @@ async def interactive_oauth_token() -> str:
 
             parsed_path = urlparse(self.path)
             query = parse_qs(parsed_path.query)
-            auth_code = query.get("code", [None])[0]
+            code = query.get("code", [None])[0]
+            auth_state["code"] = code
+            logger.info(
+                f"OAuth callback received. Code: {code[:20] if code else 'None'}..."
+            )
             self.send_response(200)
             self.send_header("Content-type", "text/html")
             self.end_headers()
@@ -652,11 +660,32 @@ async def interactive_oauth_token() -> str:
             force_register=True,
         )
 
+        # First, open Nextcloud login page to establish session
+        login_url = f"{nextcloud_host}/login"
+        logger.info(f"Please log in to Nextcloud at: {login_url}")
+        logger.info(
+            "After logging in, the OAuth authorization will proceed automatically"
+        )
+
+        # Construct authorization URL
         auth_url = f"{authorization_endpoint}?response_type=code&client_id={client_info.client_id}&redirect_uri=http://localhost:8081&scope=openid%20profile%20email"
+
+        # Open login page first, then auth URL
+        # webbrowser.open(login_url)
+        # time.sleep(2)  # Give browser time to load login page
         webbrowser.open(auth_url)
-        while not auth_code:
-            logger.info("Sleeping until auth_code available")
+
+        # Wait for auth code with timeout
+        timeout = 120  # 2 minutes
+        start_time = time.time()
+        while not auth_state["code"]:
+            if time.time() - start_time > timeout:
+                raise TimeoutError("OAuth authorization timed out after 2 minutes")
+            logger.info("Waiting for OAuth authorization...")
             time.sleep(1)
+
+        auth_code = auth_state["code"]
+        logger.info("Received authorization code, exchanging for token...")
 
         token_response = await http_client.post(
             token_endpoint,
