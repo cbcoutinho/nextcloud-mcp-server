@@ -214,6 +214,15 @@ async def setup_oauth_config():
     userinfo_uri = discovery["userinfo_endpoint"]
     registration_endpoint = discovery.get("registration_endpoint")
 
+    # Allow override of public issuer URL for clients
+    # (useful when MCP server accesses Nextcloud via internal URL
+    # but needs to advertise a different URL to clients)
+    public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+    if public_issuer:
+        public_issuer = public_issuer.rstrip("/")
+        logger.info(f"Using public issuer URL for clients: {public_issuer}")
+        issuer = public_issuer
+
     # Handle client registration
     client_id = os.getenv("NEXTCLOUD_OIDC_CLIENT_ID")
     client_secret = os.getenv("NEXTCLOUD_OIDC_CLIENT_SECRET")

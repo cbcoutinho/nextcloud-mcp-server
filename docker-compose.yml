@@ -28,7 +28,7 @@ services:
       #- command: chown -R www-data:www-data /var/www/html && while ! nc -z db 3306; do sleep 1; echo sleeping; done
         #user: root
     ports:
-      - 127.0.0.1:8080:80
+      - 0.0.0.0:8080:80
     depends_on:
       - redis
       - db
@@ -67,8 +67,12 @@ services:
       - app
     ports:
       - 127.0.0.1:8001:8001
+    #extra_hosts:
+      #- "host.docker.internal:host-gateway"
     environment:
       - NEXTCLOUD_HOST=http://app:80
+      - NEXTCLOUD_MCP_SERVER_URL=http://127.0.01:8001
+      - NEXTCLOUD_PUBLIC_ISSUER_URL=http://127.0.0.1:8080
       # No USERNAME/PASSWORD - will use OAuth
     volumes:
       - oauth-client-storage:/app/.oauth
