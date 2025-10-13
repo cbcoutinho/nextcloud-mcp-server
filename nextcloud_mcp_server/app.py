@@ -28,6 +28,70 @@ from nextcloud_mcp_server.server import (
 logger = logging.getLogger(__name__)
 
 
+def validate_pkce_support(discovery: dict, discovery_url: str) -> None:
+    """
+    Validate that the OIDC provider properly advertises PKCE support.
+
+    According to RFC 8414, if code_challenge_methods_supported is absent,
+    it means the authorization server does not support PKCE.
+
+    MCP clients require PKCE with S256 and will refuse to connect if this
+    field is missing or doesn't include S256.
+    """
+
+    code_challenge_methods = discovery.get("code_challenge_methods_supported")
+
+    if code_challenge_methods is None:
+        click.echo("=" * 80, err=True)
+        click.echo(
+            "ERROR: OIDC CONFIGURATION ERROR - Missing PKCE Support Advertisement",
+            err=True,
+        )
+        click.echo("=" * 80, err=True)
+        click.echo(f"Discovery URL: {discovery_url}", err=True)
+        click.echo("", err=True)
+        click.echo(
+            "The OIDC discovery document is missing 'code_challenge_methods_supported'.",
+            err=True,
+        )
+        click.echo(
+            "According to RFC 8414, this means the server does NOT support PKCE.",
+            err=True,
+        )
+        click.echo("", err=True)
+        click.echo("⚠️  MCP clients (like Claude Code) WILL REJECT this provider!")
+        click.echo("", err=True)
+        click.echo("How to fix:", err=True)
+        click.echo(
+            "  1. Ensure PKCE is enabled in Nextcloud OIDC app settings", err=True
+        )
+        click.echo(
+            "  2. Update the OIDC app to advertise PKCE support in discovery", err=True
+        )
+        click.echo("  3. See: RFC 8414 Section 2 (Authorization Server Metadata)")
+        click.echo("=" * 80, err=True)
+        click.echo("", err=True)
+        return
+
+    if "S256" not in code_challenge_methods:
+        click.echo("=" * 80, err=True)
+        click.echo(
+            "WARNING: OIDC CONFIGURATION WARNING - S256 Challenge Method Not Advertised",
+            err=True,
+        )
+        click.echo("=" * 80, err=True)
+        click.echo(f"Discovery URL: {discovery_url}", err=True)
+        click.echo(f"Advertised methods: {code_challenge_methods}", err=True)
+        click.echo("", err=True)
+        click.echo("MCP specification requires S256 code challenge method.", err=True)
+        click.echo("Some clients may reject this provider.", err=True)
+        click.echo("=" * 80, err=True)
+        click.echo("", err=True)
+        return
+
+    click.echo(f"✓ PKCE support validated: {code_challenge_methods}")
+
+
 @dataclass
 class AppContext:
     """Application context for BasicAuth mode."""
@@ -208,6 +272,9 @@ async def setup_oauth_config():
         discovery = response.json()
 
     logger.info("OIDC discovery successful")
+
+    # Validate PKCE support
+    validate_pkce_support(discovery, discovery_url)
 
     # Extract endpoints
     issuer = discovery["issuer"]
