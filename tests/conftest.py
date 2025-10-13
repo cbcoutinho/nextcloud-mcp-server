@@ -698,9 +698,9 @@ async def interactive_oauth_token() -> str:
             },
         )
 
-        logger.info(f"Token response: {token_response.text}")
+        logger.debug(f"Token response: {token_response.text}")
         token_data = token_response.json()
-        logger.info(f"Token data: {token_data}")
+        logger.debug(f"Token data: {token_data}")
         access_token = token_data.get("access_token")
 
         # Shut down the server
