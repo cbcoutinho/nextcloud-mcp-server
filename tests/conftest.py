@@ -135,6 +135,49 @@ async def nc_mcp_client() -> AsyncGenerator[ClientSession, Any]:
             logger.warning(f"Error closing streamable HTTP client: {e}")
 
 
+@pytest.fixture(scope="session")
+async def nc_mcp_oauth_client() -> AsyncGenerator[ClientSession, Any]:
+    """
+    Fixture to create an MCP client session for OAuth integration tests using streamable-http.
+    Connects to the OAuth-enabled MCP server on port 8001.
+    """
+    logger.info("Creating Streamable HTTP client for OAuth MCP server")
+    streamable_context = streamablehttp_client("http://127.0.0.1:8001/mcp")
+    session_context = None
+
+    try:
+        read_stream, write_stream, _ = await streamable_context.__aenter__()
+        session_context = ClientSession(read_stream, write_stream)
+        session = await session_context.__aenter__()
+        await session.initialize()
+        logger.info("OAuth MCP client session initialized successfully")
+
+        yield session
+
+    finally:
+        # Clean up in reverse order, ignoring task scope issues
+        if session_context is not None:
+            try:
+                await session_context.__aexit__(None, None, None)
+            except RuntimeError as e:
+                if "cancel scope" in str(e):
+                    logger.debug(f"Ignoring cancel scope teardown issue: {e}")
+                else:
+                    logger.warning(f"Error closing OAuth session: {e}")
+            except Exception as e:
+                logger.warning(f"Error closing OAuth session: {e}")
+
+        try:
+            await streamable_context.__aexit__(None, None, None)
+        except RuntimeError as e:
+            if "cancel scope" in str(e):
+                logger.debug(f"Ignoring cancel scope teardown issue: {e}")
+            else:
+                logger.warning(f"Error closing OAuth streamable HTTP client: {e}")
+        except Exception as e:
+            logger.warning(f"Error closing OAuth streamable HTTP client: {e}")
+
+
 @pytest.fixture
 async def temporary_note(nc_client: NextcloudClient):
     """
@@ -613,29 +656,37 @@ async def interactive_oauth_token() -> str:
             pass
 
         def do_GET(self):
-            if self.path.startswith("/shutdown"):
+            # Ignore subsequent requests if we already have a code
+            # (this is a session-scoped fixture, so only process the first auth code)
+            if auth_state["code"] is not None:
                 self.send_response(200)
                 self.send_header("Content-type", "text/html")
                 self.end_headers()
                 self.wfile.write(
-                    b"<html><body><h1>Server shutting down...</h1></body></html>"
+                    b"<html><body><h1>Authentication already completed</h1></body></html>"
                 )
-                threading.Thread(target=httpd.shutdown).start()
                 return
 
+            # Parse the callback request
             parsed_path = urlparse(self.path)
             query = parse_qs(parsed_path.query)
             code = query.get("code", [None])[0]
-            auth_state["code"] = code
-            logger.info(
-                f"OAuth callback received. Code: {code[:20] if code else 'None'}..."
-            )
-            self.send_response(200)
-            self.send_header("Content-type", "text/html")
-            self.end_headers()
-            self.wfile.write(
-                b"<html><body><h1>Authentication successful!</h1><p>You can close this window.</p></body></html>"
-            )
+
+            # Only process if we have a valid code
+            if code:
+                auth_state["code"] = code
+                logger.info(f"OAuth callback received. Code: {code[:20]}...")
+                self.send_response(200)
+                self.send_header("Content-type", "text/html")
+                self.end_headers()
+                self.wfile.write(
+                    b"<html><body><h1>Authentication successful!</h1><p>You can close this window.</p></body></html>"
+                )
+            else:
+                # Ignore requests without a code (e.g., favicon requests)
+                logger.debug(f"Ignoring request without auth code: {self.path}")
+                self.send_response(404)
+                self.end_headers()
 
     httpd = HTTPServer(("localhost", 8081), OAuthCallbackHandler)
     server_thread = threading.Thread(target=httpd.serve_forever)
@@ -704,9 +755,9 @@ async def interactive_oauth_token() -> str:
         access_token = token_data.get("access_token")
 
         # Shut down the server
-
-        await http_client.get("http://localhost:8081/shutdown")
+        # Call shutdown directly instead of via HTTP to avoid race conditions
         if httpd:
+            httpd.shutdown()
             httpd.server_close()
         if server_thread:
             server_thread.join(timeout=1)
