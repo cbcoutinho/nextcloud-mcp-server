@@ -1,3 +1,9 @@
+## v0.13.0 (2025-10-13)
+
+### Feat
+
+- **server**: Experimental support for OAuth2/OIDC authentication
+
 ## v0.12.6 (2025-10-11)
 
 ### Fix
