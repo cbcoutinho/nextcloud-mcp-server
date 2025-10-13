@@ -28,6 +28,9 @@ markers = [
     "integration: marks tests as slow (deselect with '-m \"not slow\"')",
     "oauth: marks tests as oauth (deselect with '-m \"not oauth\"')"
 ]
+testpaths = [
+    "tests",
+]
 
 [tool.commitizen]
 name = "cz_conventional_commits"

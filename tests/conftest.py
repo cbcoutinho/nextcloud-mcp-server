@@ -632,18 +632,19 @@ async def nc_oauth_client(
 
 
 @pytest.fixture(scope="session")
-async def interactive_oauth_token() -> str:
+def oauth_callback_server():
     """
-    Fixture to obtain an OAuth access token for integration tests.
+    Fixture to create an HTTP server for OAuth callback handling.
 
-    This uses the interactive OAuth flow to get a token.
+    Yields a tuple of (auth_state, server_url) where:
+    - auth_state: A dict with {"code": None} that will be populated with the auth code
+    - server_url: The callback URL for the server (e.g., "http://localhost:8081")
+
+    The server automatically shuts down when the fixture is torn down.
     """
-
-    import webbrowser
     from http.server import BaseHTTPRequestHandler, HTTPServer
     import threading
     from urllib.parse import urlparse, parse_qs
-    import time
 
     # Use a mutable container to share state across threads
     auth_state = {"code": None}
@@ -688,12 +689,45 @@ async def interactive_oauth_token() -> str:
                 self.send_response(404)
                 self.end_headers()
 
-    httpd = HTTPServer(("localhost", 8081), OAuthCallbackHandler)
-    server_thread = threading.Thread(target=httpd.serve_forever)
-    server_thread.daemon = True
-    server_thread.start()
+    try:
+        # Start the HTTP server
+        httpd = HTTPServer(("localhost", 8081), OAuthCallbackHandler)
+        server_thread = threading.Thread(target=httpd.serve_forever)
+        server_thread.daemon = True
+        server_thread.start()
+        logger.info("OAuth callback server started on http://localhost:8081")
+
+        # Yield the auth state and server URL
+        yield auth_state, "http://localhost:8081"
+
+    finally:
+        # Clean up the server
+        if httpd:
+            logger.info("Shutting down OAuth callback server...")
+            shutdown_thread = threading.Thread(target=httpd.shutdown)
+            shutdown_thread.start()
+            shutdown_thread.join(timeout=2)  # Wait up to 2 seconds for shutdown
+            httpd.server_close()
+            logger.info("OAuth callback server shut down successfully")
+        if server_thread:
+            server_thread.join(timeout=1)
+
+
+@pytest.fixture(scope="session")
+async def interactive_oauth_token(oauth_callback_server) -> str:
+    """
+    Fixture to obtain an OAuth access token for integration tests.
+
+    This uses the interactive OAuth flow to get a token.
+    Depends on oauth_callback_server fixture for HTTP callback handling.
+    """
+    import webbrowser
+    import time
 
     from nextcloud_mcp_server.auth.client_registration import load_or_register_client
+
+    # Unpack the server fixture
+    auth_state, callback_url = oauth_callback_server
 
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     async with httpx.AsyncClient() as http_client:
@@ -707,7 +741,7 @@ async def interactive_oauth_token() -> str:
             nextcloud_url=nextcloud_host,
             registration_endpoint=registration_endpoint,
             storage_path=".nextcloud_oauth_test_client.json",
-            redirect_uris=["http://localhost:8081"],
+            redirect_uris=[callback_url],
             force_register=True,
         )
 
@@ -719,11 +753,9 @@ async def interactive_oauth_token() -> str:
         )
 
         # Construct authorization URL
-        auth_url = f"{authorization_endpoint}?response_type=code&client_id={client_info.client_id}&redirect_uri=http://localhost:8081&scope=openid%20profile%20email"
+        auth_url = f"{authorization_endpoint}?response_type=code&client_id={client_info.client_id}&redirect_uri={callback_url}&scope=openid%20profile%20email"
 
-        # Open login page first, then auth URL
-        # webbrowser.open(login_url)
-        # time.sleep(2)  # Give browser time to load login page
+        # Open authorization URL in browser
         webbrowser.open(auth_url)
 
         # Wait for auth code with timeout
@@ -743,7 +775,7 @@ async def interactive_oauth_token() -> str:
             data={
                 "grant_type": "authorization_code",
                 "code": auth_code,
-                "redirect_uri": "http://localhost:8081",
+                "redirect_uri": callback_url,
                 "client_id": client_info.client_id,
                 "client_secret": client_info.client_secret,
             },
@@ -754,11 +786,4 @@ async def interactive_oauth_token() -> str:
         logger.debug(f"Token data: {token_data}")
         access_token = token_data.get("access_token")
 
-        # Shut down the server
-        # Call shutdown directly instead of via HTTP to avoid race conditions
-        if httpd:
-            httpd.shutdown()
-            httpd.server_close()
-        if server_thread:
-            server_thread.join(timeout=1)
         return access_token
