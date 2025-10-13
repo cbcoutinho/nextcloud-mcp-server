@@ -36,11 +36,12 @@ OAuth2/OIDC provides secure, per-user authentication with access tokens. See [Au
 ### 1. Install
 
 ```bash
-# Using uv (recommended)
-uv pip install nextcloud-mcp-server
+# Clone the repository
+git clone https://github.com/cbcoutinho/nextcloud-mcp-server.git
+cd nextcloud-mcp-server
 
-# Or using pip
-pip install nextcloud-mcp-server
+# Install with uv (recommended)
+uv sync
 
 # Or using Docker
 docker pull ghcr.io/cbcoutinho/nextcloud-mcp-server:latest

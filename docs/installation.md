@@ -12,20 +12,21 @@ This guide covers installing the Nextcloud MCP server on your system.
 
 Choose one of the following installation methods:
 
-- [Using uv (Recommended)](#using-uv-recommended)
-- [Using pip](#using-pip)
+- [From Source (Recommended)](#from-source-recommended)
 - [Using Docker](#using-docker)
-- [From Source](#from-source)
 
 ---
 
-## Using uv (Recommended)
+## From Source (Recommended)
 
-[uv](https://github.com/astral-sh/uv) is a fast Python package installer and resolver.
+Install from the GitHub repository using uv or pip.
 
-### Install uv
+### Prerequisites
+
+Install [uv](https://github.com/astral-sh/uv) (recommended) or ensure pip is available:
 
 ```bash
+# Install uv (recommended)
 # On macOS/Linux
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
@@ -33,37 +34,46 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-### Install Nextcloud MCP Server
+### Clone the Repository
 
 ```bash
-# Install from PyPI
-uv pip install nextcloud-mcp-server
+git clone https://github.com/cbcoutinho/nextcloud-mcp-server.git
+cd nextcloud-mcp-server
+```
 
-# Or install directly using uvx
-uvx nextcloud-mcp-server --help
+### Install Dependencies
+
+#### Using uv (Recommended)
+
+```bash
+# Install dependencies
+uv sync
+
+# Install development dependencies (optional)
+uv sync --group dev
+```
+
+#### Using pip
+
+```bash
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install in development mode
+pip install -e .
+
+# Install development dependencies (optional)
+pip install -e ".[dev]"
 ```
 
 ### Verify Installation
 
 ```bash
+# With uv
 uv run nextcloud-mcp-server --help
-```
 
----
-
-## Using pip
-
-Standard installation using pip:
-
-```bash
-# Create a virtual environment (recommended)
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install from PyPI
-pip install nextcloud-mcp-server
-
-# Verify installation
+# With pip/venv
 nextcloud-mcp-server --help
 ```
 
@@ -117,55 +127,6 @@ docker-compose up -d
 
 ---
 
-## From Source
-
-Install from the GitHub repository:
-
-### Clone the Repository
-
-```bash
-git clone https://github.com/cbcoutinho/nextcloud-mcp-server.git
-cd nextcloud-mcp-server
-```
-
-### Install Dependencies
-
-#### Using uv (Recommended)
-
-```bash
-# Install dependencies
-uv sync
-
-# Install development dependencies (optional)
-uv sync --group dev
-```
-
-#### Using pip
-
-```bash
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install in development mode
-pip install -e .
-
-# Install development dependencies (optional)
-pip install -e ".[dev]"
-```
-
-### Verify Installation
-
-```bash
-# With uv
-uv run nextcloud-mcp-server --help
-
-# With pip
-nextcloud-mcp-server --help
-```
-
----
-
 ## Next Steps
 
 After installation:
@@ -176,31 +137,29 @@ After installation:
 
 ## Updating
 
-### Update with uv
+### Update from Source
 
 ```bash
-uv pip install --upgrade nextcloud-mcp-server
-```
+cd nextcloud-mcp-server
+git pull origin master
 
-### Update with pip
+# Using uv
+uv sync
 
-```bash
-pip install --upgrade nextcloud-mcp-server
+# Or using pip
+pip install -e .
 ```
 
 ### Update Docker Image
 
 ```bash
 docker pull ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
+
+# If using docker-compose
 docker-compose up -d  # Restart with new image
-```
 
-### Update from Source
-
-```bash
-cd nextcloud-mcp-server
-git pull origin master
-uv sync  # or: pip install -e .
+# If using docker run
+# Stop the old container and start a new one with the updated image
 ```
 
 ## Troubleshooting Installation
