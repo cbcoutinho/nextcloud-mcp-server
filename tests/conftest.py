@@ -148,9 +148,6 @@ async def nc_mcp_oauth_client_interactive(
 
     Automatically skips when running in GitHub Actions CI.
     """
-    # Skip interactive tests in CI environments
-    if os.getenv("GITHUB_ACTIONS"):
-        pytest.skip("Skipping interactive OAuth tests in GitHub Actions CI")
 
     logger.info("Creating Streamable HTTP client for OAuth MCP server (Interactive)")
 
@@ -584,9 +581,6 @@ async def nc_oauth_client_interactive(
 
     Automatically skips when running in GitHub Actions CI.
     """
-    # Skip interactive tests in CI environments
-    if os.getenv("GITHUB_ACTIONS"):
-        pytest.skip("Skipping interactive OAuth tests in GitHub Actions CI")
 
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     username = os.getenv("NEXTCLOUD_USERNAME")
@@ -665,9 +659,6 @@ def oauth_callback_server():
 
     Automatically skips when running in GitHub Actions CI.
     """
-    # Skip interactive tests in CI environments
-    if os.getenv("GITHUB_ACTIONS"):
-        pytest.skip("Skipping interactive OAuth tests in GitHub Actions CI")
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
     from urllib.parse import parse_qs, urlparse
