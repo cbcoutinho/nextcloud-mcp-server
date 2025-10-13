@@ -1,7 +1,7 @@
 """Interactive integration tests for OAuth authentication."""
 
-import os
 import logging
+import os
 
 import pytest
 
