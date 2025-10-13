@@ -741,6 +741,13 @@ async def interactive_oauth_token(oauth_callback_server) -> str:
     Automatically skips when running in GitHub Actions CI.
     """
 
+    # Skip if GITHUB_ACTIONS env var available, meaning that no interactive
+    # browser is available
+    if "GITHUB_ACTIONS" in os.environ:
+        pytest.skip(
+            reason="Running in GitHub Action, skipping due to lack of interactive browser"
+        )
+
     import time
     import webbrowser
 
