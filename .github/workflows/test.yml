@@ -34,6 +34,10 @@ jobs:
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@3259c6206f993105e3a61b142c2d97bf4b9ef83d # v7.1.0
 
+      - name: Install Playwright dependencies
+        run: |
+          uv run playwright install --with-deps
+
       - name: Wait for service to be ready
         run: |
           echo "Waiting for service at http://localhost:8080/ocs/v2.php/apps/serverinfo/api/v1/info to return 401..."
@@ -57,5 +61,4 @@ jobs:
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
         run: |
-          uv run playwright install --with-deps
-          uv run --frozen python -m pytest
+          uv run pytest -v --browser firefox
