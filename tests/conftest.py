@@ -1,8 +1,10 @@
+import asyncio
 import logging
 import os
 import uuid
 from typing import Any, AsyncGenerator
 
+import httpx
 import pytest
 from httpx import HTTPStatusError
 from mcp import ClientSession
@@ -13,19 +15,71 @@ from nextcloud_mcp_server.client import NextcloudClient
 logger = logging.getLogger(__name__)
 
 
+async def wait_for_nextcloud(
+    host: str, max_attempts: int = 30, delay: float = 2.0
+) -> bool:
+    """
+    Wait for Nextcloud server to be ready by checking the status endpoint.
+
+    Args:
+        host: Nextcloud host URL
+        max_attempts: Maximum number of connection attempts
+        delay: Delay between attempts in seconds
+
+    Returns:
+        True if server is ready, False otherwise
+    """
+    logger.info(f"Waiting for Nextcloud server at {host} to be ready...")
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                # Try to hit the status endpoint
+                response = await client.get(f"{host}/status.php")
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("installed"):
+                        logger.info(
+                            f"Nextcloud server is ready (version: {data.get('versionstring', 'unknown')})"
+                        )
+                        return True
+            except (httpx.RequestError, httpx.TimeoutException) as e:
+                logger.debug(f"Attempt {attempt}/{max_attempts}: {e}")
+
+            if attempt < max_attempts:
+                logger.info(
+                    f"Nextcloud not ready yet, waiting {delay}s... (attempt {attempt}/{max_attempts})"
+                )
+                await asyncio.sleep(delay)
+
+    logger.error(
+        f"Nextcloud server at {host} did not become ready after {max_attempts} attempts"
+    )
+    return False
+
+
 @pytest.fixture(scope="session")
 async def nc_client() -> AsyncGenerator[NextcloudClient, Any]:
     """
     Fixture to create a NextcloudClient instance for integration tests.
     Uses environment variables for configuration.
+    Waits for Nextcloud to be ready before proceeding.
     """
 
     assert os.getenv("NEXTCLOUD_HOST"), "NEXTCLOUD_HOST env var not set"
     assert os.getenv("NEXTCLOUD_USERNAME"), "NEXTCLOUD_USERNAME env var not set"
     assert os.getenv("NEXTCLOUD_PASSWORD"), "NEXTCLOUD_PASSWORD env var not set"
+
+    host = os.getenv("NEXTCLOUD_HOST")
+
+    # Wait for Nextcloud to be ready
+    if not await wait_for_nextcloud(host):
+        pytest.fail(f"Nextcloud server at {host} is not ready")
+
     logger.info("Creating session-scoped NextcloudClient from environment variables.")
     client = NextcloudClient.from_env()
-    # Optional: Perform a quick check like getting capabilities to ensure connection works
+
+    # Perform a quick check to ensure connection works
     try:
         await client.capabilities()
         logger.info(
@@ -396,3 +450,183 @@ async def temporary_board_with_card(
                     )
             except Exception as e:
                 logger.error(f"Unexpected error deleting temporary card {card.id}: {e}")
+
+
+async def get_oauth_token(nextcloud_url: str, username: str, password: str) -> str:
+    """
+    Get an OAuth access token from Nextcloud OIDC using Resource Owner Password flow.
+
+    This is a helper function for testing only - it bypasses the normal OAuth flow
+    to directly obtain a token for automated testing.
+
+    Args:
+        nextcloud_url: Nextcloud base URL
+        username: Nextcloud username
+        password: Nextcloud password
+
+    Returns:
+        Access token string
+
+    Raises:
+        Exception: If token acquisition fails
+    """
+    from nextcloud_mcp_server.auth.client_registration import load_or_register_client
+
+    logger.info(f"Getting OAuth token for testing from {nextcloud_url}")
+
+    # Perform OIDC discovery
+    async with httpx.AsyncClient() as http_client:
+        discovery_url = f"{nextcloud_url}/.well-known/openid-configuration"
+        logger.debug(f"Fetching OIDC discovery from: {discovery_url}")
+
+        discovery_response = await http_client.get(discovery_url)
+        if discovery_response.status_code != 200:
+            raise Exception(f"OIDC discovery failed: {discovery_response.status_code}")
+
+        oidc_config = discovery_response.json()
+        token_endpoint = oidc_config.get("token_endpoint")
+        registration_endpoint = oidc_config.get("registration_endpoint")
+
+        if not token_endpoint or not registration_endpoint:
+            raise Exception("OIDC discovery missing required endpoints")
+
+        logger.debug(f"Token endpoint: {token_endpoint}")
+        logger.debug(f"Registration endpoint: {registration_endpoint}")
+
+        # Get or register an OAuth client
+        client_info = await load_or_register_client(
+            nextcloud_url=nextcloud_url,
+            registration_endpoint=registration_endpoint,
+            storage_path=".nextcloud_oauth_test_client.json",
+            redirect_uris=["http://localhost:8000/oauth/callback"],
+        )
+
+        # Use client credentials to get a token via password grant
+        # Note: This requires the OIDC app to support Resource Owner Password flow
+        token_response = await http_client.post(
+            token_endpoint,
+            data={
+                "grant_type": "password",
+                "client_id": client_info.client_id,
+                "client_secret": client_info.client_secret,
+                "username": username,
+                "password": password,
+                "scope": "openid profile email",
+            },
+        )
+
+        if token_response.status_code != 200:
+            logger.error(f"Failed to get OAuth token: {token_response.text}")
+            raise Exception(f"Token request failed: {token_response.status_code}")
+
+        token_data = token_response.json()
+        access_token = token_data.get("access_token")
+
+        if not access_token:
+            raise Exception("No access_token in response")
+
+        logger.info("Successfully obtained OAuth access token for testing")
+        return access_token
+
+
+@pytest.fixture(scope="session")
+async def oauth_token() -> str:
+    """
+    Fixture to obtain an OAuth access token for integration tests.
+
+    This uses the Resource Owner Password flow to get a token without
+    requiring interactive browser authentication.
+    """
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    username = os.getenv("NEXTCLOUD_USERNAME")
+    password = os.getenv("NEXTCLOUD_PASSWORD")
+
+    if not all([nextcloud_host, username, password]):
+        pytest.skip(
+            "OAuth token fixture requires NEXTCLOUD_HOST, USERNAME, and PASSWORD"
+        )
+
+    # Wait for Nextcloud to be ready
+    if not await wait_for_nextcloud(nextcloud_host):
+        pytest.fail(f"Nextcloud server at {nextcloud_host} is not ready")
+
+    try:
+        token = await get_oauth_token(nextcloud_host, username, password)
+        return token
+    except Exception as e:
+        logger.error(f"Failed to obtain OAuth token: {e}")
+        pytest.skip(f"Could not obtain OAuth token for testing: {e}")
+
+
+@pytest.fixture(scope="session")
+async def nc_oauth_client(oauth_token: str) -> AsyncGenerator[NextcloudClient, Any]:
+    """
+    Fixture to create a NextcloudClient instance using OAuth authentication.
+    Uses the oauth_token fixture to get an access token.
+    """
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    username = os.getenv("NEXTCLOUD_USERNAME")
+
+    if not all([nextcloud_host, username]):
+        pytest.skip("OAuth client fixture requires NEXTCLOUD_HOST and USERNAME")
+
+    logger.info(f"Creating OAuth NextcloudClient for user: {username}")
+    client = NextcloudClient.from_token(
+        base_url=nextcloud_host,
+        token=oauth_token,
+        username=username,
+    )
+
+    # Verify the OAuth client works
+    try:
+        await client.capabilities()
+        logger.info("OAuth NextcloudClient initialized and capabilities checked.")
+        yield client
+    except Exception as e:
+        logger.error(f"Failed to initialize OAuth NextcloudClient: {e}")
+        pytest.fail(f"Failed to connect to Nextcloud with OAuth token: {e}")
+    finally:
+        await client.close()
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_oauth_client() -> AsyncGenerator[ClientSession, Any]:
+    """
+    Fixture to create an MCP client session for OAuth integration tests.
+    Connects to the OAuth-enabled MCP server on port 8001.
+    """
+    logger.info("Creating Streamable HTTP client for OAuth MCP server")
+    streamable_context = streamablehttp_client("http://127.0.0.1:8001/mcp")
+    session_context = None
+
+    try:
+        read_stream, write_stream, _ = await streamable_context.__aenter__()
+        session_context = ClientSession(read_stream, write_stream)
+        session = await session_context.__aenter__()
+        await session.initialize()
+        logger.info("OAuth MCP client session initialized successfully")
+
+        yield session
+
+    finally:
+        # Clean up in reverse order, ignoring task scope issues
+        if session_context is not None:
+            try:
+                await session_context.__aexit__(None, None, None)
+            except RuntimeError as e:
+                if "cancel scope" in str(e):
+                    logger.debug(f"Ignoring cancel scope teardown issue: {e}")
+                else:
+                    logger.warning(f"Error closing OAuth session: {e}")
+            except Exception as e:
+                logger.warning(f"Error closing OAuth session: {e}")
+
+        try:
+            await streamable_context.__aexit__(None, None, None)
+        except RuntimeError as e:
+            if "cancel scope" in str(e):
+                logger.debug(f"Ignoring cancel scope teardown issue: {e}")
+            else:
+                logger.warning(f"Error closing OAuth streamable HTTP client: {e}")
+        except Exception as e:
+            logger.warning(f"Error closing OAuth streamable HTTP client: {e}")

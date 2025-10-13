@@ -2,7 +2,7 @@ import logging
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.context import get_client
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ def configure_webdav_tools(mcp: FastMCP):
             # List a specific folder
             await nc_webdav_list_directory("Documents/Projects")
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.webdav.list_directory(path)
 
     @mcp.tool()
@@ -49,7 +49,7 @@ def configure_webdav_tools(mcp: FastMCP):
             result = await nc_webdav_read_file("Images/photo.jpg")
             logger.info(result['encoding'])  # 'base64'
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         content, content_type = await client.webdav.read_file(path)
 
         # For text files, decode content for easier viewing
@@ -97,7 +97,7 @@ def configure_webdav_tools(mcp: FastMCP):
             # Write binary data (base64 encoded)
             await nc_webdav_write_file("files/data.bin", base64_content, "application/octet-stream;base64")
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
 
         # Handle base64 encoded content
         if content_type and "base64" in content_type.lower():
@@ -127,7 +127,7 @@ def configure_webdav_tools(mcp: FastMCP):
             # Create nested directories (parent must exist)
             await nc_webdav_create_directory("Projects/MyApp/docs")
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.webdav.create_directory(path)
 
     @mcp.tool()
@@ -147,7 +147,7 @@ def configure_webdav_tools(mcp: FastMCP):
             # Delete a directory (will delete all contents)
             await nc_webdav_delete_resource("temp_folder")
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.webdav.delete_resource(path)
 
     @mcp.tool()
@@ -177,7 +177,7 @@ def configure_webdav_tools(mcp: FastMCP):
             # Move and overwrite if destination exists
             await nc_webdav_move_resource("document.txt", "Archive/document.txt", overwrite=True)
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.webdav.move_resource(
             source_path, destination_path, overwrite
         )
@@ -209,7 +209,7 @@ def configure_webdav_tools(mcp: FastMCP):
             # Copy and overwrite if destination exists
             await nc_webdav_copy_resource("document.txt", "Backup/document.txt", overwrite=True)
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.webdav.copy_resource(
             source_path, destination_path, overwrite
         )

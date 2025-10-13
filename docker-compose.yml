@@ -47,6 +47,8 @@ services:
   mcp:
     build: .
     command: ["--transport", "streamable-http"]
+    depends_on:
+      - app
     ports:
       - 127.0.0.1:8000:8000
     environment:
@@ -56,6 +58,22 @@ services:
     #volumes:
       #- ./nextcloud_mcp_server:/app/nextcloud_mcp_server:ro
 
+  mcp-oauth:
+    build: .
+    command: ["--transport", "streamable-http", "--oauth", "--port", "8001"]
+    depends_on:
+      - app
+    ports:
+      - 127.0.0.1:8001:8001
+    environment:
+      - NEXTCLOUD_HOST=http://app:80
+      # No USERNAME/PASSWORD - will use OAuth
+    volumes:
+      - oauth-client-storage:/app/.oauth
+    #volumes:
+      #- ./nextcloud_mcp_server:/app/nextcloud_mcp_server:ro
+
 volumes:
   nextcloud:
   db:
+  oauth-client-storage:
