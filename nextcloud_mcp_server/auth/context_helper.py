@@ -30,9 +30,19 @@ def get_client_from_context(ctx: Context, base_url: str) -> NextcloudClient:
         ValueError: If username cannot be extracted from token
     """
     try:
-        logger.info(f"Inspecting session object: {dir(ctx.request_context.session)}")
-        # Get AccessToken from MCP session (set by TokenVerifier)
-        access_token: AccessToken = ctx.request_context.session.access_token
+        # In Starlette with FastMCP OAuth, the authenticated user info is stored in request.user
+        # The FastMCP auth middleware sets request.user to an AuthenticatedUser object
+        # which contains the access_token
+        if hasattr(ctx.request_context.request, "user") and hasattr(
+            ctx.request_context.request.user, "access_token"
+        ):
+            access_token: AccessToken = ctx.request_context.request.user.access_token
+            logger.debug("Retrieved access token from request.user for OAuth request")
+        else:
+            logger.error(
+                "OAuth authentication failed: No access token found in request"
+            )
+            raise AttributeError("No access token found in OAuth request context")
 
         # Extract username from resource field (RFC 8707)
         # We stored the username here during token verification

@@ -119,15 +119,19 @@ async def test_mcp_oauth_tool_execution(nc_mcp_oauth_client):
     """Test executing a tool on the OAuth-enabled MCP server."""
     import json
 
-    # Example: Execute the 'nc_tables_list_tables' tool
-    result = await nc_mcp_oauth_client.call_tool("nc_tables_list_tables")
+    # Example: Execute the 'nc_notes_search_notes' tool
+    result = await nc_mcp_oauth_client.call_tool(
+        "nc_notes_search_notes", arguments={"query": ""}
+    )
 
     assert result.isError is False, f"Tool execution failed: {result.content}"
     assert result.content is not None
-    notes_list = json.loads(result.content[0].text)
+    response_data = json.loads(result.content[0].text)
 
-    assert isinstance(notes_list, list)
+    # The search response should have a 'results' field containing the list
+    assert "results" in response_data
+    assert isinstance(response_data["results"], list)
 
     logger.info(
-        f"Successfully executed 'nc_tables_list_tables' tool on OAuth MCP server and got {len(notes_list)} notes."
+        f"Successfully executed 'nc_notes_search_notes' tool on OAuth MCP server and got {len(response_data['results'])} notes."
     )

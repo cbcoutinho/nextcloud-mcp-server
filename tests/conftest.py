@@ -136,13 +136,20 @@ async def nc_mcp_client() -> AsyncGenerator[ClientSession, Any]:
 
 
 @pytest.fixture(scope="session")
-async def nc_mcp_oauth_client() -> AsyncGenerator[ClientSession, Any]:
+async def nc_mcp_oauth_client(
+    interactive_oauth_token: str,
+) -> AsyncGenerator[ClientSession, Any]:
     """
     Fixture to create an MCP client session for OAuth integration tests using streamable-http.
-    Connects to the OAuth-enabled MCP server on port 8001.
+    Connects to the OAuth-enabled MCP server on port 8001 with OAuth authentication.
     """
     logger.info("Creating Streamable HTTP client for OAuth MCP server")
-    streamable_context = streamablehttp_client("http://127.0.0.1:8001/mcp")
+
+    # Pass OAuth token as Bearer token in headers
+    headers = {"Authorization": f"Bearer {interactive_oauth_token}"}
+    streamable_context = streamablehttp_client(
+        "http://127.0.0.1:8001/mcp", headers=headers
+    )
     session_context = None
 
     try:
