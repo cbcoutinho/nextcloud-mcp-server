@@ -13,6 +13,34 @@ The Nextcloud MCP server supports two authentication modes for connecting to you
 
 OAuth2/OIDC authentication provides secure, token-based authentication following modern security standards.
 
+### Required Nextcloud Apps
+
+OAuth authentication requires **two Nextcloud apps** to work together:
+
+#### 1. `oidc` - OIDC Identity Provider
+**Purpose:** Makes Nextcloud an OAuth2/OIDC authorization server
+
+**Provides:**
+- OAuth2 authorization endpoint (`/apps/oidc/authorize`)
+- Token endpoint (`/apps/oidc/token`)
+- User info endpoint (`/apps/oidc/userinfo`)
+- JWKS endpoint for token validation (`/apps/oidc/jwks`)
+- Dynamic client registration endpoint (`/apps/oidc/register`)
+
+**Installation:** Available in Nextcloud App Store under "Security"
+
+#### 2. `user_oidc` - OpenID Connect User Backend
+**Purpose:** Authenticates users and validates Bearer tokens
+
+**Provides:**
+- Bearer token validation against the OIDC provider
+- User authentication via OIDC
+- Session management for authenticated users
+
+**Installation:** Available in Nextcloud App Store under "Security"
+
+**Important:** The `user_oidc` app requires a patch for Bearer token support on non-OCS endpoints (like Notes API). See [oauth2-bearer-token-session-issue.md](oauth2-bearer-token-session-issue.md) for details.
+
 ### Benefits
 - **Zero-config deployment** via dynamic client registration
 - **No credential storage** in environment variables
@@ -23,10 +51,17 @@ OAuth2/OIDC authentication provides secure, token-based authentication following
 ### Current Implementation Limitations
 
 > [!IMPORTANT]
-> - Only tested with Nextcloud `user_oidc` and `oidc` apps (Nextcloud as identity provider)
-> - Requires a patch for Bearer token support on non-OCS endpoints (see [oauth2-bearer-token-session-issue.md](oauth2-bearer-token-session-issue.md))
-> - External identity providers (Azure AD, Keycloak, etc.) have not been tested
-> - Dynamic client registration credentials expire (default: 1 hour) - use pre-configured clients for production
+> **Tested Configuration:**
+> - ✅ Nextcloud `oidc` app (OIDC Identity Provider) + `user_oidc` app (OIDC User Backend)
+> - ✅ Nextcloud acting as its own identity provider (self-hosted OIDC)
+>
+> **Not Tested:**
+> - ❌ External identity providers (Azure AD, Keycloak, Okta, etc.)
+> - ❌ Using `user_oidc` with external OIDC providers
+>
+> **Known Requirements:**
+> - 🔧 The `user_oidc` app requires a patch for Bearer token support on non-OCS endpoints (see [oauth2-bearer-token-session-issue.md](oauth2-bearer-token-session-issue.md))
+> - ⏱️ Dynamic client registration credentials expire (default: 1 hour) - use pre-configured clients for production
 
 ### How OAuth Works
 

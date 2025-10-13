@@ -70,9 +70,15 @@ NEXTCLOUD_PASSWORD=
 
 Before using OAuth configuration:
 
-1. **Install Nextcloud OIDC app** - Navigate to Apps → Security in your Nextcloud instance
-2. **Enable dynamic client registration** (if using auto-registration) - Settings → OIDC
-3. **Apply Bearer token patch** (if using non-OCS endpoints) - See [oauth2-bearer-token-session-issue.md](oauth2-bearer-token-session-issue.md)
+1. **Install required Nextcloud apps** (both are required):
+   - **`oidc`** - OIDC Identity Provider (Apps → Security)
+   - **`user_oidc`** - OpenID Connect user backend (Apps → Security)
+
+2. **Configure the apps**:
+   - Enable dynamic client registration (if using auto-registration) - Settings → OIDC
+   - Enable Bearer token validation: `php occ config:system:set user_oidc oidc_provider_bearer_validation --value=true --type=boolean`
+
+3. **Apply Bearer token patch** - The `user_oidc` app requires a patch for non-OCS endpoints - See [oauth2-bearer-token-session-issue.md](oauth2-bearer-token-session-issue.md)
 
 See the [OAuth Setup Guide](oauth-setup.md) for detailed instructions.
 

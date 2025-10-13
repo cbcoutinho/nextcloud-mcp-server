@@ -8,14 +8,33 @@ This guide walks you through setting up OAuth2/OIDC authentication for the Nextc
 - Python 3.11+ installed
 - Nextcloud MCP server installed (see [Installation Guide](installation.md))
 
-## Step 1: Install Nextcloud OIDC App
+## Step 1: Install Required Nextcloud Apps
+
+OAuth authentication requires **two apps** to work together:
+
+### Install the OIDC Identity Provider App
 
 1. Open your Nextcloud instance as an administrator
 2. Navigate to **Apps** → **Security**
-3. Find and install the **OpenID Connect user backend** app
+3. Find and install the **OIDC** app (full name: "OIDC Identity Provider")
 4. Enable the app
 
-## Step 2: Enable Dynamic Client Registration
+This app makes Nextcloud an OAuth2/OIDC authorization server.
+
+### Install the OpenID Connect User Backend App
+
+1. In **Apps** → **Security**
+2. Find and install the **OpenID Connect user backend** app (app ID: `user_oidc`)
+3. Enable the app
+
+This app handles Bearer token validation and user authentication.
+
+> [!IMPORTANT]
+> **Required Patch:** The `user_oidc` app needs a patch for Bearer token authentication to work with non-OCS endpoints (like Notes API). See [oauth2-bearer-token-session-issue.md](oauth2-bearer-token-session-issue.md) for the patch and installation instructions.
+
+## Step 2: Configure OIDC Apps
+
+### Enable Dynamic Client Registration (for `oidc` app)
 
 1. Navigate to **Settings** → **OIDC** (in Administration settings)
 2. Find the **Dynamic Client Registration** section
@@ -25,6 +44,17 @@ This guide walks you through setting up OAuth2/OIDC authentication for the Nextc
    # Via Nextcloud CLI (occ) - optional, default is 3600 seconds (1 hour)
    php occ config:app:set oidc expire_time --value "86400"  # 24 hours
    ```
+
+### Enable Bearer Token Validation (for `user_oidc` app)
+
+Configure the `user_oidc` app to validate bearer tokens from the `oidc` Identity Provider:
+
+```bash
+# Via Nextcloud CLI (occ) - required for Bearer token authentication
+php occ config:system:set user_oidc oidc_provider_bearer_validation --value=true --type=boolean
+```
+
+This tells the `user_oidc` app to validate Bearer tokens against Nextcloud's own OIDC Identity Provider.
 
 ## Step 3: Choose Your Setup Approach
 

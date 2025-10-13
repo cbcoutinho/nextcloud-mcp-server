@@ -25,22 +25,29 @@ echo $NEXTCLOUD_HOST
 
 ### Issue: "OAuth mode requires either client credentials OR dynamic client registration"
 
-**Cause:** The Nextcloud OIDC app either:
-1. Is not installed
-2. Doesn't have dynamic client registration enabled
-3. Isn't providing a registration endpoint
+**Cause:** The required Nextcloud OIDC apps are either:
+1. Not installed (both `oidc` and `user_oidc` apps are required)
+2. Don't have dynamic client registration enabled
+3. Aren't providing a registration endpoint
 
 **Solution:**
 
 **Option 1: Enable dynamic client registration**
 
-1. Verify OIDC app is installed:
+1. Verify **both** OIDC apps are installed:
    - Navigate to Nextcloud **Apps** → **Security**
-   - Install "OpenID Connect user backend" if not present
+   - Install **"OIDC"** (OIDC Identity Provider app) if not present
+   - Install **"OpenID Connect user backend"** (user_oidc app) if not present
 
 2. Enable dynamic client registration:
    - Go to **Settings** → **OIDC** (Administration)
    - Enable "Allow dynamic client registration"
+
+3. Configure Bearer token validation:
+   ```bash
+   # Required for user_oidc app to validate tokens
+   php occ config:system:set user_oidc oidc_provider_bearer_validation --value=true --type=boolean
+   ```
 
 3. Verify the registration endpoint exists:
    ```bash
@@ -172,7 +179,9 @@ mkdir -p $(dirname .nextcloud_oauth_client.json)
    ping your.nextcloud.instance.com
    ```
 
-4. Verify OIDC app is installed and enabled in Nextcloud
+4. Verify **both** OIDC apps are installed and enabled in Nextcloud:
+   - `oidc` - OIDC Identity Provider
+   - `user_oidc` - OpenID Connect user backend
 
 5. Check firewall rules if using Docker
 
