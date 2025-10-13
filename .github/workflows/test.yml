@@ -30,13 +30,14 @@ jobs:
         uses: hoverkraft-tech/compose-action@3846bcd61da338e9eaaf83e7ed0234a12b099b72 # v2.4.1
         with:
           compose-file: "./docker-compose.yml"
+          up-flags: "--build"
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@3259c6206f993105e3a61b142c2d97bf4b9ef83d # v7.1.0
 
       - name: Install Playwright dependencies
         run: |
-          uv run playwright install --with-deps
+          uv run playwright install firefox --with-deps
 
       - name: Wait for service to be ready
         run: |

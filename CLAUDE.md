@@ -145,6 +145,7 @@ OAuth integration tests support both **automated** (Playwright) and **interactiv
 - Fixtures: `interactive_oauth_token`, `nc_oauth_client_interactive`, `nc_mcp_oauth_client_interactive`
 - Requires: User to complete browser-based login when prompted
 - Useful for: Debugging OAuth flows, testing with 2FA, local development
+- **Automatically skipped in GitHub Actions CI** - Interactive fixtures check for `GITHUB_ACTIONS` environment variable
 - Example:
   ```bash
   # Run OAuth tests with interactive flow (will open browser and wait for manual login)
@@ -155,6 +156,11 @@ OAuth integration tests support both **automated** (Playwright) and **interactiv
 - Start OAuth MCP server: `docker-compose up --build -d mcp-oauth`
 - OAuth server runs on port 8001 (regular MCP on 8000)
 - Both flows register OAuth clients dynamically using Nextcloud's OIDC provider
+
+**CI/CD Considerations:**
+- Interactive OAuth tests are automatically skipped when `GITHUB_ACTIONS` environment variable is set
+- Automated Playwright tests will run in CI/CD environments
+- Use Firefox browser in CI: `--browser firefox` (Chromium may have issues with localhost redirects)
 
 ### Configuration Files
 
