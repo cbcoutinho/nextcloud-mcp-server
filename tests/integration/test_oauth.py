@@ -8,7 +8,7 @@ from nextcloud_mcp_server.client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.oauth]
 
 
 class TestOAuthClient:
@@ -26,7 +26,7 @@ class TestOAuthClient:
 
     async def test_oauth_client_notes_list(self, nc_oauth_client: NextcloudClient):
         """Test that OAuth client can list notes."""
-        notes = await nc_oauth_client.notes.get_notes()
+        notes = await nc_oauth_client.notes.get_all_notes()
 
         assert isinstance(notes, list)
         logger.info(f"OAuth client successfully listed {len(notes)} notes")

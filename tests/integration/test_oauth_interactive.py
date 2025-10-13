@@ -6,7 +6,7 @@ import pytest
 
 logger = logging.getLogger(__name__)
 
-pytestmark = [pytest.mark.integration, pytest.mark.interactive]
+pytestmark = [pytest.mark.integration, pytest.mark.oauth]
 
 
 class TestOAuthInteractive:

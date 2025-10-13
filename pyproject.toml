@@ -26,7 +26,7 @@ log_cli_level = "INFO"
 log_level = "INFO"
 markers = [
     "integration: marks tests as slow (deselect with '-m \"not slow\"')",
-    "interactive: marks tests as interactive (deselect with '-m \"not interactive\"')"
+    "oauth: marks tests as oauth (deselect with '-m \"not oauth\"')"
 ]
 
 [tool.commitizen]
