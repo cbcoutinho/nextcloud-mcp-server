@@ -1,5 +1,6 @@
 """Interactive integration tests for OAuth authentication."""
 
+import os
 import logging
 
 import pytest
@@ -9,6 +10,10 @@ logger = logging.getLogger(__name__)
 pytestmark = [pytest.mark.integration, pytest.mark.oauth]
 
 
+@pytest.mark.skipif(
+    "GITHUB_ACTIONS" in os.environ,
+    reason="Unable to access interactive browser in GitHub Actions",
+)
 async def test_oauth_client_with_interactive_flow(nc_oauth_client_interactive):
     """Test that OAuth client created via interactive flow can access Nextcloud APIs."""
     # Test 1: Check capabilities
