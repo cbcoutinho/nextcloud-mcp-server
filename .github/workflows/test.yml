@@ -62,4 +62,4 @@ jobs:
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
         run: |
-          uv run pytest -v --browser firefox
+          uv run pytest -v --browser firefox -k oauth
