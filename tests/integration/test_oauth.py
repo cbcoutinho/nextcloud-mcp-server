@@ -19,9 +19,9 @@ class TestOAuthClient:
         capabilities = await nc_oauth_client.capabilities()
 
         assert capabilities is not None
-        assert "version" in capabilities
+        assert "ocs" in capabilities
         logger.info(
-            f"OAuth client successfully fetched capabilities: {capabilities.get('version')}"
+            f"OAuth client successfully fetched capabilities: {capabilities.get('ocs').get('meta')}"
         )
 
     async def test_oauth_client_notes_list(self, nc_oauth_client: NextcloudClient):
