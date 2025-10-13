@@ -5,7 +5,7 @@ import pytest
 from httpx import HTTPStatusError
 
 from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.models.deck import DeckStack, DeckCard, DeckLabel
+from nextcloud_mcp_server.models.deck import DeckCard, DeckLabel, DeckStack
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration

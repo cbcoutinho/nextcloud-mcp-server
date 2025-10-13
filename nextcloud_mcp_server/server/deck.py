@@ -5,17 +5,17 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.deck import (
+    CardOperationResponse,
+    CreateBoardResponse,
+    CreateCardResponse,
+    CreateLabelResponse,
+    CreateStackResponse,
     DeckBoard,
-    DeckStack,
     DeckCard,
     DeckLabel,
-    CreateBoardResponse,
-    CreateStackResponse,
-    StackOperationResponse,
-    CreateCardResponse,
-    CardOperationResponse,
-    CreateLabelResponse,
+    DeckStack,
     LabelOperationResponse,
+    StackOperationResponse,
 )
 
 logger = logging.getLogger(__name__)

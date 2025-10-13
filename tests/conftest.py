@@ -572,109 +572,6 @@ async def temporary_board_with_card(
                 logger.error(f"Unexpected error deleting temporary card {card.id}: {e}")
 
 
-async def get_oauth_token(nextcloud_url: str, username: str, password: str) -> str:
-    """
-    Get an OAuth access token from Nextcloud OIDC using Client Credentials flow.
-
-    This is a helper function for testing only - it bypasses the normal OAuth flow
-    to directly obtain a token for automated testing.
-
-    Args:
-        nextcloud_url: Nextcloud base URL
-        username: Nextcloud username
-        password: Nextcloud password
-
-    Returns:
-        Access token string
-
-    Raises:
-        Exception: If token acquisition fails
-    """
-    from nextcloud_mcp_server.auth.client_registration import load_or_register_client
-
-    logger.info(f"Getting OAuth token for testing from {nextcloud_url}")
-
-    # Perform OIDC discovery
-    async with httpx.AsyncClient() as http_client:
-        discovery_url = f"{nextcloud_url}/.well-known/openid-configuration"
-        logger.debug(f"Fetching OIDC discovery from: {discovery_url}")
-
-        discovery_response = await http_client.get(discovery_url)
-        if discovery_response.status_code != 200:
-            raise Exception(f"OIDC discovery failed: {discovery_response.status_code}")
-
-        oidc_config = discovery_response.json()
-        token_endpoint = oidc_config.get("token_endpoint")
-        registration_endpoint = oidc_config.get("registration_endpoint")
-
-        if not token_endpoint or not registration_endpoint:
-            raise Exception("OIDC discovery missing required endpoints")
-
-        logger.debug(f"Token endpoint: {token_endpoint}")
-        logger.debug(f"Registration endpoint: {registration_endpoint}")
-
-        # Get or register an OAuth client
-        client_info = await load_or_register_client(
-            nextcloud_url=nextcloud_url,
-            registration_endpoint=registration_endpoint,
-            storage_path=".nextcloud_oauth_test_client.json",
-            redirect_uris=["http://localhost:8000/oauth/callback"],
-        )
-
-        # Use client credentials to get a token via client_credentials grant
-        token_response = await http_client.post(
-            token_endpoint,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": client_info.client_id,
-                "client_secret": client_info.client_secret,
-                "scope": "openid profile email",
-            },
-        )
-
-        if token_response.status_code != 200:
-            logger.error(f"Failed to get OAuth token: {token_response.text}")
-            raise Exception(f"Token request failed: {token_response.status_code}")
-
-        token_data = token_response.json()
-        access_token = token_data.get("access_token")
-
-        if not access_token:
-            raise Exception("No access_token in response")
-
-        logger.info("Successfully obtained OAuth access token for testing")
-        return access_token
-
-
-@pytest.fixture(scope="session")
-async def oauth_token() -> str:
-    """
-    Fixture to obtain an OAuth access token for integration tests.
-
-    This uses the Resource Owner Password flow to get a token without
-    requiring interactive browser authentication.
-    """
-    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
-    username = os.getenv("NEXTCLOUD_USERNAME")
-    password = os.getenv("NEXTCLOUD_PASSWORD")
-
-    if not all([nextcloud_host, username, password]):
-        pytest.skip(
-            "OAuth token fixture requires NEXTCLOUD_HOST, USERNAME, and PASSWORD"
-        )
-
-    # Wait for Nextcloud to be ready
-    if not await wait_for_nextcloud(nextcloud_host):
-        pytest.fail(f"Nextcloud server at {nextcloud_host} is not ready")
-
-    try:
-        token = await get_oauth_token(nextcloud_host, username, password)
-        return token
-    except Exception as e:
-        logger.error(f"Failed to obtain OAuth token: {e}")
-        pytest.skip(f"Could not obtain OAuth token for testing: {e}")
-
-
 @pytest.fixture(scope="session")
 async def nc_oauth_client_interactive(
     interactive_oauth_token: str,
@@ -771,9 +668,9 @@ def oauth_callback_server():
     # Skip interactive tests in CI environments
     if os.getenv("GITHUB_ACTIONS"):
         pytest.skip("Skipping interactive OAuth tests in GitHub Actions CI")
-    from http.server import BaseHTTPRequestHandler, HTTPServer
     import threading
-    from urllib.parse import urlparse, parse_qs
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs, urlparse
 
     # Use a mutable container to share state across threads
     auth_state = {"code": None}
@@ -843,6 +740,10 @@ def oauth_callback_server():
 
 
 @pytest.fixture(scope="session")
+@pytest.mark.skipif(
+    "GITHUB_ACTIONS" in os.environ,
+    reason="Unable to access interactive browser in GitHub Actions",
+)
 async def interactive_oauth_token(oauth_callback_server) -> str:
     """
     Fixture to obtain an OAuth access token for integration tests.
@@ -852,12 +753,9 @@ async def interactive_oauth_token(oauth_callback_server) -> str:
 
     Automatically skips when running in GitHub Actions CI.
     """
-    # Skip interactive tests in CI environments
-    if os.getenv("GITHUB_ACTIONS"):
-        pytest.skip("Skipping interactive OAuth tests in GitHub Actions CI")
 
-    import webbrowser
     import time
+    import webbrowser
 
     from nextcloud_mcp_server.auth.client_registration import load_or_register_client
 
@@ -948,7 +846,7 @@ async def playwright_oauth_token(browser) -> str:
     - Browser fixture provided by pytest-playwright-asyncio
     - See: https://playwright.dev/python/docs/test-runners
     """
-    from urllib.parse import urlparse, parse_qs
+    from urllib.parse import parse_qs, urlparse
 
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     username = os.getenv("NEXTCLOUD_USERNAME")

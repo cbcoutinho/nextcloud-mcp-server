@@ -1,9 +1,9 @@
 """Test error propagation in the MCP server for various error scenarios."""
 
 import logging
-from mcp import ClientSession
 
 import pytest
+from mcp import ClientSession
 
 logger = logging.getLogger(__name__)
 

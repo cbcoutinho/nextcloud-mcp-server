@@ -2,13 +2,13 @@ import logging
 import os
 
 from httpx import (
+    AsyncBaseTransport,
     AsyncClient,
+    AsyncHTTPTransport,
     Auth,
     BasicAuth,
     Request,
     Response,
-    AsyncBaseTransport,
-    AsyncHTTPTransport,
 )
 
 from ..controllers.notes_search import NotesSearchController

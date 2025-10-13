@@ -1,34 +1,29 @@
-import click
 import logging
 import os
-import uvicorn
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
+import click
+import uvicorn
+from mcp.server.auth.settings import AuthSettings
+from mcp.server.fastmcp import Context, FastMCP
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.auth.settings import AuthSettings
-
-from nextcloud_mcp_server.config import setup_logging
+from nextcloud_mcp_server.auth import NextcloudTokenVerifier, load_or_register_client
 from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.config import setup_logging
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
-from nextcloud_mcp_server.auth import (
-    NextcloudTokenVerifier,
-    load_or_register_client,
-)
 from nextcloud_mcp_server.server import (
     configure_calendar_tools,
     configure_contacts_tools,
+    configure_deck_tools,
     configure_notes_tools,
     configure_tables_tools,
     configure_webdav_tools,
-    configure_deck_tools,
 )
-
 
 logger = logging.getLogger(__name__)
 

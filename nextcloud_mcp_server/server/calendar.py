@@ -5,10 +5,7 @@ from typing import Optional
 from mcp.server.fastmcp import Context, FastMCP
 
 from nextcloud_mcp_server.context import get_client
-from nextcloud_mcp_server.models.calendar import (
-    Calendar,
-    ListCalendarsResponse,
-)
+from nextcloud_mcp_server.models.calendar import Calendar, ListCalendarsResponse
 
 logger = logging.getLogger(__name__)
 

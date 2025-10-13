@@ -1,20 +1,20 @@
 import logging
+
 from httpx import HTTPStatusError
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData
 
-from mcp.server.fastmcp import Context, FastMCP
-
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.notes import (
-    Note,
-    NotesSettings,
-    CreateNoteResponse,
-    UpdateNoteResponse,
-    DeleteNoteResponse,
     AppendContentResponse,
-    SearchNotesResponse,
+    CreateNoteResponse,
+    DeleteNoteResponse,
+    Note,
     NoteSearchResult,
+    NotesSettings,
+    SearchNotesResponse,
+    UpdateNoteResponse,
 )
 
 logger = logging.getLogger(__name__)

@@ -2,8 +2,8 @@
 
 import logging
 
-from mcp.server.fastmcp import Context
 from mcp.server.auth.provider import AccessToken
+from mcp.server.fastmcp import Context
 
 from ..client import NextcloudClient
 
