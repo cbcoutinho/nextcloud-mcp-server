@@ -2,7 +2,9 @@
 
 This guide covers common issues and solutions for the Nextcloud MCP server.
 
-## OAuth Issues
+> **OAuth-specific issues?** See the dedicated [OAuth Troubleshooting Guide](oauth-troubleshooting.md) for OAuth authentication problems, OIDC discovery issues, token validation failures, and more.
+
+## OAuth Issues (Quick Reference)
 
 ### Issue: "OAuth mode requires NEXTCLOUD_HOST environment variable"
 
@@ -215,6 +217,18 @@ echo "NEXTCLOUD_PASSWORD=your-password" >> .env
 export $(grep -v '^#' .env | xargs)
 uv run nextcloud-mcp-server --no-oauth
 ```
+
+---
+
+### For More OAuth Help
+
+See the dedicated **[OAuth Troubleshooting Guide](oauth-troubleshooting.md)** for:
+- Bearer token authentication failures
+- PKCE validation errors
+- Token validation issues
+- Client registration problems
+- Advanced OAuth debugging
+- And much more...
 
 ---
 
@@ -534,7 +548,9 @@ If problems persist, open an issue on the [GitHub repository](https://github.com
 
 ## See Also
 
+- **[OAuth Troubleshooting](oauth-troubleshooting.md)** - Dedicated OAuth troubleshooting guide
 - [OAuth Setup Guide](oauth-setup.md) - OAuth configuration
+- [OAuth Architecture](oauth-architecture.md) - How OAuth works
+- [Upstream Status](oauth-upstream-status.md) - Required patches and upstream PRs
 - [Configuration](configuration.md) - Environment variables
 - [Running the Server](running.md) - Server options
-- [OAuth Bearer Token Issue](oauth2-bearer-token-session-issue.md) - Required patch

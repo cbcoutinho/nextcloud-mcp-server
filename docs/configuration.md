@@ -78,9 +78,9 @@ Before using OAuth configuration:
    - Enable dynamic client registration (if using auto-registration) - Settings → OIDC
    - Enable Bearer token validation: `php occ config:system:set user_oidc oidc_provider_bearer_validation --value=true --type=boolean`
 
-3. **Apply Bearer token patch** - The `user_oidc` app requires a patch for non-OCS endpoints - See [oauth2-bearer-token-session-issue.md](oauth2-bearer-token-session-issue.md)
+3. **Apply Bearer token patch** - The `user_oidc` app requires a patch for non-OCS endpoints - See [Upstream Status](oauth-upstream-status.md) for details
 
-See the [OAuth Setup Guide](oauth-setup.md) for detailed instructions.
+See the [OAuth Setup Guide](oauth-setup.md) for detailed step-by-step instructions, or [OAuth Quick Start](quickstart-oauth.md) for a 5-minute setup.
 
 ---
 
@@ -243,7 +243,11 @@ uv run nextcloud-mcp-server --no-oauth \
 
 ## See Also
 
-- [OAuth Setup Guide](oauth-setup.md) - Step-by-step OAuth configuration
+- [OAuth Quick Start](quickstart-oauth.md) - 5-minute OAuth setup for development
+- [OAuth Setup Guide](oauth-setup.md) - Detailed OAuth configuration for production
+- [OAuth Architecture](oauth-architecture.md) - How OAuth works in the MCP server
+- [Upstream Status](oauth-upstream-status.md) - Required patches and upstream PRs
 - [Authentication](authentication.md) - Authentication modes comparison
 - [Running the Server](running.md) - Starting the server with different configurations
 - [Troubleshooting](troubleshooting.md) - Common configuration issues
+- [OAuth Troubleshooting](oauth-troubleshooting.md) - OAuth-specific troubleshooting

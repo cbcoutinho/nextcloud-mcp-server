@@ -75,11 +75,12 @@ See [Configuration Guide](docs/configuration.md) for all options.
 ### 3. Set Up Authentication
 
 **OAuth Setup (recommended):**
-1. Install Nextcloud OIDC app
+1. Install Nextcloud OIDC apps (`oidc` + `user_oidc`)
 2. Enable dynamic client registration
-3. Start the server
+3. Configure Bearer token validation
+4. Start the server
 
-See [OAuth Setup Guide](docs/oauth-setup.md) for step-by-step instructions.
+See [OAuth Quick Start](docs/quickstart-oauth.md) for 5-minute setup or [OAuth Setup Guide](docs/oauth-setup.md) for production deployment.
 
 ### 4. Run the Server
 
@@ -117,12 +118,17 @@ Or connect from:
 - **[Installation](docs/installation.md)** - Install the server
 - **[Configuration](docs/configuration.md)** - Environment variables and settings
 - **[Authentication](docs/authentication.md)** - OAuth vs BasicAuth
-- **[OAuth Setup Guide](docs/oauth-setup.md)** - Step-by-step OAuth configuration
 - **[Running the Server](docs/running.md)** - Start and manage the server
+
+### OAuth Documentation
+- **[OAuth Quick Start](docs/quickstart-oauth.md)** - 5-minute setup guide
+- **[OAuth Setup Guide](docs/oauth-setup.md)** - Production deployment
+- **[OAuth Architecture](docs/oauth-architecture.md)** - How OAuth works
+- **[OAuth Troubleshooting](docs/oauth-troubleshooting.md)** - OAuth-specific issues
+- **[Upstream Status](docs/oauth-upstream-status.md)** - Required patches and PRs
 
 ### Reference
 - **[Troubleshooting](docs/troubleshooting.md)** - Common issues and solutions
-- **[OAuth Bearer Token Issue](docs/oauth2-bearer-token-session-issue.md)** - Required patch for non-OCS endpoints
 
 ### App-Specific Documentation
 - [Notes API](docs/notes.md)

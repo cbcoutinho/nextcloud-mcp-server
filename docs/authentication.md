@@ -13,6 +13,23 @@ The Nextcloud MCP server supports two authentication modes for connecting to you
 
 OAuth2/OIDC authentication provides secure, token-based authentication following modern security standards.
 
+### Architecture
+
+The Nextcloud MCP Server acts as an **OAuth 2.0 Resource Server**, protecting access to Nextcloud resources:
+
+```
+MCP Client ←→ MCP Server (Resource Server) ←→ Nextcloud (Authorization Server + APIs)
+            OAuth Flow with PKCE            Bearer Token Auth
+```
+
+**Key Components**:
+- **MCP Server**: OAuth Resource Server (validates tokens, provides MCP tools)
+- **Nextcloud `oidc` app**: OAuth Authorization Server (issues tokens)
+- **Nextcloud `user_oidc` app**: Token validation middleware
+- **MCP Client**: Any MCP-compatible client (Claude, custom clients)
+
+For detailed architecture, see [OAuth Architecture](oauth-architecture.md).
+
 ### Required Nextcloud Apps
 
 OAuth authentication requires **two Nextcloud apps** to work together:
@@ -39,14 +56,17 @@ OAuth authentication requires **two Nextcloud apps** to work together:
 
 **Installation:** Available in Nextcloud App Store under "Security"
 
-**Important:** The `user_oidc` app requires a patch for Bearer token support on non-OCS endpoints (like Notes API). See [oauth2-bearer-token-session-issue.md](oauth2-bearer-token-session-issue.md) for details.
+**Important:** The `user_oidc` app requires a patch for Bearer token support on non-OCS endpoints (like Notes API). See [Upstream Status](oauth-upstream-status.md) for details.
 
 ### Benefits
 - **Zero-config deployment** via dynamic client registration
 - **No credential storage** in environment variables
 - **Per-user authentication** with access tokens
-- **Automatic token validation** via Nextcloud OIDC
-- **Secure by design** following OAuth 2.0 standards
+- **Per-user permissions** - each user has their own Nextcloud client
+- **Automatic token validation** via Nextcloud OIDC userinfo endpoint
+- **Token caching** for performance (default: 1 hour TTL)
+- **PKCE required** for enhanced security (S256 code challenge)
+- **Secure by design** following OAuth 2.0 and OpenID Connect standards
 
 ### Current Implementation Limitations
 
@@ -54,31 +74,49 @@ OAuth authentication requires **two Nextcloud apps** to work together:
 > **Tested Configuration:**
 > - ✅ Nextcloud `oidc` app (OIDC Identity Provider) + `user_oidc` app (OIDC User Backend)
 > - ✅ Nextcloud acting as its own identity provider (self-hosted OIDC)
+> - ✅ MCP server as OAuth Resource Server
+> - ✅ PKCE with S256 code challenge method
 >
 > **Not Tested:**
 > - ❌ External identity providers (Azure AD, Keycloak, Okta, etc.)
 > - ❌ Using `user_oidc` with external OIDC providers
 >
 > **Known Requirements:**
-> - 🔧 The `user_oidc` app requires a patch for Bearer token support on non-OCS endpoints (see [oauth2-bearer-token-session-issue.md](oauth2-bearer-token-session-issue.md))
+> - 🔧 The `user_oidc` app requires a patch for Bearer token support on non-OCS endpoints (see [Upstream Status](oauth-upstream-status.md))
 > - ⏱️ Dynamic client registration credentials expire (default: 1 hour) - use pre-configured clients for production
+> - 🔐 PKCE must be advertised in OIDC discovery (see [Upstream Status](oauth-upstream-status.md))
 
 ### How OAuth Works
 
-When a client connects to the MCP server with OAuth enabled:
+The MCP server implements the OAuth 2.0 Resource Server pattern:
 
-1. Client receives OAuth authorization URL from the MCP server
-2. User authenticates via browser to Nextcloud
-3. Nextcloud redirects back with authorization code
-4. Client exchanges code for access token
-5. Client uses token to access MCP server
+**Phase 1: Authorization (OAuth Flow with PKCE)**
+1. MCP client connects and receives OAuth settings (issuer URL, scopes)
+2. Client initiates OAuth flow with PKCE (Proof Key for Code Exchange)
+3. User authenticates via browser to Nextcloud
+4. Nextcloud redirects back with authorization code
+5. Client exchanges code + code_verifier for access token
 
-All API requests to Nextcloud use the user's OAuth token, ensuring proper permissions and audit trails.
+**Phase 2: API Access (Bearer Token Validation)**
+6. Client sends MCP requests with `Authorization: Bearer <token>` header
+7. MCP server validates token by calling Nextcloud's userinfo endpoint
+8. Server creates per-user NextcloudClient instance with the token
+9. All Nextcloud API requests use the user's Bearer token
+10. User-specific permissions and audit trails apply
+
+This ensures:
+- Each user has their own authenticated session
+- Actions appear from the correct user in Nextcloud logs
+- Proper permission boundaries are maintained
+- No shared credentials between users
 
 ### See Also
-- [OAuth Setup Guide](oauth-setup.md) - Step-by-step setup instructions
+- [OAuth Quick Start](quickstart-oauth.md) - 5-minute setup for development
+- [OAuth Setup Guide](oauth-setup.md) - Detailed production setup
+- [OAuth Architecture](oauth-architecture.md) - Technical details
+- [Upstream Status](oauth-upstream-status.md) - Required patches and PR status
+- [OAuth Troubleshooting](oauth-troubleshooting.md) - OAuth-specific issues
 - [Configuration](configuration.md) - Environment variables
-- [Troubleshooting](troubleshooting.md) - Common OAuth issues
 
 ## Basic Authentication (Legacy)
 
