@@ -136,14 +136,23 @@ async def nc_mcp_client() -> AsyncGenerator[ClientSession, Any]:
 
 
 @pytest.fixture(scope="session")
-async def nc_mcp_oauth_client(
+async def nc_mcp_oauth_client_interactive(
     interactive_oauth_token: str,
 ) -> AsyncGenerator[ClientSession, Any]:
     """
-    Fixture to create an MCP client session for OAuth integration tests using streamable-http.
+    Fixture to create an MCP client session for OAuth integration tests using interactive authentication.
     Connects to the OAuth-enabled MCP server on port 8001 with OAuth authentication.
+    Requires manual browser login.
+
+    For automated testing, use nc_mcp_oauth_client fixture instead.
+
+    Automatically skips when running in GitHub Actions CI.
     """
-    logger.info("Creating Streamable HTTP client for OAuth MCP server")
+    # Skip interactive tests in CI environments
+    if os.getenv("GITHUB_ACTIONS"):
+        pytest.skip("Skipping interactive OAuth tests in GitHub Actions CI")
+
+    logger.info("Creating Streamable HTTP client for OAuth MCP server (Interactive)")
 
     # Pass OAuth token as Bearer token in headers
     headers = {"Authorization": f"Bearer {interactive_oauth_token}"}
@@ -157,7 +166,7 @@ async def nc_mcp_oauth_client(
         session_context = ClientSession(read_stream, write_stream)
         session = await session_context.__aenter__()
         await session.initialize()
-        logger.info("OAuth MCP client session initialized successfully")
+        logger.info("OAuth MCP client session (Interactive) initialized successfully")
 
         yield session
 
@@ -170,9 +179,9 @@ async def nc_mcp_oauth_client(
                 if "cancel scope" in str(e):
                     logger.debug(f"Ignoring cancel scope teardown issue: {e}")
                 else:
-                    logger.warning(f"Error closing OAuth session: {e}")
+                    logger.warning(f"Error closing OAuth session (Interactive): {e}")
             except Exception as e:
-                logger.warning(f"Error closing OAuth session: {e}")
+                logger.warning(f"Error closing OAuth session (Interactive): {e}")
 
         try:
             await streamable_context.__aexit__(None, None, None)
@@ -180,9 +189,70 @@ async def nc_mcp_oauth_client(
             if "cancel scope" in str(e):
                 logger.debug(f"Ignoring cancel scope teardown issue: {e}")
             else:
-                logger.warning(f"Error closing OAuth streamable HTTP client: {e}")
+                logger.warning(
+                    f"Error closing OAuth streamable HTTP client (Interactive): {e}"
+                )
         except Exception as e:
-            logger.warning(f"Error closing OAuth streamable HTTP client: {e}")
+            logger.warning(
+                f"Error closing OAuth streamable HTTP client (Interactive): {e}"
+            )
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_oauth_client(
+    playwright_oauth_token: str,
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    Fixture to create an MCP client session for OAuth integration tests using Playwright automation.
+    Connects to the OAuth-enabled MCP server on port 8001 with OAuth authentication.
+
+    This is the default OAuth MCP fixture using headless browser automation suitable for CI/CD.
+    For interactive testing with manual browser login, use nc_mcp_oauth_client_interactive instead.
+    """
+    logger.info("Creating Streamable HTTP client for OAuth MCP server (Playwright)")
+
+    # Pass OAuth token as Bearer token in headers
+    headers = {"Authorization": f"Bearer {playwright_oauth_token}"}
+    streamable_context = streamablehttp_client(
+        "http://127.0.0.1:8001/mcp", headers=headers
+    )
+    session_context = None
+
+    try:
+        read_stream, write_stream, _ = await streamable_context.__aenter__()
+        session_context = ClientSession(read_stream, write_stream)
+        session = await session_context.__aenter__()
+        await session.initialize()
+        logger.info("OAuth MCP client session (Playwright) initialized successfully")
+
+        yield session
+
+    finally:
+        # Clean up in reverse order, ignoring task scope issues
+        if session_context is not None:
+            try:
+                await session_context.__aexit__(None, None, None)
+            except RuntimeError as e:
+                if "cancel scope" in str(e):
+                    logger.debug(f"Ignoring cancel scope teardown issue: {e}")
+                else:
+                    logger.warning(f"Error closing Playwright OAuth session: {e}")
+            except Exception as e:
+                logger.warning(f"Error closing Playwright OAuth session: {e}")
+
+        try:
+            await streamable_context.__aexit__(None, None, None)
+        except RuntimeError as e:
+            if "cancel scope" in str(e):
+                logger.debug(f"Ignoring cancel scope teardown issue: {e}")
+            else:
+                logger.warning(
+                    f"Error closing Playwright OAuth streamable HTTP client: {e}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"Error closing Playwright OAuth streamable HTTP client: {e}"
+            )
 
 
 @pytest.fixture
@@ -606,20 +676,28 @@ async def oauth_token() -> str:
 
 
 @pytest.fixture(scope="session")
-async def nc_oauth_client(
+async def nc_oauth_client_interactive(
     interactive_oauth_token: str,
 ) -> AsyncGenerator[NextcloudClient, Any]:
     """
-    Fixture to create a NextcloudClient instance using OAuth authentication.
-    Uses the oauth_token fixture to get an access token.
+    Fixture to create a NextcloudClient instance using interactive OAuth authentication.
+    Uses the interactive_oauth_token fixture which requires manual browser login.
+
+    For automated testing, use nc_oauth_client fixture instead.
+
+    Automatically skips when running in GitHub Actions CI.
     """
+    # Skip interactive tests in CI environments
+    if os.getenv("GITHUB_ACTIONS"):
+        pytest.skip("Skipping interactive OAuth tests in GitHub Actions CI")
+
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     username = os.getenv("NEXTCLOUD_USERNAME")
 
     if not all([nextcloud_host, username]):
         pytest.skip("OAuth client fixture requires NEXTCLOUD_HOST and USERNAME")
 
-    logger.info(f"Creating OAuth NextcloudClient for user: {username}")
+    logger.info(f"Creating OAuth NextcloudClient (Interactive) for user: {username}")
     client = NextcloudClient.from_token(
         base_url=nextcloud_host,
         token=interactive_oauth_token,
@@ -629,11 +707,50 @@ async def nc_oauth_client(
     # Verify the OAuth client works
     try:
         await client.capabilities()
-        logger.info("OAuth NextcloudClient initialized and capabilities checked.")
+        logger.info(
+            "OAuth NextcloudClient (Interactive) initialized and capabilities checked."
+        )
         yield client
     except Exception as e:
-        logger.error(f"Failed to initialize OAuth NextcloudClient: {e}")
+        logger.error(f"Failed to initialize OAuth NextcloudClient (Interactive): {e}")
         pytest.fail(f"Failed to connect to Nextcloud with OAuth token: {e}")
+    finally:
+        await client.close()
+
+
+@pytest.fixture(scope="session")
+async def nc_oauth_client(
+    playwright_oauth_token: str,
+) -> AsyncGenerator[NextcloudClient, Any]:
+    """
+    Fixture to create a NextcloudClient instance using automated Playwright OAuth authentication.
+    This is the default OAuth fixture using headless browser automation suitable for CI/CD.
+
+    For interactive testing with manual browser login, use nc_oauth_client_interactive instead.
+    """
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    username = os.getenv("NEXTCLOUD_USERNAME")
+
+    if not all([nextcloud_host, username]):
+        pytest.skip("OAuth client fixture requires NEXTCLOUD_HOST and USERNAME")
+
+    logger.info(f"Creating OAuth NextcloudClient (Playwright) for user: {username}")
+    client = NextcloudClient.from_token(
+        base_url=nextcloud_host,
+        token=playwright_oauth_token,
+        username=username,
+    )
+
+    # Verify the OAuth client works
+    try:
+        await client.capabilities()
+        logger.info(
+            "OAuth NextcloudClient (Playwright) initialized and capabilities checked."
+        )
+        yield client
+    except Exception as e:
+        logger.error(f"Failed to initialize OAuth NextcloudClient (Playwright): {e}")
+        pytest.fail(f"Failed to connect to Nextcloud with Playwright OAuth token: {e}")
     finally:
         await client.close()
 
@@ -648,7 +765,12 @@ def oauth_callback_server():
     - server_url: The callback URL for the server (e.g., "http://localhost:8081")
 
     The server automatically shuts down when the fixture is torn down.
+
+    Automatically skips when running in GitHub Actions CI.
     """
+    # Skip interactive tests in CI environments
+    if os.getenv("GITHUB_ACTIONS"):
+        pytest.skip("Skipping interactive OAuth tests in GitHub Actions CI")
     from http.server import BaseHTTPRequestHandler, HTTPServer
     import threading
     from urllib.parse import urlparse, parse_qs
@@ -727,7 +849,13 @@ async def interactive_oauth_token(oauth_callback_server) -> str:
 
     This uses the interactive OAuth flow to get a token.
     Depends on oauth_callback_server fixture for HTTP callback handling.
+
+    Automatically skips when running in GitHub Actions CI.
     """
+    # Skip interactive tests in CI environments
+    if os.getenv("GITHUB_ACTIONS"):
+        pytest.skip("Skipping interactive OAuth tests in GitHub Actions CI")
+
     import webbrowser
     import time
 

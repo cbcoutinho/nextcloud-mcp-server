@@ -118,35 +118,36 @@ Each Nextcloud app has a corresponding server module that:
 - **Avoid creating standalone test scripts** - use pytest with proper fixtures instead
 
 #### OAuth/OIDC Testing
-OAuth integration tests support both **interactive** and **automated** (Playwright) authentication flows:
+OAuth integration tests support both **automated** (Playwright) and **interactive** authentication flows:
 
-**Automated Testing (Recommended for CI/CD):**
+**Automated Testing (Default - Recommended for CI/CD):**
+- **Default fixtures**: `nc_oauth_client`, `nc_mcp_oauth_client` now use Playwright automation by default
 - Uses Playwright headless browser automation to complete OAuth flow programmatically
-- Fixtures: `playwright_oauth_token`, `nc_oauth_client_playwright`, `nc_mcp_oauth_client_playwright`
+- All Playwright fixtures: `playwright_oauth_token`, `nc_oauth_client`, `nc_mcp_oauth_client`, `nc_oauth_client_playwright`, `nc_mcp_oauth_client_playwright`
 - Requires: `NEXTCLOUD_HOST`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_PASSWORD` environment variables
 - Uses `pytest-playwright-asyncio` for async Playwright fixtures
 - Playwright configuration: Use pytest CLI args like `--browser firefox --headed` to customize
 - Install browsers: `uv run playwright install firefox` (or `chromium`, `webkit`)
 - Example:
   ```bash
-  # Run OAuth tests with automated Playwright flow using Firefox
-  uv run pytest tests/integration/test_oauth_playwright.py --browser firefox -v
+  # Run all OAuth tests with automated Playwright flow using Firefox
+  uv run pytest tests/integration/test_oauth*.py --browser firefox -v
 
-  # Run with visible browser for debugging
+  # Run specific Playwright tests with visible browser for debugging
   uv run pytest tests/integration/test_oauth_playwright.py --browser firefox --headed -v
 
   # Run with Chromium (default)
-  uv run pytest tests/integration/test_oauth_playwright.py -v
+  uv run pytest tests/integration/test_oauth.py -v
   ```
 
 **Interactive Testing (Manual browser login):**
 - Opens system browser and waits for manual login/authorization
-- Fixtures: `interactive_oauth_token`, `nc_oauth_client`, `nc_mcp_oauth_client`
+- Fixtures: `interactive_oauth_token`, `nc_oauth_client_interactive`, `nc_mcp_oauth_client_interactive`
 - Requires: User to complete browser-based login when prompted
 - Useful for: Debugging OAuth flows, testing with 2FA, local development
 - Example:
   ```bash
-  # Run OAuth tests with interactive flow (will open browser)
+  # Run OAuth tests with interactive flow (will open browser and wait for manual login)
   uv run pytest tests/integration/test_oauth_interactive.py -v
   ```
 

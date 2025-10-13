@@ -66,7 +66,7 @@ async def test_oauth_client_create_note(nc_oauth_client: NextcloudClient):
 
 
 async def test_token_in_request_headers(
-    nc_oauth_client: NextcloudClient, interactive_oauth_token: str
+    nc_oauth_client: NextcloudClient, playwright_oauth_token: str
 ):
     """Verify that bearer token is being used in requests."""
     # The client should be using BearerAuth
