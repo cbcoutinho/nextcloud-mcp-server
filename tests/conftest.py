@@ -732,7 +732,7 @@ def oauth_callback_server():
 
 @pytest.fixture(scope="session")
 @pytest.mark.skipif(
-    "GITHUB_ACTIONS" in os.environ,
+    "GITHUB_ACTION" in os.environ,
     reason="Unable to access interactive browser in GitHub Actions",
 )
 async def interactive_oauth_token(oauth_callback_server) -> str:
