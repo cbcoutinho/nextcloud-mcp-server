@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e  # Exit on any error
+set -euox pipefail
 
 echo "Installing and configuring Calendar app..."
 
