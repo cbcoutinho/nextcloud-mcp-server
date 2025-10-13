@@ -1,9 +1,11 @@
 """CardDAV client for NextCloud contacts operations."""
 
 import logging
-from .base import BaseNextcloudClient
 import xml.etree.ElementTree as ET
+
 from pythonvCard4.vcard import Contact
+
+from .base import BaseNextcloudClient
 
 logger = logging.getLogger(__name__)
 

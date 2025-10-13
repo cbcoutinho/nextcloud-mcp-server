@@ -2,7 +2,7 @@ import logging
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.context import get_client
 
 logger = logging.getLogger(__name__)
 
@@ -12,13 +12,13 @@ def configure_tables_tools(mcp: FastMCP):
     @mcp.tool()
     async def nc_tables_list_tables(ctx: Context):
         """List all tables available to the user"""
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.tables.list_tables()
 
     @mcp.tool()
     async def nc_tables_get_schema(table_id: int, ctx: Context):
         """Get the schema/structure of a specific table including columns and views"""
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.tables.get_table_schema(table_id)
 
     @mcp.tool()
@@ -29,7 +29,7 @@ def configure_tables_tools(mcp: FastMCP):
         offset: int | None = None,
     ):
         """Read rows from a table with optional pagination"""
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.tables.get_table_rows(table_id, limit, offset)
 
     @mcp.tool()
@@ -38,7 +38,7 @@ def configure_tables_tools(mcp: FastMCP):
 
         Data should be a dictionary mapping column IDs to values, e.g. {1: "text", 2: 42}
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.tables.create_row(table_id, data)
 
     @mcp.tool()
@@ -47,11 +47,11 @@ def configure_tables_tools(mcp: FastMCP):
 
         Data should be a dictionary mapping column IDs to new values, e.g. {1: "new text", 2: 99}
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.tables.update_row(row_id, data)
 
     @mcp.tool()
     async def nc_tables_delete_row(row_id: int, ctx: Context):
         """Delete a row from a table"""
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.tables.delete_row(row_id)

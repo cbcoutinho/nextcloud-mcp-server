@@ -107,7 +107,7 @@ Each Nextcloud app has a corresponding server module that:
   - If tests require modifications to pass, ask for permission before proceeding
   - Use `docker-compose up --build -d mcp` to rebuild MCP container after code changes
 - **Use existing fixtures** from `tests/conftest.py` to avoid duplicate setup work:
-  - `nc_mcp_client` - MCP client session for tool/resource testing  
+  - `nc_mcp_client` - MCP client session for tool/resource testing
   - `nc_client` - Direct NextcloudClient for setup/cleanup operations
   - `temporary_note` - Creates and cleans up test notes automatically
   - `temporary_addressbook` - Creates and cleans up test address books
@@ -116,6 +116,51 @@ Each Nextcloud app has a corresponding server module that:
   - For Notes changes: `uv run pytest tests/integration/test_mcp.py -k "notes" -v`
   - For specific API changes: `uv run pytest tests/integration/test_notes_api.py -v`
 - **Avoid creating standalone test scripts** - use pytest with proper fixtures instead
+
+#### OAuth/OIDC Testing
+OAuth integration tests support both **automated** (Playwright) and **interactive** authentication flows:
+
+**Automated Testing (Default - Recommended for CI/CD):**
+- **Default fixtures**: `nc_oauth_client`, `nc_mcp_oauth_client` now use Playwright automation by default
+- Uses Playwright headless browser automation to complete OAuth flow programmatically
+- All Playwright fixtures: `playwright_oauth_token`, `nc_oauth_client`, `nc_mcp_oauth_client`, `nc_oauth_client_playwright`, `nc_mcp_oauth_client_playwright`
+- Requires: `NEXTCLOUD_HOST`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_PASSWORD` environment variables
+- Uses `pytest-playwright-asyncio` for async Playwright fixtures
+- Playwright configuration: Use pytest CLI args like `--browser firefox --headed` to customize
+- Install browsers: `uv run playwright install firefox` (or `chromium`, `webkit`)
+- Example:
+  ```bash
+  # Run all OAuth tests with automated Playwright flow using Firefox
+  uv run pytest tests/integration/test_oauth*.py --browser firefox -v
+
+  # Run specific Playwright tests with visible browser for debugging
+  uv run pytest tests/integration/test_oauth_playwright.py --browser firefox --headed -v
+
+  # Run with Chromium (default)
+  uv run pytest tests/integration/test_oauth.py -v
+  ```
+
+**Interactive Testing (Manual browser login):**
+- Opens system browser and waits for manual login/authorization
+- Fixtures: `interactive_oauth_token`, `nc_oauth_client_interactive`, `nc_mcp_oauth_client_interactive`
+- Requires: User to complete browser-based login when prompted
+- Useful for: Debugging OAuth flows, testing with 2FA, local development
+- **Automatically skipped in GitHub Actions CI** - Interactive fixtures check for `GITHUB_ACTIONS` environment variable
+- Example:
+  ```bash
+  # Run OAuth tests with interactive flow (will open browser and wait for manual login)
+  uv run pytest tests/integration/test_oauth_interactive.py -v
+  ```
+
+**Test Environment Setup:**
+- Start OAuth MCP server: `docker-compose up --build -d mcp-oauth`
+- OAuth server runs on port 8001 (regular MCP on 8000)
+- Both flows register OAuth clients dynamically using Nextcloud's OIDC provider
+
+**CI/CD Considerations:**
+- Interactive OAuth tests are automatically skipped when `GITHUB_ACTIONS` environment variable is set
+- Automated Playwright tests will run in CI/CD environments
+- Use Firefox browser in CI: `--browser firefox` (Chromium may have issues with localhost redirects)
 
 ### Configuration Files
 
