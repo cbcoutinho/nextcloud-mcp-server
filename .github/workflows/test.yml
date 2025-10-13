@@ -56,4 +56,4 @@ jobs:
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
         run: |
-          uv run --frozen python -m pytest -m 'not interactive'
+          uv run --frozen python -m pytest -m 'not oauth'
