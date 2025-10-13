@@ -12,21 +12,30 @@ pytestmark = [pytest.mark.integration, pytest.mark.interactive]
 class TestOAuthInteractive:
     """Test interactive OAuth authentication."""
 
-    async def test_mcp_oauth_tool_execution_interactive(
-        self, nc_mcp_oauth_client_interactive
-    ):
-        """Test executing a tool on the OAuth-enabled MCP server with an interactive token."""
-        # Example: Execute the 'nc_notes_list' tool
-        result = await nc_mcp_oauth_client_interactive.call_tool("nc_tables_list")
+    async def test_oauth_client_with_interactive_flow(self, nc_oauth_client):
+        """Test that OAuth client created via interactive flow can access Nextcloud APIs."""
+        # Test 1: Check capabilities
+        capabilities = await nc_oauth_client.capabilities()
+        assert capabilities is not None
+        logger.info("OAuth client (interactive) successfully fetched capabilities")
 
-        assert result.isError is False, f"Tool execution failed: {result.content}"
-        assert result.content is not None
-        import json
-
-        notes_list = json.loads(result.content[0].text)
-
-        assert isinstance(notes_list, list)
-
+        # Test 2: List notes
+        notes = await nc_oauth_client.notes.get_all_notes()
+        assert isinstance(notes, list)
         logger.info(
-            f"Successfully executed 'nc_notes_list' tool on OAuth MCP server and got {len(notes_list)} notes."
+            f"OAuth client (interactive) successfully listed {len(notes)} notes"
         )
+
+        # Test 3: Create and delete a note
+        test_note = await nc_oauth_client.notes.create_note(
+            title="OAuth Interactive Test Note",
+            content="This note was created during OAuth interactive testing",
+        )
+        assert test_note is not None
+        assert test_note.get("id") is not None
+        note_id = test_note["id"]
+        logger.info(f"OAuth client (interactive) successfully created note {note_id}")
+
+        # Clean up
+        await nc_oauth_client.notes.delete_note(note_id=note_id)
+        logger.info(f"OAuth client (interactive) successfully deleted note {note_id}")

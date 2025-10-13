@@ -104,7 +104,7 @@ class NextcloudClient:
 
     async def capabilities(self):
         response = await self._client.get(
-            "/ocs/v2.php/apps/notifications/api/v2/notifications",
+            "/ocs/v2.php/cloud/capabilities",
             headers={"OCS-APIRequest": "true", "Accept": "application/json"},
         )
         response.raise_for_status()

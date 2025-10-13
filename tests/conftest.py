@@ -556,7 +556,9 @@ async def oauth_token() -> str:
 
 
 @pytest.fixture(scope="session")
-async def nc_oauth_client(oauth_token: str) -> AsyncGenerator[NextcloudClient, Any]:
+async def nc_oauth_client(
+    interactive_oauth_token: str,
+) -> AsyncGenerator[NextcloudClient, Any]:
     """
     Fixture to create a NextcloudClient instance using OAuth authentication.
     Uses the oauth_token fixture to get an access token.
@@ -570,7 +572,7 @@ async def nc_oauth_client(oauth_token: str) -> AsyncGenerator[NextcloudClient, A
     logger.info(f"Creating OAuth NextcloudClient for user: {username}")
     client = NextcloudClient.from_token(
         base_url=nextcloud_host,
-        token=oauth_token,
+        token=interactive_oauth_token,
         username=username,
     )
 
@@ -587,19 +589,22 @@ async def nc_oauth_client(oauth_token: str) -> AsyncGenerator[NextcloudClient, A
 
 
 @pytest.fixture(scope="session")
-async def nc_mcp_oauth_client_interactive() -> AsyncGenerator[ClientSession, Any]:
+async def interactive_oauth_token() -> str:
     """
-    Fixture to create an MCP client session for interactive OAuth integration tests.
-    Performs an interactive OAuth flow to obtain an access token.
+    Fixture to obtain an OAuth access token for integration tests.
+
+    This uses the interactive OAuth flow to get a token.
     """
+
     import webbrowser
     from http.server import BaseHTTPRequestHandler, HTTPServer
     import threading
     from urllib.parse import urlparse, parse_qs
-
     import time
 
     auth_code = None
+    httpd = None
+    server_thread = None
 
     class OAuthCallbackHandler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -639,7 +644,6 @@ async def nc_mcp_oauth_client_interactive() -> AsyncGenerator[ClientSession, Any
         token_endpoint = oidc_config.get("token_endpoint")
         registration_endpoint = oidc_config.get("registration_endpoint")
         authorization_endpoint = oidc_config.get("authorization_endpoint")
-
         client_info = await load_or_register_client(
             nextcloud_url=nextcloud_host,
             registration_endpoint=registration_endpoint,
@@ -650,7 +654,6 @@ async def nc_mcp_oauth_client_interactive() -> AsyncGenerator[ClientSession, Any
 
         auth_url = f"{authorization_endpoint}?response_type=code&client_id={client_info.client_id}&redirect_uri=http://localhost:8081&scope=openid%20profile%20email"
         webbrowser.open(auth_url)
-
         while not auth_code:
             logger.info("Sleeping until auth_code available")
             time.sleep(1)
@@ -667,23 +670,15 @@ async def nc_mcp_oauth_client_interactive() -> AsyncGenerator[ClientSession, Any
         )
 
         logger.info(f"Token response: {token_response.text}")
-
-        # Shut down the server
         token_data = token_response.json()
         logger.info(f"Token data: {token_data}")
         access_token = token_data.get("access_token")
 
-    headers = {"Authorization": f"Bearer {access_token}"}
-    logger.info(f"Headers: {headers}")
-    async with streamablehttp_client("http://127.0.0.1:8001/mcp", headers=headers) as (
-        read_stream,
-        write_stream,
-        _,
-    ):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-        try:
-            yield session
-        finally:
-            # Shut down the server
-            await http_client.get("http://localhost:8081/shutdown")
+        # Shut down the server
+
+        await http_client.get("http://localhost:8081/shutdown")
+        if httpd:
+            httpd.server_close()
+        if server_thread:
+            server_thread.join(timeout=1)
+        return access_token
