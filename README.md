@@ -60,33 +60,63 @@ Resources provide read-only access to data for browsing and discovery. Unlike to
 ### Local Installation
 
 1.  Clone the repository (if running from source):
-    ```bash
+    ```shell
     git clone https://github.com/cbcoutinho/nextcloud-mcp-server.git
     cd nextcloud-mcp-server
     ```
 2.  Install the package dependencies (if running via CLI):
-    ```bash
+    ```shell
     uv sync
     ```
 
 3.  Run the CLI --help command to see all available options
-    ```bash
-    $ uv run python -m nextcloud_mcp_server.app --help
-    Usage: python -m nextcloud_mcp_server.app [OPTIONS]
+    ```shell
+    $ uv run nextcloud-mcp-server --help
+    Usage: nextcloud-mcp-server [OPTIONS]
+
+      Run the Nextcloud MCP server.
+
+      Authentication Modes:
+        - BasicAuth: Set NEXTCLOUD_USERNAME and NEXTCLOUD_PASSWORD
+        - OAuth: Leave USERNAME/PASSWORD unset (requires OIDC app enabled)
+
+      Examples:
+        # BasicAuth mode (legacy)
+        $ nextcloud-mcp-server --host 0.0.0.0 --port 8000
+
+        # OAuth mode with auto-registration   $ nextcloud-mcp-server --oauth
+
+        # OAuth mode with pre-configured client   $ nextcloud-mcp-server
+        --oauth --oauth-client-id=xxx --oauth-client-secret=yyy
 
     Options:
-      -h, --host TEXT                 [default: 127.0.0.1]
-      -p, --port INTEGER              [default: 8000]
-      -w, --workers INTEGER
-      -r, --reload
+      -h, --host TEXT                 Server host  [default: 127.0.0.1]
+      -p, --port INTEGER              Server port  [default: 8000]
+      -w, --workers INTEGER           Number of worker processes
+      -r, --reload                    Enable auto-reload
       -l, --log-level [critical|error|warning|info|debug|trace]
-                                      [default: info]
-      -t, --transport [sse|streamable-http]
-                                      [default: sse]
+                                      Logging level  [default: info]
+      -t, --transport [sse|streamable-http|http]
+                                      MCP transport protocol  [default: sse]
       -e, --enable-app [notes|tables|webdav|calendar|contacts|deck]
-                                      Enable specific Nextcloud app APIs. Can be
-                                      specified multiple times. If not specified,
-                                      all apps are enabled.
+                                      Enable specific Nextcloud app APIs. Can
+                                      be specified multiple times. If not
+                                      specified, all apps are enabled.
+      --oauth / --no-oauth            Force OAuth mode (if enabled) or
+                                      BasicAuth mode (if disabled). By default,
+                                      auto-detected based on environment
+                                      variables.
+      --oauth-client-id TEXT          OAuth client ID (can also use
+                                      NEXTCLOUD_OIDC_CLIENT_ID env var)
+      --oauth-client-secret TEXT      OAuth client secret (can also use
+                                      NEXTCLOUD_OIDC_CLIENT_SECRET env var)
+      --oauth-storage-path TEXT       Path to store OAuth client credentials
+                                      (can also use
+                                      NEXTCLOUD_OIDC_CLIENT_STORAGE env var)
+                                      [default: .nextcloud_oauth_client.json]
+      --mcp-server-url TEXT           MCP server URL for OAuth callbacks (can
+                                      also use NEXTCLOUD_MCP_SERVER_URL env
+                                      var)  [default: http://localhost:8000]
       --help                          Show this message and exit.
     ```
 
