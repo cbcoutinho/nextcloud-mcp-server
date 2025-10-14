@@ -10,7 +10,7 @@ class UsersClient(BaseNextcloudClient):
         self, additional_headers: Optional[Dict[str, str]] = None
     ) -> Dict[str, str]:
         """Get standard headers required for User API calls."""
-        headers = {"OCS-APIRequest": "true"}
+        headers = {"OCS-APIRequest": "true", "Accept": "application/json"}
         if additional_headers:
             headers.update(additional_headers)
         return headers
@@ -49,7 +49,7 @@ class UsersClient(BaseNextcloudClient):
 
         headers = self._get_user_headers()
         await self._make_request(
-            "POST", "/ocs/v1.php/cloud/users", data=data, headers=headers
+            "POST", "/ocs/v2.php/cloud/users", data=data, headers=headers
         )
 
     async def search_users(
@@ -71,18 +71,11 @@ class UsersClient(BaseNextcloudClient):
 
         headers = self._get_user_headers()
         response = await self._make_request(
-            "GET", "/ocs/v1.php/cloud/users", params=params, headers=headers
+            "GET", "/ocs/v2.php/cloud/users", params=params, headers=headers
         )
-        # The API returns XML, which is parsed into a dict.
-        # The user IDs are under ocs.data.users.element (can be a list or a single string)
+        # The v2 API returns JSON with users as a direct list under data.users
         data = response.json()["ocs"]["data"]
-        if "users" in data and "element" in data["users"]:
-            elements = data["users"]["element"]
-            if isinstance(elements, list):
-                return elements
-            elif isinstance(elements, str):
-                return [elements]
-        return []
+        return data.get("users", [])
 
     async def get_user_details(self, userid: str) -> UserDetails:
         """
@@ -90,7 +83,7 @@ class UsersClient(BaseNextcloudClient):
         """
         headers = self._get_user_headers()
         response = await self._make_request(
-            "GET", f"/ocs/v1.php/cloud/users/{userid}", headers=headers
+            "GET", f"/ocs/v2.php/cloud/users/{userid}", headers=headers
         )
         return UserDetails(**response.json()["ocs"]["data"])
 
@@ -101,7 +94,7 @@ class UsersClient(BaseNextcloudClient):
         data = {"key": key, "value": value}
         headers = self._get_user_headers()
         await self._make_request(
-            "PUT", f"/ocs/v1.php/cloud/users/{userid}", data=data, headers=headers
+            "PUT", f"/ocs/v2.php/cloud/users/{userid}", data=data, headers=headers
         )
 
     async def get_editable_user_fields(self) -> List[str]:
@@ -110,16 +103,11 @@ class UsersClient(BaseNextcloudClient):
         """
         headers = self._get_user_headers()
         response = await self._make_request(
-            "GET", "/ocs/v1.php/cloud/user/fields", headers=headers
+            "GET", "/ocs/v2.php/cloud/user/fields", headers=headers
         )
+        # The v2 API returns data as a direct list
         data = response.json()["ocs"]["data"]
-        if "element" in data:
-            elements = data["element"]
-            if isinstance(elements, list):
-                return elements
-            elif isinstance(elements, str):
-                return [elements]
-        return []
+        return data if isinstance(data, list) else []
 
     async def disable_user(self, userid: str) -> None:
         """
@@ -127,7 +115,7 @@ class UsersClient(BaseNextcloudClient):
         """
         headers = self._get_user_headers()
         await self._make_request(
-            "PUT", f"/ocs/v1.php/cloud/users/{userid}/disable", headers=headers
+            "PUT", f"/ocs/v2.php/cloud/users/{userid}/disable", headers=headers
         )
 
     async def enable_user(self, userid: str) -> None:
@@ -136,7 +124,7 @@ class UsersClient(BaseNextcloudClient):
         """
         headers = self._get_user_headers()
         await self._make_request(
-            "PUT", f"/ocs/v1.php/cloud/users/{userid}/enable", headers=headers
+            "PUT", f"/ocs/v2.php/cloud/users/{userid}/enable", headers=headers
         )
 
     async def delete_user(self, userid: str) -> None:
@@ -145,7 +133,7 @@ class UsersClient(BaseNextcloudClient):
         """
         headers = self._get_user_headers()
         await self._make_request(
-            "DELETE", f"/ocs/v1.php/cloud/users/{userid}", headers=headers
+            "DELETE", f"/ocs/v2.php/cloud/users/{userid}", headers=headers
         )
 
     async def get_user_groups(self, userid: str) -> List[str]:
@@ -154,16 +142,11 @@ class UsersClient(BaseNextcloudClient):
         """
         headers = self._get_user_headers()
         response = await self._make_request(
-            "GET", f"/ocs/v1.php/cloud/users/{userid}/groups", headers=headers
+            "GET", f"/ocs/v2.php/cloud/users/{userid}/groups", headers=headers
         )
+        # The v2 API returns groups as a direct list under data.groups
         data = response.json()["ocs"]["data"]
-        if "groups" in data and "element" in data["groups"]:
-            elements = data["groups"]["element"]
-            if isinstance(elements, list):
-                return elements
-            elif isinstance(elements, str):
-                return [elements]
-        return []
+        return data.get("groups", [])
 
     async def add_user_to_group(self, userid: str, groupid: str) -> None:
         """
@@ -173,7 +156,7 @@ class UsersClient(BaseNextcloudClient):
         headers = self._get_user_headers()
         await self._make_request(
             "POST",
-            f"/ocs/v1.php/cloud/users/{userid}/groups",
+            f"/ocs/v2.php/cloud/users/{userid}/groups",
             data=data,
             headers=headers,
         )
@@ -186,7 +169,7 @@ class UsersClient(BaseNextcloudClient):
         headers = self._get_user_headers()
         await self._make_request(
             "DELETE",
-            f"/ocs/v1.php/cloud/users/{userid}/groups",
+            f"/ocs/v2.php/cloud/users/{userid}/groups",
             data=data,
             headers=headers,
         )
@@ -199,7 +182,7 @@ class UsersClient(BaseNextcloudClient):
         headers = self._get_user_headers()
         await self._make_request(
             "POST",
-            f"/ocs/v1.php/cloud/users/{userid}/subadmins",
+            f"/ocs/v2.php/cloud/users/{userid}/subadmins",
             data=data,
             headers=headers,
         )
@@ -212,7 +195,7 @@ class UsersClient(BaseNextcloudClient):
         headers = self._get_user_headers()
         await self._make_request(
             "DELETE",
-            f"/ocs/v1.php/cloud/users/{userid}/subadmins",
+            f"/ocs/v2.php/cloud/users/{userid}/subadmins",
             data=data,
             headers=headers,
         )
@@ -223,16 +206,11 @@ class UsersClient(BaseNextcloudClient):
         """
         headers = self._get_user_headers()
         response = await self._make_request(
-            "GET", f"/ocs/v1.php/cloud/users/{userid}/subadmins", headers=headers
+            "GET", f"/ocs/v2.php/cloud/users/{userid}/subadmins", headers=headers
         )
+        # The v2 API returns data as a direct list
         data = response.json()["ocs"]["data"]
-        if "element" in data:
-            elements = data["element"]
-            if isinstance(elements, list):
-                return elements
-            elif isinstance(elements, str):
-                return [elements]
-        return []
+        return data if isinstance(data, list) else []
 
     async def resend_welcome_email(self, userid: str) -> None:
         """
@@ -240,5 +218,5 @@ class UsersClient(BaseNextcloudClient):
         """
         headers = self._get_user_headers()
         await self._make_request(
-            "POST", f"/ocs/v1.php/cloud/users/{userid}/welcome", headers=headers
+            "POST", f"/ocs/v2.php/cloud/users/{userid}/welcome", headers=headers
         )

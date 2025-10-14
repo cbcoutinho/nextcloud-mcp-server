@@ -1,5 +1,5 @@
-from typing import List, Optional
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional, Union
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class User(BaseModel):
@@ -18,10 +18,12 @@ class User(BaseModel):
 class UserDetails(BaseModel):
     """Model for retrieving detailed user information."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     enabled: bool
     id: str
-    quota: str
-    email: str
+    quota: Union[str, Dict[str, Any]]  # Can be string or quota object
+    email: Optional[str] = None  # Can be null
     displayname: str = Field(
         alias="display-name"
     )  # Handle both displayname and display-name

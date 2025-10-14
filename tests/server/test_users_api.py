@@ -5,7 +5,7 @@ from nextcloud_mcp_server.client import NextcloudClient
 @pytest.mark.asyncio
 async def test_create_and_delete_user(nc_client: NextcloudClient):
     userid = "testuser1"
-    password = "testpassword1"
+    password = "SecureTestPassword123!"
     display_name = "Test User One"
     email = "test1@example.com"
 
@@ -37,7 +37,7 @@ async def test_create_and_delete_user(nc_client: NextcloudClient):
 @pytest.mark.asyncio
 async def test_update_user_field(nc_client: NextcloudClient):
     userid = "testuser2"
-    password = "testpassword2"
+    password = "SecureTestPassword123!"
     display_name = "Test User Two"
     email = "test2@example.com"
 
@@ -60,7 +60,7 @@ async def test_update_user_field(nc_client: NextcloudClient):
 @pytest.mark.asyncio
 async def test_user_groups(nc_client: NextcloudClient):
     userid = "testuser3"
-    password = "testpassword3"
+    password = "SecureTestPassword123!"
     groupid = "testgroup"
 
     await nc_client.users.create_user(userid=userid, password=password)
@@ -81,7 +81,7 @@ async def test_user_groups(nc_client: NextcloudClient):
 @pytest.mark.asyncio
 async def test_user_subadmins(nc_client: NextcloudClient):
     userid = "testuser4"
-    password = "testpassword4"
+    password = "SecureTestPassword123!"
     groupid = "subadmingroup"
 
     await nc_client.users.create_user(userid=userid, password=password)
@@ -102,7 +102,7 @@ async def test_user_subadmins(nc_client: NextcloudClient):
 @pytest.mark.asyncio
 async def test_disable_enable_user(nc_client: NextcloudClient):
     userid = "testuser5"
-    password = "testpassword5"
+    password = "SecureTestPassword123!"
 
     await nc_client.users.create_user(userid=userid, password=password)
 
