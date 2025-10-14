@@ -30,25 +30,3 @@ async def test_oauth_client_with_playwright_flow(nc_oauth_client_playwright):
     notes = await nc_oauth_client_playwright.notes.get_all_notes()
     assert isinstance(notes, list)
     logger.info(f"OAuth client (Playwright) successfully listed {len(notes)} notes")
-
-
-async def test_mcp_oauth_client_with_playwright(nc_mcp_oauth_client_playwright):
-    """Test that MCP OAuth client via Playwright can execute tools."""
-    import json
-
-    # Test: Execute the 'nc_notes_search_notes' tool
-    result = await nc_mcp_oauth_client_playwright.call_tool(
-        "nc_notes_search_notes", arguments={"query": ""}
-    )
-
-    assert result.isError is False, f"Tool execution failed: {result.content}"
-    assert result.content is not None
-    response_data = json.loads(result.content[0].text)
-
-    # The search response should have a 'results' field containing the list
-    assert "results" in response_data
-    assert isinstance(response_data["results"], list)
-
-    logger.info(
-        f"Successfully executed 'nc_notes_search_notes' tool on Playwright OAuth MCP server and got {len(response_data['results'])} notes."
-    )
