@@ -5,9 +5,10 @@ are present in calendar events and contacts during round-trip operations.
 """
 
 import logging
-import pytest
 import uuid
 from datetime import datetime, timedelta
+
+import pytest
 
 logger = logging.getLogger(__name__)
 

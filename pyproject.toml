@@ -1,6 +1,6 @@
 [project]
 name = "nextcloud-mcp-server"
-version = "0.11.0"
+version = "0.13.0"
 description = ""
 authors = [
     {name = "Chris Coutinho",email = "chris@coutinho.io"}
@@ -8,7 +8,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli] (>=1.10,<1.11)",
+    "mcp[cli] (>=1.17,<1.18)",
     "httpx (>=0.28.1,<0.29.0)",
     "pillow (>=11.2.1,<12.0.0)",
     "icalendar (>=6.0.0,<7.0.0)",
@@ -25,7 +25,11 @@ log_cli = 1
 log_cli_level = "INFO"
 log_level = "INFO"
 markers = [
-    "integration: marks tests as slow (deselect with '-m \"not slow\"')"
+    "integration: marks tests as slow (deselect with '-m \"not slow\"')",
+    "oauth: marks tests as oauth (deselect with '-m \"not oauth\"')"
+]
+testpaths = [
+    "tests",
 ]
 
 [tool.commitizen]
@@ -44,9 +48,11 @@ build-backend = "poetry.core.masonry.api"
 dev = [
     "commitizen>=4.8.2",
     "ipython>=9.2.0",
+    "playwright>=1.49.1",
     "pytest>=8.3.5",
     "pytest-asyncio>=1.0.0",
     "pytest-cov>=6.1.1",
+    "pytest-playwright-asyncio>=0.7.1",
     "ruff>=0.11.13",
 ]
 

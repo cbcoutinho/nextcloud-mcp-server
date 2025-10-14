@@ -1,0 +1,69 @@
+From deab2dac3d73d25f20a95c18103f327ab48f837a Mon Sep 17 00:00:00 2001
+From: Chris Coutinho <chris@coutinho.io>
+Date: Sun, 12 Oct 2025 21:09:29 +0200
+Subject: [PATCH 1/1] Fix Bearer token authentication causing session logout
+
+When using Bearer token authentication with OIDC, API requests to
+endpoints with @CORS annotations (like Notes API) were failing with
+401 Unauthorized errors. This occurred because:
+
+1. Bearer token validation successfully authenticated the user
+2. A session was created for the authenticated user
+3. Nextcloud's CORSMiddleware detected the logged-in session but no
+   CSRF token, causing it to call session->logout()
+4. The logout invalidated the session, breaking the API request
+
+This fix sets the 'app_api' session flag during Bearer token
+authentication, which instructs CORSMiddleware to skip the CSRF check
+and logout logic. This is the same mechanism used by Nextcloud's
+AppAPI framework for external application authentication.
+
+The flag is set at all successful Bearer token authentication points:
+- Line 243: After OIDC Identity Provider validation
+- Line 310: After auto-provisioning with bearer provisioning
+- Line 315: After existing user authentication
+- Line 337: After LDAP user sync
+
+Fixes: Bearer token authentication for all Nextcloud APIs
+Tested-with: nextcloud-mcp-server integration tests
+Signed-off-by: Chris Coutinho <chris@coutinho.io>
+---
+ lib/User/Backend.php | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/lib/User/Backend.php b/lib/User/Backend.php
+index 23cfb18..65665cc 100644
+--- a/lib/User/Backend.php
++++ b/lib/User/Backend.php
+@@ -240,6 +240,7 @@ class Backend extends ABackend implements IPasswordConfirmationBackend, IGetDisp
+ 					$this->eventDispatcher->dispatchTyped($validationEvent);
+ 					$oidcProviderUserId = $validationEvent->getUserId();
+ 					if ($oidcProviderUserId !== null) {
++						$this->session->set('app_api', true);
+ 						return $oidcProviderUserId;
+ 					} else {
+ 						$this->logger->debug('[NextcloudOidcProviderValidator] The bearer token validation has failed');
+@@ -306,10 +307,12 @@ class Backend extends ABackend implements IPasswordConfirmationBackend, IGetDisp
+ 							}
+ 
+ 							$this->session->set('last-password-confirm', strtotime('+4 year', time()));
++							$this->session->set('app_api', true);
+ 							return $userId;
+ 						} elseif ($this->userExists($tokenUserId)) {
+ 							$this->checkFirstLogin($tokenUserId);
+ 							$this->session->set('last-password-confirm', strtotime('+4 year', time()));
++							$this->session->set('app_api', true);
+ 							return $tokenUserId;
+ 						} else {
+ 							// check if the user exists locally
+@@ -331,6 +334,7 @@ class Backend extends ABackend implements IPasswordConfirmationBackend, IGetDisp
+ 							}
+ 							$this->checkFirstLogin($tokenUserId);
+ 							$this->session->set('last-password-confirm', strtotime('+4 year', time()));
++							$this->session->set('app_api', true);
+ 							return $tokenUserId;
+ 						}
+ 					}
+-- 
+2.51.0
+

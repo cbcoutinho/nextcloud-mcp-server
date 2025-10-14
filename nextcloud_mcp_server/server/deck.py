@@ -3,15 +3,19 @@ from typing import Optional
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.deck import (
-    CreateBoardResponse,
-    CreateStackResponse,
-    StackOperationResponse,
-    CreateCardResponse,
     CardOperationResponse,
+    CreateBoardResponse,
+    CreateCardResponse,
     CreateLabelResponse,
+    CreateStackResponse,
+    DeckBoard,
+    DeckCard,
+    DeckLabel,
+    DeckStack,
     LabelOperationResponse,
+    StackOperationResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,7 +29,8 @@ def configure_deck_tools(mcp: FastMCP):
     async def deck_boards_resource():
         """List all Nextcloud Deck boards"""
         ctx: Context = mcp.get_context()
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        await ctx.warning("This message is deprecated, use the deck_get_board instead")
+        client = get_client(ctx)
         boards = await client.deck.get_boards()
         return [board.model_dump() for board in boards]
 
@@ -33,7 +38,10 @@ def configure_deck_tools(mcp: FastMCP):
     async def deck_board_resource(board_id: int):
         """Get details of a specific Nextcloud Deck board"""
         ctx: Context = mcp.get_context()
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        await ctx.warning(
+            "This resource is deprecated, use the deck_get_board tool instead"
+        )
+        client = get_client(ctx)
         board = await client.deck.get_board(board_id)
         return board.model_dump()
 
@@ -41,7 +49,10 @@ def configure_deck_tools(mcp: FastMCP):
     async def deck_stacks_resource(board_id: int):
         """List all stacks in a Nextcloud Deck board"""
         ctx: Context = mcp.get_context()
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        await ctx.warning(
+            "This resource is deprecated, use the deck_get_stacks tool instead"
+        )
+        client = get_client(ctx)
         stacks = await client.deck.get_stacks(board_id)
         return [stack.model_dump() for stack in stacks]
 
@@ -49,7 +60,10 @@ def configure_deck_tools(mcp: FastMCP):
     async def deck_stack_resource(board_id: int, stack_id: int):
         """Get details of a specific Nextcloud Deck stack"""
         ctx: Context = mcp.get_context()
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        await ctx.warning(
+            "This resource is deprecated, use the deck_get_stack tool instead"
+        )
+        client = get_client(ctx)
         stack = await client.deck.get_stack(board_id, stack_id)
         return stack.model_dump()
 
@@ -57,7 +71,10 @@ def configure_deck_tools(mcp: FastMCP):
     async def deck_cards_resource(board_id: int, stack_id: int):
         """List all cards in a Nextcloud Deck stack"""
         ctx: Context = mcp.get_context()
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        await ctx.warning(
+            "This resource is deprecated, use the deck_get_cards tool instead"
+        )
+        client = get_client(ctx)
         stack = await client.deck.get_stack(board_id, stack_id)
         if stack.cards:
             return [card.model_dump() for card in stack.cards]
@@ -67,7 +84,10 @@ def configure_deck_tools(mcp: FastMCP):
     async def deck_card_resource(board_id: int, stack_id: int, card_id: int):
         """Get details of a specific Nextcloud Deck card"""
         ctx: Context = mcp.get_context()
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        await ctx.warning(
+            "This resource is deprecated, use the deck_get_card tool instead"
+        )
+        client = get_client(ctx)
         card = await client.deck.get_card(board_id, stack_id, card_id)
         return card.model_dump()
 
@@ -75,7 +95,10 @@ def configure_deck_tools(mcp: FastMCP):
     async def deck_labels_resource(board_id: int):
         """List all labels in a Nextcloud Deck board"""
         ctx: Context = mcp.get_context()
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        await ctx.warning(
+            "This resource is deprecated, use the deck_get_labels tool instead"
+        )
+        client = get_client(ctx)
         board = await client.deck.get_board(board_id)
         return [label.model_dump() for label in board.labels]
 
@@ -83,11 +106,78 @@ def configure_deck_tools(mcp: FastMCP):
     async def deck_label_resource(board_id: int, label_id: int):
         """Get details of a specific Nextcloud Deck label"""
         ctx: Context = mcp.get_context()
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        await ctx.warning(
+            "This resource is deprecated, use the deck_get_label tool instead"
+        )
+        client = get_client(ctx)
         label = await client.deck.get_label(board_id, label_id)
         return label.model_dump()
 
-    # Tools
+    # Read Tools (converted from resources)
+
+    @mcp.tool()
+    async def deck_get_boards(ctx: Context) -> list[DeckBoard]:
+        """Get all Nextcloud Deck boards"""
+        client = get_client(ctx)
+        boards = await client.deck.get_boards()
+        return boards
+
+    @mcp.tool()
+    async def deck_get_board(ctx: Context, board_id: int) -> DeckBoard:
+        """Get details of a specific Nextcloud Deck board"""
+        client = get_client(ctx)
+        board = await client.deck.get_board(board_id)
+        return board
+
+    @mcp.tool()
+    async def deck_get_stacks(ctx: Context, board_id: int) -> list[DeckStack]:
+        """Get all stacks in a Nextcloud Deck board"""
+        client = get_client(ctx)
+        stacks = await client.deck.get_stacks(board_id)
+        return stacks
+
+    @mcp.tool()
+    async def deck_get_stack(ctx: Context, board_id: int, stack_id: int) -> DeckStack:
+        """Get details of a specific Nextcloud Deck stack"""
+        client = get_client(ctx)
+        stack = await client.deck.get_stack(board_id, stack_id)
+        return stack
+
+    @mcp.tool()
+    async def deck_get_cards(
+        ctx: Context, board_id: int, stack_id: int
+    ) -> list[DeckCard]:
+        """Get all cards in a Nextcloud Deck stack"""
+        client = get_client(ctx)
+        stack = await client.deck.get_stack(board_id, stack_id)
+        if stack.cards:
+            return stack.cards
+        return []
+
+    @mcp.tool()
+    async def deck_get_card(
+        ctx: Context, board_id: int, stack_id: int, card_id: int
+    ) -> DeckCard:
+        """Get details of a specific Nextcloud Deck card"""
+        client = get_client(ctx)
+        card = await client.deck.get_card(board_id, stack_id, card_id)
+        return card
+
+    @mcp.tool()
+    async def deck_get_labels(ctx: Context, board_id: int) -> list[DeckLabel]:
+        """Get all labels in a Nextcloud Deck board"""
+        client = get_client(ctx)
+        board = await client.deck.get_board(board_id)
+        return board.labels
+
+    @mcp.tool()
+    async def deck_get_label(ctx: Context, board_id: int, label_id: int) -> DeckLabel:
+        """Get details of a specific Nextcloud Deck label"""
+        client = get_client(ctx)
+        label = await client.deck.get_label(board_id, label_id)
+        return label
+
+    # Create/Update/Delete Tools
 
     @mcp.tool()
     async def deck_create_board(
@@ -99,7 +189,7 @@ def configure_deck_tools(mcp: FastMCP):
             title: The title of the new board
             color: The hexadecimal color of the new board (e.g. FF0000)
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         board = await client.deck.create_board(title, color)
         return CreateBoardResponse(id=board.id, title=board.title, color=board.color)
 
@@ -116,7 +206,7 @@ def configure_deck_tools(mcp: FastMCP):
             title: The title of the new stack
             order: Order for sorting the stacks
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         stack = await client.deck.create_stack(board_id, title, order)
         return CreateStackResponse(id=stack.id, title=stack.title, order=stack.order)
 
@@ -136,7 +226,7 @@ def configure_deck_tools(mcp: FastMCP):
             title: New title for the stack
             order: New order for the stack
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         await client.deck.update_stack(board_id, stack_id, title, order)
         return StackOperationResponse(
             success=True,
@@ -155,7 +245,7 @@ def configure_deck_tools(mcp: FastMCP):
             board_id: The ID of the board
             stack_id: The ID of the stack
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         await client.deck.delete_stack(board_id, stack_id)
         return StackOperationResponse(
             success=True,
@@ -187,7 +277,7 @@ def configure_deck_tools(mcp: FastMCP):
             description: Description of the card
             duedate: Due date of the card (ISO-8601 format)
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         card = await client.deck.create_card(
             board_id, stack_id, title, type, order, description, duedate
         )
@@ -228,7 +318,7 @@ def configure_deck_tools(mcp: FastMCP):
             archived: Whether the card should be archived
             done: Completion date for the card (ISO-8601 format)
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         await client.deck.update_card(
             board_id,
             stack_id,
@@ -261,7 +351,7 @@ def configure_deck_tools(mcp: FastMCP):
             stack_id: The ID of the stack
             card_id: The ID of the card
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         await client.deck.delete_card(board_id, stack_id, card_id)
         return CardOperationResponse(
             success=True,
@@ -282,7 +372,7 @@ def configure_deck_tools(mcp: FastMCP):
             stack_id: The ID of the stack
             card_id: The ID of the card
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         await client.deck.archive_card(board_id, stack_id, card_id)
         return CardOperationResponse(
             success=True,
@@ -303,7 +393,7 @@ def configure_deck_tools(mcp: FastMCP):
             stack_id: The ID of the stack
             card_id: The ID of the card
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         await client.deck.unarchive_card(board_id, stack_id, card_id)
         return CardOperationResponse(
             success=True,
@@ -331,7 +421,7 @@ def configure_deck_tools(mcp: FastMCP):
             order: New position in the target stack
             target_stack_id: The ID of the target stack
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         await client.deck.reorder_card(
             board_id, stack_id, card_id, order, target_stack_id
         )
@@ -355,7 +445,7 @@ def configure_deck_tools(mcp: FastMCP):
             title: The title of the new label
             color: The color of the new label (hex format without #)
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         label = await client.deck.create_label(board_id, title, color)
         return CreateLabelResponse(id=label.id, title=label.title, color=label.color)
 
@@ -375,7 +465,7 @@ def configure_deck_tools(mcp: FastMCP):
             title: New title for the label
             color: New color for the label (hex format without #)
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         await client.deck.update_label(board_id, label_id, title, color)
         return LabelOperationResponse(
             success=True,
@@ -394,7 +484,7 @@ def configure_deck_tools(mcp: FastMCP):
             board_id: The ID of the board
             label_id: The ID of the label
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         await client.deck.delete_label(board_id, label_id)
         return LabelOperationResponse(
             success=True,
@@ -416,7 +506,7 @@ def configure_deck_tools(mcp: FastMCP):
             card_id: The ID of the card
             label_id: The ID of the label to assign
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         await client.deck.assign_label_to_card(board_id, stack_id, card_id, label_id)
         return CardOperationResponse(
             success=True,
@@ -438,7 +528,7 @@ def configure_deck_tools(mcp: FastMCP):
             card_id: The ID of the card
             label_id: The ID of the label to remove
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         await client.deck.remove_label_from_card(board_id, stack_id, card_id, label_id)
         return CardOperationResponse(
             success=True,
@@ -461,7 +551,7 @@ def configure_deck_tools(mcp: FastMCP):
             card_id: The ID of the card
             user_id: The user ID to assign
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         await client.deck.assign_user_to_card(board_id, stack_id, card_id, user_id)
         return CardOperationResponse(
             success=True,
@@ -483,7 +573,7 @@ def configure_deck_tools(mcp: FastMCP):
             card_id: The ID of the card
             user_id: The user ID to unassign
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         await client.deck.unassign_user_from_card(board_id, stack_id, card_id, user_id)
         return CardOperationResponse(
             success=True,

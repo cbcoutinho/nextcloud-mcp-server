@@ -2,13 +2,13 @@ import logging
 import os
 
 from httpx import (
+    AsyncBaseTransport,
     AsyncClient,
+    AsyncHTTPTransport,
     Auth,
     BasicAuth,
     Request,
     Response,
-    AsyncBaseTransport,
-    AsyncHTTPTransport,
 )
 
 from ..controllers.notes_search import NotesSearchController
@@ -86,6 +86,23 @@ class NextcloudClient:
         password = os.environ["NEXTCLOUD_PASSWORD"]
         # Pass username to constructor
         return cls(base_url=host, username=username, auth=BasicAuth(username, password))
+
+    @classmethod
+    def from_token(cls, base_url: str, token: str, username: str):
+        """Create NextcloudClient with OAuth bearer token.
+
+        Args:
+            base_url: Nextcloud base URL
+            token: OAuth access token
+            username: Nextcloud username
+
+        Returns:
+            NextcloudClient configured with bearer token authentication
+        """
+        from ..auth import BearerAuth
+
+        logger.info(f"Creating NC Client for user '{username}' using OAuth token")
+        return cls(base_url=base_url, username=username, auth=BearerAuth(token))
 
     async def capabilities(self):
         response = await self._client.get(

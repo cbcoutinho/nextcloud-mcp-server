@@ -68,7 +68,8 @@ async def test_mcp_connectivity(nc_mcp_client: ClientSession):
         template_uris.append(template.uriTemplate)
 
     # Verify expected resource templates
-    expected_templates = ["nc://Notes/{note_id}/attachments/{attachment_filename}"]
+    # Note: Notes attachments are now handled via tools, not resource templates
+    expected_templates = []
 
     for expected_template in expected_templates:
         assert expected_template in template_uris, (
@@ -140,9 +141,11 @@ async def test_mcp_notes_crud_workflow(
 
         # 3. Read note via MCP
         logger.info(f"Reading note via MCP: {note_id}")
-        read_result = await nc_mcp_client.read_resource(f"nc://Notes/{note_id}")
-        assert len(read_result.contents) == 1, "Expected exactly one content item"
-        read_note_data = json.loads(read_result.contents[0].text)
+        read_result = await nc_mcp_client.call_tool(
+            "nc_notes_get_note", {"note_id": note_id}
+        )
+        read_note_data = read_result.content[0].text
+        read_note_data = json.loads(read_note_data)
 
         assert read_note_data["title"] == test_title
         assert read_note_data["content"] == test_content

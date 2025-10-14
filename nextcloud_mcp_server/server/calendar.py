@@ -4,11 +4,8 @@ from typing import Optional
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.models.calendar import (
-    Calendar,
-    ListCalendarsResponse,
-)
+from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.models.calendar import Calendar, ListCalendarsResponse
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +15,7 @@ def configure_calendar_tools(mcp: FastMCP):
     @mcp.tool()
     async def nc_calendar_list_calendars(ctx: Context) -> ListCalendarsResponse:
         """List all available calendars for the user"""
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         calendars_data = await client.calendar.list_calendars()
 
         calendars = [Calendar(**cal_data) for cal_data in calendars_data]
@@ -74,7 +71,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             Dict with event creation result
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
 
         event_data = {
             "title": title,
@@ -133,7 +130,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             List of events matching the filters
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
 
         # Convert YYYY-MM-DD format dates to datetime objects
         start_datetime = None
@@ -207,7 +204,7 @@ def configure_calendar_tools(mcp: FastMCP):
         ctx: Context,
     ):
         """Get detailed information about a specific event"""
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         event_data, etag = await client.calendar.get_event(calendar_name, event_uid)
         return event_data
 
@@ -240,7 +237,7 @@ def configure_calendar_tools(mcp: FastMCP):
         etag: str = "",
     ):
         """Update any aspect of an existing event"""
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
 
         # Build update data with only non-None values
         event_data = {}
@@ -290,7 +287,7 @@ def configure_calendar_tools(mcp: FastMCP):
         ctx: Context,
     ):
         """Delete a calendar event"""
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.calendar.delete_event(calendar_name, event_uid)
 
     @mcp.tool()
@@ -332,7 +329,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             Dict with meeting creation result
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
 
         # Combine date and time for start_datetime
         start_datetime = f"{date}T{time}:00"
@@ -366,7 +363,7 @@ def configure_calendar_tools(mcp: FastMCP):
         limit: int = 10,
     ):
         """Get upcoming events in next N days"""
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
 
         now = dt.datetime.now()
         end_datetime = now + dt.timedelta(days=days_ahead)
@@ -435,7 +432,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             List of available time slots with start/end times and duration
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
 
         # Parse attendees
         attendee_list = []
@@ -536,7 +533,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             Summary of operation results including counts and details
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
 
         if operation not in ["update", "delete", "move"]:
             raise ValueError("Operation must be 'update', 'delete', or 'move'")
@@ -758,7 +755,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             Result of the calendar management operation
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
 
         if action == "list":
             return await client.calendar.list_calendars()

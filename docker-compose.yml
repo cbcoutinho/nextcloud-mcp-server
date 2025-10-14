@@ -3,7 +3,7 @@ services:
   # https://hub.docker.com/_/mariadb
   db:
     # Note: Check the recommend version here: https://docs.nextcloud.com/server/latest/admin_manual/installation/system_requirements.html#server
-    image: mariadb:lts@sha256:ec5d50f32359ff020b93cce6834f9bf89147c34aea0e90c952ccf556c94a4fb8
+    image: docker.io/library/mariadb:lts@sha256:ae6119716edac6998ae85508431b3d2e666530ddf4e94c61a10710caec9b0f71
     restart: always
     command: --transaction-isolation=READ-COMMITTED
     volumes:
@@ -17,18 +17,14 @@ services:
   # Note: Redis is an external service. You can find more information about the configuration here:
   # https://hub.docker.com/_/redis
   redis:
-    image: redis:alpine@sha256:987c376c727652f99625c7d205a1cba3cb2c53b92b0b62aade2bd48ee1593232
+    image: docker.io/library/redis:alpine@sha256:59b6e694653476de2c992937ebe1c64182af4728e54bb49e9b7a6c26614d8933
     restart: always
 
   app:
-    image: nextcloud:31.0.8@sha256:c3329db9d0d0d79b1fe6433b54b81c28acaefecfe96a400be202b7da80f6b8ca
-    #user: www-data:www-data
+    image: docker.io/library/nextcloud:32.0.0@sha256:3e70e4dfe882ef44738fdc30d9896fb07c12febb27c4a1177e3d63dc0004a0b4
     restart: always
-    #post_start:
-      #- command: chown -R www-data:www-data /var/www/html && while ! nc -z db 3306; do sleep 1; echo sleeping; done
-        #user: root
     ports:
-      - 8080:80
+      - 0.0.0.0:8080:80
     depends_on:
       - redis
       - db
@@ -46,16 +42,34 @@ services:
 
   mcp:
     build: .
-    command: ["--host", "0.0.0.0"]
+    command: ["--transport", "streamable-http"]
+    restart: always
+    depends_on:
+      - app
     ports:
-      - 8000:8000
+      - 127.0.0.1:8000:8000
     environment:
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_USERNAME=admin
       - NEXTCLOUD_PASSWORD=admin
-    #volumes:
-      #- ./nextcloud_mcp_server:/app/nextcloud_mcp_server:ro
+
+  mcp-oauth:
+    build: .
+    command: ["--transport", "streamable-http", "--oauth", "--port", "8001"]
+    restart: always
+    depends_on:
+      - app
+    ports:
+      - 127.0.0.1:8001:8001
+    environment:
+      - NEXTCLOUD_HOST=http://app:80
+      - NEXTCLOUD_MCP_SERVER_URL=http://127.0.01:8001
+      - NEXTCLOUD_PUBLIC_ISSUER_URL=http://127.0.0.1:8080
+      # No USERNAME/PASSWORD - will use OAuth
+    volumes:
+      - oauth-client-storage:/app/.oauth
 
 volumes:
   nextcloud:
   db:
+  oauth-client-storage:

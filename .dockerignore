@@ -1,8 +1,7 @@
 *
 
 !pyproject.toml
-!poetry.lock
 !README.md
 !uv.lock
 
-!nextcloud_mcp_server/
+!nextcloud_mcp_server/**/*.py

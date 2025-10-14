@@ -1,3 +1,57 @@
+## v0.13.0 (2025-10-13)
+
+### Feat
+
+- **server**: Experimental support for OAuth2/OIDC authentication
+
+## v0.12.6 (2025-10-11)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.17,<1.18
+
+## v0.12.5 (2025-10-03)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.16,<1.17
+
+## v0.12.4 (2025-09-25)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.15,<1.16
+
+## v0.12.3 (2025-09-23)
+
+### Refactor
+
+- Add tools for all resources to enable tool-only workflows
+
+## v0.12.2 (2025-09-20)
+
+### Refactor
+
+- Add `http` to --transport option
+
+## v0.12.1 (2025-09-11)
+
+### Fix
+
+- **docker**: Provide --host 0.0.0.0 in default docker image
+
+## v0.12.0 (2025-09-11)
+
+### Feat
+
+- **server**: Add support for `streamable-http` transport type
+
+## v0.11.1 (2025-09-11)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.13,<1.14
+
 ## v0.11.0 (2025-09-11)
 
 ### Feat

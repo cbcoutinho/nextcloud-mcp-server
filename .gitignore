@@ -4,3 +4,4 @@ __pycache__/
 *.env
 .env.local
 .env.*.local
+.nextcloud_oauth_test_client.json

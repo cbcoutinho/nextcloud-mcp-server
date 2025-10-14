@@ -1,16 +1,16 @@
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.models.deck import (
-    DeckBoard,
-    DeckStack,
-    DeckCard,
-    DeckLabel,
     DeckACL,
     DeckAttachment,
+    DeckBoard,
+    DeckCard,
     DeckComment,
-    DeckSession,
     DeckConfig,
+    DeckLabel,
+    DeckSession,
+    DeckStack,
 )
 
 

@@ -1,23 +1,27 @@
 """Test error propagation in the MCP server for various error scenarios."""
 
 import logging
-from mcp import ClientSession
-from mcp.shared.exceptions import McpError
 
 import pytest
+from mcp import ClientSession
 
 logger = logging.getLogger(__name__)
 
-
-@pytest.mark.integration
-async def test_missing_note_resource_error(nc_mcp_client: ClientSession):
-    """Test that accessing a non-existent note resource returns proper error."""
-    # Try to get a non-existent note via resource - should raise McpError with improved message
-    with pytest.raises(McpError, match=r"Note 999999 not found"):
-        await nc_mcp_client.read_resource("nc://Notes/999999")
+# Mark all tests in this module as integration tests
+pytestmark = pytest.mark.integration
 
 
-@pytest.mark.integration
+async def test_missing_note_tool_error(nc_mcp_client: ClientSession):
+    """Test that accessing a non-existent note via tool returns proper error."""
+    # Try to get a non-existent note via tool - should return error response
+    response = await nc_mcp_client.call_tool("nc_notes_get_note", {"note_id": 999999})
+
+    # Should return error response (not raise exception) for tools
+    assert response is not None
+    assert response.isError is True
+    assert "Note 999999 not found" in response.content[0].text
+
+
 async def test_delete_missing_note_tool_error(nc_mcp_client: ClientSession):
     """Test that deleting a non-existent note returns proper error."""
     # Try to delete a non-existent note - should return error response
@@ -31,7 +35,6 @@ async def test_delete_missing_note_tool_error(nc_mcp_client: ClientSession):
     assert "Note 999999 not found" in response.content[0].text
 
 
-@pytest.mark.integration
 async def test_search_with_empty_query(nc_mcp_client: ClientSession):
     """Test search behavior with empty query."""
     # Search with empty query
@@ -44,7 +47,6 @@ async def test_search_with_empty_query(nc_mcp_client: ClientSession):
     assert response.isError is False
 
 
-@pytest.mark.integration
 async def test_tool_missing_required_parameters(nc_mcp_client: ClientSession):
     """Test calling a tool with missing required parameters."""
     # Try to create note with missing parameters
@@ -63,7 +65,6 @@ async def test_tool_missing_required_parameters(nc_mcp_client: ClientSession):
     )
 
 
-@pytest.mark.integration
 async def test_update_note_with_invalid_etag(nc_mcp_client: ClientSession, nc_client):
     """Test updating a note with invalid ETag."""
     # First create a note
@@ -95,7 +96,6 @@ async def test_update_note_with_invalid_etag(nc_mcp_client: ClientSession, nc_cl
         await nc_client.notes.delete_note(note_id)
 
 
-@pytest.mark.integration
 async def test_calendar_missing_calendar_error(nc_mcp_client: ClientSession):
     """Test calendar operations with non-existent calendar."""
     # Try to create event in non-existent calendar
@@ -124,7 +124,6 @@ async def test_calendar_missing_calendar_error(nc_mcp_client: ClientSession):
         assert response.isError is True
 
 
-@pytest.mark.integration
 async def test_webdav_read_missing_file_error(nc_mcp_client: ClientSession):
     """Test WebDAV operations with non-existent file."""
     # Try to read a non-existent file
@@ -148,7 +147,6 @@ async def test_webdav_read_missing_file_error(nc_mcp_client: ClientSession):
         assert response.isError is True
 
 
-@pytest.mark.integration
 async def test_tables_missing_table_error(nc_mcp_client: ClientSession):
     """Test Tables operations with non-existent table."""
     # Try to get schema of non-existent table
