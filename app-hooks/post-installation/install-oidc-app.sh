@@ -17,6 +17,11 @@ patch -u /var/www/html/custom_apps/oidc/lib/Util/DiscoveryGenerator.php -i /dock
 php /var/www/html/occ config:app:set oidc dynamic_client_registration --value='true'
 php /var/www/html/occ config:app:set oidc proof_key_for_code_exchange --value=true --type=boolean
 
+# Set the OIDC issuer URL (defaults to http://localhost:8080 if not provided)
+OIDC_ISSUER="${NEXTCLOUD_PUBLIC_ISSUER_URL:-http://localhost:8080}"
+php /var/www/html/occ config:app:set oidc issuer --value="${OIDC_ISSUER}"
+echo "OIDC issuer set to: ${OIDC_ISSUER}"
+
 # Configure user_oidc to validate bearer tokens from the OIDC Identity Provider
 php /var/www/html/occ config:system:set user_oidc oidc_provider_bearer_validation --value=true --type=boolean
 

@@ -652,7 +652,8 @@ def oauth_callback_server():
     Fixture to create an HTTP server for OAuth callback handling.
 
     Yields a tuple of (auth_state, server_url) where:
-    - auth_state: A dict with {"code": None} that will be populated with the auth code
+    - auth_state: A dict with {"code": None, "expected_state": None, "received_state": None}
+      that will be populated with the auth code and state verification
     - server_url: The callback URL for the server (e.g., "http://localhost:8081")
 
     The server automatically shuts down when the fixture is torn down.
@@ -664,7 +665,7 @@ def oauth_callback_server():
     from urllib.parse import parse_qs, urlparse
 
     # Use a mutable container to share state across threads
-    auth_state = {"code": None}
+    auth_state = {"code": None, "expected_state": None, "received_state": None}
     httpd = None
     server_thread = None
 
@@ -689,11 +690,42 @@ def oauth_callback_server():
             parsed_path = urlparse(self.path)
             query = parse_qs(parsed_path.query)
             code = query.get("code", [None])[0]
+            state = query.get("state", [None])[0]
+            error = query.get("error", [None])[0]
+
+            # Check for OAuth error
+            if error:
+                error_description = query.get("error_description", ["Unknown error"])[0]
+                logger.error(f"OAuth error received: {error} - {error_description}")
+                self.send_response(400)
+                self.send_header("Content-type", "text/html")
+                self.end_headers()
+                self.wfile.write(
+                    f"<html><body><h1>OAuth Error</h1><p>{error}: {error_description}</p></body></html>".encode()
+                )
+                return
+
+            # Verify state parameter if expected_state is set
+            if auth_state["expected_state"] and state != auth_state["expected_state"]:
+                logger.error(
+                    f"State mismatch! Expected: {auth_state['expected_state'][:20]}..., "
+                    f"Received: {state[:20] if state else 'None'}..."
+                )
+                self.send_response(400)
+                self.send_header("Content-type", "text/html")
+                self.end_headers()
+                self.wfile.write(
+                    b"<html><body><h1>State Verification Failed</h1><p>CSRF protection triggered.</p></body></html>"
+                )
+                return
 
             # Only process if we have a valid code
             if code:
                 auth_state["code"] = code
+                auth_state["received_state"] = state
                 logger.info(f"OAuth callback received. Code: {code[:20]}...")
+                if state:
+                    logger.debug(f"State verified: {state[:20]}...")
                 self.send_response(200)
                 self.send_header("Content-type", "text/html")
                 self.end_headers()
@@ -741,8 +773,10 @@ async def interactive_oauth_token(oauth_callback_server) -> str:
     Automatically skips when running in GitHub Actions CI.
     """
 
+    import secrets
     import time
     import webbrowser
+    from urllib.parse import urlencode
 
     from nextcloud_mcp_server.auth.client_registration import load_or_register_client
 
@@ -757,25 +791,38 @@ async def interactive_oauth_token(oauth_callback_server) -> str:
         token_endpoint = oidc_config.get("token_endpoint")
         registration_endpoint = oidc_config.get("registration_endpoint")
         authorization_endpoint = oidc_config.get("authorization_endpoint")
+
+        # Try to load existing client first, register only if needed
         client_info = await load_or_register_client(
             nextcloud_url=nextcloud_host,
             registration_endpoint=registration_endpoint,
             storage_path=".nextcloud_oauth_test_client.json",
             redirect_uris=[callback_url],
-            force_register=True,
+            force_register=False,  # Only register if no valid client exists
+            wait_for_propagation=True,
         )
 
-        # First, open Nextcloud login page to establish session
-        login_url = f"{nextcloud_host}/login"
-        logger.info(f"Please log in to Nextcloud at: {login_url}")
-        logger.info(
-            "After logging in, the OAuth authorization will proceed automatically"
-        )
+        # Generate state parameter for CSRF protection
+        state = secrets.token_urlsafe(32)
+        auth_state["expected_state"] = state
 
-        # Construct authorization URL
-        auth_url = f"{authorization_endpoint}?response_type=code&client_id={client_info.client_id}&redirect_uri={callback_url}&scope=openid%20profile%20email"
+        # Construct authorization URL with proper parameters
+        auth_params = {
+            "response_type": "code",
+            "client_id": client_info.client_id,
+            "redirect_uri": callback_url,
+            "scope": "openid profile email",
+            "state": state,
+        }
+        auth_url = f"{authorization_endpoint}?{urlencode(auth_params)}"
 
         # Open authorization URL in browser
+        # Nextcloud will automatically redirect to login if needed
+        logger.info("Opening OAuth authorization URL in browser...")
+        logger.info(
+            "Please log in to Nextcloud if prompted, then authorize the application."
+        )
+        logger.info(f"Authorization URL: {auth_url[:80]}...")
         webbrowser.open(auth_url)
 
         # Wait for auth code with timeout
@@ -784,8 +831,7 @@ async def interactive_oauth_token(oauth_callback_server) -> str:
         while not auth_state["code"]:
             if time.time() - start_time > timeout:
                 raise TimeoutError("OAuth authorization timed out after 2 minutes")
-            logger.info("Waiting for OAuth authorization...")
-            time.sleep(1)
+            await asyncio.sleep(1)
 
         auth_code = auth_state["code"]
         logger.info("Received authorization code, exchanging for token...")
@@ -890,6 +936,13 @@ async def playwright_oauth_token(browser) -> str:
 
         client_id = client_info_dict["client_id"]
         client_secret = client_info_dict["client_secret"]
+
+        # Wait for client to propagate in Nextcloud's OIDC provider
+        # This mitigates race conditions where the client is used immediately after registration
+        logger.info(
+            f"Waiting for OAuth client {client_id[:16]}... to propagate in Nextcloud..."
+        )
+        await asyncio.sleep(0.5)
 
         # Construct authorization URL
         auth_url = (

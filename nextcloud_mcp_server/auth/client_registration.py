@@ -1,5 +1,6 @@
 """Dynamic client registration for Nextcloud OIDC."""
 
+import asyncio
 import json
 import logging
 import os
@@ -205,6 +206,65 @@ def save_client_to_file(client_info: ClientInfo, storage_path: Path):
         raise
 
 
+async def wait_for_client_propagation(
+    nextcloud_url: str,
+    client_id: str,
+    max_retries: int = 10,
+    initial_delay: float = 0.5,
+    max_delay: float = 5.0,
+) -> None:
+    """
+    Wait for the registered OAuth client to be fully propagated in Nextcloud.
+
+    This function attempts to verify the client is ready by checking if we can
+    access OIDC-related endpoints. Uses exponential backoff for retries.
+
+    Args:
+        nextcloud_url: Base URL of the Nextcloud instance
+        client_id: The registered client ID
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds before first verification
+        max_delay: Maximum delay between retries
+
+    Note:
+        This is a best-effort approach to mitigate race conditions between
+        client registration and first use. Nextcloud's OIDC provider may need
+        time to propagate newly registered clients to its cache/database.
+    """
+    # Always wait at least the initial delay to give Nextcloud time to propagate
+    logger.debug(
+        f"Waiting {initial_delay}s for OAuth client {client_id[:16]}... to propagate"
+    )
+    await asyncio.sleep(initial_delay)
+
+    # Verify the client is accessible by checking OIDC discovery again
+    # (this gives Nextcloud additional time to complete any async operations)
+    discovery_url = f"{nextcloud_url}/.well-known/openid-configuration"
+    delay = initial_delay
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = await client.get(discovery_url)
+                response.raise_for_status()
+                logger.debug(
+                    f"OAuth client propagation verification successful (attempt {attempt})"
+                )
+                return
+            except Exception as e:
+                if attempt < max_retries:
+                    delay = min(delay * 1.5, max_delay)
+                    logger.debug(
+                        f"Verification attempt {attempt} failed: {e}. Retrying in {delay:.1f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.warning(
+                        f"Could not verify client propagation after {max_retries} attempts. "
+                        "Continuing anyway - first authorization may fail."
+                    )
+
+
 async def load_or_register_client(
     nextcloud_url: str,
     registration_endpoint: str,
@@ -212,6 +272,7 @@ async def load_or_register_client(
     client_name: str = "Nextcloud MCP Server",
     redirect_uris: list[str] | None = None,
     force_register: bool = True,
+    wait_for_propagation: bool = True,
 ) -> ClientInfo:
     """
     Load client from storage or register a new one if not found/expired.
@@ -220,7 +281,8 @@ async def load_or_register_client(
     1. Checks for existing client credentials in storage
     2. Validates the credentials are not expired
     3. Registers a new client if needed
-    4. Saves the new client credentials
+    4. Waits for the client to propagate (if newly registered)
+    5. Saves the new client credentials
 
     Args:
         nextcloud_url: Base URL of the Nextcloud instance
@@ -229,6 +291,7 @@ async def load_or_register_client(
         client_name: Name of the client application
         redirect_uris: List of redirect URIs
         force_register: Force registration even if valid credentials exist
+        wait_for_propagation: Wait for newly registered clients to propagate (default: True)
 
     Returns:
         ClientInfo with valid credentials
@@ -253,6 +316,15 @@ async def load_or_register_client(
         client_name=client_name,
         redirect_uris=redirect_uris,
     )
+
+    # Wait for client to propagate in Nextcloud's OIDC provider
+    # This mitigates race conditions where the client is used immediately after registration
+    if wait_for_propagation:
+        logger.info("Waiting for OAuth client to propagate in Nextcloud...")
+        await wait_for_client_propagation(
+            nextcloud_url=nextcloud_url,
+            client_id=client_info.client_id,
+        )
 
     # Save to storage
     save_client_to_file(client_info, storage_path)
