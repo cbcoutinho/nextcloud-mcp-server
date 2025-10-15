@@ -1385,9 +1385,9 @@ async def all_oauth_tokens(
             browser, shared_oauth_client_credentials, username, config["password"]
         )
 
-    # Create tasks for all users with staggered starts (0.5s apart)
+    # Create tasks for all users with staggered starts (2.0s apart)
     tasks = {
-        username: get_token_with_delay(username, config, idx * 0.5)
+        username: get_token_with_delay(username, config, idx * 2.0)
         for idx, (username, config) in enumerate(test_users_setup.items())
     }
 
