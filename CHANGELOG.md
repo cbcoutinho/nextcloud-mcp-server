@@ -1,3 +1,9 @@
+## v0.14.1 (2025-10-15)
+
+### Fix
+
+- **oauth**: Remove the option to force_register new clients
+
 ## v0.14.0 (2025-10-15)
 
 ### Feat

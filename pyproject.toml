@@ -1,6 +1,6 @@
 [project]
 name = "nextcloud-mcp-server"
-version = "0.14.0"
+version = "0.14.1"
 description = ""
 authors = [
     {name = "Chris Coutinho",email = "chris@coutinho.io"}
