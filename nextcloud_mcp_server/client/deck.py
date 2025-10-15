@@ -99,7 +99,7 @@ class DeckClient(BaseNextcloudClient):
         permission_edit: bool,
         permission_share: bool,
         permission_manage: bool,
-    ) -> List[DeckACL]:
+    ) -> DeckACL:
         json_data = {
             "type": type,
             "participant": participant,
@@ -107,10 +107,14 @@ class DeckClient(BaseNextcloudClient):
             "permissionShare": permission_share,
             "permissionManage": permission_manage,
         }
+        headers = self._get_deck_headers()
         response = await self._make_request(
-            "POST", f"/apps/deck/api/v1.0/boards/{board_id}/acl", json=json_data
+            "POST",
+            f"/apps/deck/api/v1.0/boards/{board_id}/acl",
+            json=json_data,
+            headers=headers,
         )
-        return [DeckACL(**acl) for acl in response.json()]
+        return DeckACL(**response.json())
 
     async def update_acl_rule(
         self,
@@ -127,13 +131,20 @@ class DeckClient(BaseNextcloudClient):
             json_data["permissionShare"] = permission_share
         if permission_manage is not None:
             json_data["permissionManage"] = permission_manage
+        headers = self._get_deck_headers()
         await self._make_request(
-            "PUT", f"/apps/deck/api/v1.0/boards/{board_id}/acl/{acl_id}", json=json_data
+            "PUT",
+            f"/apps/deck/api/v1.0/boards/{board_id}/acl/{acl_id}",
+            json=json_data,
+            headers=headers,
         )
 
     async def delete_acl_rule(self, board_id: int, acl_id: int) -> None:
+        headers = self._get_deck_headers()
         await self._make_request(
-            "DELETE", f"/apps/deck/api/v1.0/boards/{board_id}/acl/{acl_id}"
+            "DELETE",
+            f"/apps/deck/api/v1.0/boards/{board_id}/acl/{acl_id}",
+            headers=headers,
         )
 
     async def clone_board(

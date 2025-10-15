@@ -63,7 +63,7 @@ services:
       - 127.0.0.1:8001:8001
     environment:
       - NEXTCLOUD_HOST=http://app:80
-      - NEXTCLOUD_MCP_SERVER_URL=http://127.0.01:8001
+      - NEXTCLOUD_MCP_SERVER_URL=http://127.0.0.1:8001
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://127.0.0.1:8080
       # No USERNAME/PASSWORD - will use OAuth
     volumes:

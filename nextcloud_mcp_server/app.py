@@ -21,6 +21,7 @@ from nextcloud_mcp_server.server import (
     configure_contacts_tools,
     configure_deck_tools,
     configure_notes_tools,
+    configure_sharing_tools,
     configure_tables_tools,
     configure_webdav_tools,
 )
@@ -375,6 +376,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         "notes": configure_notes_tools,
         "tables": configure_tables_tools,
         "webdav": configure_webdav_tools,
+        "sharing": configure_sharing_tools,
         "calendar": configure_calendar_tools,
         "contacts": configure_contacts_tools,
         "deck": configure_deck_tools,

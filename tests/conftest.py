@@ -760,9 +760,9 @@ async def interactive_oauth_token(oauth_callback_server) -> str:
         client_info = await load_or_register_client(
             nextcloud_url=nextcloud_host,
             registration_endpoint=registration_endpoint,
-            storage_path=".nextcloud_oauth_test_client.json",
+            storage_path=".nextcloud_oauth_shared_test_client.json",
             redirect_uris=[callback_url],
-            force_register=True,
+            force_register=False,  # Reuse existing credentials if valid
         )
 
         # First, open Nextcloud login page to establish session
@@ -810,18 +810,75 @@ async def interactive_oauth_token(oauth_callback_server) -> str:
 
 
 @pytest.fixture(scope="session")
-async def playwright_oauth_token(browser) -> str:
+async def shared_oauth_client_credentials():
+    """
+    Fixture to obtain shared OAuth client credentials that will be reused for all users.
+
+    This registers a single OAuth client with Nextcloud that matches the MCP server's
+    registration, allowing all test users to authenticate using the same client_id/secret.
+
+    Returns:
+        Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
+    """
+    from nextcloud_mcp_server.auth.client_registration import load_or_register_client
+
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    if not nextcloud_host:
+        pytest.skip("Shared OAuth client requires NEXTCLOUD_HOST")
+
+    logger.info("Setting up shared OAuth client credentials for all test users...")
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        # OIDC Discovery
+        discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
+        discovery_response = await http_client.get(discovery_url)
+        discovery_response.raise_for_status()
+        oidc_config = discovery_response.json()
+
+        token_endpoint = oidc_config.get("token_endpoint")
+        registration_endpoint = oidc_config.get("registration_endpoint")
+        authorization_endpoint = oidc_config.get("authorization_endpoint")
+
+        if not all([token_endpoint, registration_endpoint, authorization_endpoint]):
+            raise ValueError("OIDC discovery missing required endpoints")
+
+        # Use callback URL that won't actually be used (we extract code from browser URL)
+        callback_url = "http://localhost:9999/oauth/callback"
+
+        # Register or load shared OAuth client (matches MCP server registration)
+        client_info = await load_or_register_client(
+            nextcloud_url=nextcloud_host,
+            registration_endpoint=registration_endpoint,
+            storage_path=".nextcloud_oauth_shared_test_client.json",
+            client_name="Nextcloud MCP Server - Shared Test Client",
+            redirect_uris=[callback_url],
+            force_register=False,  # Reuse existing credentials if valid
+        )
+
+        logger.info(f"Shared OAuth client ready: {client_info.client_id[:16]}...")
+        logger.info("This client will be reused for all test user authentications")
+
+        return (
+            client_info.client_id,
+            client_info.client_secret,
+            callback_url,
+            token_endpoint,
+            authorization_endpoint,
+        )
+
+
+@pytest.fixture(scope="session")
+async def playwright_oauth_token(browser, shared_oauth_client_credentials) -> str:
     """
     Fixture to obtain an OAuth access token using Playwright headless browser automation.
 
     This fully automates the OAuth flow by:
-    1. Discovering OIDC endpoints
-    2. Registering an OAuth client
-    3. Navigating to authorization URL in headless browser
-    4. Programmatically filling in login form
-    5. Handling OAuth consent
-    6. Extracting auth code from redirect
-    7. Exchanging code for access token
+    1. Using shared OAuth client credentials (reused across all users)
+    2. Navigating to authorization URL in headless browser
+    3. Programmatically filling in login form
+    4. Handling OAuth consent
+    5. Extracting auth code from redirect
+    6. Exchanging code for access token
 
     Environment variables required:
     - NEXTCLOUD_HOST: Nextcloud instance URL
@@ -844,154 +901,110 @@ async def playwright_oauth_token(browser) -> str:
             "Playwright OAuth requires NEXTCLOUD_HOST, NEXTCLOUD_USERNAME, and NEXTCLOUD_PASSWORD"
         )
 
-    logger.info("Starting Playwright-based OAuth flow...")
+    # Unpack shared client credentials
+    client_id, client_secret, callback_url, token_endpoint, authorization_endpoint = (
+        shared_oauth_client_credentials
+    )
 
-    # Use async httpx for all HTTP operations
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
-        # OIDC Discovery
-        discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
-        logger.debug(f"Fetching OIDC discovery from: {discovery_url}")
+    logger.info(f"Starting Playwright-based OAuth flow for {username}...")
+    logger.info(f"Using shared OAuth client: {client_id[:16]}...")
 
-        discovery_response = await http_client.get(discovery_url)
-        discovery_response.raise_for_status()
-        oidc_config = discovery_response.json()
+    # Construct authorization URL
+    auth_url = (
+        f"{authorization_endpoint}?"
+        f"response_type=code&"
+        f"client_id={client_id}&"
+        f"redirect_uri={callback_url}&"
+        f"scope=openid%20profile%20email"
+    )
 
-        token_endpoint = oidc_config.get("token_endpoint")
-        registration_endpoint = oidc_config.get("registration_endpoint")
-        authorization_endpoint = oidc_config.get("authorization_endpoint")
+    # Async browser automation using pytest-playwright's browser fixture
+    context = await browser.new_context(ignore_https_errors=True)
+    page = await context.new_page()
 
-        if not all([token_endpoint, registration_endpoint, authorization_endpoint]):
-            raise ValueError("OIDC discovery missing required endpoints")
+    try:
+        # Navigate to authorization URL
+        logger.debug(f"Navigating to: {auth_url}")
+        await page.goto(auth_url, wait_until="networkidle", timeout=30000)
 
-        logger.debug(f"Authorization endpoint: {authorization_endpoint}")
-        logger.debug(f"Token endpoint: {token_endpoint}")
+        # Check if we need to login first
+        current_url = page.url
+        logger.debug(f"Current URL after navigation: {current_url}")
 
-        # Register OAuth client with a callback that won't actually be used
-        # (we'll extract the code from the browser URL instead)
-        callback_url = "http://localhost:9999/oauth/callback"
+        # If we're on a login page, fill in credentials
+        if "/login" in current_url or "/index.php/login" in current_url:
+            logger.info("Login page detected, filling in credentials...")
 
-        # Register client asynchronously
-        client_metadata = {
-            "client_name": "Nextcloud MCP Server - Playwright Tests",
-            "redirect_uris": [callback_url],
-            "token_endpoint_auth_method": "client_secret_post",
-            "grant_types": ["authorization_code", "refresh_token"],
-            "response_types": ["code"],
-            "scope": "openid profile email",
-        }
+            # Wait for login form
+            await page.wait_for_selector('input[name="user"]', timeout=10000)
 
-        reg_response = await http_client.post(
-            registration_endpoint,
-            json=client_metadata,
-            headers={"Content-Type": "application/json"},
-        )
-        reg_response.raise_for_status()
-        client_info_dict = reg_response.json()
+            # Fill in username and password
+            await page.fill('input[name="user"]', username)
+            await page.fill('input[name="password"]', password)
 
-        client_id = client_info_dict["client_id"]
-        client_secret = client_info_dict["client_secret"]
+            logger.debug("Credentials filled, submitting login form...")
 
-        # Construct authorization URL
-        auth_url = (
-            f"{authorization_endpoint}?"
-            f"response_type=code&"
-            f"client_id={client_id}&"
-            f"redirect_uri={callback_url}&"
-            f"scope=openid%20profile%20email"
-        )
+            # Submit the form
+            await page.click('button[type="submit"]')
 
-        logger.info("Opening browser for OAuth authorization...")
-
-        # Async browser automation using pytest-playwright's browser fixture
-        context = await browser.new_context(ignore_https_errors=True)
-        page = await context.new_page()
-
-        try:
-            # Navigate to authorization URL
-            logger.debug(f"Navigating to: {auth_url}")
-            await page.goto(auth_url, wait_until="networkidle", timeout=30000)
-
-            # Check if we need to login first
+            # Wait for navigation after login
+            await page.wait_for_load_state("networkidle", timeout=30000)
             current_url = page.url
-            logger.debug(f"Current URL after navigation: {current_url}")
+            logger.info(f"After login, current URL: {current_url}")
 
-            # If we're on a login page, fill in credentials
-            if "/login" in current_url or "/index.php/login" in current_url:
-                logger.info("Login page detected, filling in credentials...")
-
-                # Wait for login form
-                await page.wait_for_selector('input[name="user"]', timeout=10000)
-
-                # Fill in username and password
-                await page.fill('input[name="user"]', username)
-                await page.fill('input[name="password"]', password)
-
-                logger.debug("Credentials filled, submitting login form...")
-
-                # Submit the form
-                await page.click('button[type="submit"]')
-
-                # Wait for navigation after login
-                await page.wait_for_load_state("networkidle", timeout=30000)
-                current_url = page.url
-                logger.info(f"After login, current URL: {current_url}")
-
-            # Now we should be on the OAuth authorization/consent page or already redirected
-            # Check if there's an authorize button to click
-            try:
-                # Look for common authorization button patterns
-                authorize_button = await page.query_selector(
-                    'button:has-text("Authorize"), button:has-text("Allow"), input[type="submit"][value*="uthoriz"]'
-                )
-
-                if authorize_button:
-                    logger.info(
-                        "Authorization consent page detected, clicking authorize..."
-                    )
-                    await authorize_button.click()
-                    await page.wait_for_load_state("networkidle", timeout=10000)
-                    current_url = page.url
-                    logger.debug(f"After authorization, current_url: {current_url}")
-            except Exception as e:
-                logger.debug(
-                    f"No authorization button found or already authorized: {e}"
-                )
-
-            # Wait for redirect to callback URL (which will fail to load, but we just need the URL)
-            try:
-                # The redirect might fail since localhost:9999 isn't actually running
-                # But we can still extract the code from the URL
-                await page.wait_for_url(f"{callback_url}*", timeout=10000)
-            except Exception as e:
-                # Expected - the callback URL won't load, but we should have the URL
-                logger.debug(f"Callback redirect (expected to fail): {e}")
-
-            # Extract auth code from URL
-            final_url = page.url
-            logger.debug(f"Final URL: {final_url}")
-
-            parsed_url = urlparse(final_url)
-            query_params = parse_qs(parsed_url.query)
-            auth_code = query_params.get("code", [None])[0]
-
-            if not auth_code:
-                # Take a screenshot for debugging
-                screenshot_path = "/tmp/playwright_oauth_error.png"
-                await page.screenshot(path=screenshot_path)
-                logger.error(f"Screenshot saved to {screenshot_path}")
-                raise ValueError(
-                    f"No authorization code found in redirect URL: {final_url}"
-                )
-
-            logger.info(
-                f"Successfully extracted authorization code: {auth_code[:20]}..."
+        # Now we should be on the OAuth authorization/consent page or already redirected
+        # Check if there's an authorize button to click
+        try:
+            # Look for common authorization button patterns
+            authorize_button = await page.query_selector(
+                'button:has-text("Authorize"), button:has-text("Allow"), input[type="submit"][value*="uthoriz"]'
             )
 
-        finally:
-            await context.close()
+            if authorize_button:
+                logger.info(
+                    "Authorization consent page detected, clicking authorize..."
+                )
+                await authorize_button.click()
+                await page.wait_for_load_state("networkidle", timeout=10000)
+                current_url = page.url
+                logger.debug(f"After authorization, current_url: {current_url}")
+        except Exception as e:
+            logger.debug(f"No authorization button found or already authorized: {e}")
 
-        # Exchange authorization code for access token
-        logger.info("Exchanging authorization code for access token...")
+        # Wait for redirect to callback URL (which will fail to load, but we just need the URL)
+        try:
+            # The redirect might fail since localhost:9999 isn't actually running
+            # But we can still extract the code from the URL
+            await page.wait_for_url(f"{callback_url}*", timeout=10000)
+        except Exception as e:
+            # Expected - the callback URL won't load, but we should have the URL
+            logger.debug(f"Callback redirect (expected to fail): {e}")
+
+        # Extract auth code from URL
+        final_url = page.url
+        logger.debug(f"Final URL: {final_url}")
+
+        parsed_url = urlparse(final_url)
+        query_params = parse_qs(parsed_url.query)
+        auth_code = query_params.get("code", [None])[0]
+
+        if not auth_code:
+            # Take a screenshot for debugging
+            screenshot_path = "/tmp/playwright_oauth_error.png"
+            await page.screenshot(path=screenshot_path)
+            logger.error(f"Screenshot saved to {screenshot_path}")
+            raise ValueError(
+                f"No authorization code found in redirect URL: {final_url}"
+            )
+
+        logger.info(f"Successfully extracted authorization code: {auth_code[:20]}...")
+
+    finally:
+        await context.close()
+
+    # Exchange authorization code for access token
+    logger.info("Exchanging authorization code for access token...")
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
         token_response = await http_client.post(
             token_endpoint,
             data={
@@ -1111,3 +1124,534 @@ async def nc_mcp_oauth_client_playwright(
             logger.warning(
                 f"Error closing Playwright OAuth streamable HTTP client: {e}"
             )
+
+
+@pytest.fixture(scope="session")
+async def test_users_setup(nc_client: NextcloudClient):
+    """
+    Create test users for multi-user OAuth testing.
+
+    Creates four test users:
+    - alice: Owner role, creates resources
+    - bob: Viewer role, read-only access
+    - charlie: Editor role, can edit (in 'editors' group)
+    - diana: No-access role, no shares
+    """
+    test_user_configs = {
+        "alice": {
+            "password": "AliceSecurePass123!",
+            "email": "alice@example.com",
+            "display_name": "Alice Owner",
+            "groups": [],
+        },
+        "bob": {
+            "password": "BobSecurePass456!",
+            "email": "bob@example.com",
+            "display_name": "Bob Viewer",
+            "groups": [],
+        },
+        "charlie": {
+            "password": "CharlieSecurePass789!",
+            "email": "charlie@example.com",
+            "display_name": "Charlie Editor",
+            "groups": ["editors"],
+        },
+        "diana": {
+            "password": "DianaSecurePass012!",
+            "email": "diana@example.com",
+            "display_name": "Diana NoAccess",
+            "groups": [],
+        },
+    }
+
+    logger.info("Creating test users for multi-user OAuth testing...")
+    created_users = []
+
+    try:
+        # Create the 'editors' group first (charlie needs it)
+        try:
+            # Use admin nc_client to create the group via User API
+            # First, try to create it (will fail if exists, but that's okay)
+            async with httpx.AsyncClient() as http_client:
+                base_url = str(nc_client._client.base_url)
+                # Get password from environment since nc_client doesn't expose it
+                password = os.getenv("NEXTCLOUD_PASSWORD")
+                response = await http_client.post(
+                    f"{base_url}/ocs/v2.php/cloud/groups",
+                    auth=(nc_client.username, password),
+                    headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+                    data={"groupid": "editors"},
+                )
+                if response.status_code in [
+                    200,
+                    409,
+                ]:  # 200 = created, 409 = already exists
+                    logger.info("Editors group ready")
+                else:
+                    logger.warning(
+                        f"Group creation returned {response.status_code}: {response.text}"
+                    )
+        except Exception as e:
+            logger.warning(f"Error creating editors group (may already exist): {e}")
+
+        # Create each test user
+        for username, config in test_user_configs.items():
+            try:
+                await nc_client.users.create_user(
+                    userid=username,
+                    password=config["password"],
+                    display_name=config["display_name"],
+                    email=config["email"],
+                )
+                logger.info(f"Created test user: {username}")
+                created_users.append(username)
+
+                # Add user to groups if specified
+                for group in config["groups"]:
+                    try:
+                        await nc_client.users.add_user_to_group(username, group)
+                        logger.info(f"Added {username} to group {group}")
+                    except Exception as e:
+                        logger.warning(f"Error adding {username} to group {group}: {e}")
+
+            except Exception as e:
+                # User might already exist, that's okay
+                logger.warning(
+                    f"Could not create user {username} (may already exist): {e}"
+                )
+                created_users.append(username)  # Add to list anyway for cleanup
+
+        logger.info(f"Test users setup complete: {created_users}")
+        yield test_user_configs
+
+    finally:
+        # Cleanup: delete test users
+        logger.info("Cleaning up test users...")
+        for username in created_users:
+            try:
+                await nc_client.users.delete_user(username)
+                logger.info(f"Deleted test user: {username}")
+            except Exception as e:
+                logger.warning(f"Error deleting test user {username}: {e}")
+
+
+async def _get_oauth_token_for_user(
+    browser, shared_oauth_client_credentials, username: str, password: str
+) -> str:
+    """
+    Helper function to get OAuth access token for a user via Playwright.
+
+    Uses shared OAuth client credentials to authenticate multiple users with the same client.
+
+    Args:
+        browser: Playwright browser instance
+        shared_oauth_client_credentials: Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
+        username: Username to authenticate as
+        password: Password for the user
+
+    Returns:
+        OAuth access token string
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+
+    if not nextcloud_host:
+        pytest.skip("OAuth requires NEXTCLOUD_HOST")
+
+    # Unpack shared client credentials
+    client_id, client_secret, callback_url, token_endpoint, authorization_endpoint = (
+        shared_oauth_client_credentials
+    )
+
+    logger.info(f"Getting OAuth token for user: {username}...")
+    logger.info(f"Using shared OAuth client: {client_id[:16]}...")
+
+    # Construct authorization URL with properly encoded redirect_uri
+    from urllib.parse import quote
+
+    auth_url = (
+        f"{authorization_endpoint}?"
+        f"response_type=code&"
+        f"client_id={client_id}&"
+        f"redirect_uri={quote(callback_url, safe='')}&"
+        f"scope=openid%20profile%20email"
+    )
+
+    logger.info(f"Performing browser OAuth flow for {username}...")
+    logger.debug(f"Authorization URL: {auth_url}")
+
+    # Browser automation
+    context = await browser.new_context(ignore_https_errors=True)
+    page = await context.new_page()
+
+    try:
+        await page.goto(auth_url, wait_until="networkidle", timeout=30000)
+        current_url = page.url
+
+        # Login if needed
+        if "/login" in current_url or "/index.php/login" in current_url:
+            logger.info(f"Logging in as {username}...")
+            await page.wait_for_selector('input[name="user"]', timeout=10000)
+            await page.fill('input[name="user"]', username)
+            await page.fill('input[name="password"]', password)
+            await page.click('button[type="submit"]')
+            await page.wait_for_load_state("networkidle", timeout=30000)
+            current_url = page.url
+
+        # Handle OAuth consent if present
+        try:
+            authorize_button = await page.query_selector(
+                'button:has-text("Authorize"), button:has-text("Allow"), input[type="submit"][value*="uthoriz"]'
+            )
+            if authorize_button:
+                logger.info(f"Authorizing for {username}...")
+                await authorize_button.click()
+                await page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception as e:
+            logger.debug(f"No authorization needed for {username}: {e}")
+
+        # Wait for redirect and extract auth code
+        try:
+            await page.wait_for_url(f"{callback_url}*", timeout=30000)
+        except Exception:
+            pass  # Expected - callback won't load
+
+        final_url = page.url
+        parsed_url = urlparse(final_url)
+        query_params = parse_qs(parsed_url.query)
+        auth_code = query_params.get("code", [None])[0]
+
+        if not auth_code:
+            raise ValueError(
+                f"No authorization code found for {username} in URL: {final_url}"
+            )
+
+        logger.info(f"Got auth code for {username}: {auth_code[:20]}...")
+
+    finally:
+        await context.close()
+
+    # Exchange code for token
+    logger.info(f"Exchanging auth code for access token ({username})...")
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        token_response = await http_client.post(
+            token_endpoint,
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": callback_url,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+        )
+
+        token_response.raise_for_status()
+        token_data = token_response.json()
+        access_token = token_data.get("access_token")
+
+        if not access_token:
+            raise ValueError(f"No access_token for {username}: {token_data}")
+
+        logger.info(f"Successfully obtained OAuth token for {username}")
+        return access_token
+
+
+# Parallel token retrieval fixture - fetches all OAuth tokens concurrently
+@pytest.fixture(scope="session")
+async def all_oauth_tokens(
+    browser, shared_oauth_client_credentials, test_users_setup
+) -> dict[str, str]:
+    """
+    Fetch OAuth tokens for all test users in parallel for speed.
+
+    Returns a dict mapping username to OAuth access token.
+    This is significantly faster than fetching tokens sequentially.
+
+    Note: We add a small stagger between starting each flow to avoid
+    race conditions in Nextcloud's OAuth session handling.
+    """
+    import asyncio
+    import time
+
+    start_time = time.time()
+    logger.info("Fetching OAuth tokens for all users in parallel...")
+
+    async def get_token_with_delay(username: str, config: dict, delay: float):
+        """Get token for a user after a small delay to stagger requests."""
+        if delay > 0:
+            await asyncio.sleep(delay)
+        return await _get_oauth_token_for_user(
+            browser, shared_oauth_client_credentials, username, config["password"]
+        )
+
+    # Create tasks for all users with staggered starts (2.0s apart)
+    tasks = {
+        username: get_token_with_delay(username, config, (idx + 1) * 2.0)
+        for idx, (username, config) in enumerate(test_users_setup.items())
+    }
+
+    # Run all token fetches concurrently
+    results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+    # Build result dict, handling any errors
+    tokens = {}
+    for username, result in zip(tasks.keys(), results):
+        if isinstance(result, Exception):
+            logger.error(f"Failed to get OAuth token for {username}: {result}")
+            raise result
+        tokens[username] = result
+
+    elapsed = time.time() - start_time
+    logger.info(
+        f"Successfully fetched {len(tokens)} OAuth tokens in parallel "
+        f"in {elapsed:.1f}s (~{elapsed / len(tokens):.1f}s per user)"
+    )
+    return tokens
+
+
+# Session-scoped OAuth token fixtures - now use the parallel fixture
+@pytest.fixture(scope="session")
+async def alice_oauth_token(all_oauth_tokens) -> str:
+    """OAuth token for alice (cached for session). Uses shared OAuth client."""
+    return all_oauth_tokens["alice"]
+
+
+@pytest.fixture(scope="session")
+async def bob_oauth_token(all_oauth_tokens) -> str:
+    """OAuth token for bob (cached for session). Uses shared OAuth client."""
+    return all_oauth_tokens["bob"]
+
+
+@pytest.fixture(scope="session")
+async def charlie_oauth_token(all_oauth_tokens) -> str:
+    """OAuth token for charlie (cached for session). Uses shared OAuth client."""
+    return all_oauth_tokens["charlie"]
+
+
+@pytest.fixture(scope="session")
+async def diana_oauth_token(all_oauth_tokens) -> str:
+    """OAuth token for diana (cached for session). Uses shared OAuth client."""
+    return all_oauth_tokens["diana"]
+
+
+@pytest.fixture(scope="session")
+async def alice_mcp_client(alice_oauth_token) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client authenticated as alice (owner role)."""
+    token = alice_oauth_token
+
+    # Create MCP client session with proper lifecycle management
+    headers = {"Authorization": f"Bearer {token}"}
+    streamable_context = streamablehttp_client(
+        "http://127.0.0.1:8001/mcp", headers=headers
+    )
+    session_context = None
+
+    try:
+        read_stream, write_stream, _ = await streamable_context.__aenter__()
+        session_context = ClientSession(read_stream, write_stream)
+        session = await session_context.__aenter__()
+        await session.initialize()
+        logger.info("Alice MCP client session initialized")
+
+        yield session
+
+    finally:
+        if session_context is not None:
+            try:
+                await session_context.__aexit__(None, None, None)
+            except Exception as e:
+                logger.debug(f"Error closing alice session: {e}")
+        try:
+            await streamable_context.__aexit__(None, None, None)
+        except Exception as e:
+            logger.debug(f"Error closing alice streamable context: {e}")
+
+
+@pytest.fixture(scope="session")
+async def bob_mcp_client(bob_oauth_token) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client authenticated as bob (viewer role)."""
+    token = bob_oauth_token
+
+    headers = {"Authorization": f"Bearer {token}"}
+    streamable_context = streamablehttp_client(
+        "http://127.0.0.1:8001/mcp", headers=headers
+    )
+    session_context = None
+
+    try:
+        read_stream, write_stream, _ = await streamable_context.__aenter__()
+        session_context = ClientSession(read_stream, write_stream)
+        session = await session_context.__aenter__()
+        await session.initialize()
+        logger.info("Bob MCP client session initialized")
+
+        yield session
+
+    finally:
+        if session_context is not None:
+            try:
+                await session_context.__aexit__(None, None, None)
+            except Exception as e:
+                logger.debug(f"Error closing bob session: {e}")
+        try:
+            await streamable_context.__aexit__(None, None, None)
+        except Exception as e:
+            logger.debug(f"Error closing bob streamable context: {e}")
+
+
+@pytest.fixture(scope="session")
+async def charlie_mcp_client(charlie_oauth_token) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client authenticated as charlie (editor role, in 'editors' group)."""
+    token = charlie_oauth_token
+
+    headers = {"Authorization": f"Bearer {token}"}
+    streamable_context = streamablehttp_client(
+        "http://127.0.0.1:8001/mcp", headers=headers
+    )
+    session_context = None
+
+    try:
+        read_stream, write_stream, _ = await streamable_context.__aenter__()
+        session_context = ClientSession(read_stream, write_stream)
+        session = await session_context.__aenter__()
+        await session.initialize()
+        logger.info("Charlie MCP client session initialized")
+
+        yield session
+
+    finally:
+        if session_context is not None:
+            try:
+                await session_context.__aexit__(None, None, None)
+            except Exception as e:
+                logger.debug(f"Error closing charlie session: {e}")
+        try:
+            await streamable_context.__aexit__(None, None, None)
+        except Exception as e:
+            logger.debug(f"Error closing charlie streamable context: {e}")
+
+
+@pytest.fixture(scope="session")
+async def diana_mcp_client(diana_oauth_token) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client authenticated as diana (no-access role)."""
+    token = diana_oauth_token
+
+    headers = {"Authorization": f"Bearer {token}"}
+    streamable_context = streamablehttp_client(
+        "http://127.0.0.1:8001/mcp", headers=headers
+    )
+    session_context = None
+
+    try:
+        read_stream, write_stream, _ = await streamable_context.__aenter__()
+        session_context = ClientSession(read_stream, write_stream)
+        session = await session_context.__aenter__()
+        await session.initialize()
+        logger.info("Diana MCP client session initialized")
+
+        yield session
+
+    finally:
+        if session_context is not None:
+            try:
+                await session_context.__aexit__(None, None, None)
+            except Exception as e:
+                logger.debug(f"Error closing diana session: {e}")
+        try:
+            await streamable_context.__aexit__(None, None, None)
+        except Exception as e:
+            logger.debug(f"Error closing diana streamable context: {e}")
+
+
+# Test user/group fixtures for clean test isolation
+@pytest.fixture
+async def test_user(nc_client: NextcloudClient):
+    """
+    Fixture that creates a test user and cleans it up after the test.
+
+    Returns a dict with user details that can be customized.
+    Usage:
+        async def test_something(test_user):
+            user_config = test_user
+            await nc_client.users.create_user(**user_config)
+    """
+    import uuid
+
+    # Generate unique user ID to avoid conflicts
+    userid = f"testuser_{uuid.uuid4().hex[:8]}"
+    password = "SecureTestPassword123!"
+
+    user_config = {
+        "userid": userid,
+        "password": password,
+        "display_name": f"Test User {userid}",
+        "email": f"{userid}@example.com",
+    }
+
+    # Cleanup before (in case of previous failed run)
+    try:
+        await nc_client.users.delete_user(userid)
+    except Exception:
+        pass
+
+    yield user_config
+
+    # Cleanup after test
+    try:
+        await nc_client.users.delete_user(userid)
+        logger.debug(f"Cleaned up test user: {userid}")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup test user {userid}: {e}")
+
+
+@pytest.fixture
+async def test_group(nc_client: NextcloudClient):
+    """
+    Fixture that creates a test group and cleans it up after the test.
+
+    Returns the group ID.
+    """
+    import uuid
+
+    # Generate unique group ID to avoid conflicts
+    groupid = f"testgroup_{uuid.uuid4().hex[:8]}"
+
+    # Cleanup before (in case of previous failed run)
+    try:
+        await nc_client.groups.delete_group(groupid)
+    except Exception:
+        pass
+
+    # Create the group
+    await nc_client.groups.create_group(groupid)
+    logger.debug(f"Created test group: {groupid}")
+
+    yield groupid
+
+    # Cleanup after test
+    try:
+        await nc_client.groups.delete_group(groupid)
+        logger.debug(f"Cleaned up test group: {groupid}")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup test group {groupid}: {e}")
+
+
+@pytest.fixture
+async def test_user_in_group(nc_client: NextcloudClient, test_user, test_group):
+    """
+    Fixture that creates a test user and adds them to a test group.
+
+    Returns a tuple of (user_config, groupid).
+    """
+    user_config = test_user
+    groupid = test_group
+
+    # Create the user
+    await nc_client.users.create_user(**user_config)
+
+    # Add user to group
+    await nc_client.users.add_user_to_group(user_config["userid"], groupid)
+    logger.debug(f"Added user {user_config['userid']} to group {groupid}")
+
+    yield (user_config, groupid)

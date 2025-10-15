@@ -38,12 +38,20 @@ mcp run --transport sse nextcloud_mcp_server.app:mcp
 # Docker development environment with Nextcloud instance
 docker-compose up
 
-# After code changes, rebuild and restart only the MCP server container
+# After code changes, rebuild and restart the appropriate MCP server container:
+# For basic auth changes (most common) - uses admin credentials
 docker-compose up --build -d mcp
+
+# For OAuth changes - uses OAuth authentication flow
+docker-compose up --build -d mcp-oauth
 
 # Build Docker image
 docker build -t nextcloud-mcp-server .
 ```
+
+**Important: Two MCP Server Containers**
+- **`mcp`** (port 8000): Uses basic auth with admin credentials. Use this for most development and testing.
+- **`mcp-oauth`** (port 8001): Uses OAuth authentication. Only use this when working on OAuth-specific features or tests.
 
 ### Environment Setup
 ```bash
@@ -96,18 +104,23 @@ Each Nextcloud app has a corresponding server module that:
 
 ### Testing Structure
 
-- **Integration tests** in `tests/integration/` - Test real Nextcloud API interactions
+- **Integration tests** in `tests/integration/` and `tests/client/`, `tests/server/` - Test real Nextcloud API interactions
 - **Fixtures** in `tests/conftest.py` - Shared test setup and utilities
 - Tests are marked with `@pytest.mark.integration` for selective running
-- **Important**: Integration tests run against live Docker containers. After making code changes to the MCP server, rebuild only the MCP container with `docker-compose up --build -d mcp` before running tests
+- **Important**: Integration tests run against live Docker containers. After making code changes:
+  - For basic auth tests: rebuild with `docker-compose up --build -d mcp`
+  - For OAuth tests: rebuild with `docker-compose up --build -d mcp-oauth`
 
 #### Testing Best Practices
 - **MANDATORY: Always run tests after implementing features or fixing bugs**
   - Run tests to completion before considering any task complete
   - If tests require modifications to pass, ask for permission before proceeding
-  - Use `docker-compose up --build -d mcp` to rebuild MCP container after code changes
+  - **Rebuild the correct container** after code changes:
+    - For basic auth tests (most common): `docker-compose up --build -d mcp`
+    - For OAuth tests: `docker-compose up --build -d mcp-oauth`
 - **Use existing fixtures** from `tests/conftest.py` to avoid duplicate setup work:
-  - `nc_mcp_client` - MCP client session for tool/resource testing
+  - `nc_mcp_client` - MCP client session for tool/resource testing (uses `mcp` container)
+  - `nc_mcp_oauth_client` - MCP client session for OAuth testing (uses `mcp-oauth` container)
   - `nc_client` - Direct NextcloudClient for setup/cleanup operations
   - `temporary_note` - Creates and cleans up test notes automatically
   - `temporary_addressbook` - Creates and cleans up test address books
@@ -115,6 +128,7 @@ Each Nextcloud app has a corresponding server module that:
 - **Test specific functionality** after changes:
   - For Notes changes: `uv run pytest tests/integration/test_mcp.py -k "notes" -v`
   - For specific API changes: `uv run pytest tests/integration/test_notes_api.py -v`
+  - For OAuth changes: `uv run pytest tests/server/test_oauth*.py -v` (remember to rebuild `mcp-oauth` container)
 - **Avoid creating standalone test scripts** - use pytest with proper fixtures instead
 
 #### OAuth/OIDC Testing
@@ -123,7 +137,14 @@ OAuth integration tests support both **automated** (Playwright) and **interactiv
 **Automated Testing (Default - Recommended for CI/CD):**
 - **Default fixtures**: `nc_oauth_client`, `nc_mcp_oauth_client` now use Playwright automation by default
 - Uses Playwright headless browser automation to complete OAuth flow programmatically
+- **Shared OAuth Client**: All test users authenticate using a single OAuth client (matching MCP server behavior)
+  - Single `client_id`/`client_secret` pair is registered and reused for all test users
+  - Stored in `.nextcloud_oauth_shared_test_client.json` with `force_register=False` for reuse
+  - Reduces OAuth client registrations and matches production MCP server architecture
 - All Playwright fixtures: `playwright_oauth_token`, `nc_oauth_client`, `nc_mcp_oauth_client`, `nc_oauth_client_playwright`, `nc_mcp_oauth_client_playwright`
+- Multi-user fixtures: `alice_oauth_token`, `bob_oauth_token`, `charlie_oauth_token`, `diana_oauth_token`
+  - All use `shared_oauth_client_credentials` fixture for consistent client credentials
+  - Each user gets unique access tokens via same OAuth client (like multiple users using the MCP server)
 - Requires: `NEXTCLOUD_HOST`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_PASSWORD` environment variables
 - Uses `pytest-playwright-asyncio` for async Playwright fixtures
 - Playwright configuration: Use pytest CLI args like `--browser firefox --headed` to customize
@@ -131,13 +152,13 @@ OAuth integration tests support both **automated** (Playwright) and **interactiv
 - Example:
   ```bash
   # Run all OAuth tests with automated Playwright flow using Firefox
-  uv run pytest tests/integration/test_oauth*.py --browser firefox -v
+  uv run pytest tests/server/test_oauth*.py --browser firefox -v
 
   # Run specific Playwright tests with visible browser for debugging
-  uv run pytest tests/integration/test_oauth_playwright.py --browser firefox --headed -v
+  uv run pytest tests/server/test_mcp_oauth.py --browser firefox --headed -v
 
   # Run with Chromium (default)
-  uv run pytest tests/integration/test_oauth.py -v
+  uv run pytest tests/server/test_oauth*.py -v
   ```
 
 **Interactive Testing (Manual browser login):**
@@ -149,18 +170,23 @@ OAuth integration tests support both **automated** (Playwright) and **interactiv
 - Example:
   ```bash
   # Run OAuth tests with interactive flow (will open browser and wait for manual login)
-  uv run pytest tests/integration/test_oauth_interactive.py -v
+  uv run pytest tests/client/test_oauth_interactive.py -v
   ```
 
 **Test Environment Setup:**
+- **Two MCP server containers are available:**
+  - `mcp` (port 8000): Uses basic auth with admin credentials - for most testing
+  - `mcp-oauth` (port 8001): Uses OAuth authentication - for OAuth-specific testing
 - Start OAuth MCP server: `docker-compose up --build -d mcp-oauth`
-- OAuth server runs on port 8001 (regular MCP on 8000)
-- Both flows register OAuth clients dynamically using Nextcloud's OIDC provider
+- **Important**: When working on OAuth functionality, always rebuild `mcp-oauth` container, not `mcp`
+- Shared OAuth client is registered once and reused across test runs
+- Client credentials cached in `.nextcloud_oauth_shared_test_client.json`
 
 **CI/CD Considerations:**
 - Interactive OAuth tests are automatically skipped when `GITHUB_ACTIONS` environment variable is set
 - Automated Playwright tests will run in CI/CD environments
 - Use Firefox browser in CI: `--browser firefox` (Chromium may have issues with localhost redirects)
+- Shared client approach reduces test time and API calls to Nextcloud
 
 ### Configuration Files
 
