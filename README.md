@@ -6,6 +6,9 @@
 
 The Nextcloud MCP (Model Context Protocol) server allows Large Language Models like Claude, GPT, and Gemini to interact with your Nextcloud data through a secure API. Create notes, manage calendars, organize contacts, work with files, and more - all through natural language.
 
+> [!NOTE]
+> **Nextcloud has two ways to enable AI access:** Nextcloud provides [Context Agent](https://github.com/nextcloud/context_agent), an AI agent backend that powers the Assistant app and allows AI to interact with Nextcloud apps like Calendar, Talk, and Contacts. Context Agent runs as an ExApp inside Nextcloud and also exposes an MCP server endpoint for external LLMs. This project (Nextcloud MCP Server) is a **dedicated standalone MCP server** designed specifically for external MCP clients like Claude Code and IDEs, with deep CRUD operations and OAuth support. See our [detailed comparison](docs/comparison-context-agent.md) to understand which approach fits your use case.
+
 ## Features
 
 ### Supported Nextcloud Apps
@@ -119,6 +122,9 @@ Or connect from:
 - **[Configuration](docs/configuration.md)** - Environment variables and settings
 - **[Authentication](docs/authentication.md)** - OAuth vs BasicAuth
 - **[Running the Server](docs/running.md)** - Start and manage the server
+
+### Architecture
+- **[Comparison with Context Agent](docs/comparison-context-agent.md)** - How this MCP server differs from Nextcloud's Context Agent
 
 ### OAuth Documentation
 - **[OAuth Quick Start](docs/quickstart-oauth.md)** - 5-minute setup guide
