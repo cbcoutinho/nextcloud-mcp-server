@@ -1,3 +1,15 @@
+## v0.14.0 (2025-10-15)
+
+### Feat
+
+- Add Groups API client
+- add sharing API client and server tools
+- **users**: Initialize user API client
+
+### Fix
+
+- Update user/groups API to OCS v2
+
 ## v0.13.0 (2025-10-13)
 
 ### Feat
