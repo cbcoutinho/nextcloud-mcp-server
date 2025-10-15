@@ -217,11 +217,12 @@ NEXTCLOUD_HOST=https://nextcloud.example.com
 
 **How it works**:
 1. Server checks `/.well-known/openid-configuration` for `registration_endpoint`
-2. Calls `/apps/oidc/register` to register new client
+2. Calls `/apps/oidc/register` to register a client on first startup
 3. Saves credentials to `.nextcloud_oauth_client.json`
-4. Re-registers if credentials expire
+4. Reuses these credentials on subsequent startups
+5. Re-registers only if credentials are missing or expired
 
-**Best for**: Development, testing, short-lived deployments
+**Best for**: Development, testing, quick deployments
 
 ### Pre-configured Client
 

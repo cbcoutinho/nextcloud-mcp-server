@@ -135,16 +135,15 @@ Each Nextcloud app has a corresponding server module that:
 OAuth integration tests support both **automated** (Playwright) and **interactive** authentication flows:
 
 **Automated Testing (Default - Recommended for CI/CD):**
-- **Default fixtures**: `nc_oauth_client`, `nc_mcp_oauth_client` now use Playwright automation by default
+- **Default fixtures**: `nc_oauth_client`, `nc_mcp_oauth_client` use Playwright automation
 - Uses Playwright headless browser automation to complete OAuth flow programmatically
-- **Shared OAuth Client**: All test users authenticate using a single OAuth client (matching MCP server behavior)
-  - Single `client_id`/`client_secret` pair is registered and reused for all test users
-  - Stored in `.nextcloud_oauth_shared_test_client.json` with `force_register=False` for reuse
-  - Reduces OAuth client registrations and matches production MCP server architecture
+- **Shared OAuth Client**: All test users authenticate using a single OAuth client
+  - Stored in `.nextcloud_oauth_shared_test_client.json`
+  - Matches production MCP server behavior
+  - Each user gets their own unique access token
+  - Implementation: `shared_oauth_client_credentials` fixture in `tests/conftest.py:812`
 - All Playwright fixtures: `playwright_oauth_token`, `nc_oauth_client`, `nc_mcp_oauth_client`, `nc_oauth_client_playwright`, `nc_mcp_oauth_client_playwright`
 - Multi-user fixtures: `alice_oauth_token`, `bob_oauth_token`, `charlie_oauth_token`, `diana_oauth_token`
-  - All use `shared_oauth_client_credentials` fixture for consistent client credentials
-  - Each user gets unique access tokens via same OAuth client (like multiple users using the MCP server)
 - Requires: `NEXTCLOUD_HOST`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_PASSWORD` environment variables
 - Uses `pytest-playwright-asyncio` for async Playwright fixtures
 - Playwright configuration: Use pytest CLI args like `--browser firefox --headed` to customize
@@ -179,14 +178,12 @@ OAuth integration tests support both **automated** (Playwright) and **interactiv
   - `mcp-oauth` (port 8001): Uses OAuth authentication - for OAuth-specific testing
 - Start OAuth MCP server: `docker-compose up --build -d mcp-oauth`
 - **Important**: When working on OAuth functionality, always rebuild `mcp-oauth` container, not `mcp`
-- Shared OAuth client is registered once and reused across test runs
-- Client credentials cached in `.nextcloud_oauth_shared_test_client.json`
+- OAuth client credentials cached in `.nextcloud_oauth_shared_test_client.json`
 
 **CI/CD Considerations:**
 - Interactive OAuth tests are automatically skipped when `GITHUB_ACTIONS` environment variable is set
 - Automated Playwright tests will run in CI/CD environments
 - Use Firefox browser in CI: `--browser firefox` (Chromium may have issues with localhost redirects)
-- Shared client approach reduces test time and API calls to Nextcloud
 
 ### Configuration Files
 
