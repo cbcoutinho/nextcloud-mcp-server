@@ -15,7 +15,9 @@ async def test_create_and_delete_share(nc_client):
     # Create a test user to share with
     test_user = "testuser3"
     try:
-        await nc_client.users.create_user(userid=test_user, password="password123")
+        await nc_client.users.create_user(
+            userid=test_user, password="SecureP@ssw0rd!2024TestUser"
+        )
     except Exception:
         pass  # User might already exist
 
@@ -72,7 +74,9 @@ async def test_update_share_permissions(nc_client):
     # Create a test user to share with
     test_user = "testuser3"
     try:
-        await nc_client.users.create_user(userid=test_user, password="password123")
+        await nc_client.users.create_user(
+            userid=test_user, password="SecureP@ssw0rd!2024TestUser"
+        )
     except Exception:
         pass  # User might already exist
 
@@ -122,7 +126,9 @@ async def test_list_shares(nc_client):
     # Create a test user to share with
     test_user = "testuser3"
     try:
-        await nc_client.users.create_user(userid=test_user, password="password123")
+        await nc_client.users.create_user(
+            userid=test_user, password="SecureP@ssw0rd!2024TestUser"
+        )
     except Exception:
         pass  # User might already exist
 

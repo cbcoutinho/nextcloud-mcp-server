@@ -124,7 +124,11 @@ class SharingClient(BaseNextcloudClient):
                 f"OCS API error: {data['ocs']['meta'].get('message', 'Unknown error')}"
             )
 
-        return data["ocs"]["data"]
+        share_data = data["ocs"]["data"]
+        # The API returns a list with a single share, extract the first element
+        if isinstance(share_data, list) and len(share_data) > 0:
+            return share_data[0]
+        return share_data
 
     @retry_on_429
     async def list_shares(

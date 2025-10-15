@@ -760,9 +760,9 @@ async def interactive_oauth_token(oauth_callback_server) -> str:
         client_info = await load_or_register_client(
             nextcloud_url=nextcloud_host,
             registration_endpoint=registration_endpoint,
-            storage_path=".nextcloud_oauth_test_client.json",
+            storage_path=".nextcloud_oauth_shared_test_client.json",
             redirect_uris=[callback_url],
-            force_register=True,
+            force_register=False,  # Reuse existing credentials if valid
         )
 
         # First, open Nextcloud login page to establish session
