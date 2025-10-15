@@ -53,12 +53,22 @@ class SharingClient(BaseNextcloudClient):
         response.raise_for_status()
         data = response.json()
 
-        if data["ocs"]["meta"]["statuscode"] not in (100, 200):
-            raise RuntimeError(
-                f"OCS API error: {data['ocs']['meta'].get('message', 'Unknown error')}"
-            )
+        # OCS API v2 uses HTTP-style status codes (200 for success)
+        # OCS API v1 used custom codes (100 for success)
+        ocs_status = data["ocs"]["meta"]["statuscode"]
+        if ocs_status not in (100, 200):
+            ocs_message = data["ocs"]["meta"].get("message", "Unknown error")
+            raise RuntimeError(f"OCS API error (code {ocs_status}): {ocs_message}")
 
         share_data = data["ocs"]["data"]
+
+        # Handle case where data might be an empty list on error
+        if not share_data or (isinstance(share_data, list) and len(share_data) == 0):
+            ocs_message = data["ocs"]["meta"].get("message", "Unknown error")
+            raise RuntimeError(
+                f"Share creation failed: {ocs_message} (status {ocs_status})"
+            )
+
         logger.info(
             f"Created share {share_data['id']}: {path} -> {share_with} "
             f"(type={share_type}, permissions={permissions})"
