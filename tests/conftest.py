@@ -1313,7 +1313,7 @@ async def _get_oauth_token_for_user(
 
         # Wait for redirect and extract auth code
         try:
-            await page.wait_for_url(f"{callback_url}*", timeout=10000)
+            await page.wait_for_url(f"{callback_url}*", timeout=30000)
         except Exception:
             pass  # Expected - callback won't load
 
