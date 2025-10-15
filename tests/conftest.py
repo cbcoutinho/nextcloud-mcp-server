@@ -1267,16 +1267,19 @@ async def _get_oauth_token_for_user(
     logger.info(f"Getting OAuth token for user: {username}...")
     logger.info(f"Using shared OAuth client: {client_id[:16]}...")
 
-    # Construct authorization URL
+    # Construct authorization URL with properly encoded redirect_uri
+    from urllib.parse import quote
+
     auth_url = (
         f"{authorization_endpoint}?"
         f"response_type=code&"
         f"client_id={client_id}&"
-        f"redirect_uri={callback_url}&"
+        f"redirect_uri={quote(callback_url, safe='')}&"
         f"scope=openid%20profile%20email"
     )
 
     logger.info(f"Performing browser OAuth flow for {username}...")
+    logger.debug(f"Authorization URL: {auth_url}")
 
     # Browser automation
     context = await browser.new_context(ignore_https_errors=True)
@@ -1354,49 +1357,82 @@ async def _get_oauth_token_for_user(
         return access_token
 
 
-# Session-scoped OAuth token fixtures to avoid re-registering clients
+# Parallel token retrieval fixture - fetches all OAuth tokens concurrently
 @pytest.fixture(scope="session")
-async def alice_oauth_token(
+async def all_oauth_tokens(
     browser, shared_oauth_client_credentials, test_users_setup
-) -> str:
+) -> dict[str, str]:
+    """
+    Fetch OAuth tokens for all test users in parallel for speed.
+
+    Returns a dict mapping username to OAuth access token.
+    This is significantly faster than fetching tokens sequentially.
+
+    Note: We add a small stagger between starting each flow to avoid
+    race conditions in Nextcloud's OAuth session handling.
+    """
+    import asyncio
+    import time
+
+    start_time = time.time()
+    logger.info("Fetching OAuth tokens for all users in parallel...")
+
+    async def get_token_with_delay(username: str, config: dict, delay: float):
+        """Get token for a user after a small delay to stagger requests."""
+        if delay > 0:
+            await asyncio.sleep(delay)
+        return await _get_oauth_token_for_user(
+            browser, shared_oauth_client_credentials, username, config["password"]
+        )
+
+    # Create tasks for all users with staggered starts (0.5s apart)
+    tasks = {
+        username: get_token_with_delay(username, config, idx * 0.5)
+        for idx, (username, config) in enumerate(test_users_setup.items())
+    }
+
+    # Run all token fetches concurrently
+    results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+    # Build result dict, handling any errors
+    tokens = {}
+    for username, result in zip(tasks.keys(), results):
+        if isinstance(result, Exception):
+            logger.error(f"Failed to get OAuth token for {username}: {result}")
+            raise result
+        tokens[username] = result
+
+    elapsed = time.time() - start_time
+    logger.info(
+        f"Successfully fetched {len(tokens)} OAuth tokens in parallel "
+        f"in {elapsed:.1f}s (~{elapsed / len(tokens):.1f}s per user)"
+    )
+    return tokens
+
+
+# Session-scoped OAuth token fixtures - now use the parallel fixture
+@pytest.fixture(scope="session")
+async def alice_oauth_token(all_oauth_tokens) -> str:
     """OAuth token for alice (cached for session). Uses shared OAuth client."""
-    config = test_users_setup["alice"]
-    return await _get_oauth_token_for_user(
-        browser, shared_oauth_client_credentials, "alice", config["password"]
-    )
+    return all_oauth_tokens["alice"]
 
 
 @pytest.fixture(scope="session")
-async def bob_oauth_token(
-    browser, shared_oauth_client_credentials, test_users_setup
-) -> str:
+async def bob_oauth_token(all_oauth_tokens) -> str:
     """OAuth token for bob (cached for session). Uses shared OAuth client."""
-    config = test_users_setup["bob"]
-    return await _get_oauth_token_for_user(
-        browser, shared_oauth_client_credentials, "bob", config["password"]
-    )
+    return all_oauth_tokens["bob"]
 
 
 @pytest.fixture(scope="session")
-async def charlie_oauth_token(
-    browser, shared_oauth_client_credentials, test_users_setup
-) -> str:
+async def charlie_oauth_token(all_oauth_tokens) -> str:
     """OAuth token for charlie (cached for session). Uses shared OAuth client."""
-    config = test_users_setup["charlie"]
-    return await _get_oauth_token_for_user(
-        browser, shared_oauth_client_credentials, "charlie", config["password"]
-    )
+    return all_oauth_tokens["charlie"]
 
 
 @pytest.fixture(scope="session")
-async def diana_oauth_token(
-    browser, shared_oauth_client_credentials, test_users_setup
-) -> str:
+async def diana_oauth_token(all_oauth_tokens) -> str:
     """OAuth token for diana (cached for session). Uses shared OAuth client."""
-    config = test_users_setup["diana"]
-    return await _get_oauth_token_for_user(
-        browser, shared_oauth_client_credentials, "diana", config["password"]
-    )
+    return all_oauth_tokens["diana"]
 
 
 @pytest.fixture(scope="session")
@@ -1526,3 +1562,96 @@ async def diana_mcp_client(diana_oauth_token) -> AsyncGenerator[ClientSession, A
             await streamable_context.__aexit__(None, None, None)
         except Exception as e:
             logger.debug(f"Error closing diana streamable context: {e}")
+
+
+# Test user/group fixtures for clean test isolation
+@pytest.fixture
+async def test_user(nc_client: NextcloudClient):
+    """
+    Fixture that creates a test user and cleans it up after the test.
+
+    Returns a dict with user details that can be customized.
+    Usage:
+        async def test_something(test_user):
+            user_config = test_user
+            await nc_client.users.create_user(**user_config)
+    """
+    import uuid
+
+    # Generate unique user ID to avoid conflicts
+    userid = f"testuser_{uuid.uuid4().hex[:8]}"
+    password = "SecureTestPassword123!"
+
+    user_config = {
+        "userid": userid,
+        "password": password,
+        "display_name": f"Test User {userid}",
+        "email": f"{userid}@example.com",
+    }
+
+    # Cleanup before (in case of previous failed run)
+    try:
+        await nc_client.users.delete_user(userid)
+    except Exception:
+        pass
+
+    yield user_config
+
+    # Cleanup after test
+    try:
+        await nc_client.users.delete_user(userid)
+        logger.debug(f"Cleaned up test user: {userid}")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup test user {userid}: {e}")
+
+
+@pytest.fixture
+async def test_group(nc_client: NextcloudClient):
+    """
+    Fixture that creates a test group and cleans it up after the test.
+
+    Returns the group ID.
+    """
+    import uuid
+
+    # Generate unique group ID to avoid conflicts
+    groupid = f"testgroup_{uuid.uuid4().hex[:8]}"
+
+    # Cleanup before (in case of previous failed run)
+    try:
+        await nc_client.groups.delete_group(groupid)
+    except Exception:
+        pass
+
+    # Create the group
+    await nc_client.groups.create_group(groupid)
+    logger.debug(f"Created test group: {groupid}")
+
+    yield groupid
+
+    # Cleanup after test
+    try:
+        await nc_client.groups.delete_group(groupid)
+        logger.debug(f"Cleaned up test group: {groupid}")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup test group {groupid}: {e}")
+
+
+@pytest.fixture
+async def test_user_in_group(nc_client: NextcloudClient, test_user, test_group):
+    """
+    Fixture that creates a test user and adds them to a test group.
+
+    Returns a tuple of (user_config, groupid).
+    """
+    user_config = test_user
+    groupid = test_group
+
+    # Create the user
+    await nc_client.users.create_user(**user_config)
+
+    # Add user to group
+    await nc_client.users.add_user_to_group(user_config["userid"], groupid)
+    logger.debug(f"Added user {user_config['userid']} to group {groupid}")
+
+    yield (user_config, groupid)

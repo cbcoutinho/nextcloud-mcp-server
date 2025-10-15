@@ -3,70 +3,53 @@ from nextcloud_mcp_server.client import NextcloudClient
 
 
 @pytest.mark.asyncio
-async def test_create_and_delete_user(nc_client: NextcloudClient):
-    userid = "testuser1"
-    password = "SecureTestPassword123!"
-    display_name = "Test User One"
-    email = "test1@example.com"
+async def test_create_and_delete_user(nc_client: NextcloudClient, test_user):
+    """Test creating a user and verifying deletion (cleanup by fixture)."""
+    user_config = test_user
 
     # Create user
-    await nc_client.users.create_user(
-        userid=userid,
-        password=password,
-        display_name=display_name,
-        email=email,
-    )
+    await nc_client.users.create_user(**user_config)
 
     # Verify user exists
-    users = await nc_client.users.search_users(search=userid)
-    assert userid in users
+    users = await nc_client.users.search_users(search=user_config["userid"])
+    assert user_config["userid"] in users
 
-    user_details = await nc_client.users.get_user_details(userid)
-    assert user_details.id == userid
-    assert user_details.displayname == display_name
-    assert user_details.email == email
+    user_details = await nc_client.users.get_user_details(user_config["userid"])
+    assert user_details.id == user_config["userid"]
+    assert user_details.displayname == user_config["display_name"]
+    assert user_details.email == user_config["email"]
 
-    # Delete user
-    await nc_client.users.delete_user(userid)
+    # Test deletion explicitly as part of test functionality
+    await nc_client.users.delete_user(user_config["userid"])
 
     # Verify user is deleted
-    users = await nc_client.users.search_users(search=userid)
-    assert userid not in users
+    users = await nc_client.users.search_users(search=user_config["userid"])
+    assert user_config["userid"] not in users
+    # Note: Fixture cleanup will also try to delete but handle 404 gracefully
 
 
 @pytest.mark.asyncio
-async def test_update_user_field(nc_client: NextcloudClient):
-    userid = "testuser2"
-    password = "SecureTestPassword123!"
-    display_name = "Test User Two"
-    email = "test2@example.com"
+async def test_update_user_field(nc_client: NextcloudClient, test_user):
+    """Test updating user fields."""
+    user_config = test_user
 
-    await nc_client.users.create_user(
-        userid=userid,
-        password=password,
-        display_name=display_name,
-        email=email,
-    )
+    await nc_client.users.create_user(**user_config)
 
-    new_email = "new.test2@example.com"
-    await nc_client.users.update_user_field(userid, "email", new_email)
+    new_email = f"new.{user_config['email']}"
+    await nc_client.users.update_user_field(user_config["userid"], "email", new_email)
 
-    user_details = await nc_client.users.get_user_details(userid)
+    user_details = await nc_client.users.get_user_details(user_config["userid"])
     assert user_details.email == new_email
-
-    await nc_client.users.delete_user(userid)
+    # Fixture will handle cleanup
 
 
 @pytest.mark.asyncio
-async def test_user_groups(nc_client: NextcloudClient):
-    userid = "testuser3"
-    password = "SecureTestPassword123!"
-    groupid = "testgroup"
+async def test_user_groups(nc_client: NextcloudClient, test_user_in_group):
+    """Test adding and removing users from groups."""
+    user_config, groupid = test_user_in_group
+    userid = user_config["userid"]
 
-    await nc_client.users.create_user(userid=userid, password=password)
-
-    # Add user to group
-    await nc_client.users.add_user_to_group(userid, groupid)
+    # Verify user is in group
     groups = await nc_client.users.get_user_groups(userid)
     assert groupid in groups
 
@@ -74,17 +57,17 @@ async def test_user_groups(nc_client: NextcloudClient):
     await nc_client.users.remove_user_from_group(userid, groupid)
     groups = await nc_client.users.get_user_groups(userid)
     assert groupid not in groups
-
-    await nc_client.users.delete_user(userid)
+    # Fixtures will handle cleanup
 
 
 @pytest.mark.asyncio
-async def test_user_subadmins(nc_client: NextcloudClient):
-    userid = "testuser4"
-    password = "SecureTestPassword123!"
-    groupid = "subadmingroup"
+async def test_user_subadmins(nc_client: NextcloudClient, test_user, test_group):
+    """Test promoting and demoting subadmins."""
+    user_config = test_user
+    groupid = test_group
+    userid = user_config["userid"]
 
-    await nc_client.users.create_user(userid=userid, password=password)
+    await nc_client.users.create_user(**user_config)
 
     # Promote to subadmin
     await nc_client.users.promote_user_to_subadmin(userid, groupid)
@@ -95,16 +78,16 @@ async def test_user_subadmins(nc_client: NextcloudClient):
     await nc_client.users.demote_user_from_subadmin(userid, groupid)
     subadmin_groups = await nc_client.users.get_user_subadmin_groups(userid)
     assert groupid not in subadmin_groups
-
-    await nc_client.users.delete_user(userid)
+    # Fixtures will handle cleanup
 
 
 @pytest.mark.asyncio
-async def test_disable_enable_user(nc_client: NextcloudClient):
-    userid = "testuser5"
-    password = "SecureTestPassword123!"
+async def test_disable_enable_user(nc_client: NextcloudClient, test_user):
+    """Test disabling and enabling users."""
+    user_config = test_user
+    userid = user_config["userid"]
 
-    await nc_client.users.create_user(userid=userid, password=password)
+    await nc_client.users.create_user(**user_config)
 
     # Disable user
     await nc_client.users.disable_user(userid)
@@ -115,8 +98,7 @@ async def test_disable_enable_user(nc_client: NextcloudClient):
     await nc_client.users.enable_user(userid)
     user_details = await nc_client.users.get_user_details(userid)
     assert user_details.enabled
-
-    await nc_client.users.delete_user(userid)
+    # Fixture will handle cleanup
 
 
 @pytest.mark.asyncio
