@@ -165,23 +165,23 @@ You have two options for managing OAuth clients:
 
 ### Mode A: Automatic Registration (Dynamic Client Registration)
 
-**Best for**: Development, testing, short-lived deployments
+**Best for**: Development, testing, quick deployments
 
 **How it works**:
-- MCP server automatically registers OAuth client at startup
+- MCP server automatically registers an OAuth client on first startup
 - Uses Nextcloud's dynamic client registration endpoint
 - Saves credentials to `.nextcloud_oauth_client.json`
+- Reuses stored credentials on subsequent restarts
 - Re-registers automatically if credentials expire
 
 **Pros**:
 - Zero configuration required
 - Quick setup
-- No manual client management
+- Automatic credential management
 
 **Cons**:
 - Clients expire (default: 1 hour, configurable)
-- Must re-register on restart if expired
-- Not ideal for long-running production
+- Must have dynamic client registration enabled on Nextcloud
 
 **Configuration**: Skip to [Step 4](#step-4-configure-mcp-server) with minimal config.
 
@@ -192,8 +192,8 @@ You have two options for managing OAuth clients:
 **Best for**: Production, long-running deployments, stable environments
 
 **How it works**:
-- You manually register OAuth client via Nextcloud CLI
-- Provide client credentials to MCP server
+- You manually register an OAuth client via Nextcloud CLI
+- Provide client credentials to MCP server via environment variables
 - Credentials don't expire
 
 **Pros**:

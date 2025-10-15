@@ -762,7 +762,6 @@ async def interactive_oauth_token(oauth_callback_server) -> str:
             registration_endpoint=registration_endpoint,
             storage_path=".nextcloud_oauth_shared_test_client.json",
             redirect_uris=[callback_url],
-            force_register=False,  # Reuse existing credentials if valid
         )
 
         # First, open Nextcloud login page to establish session
@@ -852,7 +851,6 @@ async def shared_oauth_client_credentials():
             storage_path=".nextcloud_oauth_shared_test_client.json",
             client_name="Nextcloud MCP Server - Shared Test Client",
             redirect_uris=[callback_url],
-            force_register=False,  # Reuse existing credentials if valid
         )
 
         logger.info(f"Shared OAuth client ready: {client_info.client_id[:16]}...")

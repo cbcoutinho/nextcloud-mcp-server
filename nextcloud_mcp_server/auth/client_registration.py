@@ -211,7 +211,6 @@ async def load_or_register_client(
     storage_path: str | Path,
     client_name: str = "Nextcloud MCP Server",
     redirect_uris: list[str] | None = None,
-    force_register: bool = True,
 ) -> ClientInfo:
     """
     Load client from storage or register a new one if not found/expired.
@@ -219,7 +218,7 @@ async def load_or_register_client(
     This function:
     1. Checks for existing client credentials in storage
     2. Validates the credentials are not expired
-    3. Registers a new client if needed
+    3. Registers a new client if needed (no stored credentials or expired)
     4. Saves the new client credentials
 
     Args:
@@ -228,7 +227,6 @@ async def load_or_register_client(
         storage_path: Path to store client credentials
         client_name: Name of the client application
         redirect_uris: List of redirect URIs
-        force_register: Force registration even if valid credentials exist
 
     Returns:
         ClientInfo with valid credentials
@@ -239,11 +237,10 @@ async def load_or_register_client(
     """
     storage_path = Path(storage_path)
 
-    # Try to load existing client unless forced to register
-    if not force_register:
-        client_info = load_client_from_file(storage_path)
-        if client_info:
-            return client_info
+    # Try to load existing client
+    client_info = load_client_from_file(storage_path)
+    if client_info:
+        return client_info
 
     # Register new client
     logger.info("Registering new OAuth client...")

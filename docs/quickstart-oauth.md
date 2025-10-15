@@ -151,11 +151,11 @@ curl https://your.nextcloud.instance.com/.well-known/openid-configuration
 This quick start uses **automatic client registration** which is perfect for:
 - Development
 - Testing
-- Short-lived deployments
+- Quick deployments
 
-For **production deployments**, you should:
-1. Pre-register OAuth clients manually
-2. Use dedicated client credentials
+For **production deployments**, consider:
+1. Pre-registering OAuth client manually
+2. Using dedicated client credentials that don't expire
 3. See [OAuth Setup Guide](oauth-setup.md) for production configuration
 
 ---
