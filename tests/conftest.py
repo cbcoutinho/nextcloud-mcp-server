@@ -1387,7 +1387,7 @@ async def all_oauth_tokens(
 
     # Create tasks for all users with staggered starts (2.0s apart)
     tasks = {
-        username: get_token_with_delay(username, config, idx * 2.0)
+        username: get_token_with_delay(username, config, (idx + 1) * 2.0)
         for idx, (username, config) in enumerate(test_users_setup.items())
     }
 
