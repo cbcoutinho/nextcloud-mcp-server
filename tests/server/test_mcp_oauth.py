@@ -38,11 +38,11 @@ async def test_mcp_oauth_tool_execution(nc_mcp_oauth_client):
     )
 
 
-async def test_mcp_oauth_client_with_playwright(nc_mcp_oauth_client_playwright):
+async def test_mcp_oauth_client_with_playwright(nc_mcp_oauth_client):
     """Test that MCP OAuth client via Playwright can execute tools."""
 
     # Test: Execute the 'nc_notes_search_notes' tool
-    result = await nc_mcp_oauth_client_playwright.call_tool(
+    result = await nc_mcp_oauth_client.call_tool(
         "nc_notes_search_notes", arguments={"query": ""}
     )
 

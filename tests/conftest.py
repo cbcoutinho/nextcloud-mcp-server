@@ -168,27 +168,6 @@ async def nc_mcp_client() -> AsyncGenerator[ClientSession, Any]:
 
 
 @pytest.fixture(scope="session")
-async def nc_mcp_oauth_client_interactive(
-    interactive_oauth_token: str,
-) -> AsyncGenerator[ClientSession, Any]:
-    """
-    Fixture to create an MCP client session for OAuth integration tests using interactive authentication.
-    Connects to the OAuth-enabled MCP server on port 8001 with OAuth authentication.
-    Requires manual browser login.
-
-    For automated testing, use nc_mcp_oauth_client fixture instead.
-
-    Automatically skips when running in GitHub Actions CI.
-    """
-    async for session in create_mcp_client_session(
-        url="http://127.0.0.1:8001/mcp",
-        token=interactive_oauth_token,
-        client_name="OAuth MCP (Interactive)",
-    ):
-        yield session
-
-
-@pytest.fixture(scope="session")
 async def nc_mcp_oauth_client(
     playwright_oauth_token: str,
 ) -> AsyncGenerator[ClientSession, Any]:
@@ -196,8 +175,7 @@ async def nc_mcp_oauth_client(
     Fixture to create an MCP client session for OAuth integration tests using Playwright automation.
     Connects to the OAuth-enabled MCP server on port 8001 with OAuth authentication.
 
-    This is the default OAuth MCP fixture using headless browser automation suitable for CI/CD.
-    For interactive testing with manual browser login, use nc_mcp_oauth_client_interactive instead.
+    Uses headless browser automation suitable for CI/CD.
     """
     async for session in create_mcp_client_session(
         url="http://127.0.0.1:8001/mcp",
@@ -525,54 +503,12 @@ async def temporary_board_with_card(
 
 
 @pytest.fixture(scope="session")
-async def nc_oauth_client_interactive(
-    interactive_oauth_token: str,
-) -> AsyncGenerator[NextcloudClient, Any]:
-    """
-    Fixture to create a NextcloudClient instance using interactive OAuth authentication.
-    Uses the interactive_oauth_token fixture which requires manual browser login.
-
-    For automated testing, use nc_oauth_client fixture instead.
-
-    Automatically skips when running in GitHub Actions CI.
-    """
-
-    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
-    username = os.getenv("NEXTCLOUD_USERNAME")
-
-    if not all([nextcloud_host, username]):
-        pytest.skip("OAuth client fixture requires NEXTCLOUD_HOST and USERNAME")
-
-    logger.info(f"Creating OAuth NextcloudClient (Interactive) for user: {username}")
-    client = NextcloudClient.from_token(
-        base_url=nextcloud_host,
-        token=interactive_oauth_token,
-        username=username,
-    )
-
-    # Verify the OAuth client works
-    try:
-        await client.capabilities()
-        logger.info(
-            "OAuth NextcloudClient (Interactive) initialized and capabilities checked."
-        )
-        yield client
-    except Exception as e:
-        logger.error(f"Failed to initialize OAuth NextcloudClient (Interactive): {e}")
-        pytest.fail(f"Failed to connect to Nextcloud with OAuth token: {e}")
-    finally:
-        await client.close()
-
-
-@pytest.fixture(scope="session")
 async def nc_oauth_client(
     playwright_oauth_token: str,
 ) -> AsyncGenerator[NextcloudClient, Any]:
     """
     Fixture to create a NextcloudClient instance using automated Playwright OAuth authentication.
-    This is the default OAuth fixture using headless browser automation suitable for CI/CD.
-
-    For interactive testing with manual browser login, use nc_oauth_client_interactive instead.
+    Uses headless browser automation suitable for CI/CD.
     """
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     username = os.getenv("NEXTCLOUD_USERNAME")
@@ -687,84 +623,6 @@ def oauth_callback_server():
             logger.info("OAuth callback server shut down successfully")
         if server_thread:
             server_thread.join(timeout=1)
-
-
-@pytest.fixture(scope="session")
-async def interactive_oauth_token(oauth_callback_server) -> str:
-    """
-    Fixture to obtain an OAuth access token for integration tests.
-
-    This uses the interactive OAuth flow to get a token.
-    Depends on oauth_callback_server fixture for HTTP callback handling.
-
-    Automatically skips when running in GitHub Actions CI.
-    """
-
-    import time
-    import webbrowser
-
-    from nextcloud_mcp_server.auth.client_registration import load_or_register_client
-
-    # Unpack the server fixture (now returns dict of auth_states)
-    auth_states, callback_url = oauth_callback_server
-
-    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
-    async with httpx.AsyncClient() as http_client:
-        discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
-        discovery_response = await http_client.get(discovery_url)
-        oidc_config = discovery_response.json()
-        token_endpoint = oidc_config.get("token_endpoint")
-        registration_endpoint = oidc_config.get("registration_endpoint")
-        authorization_endpoint = oidc_config.get("authorization_endpoint")
-        client_info = await load_or_register_client(
-            nextcloud_url=nextcloud_host,
-            registration_endpoint=registration_endpoint,
-            storage_path=".nextcloud_oauth_shared_test_client.json",
-            redirect_uris=[callback_url],
-        )
-
-        # First, open Nextcloud login page to establish session
-        login_url = f"{nextcloud_host}/login"
-        logger.info(f"Please log in to Nextcloud at: {login_url}")
-        logger.info(
-            "After logging in, the OAuth authorization will proceed automatically"
-        )
-
-        # Construct authorization URL (no state parameter for interactive flow)
-        auth_url = f"{authorization_endpoint}?response_type=code&client_id={client_info.client_id}&redirect_uri={callback_url}&scope=openid%20profile%20email"
-
-        # Open authorization URL in browser
-        webbrowser.open(auth_url)
-
-        # Wait for auth code with timeout (uses "_default" key for flows without state)
-        timeout = 120  # 2 minutes
-        start_time = time.time()
-        while "_default" not in auth_states:
-            if time.time() - start_time > timeout:
-                raise TimeoutError("OAuth authorization timed out after 2 minutes")
-            logger.info("Waiting for OAuth authorization...")
-            time.sleep(1)
-
-        auth_code = auth_states["_default"]
-        logger.info("Received authorization code, exchanging for token...")
-
-        token_response = await http_client.post(
-            token_endpoint,
-            data={
-                "grant_type": "authorization_code",
-                "code": auth_code,
-                "redirect_uri": callback_url,
-                "client_id": client_info.client_id,
-                "client_secret": client_info.client_secret,
-            },
-        )
-
-        logger.debug(f"Token response: {token_response.text}")
-        token_data = token_response.json()
-        logger.debug(f"Token data: {token_data}")
-        access_token = token_data.get("access_token")
-
-        return access_token
 
 
 @pytest.fixture(scope="session")
@@ -989,67 +847,6 @@ async def playwright_oauth_token(
 
         logger.info("Successfully obtained OAuth access token via Playwright")
         return access_token
-
-
-# Alternative fixtures using Playwright token (for automated/CI testing)
-
-
-@pytest.fixture(scope="session")
-async def nc_oauth_client_playwright(
-    playwright_oauth_token: str,
-) -> AsyncGenerator[NextcloudClient, Any]:
-    """
-    Fixture to create a NextcloudClient instance using automated Playwright OAuth authentication.
-    This fixture uses headless browser automation and is suitable for CI/CD pipelines.
-
-    For interactive testing, use nc_oauth_client fixture instead.
-    """
-    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
-    username = os.getenv("NEXTCLOUD_USERNAME")
-
-    if not all([nextcloud_host, username]):
-        pytest.skip(
-            "Playwright OAuth client fixture requires NEXTCLOUD_HOST and USERNAME"
-        )
-
-    logger.info(f"Creating OAuth NextcloudClient (Playwright) for user: {username}")
-    client = NextcloudClient.from_token(
-        base_url=nextcloud_host,
-        token=playwright_oauth_token,
-        username=username,
-    )
-
-    # Verify the OAuth client works
-    try:
-        await client.capabilities()
-        logger.info(
-            "OAuth NextcloudClient (Playwright) initialized and capabilities checked."
-        )
-        yield client
-    except Exception as e:
-        logger.error(f"Failed to initialize Playwright OAuth NextcloudClient: {e}")
-        pytest.fail(f"Failed to connect to Nextcloud with Playwright OAuth token: {e}")
-    finally:
-        await client.close()
-
-
-@pytest.fixture(scope="session")
-async def nc_mcp_oauth_client_playwright(
-    playwright_oauth_token: str,
-) -> AsyncGenerator[ClientSession, Any]:
-    """
-    Fixture to create an MCP client session for OAuth integration tests using Playwright automation.
-    Connects to the OAuth-enabled MCP server on port 8001 with OAuth authentication.
-
-    This fixture uses headless browser automation and is suitable for CI/CD pipelines.
-    For interactive testing, use nc_mcp_oauth_client fixture instead.
-    """
-    async for session in create_mcp_client_session(
-        url="http://127.0.0.1:8001/mcp",
-        token=playwright_oauth_token,
-        client_name="OAuth MCP (Playwright Alt)",
-    ):
-        yield session
 
 
 @pytest.fixture(scope="session")

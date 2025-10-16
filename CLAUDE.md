@@ -132,47 +132,35 @@ Each Nextcloud app has a corresponding server module that:
 - **Avoid creating standalone test scripts** - use pytest with proper fixtures instead
 
 #### OAuth/OIDC Testing
-OAuth integration tests support both **automated** (Playwright) and **interactive** authentication flows:
+OAuth integration tests use **automated Playwright browser automation** to complete the OAuth flow programmatically.
 
-**Automated Testing (Default - Recommended for CI/CD):**
-- **Default fixtures**: `nc_oauth_client`, `nc_mcp_oauth_client` use Playwright automation
-- Uses Playwright headless browser automation to complete OAuth flow programmatically
+**OAuth Testing Setup:**
+- **Main fixtures**: `nc_oauth_client`, `nc_mcp_oauth_client` - Use Playwright automation
 - **Shared OAuth Client**: All test users authenticate using a single OAuth client
   - Stored in `.nextcloud_oauth_shared_test_client.json`
   - Matches production MCP server behavior
   - Each user gets their own unique access token
-  - Implementation: `shared_oauth_client_credentials` fixture in `tests/conftest.py:812`
-- All Playwright fixtures: `playwright_oauth_token`, `nc_oauth_client`, `nc_mcp_oauth_client`, `nc_oauth_client_playwright`, `nc_mcp_oauth_client_playwright`
-- Multi-user fixtures: `alice_oauth_token`, `bob_oauth_token`, `charlie_oauth_token`, `diana_oauth_token`
-- Requires: `NEXTCLOUD_HOST`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_PASSWORD` environment variables
+  - Implementation: `shared_oauth_client_credentials` fixture in `tests/conftest.py`
+- **Available fixtures**: `playwright_oauth_token`, `nc_oauth_client`, `nc_mcp_oauth_client`
+- **Multi-user fixtures**: `alice_oauth_token`, `bob_oauth_token`, `charlie_oauth_token`, `diana_oauth_token`
+- **Requirements**: `NEXTCLOUD_HOST`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_PASSWORD` environment variables
 - Uses `pytest-playwright-asyncio` for async Playwright fixtures
-- Playwright configuration: Use pytest CLI args like `--browser firefox --headed` to customize
-- Install browsers: `uv run playwright install firefox` (or `chromium`, `webkit`)
-- Example:
-  ```bash
-  # Run all OAuth tests with automated Playwright flow using Firefox
-  uv run pytest tests/server/test_oauth*.py --browser firefox -v
+- **Playwright configuration**: Use pytest CLI args like `--browser firefox --headed` to customize
+- **Install browsers**: `uv run playwright install firefox` (or `chromium`, `webkit`)
 
-  # Run specific Playwright tests with visible browser for debugging
-  uv run pytest tests/server/test_mcp_oauth.py --browser firefox --headed -v
+**Example Commands:**
+```bash
+# Run all OAuth tests with Playwright automation using Firefox
+uv run pytest tests/server/test_oauth*.py --browser firefox -v
 
-  # Run with Chromium (default)
-  uv run pytest tests/server/test_oauth*.py -v
-  ```
+# Run specific tests with visible browser for debugging
+uv run pytest tests/server/test_mcp_oauth.py --browser firefox --headed -v
 
-**Interactive Testing (Manual browser login):**
-- Opens system browser and waits for manual login/authorization
-- Fixtures: `interactive_oauth_token`, `nc_oauth_client_interactive`, `nc_mcp_oauth_client_interactive`
-- Requires: User to complete browser-based login when prompted
-- Useful for: Debugging OAuth flows, testing with 2FA, local development
-- **Automatically skipped in GitHub Actions CI** - Interactive fixtures check for `GITHUB_ACTIONS` environment variable
-- Example:
-  ```bash
-  # Run OAuth tests with interactive flow (will open browser and wait for manual login)
-  uv run pytest tests/client/test_oauth_interactive.py -v
-  ```
+# Run with Chromium (default)
+uv run pytest tests/server/test_oauth*.py -v
+```
 
-**Test Environment Setup:**
+**Test Environment:**
 - **Two MCP server containers are available:**
   - `mcp` (port 8000): Uses basic auth with admin credentials - for most testing
   - `mcp-oauth` (port 8001): Uses OAuth authentication - for OAuth-specific testing
@@ -180,9 +168,8 @@ OAuth integration tests support both **automated** (Playwright) and **interactiv
 - **Important**: When working on OAuth functionality, always rebuild `mcp-oauth` container, not `mcp`
 - OAuth client credentials cached in `.nextcloud_oauth_shared_test_client.json`
 
-**CI/CD Considerations:**
-- Interactive OAuth tests are automatically skipped when `GITHUB_ACTIONS` environment variable is set
-- Automated Playwright tests will run in CI/CD environments
+**CI/CD Notes:**
+- Playwright tests run in CI/CD environments
 - Use Firefox browser in CI: `--browser firefox` (Chromium may have issues with localhost redirects)
 
 ### Configuration Files
