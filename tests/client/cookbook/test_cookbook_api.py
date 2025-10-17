@@ -153,29 +153,17 @@ async def test_cookbook_delete_nonexistent_recipe(nc_client: NextcloudClient):
         logger.info(f"Delete correctly failed with {e.response.status_code}")
 
 
-async def test_cookbook_import_recipe_from_url(
-    nc_client: NextcloudClient, test_recipe_server: str
-):
+async def test_cookbook_import_recipe_from_url(nc_client: NextcloudClient):
     """Test importing a recipe from a URL.
 
     This is the key feature test - importing recipes from URLs using schema.org metadata.
-    Uses a local test server to provide reliable, controlled test data.
+    Uses an nginx container to serve reliable, controlled test data.
     """
-    # Replace localhost with Docker bridge gateway IP so the Nextcloud container can reach it
-    # The test_recipe_server runs on the host, but Nextcloud runs in Docker
-    # On Linux, 172.17.0.1 is the default Docker bridge gateway
-    # On Mac/Windows, try host.docker.internal first
-    import platform
 
-    if platform.system() == "Linux":
-        docker_host = "172.17.0.1"
-    else:
-        docker_host = "host.docker.internal"
+    # Use the nginx container hostname within the Docker network
+    test_url = "http://recipes/black-pepper-tofu"
 
-    docker_accessible_url = test_recipe_server.replace("localhost", docker_host)
-    test_url = f"{docker_accessible_url}/black-pepper-tofu"
-
-    logger.info(f"Importing recipe from local test URL (Docker-accessible): {test_url}")
+    logger.info(f"Importing recipe from nginx container: {test_url}")
 
     try:
         imported_recipe = await nc_client.cookbook.import_recipe(test_url)
@@ -213,7 +201,7 @@ async def test_cookbook_import_recipe_from_url(
         elif e.response.status_code == 400:
             # URL couldn't be imported
             logger.error(
-                f"Failed to import recipe from local test URL: {test_url}. "
+                f"Failed to import recipe from nginx container: {test_url}. "
                 f"Status: {e.response.status_code}, Response: {e.response.text}"
             )
             raise
