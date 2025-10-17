@@ -1,6 +1,6 @@
 import logging
 
-from httpx import HTTPStatusError
+from httpx import HTTPStatusError, RequestError
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData
@@ -61,6 +61,13 @@ def configure_notes_tools(mcp: FastMCP):
         try:
             note_data = await client.notes.get_note(note_id)
             return Note(**note_data)
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message=f"Network error retrieving note {note_id}: {str(e)}",
+                )
+            )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
                 raise McpError(ErrorData(code=-1, message=f"Note {note_id} not found"))
@@ -91,6 +98,10 @@ def configure_notes_tools(mcp: FastMCP):
             note = Note(**note_data)
             return CreateNoteResponse(
                 id=note.id, title=note.title, category=note.category, etag=note.etag
+            )
+        except RequestError as e:
+            raise McpError(
+                ErrorData(code=-1, message=f"Network error creating note: {str(e)}")
             )
         except HTTPStatusError as e:
             if e.response.status_code == 403:
@@ -146,6 +157,12 @@ def configure_notes_tools(mcp: FastMCP):
             return UpdateNoteResponse(
                 id=note.id, title=note.title, category=note.category, etag=note.etag
             )
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-1, message=f"Network error updating note {note_id}: {str(e)}"
+                )
+            )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
                 raise McpError(ErrorData(code=-1, message=f"Note {note_id} not found"))
@@ -191,6 +208,13 @@ def configure_notes_tools(mcp: FastMCP):
             note = Note(**note_data)
             return AppendContentResponse(
                 id=note.id, title=note.title, category=note.category, etag=note.etag
+            )
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message=f"Network error appending to note {note_id}: {str(e)}",
+                )
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
@@ -238,6 +262,10 @@ def configure_notes_tools(mcp: FastMCP):
             return SearchNotesResponse(
                 results=results, query=query, total_found=len(results)
             )
+        except RequestError as e:
+            raise McpError(
+                ErrorData(code=-1, message=f"Network error searching notes: {str(e)}")
+            )
         except HTTPStatusError as e:
             if e.response.status_code == 403:
                 raise McpError(
@@ -265,6 +293,12 @@ def configure_notes_tools(mcp: FastMCP):
         try:
             note_data = await client.notes.get_note(note_id)
             return Note(**note_data)
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-1, message=f"Network error getting note {note_id}: {str(e)}"
+                )
+            )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
                 raise McpError(ErrorData(code=-1, message=f"Note {note_id} not found"))
@@ -295,6 +329,13 @@ def configure_notes_tools(mcp: FastMCP):
                 "mimeType": mime_type,
                 "data": content,
             }
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message=f"Network error getting attachment {attachment_filename} for note {note_id}: {str(e)}",
+                )
+            )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
                 raise McpError(
@@ -329,6 +370,12 @@ def configure_notes_tools(mcp: FastMCP):
                 status_code=200,
                 message=f"Note {note_id} deleted successfully",
                 deleted_id=note_id,
+            )
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-1, message=f"Network error deleting note {note_id}: {str(e)}"
+                )
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:

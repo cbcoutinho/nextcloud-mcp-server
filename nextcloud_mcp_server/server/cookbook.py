@@ -1,6 +1,6 @@
 import logging
 
-from httpx import HTTPStatusError
+from httpx import HTTPStatusError, RequestError
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData
@@ -82,6 +82,13 @@ def configure_cookbook_tools(mcp: FastMCP):
             return ImportRecipeResponse(
                 recipe=recipe,
                 recipe_id=recipe.id or "unknown",
+            )
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message=f"Network error importing recipe from {url}: {str(e)}",
+                )
             )
         except HTTPStatusError as e:
             if e.response.status_code == 400:
