@@ -1,3 +1,9 @@
+## v0.15.0 (2025-10-17)
+
+### Feat
+
+- **cookbook**: Add full Cookbook app support with 13 tools and 2 resources
+
 ## v0.14.3 (2025-10-17)
 
 ### Fix
