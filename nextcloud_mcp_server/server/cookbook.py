@@ -84,10 +84,15 @@ def configure_cookbook_tools(mcp: FastMCP):
                 recipe_id=recipe.id or "unknown",
             )
         except RequestError as e:
+            # RequestError can have empty str() - get details from exception attributes
+            error_detail = (
+                str(e)
+                or f"{type(e).__name__}: {getattr(e, '__cause__', 'unknown cause')}"
+            )
             raise McpError(
                 ErrorData(
                     code=-1,
-                    message=f"Network error importing recipe from {url}: {str(e)}",
+                    message=f"Network error importing recipe from {url}: {error_detail}",
                 )
             )
         except HTTPStatusError as e:
