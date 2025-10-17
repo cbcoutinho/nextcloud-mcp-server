@@ -161,16 +161,8 @@ async def test_cookbook_import_recipe_from_url(
     This is the key feature test - importing recipes from URLs using schema.org metadata.
     Uses a local test server to provide reliable, controlled test data.
     """
-    # Replace localhost with Docker bridge gateway IP so the Nextcloud container can reach it
-    # The test_recipe_server runs on the host, but Nextcloud runs in Docker
-    # On Linux, 172.17.0.1 is the default Docker bridge gateway
-    # On Mac/Windows, try host.docker.internal first
-    import platform
 
-    if platform.system() == "Linux":
-        docker_host = "172.17.0.1"
-    else:
-        docker_host = "host.docker.internal"
+    docker_host = "host.docker.internal"
 
     docker_accessible_url = test_recipe_server.replace("localhost", docker_host)
     test_url = f"{docker_accessible_url}/black-pepper-tofu"

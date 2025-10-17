@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import platform
 import uuid
 
 import pytest
@@ -216,11 +215,7 @@ async def test_mcp_cookbook_import_recipe_from_url(
     This is the key feature test - importing recipes from URLs using schema.org metadata.
     Uses a local test server to provide reliable, controlled test data.
     """
-    # Replace localhost with Docker bridge gateway IP so the Nextcloud container can reach it
-    if platform.system() == "Linux":
-        docker_host = "172.17.0.1"
-    else:
-        docker_host = "host.docker.internal"
+    docker_host = "host.docker.internal"
 
     docker_accessible_url = test_recipe_server.replace("localhost", docker_host)
     test_url = f"{docker_accessible_url}/black-pepper-tofu"

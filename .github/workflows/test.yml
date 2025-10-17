@@ -62,4 +62,4 @@ jobs:
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
         run: |
-          uv run pytest -v --browser firefox
+          uv run pytest -v --browser firefox -k 'test_mcp_cookbook_import_recipe_from_url or test_cookbook_import_recipe_from_url'

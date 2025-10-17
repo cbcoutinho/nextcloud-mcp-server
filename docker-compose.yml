@@ -39,6 +39,8 @@ services:
       - MYSQL_DATABASE=nextcloud
       - MYSQL_USER=nextcloud
       - MYSQL_HOST=db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   mcp:
     build: .
