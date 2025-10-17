@@ -39,8 +39,13 @@ services:
       - MYSQL_DATABASE=nextcloud
       - MYSQL_USER=nextcloud
       - MYSQL_HOST=db
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+
+  recipes:
+    image: docker.io/library/nginx:alpine
+    restart: always
+    volumes:
+      - ./tests/fixtures/test_recipe.html:/usr/share/nginx/html/test_recipe.html:ro
+      - ./tests/fixtures/nginx.conf:/etc/nginx/nginx.conf:ro
 
   mcp:
     build: .

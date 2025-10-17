@@ -208,25 +208,20 @@ async def test_mcp_cookbook_delete_recipe(
 async def test_mcp_cookbook_import_recipe_from_url(
     nc_mcp_client: ClientSession,
     nc_client: NextcloudClient,
-    test_recipe_server: str,
 ):
     """Test importing a recipe from a URL via MCP tools.
 
     This is the key feature test - importing recipes from URLs using schema.org metadata.
-    Uses a local test server to provide reliable, controlled test data.
+    Uses an nginx container to serve reliable, controlled test data.
     """
-    docker_host = "host.docker.internal"
-
-    docker_accessible_url = test_recipe_server.replace("localhost", docker_host)
-    test_url = f"{docker_accessible_url}/black-pepper-tofu"
+    # Use the nginx container hostname within the Docker network
+    test_url = "http://recipes/black-pepper-tofu"
 
     created_recipe_id = None
 
     try:
         # 1. Import recipe via MCP
-        logger.info(
-            f"Importing recipe from local test URL via MCP (Docker-accessible): {test_url}"
-        )
+        logger.info(f"Importing recipe from nginx container via MCP: {test_url}")
         import_result = await nc_mcp_client.call_tool(
             "nc_cookbook_import_recipe", {"url": test_url}
         )
