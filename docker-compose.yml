@@ -41,7 +41,7 @@ services:
       - MYSQL_HOST=db
 
   recipes:
-    image: docker.io/library/nginx:alpine
+    image: docker.io/library/nginx:alpine@sha256:61e01287e546aac28a3f56839c136b31f590273f3b41187a36f46f6a03bbfe22
     restart: always
     volumes:
       - ./tests/fixtures/test_recipe.html:/usr/share/nginx/html/test_recipe.html:ro
