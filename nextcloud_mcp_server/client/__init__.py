@@ -14,6 +14,7 @@ from httpx import (
 from ..controllers.notes_search import NotesSearchController
 from .calendar import CalendarClient
 from .contacts import ContactsClient
+from .cookbook import CookbookClient
 from .deck import DeckClient
 from .groups import GroupsClient
 from .notes import NotesClient
@@ -73,6 +74,7 @@ class NextcloudClient:
         self.tables = TablesClient(self._client, username)
         self.calendar = CalendarClient(self._client, username)
         self.contacts = ContactsClient(self._client, username)
+        self.cookbook = CookbookClient(self._client, username)
         self.deck = DeckClient(self._client, username)
         self.users = UsersClient(self._client, username)
         self.groups = GroupsClient(self._client, username)

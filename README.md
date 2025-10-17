@@ -18,6 +18,7 @@ The Nextcloud MCP (Model Context Protocol) server allows Large Language Models l
 | **Notes** | ✅ Full | Create, read, update, delete, search notes. Handle attachments. |
 | **Calendar** | ✅ Full | Manage events, recurring events, reminders, attendees via CalDAV. |
 | **Contacts** | ✅ Full | CRUD operations for contacts and address books via CardDAV. |
+| **Cookbook** | ✅ Full | Manage recipes with schema.org metadata. Import from URLs, search, categorize. |
 | **Files (WebDAV)** | ✅ Full | Complete file system access - browse, read, write, organize files. |
 | **Deck** | ✅ Full | Project management - boards, stacks, cards, labels, assignments. |
 | **Tables** | ⚠️ Partial | Row-level operations. Table management not yet supported. |
@@ -29,8 +30,16 @@ Want to see another Nextcloud app supported? [Open an issue](https://github.com/
 
 | Mode | Security | Best For |
 |------|----------|----------|
-| **OAuth2/OIDC** ✅ | 🔒 High | Production, multi-user deployments |
-| **Basic Auth** ⚠️ | Lower | Development, testing |
+| **OAuth2/OIDC** ⚠️ **Experimental** | 🔒 High | Testing, evaluation (requires patches) |
+| **Basic Auth** ✅ | Lower | Development, testing, production |
+
+> [!IMPORTANT]
+> **OAuth is experimental** and requires manual patches to upstream Nextcloud apps. Specifically:
+> - **Required patch**: `user_oidc` app needs modifications for Bearer token support ([issue #1221](https://github.com/nextcloud/user_oidc/issues/1221))
+> - **Impact**: Without the patch, most app-specific APIs (Notes, Calendar, Contacts, Deck, etc.) will fail with 401 errors
+> - **Production use**: Wait for upstream patches to be merged into official releases
+>
+> See [OAuth Upstream Status](docs/oauth-upstream-status.md) for detailed information on required patches and workarounds.
 
 OAuth2/OIDC provides secure, per-user authentication with access tokens. See [Authentication Guide](docs/authentication.md) for details.
 
@@ -61,29 +70,35 @@ Create a `.env` file:
 cp env.sample .env
 ```
 
-**For OAuth (recommended):**
-```dotenv
-NEXTCLOUD_HOST=https://your.nextcloud.instance.com
-```
-
-**For Basic Auth:**
+**For Basic Auth (recommended for most users):**
 ```dotenv
 NEXTCLOUD_HOST=https://your.nextcloud.instance.com
 NEXTCLOUD_USERNAME=your_username
 NEXTCLOUD_PASSWORD=your_app_password
 ```
 
+**For OAuth (experimental - requires patches):**
+```dotenv
+NEXTCLOUD_HOST=https://your.nextcloud.instance.com
+```
+
 See [Configuration Guide](docs/configuration.md) for all options.
 
 ### 3. Set Up Authentication
 
-**OAuth Setup (recommended):**
-1. Install Nextcloud OIDC apps (`oidc` + `user_oidc`)
-2. Enable dynamic client registration
-3. Configure Bearer token validation
-4. Start the server
+**Basic Auth Setup (recommended):**
+1. Create an app password in Nextcloud (Settings → Security → Devices & sessions)
+2. Add credentials to `.env` file
+3. Start the server
 
-See [OAuth Quick Start](docs/quickstart-oauth.md) for 5-minute setup or [OAuth Setup Guide](docs/oauth-setup.md) for production deployment.
+**OAuth Setup (experimental):**
+1. Install Nextcloud OIDC apps (`oidc` + `user_oidc`)
+2. **Apply required patches** to `user_oidc` app (see [OAuth Upstream Status](docs/oauth-upstream-status.md))
+3. Enable dynamic client registration
+4. Configure Bearer token validation
+5. Start the server
+
+See [OAuth Quick Start](docs/quickstart-oauth.md) for 5-minute setup or [OAuth Setup Guide](docs/oauth-setup.md) for detailed instructions.
 
 ### 4. Run the Server
 
@@ -91,12 +106,15 @@ See [OAuth Quick Start](docs/quickstart-oauth.md) for 5-minute setup or [OAuth S
 # Load environment variables
 export $(grep -v '^#' .env | xargs)
 
-# Start the server
+# Start with Basic Auth (default)
+uv run nextcloud-mcp-server
+
+# Or start with OAuth (experimental - requires patches)
 uv run nextcloud-mcp-server --oauth
 
 # Or with Docker
 docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
-  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
 ```
 
 The server starts on `http://127.0.0.1:8000` by default.
@@ -126,12 +144,12 @@ Or connect from:
 ### Architecture
 - **[Comparison with Context Agent](docs/comparison-context-agent.md)** - How this MCP server differs from Nextcloud's Context Agent
 
-### OAuth Documentation
+### OAuth Documentation (Experimental)
 - **[OAuth Quick Start](docs/quickstart-oauth.md)** - 5-minute setup guide
-- **[OAuth Setup Guide](docs/oauth-setup.md)** - Production deployment
+- **[OAuth Setup Guide](docs/oauth-setup.md)** - Detailed setup instructions
 - **[OAuth Architecture](docs/oauth-architecture.md)** - How OAuth works
 - **[OAuth Troubleshooting](docs/oauth-troubleshooting.md)** - OAuth-specific issues
-- **[Upstream Status](docs/oauth-upstream-status.md)** - Required patches and PRs
+- **[Upstream Status](docs/oauth-upstream-status.md)** - **Required patches and PRs** ⚠️
 
 ### Reference
 - **[Troubleshooting](docs/troubleshooting.md)** - Common issues and solutions
@@ -140,6 +158,7 @@ Or connect from:
 - [Notes API](docs/notes.md)
 - [Calendar (CalDAV)](docs/calendar.md)
 - [Contacts (CardDAV)](docs/contacts.md)
+- [Cookbook](docs/cookbook.md)
 - [Deck](docs/deck.md)
 - [Tables](docs/table.md)
 - [WebDAV](docs/webdav.md)
@@ -151,6 +170,7 @@ The server exposes Nextcloud functionality through MCP tools (for actions) and r
 ### Tools
 Tools enable AI assistants to perform actions:
 - `nc_notes_create_note` - Create a new note
+- `nc_cookbook_import_recipe` - Import recipes from URLs with schema.org metadata
 - `deck_create_card` - Create a Deck card
 - `nc_calendar_create_event` - Create a calendar event
 - `nc_contacts_create_contact` - Create a contact
@@ -159,6 +179,7 @@ Tools enable AI assistants to perform actions:
 ### Resources
 Resources provide read-only access to Nextcloud data:
 - `nc://capabilities` - Server capabilities
+- `cookbook://version` - Cookbook app version info
 - `nc://Deck/boards/{board_id}` - Deck board data
 - `notes://settings` - Notes app settings
 - And more...
@@ -171,6 +192,12 @@ Run `uv run nextcloud-mcp-server --help` to see all available options.
 ```
 AI: "Create a note called 'Meeting Notes' with today's agenda"
 → Uses nc_notes_create_note tool
+```
+
+### Manage Recipes
+```
+AI: "Import the recipe from this URL: https://www.example.com/recipe/chocolate-cake"
+→ Uses nc_cookbook_import_recipe tool to extract schema.org metadata
 ```
 
 ### Manage Calendar
@@ -220,7 +247,8 @@ Contributions are welcome!
 [![MseeP.ai Security Assessment](https://mseep.net/pr/cbcoutinho-nextcloud-mcp-server-badge.png)](https://mseep.ai/app/cbcoutinho-nextcloud-mcp-server)
 
 This project takes security seriously:
-- OAuth2/OIDC support for secure authentication
+- OAuth2/OIDC support (experimental - requires upstream patches)
+- Basic Auth with app-specific passwords (recommended)
 - No credential storage with OAuth mode
 - Per-user access tokens
 - Regular security assessments
