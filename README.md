@@ -18,6 +18,7 @@ The Nextcloud MCP (Model Context Protocol) server allows Large Language Models l
 | **Notes** | ✅ Full | Create, read, update, delete, search notes. Handle attachments. |
 | **Calendar** | ✅ Full | Manage events, recurring events, reminders, attendees via CalDAV. |
 | **Contacts** | ✅ Full | CRUD operations for contacts and address books via CardDAV. |
+| **Cookbook** | ✅ Full | Manage recipes with schema.org metadata. Import from URLs, search, categorize. |
 | **Files (WebDAV)** | ✅ Full | Complete file system access - browse, read, write, organize files. |
 | **Deck** | ✅ Full | Project management - boards, stacks, cards, labels, assignments. |
 | **Tables** | ⚠️ Partial | Row-level operations. Table management not yet supported. |
@@ -140,6 +141,7 @@ Or connect from:
 - [Notes API](docs/notes.md)
 - [Calendar (CalDAV)](docs/calendar.md)
 - [Contacts (CardDAV)](docs/contacts.md)
+- [Cookbook](docs/cookbook.md)
 - [Deck](docs/deck.md)
 - [Tables](docs/table.md)
 - [WebDAV](docs/webdav.md)
@@ -151,6 +153,7 @@ The server exposes Nextcloud functionality through MCP tools (for actions) and r
 ### Tools
 Tools enable AI assistants to perform actions:
 - `nc_notes_create_note` - Create a new note
+- `nc_cookbook_import_recipe` - Import recipes from URLs with schema.org metadata
 - `deck_create_card` - Create a Deck card
 - `nc_calendar_create_event` - Create a calendar event
 - `nc_contacts_create_contact` - Create a contact
@@ -159,6 +162,7 @@ Tools enable AI assistants to perform actions:
 ### Resources
 Resources provide read-only access to Nextcloud data:
 - `nc://capabilities` - Server capabilities
+- `cookbook://version` - Cookbook app version info
 - `nc://Deck/boards/{board_id}` - Deck board data
 - `notes://settings` - Notes app settings
 - And more...
@@ -171,6 +175,12 @@ Run `uv run nextcloud-mcp-server --help` to see all available options.
 ```
 AI: "Create a note called 'Meeting Notes' with today's agenda"
 → Uses nc_notes_create_note tool
+```
+
+### Manage Recipes
+```
+AI: "Import the recipe from this URL: https://www.example.com/recipe/chocolate-cake"
+→ Uses nc_cookbook_import_recipe tool to extract schema.org metadata
 ```
 
 ### Manage Calendar

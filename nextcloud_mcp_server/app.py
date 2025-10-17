@@ -19,6 +19,7 @@ from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.server import (
     configure_calendar_tools,
     configure_contacts_tools,
+    configure_cookbook_tools,
     configure_deck_tools,
     configure_notes_tools,
     configure_sharing_tools,
@@ -379,6 +380,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         "sharing": configure_sharing_tools,
         "calendar": configure_calendar_tools,
         "contacts": configure_contacts_tools,
+        "cookbook": configure_cookbook_tools,
         "deck": configure_deck_tools,
     }
 
@@ -444,7 +446,9 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     "--enable-app",
     "-e",
     multiple=True,
-    type=click.Choice(["notes", "tables", "webdav", "calendar", "contacts", "deck"]),
+    type=click.Choice(
+        ["notes", "tables", "webdav", "calendar", "contacts", "cookbook", "deck"]
+    ),
     help="Enable specific Nextcloud app APIs. Can be specified multiple times. If not specified, all apps are enabled.",
 )
 @click.option(

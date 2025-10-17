@@ -52,6 +52,19 @@ async def test_mcp_connectivity(nc_mcp_client: ClientSession):
         "nc_calendar_bulk_operations",
         "nc_calendar_manage_calendar",
         "deck_create_board",
+        "nc_cookbook_import_recipe",
+        "nc_cookbook_list_recipes",
+        "nc_cookbook_get_recipe",
+        "nc_cookbook_create_recipe",
+        "nc_cookbook_update_recipe",
+        "nc_cookbook_delete_recipe",
+        "nc_cookbook_search_recipes",
+        "nc_cookbook_list_categories",
+        "nc_cookbook_get_recipes_in_category",
+        "nc_cookbook_list_keywords",
+        "nc_cookbook_get_recipes_with_keywords",
+        "nc_cookbook_set_config",
+        "nc_cookbook_reindex",
     ]
 
     for expected_tool in expected_tools:
@@ -85,7 +98,13 @@ async def test_mcp_connectivity(nc_mcp_client: ClientSession):
         resource_uris.append(str(resource.uri))  # Convert to string for comparison
 
     # Verify expected resources
-    expected_resources = ["nc://capabilities", "notes://settings", "nc://Deck/boards"]
+    expected_resources = [
+        "nc://capabilities",
+        "notes://settings",
+        "nc://Deck/boards",
+        "cookbook://version",
+        "cookbook://config",
+    ]
 
     for expected_resource in expected_resources:
         assert expected_resource in resource_uris, (
