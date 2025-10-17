@@ -1,3 +1,10 @@
+## v0.15.1 (2025-10-17)
+
+### Fix
+
+- Increase HTTP client timeout to 30s
+- Handle RequestError in mcp tools
+
 ## v0.15.0 (2025-10-17)
 
 ### Feat
