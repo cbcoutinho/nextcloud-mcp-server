@@ -14,7 +14,7 @@ from starlette.routing import Mount
 
 from nextcloud_mcp_server.auth import NextcloudTokenVerifier, load_or_register_client
 from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.config import setup_logging
+from nextcloud_mcp_server.config import setup_logging, LOGGING_CONFIG
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.server import (
     configure_calendar_tools,
@@ -352,9 +352,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         # Asynchronously get the OAuth configuration
         import asyncio
 
-        nextcloud_host, token_verifier, auth_settings = asyncio.run(
-            setup_oauth_config()
-        )
+        _, token_verifier, auth_settings = asyncio.run(setup_oauth_config())
         mcp = FastMCP(
             "Nextcloud MCP",
             lifespan=app_lifespan_oauth,
@@ -423,10 +421,6 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     "--port", "-p", type=int, default=8000, show_default=True, help="Server port"
 )
 @click.option(
-    "--workers", "-w", type=int, default=None, help="Number of worker processes"
-)
-@click.option("--reload", "-r", is_flag=True, help="Enable auto-reload")
-@click.option(
     "--log-level",
     "-l",
     default="info",
@@ -483,8 +477,6 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 def run(
     host: str,
     port: int,
-    workers: int,
-    reload: bool,
     log_level: str,
     transport: str,
     enable_app: tuple[str, ...],
@@ -591,21 +583,10 @@ def run(
 
     enabled_apps = list(enable_app) if enable_app else None
 
-    if reload or workers:
-        app = "nextcloud_mcp_server.app:get_app"
-        factory = True
-    else:
-        app = get_app(transport=transport, enabled_apps=enabled_apps)
-        factory = False
+    app = get_app(transport=transport, enabled_apps=enabled_apps)
 
     uvicorn.run(
-        app=app,
-        factory=factory,
-        host=host,
-        port=port,
-        reload=reload,
-        workers=workers,
-        log_level=log_level,
+        app=app, host=host, port=port, log_level=log_level, log_config=LOGGING_CONFIG
     )
 
 
