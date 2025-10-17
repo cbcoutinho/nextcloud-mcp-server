@@ -1,5 +1,6 @@
 # Nextcloud MCP Server
 
+
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io/cbcoutinho/nextcloud--mcp--server-blue)](https://github.com/cbcoutinho/nextcloud-mcp-server/pkgs/container/nextcloud-mcp-server)
 
 **Enable AI assistants to interact with your Nextcloud instance.**
