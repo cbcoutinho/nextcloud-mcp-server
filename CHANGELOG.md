@@ -1,3 +1,9 @@
+## v0.15.2 (2025-10-17)
+
+### Refactor
+
+- Unify logging & remove factory deployment
+
 ## v0.15.1 (2025-10-17)
 
 ### Fix
