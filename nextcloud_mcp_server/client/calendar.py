@@ -7,9 +7,8 @@ import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional, Tuple
 
 from httpx import HTTPStatusError
-from icalendar import Alarm, Calendar
+from icalendar import Alarm, Calendar, vRecur
 from icalendar import Event as ICalEvent
-from icalendar import vRecur
 
 from .base import BaseNextcloudClient
 
