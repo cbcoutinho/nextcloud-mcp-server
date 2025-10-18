@@ -27,6 +27,6 @@ async def test_oauth_client_with_playwright_flow(nc_oauth_client):
     logger.info("OAuth client (Playwright) successfully fetched capabilities")
 
     # Test 2: List notes
-    notes = await nc_oauth_client.notes.get_all_notes()
+    notes = [note async for note in nc_oauth_client.notes.get_all_notes()]
     assert isinstance(notes, list)
     logger.info(f"OAuth client (Playwright) successfully listed {len(notes)} notes")

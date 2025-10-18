@@ -1,7 +1,7 @@
 """Client for Nextcloud Notes app operations."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
 from .base import BaseNextcloudClient
 
@@ -16,23 +16,21 @@ class NotesClient(BaseNextcloudClient):
         response = await self._make_request("GET", "/apps/notes/api/v1/settings")
         return response.json()
 
-    async def get_all_notes(self) -> List[Dict[str, Any]]:
-        """Get all notes."""
-        notes = []
+    async def get_all_notes(self) -> AsyncIterator[Dict[str, Any]]:
+        """Get all notes, yielding them one at a time."""
         cursor = ""
 
         while True:
             response = await self._make_request(
                 "GET",
                 "/apps/notes/api/v1/notes",
-                params={"chunkSize": 50, "chunkCursor": cursor},
+                params={"chunkSize": 10, "chunkCursor": cursor},
             )
-            notes.extend(response.json())
+            for note in response.json():
+                yield note
             if "X-Notes-Chunk-Cursor" not in response.headers:
                 break
             cursor = response.headers["X-Notes-Chunk-Cursor"]
-
-        return notes
 
     async def get_note(self, note_id: int) -> Dict[str, Any]:
         """Get a specific note by ID."""
