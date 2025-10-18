@@ -552,6 +552,13 @@ def oauth_callback_server():
 
     Automatically skips when running in GitHub Actions CI.
     """
+    # Skip OAuth tests in GitHub Actions - Playwright browser automation
+    # has issues with localhost callback server in CI environment
+    if os.getenv("GITHUB_ACTIONS"):
+        pytest.skip(
+            "OAuth tests with browser automation not supported in GitHub Actions CI"
+        )
+
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
     from urllib.parse import parse_qs, urlparse
@@ -1135,9 +1142,8 @@ async def all_oauth_tokens(
         )
 
     # Create tasks for all users with staggered starts (0.5s apart)
-    scale = 0.5 if "GITHUB_ACTIONS" not in os.environ else 10
     tasks = {
-        username: get_token_with_delay(username, config, idx * scale)
+        username: get_token_with_delay(username, config, idx * 0.5)
         for idx, (username, config) in enumerate(test_users_setup.items())
     }
 

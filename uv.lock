@@ -650,6 +650,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-playwright-asyncio" },
+    { name = "pytest-timeout" },
     { name = "ruff" },
 ]
 
@@ -672,6 +673,7 @@ dev = [
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-cov", specifier = ">=6.1.1" },
     { name = "pytest-playwright-asyncio", specifier = ">=0.7.1" },
+    { name = "pytest-timeout", specifier = ">=2.3.1" },
     { name = "ruff", specifier = ">=0.11.13" },
 ]
 
@@ -1035,6 +1037,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f8/14/bdabbbcceea6acdcab21d5e920671ce27268d505d1800228c61b14fc0a47/pytest_playwright_asyncio-0.7.1.tar.gz", hash = "sha256:696896e27d8d6b0029f9d324d9b1ae64cfb239c378c13440ea06af4df68ccfae", size = 16836, upload-time = "2025-09-08T08:10:54.877Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/94/1e/f71a3131bb03a57631d77a47cebba93b694033759f69f08a6f06c375fc30/pytest_playwright_asyncio-0.7.1-py3-none-any.whl", hash = "sha256:1cc25aed49879161cc1b1aa0f9e1a3d36d9ebdde412b6e5074440d71dc0d87e3", size = 16963, upload-time = "2025-09-08T08:10:56.788Z" },
+]
+
+[[package]]
+name = "pytest-timeout"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/82/4c9ecabab13363e72d880f2fb504c5f750433b2b6f16e99f4ec21ada284c/pytest_timeout-2.4.0.tar.gz", hash = "sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a", size = 17973, upload-time = "2025-05-05T19:44:34.99Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/b6/3127540ecdf1464a00e5a01ee60a1b09175f6913f0644ac748494d9c4b21/pytest_timeout-2.4.0-py3-none-any.whl", hash = "sha256:c42667e5cdadb151aeb5b26d114aff6bdf5a907f176a007a30b940d3d865b5c2", size = 14382, upload-time = "2025-05-05T19:44:33.502Z" },
 ]
 
 [[package]]
