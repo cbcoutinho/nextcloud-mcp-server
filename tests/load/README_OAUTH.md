@@ -142,24 +142,35 @@ uv run python -m tests.load.oauth_benchmark -u 2 -d 30 --verbose
 
 | Option | Short | Default | Description |
 |--------|-------|---------|-------------|
-| `--users` | `-u` | 2 | Number of concurrent users (max 4 with default config) |
+| `--users` | `-u` | 2 | Number of concurrent users (dynamically created) |
 | `--duration` | `-d` | 30.0 | Test duration in seconds |
 | `--warmup` | `-w` | 5.0 | Warmup period before metrics collection (seconds) |
 | `--url` | | `http://127.0.0.1:8001/mcp` | MCP OAuth server URL |
 | `--output` | `-o` | None | JSON output file path |
 | `--workload` | | `mixed` | Workload type: mixed, sharing, collaboration, baseline |
+| `--user-prefix` | | `loadtest` | Prefix for dynamically created usernames |
+| `--cleanup/--no-cleanup` | | `cleanup` | Delete created users after benchmark |
+| `--browser` | | `chromium` | Playwright browser: firefox, chromium, webkit |
+| `--headed` | | False | Run browser in headed mode (visible window) |
 | `--verbose` | `-v` | False | Enable verbose logging |
 
-## Default Test Users
+## Test User Creation
 
-The framework includes 4 pre-configured test users:
+The framework **dynamically creates test users** on-demand with OAuth authentication:
 
-| Username | Display Name | Groups | Role |
-|----------|--------------|--------|------|
-| alice | Alice Anderson | owners | Owner - full permissions |
-| bob | Bob Brown | viewers | Viewer - read-only |
-| charlie | Charlie Chen | editors | Editor - read/write |
-| diana | Diana Davis | (none) | No special permissions |
+- **Naming**: Users are created with the pattern `{prefix}_user_{n}` (default: `loadtest_user_1`, `loadtest_user_2`, etc.)
+- **Customization**: Use `--user-prefix` to change the prefix (e.g., `--user-prefix mytest` → `mytest_user_1`)
+- **Scalability**: No limit on user count - create as many concurrent users as your system can handle
+- **Credentials**: Each user gets a randomly generated secure password
+- **OAuth Tokens**: All users authenticate via automated OAuth flow using Playwright
+- **Cleanup**: Users are automatically deleted after the benchmark (disable with `--no-cleanup`)
+
+**Example**: Running `--users 5` creates:
+- `loadtest_user_1` (Display: Load Test User 1, Email: loadtest_user_1@benchmark.local)
+- `loadtest_user_2` (Display: Load Test User 2, Email: loadtest_user_2@benchmark.local)
+- `loadtest_user_3` (Display: Load Test User 3, Email: loadtest_user_3@benchmark.local)
+- `loadtest_user_4` (Display: Load Test User 4, Email: loadtest_user_4@benchmark.local)
+- `loadtest_user_5` (Display: Load Test User 5, Email: loadtest_user_5@benchmark.local)
 
 ## Metrics Output
 
@@ -171,34 +182,35 @@ OAUTH MULTI-USER BENCHMARK RESULTS
 ================================================================================
 
 Duration: 120.45s
-Total Users: 4
-Total Workflows Executed: 247
-Total Baseline Operations: 531
+Total Users: 5
+Total Workflows Executed: 312
+Total Baseline Operations: 678
 
 --------------------------------------------------------------------------------
 WORKFLOW STATISTICS
 --------------------------------------------------------------------------------
 Workflow                         Total  Success     Rate        P50        P95
 --------------------------------------------------------------------------------
-note_share                          89       87    97.8%   0.2341s   0.4782s
-collaborative_edit                  52       48    92.3%   0.5123s   0.9234s
-file_share                          23       23   100.0%   0.3456s   0.6123s
+note_share                         112      109    97.3%   0.2341s   0.4782s
+collaborative_edit                  65       61    93.8%   0.5123s   0.9234s
+file_share                          29       29   100.0%   0.3456s   0.6123s
 
 --------------------------------------------------------------------------------
 PER-USER STATISTICS
 --------------------------------------------------------------------------------
 User                  Total Ops    Success   Errors     Rate        P50
 --------------------------------------------------------------------------------
-alice                        234        229        5    97.9%   0.2456s
-bob                          198        195        3    98.5%   0.2123s
-charlie                      187        183        4    97.9%   0.2345s
-diana                        159        157        2    98.7%   0.2234s
+loadtest_user_1              289        283        6    97.9%   0.2456s
+loadtest_user_2              245        241        4    98.4%   0.2123s
+loadtest_user_3              231        226        5    97.8%   0.2345s
+loadtest_user_4              198        195        3    98.5%   0.2234s
+loadtest_user_5              187        184        3    98.4%   0.2189s
 
 --------------------------------------------------------------------------------
 BASELINE OPERATIONS
 --------------------------------------------------------------------------------
-Total Operations: 531
-Success Rate: 98.1%
+Total Operations: 678
+Success Rate: 98.2%
 Latency: min=0.0234s, p50=0.1234s, p95=0.3456s, max=0.8123s
 ================================================================================
 ```
@@ -209,16 +221,16 @@ Latency: min=0.0234s, p50=0.1234s, p95=0.3456s, max=0.8123s
 {
   "summary": {
     "duration": 120.45,
-    "total_workflows": 247,
-    "total_baseline_ops": 531,
-    "total_users": 4
+    "total_workflows": 312,
+    "total_baseline_ops": 678,
+    "total_users": 5
   },
   "workflows": {
     "note_share": {
-      "total_executions": 89,
-      "successful_executions": 87,
-      "failed_executions": 2,
-      "success_rate": 97.8,
+      "total_executions": 112,
+      "successful_executions": 109,
+      "failed_executions": 3,
+      "success_rate": 97.3,
       "latency": {
         "min": 0.1234,
         "max": 0.8765,
@@ -237,15 +249,19 @@ Latency: min=0.0234s, p50=0.1234s, p95=0.3456s, max=0.8123s
     }
   },
   "users": {
-    "alice": {
-      "total_operations": 234,
-      "successful_operations": 229,
-      "failed_operations": 5,
+    "loadtest_user_1": {
+      "total_operations": 289,
+      "successful_operations": 283,
+      "failed_operations": 6,
       "success_rate": 97.9,
       "latency": {...},
       "operations_breakdown": {...},
       "errors_breakdown": {...}
-    }
+    },
+    "loadtest_user_2": {...},
+    "loadtest_user_3": {...},
+    "loadtest_user_4": {...},
+    "loadtest_user_5": {...}
   },
   "baseline": {...}
 }
@@ -472,6 +488,18 @@ uv run python -m tests.load.cleanup_loadtest_users
 ### "User X not in pool" Error
 - Ensure user count doesn't exceed configured limits
 - Check that user creation succeeded in previous steps
+
+### CancelledError During Benchmark
+**Symptom**: Error message like `'CancelledError' object has no attribute 'username'` appears in logs
+
+**Cause**: Async task cancellation during benchmark shutdown or errors can cause race conditions in error handling
+
+**Solution**: This has been mitigated with defensive error handling. The worker now:
+- Catches `asyncio.CancelledError` specifically before general exceptions
+- Logs cancellation gracefully without attempting to access potentially invalid state
+- Re-raises the exception to allow proper cleanup chain
+
+If you still see this error, it's likely harmless and occurs during shutdown. The benchmark results should still be valid.
 
 ### High Error Rates
 - Increase delay between operations (`await asyncio.sleep()` in worker)

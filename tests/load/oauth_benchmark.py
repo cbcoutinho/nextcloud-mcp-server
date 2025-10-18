@@ -263,6 +263,13 @@ async def oauth_benchmark_worker(
             f"Worker for {user_wrapper.username} completed {operation_count} operations"
         )
 
+    except asyncio.CancelledError:
+        # Handle task cancellation gracefully (e.g., during benchmark shutdown)
+        logger.info(
+            f"Worker for {user_wrapper.username} was cancelled "
+            f"(completed {operation_count} operations)"
+        )
+        raise  # Re-raise to allow proper cleanup
     except Exception as e:
         logger.error(f"Worker {user_wrapper.username} error: {e}", exc_info=True)
 
