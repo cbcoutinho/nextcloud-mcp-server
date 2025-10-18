@@ -21,8 +21,8 @@ from .groups import GroupsClient
 from .notes import NotesClient
 from .sharing import SharingClient
 from .tables import TablesClient
-from .webdav import WebDAVClient
 from .users import UsersClient
+from .webdav import WebDAVClient
 
 logger = logging.getLogger(__name__)
 
