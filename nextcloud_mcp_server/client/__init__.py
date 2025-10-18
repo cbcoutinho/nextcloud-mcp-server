@@ -125,8 +125,8 @@ class NextcloudClient:
 
     async def notes_search_notes(self, *, query: str):
         """Search notes using token-based matching with relevance ranking."""
-        all_notes = await self.notes.get_all_notes()
-        return self._notes_search.search_notes(all_notes, query)
+        all_notes = self.notes.get_all_notes()
+        return await self._notes_search.search_notes(all_notes, query)
 
     def _get_webdav_base_path(self) -> str:
         """Helper to get the base WebDAV path for the authenticated user."""

@@ -151,7 +151,7 @@ Each Nextcloud app has a corresponding server module that:
 
 ### Testing Structure
 
-- **Integration tests** in `tests/integration/` and `tests/client/`, `tests/server/` - Test real Nextcloud API interactions
+- **Integration tests** in `tests/client/` and `tests/server/` - Test real Nextcloud API interactions
 - **Fixtures** in `tests/conftest.py` - Shared test setup and utilities
 - Tests are marked with `@pytest.mark.integration` for selective running
 - **Important**: Integration tests run against live Docker containers. After making code changes:
@@ -173,8 +173,8 @@ Each Nextcloud app has a corresponding server module that:
   - `temporary_addressbook` - Creates and cleans up test address books
   - `temporary_contact` - Creates and cleans up test contacts
 - **Test specific functionality** after changes:
-  - For Notes changes: `uv run pytest tests/integration/test_mcp.py -k "notes" -v`
-  - For specific API changes: `uv run pytest tests/integration/test_notes_api.py -v`
+  - For Notes changes: `uv run pytest tests/server/test_mcp.py -k "notes" -v`
+  - For specific API changes: `uv run pytest tests/client/notes/test_notes_api.py -v`
   - For OAuth changes: `uv run pytest tests/server/test_oauth*.py -v` (remember to rebuild `mcp-oauth` container)
 - **Avoid creating standalone test scripts** - use pytest with proper fixtures instead
 

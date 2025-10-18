@@ -97,6 +97,7 @@ async def create_mcp_client_session(
 
     finally:
         # Clean up in reverse order, ignoring task scope issues
+        # See: https://github.com/modelcontextprotocol/python-sdk/issues/577
         if session_context is not None:
             try:
                 await session_context.__aexit__(None, None, None)

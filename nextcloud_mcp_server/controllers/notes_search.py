@@ -1,13 +1,13 @@
 """Controller for notes search functionality."""
 
-from typing import Any, Dict, List
+from typing import Any, AsyncIterable, Dict, List
 
 
 class NotesSearchController:
     """Handles notes search logic and scoring."""
 
-    def search_notes(
-        self, notes: List[Dict[str, Any]], query: str
+    async def search_notes(
+        self, notes: AsyncIterable[Dict[str, Any]], query: str
     ) -> List[Dict[str, Any]]:
         """
         Search notes using token-based matching with relevance ranking.
@@ -21,7 +21,7 @@ class NotesSearchController:
             return []
 
         # Process and score each note
-        for note in notes:
+        async for note in notes:
             title_tokens, content_tokens = self._process_note_content(note)
             score = self._calculate_score(query_tokens, title_tokens, content_tokens)
 
