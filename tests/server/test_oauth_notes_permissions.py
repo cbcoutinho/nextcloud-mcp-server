@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 pytestmark = [pytest.mark.integration, pytest.mark.oauth]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_notes_share_read_permissions(
     nc_client, alice_mcp_client, bob_mcp_client, diana_mcp_client
 ):
@@ -82,7 +82,7 @@ async def test_notes_share_read_permissions(
         await nc_client.notes.delete_note(note_id)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_notes_share_write_permissions(
     nc_client, alice_mcp_client, charlie_mcp_client, bob_mcp_client
 ):
@@ -149,7 +149,7 @@ async def test_notes_share_write_permissions(
         await nc_client.notes.delete_note(note_id)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_user_isolation_notes(nc_client, alice_mcp_client, bob_mcp_client):
     """
     Test that users can only see their own notes when not shared.
@@ -222,7 +222,7 @@ async def test_user_isolation_notes(nc_client, alice_mcp_client, bob_mcp_client)
         await nc_client.notes.delete_note(bob_note_id)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_oauth_mcp_clients_initialized(
     alice_mcp_client, bob_mcp_client, charlie_mcp_client, diana_mcp_client
 ):

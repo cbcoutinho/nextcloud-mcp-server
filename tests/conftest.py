@@ -15,6 +15,12 @@ from nextcloud_mcp_server.client import NextcloudClient
 logger = logging.getLogger(__name__)
 
 
+@pytest.fixture(scope="session")
+def anyio_backend():
+    """Configure anyio to use asyncio backend for all tests."""
+    return "asyncio"
+
+
 async def wait_for_nextcloud(
     host: str, max_attempts: int = 30, delay: float = 2.0
 ) -> bool:
@@ -111,7 +117,7 @@ async def create_mcp_client_session(
 
 
 @pytest.fixture(scope="session")
-async def nc_client() -> AsyncGenerator[NextcloudClient, Any]:
+async def nc_client(anyio_backend) -> AsyncGenerator[NextcloudClient, Any]:
     """
     Fixture to create a NextcloudClient instance for integration tests.
     Uses environment variables for configuration.
@@ -146,35 +152,21 @@ async def nc_client() -> AsyncGenerator[NextcloudClient, Any]:
 
 
 @pytest.fixture(scope="session")
-async def nc_mcp_client() -> AsyncGenerator[ClientSession, Any]:
+async def nc_mcp_client(anyio_backend) -> AsyncGenerator[ClientSession, Any]:
     """
     Fixture to create an MCP client session for integration tests using streamable-http.
 
-    Note: This fixture uses a workaround for pytest-asyncio + anyio incompatibility.
-    pytest-asyncio runs fixture teardown in a new asyncio task, which violates anyio's
-    requirement that cancel scopes must be entered/exited in the same task. We catch
-    and ignore these expected teardown errors while allowing real errors to propagate.
-
-    See: https://github.com/modelcontextprotocol/python-sdk/issues/577
+    Uses anyio pytest plugin for proper async fixture handling.
     """
-    try:
-        async for session in create_mcp_client_session(
-            url="http://127.0.0.1:8000/mcp", client_name="Basic MCP"
-        ):
-            yield session
-    except RuntimeError as e:
-        # Expected error during pytest-asyncio fixture teardown
-        # pytest-asyncio creates a new task for teardown, causing:
-        # "Attempted to exit cancel scope in a different task than it was entered in"
-        if "cancel scope" in str(e) and "different task" in str(e):
-            logger.debug(f"Ignoring expected pytest-asyncio teardown issue: {e}")
-        else:
-            # Unexpected RuntimeError - re-raise
-            raise
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8000/mcp", client_name="Basic MCP"
+    ):
+        yield session
 
 
 @pytest.fixture(scope="session")
 async def nc_mcp_oauth_client(
+    anyio_backend,
     playwright_oauth_token: str,
 ) -> AsyncGenerator[ClientSession, Any]:
     """
@@ -182,22 +174,14 @@ async def nc_mcp_oauth_client(
     Connects to the OAuth-enabled MCP server on port 8001 with OAuth authentication.
 
     Uses headless browser automation suitable for CI/CD.
-
-    Note: Includes workaround for pytest-asyncio + anyio incompatibility.
-    See nc_mcp_client fixture for details.
+    Uses anyio pytest plugin for proper async fixture handling.
     """
-    try:
-        async for session in create_mcp_client_session(
-            url="http://127.0.0.1:8001/mcp",
-            token=playwright_oauth_token,
-            client_name="OAuth MCP (Playwright)",
-        ):
-            yield session
-    except RuntimeError as e:
-        if "cancel scope" in str(e) and "different task" in str(e):
-            logger.debug(f"Ignoring expected pytest-asyncio teardown issue: {e}")
-        else:
-            raise
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8001/mcp",
+        token=playwright_oauth_token,
+        client_name="OAuth MCP (Playwright)",
+    ):
+        yield session
 
 
 @pytest.fixture
@@ -519,6 +503,7 @@ async def temporary_board_with_card(
 
 @pytest.fixture(scope="session")
 async def nc_oauth_client(
+    anyio_backend,
     playwright_oauth_token: str,
 ) -> AsyncGenerator[NextcloudClient, Any]:
     """
@@ -641,7 +626,7 @@ def oauth_callback_server():
 
 
 @pytest.fixture(scope="session")
-async def shared_oauth_client_credentials(oauth_callback_server):
+async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
     """
     Fixture to obtain shared OAuth client credentials that will be reused for all users.
 
@@ -702,7 +687,7 @@ async def shared_oauth_client_credentials(oauth_callback_server):
 
 @pytest.fixture(scope="session")
 async def playwright_oauth_token(
-    browser, shared_oauth_client_credentials, oauth_callback_server
+    anyio_backend, browser, shared_oauth_client_credentials, oauth_callback_server
 ) -> str:
     """
     Fixture to obtain an OAuth access token using Playwright headless browser automation.
@@ -865,7 +850,7 @@ async def playwright_oauth_token(
 
 
 @pytest.fixture(scope="session")
-async def test_users_setup(nc_client: NextcloudClient):
+async def test_users_setup(anyio_backend, nc_client: NextcloudClient):
     """
     Create test users for multi-user OAuth testing.
 
@@ -1112,7 +1097,11 @@ async def _get_oauth_token_for_user(
 # Parallel token retrieval fixture - fetches all OAuth tokens concurrently
 @pytest.fixture(scope="session")
 async def all_oauth_tokens(
-    browser, shared_oauth_client_credentials, test_users_setup, oauth_callback_server
+    anyio_backend,
+    browser,
+    shared_oauth_client_credentials,
+    test_users_setup,
+    oauth_callback_server,
 ) -> dict[str, str]:
     """
     Fetch OAuth tokens for all test users in parallel for speed.
@@ -1172,101 +1161,82 @@ async def all_oauth_tokens(
 
 # Session-scoped OAuth token fixtures - now use the parallel fixture
 @pytest.fixture(scope="session")
-async def alice_oauth_token(all_oauth_tokens) -> str:
+async def alice_oauth_token(anyio_backend, all_oauth_tokens) -> str:
     """OAuth token for alice (cached for session). Uses shared OAuth client."""
     return all_oauth_tokens["alice"]
 
 
 @pytest.fixture(scope="session")
-async def bob_oauth_token(all_oauth_tokens) -> str:
+async def bob_oauth_token(anyio_backend, all_oauth_tokens) -> str:
     """OAuth token for bob (cached for session). Uses shared OAuth client."""
     return all_oauth_tokens["bob"]
 
 
 @pytest.fixture(scope="session")
-async def charlie_oauth_token(all_oauth_tokens) -> str:
+async def charlie_oauth_token(anyio_backend, all_oauth_tokens) -> str:
     """OAuth token for charlie (cached for session). Uses shared OAuth client."""
     return all_oauth_tokens["charlie"]
 
 
 @pytest.fixture(scope="session")
-async def diana_oauth_token(all_oauth_tokens) -> str:
+async def diana_oauth_token(anyio_backend, all_oauth_tokens) -> str:
     """OAuth token for diana (cached for session). Uses shared OAuth client."""
     return all_oauth_tokens["diana"]
 
 
 @pytest.fixture(scope="session")
 async def alice_mcp_client(
+    anyio_backend,
     alice_oauth_token: str,
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as alice (owner role)."""
-    try:
-        async for session in create_mcp_client_session(
-            url="http://127.0.0.1:8001/mcp",
-            token=alice_oauth_token,
-            client_name="Alice MCP",
-        ):
-            yield session
-    except RuntimeError as e:
-        if "cancel scope" in str(e) and "different task" in str(e):
-            logger.debug(f"Ignoring expected pytest-asyncio teardown issue: {e}")
-        else:
-            raise
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8001/mcp",
+        token=alice_oauth_token,
+        client_name="Alice MCP",
+    ):
+        yield session
 
 
 @pytest.fixture(scope="session")
-async def bob_mcp_client(bob_oauth_token: str) -> AsyncGenerator[ClientSession, Any]:
+async def bob_mcp_client(
+    anyio_backend, bob_oauth_token: str
+) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as bob (viewer role)."""
-    try:
-        async for session in create_mcp_client_session(
-            url="http://127.0.0.1:8001/mcp",
-            token=bob_oauth_token,
-            client_name="Bob MCP",
-        ):
-            yield session
-    except RuntimeError as e:
-        if "cancel scope" in str(e) and "different task" in str(e):
-            logger.debug(f"Ignoring expected pytest-asyncio teardown issue: {e}")
-        else:
-            raise
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8001/mcp",
+        token=bob_oauth_token,
+        client_name="Bob MCP",
+    ):
+        yield session
 
 
 @pytest.fixture(scope="session")
 async def charlie_mcp_client(
+    anyio_backend,
     charlie_oauth_token: str,
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as charlie (editor role, in 'editors' group)."""
-    try:
-        async for session in create_mcp_client_session(
-            url="http://127.0.0.1:8001/mcp",
-            token=charlie_oauth_token,
-            client_name="Charlie MCP",
-        ):
-            yield session
-    except RuntimeError as e:
-        if "cancel scope" in str(e) and "different task" in str(e):
-            logger.debug(f"Ignoring expected pytest-asyncio teardown issue: {e}")
-        else:
-            raise
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8001/mcp",
+        token=charlie_oauth_token,
+        client_name="Charlie MCP",
+    ):
+        yield session
 
 
 @pytest.fixture(scope="session")
 async def diana_mcp_client(
+    anyio_backend,
     diana_oauth_token: str,
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as diana (no-access role)."""
-    try:
-        async for session in create_mcp_client_session(
-            url="http://127.0.0.1:8001/mcp",
-            token=diana_oauth_token,
-            client_name="Diana MCP",
-        ):
-            yield session
-    except RuntimeError as e:
-        if "cancel scope" in str(e) and "different task" in str(e):
-            logger.debug(f"Ignoring expected pytest-asyncio teardown issue: {e}")
-        else:
-            raise
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8001/mcp",
+        token=diana_oauth_token,
+        client_name="Diana MCP",
+    ):
+        yield session
 
 
 # Test user/group fixtures for clean test isolation
