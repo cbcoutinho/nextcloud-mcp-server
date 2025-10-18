@@ -37,7 +37,7 @@ jobs:
 
       - name: Install Playwright dependencies
         run: |
-          uv run playwright install firefox --with-deps
+          uv run playwright install chromium --with-deps
 
       - name: Wait for service to be ready
         run: |
@@ -62,4 +62,4 @@ jobs:
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
         run: |
-          uv run pytest -v --browser firefox
+          uv run pytest -v
