@@ -11,9 +11,9 @@ Usage:
     uv run python -m tests.load.cleanup_loadtest_users --dry-run
 """
 
-import asyncio
 import sys
 
+import anyio
 import click
 
 from nextcloud_mcp_server.client import NextcloudClient
@@ -110,7 +110,7 @@ def main(prefix: str, dry_run: bool):
         # Delete users with custom prefix
         uv run python -m tests.load.cleanup_loadtest_users --prefix mytest
     """
-    asyncio.run(cleanup_users(prefix=prefix, dry_run=dry_run))
+    anyio.run(cleanup_users, prefix, dry_run)
 
 
 if __name__ == "__main__":

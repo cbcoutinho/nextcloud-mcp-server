@@ -18,6 +18,7 @@ from collections import Counter
 from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 import click
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
@@ -494,7 +495,7 @@ def main(
             print(f"Results exported to: {output}")
 
     try:
-        asyncio.run(run())
+        anyio.run(run)
     except KeyboardInterrupt:
         print("\nBenchmark interrupted by user")
         sys.exit(130)
