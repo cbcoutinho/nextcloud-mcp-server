@@ -149,6 +149,24 @@ Each Nextcloud app has a corresponding server module that:
 4. **Context injection** - MCP context provides access to the authenticated client instance
 5. **Modular design** - Each Nextcloud app is isolated in its own client/server pair
 
+### MCP Response Patterns
+
+**CRITICAL: Never return raw `List[Dict]` from MCP tools - always wrap in Pydantic response models**
+
+FastMCP serialization issue: raw lists get mangled into dicts with numeric string keys.
+
+**Pattern:**
+1. Client methods return `List[Dict]` (raw data)
+2. MCP tools convert to Pydantic models and wrap in response object
+3. Response models inherit from `BaseResponse`, include `results` field + metadata
+
+**Reference implementations:**
+- `SearchNotesResponse` in `nextcloud_mcp_server/models/notes.py:80`
+- `SearchFilesResponse` in `nextcloud_mcp_server/models/webdav.py:113`
+- Tool examples: `nextcloud_mcp_server/server/{notes,webdav}.py`
+
+**Testing:** Extract `data["results"]` from MCP responses, not `data` directly.
+
 ### Testing Structure
 
 - **Integration tests** in `tests/client/` and `tests/server/` - Test real Nextcloud API interactions
