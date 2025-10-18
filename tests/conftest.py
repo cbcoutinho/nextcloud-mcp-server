@@ -549,15 +549,13 @@ def oauth_callback_server():
     - server_url: The callback URL for the server (e.g., "http://localhost:8081")
 
     The server automatically shuts down when the fixture is torn down.
-
-    Automatically skips when running in GitHub Actions CI.
     """
     # Skip OAuth tests in GitHub Actions - Playwright browser automation
     # has issues with localhost callback server in CI environment
-    if os.getenv("GITHUB_ACTIONS"):
-        pytest.skip(
-            "OAuth tests with browser automation not supported in GitHub Actions CI"
-        )
+    # if os.getenv("GITHUB_ACTIONS"):
+    # pytest.skip(
+    # "OAuth tests with browser automation not supported in GitHub Actions CI"
+    # )
 
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
