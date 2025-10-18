@@ -10,7 +10,6 @@ Usage:
     uv run python -m tests.load.oauth_benchmark -u 10 -d 300 --workload sharing
 """
 
-import asyncio
 import json
 import logging
 import os
@@ -223,7 +222,7 @@ async def oauth_benchmark_worker(
     workload: MixedOAuthWorkload,
     duration: float,
     metrics: OAuthBenchmarkMetrics,
-    stop_event: asyncio.Event,
+    stop_event: anyio.Event,
 ):
     """
     Single worker executing operations for one user.
@@ -258,13 +257,13 @@ async def oauth_benchmark_worker(
             operation_count += 1
 
             # Small delay to prevent overwhelming the server
-            await asyncio.sleep(0.05)
+            await anyio.sleep(0.05)
 
         logger.info(
             f"Worker for {user_wrapper.username} completed {operation_count} operations"
         )
 
-    except asyncio.CancelledError:
+    except anyio.get_cancelled_exc_class():
         # Handle task cancellation gracefully (e.g., during benchmark shutdown)
         logger.info(
             f"Worker for {user_wrapper.username} was cancelled "
@@ -278,7 +277,7 @@ async def oauth_benchmark_worker(
 async def show_progress(
     duration: float,
     metrics: OAuthBenchmarkMetrics,
-    stop_event: asyncio.Event,
+    stop_event: anyio.Event,
 ):
     """Show real-time progress during benchmark."""
     start_time = time.time()
@@ -306,7 +305,7 @@ async def show_progress(
             flush=True,
         )
 
-        await asyncio.sleep(0.5)
+        await anyio.sleep(0.5)
 
     print()  # New line after progress
 
@@ -338,7 +337,7 @@ async def run_oauth_benchmark(
         OAuthBenchmarkMetrics with results
     """
     metrics = OAuthBenchmarkMetrics()
-    stop_event = asyncio.Event()
+    stop_event = anyio.Event()
     created_users: list[str] = []
     callback_server: OAuthCallbackServer | None = None
     user_pool: OAuthUserPool | None = None
@@ -437,12 +436,23 @@ async def run_oauth_benchmark(
                 browser = await browser_launcher.launch(headless=not headed)
 
                 try:
-                    # Create all users concurrently
-                    tasks = [
-                        create_user_task(i, browser, callback_server.auth_states)
-                        for i in range(num_users)
-                    ]
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    # Create all users concurrently using anyio task groups
+                    results = []
+
+                    async def run_and_collect(i: int):
+                        """Wrapper to collect results from tasks."""
+                        try:
+                            result = await create_user_task(
+                                i, browser, callback_server.auth_states
+                            )
+                            results.append(result)
+                        except Exception as e:
+                            logger.error(f"User creation task failed: {e}")
+                            results.append(e)
+
+                    async with anyio.create_task_group() as tg:
+                        for i in range(num_users):
+                            tg.start_soon(run_and_collect, i)
 
                     # Process results
                     for result in results:
@@ -484,13 +494,21 @@ async def run_oauth_benchmark(
                     logger.error(f"Failed to create session for {username}: {e}")
                     return None
 
-            # Create all sessions concurrently
-            session_tasks = [
-                create_session_task(username) for username in created_users
-            ]
-            session_results = await asyncio.gather(
-                *session_tasks, return_exceptions=True
-            )
+            # Create all sessions concurrently using anyio task groups
+            session_results = []
+
+            async def run_and_collect_session(username: str):
+                """Wrapper to collect session results from tasks."""
+                try:
+                    result = await create_session_task(username)
+                    session_results.append(result)
+                except Exception as e:
+                    logger.error(f"Session creation task failed: {e}")
+                    session_results.append(e)
+
+            async with anyio.create_task_group() as tg:
+                for username in created_users:
+                    tg.start_soon(run_and_collect_session, username)
 
             # Process results
             for result in session_results:
@@ -508,7 +526,7 @@ async def run_oauth_benchmark(
             # Warmup period
             if warmup > 0:
                 print(f"Warmup period: {warmup}s...")
-                await asyncio.sleep(warmup)
+                await anyio.sleep(warmup)
                 print()
 
             # Start benchmark
@@ -518,21 +536,26 @@ async def run_oauth_benchmark(
 
             metrics.start()
 
-            # Create workload and workers
+            # Create workload and workers using anyio task groups
             workload = MixedOAuthWorkload(user_wrappers)
-            workers = [
-                oauth_benchmark_worker(wrapper, workload, duration, metrics, stop_event)
-                for wrapper in user_wrappers
-            ]
 
             # Run workers with progress display
-            progress_task = asyncio.create_task(
-                show_progress(duration, metrics, stop_event)
-            )
-            await asyncio.gather(*workers, return_exceptions=True)
-            stop_event.set()
-            await progress_task
+            async with anyio.create_task_group() as tg:
+                # Start all workers
+                for wrapper in user_wrappers:
+                    tg.start_soon(
+                        oauth_benchmark_worker,
+                        wrapper,
+                        workload,
+                        duration,
+                        metrics,
+                        stop_event,
+                    )
 
+                # Show progress
+                tg.start_soon(show_progress, duration, metrics, stop_event)
+
+            # Tasks already completed when task group exits
             metrics.stop()
 
             print(f"\n{'=' * 80}")

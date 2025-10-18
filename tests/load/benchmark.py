@@ -7,7 +7,6 @@ Usage:
     uv run python -m tests.load.benchmark -c 50 -d 300 --output results.json
 """
 
-import asyncio
 import json
 import logging
 import signal
@@ -254,7 +253,7 @@ async def wait_for_mcp_server(url: str, max_attempts: int = 10) -> bool:
         except Exception as e:
             if attempt < max_attempts:
                 logger.debug(f"Attempt {attempt}/{max_attempts}: {e}")
-                await asyncio.sleep(2)
+                await anyio.sleep(2)
             else:
                 logger.error(f"MCP server not ready after {max_attempts} attempts")
                 return False
@@ -267,7 +266,7 @@ async def benchmark_worker(
     url: str,
     duration: float,
     metrics: BenchmarkMetrics,
-    stop_event: asyncio.Event,
+    stop_event: anyio.Event,
 ):
     """Single worker that runs operations for the specified duration."""
     logger.info(f"Worker {worker_id} starting...")
@@ -293,7 +292,7 @@ async def benchmark_worker(
                 operation_count += 1
 
                 # Small delay to prevent overwhelming the server
-                await asyncio.sleep(0.01)
+                await anyio.sleep(0.01)
 
             # Cleanup
             await ops.cleanup()
@@ -312,7 +311,7 @@ async def run_benchmark(
 ) -> BenchmarkMetrics:
     """Run the benchmark with specified parameters."""
     metrics = BenchmarkMetrics()
-    stop_event = asyncio.Event()
+    stop_event = anyio.Event()
 
     # Setup signal handlers for graceful shutdown
     def signal_handler(sig, frame):
@@ -331,27 +330,22 @@ async def run_benchmark(
     # Warmup period
     if warmup > 0:
         print("Warming up...")
-        await asyncio.sleep(warmup)
+        await anyio.sleep(warmup)
 
     # Start metrics collection
     metrics.start()
 
-    # Create and run workers
-    workers = [
-        benchmark_worker(i, url, duration, metrics, stop_event)
-        for i in range(concurrency)
-    ]
+    # Create and run workers using anyio task groups
+    async with anyio.create_task_group() as tg:
+        # Start all workers
+        for i in range(concurrency):
+            tg.start_soon(benchmark_worker, i, url, duration, metrics, stop_event)
 
-    # Show progress
-    progress_task = asyncio.create_task(show_progress(duration, metrics, stop_event))
+        # Show progress
+        tg.start_soon(show_progress, duration, metrics, stop_event)
 
-    # Wait for all workers to complete
-    await asyncio.gather(*workers, return_exceptions=True)
-
-    # Stop metrics and progress
+    # Stop metrics (tasks already completed when task group exits)
     metrics.stop()
-    stop_event.set()
-    await progress_task
 
     return metrics
 
@@ -359,7 +353,7 @@ async def run_benchmark(
 async def show_progress(
     duration: float,
     metrics: BenchmarkMetrics,
-    stop_event: asyncio.Event,
+    stop_event: anyio.Event,
 ):
     """Show real-time progress during benchmark."""
     start_time = time.time()
@@ -387,7 +381,7 @@ async def show_progress(
             flush=True,
         )
 
-        await asyncio.sleep(0.5)
+        await anyio.sleep(0.5)
 
     print()  # New line after progress
 

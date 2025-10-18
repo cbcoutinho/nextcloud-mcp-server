@@ -14,19 +14,12 @@ services:
       - MYSQL_DATABASE=nextcloud
       - MYSQL_USER=nextcloud
 
-  # Note: Redis is an external service. You can find more information about the configuration here:
-  # https://hub.docker.com/_/redis
-  redis:
-    image: docker.io/library/redis:alpine@sha256:59b6e694653476de2c992937ebe1c64182af4728e54bb49e9b7a6c26614d8933
-    restart: always
-
   app:
     image: docker.io/library/nextcloud:32.0.0@sha256:3e70e4dfe882ef44738fdc30d9896fb07c12febb27c4a1177e3d63dc0004a0b4
     restart: always
     ports:
       - 0.0.0.0:8080:80
     depends_on:
-      - redis
       - db
     volumes:
       - nextcloud:/var/www/html
