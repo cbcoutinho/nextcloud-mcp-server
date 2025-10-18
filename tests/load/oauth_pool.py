@@ -180,13 +180,8 @@ class OAuthUserPool:
             # Clean up streamable context if session creation failed
             try:
                 await streamable_context.__aexit__(None, None, None)
-            except RuntimeError as cleanup_error:
-                if "cancel scope" in str(cleanup_error):
-                    logger.debug(
-                        f"Ignoring cancel scope teardown issue: {cleanup_error}"
-                    )
-                else:
-                    raise
+            except Exception as cleanup_error:
+                logger.debug(f"Error during cleanup: {cleanup_error}")
             raise e
 
     async def close_user_session(self, username: str):
@@ -200,13 +195,6 @@ class OAuthUserPool:
         if profile.session:
             try:
                 await profile.session.__aexit__(None, None, None)
-            except RuntimeError as e:
-                if "cancel scope" in str(e):
-                    logger.debug(
-                        f"Ignoring cancel scope teardown issue for {username}: {e}"
-                    )
-                else:
-                    logger.debug(f"Error closing session for {username}: {e}")
             except Exception as e:
                 logger.debug(f"Error closing session for {username}: {e}")
             profile.session = None
@@ -215,15 +203,6 @@ class OAuthUserPool:
         if profile.streamable_context:
             try:
                 await profile.streamable_context.__aexit__(None, None, None)
-            except RuntimeError as e:
-                if "cancel scope" in str(e):
-                    logger.debug(
-                        f"Ignoring cancel scope teardown issue for {username}: {e}"
-                    )
-                else:
-                    logger.debug(
-                        f"Error closing streamable context for {username}: {e}"
-                    )
             except Exception as e:
                 logger.debug(f"Error closing streamable context for {username}: {e}")
             profile.streamable_context = None

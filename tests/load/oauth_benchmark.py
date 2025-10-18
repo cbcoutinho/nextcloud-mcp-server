@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import anyio
 import click
 import httpx
 from playwright.async_api import async_playwright
@@ -729,7 +730,7 @@ def main(
             print(f"Results exported to: {output}")
 
     try:
-        asyncio.run(run())
+        anyio.run(run)
     except KeyboardInterrupt:
         print("\nBenchmark interrupted by user")
         sys.exit(130)
