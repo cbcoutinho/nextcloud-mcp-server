@@ -9,7 +9,6 @@ from httpx import (
     BasicAuth,
     Request,
     Response,
-    Timeout,
 )
 
 from ..controllers.notes_search import NotesSearchController
@@ -67,9 +66,6 @@ class NextcloudClient:
             auth=auth,
             transport=AsyncDisableCookieTransport(AsyncHTTPTransport()),
             event_hooks={"request": [log_request], "response": [log_response]},
-            timeout=Timeout(
-                30.0
-            ),  # 30 second timeout for all operations including recipe imports
         )
 
         # Initialize app clients
