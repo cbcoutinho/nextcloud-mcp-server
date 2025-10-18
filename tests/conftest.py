@@ -756,7 +756,7 @@ async def playwright_oauth_token(
     try:
         # Navigate to authorization URL
         logger.debug(f"Navigating to: {auth_url}")
-        await page.goto(auth_url, wait_until="networkidle", timeout=30000)
+        await page.goto(auth_url, wait_until="networkidle", timeout=60000)
 
         # Check if we need to login first
         current_url = page.url
@@ -779,7 +779,7 @@ async def playwright_oauth_token(
             await page.click('button[type="submit"]')
 
             # Wait for navigation after login
-            await page.wait_for_load_state("networkidle", timeout=30000)
+            await page.wait_for_load_state("networkidle", timeout=60000)
             current_url = page.url
             logger.info(f"After login, current URL: {current_url}")
 
