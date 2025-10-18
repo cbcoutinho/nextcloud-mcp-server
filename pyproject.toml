@@ -19,6 +19,7 @@ dependencies = [
 
 [tool.pytest.ini_options]
 anyio_mode = "auto"
+addopts = "-p no:asyncio"  # Disable pytest-asyncio plugin, use only anyio
 log_cli = 1
 log_cli_level = "WARN"
 log_level = "WARN"
