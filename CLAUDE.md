@@ -19,6 +19,53 @@ uv run pytest --cov
 uv run pytest -m "not integration"
 ```
 
+### Load Testing
+```bash
+# Run benchmark with default settings (10 workers, 30 seconds)
+uv run python -m tests.load.benchmark
+
+# Quick test with custom concurrency and duration
+uv run python -m tests.load.benchmark --concurrency 20 --duration 60
+
+# Extended load test (50 workers for 5 minutes)
+uv run python -m tests.load.benchmark -c 50 -d 300
+
+# Export results to JSON for analysis
+uv run python -m tests.load.benchmark -c 20 -d 60 --output results.json
+
+# Test OAuth server on port 8001
+uv run python -m tests.load.benchmark --url http://127.0.0.1:8001/mcp
+
+# Verbose mode with detailed logging
+uv run python -m tests.load.benchmark -c 10 -d 30 --verbose
+```
+
+**Load Testing Features:**
+- **Mixed workload** simulating realistic MCP usage (40% reads, 20% writes, 15% search, 25% other operations)
+- **Real-time progress** bar with live RPS and error counts
+- **Detailed metrics**:
+  - Throughput (requests/second)
+  - Latency percentiles (p50, p90, p95, p99)
+  - Per-operation breakdown
+  - Error rates and types
+- **Automatic cleanup** of test data
+- **JSON export** for CI/CD integration
+- **Server health checks** before starting
+
+**Understanding Results:**
+- **Requests/Second (RPS)**: Higher is better. Expected baseline: 50-200 RPS for mixed workload
+- **Latency**:
+  - p50 (median): Should be <100ms for most operations
+  - p95: Should be <500ms
+  - p99: Should be <1000ms
+- **Error Rate**: Should be <1% under normal load
+
+**Common Bottlenecks:**
+1. Nextcloud backend API response times (most common)
+2. Database connection limits
+3. HTTP client connection pooling
+4. Network I/O between containers
+
 ### Code Quality
 ```bash
 # Format and lint code
@@ -104,7 +151,7 @@ Each Nextcloud app has a corresponding server module that:
 
 ### Testing Structure
 
-- **Integration tests** in `tests/integration/` and `tests/client/`, `tests/server/` - Test real Nextcloud API interactions
+- **Integration tests** in `tests/client/` and `tests/server/` - Test real Nextcloud API interactions
 - **Fixtures** in `tests/conftest.py` - Shared test setup and utilities
 - Tests are marked with `@pytest.mark.integration` for selective running
 - **Important**: Integration tests run against live Docker containers. After making code changes:
@@ -126,8 +173,8 @@ Each Nextcloud app has a corresponding server module that:
   - `temporary_addressbook` - Creates and cleans up test address books
   - `temporary_contact` - Creates and cleans up test contacts
 - **Test specific functionality** after changes:
-  - For Notes changes: `uv run pytest tests/integration/test_mcp.py -k "notes" -v`
-  - For specific API changes: `uv run pytest tests/integration/test_notes_api.py -v`
+  - For Notes changes: `uv run pytest tests/server/test_mcp.py -k "notes" -v`
+  - For specific API changes: `uv run pytest tests/client/notes/test_notes_api.py -v`
   - For OAuth changes: `uv run pytest tests/server/test_oauth*.py -v` (remember to rebuild `mcp-oauth` container)
 - **Avoid creating standalone test scripts** - use pytest with proper fixtures instead
 

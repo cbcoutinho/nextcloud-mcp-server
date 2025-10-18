@@ -1,8 +1,9 @@
 import pytest
+
 from nextcloud_mcp_server.client import NextcloudClient
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_create_and_delete_user(nc_client: NextcloudClient, test_user):
     """Test creating a user and verifying deletion (cleanup by fixture)."""
     user_config = test_user
@@ -28,7 +29,7 @@ async def test_create_and_delete_user(nc_client: NextcloudClient, test_user):
     # Note: Fixture cleanup will also try to delete but handle 404 gracefully
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_update_user_field(nc_client: NextcloudClient, test_user):
     """Test updating user fields."""
     user_config = test_user
@@ -43,7 +44,7 @@ async def test_update_user_field(nc_client: NextcloudClient, test_user):
     # Fixture will handle cleanup
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_user_groups(nc_client: NextcloudClient, test_user_in_group):
     """Test adding and removing users from groups."""
     user_config, groupid = test_user_in_group
@@ -60,7 +61,7 @@ async def test_user_groups(nc_client: NextcloudClient, test_user_in_group):
     # Fixtures will handle cleanup
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_user_subadmins(nc_client: NextcloudClient, test_user, test_group):
     """Test promoting and demoting subadmins."""
     user_config = test_user
@@ -81,7 +82,7 @@ async def test_user_subadmins(nc_client: NextcloudClient, test_user, test_group)
     # Fixtures will handle cleanup
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_disable_enable_user(nc_client: NextcloudClient, test_user):
     """Test disabling and enabling users."""
     user_config = test_user
@@ -101,7 +102,7 @@ async def test_disable_enable_user(nc_client: NextcloudClient, test_user):
     # Fixture will handle cleanup
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_get_editable_user_fields(nc_client: NextcloudClient):
     editable_fields = await nc_client.users.get_editable_user_fields()
     assert "displayname" in editable_fields

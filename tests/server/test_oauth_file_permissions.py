@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 pytestmark = [pytest.mark.integration, pytest.mark.oauth]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_file_share_read_permissions(
     alice_mcp_client, bob_mcp_client, diana_mcp_client
 ):
@@ -104,7 +104,7 @@ async def test_file_share_read_permissions(
         )
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_file_share_write_permissions(
     alice_mcp_client, charlie_mcp_client, bob_mcp_client
 ):
@@ -210,7 +210,7 @@ async def test_file_share_write_permissions(
         )
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_file_list_permissions(alice_mcp_client, bob_mcp_client):
     """
     Test that file listing respects share permissions.
@@ -326,7 +326,7 @@ async def test_file_list_permissions(alice_mcp_client, bob_mcp_client):
         )
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_folder_share_permissions(alice_mcp_client, bob_mcp_client):
     """
     Test that folder sharing works correctly.

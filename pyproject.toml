@@ -18,9 +18,7 @@ dependencies = [
 ]
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
-asyncio_default_test_loop_scope = "session"
-asyncio_default_fixture_loop_scope = "session"
+anyio_mode = "auto"
 log_cli = 1
 log_cli_level = "WARN"
 log_level = "WARN"
@@ -40,6 +38,9 @@ version_provider = "uv"
 update_changelog_on_bump = true
 major_version_zero = true
 
+[tool.ruff.lint]
+extend-select = ["I"]
+
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
@@ -50,7 +51,6 @@ dev = [
     "ipython>=9.2.0",
     "playwright>=1.49.1",
     "pytest>=8.3.5",
-    "pytest-asyncio>=1.0.0",
     "pytest-cov>=6.1.1",
     "pytest-playwright-asyncio>=0.7.1",
     "ruff>=0.11.13",
