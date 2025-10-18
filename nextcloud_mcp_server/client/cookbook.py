@@ -132,7 +132,7 @@ class CookbookClient(BaseNextcloudClient):
             "POST",
             "/apps/cookbook/api/v1/import",
             json={"url": url},
-            timeout=Timeout(60.0),
+            timeout=Timeout(300.0),
         )
         return response.json()
 
