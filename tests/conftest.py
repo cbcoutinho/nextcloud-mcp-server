@@ -502,6 +502,120 @@ async def temporary_board_with_card(
 
 
 @pytest.fixture(scope="session")
+def shared_test_calendar_name():
+    """Unique calendar name for the entire test session."""
+    return f"test_calendar_shared_{uuid.uuid4().hex[:8]}"
+
+
+@pytest.fixture(scope="session")
+def shared_test_calendar_name_2():
+    """Second unique calendar name for cross-calendar tests."""
+    return f"test_calendar_shared_2_{uuid.uuid4().hex[:8]}"
+
+
+@pytest.fixture(scope="session")
+async def shared_calendar(nc_client: NextcloudClient, shared_test_calendar_name: str):
+    """Create a shared calendar for all tests in the session. Reuses the calendar to avoid rate limiting."""
+    calendar_name = shared_test_calendar_name
+
+    try:
+        # Create a test calendar
+        logger.info(f"Creating shared test calendar: {calendar_name}")
+        result = await nc_client.calendar.create_calendar(
+            calendar_name=calendar_name,
+            display_name=f"Shared Test Calendar {calendar_name}",
+            description="Shared calendar for integration testing (reused across tests)",
+            color="#FF5722",
+        )
+
+        if result["status_code"] not in [200, 201]:
+            pytest.skip(f"Failed to create shared test calendar: {result}")
+
+        logger.info(f"Created shared test calendar: {calendar_name}")
+        yield calendar_name
+
+    except Exception as e:
+        logger.error(f"Error setting up shared test calendar: {e}")
+        pytest.skip(f"Shared calendar setup failed: {e}")
+
+    finally:
+        # Cleanup: Delete the shared calendar at end of session
+        try:
+            logger.info(f"Cleaning up shared test calendar: {calendar_name}")
+            await nc_client.calendar.delete_calendar(calendar_name)
+            logger.info(f"Successfully deleted shared test calendar: {calendar_name}")
+        except Exception as e:
+            logger.error(f"Error deleting shared test calendar {calendar_name}: {e}")
+
+
+@pytest.fixture(scope="session")
+async def shared_calendar_2(
+    nc_client: NextcloudClient, shared_test_calendar_name_2: str
+):
+    """Create a second shared calendar for cross-calendar tests."""
+    calendar_name = shared_test_calendar_name_2
+
+    try:
+        # Create a test calendar
+        logger.info(f"Creating second shared test calendar: {calendar_name}")
+        result = await nc_client.calendar.create_calendar(
+            calendar_name=calendar_name,
+            display_name=f"Shared Test Calendar 2 {calendar_name}",
+            description="Second shared calendar for cross-calendar testing",
+            color="#4CAF50",
+        )
+
+        if result["status_code"] not in [200, 201]:
+            pytest.skip(f"Failed to create second shared test calendar: {result}")
+
+        logger.info(f"Created second shared test calendar: {calendar_name}")
+        yield calendar_name
+
+    except Exception as e:
+        logger.error(f"Error setting up second shared test calendar: {e}")
+        pytest.skip(f"Second shared calendar setup failed: {e}")
+
+    finally:
+        # Cleanup: Delete the second shared calendar at end of session
+        try:
+            logger.info(f"Cleaning up second shared test calendar: {calendar_name}")
+            await nc_client.calendar.delete_calendar(calendar_name)
+            logger.info(
+                f"Successfully deleted second shared test calendar: {calendar_name}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Error deleting second shared test calendar {calendar_name}: {e}"
+            )
+
+
+@pytest.fixture
+async def temporary_calendar(shared_calendar: str, nc_client: NextcloudClient):
+    """Provide the shared calendar and clean up todos after each test.
+
+    This fixture reuses a session-scoped calendar to avoid Nextcloud rate limiting
+    on calendar creation. Each test gets the same calendar but todos are cleaned up
+    between tests.
+    """
+    calendar_name = shared_calendar
+
+    yield calendar_name
+
+    # Cleanup: Delete all todos from this calendar
+    try:
+        logger.info(f"Cleaning up todos from shared calendar: {calendar_name}")
+        todos = await nc_client.calendar.list_todos(calendar_name)
+        for todo in todos:
+            try:
+                await nc_client.calendar.delete_todo(calendar_name, todo["uid"])
+            except Exception as e:
+                logger.warning(f"Error deleting todo {todo['uid']}: {e}")
+        logger.info(f"Cleaned up {len(todos)} todos from shared calendar")
+    except Exception as e:
+        logger.error(f"Error cleaning up todos from calendar {calendar_name}: {e}")
+
+
+@pytest.fixture(scope="session")
 async def nc_oauth_client(
     anyio_backend,
     playwright_oauth_token: str,

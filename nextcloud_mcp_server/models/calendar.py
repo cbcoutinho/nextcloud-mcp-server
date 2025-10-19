@@ -180,3 +180,71 @@ class ManageCalendarResponse(BaseResponse):
         None, description="List of calendars (for list action)"
     )
     message: str = Field(description="Success message")
+
+
+# ============= Todo/Task Models =============
+
+
+class Todo(BaseModel):
+    """Model for a CalDAV todo/task (VTODO)."""
+
+    uid: str = Field(description="Todo UID")
+    summary: str = Field(description="Todo summary/title")
+    description: str = Field(default="", description="Todo description")
+    status: str = Field(
+        default="NEEDS-ACTION",
+        description="Todo status: NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED",
+    )
+    priority: int = Field(
+        default=0, description="Todo priority (0=undefined, 1=highest, 9=lowest)"
+    )
+    percent_complete: int = Field(default=0, description="Percentage complete (0-100)")
+    due: Optional[str] = Field(None, description="Due date/time (ISO format)")
+    dtstart: Optional[str] = Field(None, description="Start date/time (ISO format)")
+    completed: Optional[str] = Field(
+        None, description="Completion timestamp (ISO format)"
+    )
+    categories: str = Field(default="", description="Comma-separated categories")
+    href: str = Field(default="", description="CalDAV href")
+    etag: str = Field(default="", description="ETag for versioning")
+    calendar_name: Optional[str] = Field(
+        None, description="Calendar containing this todo"
+    )
+    calendar_display_name: Optional[str] = Field(
+        None, description="Display name of calendar containing this todo"
+    )
+
+
+class ListTodosResponse(BaseResponse):
+    """Response model for listing todos."""
+
+    todos: List[Todo] = Field(description="List of todos/tasks")
+    calendar_name: Optional[str] = Field(
+        None, description="Calendar name (if filtered to one calendar)"
+    )
+    total_count: int = Field(description="Total number of todos found")
+
+
+class CreateTodoResponse(BaseResponse):
+    """Response model for todo creation."""
+
+    todo: Todo = Field(description="The created todo")
+    calendar_name: str = Field(
+        description="Name of the calendar the todo was created in"
+    )
+
+
+class UpdateTodoResponse(BaseResponse):
+    """Response model for todo updates."""
+
+    todo: Todo = Field(description="The updated todo")
+    calendar_name: str = Field(description="Name of the calendar the todo belongs to")
+
+
+class DeleteTodoResponse(StatusResponse):
+    """Response model for todo deletion."""
+
+    deleted_uid: str = Field(description="UID of the deleted todo")
+    calendar_name: str = Field(
+        description="Name of the calendar the todo was deleted from"
+    )

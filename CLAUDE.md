@@ -136,7 +136,17 @@ Each Nextcloud app has a corresponding server module that:
 ### Supported Nextcloud Apps
 
 - **Notes** - Full CRUD operations and search
-- **Calendar** - CalDAV integration with events, recurring events, attendees
+- **Calendar** - CalDAV integration with events, recurring events, attendees, and **tasks (VTODO)**
+  - **Calendar Operations**: List, create, delete calendars
+  - **Event Operations**: Full CRUD, recurring events, attendees, reminders, bulk operations
+  - **Task Operations (VTODO)**: Full CRUD for CalDAV tasks with:
+    - Status tracking (NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED)
+    - Priority levels (0-9, 1=highest, 9=lowest)
+    - Due dates, start dates, completion tracking
+    - Percent complete (0-100%)
+    - Categories and filtering
+    - Search across all calendars
+  - **Note**: Calendar implementation uses caldav library's AsyncDavClient
 - **Contacts** - CardDAV integration with address book operations
 - **Tables** - Row-level operations on Nextcloud Tables
 - **WebDAV** - Complete file system access

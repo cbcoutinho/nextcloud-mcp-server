@@ -5,7 +5,12 @@ from typing import Optional
 from mcp.server.fastmcp import Context, FastMCP
 
 from nextcloud_mcp_server.context import get_client
-from nextcloud_mcp_server.models.calendar import Calendar, ListCalendarsResponse
+from nextcloud_mcp_server.models.calendar import (
+    Calendar,
+    ListCalendarsResponse,
+    ListTodosResponse,
+    Todo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -796,3 +801,209 @@ def configure_calendar_tools(mcp: FastMCP):
 
         else:
             raise ValueError("Action must be 'create', 'delete', 'update', or 'list'")
+
+    # ============= Todo/Task Tools =============
+
+    @mcp.tool()
+    async def nc_calendar_list_todos(
+        calendar_name: str,
+        ctx: Context,
+        status: Optional[str] = None,
+        min_priority: Optional[int] = None,
+        categories: Optional[str] = None,
+        summary_contains: Optional[str] = None,
+    ) -> ListTodosResponse:
+        """List todos/tasks in a calendar with optional filtering.
+
+        Args:
+            calendar_name: Name of the calendar to list todos from
+            ctx: MCP context
+            status: Filter by status (NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED)
+            min_priority: Filter by minimum priority (1=highest, 9=lowest)
+            categories: Filter by categories (comma-separated, e.g., "work,urgent")
+            summary_contains: Filter todos where summary contains this text
+
+        Returns:
+            List of todos matching the filters
+        """
+        client = get_client(ctx)
+
+        # Build filters dictionary
+        filters = {}
+        if status is not None:
+            filters["status"] = status
+        if min_priority is not None:
+            filters["min_priority"] = min_priority
+        if categories is not None:
+            filters["categories"] = [cat.strip() for cat in categories.split(",")]
+        if summary_contains is not None:
+            filters["summary_contains"] = summary_contains
+
+        todos_data = await client.calendar.list_todos(
+            calendar_name, filters if filters else None
+        )
+
+        todos = [Todo(**todo_data) for todo_data in todos_data]
+        return ListTodosResponse(
+            todos=todos, calendar_name=calendar_name, total_count=len(todos)
+        )
+
+    @mcp.tool()
+    async def nc_calendar_create_todo(
+        calendar_name: str,
+        summary: str,
+        ctx: Context,
+        description: str = "",
+        status: str = "NEEDS-ACTION",
+        priority: int = 0,
+        due: str = "",
+        dtstart: str = "",
+        categories: str = "",
+    ):
+        """Create a new todo/task in a calendar.
+
+        Args:
+            calendar_name: Name of the calendar to create the todo in
+            summary: Todo title/summary
+            ctx: MCP context
+            description: Detailed description of the todo
+            status: Todo status (NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED)
+            priority: Priority (0=undefined, 1=highest, 9=lowest)
+            due: Due date/time (ISO format, e.g., "2025-01-15T14:00:00")
+            dtstart: Start date/time (ISO format)
+            categories: Comma-separated categories (e.g., "work,urgent")
+
+        Returns:
+            Dict with todo creation result
+        """
+        client = get_client(ctx)
+
+        todo_data = {
+            "summary": summary,
+            "description": description,
+            "status": status,
+            "priority": priority,
+            "due": due,
+            "dtstart": dtstart,
+            "categories": categories,
+        }
+
+        return await client.calendar.create_todo(calendar_name, todo_data)
+
+    @mcp.tool()
+    async def nc_calendar_update_todo(
+        calendar_name: str,
+        todo_uid: str,
+        ctx: Context,
+        summary: Optional[str] = None,
+        description: Optional[str] = None,
+        status: Optional[str] = None,
+        priority: Optional[int] = None,
+        percent_complete: Optional[int] = None,
+        due: Optional[str] = None,
+        dtstart: Optional[str] = None,
+        completed: Optional[str] = None,
+        categories: Optional[str] = None,
+    ):
+        """Update an existing todo/task.
+
+        Args:
+            calendar_name: Name of the calendar containing the todo
+            todo_uid: UID of the todo to update
+            ctx: MCP context
+            summary: New summary/title
+            description: New description
+            status: New status (NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED)
+            priority: New priority (0-9)
+            percent_complete: New completion percentage (0-100)
+            due: New due date/time (ISO format)
+            dtstart: New start date/time (ISO format)
+            completed: Completion timestamp (ISO format)
+            categories: New categories (comma-separated)
+
+        Returns:
+            Dict with todo update result
+        """
+        client = get_client(ctx)
+
+        # Build update data with only non-None values
+        todo_data = {}
+        if summary is not None:
+            todo_data["summary"] = summary
+        if description is not None:
+            todo_data["description"] = description
+        if status is not None:
+            todo_data["status"] = status
+        if priority is not None:
+            todo_data["priority"] = priority
+        if percent_complete is not None:
+            todo_data["percent_complete"] = percent_complete
+        if due is not None:
+            todo_data["due"] = due
+        if dtstart is not None:
+            todo_data["dtstart"] = dtstart
+        if completed is not None:
+            todo_data["completed"] = completed
+        if categories is not None:
+            todo_data["categories"] = categories
+
+        return await client.calendar.update_todo(calendar_name, todo_uid, todo_data)
+
+    @mcp.tool()
+    async def nc_calendar_delete_todo(
+        calendar_name: str,
+        todo_uid: str,
+        ctx: Context,
+    ):
+        """Delete a todo/task from a calendar.
+
+        Args:
+            calendar_name: Name of the calendar containing the todo
+            todo_uid: UID of the todo to delete
+            ctx: MCP context
+
+        Returns:
+            Dict with deletion status
+        """
+        client = get_client(ctx)
+        return await client.calendar.delete_todo(calendar_name, todo_uid)
+
+    @mcp.tool()
+    async def nc_calendar_search_todos(
+        ctx: Context,
+        status: Optional[str] = None,
+        min_priority: Optional[int] = None,
+        categories: Optional[str] = None,
+        summary_contains: Optional[str] = None,
+    ):
+        """Search todos across all calendars with optional filtering.
+
+        Args:
+            ctx: MCP context
+            status: Filter by status (NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED)
+            min_priority: Filter by minimum priority (1=highest, 9=lowest)
+            categories: Filter by categories (comma-separated, e.g., "work,urgent")
+            summary_contains: Filter todos where summary contains this text
+
+        Returns:
+            List of todos matching the filters from all calendars
+        """
+        client = get_client(ctx)
+
+        # Build filters dictionary
+        filters = {}
+        if status is not None:
+            filters["status"] = status
+        if min_priority is not None:
+            filters["min_priority"] = min_priority
+        if categories is not None:
+            filters["categories"] = [cat.strip() for cat in categories.split(",")]
+        if summary_contains is not None:
+            filters["summary_contains"] = summary_contains
+
+        todos_data = await client.calendar.search_todos_across_calendars(
+            filters if filters else None
+        )
+
+        todos = [Todo(**todo_data) for todo_data in todos_data]
+        return ListTodosResponse(todos=todos, total_count=len(todos))
