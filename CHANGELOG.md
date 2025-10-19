@@ -1,3 +1,18 @@
+## v0.17.0 (2025-10-19)
+
+### Feat
+
+- **caldav**: Add support for tasks
+
+### Fix
+
+- **caldav**: Check that calendar exists after creation to avoid race condition
+- **caldav**: Properly parse datetimes as vDDDTypes
+
+### Refactor
+
+- Migrate from internal CalendarClient to caldav library
+
 ## v0.16.0 (2025-10-19)
 
 ### Feat
