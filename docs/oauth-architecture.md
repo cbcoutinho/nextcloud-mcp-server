@@ -296,8 +296,7 @@ See [Configuration Guide](configuration.md) for all OAuth environment variables:
 
 The integration test suite includes comprehensive OAuth testing:
 
-- **Automated tests** (Playwright): [`tests/integration/test_oauth_playwright.py`](../tests/integration/test_oauth_playwright.py)
-- **Interactive tests**: [`tests/integration/test_oauth_interactive.py`](../tests/integration/test_oauth_interactive.py)
+- **Automated tests** (Playwright): [`tests/client/test_oauth_playwright.py`](../tests/client/test_oauth_playwright.py)
 - **Fixtures**: [`tests/conftest.py`](../tests/conftest.py)
 
 Run OAuth tests:
@@ -306,10 +305,7 @@ Run OAuth tests:
 docker-compose up --build -d mcp-oauth
 
 # Run automated tests
-uv run pytest tests/integration/test_oauth_playwright.py --browser firefox -v
-
-# Run interactive tests (manual login)
-uv run pytest tests/integration/test_oauth_interactive.py -v
+uv run pytest tests/client/test_oauth_playwright.py --browser firefox -v
 ```
 
 ## See Also

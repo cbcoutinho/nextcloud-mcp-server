@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_create_and_delete_share(nc_client):
     """Test creating and deleting a file share."""
     # Create a test user to share with
@@ -68,7 +68,7 @@ async def test_create_and_delete_share(nc_client):
             pass
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_update_share_permissions(nc_client):
     """Test updating share permissions."""
     # Create a test user to share with
@@ -120,7 +120,7 @@ async def test_update_share_permissions(nc_client):
             pass
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_shares(nc_client):
     """Test listing all shares."""
     # Create a test user to share with

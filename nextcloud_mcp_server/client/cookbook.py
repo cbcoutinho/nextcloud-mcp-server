@@ -3,6 +3,8 @@
 import logging
 from typing import Any, Dict, List
 
+from httpx import Timeout
+
 from .base import BaseNextcloudClient
 
 logger = logging.getLogger(__name__)
@@ -127,7 +129,10 @@ class CookbookClient(BaseNextcloudClient):
         """
         logger.info(f"Importing recipe from URL: {url}")
         response = await self._make_request(
-            "POST", "/apps/cookbook/api/v1/import", json={"url": url}
+            "POST",
+            "/apps/cookbook/api/v1/import",
+            json={"url": url},
+            timeout=Timeout(300.0),
         )
         return response.json()
 

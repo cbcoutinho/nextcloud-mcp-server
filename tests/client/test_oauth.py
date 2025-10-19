@@ -30,7 +30,7 @@ async def test_oauth_client_capabilities(nc_oauth_client: NextcloudClient):
 
 async def test_oauth_client_notes_list(nc_oauth_client: NextcloudClient):
     """Test that OAuth client can list notes."""
-    notes = await nc_oauth_client.notes.get_all_notes()
+    notes = [note async for note in nc_oauth_client.notes.get_all_notes()]
 
     assert isinstance(notes, list)
     logger.info(f"OAuth client successfully listed {len(notes)} notes")
@@ -95,7 +95,7 @@ async def test_invalid_token_fails():
     # Attempt to use a protected endpoint - should fail with 401
     # Note: capabilities endpoint is public and doesn't require auth
     with pytest.raises(HTTPStatusError) as exc_info:
-        await invalid_client.notes.get_all_notes()
+        _ = [note async for note in invalid_client.notes.get_all_notes()]
 
     assert exc_info.value.response.status_code == 401
 

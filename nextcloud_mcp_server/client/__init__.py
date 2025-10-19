@@ -9,7 +9,6 @@ from httpx import (
     BasicAuth,
     Request,
     Response,
-    Timeout,
 )
 
 from ..controllers.notes_search import NotesSearchController
@@ -21,8 +20,8 @@ from .groups import GroupsClient
 from .notes import NotesClient
 from .sharing import SharingClient
 from .tables import TablesClient
-from .webdav import WebDAVClient
 from .users import UsersClient
+from .webdav import WebDAVClient
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +66,6 @@ class NextcloudClient:
             auth=auth,
             transport=AsyncDisableCookieTransport(AsyncHTTPTransport()),
             event_hooks={"request": [log_request], "response": [log_response]},
-            timeout=Timeout(
-                30.0
-            ),  # 30 second timeout for all operations including recipe imports
         )
 
         # Initialize app clients
@@ -125,8 +121,8 @@ class NextcloudClient:
 
     async def notes_search_notes(self, *, query: str):
         """Search notes using token-based matching with relevance ranking."""
-        all_notes = await self.notes.get_all_notes()
-        return self._notes_search.search_notes(all_notes, query)
+        all_notes = self.notes.get_all_notes()
+        return await self._notes_search.search_notes(all_notes, query)
 
     def _get_webdav_base_path(self) -> str:
         """Helper to get the base WebDAV path for the authenticated user."""

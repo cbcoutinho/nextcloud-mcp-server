@@ -5,6 +5,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
 import click
+import httpx
 import uvicorn
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
@@ -14,7 +15,7 @@ from starlette.routing import Mount
 
 from nextcloud_mcp_server.auth import NextcloudTokenVerifier, load_or_register_client
 from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.config import setup_logging, LOGGING_CONFIG
+from nextcloud_mcp_server.config import LOGGING_CONFIG, setup_logging
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.server import (
     configure_calendar_tools,
@@ -176,8 +177,6 @@ async def app_lifespan_oauth(server: FastMCP) -> AsyncIterator[OAuthAppContext]:
 
     try:
         # Fetch OIDC discovery
-        import httpx
-
         async with httpx.AsyncClient() as client:
             response = await client.get(discovery_url)
             response.raise_for_status()
@@ -266,8 +265,6 @@ async def setup_oauth_config():
     logger.info(f"Performing OIDC discovery: {discovery_url}")
 
     # Fetch OIDC discovery
-    import httpx
-
     async with httpx.AsyncClient() as client:
         response = await client.get(discovery_url)
         response.raise_for_status()

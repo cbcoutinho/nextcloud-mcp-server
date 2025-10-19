@@ -15,6 +15,12 @@ from nextcloud_mcp_server.client import NextcloudClient
 logger = logging.getLogger(__name__)
 
 
+@pytest.fixture(scope="session")
+def anyio_backend():
+    """Configure anyio to use asyncio backend for all tests."""
+    return "asyncio"
+
+
 async def wait_for_nextcloud(
     host: str, max_attempts: int = 30, delay: float = 2.0
 ) -> bool:
@@ -66,10 +72,14 @@ async def create_mcp_client_session(
     """
     Factory function to create an MCP client session with proper lifecycle management.
 
+    Uses native async context managers to ensure correct LIFO cleanup order,
+    eliminating the need for exception suppression. Python's context manager protocol
+    guarantees that cleanup happens in reverse order of entry.
+
     Consolidates the common pattern used by all MCP client fixtures:
     - Creates streamable HTTP client with optional OAuth token
     - Initializes MCP ClientSession
-    - Handles cleanup with proper exception handling
+    - Ensures proper cleanup without suppressing errors
 
     Args:
         url: MCP server URL (e.g., "http://127.0.0.1:8000/mcp")
@@ -78,51 +88,36 @@ async def create_mcp_client_session(
 
     Yields:
         Initialized MCP ClientSession
+
+    Note:
+        This implementation uses native async context managers instead of manually
+        calling __aenter__/__aexit__. This ensures that anyio's structured concurrency
+        requirements are met, as Python guarantees LIFO cleanup order for nested
+        context managers. See: https://github.com/modelcontextprotocol/python-sdk/issues/577
     """
     logger.info(f"Creating Streamable HTTP client for {client_name}")
 
     # Prepare headers with OAuth token if provided
     headers = {"Authorization": f"Bearer {token}"} if token else None
-    streamable_context = streamablehttp_client(url, headers=headers)
-    session_context = None
 
-    try:
-        read_stream, write_stream, _ = await streamable_context.__aenter__()
-        session_context = ClientSession(read_stream, write_stream)
-        session = await session_context.__aenter__()
-        await session.initialize()
-        logger.info(f"{client_name} client session initialized successfully")
+    # Use native async with - Python ensures LIFO cleanup
+    # Cleanup order will be: ClientSession.__aexit__ -> streamablehttp_client.__aexit__
+    async with streamablehttp_client(url, headers=headers) as (
+        read_stream,
+        write_stream,
+        _,
+    ):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            logger.info(f"{client_name} client session initialized successfully")
+            yield session
 
-        yield session
-
-    finally:
-        # Clean up in reverse order, ignoring task scope issues
-        if session_context is not None:
-            try:
-                await session_context.__aexit__(None, None, None)
-            except RuntimeError as e:
-                if "cancel scope" in str(e):
-                    logger.debug(f"Ignoring cancel scope teardown issue: {e}")
-                else:
-                    logger.warning(f"Error closing {client_name} session: {e}")
-            except Exception as e:
-                logger.warning(f"Error closing {client_name} session: {e}")
-
-        try:
-            await streamable_context.__aexit__(None, None, None)
-        except RuntimeError as e:
-            if "cancel scope" in str(e):
-                logger.debug(f"Ignoring cancel scope teardown issue: {e}")
-            else:
-                logger.warning(
-                    f"Error closing {client_name} streamable HTTP client: {e}"
-                )
-        except Exception as e:
-            logger.warning(f"Error closing {client_name} streamable HTTP client: {e}")
+    # Cleanup happens automatically in LIFO order - no exception suppression needed
+    logger.debug(f"{client_name} client session cleaned up successfully")
 
 
 @pytest.fixture(scope="session")
-async def nc_client() -> AsyncGenerator[NextcloudClient, Any]:
+async def nc_client(anyio_backend) -> AsyncGenerator[NextcloudClient, Any]:
     """
     Fixture to create a NextcloudClient instance for integration tests.
     Uses environment variables for configuration.
@@ -157,9 +152,11 @@ async def nc_client() -> AsyncGenerator[NextcloudClient, Any]:
 
 
 @pytest.fixture(scope="session")
-async def nc_mcp_client() -> AsyncGenerator[ClientSession, Any]:
+async def nc_mcp_client(anyio_backend) -> AsyncGenerator[ClientSession, Any]:
     """
     Fixture to create an MCP client session for integration tests using streamable-http.
+
+    Uses anyio pytest plugin for proper async fixture handling.
     """
     async for session in create_mcp_client_session(
         url="http://127.0.0.1:8000/mcp", client_name="Basic MCP"
@@ -169,6 +166,7 @@ async def nc_mcp_client() -> AsyncGenerator[ClientSession, Any]:
 
 @pytest.fixture(scope="session")
 async def nc_mcp_oauth_client(
+    anyio_backend,
     playwright_oauth_token: str,
 ) -> AsyncGenerator[ClientSession, Any]:
     """
@@ -176,6 +174,7 @@ async def nc_mcp_oauth_client(
     Connects to the OAuth-enabled MCP server on port 8001 with OAuth authentication.
 
     Uses headless browser automation suitable for CI/CD.
+    Uses anyio pytest plugin for proper async fixture handling.
     """
     async for session in create_mcp_client_session(
         url="http://127.0.0.1:8001/mcp",
@@ -504,6 +503,7 @@ async def temporary_board_with_card(
 
 @pytest.fixture(scope="session")
 async def nc_oauth_client(
+    anyio_backend,
     playwright_oauth_token: str,
 ) -> AsyncGenerator[NextcloudClient, Any]:
     """
@@ -549,9 +549,14 @@ def oauth_callback_server():
     - server_url: The callback URL for the server (e.g., "http://localhost:8081")
 
     The server automatically shuts down when the fixture is torn down.
-
-    Automatically skips when running in GitHub Actions CI.
     """
+    # Skip OAuth tests in GitHub Actions - Playwright browser automation
+    # has issues with localhost callback server in CI environment
+    # if os.getenv("GITHUB_ACTIONS"):
+    # pytest.skip(
+    # "OAuth tests with browser automation not supported in GitHub Actions CI"
+    # )
+
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
     from urllib.parse import parse_qs, urlparse
@@ -626,7 +631,7 @@ def oauth_callback_server():
 
 
 @pytest.fixture(scope="session")
-async def shared_oauth_client_credentials(oauth_callback_server):
+async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
     """
     Fixture to obtain shared OAuth client credentials that will be reused for all users.
 
@@ -687,7 +692,7 @@ async def shared_oauth_client_credentials(oauth_callback_server):
 
 @pytest.fixture(scope="session")
 async def playwright_oauth_token(
-    browser, shared_oauth_client_credentials, oauth_callback_server
+    anyio_backend, browser, shared_oauth_client_credentials, oauth_callback_server
 ) -> str:
     """
     Fixture to obtain an OAuth access token using Playwright headless browser automation.
@@ -756,7 +761,7 @@ async def playwright_oauth_token(
     try:
         # Navigate to authorization URL
         logger.debug(f"Navigating to: {auth_url}")
-        await page.goto(auth_url, wait_until="networkidle", timeout=30000)
+        await page.goto(auth_url, wait_until="networkidle", timeout=60000)
 
         # Check if we need to login first
         current_url = page.url
@@ -779,7 +784,7 @@ async def playwright_oauth_token(
             await page.click('button[type="submit"]')
 
             # Wait for navigation after login
-            await page.wait_for_load_state("networkidle", timeout=30000)
+            await page.wait_for_load_state("networkidle", timeout=60000)
             current_url = page.url
             logger.info(f"After login, current URL: {current_url}")
 
@@ -850,7 +855,7 @@ async def playwright_oauth_token(
 
 
 @pytest.fixture(scope="session")
-async def test_users_setup(nc_client: NextcloudClient):
+async def test_users_setup(anyio_backend, nc_client: NextcloudClient):
     """
     Create test users for multi-user OAuth testing.
 
@@ -1097,7 +1102,11 @@ async def _get_oauth_token_for_user(
 # Parallel token retrieval fixture - fetches all OAuth tokens concurrently
 @pytest.fixture(scope="session")
 async def all_oauth_tokens(
-    browser, shared_oauth_client_credentials, test_users_setup, oauth_callback_server
+    anyio_backend,
+    browser,
+    shared_oauth_client_credentials,
+    test_users_setup,
+    oauth_callback_server,
 ) -> dict[str, str]:
     """
     Fetch OAuth tokens for all test users in parallel for speed.
@@ -1157,31 +1166,32 @@ async def all_oauth_tokens(
 
 # Session-scoped OAuth token fixtures - now use the parallel fixture
 @pytest.fixture(scope="session")
-async def alice_oauth_token(all_oauth_tokens) -> str:
+async def alice_oauth_token(anyio_backend, all_oauth_tokens) -> str:
     """OAuth token for alice (cached for session). Uses shared OAuth client."""
     return all_oauth_tokens["alice"]
 
 
 @pytest.fixture(scope="session")
-async def bob_oauth_token(all_oauth_tokens) -> str:
+async def bob_oauth_token(anyio_backend, all_oauth_tokens) -> str:
     """OAuth token for bob (cached for session). Uses shared OAuth client."""
     return all_oauth_tokens["bob"]
 
 
 @pytest.fixture(scope="session")
-async def charlie_oauth_token(all_oauth_tokens) -> str:
+async def charlie_oauth_token(anyio_backend, all_oauth_tokens) -> str:
     """OAuth token for charlie (cached for session). Uses shared OAuth client."""
     return all_oauth_tokens["charlie"]
 
 
 @pytest.fixture(scope="session")
-async def diana_oauth_token(all_oauth_tokens) -> str:
+async def diana_oauth_token(anyio_backend, all_oauth_tokens) -> str:
     """OAuth token for diana (cached for session). Uses shared OAuth client."""
     return all_oauth_tokens["diana"]
 
 
 @pytest.fixture(scope="session")
 async def alice_mcp_client(
+    anyio_backend,
     alice_oauth_token: str,
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as alice (owner role)."""
@@ -1194,16 +1204,21 @@ async def alice_mcp_client(
 
 
 @pytest.fixture(scope="session")
-async def bob_mcp_client(bob_oauth_token: str) -> AsyncGenerator[ClientSession, Any]:
+async def bob_mcp_client(
+    anyio_backend, bob_oauth_token: str
+) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as bob (viewer role)."""
     async for session in create_mcp_client_session(
-        url="http://127.0.0.1:8001/mcp", token=bob_oauth_token, client_name="Bob MCP"
+        url="http://127.0.0.1:8001/mcp",
+        token=bob_oauth_token,
+        client_name="Bob MCP",
     ):
         yield session
 
 
 @pytest.fixture(scope="session")
 async def charlie_mcp_client(
+    anyio_backend,
     charlie_oauth_token: str,
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as charlie (editor role, in 'editors' group)."""
@@ -1217,6 +1232,7 @@ async def charlie_mcp_client(
 
 @pytest.fixture(scope="session")
 async def diana_mcp_client(
+    anyio_backend,
     diana_oauth_token: str,
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as diana (no-access role)."""

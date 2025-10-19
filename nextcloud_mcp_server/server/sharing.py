@@ -2,8 +2,9 @@
 
 import json
 
-from nextcloud_mcp_server.context import get_client
 from mcp.server.fastmcp import Context, FastMCP
+
+from nextcloud_mcp_server.context import get_client
 
 
 def configure_sharing_tools(mcp: FastMCP):

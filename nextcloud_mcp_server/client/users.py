@@ -1,4 +1,5 @@
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional
+
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.models.users import UserDetails
 

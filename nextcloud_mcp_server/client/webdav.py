@@ -570,3 +570,379 @@ class WebDAVClient(BaseNextcloudClient):
                 f"Unexpected error copying resource from '{source_path}' to '{destination_path}': {e}"
             )
             raise e
+
+    async def search_files(
+        self,
+        scope: str = "",
+        where_conditions: Optional[str] = None,
+        properties: Optional[List[str]] = None,
+        order_by: Optional[List[Tuple[str, str]]] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search for files using WebDAV SEARCH method (RFC 5323).
+
+        Args:
+            scope: Directory path to search in (empty string for user root)
+            where_conditions: XML string for where clause conditions
+            properties: List of property names to retrieve (defaults to basic set)
+            order_by: List of (property, direction) tuples for sorting, e.g. [("getlastmodified", "descending")]
+            limit: Maximum number of results to return
+
+        Returns:
+            List of file/directory dictionaries with requested properties
+        """
+        # Default properties if not specified
+        if properties is None:
+            properties = [
+                "displayname",
+                "getcontentlength",
+                "getcontenttype",
+                "getlastmodified",
+                "resourcetype",
+                "getetag",
+            ]
+
+        # Build the SEARCH request XML
+        search_body = self._build_search_xml(
+            scope=scope,
+            where_conditions=where_conditions,
+            properties=properties,
+            order_by=order_by,
+            limit=limit,
+        )
+
+        # The SEARCH endpoint is at the dav root
+        search_path = "/remote.php/dav/"
+
+        headers = {"Content-Type": "text/xml", "OCS-APIRequest": "true"}
+
+        logger.debug(f"Searching files in scope: {scope}")
+
+        try:
+            response = await self._make_request(
+                "SEARCH", search_path, content=search_body, headers=headers
+            )
+            response.raise_for_status()
+
+            # Parse the XML response
+            results = self._parse_search_response(response.content, scope)
+
+            logger.debug(f"Search returned {len(results)} results")
+            return results
+
+        except HTTPStatusError as e:
+            logger.error(f"HTTP error during search: {e}")
+            raise e
+        except Exception as e:
+            logger.error(f"Unexpected error during search: {e}")
+            raise e
+
+    def _build_search_xml(
+        self,
+        scope: str,
+        where_conditions: Optional[str],
+        properties: List[str],
+        order_by: Optional[List[Tuple[str, str]]],
+        limit: Optional[int],
+    ) -> str:
+        """Build the XML body for a SEARCH request."""
+        # Construct the scope path
+        username = self.username
+        scope_path = f"/files/{username}"
+        if scope:
+            scope_path = f"{scope_path}/{scope.lstrip('/')}"
+
+        # Build property list
+        prop_xml = "\n".join([self._property_to_xml(prop) for prop in properties])
+
+        # Build where clause
+        where_xml = where_conditions if where_conditions else ""
+
+        # Build order by clause
+        orderby_xml = ""
+        if order_by:
+            order_elements = []
+            for prop, direction in order_by:
+                prop_element = self._property_to_xml(prop)
+                dir_element = (
+                    "<d:ascending/>"
+                    if direction.lower() == "ascending"
+                    else "<d:descending/>"
+                )
+                order_elements.append(f"<d:order>{prop_element}{dir_element}</d:order>")
+            orderby_xml = "\n".join(order_elements)
+        else:
+            orderby_xml = ""
+
+        # Build limit clause
+        limit_xml = (
+            f"<d:limit><d:nresults>{limit}</d:nresults></d:limit>" if limit else ""
+        )
+
+        # Construct the full SEARCH XML
+        search_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<d:searchrequest xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
+    <d:basicsearch>
+        <d:select>
+            <d:prop>
+                {prop_xml}
+            </d:prop>
+        </d:select>
+        <d:from>
+            <d:scope>
+                <d:href>{scope_path}</d:href>
+                <d:depth>infinity</d:depth>
+            </d:scope>
+        </d:from>
+        <d:where>
+            {where_xml}
+        </d:where>
+        <d:orderby>
+            {orderby_xml}
+        </d:orderby>
+        {limit_xml}
+    </d:basicsearch>
+</d:searchrequest>"""
+
+        return search_xml
+
+    def _property_to_xml(self, prop: str) -> str:
+        """Convert a property name to its XML element."""
+        # Handle properties with namespace prefixes
+        if prop.startswith("{"):
+            # Already a full namespace
+            namespace_end = prop.index("}")
+            namespace = prop[1:namespace_end]
+            local_name = prop[namespace_end + 1 :]
+
+            # Map namespace URIs to prefixes
+            ns_map = {
+                "DAV:": "d",
+                "http://owncloud.org/ns": "oc",
+                "http://nextcloud.org/ns": "nc",
+            }
+
+            prefix = ns_map.get(namespace, "d")
+            return f"<{prefix}:{local_name}/>"
+        else:
+            # Guess namespace based on common properties
+            if prop in [
+                "displayname",
+                "getcontentlength",
+                "getcontenttype",
+                "getlastmodified",
+                "resourcetype",
+                "getetag",
+                "quota-available-bytes",
+                "quota-used-bytes",
+            ]:
+                return f"<d:{prop}/>"
+            elif prop in [
+                "fileid",
+                "size",
+                "permissions",
+                "favorite",
+                "tags",
+                "owner-id",
+                "owner-display-name",
+                "share-types",
+                "checksums",
+                "comments-count",
+                "comments-unread",
+            ]:
+                return f"<oc:{prop}/>"
+            else:
+                # Assume nc namespace for newer properties
+                return f"<nc:{prop}/>"
+
+    def _parse_search_response(
+        self, xml_content: bytes, scope: str
+    ) -> List[Dict[str, Any]]:
+        """Parse the XML response from a SEARCH request."""
+        root = ET.fromstring(xml_content)
+        items = []
+
+        # Process each response element
+        responses = root.findall(".//{DAV:}response")
+
+        for response_elem in responses:
+            href = response_elem.find(".//{DAV:}href")
+            if href is None:
+                continue
+
+            # Extract file/directory path from href
+            href_text = href.text or ""
+            # Remove the /remote.php/dav/files/username/ prefix to get relative path
+            path_parts = href_text.split("/files/")
+            if len(path_parts) > 1:
+                # Get the path after username
+                path_after_user = "/".join(path_parts[1].split("/")[1:])
+                relative_path = path_after_user.rstrip("/")
+            else:
+                relative_path = href_text.rstrip("/").split("/")[-1]
+
+            # Get properties
+            propstat = response_elem.find(".//{DAV:}propstat")
+            if propstat is None:
+                continue
+
+            prop = propstat.find(".//{DAV:}prop")
+            if prop is None:
+                continue
+
+            # Build item dictionary
+            item = {"path": relative_path, "href": href_text}
+
+            # Extract all properties
+            for child in prop:
+                tag = child.tag
+                value = child.text
+
+                # Remove namespace from tag
+                if "}" in tag:
+                    tag = tag.split("}", 1)[1]
+
+                # Handle special properties
+                if tag == "resourcetype":
+                    item["is_directory"] = child.find(".//{DAV:}collection") is not None
+                elif tag == "getcontentlength":
+                    item["size"] = int(value) if value else 0
+                elif tag == "displayname":
+                    item["name"] = value
+                elif tag == "getcontenttype":
+                    item["content_type"] = value
+                elif tag == "getlastmodified":
+                    item["last_modified"] = value
+                elif tag == "getetag":
+                    item["etag"] = value.strip('"') if value else None
+                elif tag == "fileid":
+                    item["file_id"] = int(value) if value else None
+                elif tag == "favorite":
+                    item["is_favorite"] = value == "1"
+                elif tag == "permissions":
+                    item["permissions"] = value
+                elif tag == "size":
+                    # oc:size includes folder sizes
+                    item["total_size"] = int(value) if value else 0
+                else:
+                    # Store other properties as-is
+                    item[tag] = value
+
+            items.append(item)
+
+        return items
+
+    async def find_by_name(
+        self, pattern: str, scope: str = "", limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Find files by name pattern using LIKE matching.
+
+        Args:
+            pattern: Name pattern to search for (supports % wildcard)
+            scope: Directory path to search in (empty string for user root)
+            limit: Maximum number of results to return
+
+        Returns:
+            List of matching files/directories
+
+        Examples:
+            # Find all .txt files
+            results = await find_by_name("%.txt")
+
+            # Find files starting with "report"
+            results = await find_by_name("report%")
+        """
+        where_conditions = f"""
+            <d:like>
+                <d:prop>
+                    <d:displayname/>
+                </d:prop>
+                <d:literal>{pattern}</d:literal>
+            </d:like>
+        """
+
+        return await self.search_files(
+            scope=scope, where_conditions=where_conditions, limit=limit
+        )
+
+    async def find_by_type(
+        self, mime_type: str, scope: str = "", limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Find files by MIME type.
+
+        Args:
+            mime_type: MIME type to search for (supports % wildcard, e.g., "image/%")
+            scope: Directory path to search in (empty string for user root)
+            limit: Maximum number of results to return
+
+        Returns:
+            List of matching files
+
+        Examples:
+            # Find all images
+            results = await find_by_type("image/%")
+
+            # Find all PDFs
+            results = await find_by_type("application/pdf")
+        """
+        where_conditions = f"""
+            <d:like>
+                <d:prop>
+                    <d:getcontenttype/>
+                </d:prop>
+                <d:literal>{mime_type}</d:literal>
+            </d:like>
+        """
+
+        return await self.search_files(
+            scope=scope, where_conditions=where_conditions, limit=limit
+        )
+
+    async def list_favorites(
+        self, scope: str = "", limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """List all favorite files.
+
+        Args:
+            scope: Directory path to search in (empty string for user root)
+            limit: Maximum number of results to return
+
+        Returns:
+            List of favorite files/directories
+
+        Examples:
+            # List all favorites
+            results = await list_favorites()
+
+            # List favorites in a specific folder
+            results = await list_favorites(scope="Documents")
+        """
+        # Use REPORT method for favorites as it's more efficient
+        # But we can also use SEARCH as fallback
+        where_conditions = """
+            <d:eq>
+                <d:prop>
+                    <oc:favorite/>
+                </d:prop>
+                <d:literal>1</d:literal>
+            </d:eq>
+        """
+
+        # Request favorite property
+        properties = [
+            "displayname",
+            "getcontentlength",
+            "getcontenttype",
+            "getlastmodified",
+            "resourcetype",
+            "getetag",
+            "fileid",
+            "favorite",
+        ]
+
+        return await self.search_files(
+            scope=scope,
+            where_conditions=where_conditions,
+            properties=properties,
+            limit=limit,
+        )

@@ -171,7 +171,7 @@ The integration test suite validates OAuth functionality:
 docker-compose up --build -d mcp-oauth
 
 # Run comprehensive OAuth tests
-uv run pytest tests/integration/test_oauth_playwright.py --browser firefox -v
+uv run pytest tests/client/test_oauth_playwright.py --browser firefox -v
 
 # Tests verify:
 # - OAuth flow completion

@@ -65,11 +65,14 @@ from .tables import (
 
 # WebDAV models
 from .webdav import (
+    CopyResourceResponse,
     CreateDirectoryResponse,
     DeleteResourceResponse,
     DirectoryListing,
     FileInfo,
+    MoveResourceResponse,
     ReadFileResponse,
+    SearchFilesResponse,
     WriteFileResponse,
 )
 
@@ -133,4 +136,7 @@ __all__ = [
     "WriteFileResponse",
     "CreateDirectoryResponse",
     "DeleteResourceResponse",
+    "MoveResourceResponse",
+    "CopyResourceResponse",
+    "SearchFilesResponse",
 ]
