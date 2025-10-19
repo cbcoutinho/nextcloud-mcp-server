@@ -97,7 +97,9 @@ class CalendarClient:
 
     async def list_calendars(self) -> List[Dict[str, Any]]:
         """List all available calendars for the user."""
-        # Use PROPFIND to discover calendars in the calendar home set
+        # Use custom PROPFIND with CalendarServer namespace (cs:) for calendar-color.
+        # caldav library's nsmap lacks "CS" namespace, and its CalendarColor uses
+        # Apple iCal namespace which Nextcloud doesn't recognize.
         from lxml import etree
 
         propfind_body = """<?xml version="1.0" encoding="utf-8"?>
@@ -186,8 +188,10 @@ class CalendarClient:
         color: str = "#1976D2",
     ) -> Dict[str, Any]:
         """Create a new calendar with retry on 429 errors."""
-        # Use direct MKCALENDAR request instead of caldav library's make_calendar
-        # to avoid XML element issues
+        # Use custom MKCALENDAR XML instead of caldav library's make_calendar() due to:
+        # 1. Missing CalendarServer namespace (cs:) in caldav's nsmap
+        # 2. caldav's CalendarColor uses Apple iCal namespace, not cs:calendar-color
+        # 3. make_calendar() doesn't support calendar-description or calendar-color params
         calendar_url = (
             f"{self.base_url}/remote.php/dav/calendars/{self.username}/{calendar_name}/"
         )
