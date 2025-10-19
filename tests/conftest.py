@@ -502,6 +502,161 @@ async def temporary_board_with_card(
 
 
 @pytest.fixture(scope="session")
+def shared_test_calendar_name():
+    """Unique calendar name for the entire test session."""
+    return f"test_calendar_shared_{uuid.uuid4().hex[:8]}"
+
+
+@pytest.fixture(scope="session")
+def shared_test_calendar_name_2():
+    """Second unique calendar name for cross-calendar tests."""
+    return f"test_calendar_shared_2_{uuid.uuid4().hex[:8]}"
+
+
+@pytest.fixture(scope="session")
+async def shared_calendar(nc_client: NextcloudClient, shared_test_calendar_name: str):
+    """Create a shared calendar for all tests in the session. Reuses the calendar to avoid rate limiting."""
+    calendar_name = shared_test_calendar_name
+
+    try:
+        # Create a test calendar
+        logger.info(f"Creating shared test calendar: {calendar_name}")
+        result = await nc_client.calendar.create_calendar(
+            calendar_name=calendar_name,
+            display_name=f"Shared Test Calendar {calendar_name}",
+            description="Shared calendar for integration testing (reused across tests)",
+            color="#FF5722",
+        )
+
+        if result["status_code"] not in [200, 201]:
+            pytest.skip(f"Failed to create shared test calendar: {result}")
+
+        logger.info(f"Created shared test calendar: {calendar_name}")
+        yield calendar_name
+
+    except Exception as e:
+        logger.error(f"Error setting up shared test calendar: {e}")
+        pytest.skip(f"Shared calendar setup failed: {e}")
+
+    finally:
+        # Cleanup: Delete the shared calendar at end of session
+        try:
+            logger.info(f"Cleaning up shared test calendar: {calendar_name}")
+            await nc_client.calendar.delete_calendar(calendar_name)
+            logger.info(f"Successfully deleted shared test calendar: {calendar_name}")
+        except Exception as e:
+            logger.error(f"Error deleting shared test calendar {calendar_name}: {e}")
+
+
+@pytest.fixture(scope="session")
+async def shared_calendar_2(
+    nc_client: NextcloudClient,
+    shared_test_calendar_name_2: str,
+    shared_calendar: str,  # Explicit dependency to ensure proper initialization order
+):
+    """Create a second shared calendar for cross-calendar tests.
+
+    Note: Depends on shared_calendar to ensure proper fixture initialization order
+    and avoid race conditions when running multiple tests together.
+    """
+    calendar_name = shared_test_calendar_name_2
+
+    try:
+        # Wait for first calendar to fully initialize to avoid Nextcloud rate limiting
+        # When creating multiple calendars rapidly, Nextcloud may not register them all
+        import asyncio
+
+        logger.info("Waiting before creating second calendar to avoid rate limiting...")
+        await asyncio.sleep(3)  # Increased from 2 to 3 seconds
+
+        # Create a test calendar
+        logger.info(f"Creating second shared test calendar: {calendar_name}")
+        result = await nc_client.calendar.create_calendar(
+            calendar_name=calendar_name,
+            display_name=f"Shared Test Calendar 2 {calendar_name}",
+            description="Second shared calendar for cross-calendar testing",
+            color="#4CAF50",
+        )
+
+        if result["status_code"] not in [200, 201]:
+            pytest.skip(f"Failed to create second shared test calendar: {result}")
+
+        logger.info(f"Created second shared test calendar: {calendar_name}")
+
+        # Verify calendar was created by listing calendars
+        # Add small delay to allow calendar to propagate in the system
+        import asyncio
+
+        await asyncio.sleep(1.0)  # Allow time for calendar to propagate
+
+        calendars = await nc_client.calendar.list_calendars()
+        calendar_names = [cal["name"] for cal in calendars]
+        if calendar_name not in calendar_names:
+            logger.warning(
+                f"Calendar {calendar_name} not found immediately after creation. Available: {calendar_names}"
+            )
+            # Try one more time after a longer delay
+            await asyncio.sleep(3)  # Additional wait for calendar synchronization
+            calendars = await nc_client.calendar.list_calendars()
+            calendar_names = [cal["name"] for cal in calendars]
+            if calendar_name not in calendar_names:
+                logger.error(
+                    f"Calendar {calendar_name} still not found after retries. Available: {calendar_names}"
+                )
+                pytest.fail(
+                    f"Failed to create second shared calendar: {calendar_name} not found in listing"
+                )
+
+        logger.info(
+            f"Successfully verified second shared test calendar: {calendar_name}"
+        )
+        yield calendar_name
+
+    except Exception as e:
+        logger.error(f"Error setting up second shared test calendar: {e}")
+        pytest.skip(f"Second shared calendar setup failed: {e}")
+
+    finally:
+        # Cleanup: Delete the second shared calendar at end of session
+        try:
+            logger.info(f"Cleaning up second shared test calendar: {calendar_name}")
+            await nc_client.calendar.delete_calendar(calendar_name)
+            logger.info(
+                f"Successfully deleted second shared test calendar: {calendar_name}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Error deleting second shared test calendar {calendar_name}: {e}"
+            )
+
+
+@pytest.fixture
+async def temporary_calendar(shared_calendar: str, nc_client: NextcloudClient):
+    """Provide the shared calendar and clean up todos after each test.
+
+    This fixture reuses a session-scoped calendar to avoid Nextcloud rate limiting
+    on calendar creation. Each test gets the same calendar but todos are cleaned up
+    between tests.
+    """
+    calendar_name = shared_calendar
+
+    yield calendar_name
+
+    # Cleanup: Delete all todos from this calendar
+    try:
+        logger.info(f"Cleaning up todos from shared calendar: {calendar_name}")
+        todos = await nc_client.calendar.list_todos(calendar_name)
+        for todo in todos:
+            try:
+                await nc_client.calendar.delete_todo(calendar_name, todo["uid"])
+            except Exception as e:
+                logger.warning(f"Error deleting todo {todo['uid']}: {e}")
+        logger.info(f"Cleaned up {len(todos)} todos from shared calendar")
+    except Exception as e:
+        logger.error(f"Error cleaning up todos from calendar {calendar_name}: {e}")
+
+
+@pytest.fixture(scope="session")
 async def nc_oauth_client(
     anyio_backend,
     playwright_oauth_token: str,

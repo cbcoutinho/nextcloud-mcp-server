@@ -15,6 +15,7 @@ dependencies = [
     "pythonvcard4>=0.2.0",
     "pydantic>=2.11.4",
     "click>=8.1.8",
+    "caldav",
 ]
 
 [tool.pytest.ini_options]
@@ -44,6 +45,9 @@ major_version_zero = true
 
 [tool.ruff.lint]
 extend-select = ["I"]
+
+[tool.uv.sources]
+caldav = { git = "https://github.com/cbcoutinho/caldav", branch = "feature/httpx" }
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

@@ -1,0 +1,320 @@
+From cb2c931fe1f73e5bbfdf459928b5b21e2d96e0f1 Mon Sep 17 00:00:00 2001
+From: Chris Coutinho <chris@coutinho.io>
+Date: Sun, 19 Oct 2025 21:04:46 +0200
+Subject: [PATCH 2/2] Initial implementation of PKCE
+
+Signed-off-by: Chris Coutinho <chris@coutinho.io>
+---
+ lib/Controller/LoginRedirectorController.php  | 44 +++++++++++-
+ lib/Controller/OIDCApiController.php          | 68 ++++++++++++++++++-
+ lib/Db/AccessToken.php                        | 10 +++
+ .../Version0014Date20251019100100.php         | 63 +++++++++++++++++
+ lib/Util/DiscoveryGenerator.php               |  2 +-
+ 5 files changed, 184 insertions(+), 3 deletions(-)
+ create mode 100644 lib/Migration/Version0014Date20251019100100.php
+
+diff --git a/lib/Controller/LoginRedirectorController.php b/lib/Controller/LoginRedirectorController.php
+index 1b9bdde..5f2d327 100644
+--- a/lib/Controller/LoginRedirectorController.php
++++ b/lib/Controller/LoginRedirectorController.php
+@@ -142,6 +142,8 @@ class LoginRedirectorController extends ApiController
+      * @param string $scope
+      * @param string $nonce
+      * @param string $resource
++     * @param string $code_challenge
++     * @param string $code_challenge_method
+      * @return Response
+      */
+     #[BruteForceProtection(action: 'oidc_login')]
+@@ -155,7 +157,9 @@ class LoginRedirectorController extends ApiController
+                     $redirect_uri,
+                     $scope,
+                     $nonce,
+-                    $resource
++                    $resource,
++                    $code_challenge = null,
++                    $code_challenge_method = null
+                     ): Response
+         {
+         if (!$this->userSession->isLoggedIn()) {
+@@ -168,6 +172,8 @@ class LoginRedirectorController extends ApiController
+             $this->session->set('oidc_scope', $scope);
+             $this->session->set('oidc_nonce', $nonce);
+             $this->session->set('oidc_resource', $resource);
++            $this->session->set('oidc_code_challenge', $code_challenge);
++            $this->session->set('oidc_code_challenge_method', $code_challenge_method);
+ 
+             $afterLoginRedirectUrl = $this->urlGenerator->linkToRoute('oidc.Page.index', []);
+ 
+@@ -204,6 +210,12 @@ class LoginRedirectorController extends ApiController
+         if (empty($resource)) {
+             $resource = $this->session->get('oidc_resource');
+         }
++        if (empty($code_challenge)) {
++            $code_challenge = $this->session->get('oidc_code_challenge');
++        }
++        if (empty($code_challenge_method)) {
++            $code_challenge_method = $this->session->get('oidc_code_challenge_method');
++        }
+ 
+         // Set default scope if scope is not set at all
+         if (!isset($scope)) {
+@@ -327,6 +339,30 @@ class LoginRedirectorController extends ApiController
+ 
+         $uid = $this->userSession->getUser()->getUID();
+ 
++        // PKCE validation (RFC 7636)
++        if (!empty($code_challenge)) {
++            // Validate code_challenge format: 43-128 characters, unreserved chars only
++            if (!preg_match('/^[A-Za-z0-9._~-]{43,128}$/', $code_challenge)) {
++                $this->logger->notice('Invalid code_challenge format for client ' . $client_id . '.');
++                $url = $redirect_uri . '?error=invalid_request&error_description=Invalid%20code_challenge%20format&state=' . urlencode($state);
++                return new RedirectResponse($url);
++            }
++
++            // Default to S256 if method not specified
++            if (empty($code_challenge_method)) {
++                $code_challenge_method = 'S256';
++            }
++
++            // Validate code_challenge_method: only S256 and plain are allowed
++            if (!in_array($code_challenge_method, ['S256', 'plain'])) {
++                $this->logger->notice('Unsupported code_challenge_method for client ' . $client_id . ': ' . $code_challenge_method);
++                $url = $redirect_uri . '?error=invalid_request&error_description=Unsupported%20code_challenge_method&state=' . urlencode($state);
++                return new RedirectResponse($url);
++            }
++
++            $this->logger->debug('PKCE challenge received for client ' . $client_id . ' using method ' . $code_challenge_method);
++        }
++
+         $code = $this->random->generate(128, ISecureRandom::CHAR_UPPER.ISecureRandom::CHAR_LOWER.ISecureRandom::CHAR_DIGITS);
+         $accessToken = new AccessToken();
+         $accessToken->setClientId($client->getId());
+@@ -343,6 +379,12 @@ class LoginRedirectorController extends ApiController
+         }
+         $accessToken->setNonce($nonce);
+ 
++        // Store PKCE challenge if provided
++        if (!empty($code_challenge)) {
++            $accessToken->setCodeChallenge(substr($code_challenge, 0, 128));
++            $accessToken->setCodeChallengeMethod(substr($code_challenge_method, 0, 16));
++        }
++
+         try {
+             $accessToken->setAccessToken($this->jwtGenerator->generateAccessToken($accessToken, $client, $this->request->getServerProtocol(), $this->request->getServerHost()));
+             $this->accessTokenMapper->insert($accessToken);
+diff --git a/lib/Controller/OIDCApiController.php b/lib/Controller/OIDCApiController.php
+index 6fd6eb0..059396c 100644
+--- a/lib/Controller/OIDCApiController.php
++++ b/lib/Controller/OIDCApiController.php
+@@ -125,12 +125,13 @@ class OIDCApiController extends ApiController {
+      * @param string $refresh_token
+      * @param string $client_id
+      * @param string $client_secret
++     * @param string $code_verifier
+      * @return JSONResponse
+      */
+     #[BruteForceProtection(action: 'oidc_token')]
+     #[PublicPage]
+     #[NoCSRFRequired]
+-    public function getToken($grant_type, $code, $refresh_token, $client_id, $client_secret): JSONResponse
++    public function getToken($grant_type, $code, $refresh_token, $client_id, $client_secret, $code_verifier = null): JSONResponse
+     {
+         $expireTime = (int)$this->appConfig->getAppValueString(Application::APP_CONFIG_DEFAULT_EXPIRE_TIME, '0');
+         $refreshExpireTime = (int)$this->appConfig->getAppValueString(Application::APP_CONFIG_DEFAULT_REFRESH_EXPIRE_TIME, Application::DEFAULT_REFRESH_EXPIRE_TIME);
+@@ -212,6 +213,32 @@ class OIDCApiController extends ApiController {
+                     'error_description' => 'Access token already expired.',
+                 ], Http::STATUS_BAD_REQUEST);
+             }
++
++            // PKCE verification (RFC 7636 Section 4.6)
++            $storedCodeChallenge = $accessToken->getCodeChallenge();
++            if (!empty($storedCodeChallenge)) {
++                // PKCE was used in authorization request, code_verifier is required
++                if (empty($code_verifier)) {
++                    $this->accessTokenMapper->delete($accessToken);
++                    $this->logger->notice('Missing code_verifier for PKCE-protected token. Client id: ' . $client_id);
++                    return new JSONResponse([
++                        'error' => 'invalid_grant',
++                        'error_description' => 'code_verifier required for PKCE flow.',
++                    ], Http::STATUS_BAD_REQUEST);
++                }
++
++                $storedCodeChallengeMethod = $accessToken->getCodeChallengeMethod() ?: 'S256';
++                if (!$this->verifyPkce($code_verifier, $storedCodeChallenge, $storedCodeChallengeMethod)) {
++                    $this->accessTokenMapper->delete($accessToken);
++                    $this->logger->notice('PKCE verification failed. Client id: ' . $client_id);
++                    return new JSONResponse([
++                        'error' => 'invalid_grant',
++                        'error_description' => 'Invalid code_verifier.',
++                    ], Http::STATUS_BAD_REQUEST);
++                }
++
++                $this->logger->debug('PKCE verification successful for client ' . $client_id);
++            }
+         } elseif ($refreshExpireTime !== 'never') {
+             // The refresh token must not be expired
+             $refreshExpireTime = (int)$refreshExpireTime;
+@@ -286,4 +313,43 @@ class OIDCApiController extends ApiController {
+ 
+         return $response;
+     }
++
++    /**
++     * Base64URL encode (RFC 7636 Section 4.2)
++     *
++     * @param string $data
++     * @return string
++     */
++    private function base64UrlEncode(string $data): string
++    {
++        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
++    }
++
++    /**
++     * Verify PKCE code_verifier against code_challenge (RFC 7636 Section 4.6)
++     *
++     * @param string $codeVerifier
++     * @param string $codeChallenge
++     * @param string $codeChallengeMethod
++     * @return bool
++     */
++    private function verifyPkce(string $codeVerifier, string $codeChallenge, string $codeChallengeMethod): bool
++    {
++        // Validate code_verifier format: 43-128 characters, unreserved chars only
++        if (!preg_match('/^[A-Za-z0-9._~-]{43,128}$/', $codeVerifier)) {
++            return false;
++        }
++
++        // Compute the challenge based on the method
++        if ($codeChallengeMethod === 'S256') {
++            $computedChallenge = $this->base64UrlEncode(hash('sha256', $codeVerifier, true));
++        } elseif ($codeChallengeMethod === 'plain') {
++            $computedChallenge = $codeVerifier;
++        } else {
++            return false;
++        }
++
++        // Constant-time comparison to prevent timing attacks
++        return hash_equals($codeChallenge, $computedChallenge);
++    }
+ }
+diff --git a/lib/Db/AccessToken.php b/lib/Db/AccessToken.php
+index a0419c0..593c5c8 100644
+--- a/lib/Db/AccessToken.php
++++ b/lib/Db/AccessToken.php
+@@ -27,6 +27,10 @@ use OCP\AppFramework\Db\Entity;
+  * @method void setNonce(string $nonce)
+  * @method string getResource()
+  * @method void setResource(string $resource)
++ * @method string getCodeChallenge()
++ * @method void setCodeChallenge(string $codeChallenge)
++ * @method string getCodeChallengeMethod()
++ * @method void setCodeChallengeMethod(string $codeChallengeMethod)
+  */
+ class AccessToken extends Entity
+ {
+@@ -50,6 +54,10 @@ class AccessToken extends Entity
+     protected $nonce;
+     /** @var string */
+     protected $resource;
++    /** @var string */
++    protected $codeChallenge;
++    /** @var string */
++    protected $codeChallengeMethod;
+ 
+     public function __construct() {
+         $this->addType('id', 'int');
+@@ -62,5 +70,7 @@ class AccessToken extends Entity
+         $this->addType('refreshed', 'int');
+         $this->addType('nonce', 'string');
+         $this->addType('resource', 'string');
++        $this->addType('codeChallenge', 'string');
++        $this->addType('codeChallengeMethod', 'string');
+     }
+ }
+diff --git a/lib/Migration/Version0014Date20251019100100.php b/lib/Migration/Version0014Date20251019100100.php
+new file mode 100644
+index 0000000..bf705b3
+--- /dev/null
++++ b/lib/Migration/Version0014Date20251019100100.php
+@@ -0,0 +1,63 @@
++<?php
++
++declare(strict_types=1);
++
++/**
++ * SPDX-FileCopyrightText: 2022-2025 Thorsten Jagel <dev@jagel.net>
++ * SPDX-License-Identifier: AGPL-3.0-or-later
++ */
++namespace OCA\OIDCIdentityProvider\Migration;
++
++use Closure;
++use OCP\DB\ISchemaWrapper;
++use OCP\Migration\IOutput;
++use OCP\Migration\SimpleMigrationStep;
++use Psr\Log\LoggerInterface;
++use OCP\IDBConnection;
++use OCP\DB\Types;
++
++class Version0014Date20251019100100 extends SimpleMigrationStep {
++    private LoggerInterface $logger;
++    private IDBConnection $db;
++
++    public function __construct(
++                    IDBConnection $db,
++                    LoggerInterface $logger
++                    )
++    {
++        $this->db = $db;
++        $this->logger = $logger;
++    }
++
++    /**
++     * @param IOutput $output
++     * @param Closure $schemaClosure The `\Closure` returns a `ISchemaWrapper`
++     * @param array $options
++     * @return null|ISchemaWrapper
++     */
++    public function changeSchema(IOutput $output, Closure $schemaClosure, array $options) {
++        /** @var ISchemaWrapper $schema */
++        $schema = $schemaClosure();
++
++        $table = $schema->getTable('oidc_access_tokens');
++
++        if(!$table->hasColumn('code_challenge')) {
++            $table->addColumn('code_challenge', Types::STRING, [
++                'notnull' => false,
++                'default' => null,
++                'length' => 128,
++            ]);
++        }
++
++        if(!$table->hasColumn('code_challenge_method')) {
++            $table->addColumn('code_challenge_method', Types::STRING, [
++                'notnull' => false,
++                'default' => null,
++                'length' => 16,
++            ]);
++        }
++
++        return $schema;
++    }
++
++}
+diff --git a/lib/Util/DiscoveryGenerator.php b/lib/Util/DiscoveryGenerator.php
+index 6429f94..d96a18c 100644
+--- a/lib/Util/DiscoveryGenerator.php
++++ b/lib/Util/DiscoveryGenerator.php
+@@ -173,7 +173,7 @@ class DiscoveryGenerator
+ 
+         // Add PKCE support if enabled
+         if ($this->appConfig->getAppValueBool('proof_key_for_code_exchange', false)) {
+-            $discoveryPayload['code_challenge_methods_supported'] = ['S256'];
++            $discoveryPayload['code_challenge_methods_supported'] = ['S256', 'plain'];
+         }
+ 
+         $this->logger->info('Request to Discovery Endpoint.');
+-- 
+2.51.1
+

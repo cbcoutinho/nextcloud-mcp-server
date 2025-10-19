@@ -72,7 +72,9 @@ class NextcloudClient:
         self.notes = NotesClient(self._client, username)
         self.webdav = WebDAVClient(self._client, username)
         self.tables = TablesClient(self._client, username)
-        self.calendar = CalendarClient(self._client, username)
+        self.calendar = CalendarClient(
+            base_url, username, auth
+        )  # Uses AsyncDavClient internally
         self.contacts = ContactsClient(self._client, username)
         self.cookbook = CookbookClient(self._client, username)
         self.deck = DeckClient(self._client, username)
@@ -129,5 +131,6 @@ class NextcloudClient:
         return f"/remote.php/dav/files/{self.username}"
 
     async def close(self):
-        """Close the HTTP client."""
+        """Close the HTTP client and CalDAV client."""
         await self._client.aclose()
+        await self.calendar.close()

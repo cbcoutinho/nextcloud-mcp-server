@@ -1,5 +1,8 @@
 FROM ghcr.io/astral-sh/uv:0.9.4-python3.11-alpine@sha256:1a51c7710eaf839fa3365329ad993b48d17ddd9ab0f0672efaa9b09f407ebf44
 
+# Install git (required for caldav dependency from git)
+RUN apk add --no-cache git
+
 WORKDIR /app
 
 COPY . .

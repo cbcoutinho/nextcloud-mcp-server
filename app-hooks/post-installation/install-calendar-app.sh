@@ -6,14 +6,18 @@ echo "Installing and configuring Calendar app..."
 
 # Enable calendar app
 php /var/www/html/occ app:enable calendar
+php /var/www/html/occ app:enable --force tasks # Not currently supported on 32
 
 # Wait for calendar app to be fully initialized
 echo "Waiting for calendar app to initialize..."
 sleep 5
 
-# Increase limits on calendar creation for integration tests (100 in 60s)
+# Disable rate limits on calendar creation for integration tests
+# Set to -1 to completely disable rate limiting
+# Reference: https://docs.nextcloud.com/server/stable/admin_manual/groupware/calendar.html#rate-limits
 php occ config:app:set dav rateLimitCalendarCreation --type=integer --value=100
 php occ config:app:set dav rateLimitPeriodCalendarCreation --type=integer --value=60
+php occ config:app:set dav maximumCalendarsSubscriptions --type=integer --value=-1
 
 # Ensure maintenance mode is off before calendar operations
 php /var/www/html/occ maintenance:mode --off
