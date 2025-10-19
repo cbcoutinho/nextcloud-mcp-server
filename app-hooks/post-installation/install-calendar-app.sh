@@ -15,8 +15,8 @@ sleep 5
 # Disable rate limits on calendar creation for integration tests
 # Set to -1 to completely disable rate limiting
 # Reference: https://docs.nextcloud.com/server/stable/admin_manual/groupware/calendar.html#rate-limits
-php occ config:app:set dav rateLimitCalendarCreation --type=integer --value=-1
-php occ config:app:set dav rateLimitPeriodCalendarCreation --type=integer --value=-1
+php occ config:app:set dav rateLimitCalendarCreation --type=integer --value=100
+php occ config:app:set dav rateLimitPeriodCalendarCreation --type=integer --value=-300
 php occ config:app:set dav maximumCalendarsSubscriptions --type=integer --value=-1
 
 # Ensure maintenance mode is off before calendar operations

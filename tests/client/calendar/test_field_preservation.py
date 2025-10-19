@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 @pytest.mark.integration
 async def test_calendar_event_custom_fields_preservation(nc_client):
-    """Test that demonstrates loss of non-supported iCal fields during round-trip operations."""
+    """Test that custom iCal fields are preserved during round-trip update operations."""
     calendar_name = "personal"
 
     # Create an event with standard fields
@@ -32,7 +32,12 @@ async def test_calendar_event_custom_fields_preservation(nc_client):
     event_uid = result["uid"]
 
     try:
-        # Now manually inject a custom iCal property by creating a new version with raw iCal
+        # Get the calendar object from the caldav library
+        calendar = nc_client.calendar._get_calendar(calendar_name)
+        event = await calendar.event_by_uid(event_uid)
+        await event.load()
+
+        # Now manually inject custom iCal properties into the raw data
         # This simulates what would happen if the event was created by another CalDAV client
         # with extended properties
         custom_ical = f"""BEGIN:VCALENDAR
@@ -57,22 +62,15 @@ LAST-MODIFIED:{datetime.now().strftime("%Y%m%dT%H%M%SZ")}
 END:VEVENT
 END:VCALENDAR"""
 
-        # Direct CalDAV PUT to inject the custom iCal
-        event_path = f"/remote.php/dav/calendars/{nc_client.calendar.username}/{calendar_name}/{event_uid}.ics"
-        await nc_client.calendar._make_request(
-            "PUT",
-            event_path,
-            content=custom_ical,
-            headers={"Content-Type": "text/calendar; charset=utf-8"},
-        )
+        # Update the event's raw data and save
+        event.data = custom_ical
+        await event.save()
 
         logger.info(f"Injected custom iCal properties into event {event_uid}")
 
-        # Retrieve the event to confirm custom fields are present in raw iCal
-        response = await nc_client.calendar._make_request(
-            "GET", event_path, headers={"Accept": "text/calendar"}
-        )
-        raw_ical_before = response.text
+        # Reload the event to confirm custom fields are present
+        await event.load()
+        raw_ical_before = event.data
 
         logger.info("Raw iCal before update:")
         logger.info(raw_ical_before)
@@ -93,31 +91,24 @@ END:VCALENDAR"""
         await nc_client.calendar.update_event(calendar_name, event_uid, update_data)
         logger.info(f"Updated event {event_uid} through MCP client")
 
-        # Retrieve the event again to see if custom fields survived
-        response_after = await nc_client.calendar._make_request(
-            "GET", event_path, headers={"Accept": "text/calendar"}
-        )
-        raw_ical_after = response_after.text
+        # Reload the event to see if custom fields survived
+        await event.load()
+        raw_ical_after = event.data
 
         logger.info("Raw iCal after update:")
         logger.info(raw_ical_after)
 
-        # THIS IS THE TEST THAT SHOULD FAIL - custom fields should be preserved but won't be
-        try:
-            assert (
-                "X-CUSTOM-FIELD:This is a custom field that should be preserved"
-                in raw_ical_after
-            ), "Custom field X-CUSTOM-FIELD was lost during round-trip update"
-            assert "X-VENDOR-SPECIFIC:Vendor specific data" in raw_ical_after, (
-                "Custom field X-VENDOR-SPECIFIC was lost during round-trip update"
-            )
-            logger.info(
-                "✓ Custom fields were preserved (unexpected - this should fail with current implementation)"
-            )
-        except AssertionError as e:
-            logger.error(f"✗ Custom fields were lost during round-trip update: {e}")
-            # Re-raise to show the test failure
-            raise
+        # THIS IS THE CRITICAL TEST - custom fields should be preserved
+        assert (
+            "X-CUSTOM-FIELD:This is a custom field that should be preserved"
+            in raw_ical_after
+        ), "Custom field X-CUSTOM-FIELD was lost during round-trip update"
+
+        assert "X-VENDOR-SPECIFIC:Vendor specific data" in raw_ical_after, (
+            "Custom field X-VENDOR-SPECIFIC was lost during round-trip update"
+        )
+
+        logger.info("✓ Custom fields were preserved during update")
 
     finally:
         # Cleanup
@@ -299,7 +290,7 @@ END:VCARD"""
 
 @pytest.mark.integration
 async def test_calendar_event_roundtrip_data_loss_demonstration(nc_client):
-    """Demonstrates specific data loss scenarios in calendar events."""
+    """Test that extended iCal properties are preserved during round-trip update operations."""
     calendar_name = "personal"
 
     event_data = {
@@ -313,6 +304,11 @@ async def test_calendar_event_roundtrip_data_loss_demonstration(nc_client):
     event_uid = result["uid"]
 
     try:
+        # Get the calendar object and event
+        calendar = nc_client.calendar._get_calendar(calendar_name)
+        event = await calendar.event_by_uid(event_uid)
+        await event.load()
+
         # Inject additional iCal properties that are valid but not supported by our parser
         extended_ical = f"""BEGIN:VCALENDAR
 VERSION:2.0
@@ -342,20 +338,13 @@ LAST-MODIFIED:{datetime.now().strftime("%Y%m%dT%H%M%SZ")}
 END:VEVENT
 END:VCALENDAR"""
 
-        # Inject the extended iCal
-        event_path = f"/remote.php/dav/calendars/{nc_client.calendar.username}/{calendar_name}/{event_uid}.ics"
-        await nc_client.calendar._make_request(
-            "PUT",
-            event_path,
-            content=extended_ical,
-            headers={"Content-Type": "text/calendar; charset=utf-8"},
-        )
+        # Update the event's raw data and save
+        event.data = extended_ical
+        await event.save()
 
-        # Verify extended properties are present
-        response = await nc_client.calendar._make_request(
-            "GET", event_path, headers={"Accept": "text/calendar"}
-        )
-        original_ical = response.text
+        # Reload to verify extended properties are present
+        await event.load()
+        original_ical = event.data
 
         # Confirm extended properties exist
         extended_properties = [
@@ -392,11 +381,9 @@ END:VCALENDAR"""
         update_data = {"location": "Conference Room B"}  # Simple location change
         await nc_client.calendar.update_event(calendar_name, event_uid, update_data)
 
-        # Check what survived the round-trip
-        response_after = await nc_client.calendar._make_request(
-            "GET", event_path, headers={"Accept": "text/calendar"}
-        )
-        updated_ical = response_after.text
+        # Reload the event to check what survived the round-trip
+        await event.load()
+        updated_ical = event.data
 
         logger.info("Checking which properties survived the update...")
 
@@ -423,12 +410,15 @@ END:VCALENDAR"""
                     lost.append(prop)
 
         logger.info(f"Properties that SURVIVED: {survived}")
-        logger.error(f"Properties that were LOST: {lost}")
+        if lost:
+            logger.error(f"Properties that were LOST: {lost}")
 
-        # This test should fail - we expect data loss
+        # Assert that all extended properties were preserved
         assert len(lost) == 0, (
             f"Round-trip update lost {len(lost)} extended properties: {lost}"
         )
+
+        logger.info("✓ All extended properties preserved during update")
 
     finally:
         try:

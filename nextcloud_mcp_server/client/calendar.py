@@ -5,14 +5,13 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
+import anyio
 from caldav.async_collection import AsyncCalendar
 from caldav.async_davclient import AsyncDAVClient
 from httpx import Auth
 from icalendar import Alarm, Calendar, vRecur
 from icalendar import Event as ICalEvent
 from icalendar import Todo as ICalTodo
-
-# from .base import retry_on_429
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +51,47 @@ class CalendarClient:
     async def close(self):
         """Close the DAV client connection."""
         await self._dav_client.close()
+
+    async def _wait_for_calendar_propagation(
+        self, calendar_name: str, max_attempts: int = 40, initial_delay_ms: int = 100
+    ) -> None:
+        """Wait for calendar to propagate through Nextcloud's DAV backend.
+
+        After MKCALENDAR succeeds (201), the calendar may not be immediately queryable
+        due to Nextcloud's internal caching/indexing. This polls until it appears.
+
+        Args:
+            calendar_name: Name of the calendar to wait for
+            max_attempts: Maximum polling attempts (default: 40)
+            initial_delay_ms: Initial delay between attempts in ms (default: 100ms)
+        """
+        logger.info(f"Waiting for calendar '{calendar_name}' to propagate...")
+        delay_ms = initial_delay_ms
+
+        for attempt in range(max_attempts):
+            try:
+                logger.debug(
+                    f"Attempt {attempt + 1}/{max_attempts} to find calendar '{calendar_name}'..."
+                )
+                calendars = await self.list_calendars()
+                if any(cal["name"] == calendar_name for cal in calendars):
+                    logger.info(
+                        f"Calendar '{calendar_name}' became available after {attempt + 1} attempts"
+                    )
+                    return
+            except Exception as e:
+                logger.warning(
+                    f"Attempt {attempt + 1}/{max_attempts} to verify calendar '{calendar_name}' failed: {e}"
+                )
+
+            if attempt < max_attempts - 1:
+                await anyio.sleep(delay_ms / 1000.0)
+                # Exponential backoff: double delay up to 2 seconds max
+                delay_ms = min(delay_ms * 2, 2000)
+
+        logger.error(
+            f"Calendar '{calendar_name}' did not become available after {max_attempts} attempts."
+        )
 
     # ============= Calendar Operations =============
 
@@ -138,7 +178,6 @@ class CalendarClient:
         logger.debug(f"Found {len(result)} calendars")
         return result
 
-    # @retry_on_429
     async def create_calendar(
         self,
         calendar_name: str,
@@ -146,7 +185,7 @@ class CalendarClient:
         description: str = "",
         color: str = "#1976D2",
     ) -> Dict[str, Any]:
-        """Create a new calendar."""
+        """Create a new calendar with retry on 429 errors."""
         # Use direct MKCALENDAR request instead of caldav library's make_calendar
         # to avoid XML element issues
         calendar_url = (
@@ -168,13 +207,18 @@ class CalendarClient:
     </d:set>
 </mkcalendar>"""
 
-        await self._dav_client.mkcalendar(calendar_url, mkcalendar_body)
+        # Create calendar via MKCALENDAR request
+        response = await self._dav_client.mkcalendar(calendar_url, mkcalendar_body)
+
+        if response.status != 201:
+            raise RuntimeError(
+                f"Failed to create calendar '{calendar_name}': HTTP {response.status}"
+            )
 
         logger.debug(f"Created calendar: {calendar_name}")
 
-        # Wait for Nextcloud to fully register the calendar in its DAV backend
-        # Without this delay, subsequent operations may fail with "calendar not found"
-        # Reference: https://github.com/nextcloud/server/issues/...
+        # Wait for calendar to be queryable (Nextcloud eventual consistency)
+        await self._wait_for_calendar_propagation(calendar_name)
 
         return {
             "name": calendar_name,
@@ -234,9 +278,16 @@ class CalendarClient:
         event_uid = str(uuid.uuid4())
         ical_content = self._create_ical_event(event_data, event_uid)
 
-        event = await calendar.save_event(ical=ical_content)
+        # save_event returns (event, response) tuple
+        event, response = await calendar.save_event(ical=ical_content)
+
+        if response.status not in [201, 204]:
+            raise RuntimeError(
+                f"Failed to create event {event_uid}: HTTP {response.status}"
+            )
 
         logger.debug(f"Created event {event_uid}")
+
         return {
             "uid": event_uid,
             "href": str(event.url),
@@ -380,9 +431,16 @@ class CalendarClient:
         todo_uid = str(uuid.uuid4())
         ical_content = self._create_ical_todo(todo_data, todo_uid)
 
-        todo = await calendar.save_todo(ical=ical_content)
+        # save_todo returns (todo, response) tuple
+        todo, response = await calendar.save_todo(ical=ical_content)
+
+        if response.status not in [201, 204]:
+            raise RuntimeError(
+                f"Failed to create todo {todo_uid}: HTTP {response.status}"
+            )
 
         logger.debug(f"Created todo {todo_uid}")
+
         return {
             "uid": todo_uid,
             "href": str(todo.url),
