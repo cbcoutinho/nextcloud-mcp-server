@@ -6,6 +6,7 @@ echo "Installing and configuring Calendar app..."
 
 # Enable calendar app
 php /var/www/html/occ app:enable calendar
+php /var/www/html/occ app:enable --force tasks # Not currently supported on 32
 
 # Wait for calendar app to be fully initialized
 echo "Waiting for calendar app to initialize..."

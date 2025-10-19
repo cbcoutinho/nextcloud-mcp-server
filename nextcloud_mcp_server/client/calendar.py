@@ -12,6 +12,8 @@ from icalendar import Alarm, Calendar, vRecur
 from icalendar import Event as ICalEvent
 from icalendar import Todo as ICalTodo
 
+# from .base import retry_on_429
+
 logger = logging.getLogger(__name__)
 
 
@@ -136,6 +138,7 @@ class CalendarClient:
         logger.debug(f"Found {len(result)} calendars")
         return result
 
+    # @retry_on_429
     async def create_calendar(
         self,
         calendar_name: str,
@@ -397,23 +400,37 @@ class CalendarClient:
         """Update an existing todo/task."""
         calendar = self._get_calendar(calendar_name)
 
-        # Find the todo by UID
-        todo = await calendar.todo_by_uid(todo_uid)
-        await todo.load()
+        try:
+            # Find the todo by UID
+            todo = await calendar.todo_by_uid(todo_uid)
+            await todo.load()
 
-        # Merge updates into existing iCal data
-        updated_ical = self._merge_ical_todo_properties(todo.data, todo_data, todo_uid)
-        todo.data = updated_ical
+            logger.debug(
+                f"Loaded todo {todo_uid}, current data length: {len(todo.data)}"
+            )
 
-        await todo.save()
+            # Merge updates into existing iCal data
+            updated_ical = self._merge_ical_todo_properties(
+                todo.data, todo_data, todo_uid
+            )
+            logger.debug(f"Merged iCal data length: {len(updated_ical)}")
+            logger.debug(f"Updated iCal content:\n{updated_ical}")
 
-        logger.debug(f"Updated todo {todo_uid}")
-        return {
-            "uid": todo_uid,
-            "href": str(todo.url),
-            "etag": "",
-            "status_code": 200,
-        }
+            todo.data = updated_ical
+
+            save_result = await todo.save()
+            logger.debug(f"Save result: {save_result}")
+
+            logger.debug(f"Updated todo {todo_uid}")
+            return {
+                "uid": todo_uid,
+                "href": str(todo.url),
+                "etag": "",
+                "status_code": 200,
+            }
+        except Exception as e:
+            logger.error(f"Error updating todo {todo_uid}: {e}", exc_info=True)
+            raise
 
     async def delete_todo(self, calendar_name: str, todo_uid: str) -> Dict[str, Any]:
         """Delete a todo/task."""
@@ -686,6 +703,30 @@ class CalendarClient:
 
     # ============= Helper Methods - Todo iCalendar =============
 
+    def _ensure_timezone_aware(self, datetime_str: str) -> dt.datetime:
+        """Parse datetime string and ensure it's timezone-aware.
+
+        If the datetime string doesn't include timezone info, interpret it as UTC.
+        This ensures RFC 5545 compliance for CalDAV/iCalendar properties.
+
+        Args:
+            datetime_str: ISO format datetime string (e.g., "2025-10-19T14:30:00" or "2025-10-19T14:30:00Z")
+
+        Returns:
+            Timezone-aware datetime object
+        """
+        # Replace 'Z' with '+00:00' for consistent parsing
+        datetime_str = datetime_str.replace("Z", "+00:00")
+
+        # Parse the datetime
+        parsed_dt = dt.datetime.fromisoformat(datetime_str)
+
+        # If timezone-naive, assume UTC
+        if parsed_dt.tzinfo is None:
+            parsed_dt = parsed_dt.replace(tzinfo=dt.UTC)
+
+        return parsed_dt
+
     def _create_ical_todo(self, todo_data: Dict[str, Any], todo_uid: str) -> str:
         """Create iCalendar VTODO content from todo data."""
         cal = Calendar()
@@ -712,20 +753,26 @@ class CalendarClient:
         # Due date
         due = todo_data.get("due", "")
         if due:
-            due_dt = dt.datetime.fromisoformat(due.replace("Z", "+00:00"))
-            todo.add("due", due_dt)
+            from icalendar import vDDDTypes
+
+            due_dt = self._ensure_timezone_aware(due)
+            todo.add("due", vDDDTypes(due_dt))
 
         # Start date
         dtstart = todo_data.get("dtstart", "")
         if dtstart:
-            start_dt = dt.datetime.fromisoformat(dtstart.replace("Z", "+00:00"))
-            todo.add("dtstart", start_dt)
+            from icalendar import vDDDTypes
+
+            start_dt = self._ensure_timezone_aware(dtstart)
+            todo.add("dtstart", vDDDTypes(start_dt))
 
         # Completed timestamp
         completed = todo_data.get("completed", "")
         if completed:
-            completed_dt = dt.datetime.fromisoformat(completed.replace("Z", "+00:00"))
-            todo.add("completed", completed_dt)
+            from icalendar import vDDDTypes
+
+            completed_dt = self._ensure_timezone_aware(completed)
+            todo.add("completed", vDDDTypes(completed_dt))
 
         # Categories
         categories = todo_data.get("categories", "")
@@ -789,6 +836,9 @@ class CalendarClient:
     ) -> str:
         """Merge new todo data into existing raw iCal while preserving all properties."""
         try:
+            logger.debug(
+                f"Merging todo properties for {todo_uid}: {list(todo_data.keys())}"
+            )
             cal = Calendar.from_ical(raw_ical)
 
             for component in cal.walk():
@@ -799,33 +849,44 @@ class CalendarClient:
                     if "description" in todo_data:
                         component["DESCRIPTION"] = todo_data["description"]
                     if "status" in todo_data:
-                        component["STATUS"] = todo_data["status"].upper()
+                        status_value = todo_data["status"].upper()
+                        component["STATUS"] = status_value
+                        logger.debug(f"Set STATUS to {status_value}")
                     if "priority" in todo_data:
                         component["PRIORITY"] = todo_data["priority"]
                     if "percent_complete" in todo_data:
-                        component["PERCENT-COMPLETE"] = todo_data["percent_complete"]
+                        percent_value = todo_data["percent_complete"]
+                        component["PERCENT-COMPLETE"] = percent_value
+                        logger.debug(f"Set PERCENT-COMPLETE to {percent_value}")
+
+                    # Import vDDDTypes at the beginning for datetime formatting
+                    from icalendar import vDDDTypes
 
                     # Handle due date
                     if "due" in todo_data:
                         due_str = todo_data["due"]
                         if due_str:
-                            due_dt = dt.datetime.fromisoformat(
-                                due_str.replace("Z", "+00:00")
-                            )
-                            component["DUE"] = due_dt
+                            due_dt = self._ensure_timezone_aware(due_str)
+                            component["DUE"] = vDDDTypes(due_dt)
+                            logger.debug(f"Set DUE to {due_dt}")
+
+                    # Handle start date
+                    if "dtstart" in todo_data:
+                        dtstart_str = todo_data["dtstart"]
+                        if dtstart_str:
+                            dtstart_dt = self._ensure_timezone_aware(dtstart_str)
+                            component["DTSTART"] = vDDDTypes(dtstart_dt)
+                            logger.debug(f"Set DTSTART to {dtstart_dt}")
 
                     # Handle completed date
                     if "completed" in todo_data:
                         completed_str = todo_data["completed"]
                         if completed_str:
-                            completed_dt = dt.datetime.fromisoformat(
-                                completed_str.replace("Z", "+00:00")
-                            )
-                            component["COMPLETED"] = completed_dt
+                            completed_dt = self._ensure_timezone_aware(completed_str)
+                            component["COMPLETED"] = vDDDTypes(completed_dt)
+                            logger.debug(f"Set COMPLETED to {completed_dt}")
 
                     # Update timestamps
-                    from icalendar import vDDDTypes
-
                     now = dt.datetime.now(dt.UTC)
                     component["LAST-MODIFIED"] = vDDDTypes(now)
                     component["DTSTAMP"] = vDDDTypes(now)
@@ -835,7 +896,7 @@ class CalendarClient:
             return cal.to_ical().decode("utf-8")
 
         except Exception as e:
-            logger.error(f"Error merging iCal todo properties: {e}")
+            logger.error(f"Error merging iCal todo properties: {e}", exc_info=True)
             return self._create_ical_todo(todo_data, todo_uid)
 
     # ============= Helper Methods - Filtering =============

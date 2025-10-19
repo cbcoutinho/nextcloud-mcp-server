@@ -550,12 +550,25 @@ async def shared_calendar(nc_client: NextcloudClient, shared_test_calendar_name:
 
 @pytest.fixture(scope="session")
 async def shared_calendar_2(
-    nc_client: NextcloudClient, shared_test_calendar_name_2: str
+    nc_client: NextcloudClient,
+    shared_test_calendar_name_2: str,
+    shared_calendar: str,  # Explicit dependency to ensure proper initialization order
 ):
-    """Create a second shared calendar for cross-calendar tests."""
+    """Create a second shared calendar for cross-calendar tests.
+
+    Note: Depends on shared_calendar to ensure proper fixture initialization order
+    and avoid race conditions when running multiple tests together.
+    """
     calendar_name = shared_test_calendar_name_2
 
     try:
+        # Wait for first calendar to fully initialize to avoid Nextcloud rate limiting
+        # When creating multiple calendars rapidly, Nextcloud may not register them all
+        import asyncio
+
+        logger.info("Waiting before creating second calendar to avoid rate limiting...")
+        await asyncio.sleep(3)  # Increased from 2 to 3 seconds
+
         # Create a test calendar
         logger.info(f"Creating second shared test calendar: {calendar_name}")
         result = await nc_client.calendar.create_calendar(
@@ -569,6 +582,34 @@ async def shared_calendar_2(
             pytest.skip(f"Failed to create second shared test calendar: {result}")
 
         logger.info(f"Created second shared test calendar: {calendar_name}")
+
+        # Verify calendar was created by listing calendars
+        # Add small delay to allow calendar to propagate in the system
+        import asyncio
+
+        await asyncio.sleep(1.0)  # Allow time for calendar to propagate
+
+        calendars = await nc_client.calendar.list_calendars()
+        calendar_names = [cal["name"] for cal in calendars]
+        if calendar_name not in calendar_names:
+            logger.warning(
+                f"Calendar {calendar_name} not found immediately after creation. Available: {calendar_names}"
+            )
+            # Try one more time after a longer delay
+            await asyncio.sleep(3)  # Additional wait for calendar synchronization
+            calendars = await nc_client.calendar.list_calendars()
+            calendar_names = [cal["name"] for cal in calendars]
+            if calendar_name not in calendar_names:
+                logger.error(
+                    f"Calendar {calendar_name} still not found after retries. Available: {calendar_names}"
+                )
+                pytest.fail(
+                    f"Failed to create second shared calendar: {calendar_name} not found in listing"
+                )
+
+        logger.info(
+            f"Successfully verified second shared test calendar: {calendar_name}"
+        )
         yield calendar_name
 
     except Exception as e:
