@@ -944,6 +944,13 @@ class CalendarClient:
                             component["COMPLETED"] = vDDDTypes(completed_dt)
                             logger.debug(f"Set COMPLETED to {completed_dt}")
 
+                    # Handle categories
+                    if "categories" in todo_data:
+                        categories_str = todo_data["categories"]
+                        if categories_str:
+                            component["CATEGORIES"] = categories_str.split(",")
+                            logger.debug(f"Set CATEGORIES to {categories_str}")
+
                     # Update timestamps
                     now = dt.datetime.now(dt.UTC)
                     component["LAST-MODIFIED"] = vDDDTypes(now)
@@ -966,14 +973,27 @@ class CalendarClient:
 
         try:
             if hasattr(categories_obj, "cats"):
+                # Handle Categories object with cats attribute
                 return ", ".join(str(cat) for cat in categories_obj.cats)
             elif hasattr(categories_obj, "__iter__") and not isinstance(
                 categories_obj, str
             ):
-                return ", ".join(str(cat) for cat in categories_obj)
+                # Handle list of vCategory objects or strings
+                result = []
+                for cat in categories_obj:
+                    # Try to extract value from vCategory objects using to_ical()
+                    if hasattr(cat, "to_ical"):
+                        result.append(cat.to_ical().decode("utf-8"))
+                    else:
+                        result.append(str(cat))
+                return ", ".join(result)
             else:
+                # Handle single category string or object
+                if hasattr(categories_obj, "to_ical"):
+                    return categories_obj.to_ical().decode("utf-8")
                 return str(categories_obj)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Error extracting categories: {e}")
             return str(categories_obj)
 
     def _apply_event_filters(
