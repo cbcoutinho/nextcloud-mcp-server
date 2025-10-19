@@ -1,3 +1,13 @@
+## v0.16.0 (2025-10-19)
+
+### Feat
+
+- **webdav**: Add search and list favorite response tools
+
+### Perf
+
+- **notes**: Improve notes search performance using async iterators
+
 ## v0.15.2 (2025-10-17)
 
 ### Refactor
