@@ -1,11 +1,9 @@
 name: Release
 
-on: workflow_dispatch
-# Uncomment and release to PyPI once caldav feature/httpx branch is merged
-#on:
-  #push:
-    #tags:
-      #- v*
+on:
+  push:
+    tags:
+      - v*
 
 jobs:
   pypi:
@@ -28,4 +26,4 @@ jobs:
       - name: Build
         run: uv build
       - name: Publish
-        run: uv publish
+        run: uv publish --index testpypi
