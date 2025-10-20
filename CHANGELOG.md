@@ -1,3 +1,9 @@
+## v0.17.1 (2025-10-20)
+
+### Fix
+
+- **caldav**: Fix caldav search() due to missing todos
+
 ## v0.17.0 (2025-10-19)
 
 ### Feat
