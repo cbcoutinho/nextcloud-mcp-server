@@ -25,5 +25,9 @@ jobs:
         run: uv python install 3.11
       - name: Build
         run: uv build
+      - name: Smoke test (wheel)
+        run: uv run --isolated --no-project --with dist/*.whl nextcloud-mcp-server --help
+      - name: Smoke test (source distribution)
+        run: uv run --isolated --no-project --with dist/*.tar.gz nextcloud-mcp-server --help
       - name: Publish
         run: uv publish
