@@ -1,10 +1,11 @@
 name: Release
 
-on:
-  push:
-    tags:
-      # Publish on any tag starting with a `v`, e.g., v1.2.3
-      - v*
+on: workflow_dispatch
+# Uncomment and release to PyPI once caldav feature/httpx branch is merged
+#on:
+  #push:
+    #tags:
+      #- v*
 
 jobs:
   pypi:
