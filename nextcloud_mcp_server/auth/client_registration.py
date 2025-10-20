@@ -1,5 +1,6 @@
 """Dynamic client registration for Nextcloud OIDC."""
 
+import datetime as dt
 import json
 import logging
 import os
@@ -113,8 +114,11 @@ async def register_client(
             logger.info(
                 f"Successfully registered client: {client_info.get('client_id')}"
             )
+            expires_at = dt.datetime.fromtimestamp(
+                client_info.get("client_secret_expires_at")
+            )
             logger.info(
-                f"Client expires at: {client_info.get('client_secret_expires_at')} "
+                f"Client expires at: {expires_at} "
                 f"(in {client_info.get('client_secret_expires_at', 0) - int(time.time())} seconds)"
             )
 

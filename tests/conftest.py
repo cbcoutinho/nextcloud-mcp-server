@@ -829,7 +829,7 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
             nextcloud_url=nextcloud_host,
             registration_endpoint=registration_endpoint,
             storage_path=".nextcloud_oauth_shared_test_client.json",
-            client_name="Nextcloud MCP Server - Shared Test Client",
+            client_name="Pytest - Shared Test Client",
             redirect_uris=[callback_url],
         )
 

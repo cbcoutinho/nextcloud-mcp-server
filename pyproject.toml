@@ -1,12 +1,14 @@
 [project]
 name = "nextcloud-mcp-server"
 version = "0.17.0"
-description = ""
+description = "Model Context Protocol (MCP) server for Nextcloud integration - enables AI assistants to interact with Nextcloud data"
 authors = [
-    {name = "Chris Coutinho",email = "chris@coutinho.io"}
+    {name = "Chris Coutinho", email = "chris@coutinho.io"}
 ]
 readme = "README.md"
+license = {text = "AGPL-3.0-only"}
 requires-python = ">=3.11"
+keywords = ["nextcloud", "mcp", "model-context-protocol", "llm", "ai", "claude", "webdav", "caldav", "carddav"]
 dependencies = [
     "mcp[cli] (>=1.18,<1.19)",
     "httpx (>=0.28.1,<0.29.0)",
@@ -17,13 +19,31 @@ dependencies = [
     "click>=8.1.8",
     "caldav",
 ]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Communications",
+    "Topic :: Internet :: WWW/HTTP",
+]
+
+[project.urls]
+Homepage = "https://github.com/cbcoutinho/nextcloud-mcp-server"
+Documentation = "https://github.com/cbcoutinho/nextcloud-mcp-server#readme"
+Repository = "https://github.com/cbcoutinho/nextcloud-mcp-server"
+"Bug Tracker" = "https://github.com/cbcoutinho/nextcloud-mcp-server/issues"
+Changelog = "https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/CHANGELOG.md"
 
 [tool.pytest.ini_options]
 anyio_mode = "auto"
 addopts = "-p no:asyncio"  # Disable pytest-asyncio plugin, use only anyio
 log_cli = 1
-log_cli_level = "WARN"
-log_level = "WARN"
+log_cli_level = "ERROR"
+log_level = "ERROR"
 markers = [
     "integration: marks tests as slow (deselect with '-m \"not slow\"')",
     "oauth: marks tests as oauth (deselect with '-m \"not oauth\"')"
@@ -50,8 +70,12 @@ extend-select = ["I"]
 caldav = { git = "https://github.com/cbcoutinho/caldav", branch = "feature/httpx" }
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["uv_build>=0.9.4,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "nextcloud_mcp_server"
+module-root = ""
 
 [dependency-groups]
 dev = [
@@ -67,3 +91,9 @@ dev = [
 
 [project.scripts]
 nextcloud-mcp-server = "nextcloud_mcp_server.app:run"
+
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+publish-url = "https://test.pypi.org/legacy/"
+explicit = true
