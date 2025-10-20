@@ -44,36 +44,52 @@ This is added at lines ~243, ~310, ~315, and ~337 in `Backend.php`.
 
 ---
 
-### 2. PKCE Support Advertisement in Discovery
+### 2. PKCE Support (RFC 7636)
 
-**Status**: 🟢 **PR Submitted** (Pending Review)
+**Status**: ✅ **Complete** (Merged Upstream)
 
 **Affected Component**: `oidc` app
 
-**Issue**: The OIDC discovery endpoint (`/.well-known/openid-configuration`) does not advertise PKCE support in the `code_challenge_methods_supported` field.
+**Issue**: The OIDC app lacked PKCE (Proof Key for Code Exchange) implementation per RFC 7636.
 
-**Why It Matters**:
-- MCP specification requires PKCE with S256 code challenge method
-- RFC 8414 states that absence of `code_challenge_methods_supported` means PKCE is **not supported**
-- Some MCP clients may reject providers without proper PKCE advertisement
+**Resolution**: Full PKCE support has been implemented and merged upstream into the `oidc` app:
 
-**Current Behavior**:
-- PKCE **functionally works** (the OIDC app accepts and validates PKCE)
-- PKCE just isn't **advertised** in discovery metadata
+**Authorization Endpoint** (`/authorize`):
+- Accepts `code_challenge` and `code_challenge_method` parameters
+- Validates code_challenge format (43-128 characters, unreserved chars only)
+- Supports both `S256` (SHA-256) and `plain` challenge methods
+- Stores challenge and method in database for later verification
 
-**Recommended Fix**: Update `oidc` app to include:
+**Token Endpoint** (`/token`):
+- Accepts `code_verifier` parameter
+- Verifies code_verifier against stored code_challenge using proper algorithm
+- Uses constant-time comparison to prevent timing attacks
+- Enforces code_verifier requirement when PKCE was used in authorization
+
+**Discovery Document**:
 ```json
 {
-  "code_challenge_methods_supported": ["S256"]
+  "code_challenge_methods_supported": ["S256", "plain"]
 }
 ```
 
-**Workaround**: The MCP server implements PKCE validation and logs a warning if not advertised. Functionality still works.
+**Database**:
+- New columns: `code_challenge` and `code_challenge_method` in `oc_oauth2_access_tokens`
+- Migration included for existing installations
 
-**Upstream PR**: [H2CK/oidc#584](https://github.com/H2CK/oidc/pull/584) - Submitted 2025-10-13
-- **Changes**: Adds `code_challenge_methods_supported: ["S256"]` to discovery document when PKCE is enabled
-- **Size**: +5 lines added, 0 deleted
-- **Status**: Open, awaiting review
+**Why It Mattered**:
+- MCP specification requires PKCE with S256 code challenge method
+- RFC 7636 PKCE provides security for public clients (no client secret)
+- RFC 8414 states that absence of `code_challenge_methods_supported` means PKCE is **not supported**
+- Prevents authorization code interception attacks
+
+**Upstream PR**: [H2CK/oidc#584](https://github.com/H2CK/oidc/pull/584) - ✅ **Merged 2025-10-20**
+- **Changes**: Complete PKCE implementation (+194 lines)
+  - Authorization flow with code_challenge validation
+  - Token exchange with code_verifier verification
+  - Database schema updates
+  - Discovery document updates
+- **Status**: Merged and available in v1.10.0+ of the `oidc` app
 
 ---
 
@@ -82,17 +98,17 @@ This is added at lines ~243, ~310, ~315, and ~337 in `Backend.php`.
 | PR/Issue | Component | Status | Priority | Notes |
 |----------|-----------|--------|----------|-------|
 | [user_oidc#1221](https://github.com/nextcloud/user_oidc/issues/1221) | `user_oidc` | 🟡 Open | High | Required for app-specific APIs |
-| [H2CK/oidc#584](https://github.com/H2CK/oidc/pull/584) | `oidc` | 🟢 PR Open | Medium | PKCE advertisement for standards compliance |
+| [H2CK/oidc#584](https://github.com/H2CK/oidc/pull/584) | `oidc` | ✅ Merged | ~~Medium~~ | ✅ PKCE advertisement complete (v1.10.0+) |
 
 ## What Works Without Patches
 
 The following functionality works **out of the box** without any patches:
 
 ✅ **OAuth Flow**:
-- OIDC discovery
+- OIDC discovery with full PKCE support (requires `oidc` app v1.10.0+)
 - Dynamic client registration
-- Authorization code flow with PKCE
-- Token exchange
+- Authorization code flow with PKCE (S256 and plain methods)
+- Token exchange with code_verifier verification
 - Userinfo endpoint
 
 ✅ **MCP Server as Resource Server**:
@@ -116,9 +132,9 @@ The following functionality requires upstream patches:
 - Tables API
 - Custom app APIs
 
-🟡 **Standards Compliance** (PKCE advertisement):
-- Full RFC 8414 compliance
-- MCP client compatibility guarantee
+✅ **Standards Compliance**: Now complete with `oidc` app v1.10.0+
+- ✅ Full RFC 8414 compliance (PKCE advertisement)
+- ✅ MCP client compatibility guarantee
 
 ## Installation Instructions
 
@@ -221,6 +237,6 @@ Want to help get these patches merged?
 
 ---
 
-**Last Updated**: 2025-10-14
+**Last Updated**: 2025-10-20
 
-**Next Review**: When PR #584 or issue #1221 has activity
+**Next Review**: When issue #1221 (Bearer token support) has activity

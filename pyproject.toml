@@ -22,8 +22,8 @@ dependencies = [
 anyio_mode = "auto"
 addopts = "-p no:asyncio"  # Disable pytest-asyncio plugin, use only anyio
 log_cli = 1
-log_cli_level = "WARN"
-log_level = "WARN"
+log_cli_level = "ERROR"
+log_level = "ERROR"
 markers = [
     "integration: marks tests as slow (deselect with '-m \"not slow\"')",
     "oauth: marks tests as oauth (deselect with '-m \"not oauth\"')"

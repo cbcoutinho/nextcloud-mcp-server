@@ -7,22 +7,33 @@
 The Nextcloud MCP (Model Context Protocol) server allows Large Language Models like Claude, GPT, and Gemini to interact with your Nextcloud data through a secure API. Create notes, manage calendars, organize contacts, work with files, and more - all through natural language.
 
 > [!NOTE]
-> **Nextcloud has two ways to enable AI access:** Nextcloud provides [Context Agent](https://github.com/nextcloud/context_agent), an AI agent backend that powers the [Assistant](https://github.com/nextcloud/assistant) app and allows AI to interact with Nextcloud apps like Calendar, Talk, and Contacts. Context Agent runs as an ExApp inside Nextcloud and also exposes an MCP server endpoint for external LLMs. This project (Nextcloud MCP Server) is a **dedicated standalone MCP server** designed specifically for external MCP clients like Claude Code and IDEs, with deep CRUD operations and OAuth support. See our [detailed comparison](docs/comparison-context-agent.md) to understand which approach fits your use case.
+> **Nextcloud has two ways to enable AI access:** Nextcloud provides [Context Agent](https://github.com/nextcloud/context_agent), an AI agent backend that powers the [Assistant](https://github.com/nextcloud/assistant) app and allows AI to interact with Nextcloud apps like Calendar, Talk, and Contacts. Context Agent runs as an ExApp inside Nextcloud and also exposes an MCP server endpoint for external LLMs. This project (Nextcloud MCP Server) is a **dedicated standalone MCP server** designed specifically for external MCP clients like Claude Code and IDEs, with deep CRUD operations and OAuth support.
 
-## Features
+### High-level Comparison: Nextcloud MCP Server vs. Nextcloud AI Stack
 
-### Supported Nextcloud Apps
+| Aspect | **Nextcloud MCP Server**<br/>(This Project) | **Nextcloud AI Stack**<br/>(Assistant + Context Agent) |
+|--------|---------------------------------------------|--------------------------------------------------------|
+| **Purpose** | External MCP client access to Nextcloud | AI assistance within Nextcloud UI |
+| **Deployment** | Standalone (Docker, VM, K8s) | Inside Nextcloud (ExApp via AppAPI) |
+| **Primary Users** | Claude Code, IDEs, external developers | Nextcloud end users via Assistant app |
+| **Authentication** | OAuth2/OIDC or Basic Auth | Session-based (integrated) |
+| **Notes Support** | ✅ Full CRUD + search (7 tools) | ❌ Not implemented |
+| **Calendar** | ✅ Full CalDAV + tasks (20+ tools) | ✅ Events, free/busy, tasks (4 tools) |
+| **Contacts** | ✅ Full CardDAV (8 tools) | ✅ Find person, current user (2 tools) |
+| **Files (WebDAV)** | ✅ Full filesystem access (12 tools) | ✅ Read, folder tree, sharing (3 tools) |
+| **Deck** | ✅ Full project management (15 tools) | ✅ Basic board/card ops (2 tools) |
+| **Tables** | ✅ Row operations (5 tools) | ❌ Not implemented |
+| **Cookbook** | ✅ Full recipe management (13 tools) | ❌ Not implemented |
+| **Talk** | ❌ Not implemented | ✅ Messages, conversations (4 tools) |
+| **Mail** | ❌ Not implemented | ✅ Send email (2 tools) |
+| **AI Features** | ❌ Not implemented | ✅ Image gen, transcription, doc gen (4 tools) |
+| **Web/Maps** | ❌ Not implemented | ✅ Search, weather, transit (5 tools) |
+| **MCP Resources** | ✅ Structured data URIs | ❌ Not supported |
+| **External MCP** | ❌ Pure server | ✅ Consumes external MCP servers |
+| **Safety Model** | Client-controlled | Built-in safe/dangerous distinction |
+| **Best For** | • Deep CRUD operations<br/>• External integrations<br/>• OAuth security<br/>• IDE/editor integration | • AI-driven actions in Nextcloud UI<br/>• Multi-service orchestration<br/>• User task automation<br/>• MCP aggregation hub |
 
-| App | Support | Features |
-|-----|---------|----------|
-| **Notes** | ✅ Full | Create, read, update, delete, search notes. Handle attachments. |
-| **Calendar** | ✅ Full | Manage events, recurring events, reminders, attendees via CalDAV. |
-| **Contacts** | ✅ Full | CRUD operations for contacts and address books via CardDAV. |
-| **Cookbook** | ✅ Full | Manage recipes with schema.org metadata. Import from URLs, search, categorize. |
-| **Files (WebDAV)** | ✅ Full | Complete file system access - browse, read, write, organize files. |
-| **Deck** | ✅ Full | Project management - boards, stacks, cards, labels, assignments. |
-| **Tables** | ⚠️ Partial | Row-level operations. Table management not yet supported. |
-| **Tasks** | ❌ Planned | [Issue #73](https://github.com/cbcoutinho/nextcloud-mcp-server/issues/73) |
+See our [detailed comparison](docs/comparison-context-agent.md) for architecture diagrams, workflow examples, and guidance on when to use each approach.
 
 Want to see another Nextcloud app supported? [Open an issue](https://github.com/cbcoutinho/nextcloud-mcp-server/issues) or contribute a pull request!
 
@@ -30,14 +41,15 @@ Want to see another Nextcloud app supported? [Open an issue](https://github.com/
 
 | Mode | Security | Best For |
 |------|----------|----------|
-| **OAuth2/OIDC** ⚠️ **Experimental** | 🔒 High | Testing, evaluation (requires patches) |
+| **OAuth2/OIDC** ⚠️ **Experimental** | 🔒 High | Testing, evaluation (requires patch for app-specific APIs) |
 | **Basic Auth** ✅ | Lower | Development, testing, production |
 
 > [!IMPORTANT]
-> **OAuth is experimental** and requires manual patches to upstream Nextcloud apps. Specifically:
+> **OAuth is experimental** and requires a manual patch to the `user_oidc` app for full functionality:
 > - **Required patch**: `user_oidc` app needs modifications for Bearer token support ([issue #1221](https://github.com/nextcloud/user_oidc/issues/1221))
 > - **Impact**: Without the patch, most app-specific APIs (Notes, Calendar, Contacts, Deck, etc.) will fail with 401 errors
-> - **Production use**: Wait for upstream patches to be merged into official releases
+> - **What works without patches**: OAuth flow, PKCE support (with `oidc` v1.10.0+), OCS APIs
+> - **Production use**: Wait for upstream patch to be merged into official releases
 >
 > See [OAuth Upstream Status](docs/oauth-upstream-status.md) for detailed information on required patches and workarounds.
 
@@ -92,10 +104,10 @@ See [Configuration Guide](docs/configuration.md) for all options.
 3. Start the server
 
 **OAuth Setup (experimental):**
-1. Install Nextcloud OIDC apps (`oidc` + `user_oidc`)
-2. **Apply required patches** to `user_oidc` app (see [OAuth Upstream Status](docs/oauth-upstream-status.md))
-3. Enable dynamic client registration
-4. Configure Bearer token validation
+1. Install Nextcloud OIDC apps (`oidc` v1.10.0+ + `user_oidc`)
+2. **Apply required patch** to `user_oidc` app for Bearer token support (see [OAuth Upstream Status](docs/oauth-upstream-status.md))
+3. Enable dynamic client registration or create an OIDC client with id & secret
+4. Configure Bearer token validation in `user_oidc`
 5. Start the server
 
 See [OAuth Quick Start](docs/quickstart-oauth.md) for 5-minute setup or [OAuth Setup Guide](docs/oauth-setup.md) for detailed instructions.
