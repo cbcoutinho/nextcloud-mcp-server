@@ -260,7 +260,7 @@ class CalendarClient:
 
         result = []
         for event in events:
-            await event.load()
+            await event.load(only_if_unloaded=True)
             event_dict = self._parse_ical_event(event.data)
             if event_dict:
                 event_dict["href"] = str(event.url)
@@ -311,7 +311,7 @@ class CalendarClient:
 
         # Find the event by UID using caldav library
         event = await calendar.event_by_uid(event_uid)
-        await event.load()
+        await event.load(only_if_unloaded=True)
 
         # Merge updates into existing iCal data
         updated_ical = self._merge_ical_properties(event.data, event_data, event_uid)
@@ -347,7 +347,7 @@ class CalendarClient:
         calendar = self._get_calendar(calendar_name)
 
         event = await calendar.event_by_uid(event_uid)
-        await event.load()
+        await event.load(only_if_unloaded=True)
 
         event_data = self._parse_ical_event(event.data)
         if not event_data:
@@ -413,7 +413,9 @@ class CalendarClient:
 
         result = []
         for todo in todos:
-            await todo.load()
+            # Only load if data not already present from REPORT response
+            # This avoids 404 errors for virtual calendars (e.g., Deck boards)
+            await todo.load(only_if_unloaded=True)
             todo_dict = self._parse_ical_todo(todo.data)
             if todo_dict:
                 todo_dict["href"] = str(todo.url)
@@ -465,7 +467,7 @@ class CalendarClient:
         try:
             # Find the todo by UID
             todo = await calendar.todo_by_uid(todo_uid)
-            await todo.load()
+            await todo.load(only_if_unloaded=True)
 
             logger.debug(
                 f"Loaded todo {todo_uid}, current data length: {len(todo.data)}"

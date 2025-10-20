@@ -54,8 +54,8 @@ wheels = [
 
 [[package]]
 name = "caldav"
-version = "2.0.2.dev37+g543d3829b"
-source = { git = "https://github.com/cbcoutinho/caldav?branch=feature%2Fhttpx#543d3829b3caedadd9d3d52b91c01fd9f73cce02" }
+version = "2.0.2.dev38+g1aa2be35e"
+source = { git = "https://github.com/cbcoutinho/caldav?branch=feature%2Fhttpx#1aa2be35e94883b44efd42f1cd82d281f8f58e60" }
 dependencies = [
     { name = "httpx", extra = ["http2"] },
     { name = "icalendar" },
