@@ -1,20 +1,20 @@
 import logging
-from httpx import HTTPStatusError
+
+from httpx import HTTPStatusError, RequestError
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData
 
-from mcp.server.fastmcp import Context, FastMCP
-
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.notes import (
-    Note,
-    NotesSettings,
-    CreateNoteResponse,
-    UpdateNoteResponse,
-    DeleteNoteResponse,
     AppendContentResponse,
-    SearchNotesResponse,
+    CreateNoteResponse,
+    DeleteNoteResponse,
+    Note,
     NoteSearchResult,
+    NotesSettings,
+    SearchNotesResponse,
+    UpdateNoteResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ def configure_notes_tools(mcp: FastMCP):
         ctx: Context = (
             mcp.get_context()
         )  # https://github.com/modelcontextprotocol/python-sdk/issues/244
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         settings_data = await client.notes.get_settings()
         return NotesSettings(**settings_data)
 
@@ -35,7 +35,7 @@ def configure_notes_tools(mcp: FastMCP):
     async def nc_notes_get_attachment_resource(note_id: int, attachment_filename: str):
         """Get a specific attachment from a note"""
         ctx: Context = mcp.get_context()
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         # Assuming a method get_note_attachment exists in the client
         # This method should return the raw content and determine the mime type
         content, mime_type = await client.webdav.get_note_attachment(
@@ -57,10 +57,17 @@ def configure_notes_tools(mcp: FastMCP):
         """Get user note using note id"""
 
         ctx: Context = mcp.get_context()
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         try:
             note_data = await client.notes.get_note(note_id)
             return Note(**note_data)
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message=f"Network error retrieving note {note_id}: {str(e)}",
+                )
+            )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
                 raise McpError(ErrorData(code=-1, message=f"Note {note_id} not found"))
@@ -81,7 +88,7 @@ def configure_notes_tools(mcp: FastMCP):
         title: str, content: str, category: str, ctx: Context
     ) -> CreateNoteResponse:
         """Create a new note"""
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         try:
             note_data = await client.notes.create_note(
                 title=title,
@@ -91,6 +98,10 @@ def configure_notes_tools(mcp: FastMCP):
             note = Note(**note_data)
             return CreateNoteResponse(
                 id=note.id, title=note.title, category=note.category, etag=note.etag
+            )
+        except RequestError as e:
+            raise McpError(
+                ErrorData(code=-1, message=f"Network error creating note: {str(e)}")
             )
         except HTTPStatusError as e:
             if e.response.status_code == 403:
@@ -133,7 +144,7 @@ def configure_notes_tools(mcp: FastMCP):
         If the note has been modified by someone else since you retrieved it,
         the update will fail with a 412 error."""
         logger.info("Updating note %s", note_id)
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         try:
             note_data = await client.notes.update(
                 note_id=note_id,
@@ -145,6 +156,12 @@ def configure_notes_tools(mcp: FastMCP):
             note = Note(**note_data)
             return UpdateNoteResponse(
                 id=note.id, title=note.title, category=note.category, etag=note.etag
+            )
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-1, message=f"Network error updating note {note_id}: {str(e)}"
+                )
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
@@ -183,7 +200,7 @@ def configure_notes_tools(mcp: FastMCP):
         between the note and what will be appended."""
 
         logger.info("Appending content to note %s", note_id)
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         try:
             note_data = await client.notes.append_content(
                 note_id=note_id, content=content
@@ -191,6 +208,13 @@ def configure_notes_tools(mcp: FastMCP):
             note = Note(**note_data)
             return AppendContentResponse(
                 id=note.id, title=note.title, category=note.category, etag=note.etag
+            )
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message=f"Network error appending to note {note_id}: {str(e)}",
+                )
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
@@ -220,7 +244,7 @@ def configure_notes_tools(mcp: FastMCP):
     @mcp.tool()
     async def nc_notes_search_notes(query: str, ctx: Context) -> SearchNotesResponse:
         """Search notes by title or content, returning only id, title, and category."""
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         try:
             search_results_raw = await client.notes_search_notes(query=query)
 
@@ -237,6 +261,10 @@ def configure_notes_tools(mcp: FastMCP):
 
             return SearchNotesResponse(
                 results=results, query=query, total_found=len(results)
+            )
+        except RequestError as e:
+            raise McpError(
+                ErrorData(code=-1, message=f"Network error searching notes: {str(e)}")
             )
         except HTTPStatusError as e:
             if e.response.status_code == 403:
@@ -261,10 +289,16 @@ def configure_notes_tools(mcp: FastMCP):
     @mcp.tool()
     async def nc_notes_get_note(note_id: int, ctx: Context) -> Note:
         """Get a specific note by its ID"""
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         try:
             note_data = await client.notes.get_note(note_id)
             return Note(**note_data)
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-1, message=f"Network error getting note {note_id}: {str(e)}"
+                )
+            )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
                 raise McpError(ErrorData(code=-1, message=f"Note {note_id} not found"))
@@ -285,7 +319,7 @@ def configure_notes_tools(mcp: FastMCP):
         note_id: int, attachment_filename: str, ctx: Context
     ) -> dict[str, str]:
         """Get a specific attachment from a note"""
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         try:
             content, mime_type = await client.webdav.get_note_attachment(
                 note_id=note_id, filename=attachment_filename
@@ -295,6 +329,13 @@ def configure_notes_tools(mcp: FastMCP):
                 "mimeType": mime_type,
                 "data": content,
             }
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message=f"Network error getting attachment {attachment_filename} for note {note_id}: {str(e)}",
+                )
+            )
         except HTTPStatusError as e:
             if e.response.status_code == 404:
                 raise McpError(
@@ -322,13 +363,19 @@ def configure_notes_tools(mcp: FastMCP):
     async def nc_notes_delete_note(note_id: int, ctx: Context) -> DeleteNoteResponse:
         """Delete a note permanently"""
         logger.info("Deleting note %s", note_id)
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         try:
             await client.notes.delete_note(note_id)
             return DeleteNoteResponse(
                 status_code=200,
                 message=f"Note {note_id} deleted successfully",
                 deleted_id=note_id,
+            )
+        except RequestError as e:
+            raise McpError(
+                ErrorData(
+                    code=-1, message=f"Network error deleting note {note_id}: {str(e)}"
+                )
             )
         except HTTPStatusError as e:
             if e.response.status_code == 404:

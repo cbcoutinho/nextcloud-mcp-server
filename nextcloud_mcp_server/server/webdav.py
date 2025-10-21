@@ -8,6 +8,8 @@ from nextcloud_mcp_server.utils.document_parser import (
     parse_document,
 )
 from nextcloud_mcp_server.config import is_unstructured_parsing_enabled
+from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.models import FileInfo, SearchFilesResponse
 
 logger = logging.getLogger(__name__)
 
@@ -23,15 +25,8 @@ def configure_webdav_tools(mcp: FastMCP):
 
         Returns:
             List of items with metadata including name, path, is_directory, size, content_type, last_modified
-
-        Examples:
-            # List root directory
-            await nc_webdav_list_directory("")
-
-            # List a specific folder
-            await nc_webdav_list_directory("Documents/Projects")
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.webdav.list_directory(path)
 
     @mcp.tool()
@@ -61,7 +56,7 @@ def configure_webdav_tools(mcp: FastMCP):
             result = await nc_webdav_read_file("Images/photo.jpg")
             logger.info(result['encoding'])  # 'base64'
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         content, content_type = await client.webdav.read_file(path)
 
         # Check if this is a parseable document (PDF, DOCX, etc.)
@@ -122,15 +117,8 @@ def configure_webdav_tools(mcp: FastMCP):
 
         Returns:
             Dict with status_code indicating success
-
-        Examples:
-            # Write a text file
-            await nc_webdav_write_file("Documents/notes.md", "# My Notes\nContent here...")
-
-            # Write binary data (base64 encoded)
-            await nc_webdav_write_file("files/data.bin", base64_content, "application/octet-stream;base64")
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
 
         # Handle base64 encoded content
         if content_type and "base64" in content_type.lower():
@@ -152,15 +140,8 @@ def configure_webdav_tools(mcp: FastMCP):
 
         Returns:
             Dict with status_code (201 for created, 405 if already exists)
-
-        Examples:
-            # Create a single directory
-            await nc_webdav_create_directory("NewProject")
-
-            # Create nested directories (parent must exist)
-            await nc_webdav_create_directory("Projects/MyApp/docs")
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.webdav.create_directory(path)
 
     @mcp.tool()
@@ -172,15 +153,8 @@ def configure_webdav_tools(mcp: FastMCP):
 
         Returns:
             Dict with status_code indicating result (404 if not found)
-
-        Examples:
-            # Delete a file
-            await nc_webdav_delete_resource("old_document.txt")
-
-            # Delete a directory (will delete all contents)
-            await nc_webdav_delete_resource("temp_folder")
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.webdav.delete_resource(path)
 
     @mcp.tool()
@@ -196,21 +170,8 @@ def configure_webdav_tools(mcp: FastMCP):
 
         Returns:
             Dict with status_code indicating result (404 if source not found, 412 if destination exists and overwrite is False)
-
-        Examples:
-            # Rename a file
-            await nc_webdav_move_resource("document.txt", "new_name.txt")
-
-            # Move a file to another directory
-            await nc_webdav_move_resource("document.txt", "Archive/document.txt")
-
-            # Move a directory
-            await nc_webdav_move_resource("Projects/OldProject", "Projects/NewProject")
-
-            # Move and overwrite if destination exists
-            await nc_webdav_move_resource("document.txt", "Archive/document.txt", overwrite=True)
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.webdav.move_resource(
             source_path, destination_path, overwrite
         )
@@ -228,21 +189,198 @@ def configure_webdav_tools(mcp: FastMCP):
 
         Returns:
             Dict with status_code indicating result (404 if source not found, 412 if destination exists and overwrite is False)
-
-        Examples:
-            # Copy a file
-            await nc_webdav_copy_resource("document.txt", "document_copy.txt")
-
-            # Copy a file to another directory
-            await nc_webdav_copy_resource("document.txt", "Backup/document.txt")
-
-            # Copy a directory
-            await nc_webdav_copy_resource("Projects/ProjectA", "Projects/ProjectA_Backup")
-
-            # Copy and overwrite if destination exists
-            await nc_webdav_copy_resource("document.txt", "Backup/document.txt", overwrite=True)
         """
-        client: NextcloudClient = ctx.request_context.lifespan_context.client
+        client = get_client(ctx)
         return await client.webdav.copy_resource(
             source_path, destination_path, overwrite
+        )
+
+    @mcp.tool()
+    async def nc_webdav_search_files(
+        ctx: Context,
+        scope: str = "",
+        name_pattern: str | None = None,
+        mime_type: str | None = None,
+        only_favorites: bool = False,
+        limit: int | None = None,
+    ) -> SearchFilesResponse:
+        """Search for files in NextCloud using WebDAV SEARCH.
+
+        This is a high-level search tool that supports common search patterns.
+        For more complex queries, use the specific search tools.
+
+        Args:
+            scope: Directory path to search in (empty string for user root)
+            name_pattern: File name pattern (supports % wildcard, e.g., "%.txt" for all text files)
+            mime_type: MIME type to filter by (supports % wildcard, e.g., "image/%" for all images)
+            only_favorites: If True, only return favorited files
+            limit: Maximum number of results to return
+
+        Returns:
+            SearchFilesResponse with list of matching files
+        """
+        client = get_client(ctx)
+
+        # Build where conditions based on filters
+        conditions = []
+
+        if name_pattern:
+            conditions.append(
+                f"""
+                <d:like>
+                    <d:prop>
+                        <d:displayname/>
+                    </d:prop>
+                    <d:literal>{name_pattern}</d:literal>
+                </d:like>
+            """
+            )
+
+        if mime_type:
+            conditions.append(
+                f"""
+                <d:like>
+                    <d:prop>
+                        <d:getcontenttype/>
+                    </d:prop>
+                    <d:literal>{mime_type}</d:literal>
+                </d:like>
+            """
+            )
+
+        if only_favorites:
+            conditions.append(
+                """
+                <d:eq>
+                    <d:prop>
+                        <oc:favorite/>
+                    </d:prop>
+                    <d:literal>1</d:literal>
+                </d:eq>
+            """
+            )
+
+        # Combine conditions with AND if multiple
+        if len(conditions) > 1:
+            where_conditions = f"""
+                <d:and>
+                    {"".join(conditions)}
+                </d:and>
+            """
+        elif len(conditions) == 1:
+            where_conditions = conditions[0]
+        else:
+            where_conditions = None
+
+        # Include extended properties
+        properties = [
+            "displayname",
+            "getcontentlength",
+            "getcontenttype",
+            "getlastmodified",
+            "resourcetype",
+            "getetag",
+            "fileid",
+            "favorite",
+        ]
+
+        results = await client.webdav.search_files(
+            scope=scope,
+            where_conditions=where_conditions,
+            properties=properties,
+            limit=limit,
+        )
+
+        # Convert to FileInfo models
+        file_infos = [FileInfo(**result) for result in results]
+
+        # Build filters applied dict
+        filters = {}
+        if name_pattern:
+            filters["name_pattern"] = name_pattern
+        if mime_type:
+            filters["mime_type"] = mime_type
+        if only_favorites:
+            filters["only_favorites"] = True
+
+        return SearchFilesResponse(
+            results=file_infos,
+            total_found=len(file_infos),
+            scope=scope,
+            filters_applied=filters if filters else None,
+        )
+
+    @mcp.tool()
+    async def nc_webdav_find_by_name(
+        pattern: str, ctx: Context, scope: str = "", limit: int | None = None
+    ) -> SearchFilesResponse:
+        """Find files by name pattern in NextCloud.
+
+        Args:
+            pattern: Name pattern to search for (supports % wildcard)
+            scope: Directory path to search in (empty string for user root)
+            limit: Maximum number of results to return
+
+        Returns:
+            SearchFilesResponse with list of matching files
+        """
+        client = get_client(ctx)
+        results = await client.webdav.find_by_name(
+            pattern=pattern, scope=scope, limit=limit
+        )
+        file_infos = [FileInfo(**result) for result in results]
+        return SearchFilesResponse(
+            results=file_infos,
+            total_found=len(file_infos),
+            scope=scope,
+            filters_applied={"name_pattern": pattern},
+        )
+
+    @mcp.tool()
+    async def nc_webdav_find_by_type(
+        mime_type: str, ctx: Context, scope: str = "", limit: int | None = None
+    ) -> SearchFilesResponse:
+        """Find files by MIME type in NextCloud.
+
+        Args:
+            mime_type: MIME type to search for (supports % wildcard)
+            scope: Directory path to search in (empty string for user root)
+            limit: Maximum number of results to return
+
+        Returns:
+            SearchFilesResponse with list of matching files
+        """
+        client = get_client(ctx)
+        results = await client.webdav.find_by_type(
+            mime_type=mime_type, scope=scope, limit=limit
+        )
+        file_infos = [FileInfo(**result) for result in results]
+        return SearchFilesResponse(
+            results=file_infos,
+            total_found=len(file_infos),
+            scope=scope,
+            filters_applied={"mime_type": mime_type},
+        )
+
+    @mcp.tool()
+    async def nc_webdav_list_favorites(
+        ctx: Context, scope: str = "", limit: int | None = None
+    ) -> SearchFilesResponse:
+        """List all favorite files in NextCloud.
+
+        Args:
+            scope: Directory path to search in (empty string for all favorites)
+            limit: Maximum number of results to return
+
+        Returns:
+            SearchFilesResponse with list of favorite files
+        """
+        client = get_client(ctx)
+        results = await client.webdav.list_favorites(scope=scope, limit=limit)
+        file_infos = [FileInfo(**result) for result in results]
+        return SearchFilesResponse(
+            results=file_infos,
+            total_found=len(file_infos),
+            scope=scope,
+            filters_applied={"only_favorites": True},
         )

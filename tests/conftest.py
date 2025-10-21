@@ -1,8 +1,10 @@
+import asyncio
 import logging
 import os
 import uuid
 from typing import Any, AsyncGenerator
 
+import httpx
 import pytest
 from httpx import HTTPStatusError
 from mcp import ClientSession
@@ -14,18 +16,128 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.fixture(scope="session")
-async def nc_client() -> AsyncGenerator[NextcloudClient, Any]:
+def anyio_backend():
+    """Configure anyio to use asyncio backend for all tests."""
+    return "asyncio"
+
+
+async def wait_for_nextcloud(
+    host: str, max_attempts: int = 30, delay: float = 2.0
+) -> bool:
+    """
+    Wait for Nextcloud server to be ready by checking the status endpoint.
+
+    Args:
+        host: Nextcloud host URL
+        max_attempts: Maximum number of connection attempts
+        delay: Delay between attempts in seconds
+
+    Returns:
+        True if server is ready, False otherwise
+    """
+    logger.info(f"Waiting for Nextcloud server at {host} to be ready...")
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                # Try to hit the status endpoint
+                response = await client.get(f"{host}/status.php")
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("installed"):
+                        logger.info(
+                            f"Nextcloud server is ready (version: {data.get('versionstring', 'unknown')})"
+                        )
+                        return True
+            except (httpx.RequestError, httpx.TimeoutException) as e:
+                logger.debug(f"Attempt {attempt}/{max_attempts}: {e}")
+
+            if attempt < max_attempts:
+                logger.info(
+                    f"Nextcloud not ready yet, waiting {delay}s... (attempt {attempt}/{max_attempts})"
+                )
+                await asyncio.sleep(delay)
+
+    logger.error(
+        f"Nextcloud server at {host} did not become ready after {max_attempts} attempts"
+    )
+    return False
+
+
+async def create_mcp_client_session(
+    url: str,
+    token: str | None = None,
+    client_name: str = "MCP",
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    Factory function to create an MCP client session with proper lifecycle management.
+
+    Uses native async context managers to ensure correct LIFO cleanup order,
+    eliminating the need for exception suppression. Python's context manager protocol
+    guarantees that cleanup happens in reverse order of entry.
+
+    Consolidates the common pattern used by all MCP client fixtures:
+    - Creates streamable HTTP client with optional OAuth token
+    - Initializes MCP ClientSession
+    - Ensures proper cleanup without suppressing errors
+
+    Args:
+        url: MCP server URL (e.g., "http://127.0.0.1:8000/mcp")
+        token: Optional OAuth access token for Bearer authentication
+        client_name: Client name for logging (e.g., "OAuth MCP (Playwright)")
+
+    Yields:
+        Initialized MCP ClientSession
+
+    Note:
+        This implementation uses native async context managers instead of manually
+        calling __aenter__/__aexit__. This ensures that anyio's structured concurrency
+        requirements are met, as Python guarantees LIFO cleanup order for nested
+        context managers. See: https://github.com/modelcontextprotocol/python-sdk/issues/577
+    """
+    logger.info(f"Creating Streamable HTTP client for {client_name}")
+
+    # Prepare headers with OAuth token if provided
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+
+    # Use native async with - Python ensures LIFO cleanup
+    # Cleanup order will be: ClientSession.__aexit__ -> streamablehttp_client.__aexit__
+    async with streamablehttp_client(url, headers=headers) as (
+        read_stream,
+        write_stream,
+        _,
+    ):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            logger.info(f"{client_name} client session initialized successfully")
+            yield session
+
+    # Cleanup happens automatically in LIFO order - no exception suppression needed
+    logger.debug(f"{client_name} client session cleaned up successfully")
+
+
+@pytest.fixture(scope="session")
+async def nc_client(anyio_backend) -> AsyncGenerator[NextcloudClient, Any]:
     """
     Fixture to create a NextcloudClient instance for integration tests.
     Uses environment variables for configuration.
+    Waits for Nextcloud to be ready before proceeding.
     """
 
     assert os.getenv("NEXTCLOUD_HOST"), "NEXTCLOUD_HOST env var not set"
     assert os.getenv("NEXTCLOUD_USERNAME"), "NEXTCLOUD_USERNAME env var not set"
     assert os.getenv("NEXTCLOUD_PASSWORD"), "NEXTCLOUD_PASSWORD env var not set"
+
+    host = os.getenv("NEXTCLOUD_HOST")
+
+    # Wait for Nextcloud to be ready
+    if not await wait_for_nextcloud(host):
+        pytest.fail(f"Nextcloud server at {host} is not ready")
+
     logger.info("Creating session-scoped NextcloudClient from environment variables.")
     client = NextcloudClient.from_env()
-    # Optional: Perform a quick check like getting capabilities to ensure connection works
+
+    # Perform a quick check to ensure connection works
     try:
         await client.capabilities()
         logger.info(
@@ -40,45 +152,36 @@ async def nc_client() -> AsyncGenerator[NextcloudClient, Any]:
 
 
 @pytest.fixture(scope="session")
-async def nc_mcp_client() -> AsyncGenerator[ClientSession, Any]:
+async def nc_mcp_client(anyio_backend) -> AsyncGenerator[ClientSession, Any]:
     """
     Fixture to create an MCP client session for integration tests using streamable-http.
+
+    Uses anyio pytest plugin for proper async fixture handling.
     """
-    logger.info("Creating Streamable HTTP client")
-    streamable_context = streamablehttp_client("http://127.0.0.1:8000/mcp")
-    session_context = None
-
-    try:
-        read_stream, write_stream, _ = await streamable_context.__aenter__()
-        session_context = ClientSession(read_stream, write_stream)
-        session = await session_context.__aenter__()
-        await session.initialize()
-        logger.info("MCP client session initialized successfully")
-
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8000/mcp", client_name="Basic MCP"
+    ):
         yield session
 
-    finally:
-        # Clean up in reverse order, ignoring task scope issues
-        if session_context is not None:
-            try:
-                await session_context.__aexit__(None, None, None)
-            except RuntimeError as e:
-                if "cancel scope" in str(e):
-                    logger.debug(f"Ignoring cancel scope teardown issue: {e}")
-                else:
-                    logger.warning(f"Error closing session: {e}")
-            except Exception as e:
-                logger.warning(f"Error closing session: {e}")
 
-        try:
-            await streamable_context.__aexit__(None, None, None)
-        except RuntimeError as e:
-            if "cancel scope" in str(e):
-                logger.debug(f"Ignoring cancel scope teardown issue: {e}")
-            else:
-                logger.warning(f"Error closing streamable HTTP client: {e}")
-        except Exception as e:
-            logger.warning(f"Error closing streamable HTTP client: {e}")
+@pytest.fixture(scope="session")
+async def nc_mcp_oauth_client(
+    anyio_backend,
+    playwright_oauth_token: str,
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    Fixture to create an MCP client session for OAuth integration tests using Playwright automation.
+    Connects to the OAuth-enabled MCP server on port 8001 with OAuth authentication.
+
+    Uses headless browser automation suitable for CI/CD.
+    Uses anyio pytest plugin for proper async fixture handling.
+    """
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8001/mcp",
+        token=playwright_oauth_token,
+        client_name="OAuth MCP (Playwright)",
+    ):
+        yield session
 
 
 @pytest.fixture
@@ -396,3 +499,994 @@ async def temporary_board_with_card(
                     )
             except Exception as e:
                 logger.error(f"Unexpected error deleting temporary card {card.id}: {e}")
+
+
+@pytest.fixture(scope="session")
+def shared_test_calendar_name():
+    """Unique calendar name for the entire test session."""
+    return f"test_calendar_shared_{uuid.uuid4().hex[:8]}"
+
+
+@pytest.fixture(scope="session")
+def shared_test_calendar_name_2():
+    """Second unique calendar name for cross-calendar tests."""
+    return f"test_calendar_shared_2_{uuid.uuid4().hex[:8]}"
+
+
+@pytest.fixture(scope="session")
+async def shared_calendar(nc_client: NextcloudClient, shared_test_calendar_name: str):
+    """Create a shared calendar for all tests in the session. Reuses the calendar to avoid rate limiting."""
+    calendar_name = shared_test_calendar_name
+
+    try:
+        # Create a test calendar
+        logger.info(f"Creating shared test calendar: {calendar_name}")
+        result = await nc_client.calendar.create_calendar(
+            calendar_name=calendar_name,
+            display_name=f"Shared Test Calendar {calendar_name}",
+            description="Shared calendar for integration testing (reused across tests)",
+            color="#FF5722",
+        )
+
+        if result["status_code"] not in [200, 201]:
+            pytest.skip(f"Failed to create shared test calendar: {result}")
+
+        logger.info(f"Created shared test calendar: {calendar_name}")
+        yield calendar_name
+
+    except Exception as e:
+        logger.error(f"Error setting up shared test calendar: {e}")
+        pytest.skip(f"Shared calendar setup failed: {e}")
+
+    finally:
+        # Cleanup: Delete the shared calendar at end of session
+        try:
+            logger.info(f"Cleaning up shared test calendar: {calendar_name}")
+            await nc_client.calendar.delete_calendar(calendar_name)
+            logger.info(f"Successfully deleted shared test calendar: {calendar_name}")
+        except Exception as e:
+            logger.error(f"Error deleting shared test calendar {calendar_name}: {e}")
+
+
+@pytest.fixture(scope="session")
+async def shared_calendar_2(
+    nc_client: NextcloudClient,
+    shared_test_calendar_name_2: str,
+    shared_calendar: str,  # Explicit dependency to ensure proper initialization order
+):
+    """Create a second shared calendar for cross-calendar tests.
+
+    Note: Depends on shared_calendar to ensure proper fixture initialization order
+    and avoid race conditions when running multiple tests together.
+    """
+    calendar_name = shared_test_calendar_name_2
+
+    try:
+        # Wait for first calendar to fully initialize to avoid Nextcloud rate limiting
+        # When creating multiple calendars rapidly, Nextcloud may not register them all
+        import asyncio
+
+        logger.info("Waiting before creating second calendar to avoid rate limiting...")
+        await asyncio.sleep(3)  # Increased from 2 to 3 seconds
+
+        # Create a test calendar
+        logger.info(f"Creating second shared test calendar: {calendar_name}")
+        result = await nc_client.calendar.create_calendar(
+            calendar_name=calendar_name,
+            display_name=f"Shared Test Calendar 2 {calendar_name}",
+            description="Second shared calendar for cross-calendar testing",
+            color="#4CAF50",
+        )
+
+        if result["status_code"] not in [200, 201]:
+            pytest.skip(f"Failed to create second shared test calendar: {result}")
+
+        logger.info(f"Created second shared test calendar: {calendar_name}")
+
+        # Verify calendar was created by listing calendars
+        # Add small delay to allow calendar to propagate in the system
+        import asyncio
+
+        await asyncio.sleep(1.0)  # Allow time for calendar to propagate
+
+        calendars = await nc_client.calendar.list_calendars()
+        calendar_names = [cal["name"] for cal in calendars]
+        if calendar_name not in calendar_names:
+            logger.warning(
+                f"Calendar {calendar_name} not found immediately after creation. Available: {calendar_names}"
+            )
+            # Try one more time after a longer delay
+            await asyncio.sleep(3)  # Additional wait for calendar synchronization
+            calendars = await nc_client.calendar.list_calendars()
+            calendar_names = [cal["name"] for cal in calendars]
+            if calendar_name not in calendar_names:
+                logger.error(
+                    f"Calendar {calendar_name} still not found after retries. Available: {calendar_names}"
+                )
+                pytest.fail(
+                    f"Failed to create second shared calendar: {calendar_name} not found in listing"
+                )
+
+        logger.info(
+            f"Successfully verified second shared test calendar: {calendar_name}"
+        )
+        yield calendar_name
+
+    except Exception as e:
+        logger.error(f"Error setting up second shared test calendar: {e}")
+        pytest.skip(f"Second shared calendar setup failed: {e}")
+
+    finally:
+        # Cleanup: Delete the second shared calendar at end of session
+        try:
+            logger.info(f"Cleaning up second shared test calendar: {calendar_name}")
+            await nc_client.calendar.delete_calendar(calendar_name)
+            logger.info(
+                f"Successfully deleted second shared test calendar: {calendar_name}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Error deleting second shared test calendar {calendar_name}: {e}"
+            )
+
+
+@pytest.fixture
+async def temporary_calendar(shared_calendar: str, nc_client: NextcloudClient):
+    """Provide the shared calendar and clean up todos after each test.
+
+    This fixture reuses a session-scoped calendar to avoid Nextcloud rate limiting
+    on calendar creation. Each test gets the same calendar but todos are cleaned up
+    between tests.
+    """
+    calendar_name = shared_calendar
+
+    yield calendar_name
+
+    # Cleanup: Delete all todos from this calendar
+    try:
+        logger.info(f"Cleaning up todos from shared calendar: {calendar_name}")
+        todos = await nc_client.calendar.list_todos(calendar_name)
+        for todo in todos:
+            try:
+                await nc_client.calendar.delete_todo(calendar_name, todo["uid"])
+            except Exception as e:
+                logger.warning(f"Error deleting todo {todo['uid']}: {e}")
+        logger.info(f"Cleaned up {len(todos)} todos from shared calendar")
+    except Exception as e:
+        logger.error(f"Error cleaning up todos from calendar {calendar_name}: {e}")
+
+
+@pytest.fixture(scope="session")
+async def nc_oauth_client(
+    anyio_backend,
+    playwright_oauth_token: str,
+) -> AsyncGenerator[NextcloudClient, Any]:
+    """
+    Fixture to create a NextcloudClient instance using automated Playwright OAuth authentication.
+    Uses headless browser automation suitable for CI/CD.
+    """
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    username = os.getenv("NEXTCLOUD_USERNAME")
+
+    if not all([nextcloud_host, username]):
+        pytest.skip("OAuth client fixture requires NEXTCLOUD_HOST and USERNAME")
+
+    logger.info(f"Creating OAuth NextcloudClient (Playwright) for user: {username}")
+    client = NextcloudClient.from_token(
+        base_url=nextcloud_host,
+        token=playwright_oauth_token,
+        username=username,
+    )
+
+    # Verify the OAuth client works
+    try:
+        await client.capabilities()
+        logger.info(
+            "OAuth NextcloudClient (Playwright) initialized and capabilities checked."
+        )
+        yield client
+    except Exception as e:
+        logger.error(f"Failed to initialize OAuth NextcloudClient (Playwright): {e}")
+        pytest.fail(f"Failed to connect to Nextcloud with Playwright OAuth token: {e}")
+    finally:
+        await client.close()
+
+
+@pytest.fixture(scope="session")
+def oauth_callback_server():
+    """
+    Fixture to create an HTTP server for OAuth callback handling.
+
+    Supports multiple concurrent OAuth flows using state parameters for correlation.
+
+    Yields a tuple of (auth_states, server_url) where:
+    - auth_states: A dict mapping state parameter to auth code
+    - server_url: The callback URL for the server (e.g., "http://localhost:8081")
+
+    The server automatically shuts down when the fixture is torn down.
+    """
+    # Skip OAuth tests in GitHub Actions - Playwright browser automation
+    # has issues with localhost callback server in CI environment
+    # if os.getenv("GITHUB_ACTIONS"):
+    # pytest.skip(
+    # "OAuth tests with browser automation not supported in GitHub Actions CI"
+    # )
+
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs, urlparse
+
+    # Use a dict to store auth codes keyed by state parameter
+    # This allows multiple concurrent OAuth flows
+    auth_states = {}
+    httpd = None
+    server_thread = None
+
+    class OAuthCallbackHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            # Suppress default HTTP logging
+            pass
+
+        def do_GET(self):
+            # Parse the callback request
+            parsed_path = urlparse(self.path)
+            query = parse_qs(parsed_path.query)
+            code = query.get("code", [None])[0]
+            state = query.get("state", [None])[0]
+
+            # Only process if we have a valid code
+            if code:
+                # Store code keyed by state parameter for correlation
+                if state:
+                    auth_states[state] = code
+                    logger.info(
+                        f"OAuth callback received for state={state[:16]}... Code: {code[:20]}..."
+                    )
+                else:
+                    # Fallback for flows without state parameter (legacy interactive flow)
+                    auth_states["_default"] = code
+                    logger.info(
+                        f"OAuth callback received (no state). Code: {code[:20]}..."
+                    )
+
+                self.send_response(200)
+                self.send_header("Content-type", "text/html")
+                self.end_headers()
+                self.wfile.write(
+                    b"<html><body><h1>Authentication successful!</h1><p>You can close this window.</p></body></html>"
+                )
+            else:
+                # Ignore requests without a code (e.g., favicon requests)
+                logger.debug(f"Ignoring request without auth code: {self.path}")
+                self.send_response(404)
+                self.end_headers()
+
+    try:
+        # Start the HTTP server
+        httpd = HTTPServer(("localhost", 8081), OAuthCallbackHandler)
+        server_thread = threading.Thread(target=httpd.serve_forever)
+        server_thread.daemon = True
+        server_thread.start()
+        logger.info("OAuth callback server started on http://localhost:8081")
+
+        # Yield the auth states dict and server URL
+        yield auth_states, "http://localhost:8081"
+
+    finally:
+        # Clean up the server
+        if httpd:
+            logger.info("Shutting down OAuth callback server...")
+            shutdown_thread = threading.Thread(target=httpd.shutdown)
+            shutdown_thread.start()
+            shutdown_thread.join(timeout=2)  # Wait up to 2 seconds for shutdown
+            httpd.server_close()
+            logger.info("OAuth callback server shut down successfully")
+        if server_thread:
+            server_thread.join(timeout=1)
+
+
+@pytest.fixture(scope="session")
+async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
+    """
+    Fixture to obtain shared OAuth client credentials that will be reused for all users.
+
+    This registers a single OAuth client with Nextcloud that matches the MCP server's
+    registration, allowing all test users to authenticate using the same client_id/secret.
+
+    Now uses the real OAuth callback server for reliable token acquisition.
+
+    Returns:
+        Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
+    """
+    from nextcloud_mcp_server.auth.client_registration import load_or_register_client
+
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    if not nextcloud_host:
+        pytest.skip("Shared OAuth client requires NEXTCLOUD_HOST")
+
+    # Get callback URL from the real callback server
+    auth_states, callback_url = oauth_callback_server
+
+    logger.info("Setting up shared OAuth client credentials for all test users...")
+    logger.info(f"Using real callback server at: {callback_url}")
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        # OIDC Discovery
+        discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
+        discovery_response = await http_client.get(discovery_url)
+        discovery_response.raise_for_status()
+        oidc_config = discovery_response.json()
+
+        token_endpoint = oidc_config.get("token_endpoint")
+        registration_endpoint = oidc_config.get("registration_endpoint")
+        authorization_endpoint = oidc_config.get("authorization_endpoint")
+
+        if not all([token_endpoint, registration_endpoint, authorization_endpoint]):
+            raise ValueError("OIDC discovery missing required endpoints")
+
+        # Register or load shared OAuth client (matches MCP server registration)
+        client_info = await load_or_register_client(
+            nextcloud_url=nextcloud_host,
+            registration_endpoint=registration_endpoint,
+            storage_path=".nextcloud_oauth_shared_test_client.json",
+            client_name="Pytest - Shared Test Client",
+            redirect_uris=[callback_url],
+        )
+
+        logger.info(f"Shared OAuth client ready: {client_info.client_id[:16]}...")
+        logger.info("This client will be reused for all test user authentications")
+
+        return (
+            client_info.client_id,
+            client_info.client_secret,
+            callback_url,
+            token_endpoint,
+            authorization_endpoint,
+        )
+
+
+@pytest.fixture(scope="session")
+async def playwright_oauth_token(
+    anyio_backend, browser, shared_oauth_client_credentials, oauth_callback_server
+) -> str:
+    """
+    Fixture to obtain an OAuth access token using Playwright headless browser automation.
+
+    This fully automates the OAuth flow by:
+    1. Using shared OAuth client credentials (reused across all users)
+    2. Navigating to authorization URL in headless browser
+    3. Programmatically filling in login form
+    4. Handling OAuth consent
+    5. Waiting for callback server to receive auth code (NEW: using real callback server!)
+    6. Exchanging code for access token
+
+    Environment variables required:
+    - NEXTCLOUD_HOST: Nextcloud instance URL
+    - NEXTCLOUD_USERNAME: Username for login
+    - NEXTCLOUD_PASSWORD: Password for login
+
+    Playwright Configuration:
+    - Configure browser via pytest CLI args: --browser firefox --headed
+    - Browser fixture provided by pytest-playwright-asyncio
+    - See: https://playwright.dev/python/docs/test-runners
+    """
+    import secrets
+    import time
+    from urllib.parse import quote
+
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    username = os.getenv("NEXTCLOUD_USERNAME")
+    password = os.getenv("NEXTCLOUD_PASSWORD")
+
+    if not all([nextcloud_host, username, password]):
+        pytest.skip(
+            "Playwright OAuth requires NEXTCLOUD_HOST, NEXTCLOUD_USERNAME, and NEXTCLOUD_PASSWORD"
+        )
+
+    # Get auth_states dict from callback server
+    auth_states, _ = oauth_callback_server
+
+    # Unpack shared client credentials
+    client_id, client_secret, callback_url, token_endpoint, authorization_endpoint = (
+        shared_oauth_client_credentials
+    )
+
+    logger.info(f"Starting Playwright-based OAuth flow for {username}...")
+    logger.info(f"Using shared OAuth client: {client_id[:16]}...")
+    logger.info(f"Using real callback server at: {callback_url}")
+
+    # Generate unique state parameter for this OAuth flow
+    state = secrets.token_urlsafe(32)
+    logger.debug(f"Generated state: {state[:16]}...")
+
+    # Construct authorization URL with state parameter
+    auth_url = (
+        f"{authorization_endpoint}?"
+        f"response_type=code&"
+        f"client_id={client_id}&"
+        f"redirect_uri={quote(callback_url, safe='')}&"
+        f"state={state}&"
+        f"scope=openid%20profile%20email"
+    )
+
+    # Async browser automation using pytest-playwright's browser fixture
+    context = await browser.new_context(ignore_https_errors=True)
+    page = await context.new_page()
+
+    try:
+        # Navigate to authorization URL
+        logger.debug(f"Navigating to: {auth_url}")
+        await page.goto(auth_url, wait_until="networkidle", timeout=60000)
+
+        # Check if we need to login first
+        current_url = page.url
+        logger.debug(f"Current URL after navigation: {current_url}")
+
+        # If we're on a login page, fill in credentials
+        if "/login" in current_url or "/index.php/login" in current_url:
+            logger.info("Login page detected, filling in credentials...")
+
+            # Wait for login form
+            await page.wait_for_selector('input[name="user"]', timeout=10000)
+
+            # Fill in username and password
+            await page.fill('input[name="user"]', username)
+            await page.fill('input[name="password"]', password)
+
+            logger.debug("Credentials filled, submitting login form...")
+
+            # Submit the form
+            await page.click('button[type="submit"]')
+
+            # Wait for navigation after login
+            await page.wait_for_load_state("networkidle", timeout=60000)
+            current_url = page.url
+            logger.info(f"After login, current URL: {current_url}")
+
+        # Now we should be on the OAuth authorization/consent page or already redirected
+        # Check if there's an authorize button to click
+        try:
+            # Look for common authorization button patterns
+            authorize_button = await page.query_selector(
+                'button:has-text("Authorize"), button:has-text("Allow"), input[type="submit"][value*="uthoriz"]'
+            )
+
+            if authorize_button:
+                logger.info(
+                    "Authorization consent page detected, clicking authorize..."
+                )
+                await authorize_button.click()
+                await page.wait_for_load_state("networkidle", timeout=10000)
+                current_url = page.url
+                logger.debug(f"After authorization, current_url: {current_url}")
+        except Exception as e:
+            logger.debug(f"No authorization button found or already authorized: {e}")
+
+        # Wait for callback server to receive the auth code
+        # Browser will be redirected to localhost:8081 which will capture the code
+        logger.info("Waiting for callback server to receive auth code...")
+        timeout_seconds = 30
+        start_time = time.time()
+        while state not in auth_states:
+            if time.time() - start_time > timeout_seconds:
+                # Take a screenshot for debugging
+                screenshot_path = "/tmp/playwright_oauth_error.png"
+                await page.screenshot(path=screenshot_path)
+                logger.error(f"Screenshot saved to {screenshot_path}")
+                raise TimeoutError(
+                    f"Timeout waiting for OAuth callback (state={state[:16]}...)"
+                )
+            await asyncio.sleep(0.5)
+
+        auth_code = auth_states[state]
+        logger.info(f"Successfully received authorization code: {auth_code[:20]}...")
+
+    finally:
+        await context.close()
+
+    # Exchange authorization code for access token
+    logger.info("Exchanging authorization code for access token...")
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        token_response = await http_client.post(
+            token_endpoint,
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": callback_url,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+        )
+
+        token_response.raise_for_status()
+        token_data = token_response.json()
+        access_token = token_data.get("access_token")
+
+        if not access_token:
+            raise ValueError(f"No access_token in response: {token_data}")
+
+        logger.info("Successfully obtained OAuth access token via Playwright")
+        return access_token
+
+
+@pytest.fixture(scope="session")
+async def test_users_setup(anyio_backend, nc_client: NextcloudClient):
+    """
+    Create test users for multi-user OAuth testing.
+
+    Creates four test users:
+    - alice: Owner role, creates resources
+    - bob: Viewer role, read-only access
+    - charlie: Editor role, can edit (in 'editors' group)
+    - diana: No-access role, no shares
+    """
+    test_user_configs = {
+        "alice": {
+            "password": "AliceSecurePass123!",
+            "email": "alice@example.com",
+            "display_name": "Alice Owner",
+            "groups": [],
+        },
+        "bob": {
+            "password": "BobSecurePass456!",
+            "email": "bob@example.com",
+            "display_name": "Bob Viewer",
+            "groups": [],
+        },
+        "charlie": {
+            "password": "CharlieSecurePass789!",
+            "email": "charlie@example.com",
+            "display_name": "Charlie Editor",
+            "groups": ["editors"],
+        },
+        "diana": {
+            "password": "DianaSecurePass012!",
+            "email": "diana@example.com",
+            "display_name": "Diana NoAccess",
+            "groups": [],
+        },
+    }
+
+    logger.info("Creating test users for multi-user OAuth testing...")
+    created_users = []
+
+    try:
+        # Create the 'editors' group first (charlie needs it)
+        try:
+            # Use admin nc_client to create the group via User API
+            # First, try to create it (will fail if exists, but that's okay)
+            async with httpx.AsyncClient() as http_client:
+                base_url = str(nc_client._client.base_url)
+                # Get password from environment since nc_client doesn't expose it
+                password = os.getenv("NEXTCLOUD_PASSWORD")
+                response = await http_client.post(
+                    f"{base_url}/ocs/v2.php/cloud/groups",
+                    auth=(nc_client.username, password),
+                    headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+                    data={"groupid": "editors"},
+                )
+                if response.status_code in [
+                    200,
+                    409,
+                ]:  # 200 = created, 409 = already exists
+                    logger.info("Editors group ready")
+                else:
+                    logger.warning(
+                        f"Group creation returned {response.status_code}: {response.text}"
+                    )
+        except Exception as e:
+            logger.warning(f"Error creating editors group (may already exist): {e}")
+
+        # Create each test user
+        for username, config in test_user_configs.items():
+            try:
+                await nc_client.users.create_user(
+                    userid=username,
+                    password=config["password"],
+                    display_name=config["display_name"],
+                    email=config["email"],
+                )
+                logger.info(f"Created test user: {username}")
+                created_users.append(username)
+
+                # Add user to groups if specified
+                for group in config["groups"]:
+                    try:
+                        await nc_client.users.add_user_to_group(username, group)
+                        logger.info(f"Added {username} to group {group}")
+                    except Exception as e:
+                        logger.warning(f"Error adding {username} to group {group}: {e}")
+
+            except Exception as e:
+                # User might already exist, that's okay
+                logger.warning(
+                    f"Could not create user {username} (may already exist): {e}"
+                )
+                created_users.append(username)  # Add to list anyway for cleanup
+
+        logger.info(f"Test users setup complete: {created_users}")
+        yield test_user_configs
+
+    finally:
+        # Cleanup: delete test users
+        logger.info("Cleaning up test users...")
+        for username in created_users:
+            try:
+                await nc_client.users.delete_user(username)
+                logger.info(f"Deleted test user: {username}")
+            except Exception as e:
+                logger.warning(f"Error deleting test user {username}: {e}")
+
+
+async def _get_oauth_token_for_user(
+    browser,
+    shared_oauth_client_credentials,
+    auth_states,
+    username: str,
+    password: str,
+) -> str:
+    """
+    Helper function to get OAuth access token for a user via Playwright.
+
+    Uses shared OAuth client credentials to authenticate multiple users with the same client.
+    Now uses real callback server with state parameters for reliable token acquisition.
+
+    Args:
+        browser: Playwright browser instance
+        shared_oauth_client_credentials: Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
+        auth_states: Dict mapping state parameters to auth codes (from callback server)
+        username: Username to authenticate as
+        password: Password for the user
+
+    Returns:
+        OAuth access token string
+    """
+    import secrets
+    import time
+    from urllib.parse import quote
+
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+
+    if not nextcloud_host:
+        pytest.skip("OAuth requires NEXTCLOUD_HOST")
+
+    # Unpack shared client credentials
+    client_id, client_secret, callback_url, token_endpoint, authorization_endpoint = (
+        shared_oauth_client_credentials
+    )
+
+    logger.info(f"Getting OAuth token for user: {username}...")
+    logger.info(f"Using shared OAuth client: {client_id[:16]}...")
+
+    # Generate unique state parameter for this OAuth flow
+    state = secrets.token_urlsafe(32)
+    logger.debug(f"Generated state for {username}: {state[:16]}...")
+
+    # Construct authorization URL with state parameter
+    auth_url = (
+        f"{authorization_endpoint}?"
+        f"response_type=code&"
+        f"client_id={client_id}&"
+        f"redirect_uri={quote(callback_url, safe='')}&"
+        f"state={state}&"
+        f"scope=openid%20profile%20email"
+    )
+
+    logger.info(f"Performing browser OAuth flow for {username}...")
+    logger.debug(f"Authorization URL: {auth_url}")
+
+    # Browser automation
+    context = await browser.new_context(ignore_https_errors=True)
+    page = await context.new_page()
+
+    try:
+        await page.goto(auth_url, wait_until="networkidle", timeout=30000)
+        current_url = page.url
+
+        # Login if needed
+        if "/login" in current_url or "/index.php/login" in current_url:
+            logger.info(f"Logging in as {username}...")
+            await page.wait_for_selector('input[name="user"]', timeout=10000)
+            await page.fill('input[name="user"]', username)
+            await page.fill('input[name="password"]', password)
+            await page.click('button[type="submit"]')
+            await page.wait_for_load_state("networkidle", timeout=30000)
+            current_url = page.url
+
+        # Handle OAuth consent if present
+        try:
+            authorize_button = await page.query_selector(
+                'button:has-text("Authorize"), button:has-text("Allow"), input[type="submit"][value*="uthoriz"]'
+            )
+            if authorize_button:
+                logger.info(f"Authorizing for {username}...")
+                await authorize_button.click()
+                await page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception as e:
+            logger.debug(f"No authorization needed for {username}: {e}")
+
+        # Wait for callback server to receive the auth code
+        # Browser will be redirected to localhost:8081 which will capture the code
+        logger.info(
+            f"Waiting for callback server to receive auth code for {username}..."
+        )
+        timeout_seconds = 30
+        start_time = time.time()
+        while state not in auth_states:
+            if time.time() - start_time > timeout_seconds:
+                # Take screenshot for debugging
+                screenshot_path = f"/tmp/playwright_oauth_timeout_{username}.png"
+                await page.screenshot(path=screenshot_path)
+                logger.error(f"Screenshot saved to {screenshot_path}")
+                raise TimeoutError(
+                    f"Timeout waiting for OAuth callback for {username} (state={state[:16]}...)"
+                )
+            await asyncio.sleep(0.5)
+
+        auth_code = auth_states[state]
+        logger.info(f"Got auth code for {username}: {auth_code[:20]}...")
+
+    finally:
+        await context.close()
+
+    # Exchange code for token
+    logger.info(f"Exchanging auth code for access token ({username})...")
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        token_response = await http_client.post(
+            token_endpoint,
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": callback_url,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+        )
+
+        token_response.raise_for_status()
+        token_data = token_response.json()
+        access_token = token_data.get("access_token")
+
+        if not access_token:
+            raise ValueError(f"No access_token for {username}: {token_data}")
+
+        logger.info(f"Successfully obtained OAuth token for {username}")
+        return access_token
+
+
+# Parallel token retrieval fixture - fetches all OAuth tokens concurrently
+@pytest.fixture(scope="session")
+async def all_oauth_tokens(
+    anyio_backend,
+    browser,
+    shared_oauth_client_credentials,
+    test_users_setup,
+    oauth_callback_server,
+) -> dict[str, str]:
+    """
+    Fetch OAuth tokens for all test users in parallel for speed.
+
+    Returns a dict mapping username to OAuth access token.
+    This is significantly faster than fetching tokens sequentially.
+
+    Now uses the real callback server with state parameters for reliable
+    concurrent token acquisition without race conditions.
+    """
+    import asyncio
+    import time
+
+    # Get auth_states dict from callback server
+    auth_states, callback_url = oauth_callback_server
+
+    start_time = time.time()
+    logger.info("Fetching OAuth tokens for all users in parallel...")
+    logger.info(f"Using callback server at {callback_url} with state-based correlation")
+
+    async def get_token_with_delay(username: str, config: dict, delay: float):
+        """Get token for a user after a small delay to stagger requests."""
+        if delay > 0:
+            await asyncio.sleep(delay)
+        return await _get_oauth_token_for_user(
+            browser,
+            shared_oauth_client_credentials,
+            auth_states,
+            username,
+            config["password"],
+        )
+
+    # Create tasks for all users with staggered starts (0.5s apart)
+    tasks = {
+        username: get_token_with_delay(username, config, idx * 0.5)
+        for idx, (username, config) in enumerate(test_users_setup.items())
+    }
+
+    # Run all token fetches concurrently
+    results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+    # Build result dict, handling any errors
+    tokens = {}
+    for username, result in zip(tasks.keys(), results):
+        if isinstance(result, Exception):
+            logger.error(f"Failed to get OAuth token for {username}: {result}")
+            raise result
+        tokens[username] = result
+
+    elapsed = time.time() - start_time
+    logger.info(
+        f"Successfully fetched {len(tokens)} OAuth tokens in parallel "
+        f"in {elapsed:.1f}s (~{elapsed / len(tokens):.1f}s per user)"
+    )
+    return tokens
+
+
+# Session-scoped OAuth token fixtures - now use the parallel fixture
+@pytest.fixture(scope="session")
+async def alice_oauth_token(anyio_backend, all_oauth_tokens) -> str:
+    """OAuth token for alice (cached for session). Uses shared OAuth client."""
+    return all_oauth_tokens["alice"]
+
+
+@pytest.fixture(scope="session")
+async def bob_oauth_token(anyio_backend, all_oauth_tokens) -> str:
+    """OAuth token for bob (cached for session). Uses shared OAuth client."""
+    return all_oauth_tokens["bob"]
+
+
+@pytest.fixture(scope="session")
+async def charlie_oauth_token(anyio_backend, all_oauth_tokens) -> str:
+    """OAuth token for charlie (cached for session). Uses shared OAuth client."""
+    return all_oauth_tokens["charlie"]
+
+
+@pytest.fixture(scope="session")
+async def diana_oauth_token(anyio_backend, all_oauth_tokens) -> str:
+    """OAuth token for diana (cached for session). Uses shared OAuth client."""
+    return all_oauth_tokens["diana"]
+
+
+@pytest.fixture(scope="session")
+async def alice_mcp_client(
+    anyio_backend,
+    alice_oauth_token: str,
+) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client authenticated as alice (owner role)."""
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8001/mcp",
+        token=alice_oauth_token,
+        client_name="Alice MCP",
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def bob_mcp_client(
+    anyio_backend, bob_oauth_token: str
+) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client authenticated as bob (viewer role)."""
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8001/mcp",
+        token=bob_oauth_token,
+        client_name="Bob MCP",
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def charlie_mcp_client(
+    anyio_backend,
+    charlie_oauth_token: str,
+) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client authenticated as charlie (editor role, in 'editors' group)."""
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8001/mcp",
+        token=charlie_oauth_token,
+        client_name="Charlie MCP",
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def diana_mcp_client(
+    anyio_backend,
+    diana_oauth_token: str,
+) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client authenticated as diana (no-access role)."""
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8001/mcp",
+        token=diana_oauth_token,
+        client_name="Diana MCP",
+    ):
+        yield session
+
+
+# Test user/group fixtures for clean test isolation
+@pytest.fixture
+async def test_user(nc_client: NextcloudClient):
+    """
+    Fixture that creates a test user and cleans it up after the test.
+
+    Returns a dict with user details that can be customized.
+    Usage:
+        async def test_something(test_user):
+            user_config = test_user
+            await nc_client.users.create_user(**user_config)
+    """
+    import uuid
+
+    # Generate unique user ID to avoid conflicts
+    userid = f"testuser_{uuid.uuid4().hex[:8]}"
+    password = "SecureTestPassword123!"
+
+    user_config = {
+        "userid": userid,
+        "password": password,
+        "display_name": f"Test User {userid}",
+        "email": f"{userid}@example.com",
+    }
+
+    # Cleanup before (in case of previous failed run)
+    try:
+        await nc_client.users.delete_user(userid)
+    except Exception:
+        pass
+
+    yield user_config
+
+    # Cleanup after test
+    try:
+        await nc_client.users.delete_user(userid)
+        logger.debug(f"Cleaned up test user: {userid}")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup test user {userid}: {e}")
+
+
+@pytest.fixture
+async def test_group(nc_client: NextcloudClient):
+    """
+    Fixture that creates a test group and cleans it up after the test.
+
+    Returns the group ID.
+    """
+    import uuid
+
+    # Generate unique group ID to avoid conflicts
+    groupid = f"testgroup_{uuid.uuid4().hex[:8]}"
+
+    # Cleanup before (in case of previous failed run)
+    try:
+        await nc_client.groups.delete_group(groupid)
+    except Exception:
+        pass
+
+    # Create the group
+    await nc_client.groups.create_group(groupid)
+    logger.debug(f"Created test group: {groupid}")
+
+    yield groupid
+
+    # Cleanup after test
+    try:
+        await nc_client.groups.delete_group(groupid)
+        logger.debug(f"Cleaned up test group: {groupid}")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup test group {groupid}: {e}")
+
+
+@pytest.fixture
+async def test_user_in_group(nc_client: NextcloudClient, test_user, test_group):
+    """
+    Fixture that creates a test user and adds them to a test group.
+
+    Returns a tuple of (user_config, groupid).
+    """
+    user_config = test_user
+    groupid = test_group
+
+    # Create the user
+    await nc_client.users.create_user(**user_config)
+
+    # Add user to group
+    await nc_client.users.add_user_to_group(user_config["userid"], groupid)
+    logger.debug(f"Added user {user_config['userid']} to group {groupid}")
+
+    yield (user_config, groupid)

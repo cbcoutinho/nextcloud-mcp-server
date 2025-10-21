@@ -3,7 +3,7 @@ services:
   # https://hub.docker.com/_/mariadb
   db:
     # Note: Check the recommend version here: https://docs.nextcloud.com/server/latest/admin_manual/installation/system_requirements.html#server
-    image: docker.io/library/mariadb:lts@sha256:4b1e7958f820681b1b93b9cf9ea05a76e0785da12699a1fb1d05e0eb2137e56b
+    image: docker.io/library/mariadb:lts@sha256:ae6119716edac6998ae85508431b3d2e666530ddf4e94c61a10710caec9b0f71
     restart: always
     command: --transaction-isolation=READ-COMMITTED
     volumes:
@@ -17,18 +17,14 @@ services:
   # Note: Redis is an external service. You can find more information about the configuration here:
   # https://hub.docker.com/_/redis
   redis:
-    image: redis:alpine@sha256:987c376c727652f99625c7d205a1cba3cb2c53b92b0b62aade2bd48ee1593232
+    image: docker.io/library/redis:alpine@sha256:59b6e694653476de2c992937ebe1c64182af4728e54bb49e9b7a6c26614d8933
     restart: always
 
   app:
-    image: docker.io/library/nextcloud:32.0.0@sha256:f4d0a4a74e93780db5e2130cdf08caa4cd856f6db4da34802d542d57443a9a63
-    #user: www-data:www-data
+    image: docker.io/library/nextcloud:32.0.0@sha256:4fbd72f05b5e6b82e078542b6cb2ecf021d2f8b5045454ffa7f4e080e488b375
     restart: always
-    #post_start:
-      #- command: chown -R www-data:www-data /var/www/html && while ! nc -z db 3306; do sleep 1; echo sleeping; done
-        #user: root
     ports:
-      - 127.0.0.1:8080:80
+      - 0.0.0.0:8080:80
     depends_on:
       - redis
       - db
@@ -43,6 +39,14 @@ services:
       - MYSQL_DATABASE=nextcloud
       - MYSQL_USER=nextcloud
       - MYSQL_HOST=db
+      - REDIS_HOST=redis
+
+  recipes:
+    image: docker.io/library/nginx:alpine@sha256:61e01287e546aac28a3f56839c136b31f590273f3b41187a36f46f6a03bbfe22
+    restart: always
+    volumes:
+      - ./tests/fixtures/test_recipe.html:/usr/share/nginx/html/test_recipe.html:ro
+      - ./tests/fixtures/nginx.conf:/etc/nginx/nginx.conf:ro
 
   unstructured:
     image: downloads.unstructured.io/unstructured-io/unstructured-api:latest
@@ -55,6 +59,9 @@ services:
   mcp:
     build: .
     command: ["--transport", "streamable-http"]
+    restart: always
+    depends_on:
+      - app
     ports:
       - 127.0.0.1:8000:8000
     depends_on:
@@ -70,6 +77,23 @@ services:
     #volumes:
       #- ./nextcloud_mcp_server:/app/nextcloud_mcp_server:ro
 
+  mcp-oauth:
+    build: .
+    command: ["--transport", "streamable-http", "--oauth", "--port", "8001"]
+    restart: always
+    depends_on:
+      - app
+    ports:
+      - 127.0.0.1:8001:8001
+    environment:
+      - NEXTCLOUD_HOST=http://app:80
+      - NEXTCLOUD_MCP_SERVER_URL=http://127.0.0.1:8001
+      - NEXTCLOUD_PUBLIC_ISSUER_URL=http://127.0.0.1:8080
+      # No USERNAME/PASSWORD - will use OAuth
+    volumes:
+      - oauth-client-storage:/app/.oauth
+
 volumes:
   nextcloud:
   db:
+  oauth-client-storage:

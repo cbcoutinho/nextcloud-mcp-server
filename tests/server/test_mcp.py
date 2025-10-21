@@ -40,6 +40,12 @@ async def test_mcp_connectivity(nc_mcp_client: ClientSession):
         "nc_webdav_write_file",
         "nc_webdav_create_directory",
         "nc_webdav_delete_resource",
+        "nc_webdav_move_resource",
+        "nc_webdav_copy_resource",
+        "nc_webdav_search_files",
+        "nc_webdav_find_by_name",
+        "nc_webdav_find_by_type",
+        "nc_webdav_list_favorites",
         "nc_calendar_list_calendars",
         "nc_calendar_create_event",
         "nc_calendar_list_events",
@@ -51,7 +57,25 @@ async def test_mcp_connectivity(nc_mcp_client: ClientSession):
         "nc_calendar_find_availability",
         "nc_calendar_bulk_operations",
         "nc_calendar_manage_calendar",
+        "nc_calendar_list_todos",
+        "nc_calendar_create_todo",
+        "nc_calendar_update_todo",
+        "nc_calendar_delete_todo",
+        "nc_calendar_search_todos",
         "deck_create_board",
+        "nc_cookbook_import_recipe",
+        "nc_cookbook_list_recipes",
+        "nc_cookbook_get_recipe",
+        "nc_cookbook_create_recipe",
+        "nc_cookbook_update_recipe",
+        "nc_cookbook_delete_recipe",
+        "nc_cookbook_search_recipes",
+        "nc_cookbook_list_categories",
+        "nc_cookbook_get_recipes_in_category",
+        "nc_cookbook_list_keywords",
+        "nc_cookbook_get_recipes_with_keywords",
+        "nc_cookbook_set_config",
+        "nc_cookbook_reindex",
     ]
 
     for expected_tool in expected_tools:
@@ -85,7 +109,13 @@ async def test_mcp_connectivity(nc_mcp_client: ClientSession):
         resource_uris.append(str(resource.uri))  # Convert to string for comparison
 
     # Verify expected resources
-    expected_resources = ["nc://capabilities", "notes://settings", "nc://Deck/boards"]
+    expected_resources = [
+        "nc://capabilities",
+        "notes://settings",
+        "nc://Deck/boards",
+        "cookbook://version",
+        "cookbook://config",
+    ]
 
     for expected_resource in expected_resources:
         assert expected_resource in resource_uris, (

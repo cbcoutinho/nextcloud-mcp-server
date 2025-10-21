@@ -22,6 +22,8 @@ class FileInfo(BaseModel):
         None, description="Last modification time (ISO format)"
     )
     etag: Optional[str] = Field(None, description="ETag for versioning")
+    file_id: Optional[int] = Field(None, description="Nextcloud file ID")
+    is_favorite: Optional[bool] = Field(None, description="Whether file is favorited")
 
     @property
     def last_modified_datetime(self) -> Optional[datetime]:
@@ -105,4 +107,15 @@ class CopyResourceResponse(StatusResponse):
     destination_path: str = Field(description="Destination path for the copy")
     overwrite: bool = Field(
         description="Whether the destination was overwritten if it existed"
+    )
+
+
+class SearchFilesResponse(BaseResponse):
+    """Response model for WebDAV search operations."""
+
+    results: List[FileInfo] = Field(description="Search results")
+    total_found: int = Field(description="Total number of files found")
+    scope: str = Field(description="The scope/path that was searched")
+    filters_applied: Optional[dict] = Field(
+        None, description="Filters that were applied to the search"
     )

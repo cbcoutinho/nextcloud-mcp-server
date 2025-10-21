@@ -1,3 +1,95 @@
+## v0.17.1 (2025-10-20)
+
+### Fix
+
+- **caldav**: Fix caldav search() due to missing todos
+
+## v0.17.0 (2025-10-19)
+
+### Feat
+
+- **caldav**: Add support for tasks
+
+### Fix
+
+- **caldav**: Check that calendar exists after creation to avoid race condition
+- **caldav**: Properly parse datetimes as vDDDTypes
+
+### Refactor
+
+- Migrate from internal CalendarClient to caldav library
+
+## v0.16.0 (2025-10-19)
+
+### Feat
+
+- **webdav**: Add search and list favorite response tools
+
+### Perf
+
+- **notes**: Improve notes search performance using async iterators
+
+## v0.15.2 (2025-10-17)
+
+### Refactor
+
+- Unify logging & remove factory deployment
+
+## v0.15.1 (2025-10-17)
+
+### Fix
+
+- Increase HTTP client timeout to 30s
+- Handle RequestError in mcp tools
+
+## v0.15.0 (2025-10-17)
+
+### Feat
+
+- **cookbook**: Add full Cookbook app support with 13 tools and 2 resources
+
+## v0.14.3 (2025-10-17)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.18,<1.19
+
+## v0.14.2 (2025-10-16)
+
+### Fix
+
+- **deps**: update dependency pillow to v12
+
+## v0.14.1 (2025-10-15)
+
+### Fix
+
+- **oauth**: Remove the option to force_register new clients
+
+## v0.14.0 (2025-10-15)
+
+### Feat
+
+- Add Groups API client
+- add sharing API client and server tools
+- **users**: Initialize user API client
+
+### Fix
+
+- Update user/groups API to OCS v2
+
+## v0.13.0 (2025-10-13)
+
+### Feat
+
+- **server**: Experimental support for OAuth2/OIDC authentication
+
+## v0.12.6 (2025-10-11)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.17,<1.18
+
 ## v0.12.5 (2025-10-03)
 
 ### Fix

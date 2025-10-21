@@ -1,4 +1,9 @@
-"""Integration tests for Calendar CalDAV operations."""
+"""Integration tests for Calendar CalDAV operations.
+
+Note: These tests use the shared temporary_calendar fixture from conftest.py
+which reuses a session-scoped calendar to avoid Nextcloud rate limiting issues.
+Each test cleans up its own events/todos but shares the same calendar.
+"""
 
 import logging
 import uuid
@@ -16,49 +21,12 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def test_calendar_name():
-    """Unique calendar name for testing."""
-    return f"test_calendar_{uuid.uuid4().hex[:8]}"
-
-
-@pytest.fixture
-async def temporary_calendar(nc_client: NextcloudClient, test_calendar_name: str):
-    """Create a temporary calendar for testing and clean up afterward."""
-    calendar_name = test_calendar_name
-
-    try:
-        # Create a test calendar
-        logger.info(f"Creating temporary calendar: {calendar_name}")
-        result = await nc_client.calendar.create_calendar(
-            calendar_name=calendar_name,
-            display_name=f"Test Calendar {calendar_name}",
-            description="Temporary calendar for integration testing",
-            color="#FF5722",
-        )
-
-        if result["status_code"] not in [200, 201]:
-            pytest.skip(f"Failed to create temporary calendar: {result}")
-
-        logger.info(f"Created temporary calendar: {calendar_name}")
-        yield calendar_name
-
-    except Exception as e:
-        logger.error(f"Error setting up temporary calendar: {e}")
-        pytest.skip(f"Calendar setup failed: {e}")
-
-    finally:
-        # Cleanup: Delete the temporary calendar
-        try:
-            logger.info(f"Cleaning up temporary calendar: {calendar_name}")
-            await nc_client.calendar.delete_calendar(calendar_name)
-            logger.info(f"Successfully deleted temporary calendar: {calendar_name}")
-        except Exception as e:
-            logger.error(f"Error deleting temporary calendar {calendar_name}: {e}")
-
-
-@pytest.fixture
 async def temporary_event(nc_client: NextcloudClient, temporary_calendar: str):
-    """Create a temporary event for testing and clean up afterward."""
+    """Create a temporary event for testing and clean up afterward.
+
+    Uses the shared temporary_calendar fixture from conftest.py which reuses
+    a session-scoped calendar to avoid Nextcloud rate limiting.
+    """
     event_uid = None
     calendar_name = temporary_calendar
 
@@ -351,11 +319,11 @@ async def test_get_nonexistent_event(
     calendar_name = temporary_calendar
     fake_uid = f"nonexistent-{uuid.uuid4()}"
 
-    with pytest.raises(HTTPStatusError) as exc_info:
+    # caldav library raises generic Exception for missing events, not HTTPStatusError
+    with pytest.raises(Exception, match="not found"):
         await nc_client.calendar.get_event(calendar_name, fake_uid)
 
-    assert exc_info.value.response.status_code == 404
-    logger.info(f"Correctly got 404 for nonexistent event: {fake_uid}")
+    logger.info(f"Correctly raised exception for nonexistent event: {fake_uid}")
 
 
 async def test_delete_nonexistent_event(
@@ -420,7 +388,11 @@ async def test_calendar_operations_error_handling(
     # Test with non-existent calendar
     fake_calendar = f"nonexistent_calendar_{uuid.uuid4().hex}"
 
-    with pytest.raises(HTTPStatusError):
-        await nc_client.calendar.get_calendar_events(fake_calendar)
+    # caldav library returns empty list for non-existent calendars, doesn't raise
+    # Testing that it doesn't crash and returns empty results
+    events = await nc_client.calendar.get_calendar_events(fake_calendar)
+    assert isinstance(events, list)
+    # Empty list is expected for non-existent calendar
+    assert len(events) == 0
 
     logger.info("Error handling tests completed successfully")

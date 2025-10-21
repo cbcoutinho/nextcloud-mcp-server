@@ -1,41 +1,25 @@
 """Pydantic models for structured MCP server responses."""
 
 # Base models
-from .base import (
-    BaseResponse,
-    IdResponse,
-    StatusResponse,
-)
-
-# Notes models
-from .notes import (
-    Note,
-    NoteSearchResult,
-    NotesSettings,
-    CreateNoteResponse,
-    UpdateNoteResponse,
-    DeleteNoteResponse,
-    AppendContentResponse,
-    SearchNotesResponse,
-)
+from .base import BaseResponse, IdResponse, StatusResponse
 
 # Calendar models
 from .calendar import (
+    AvailabilitySlot,
+    BulkOperationResponse,
+    BulkOperationResult,
     Calendar,
     CalendarEvent,
     CalendarEventSummary,
     CreateEventResponse,
-    UpdateEventResponse,
-    DeleteEventResponse,
-    ListEventsResponse,
-    ListCalendarsResponse,
-    AvailabilitySlot,
-    FindAvailabilityResponse,
-    BulkOperationResult,
-    BulkOperationResponse,
     CreateMeetingResponse,
-    UpcomingEventsResponse,
+    DeleteEventResponse,
+    FindAvailabilityResponse,
+    ListCalendarsResponse,
+    ListEventsResponse,
     ManageCalendarResponse,
+    UpcomingEventsResponse,
+    UpdateEventResponse,
 )
 
 # Contacts models
@@ -43,38 +27,53 @@ from .contacts import (
     AddressBook,
     Contact,
     ContactField,
+    CreateAddressBookResponse,
+    CreateContactResponse,
+    DeleteAddressBookResponse,
+    DeleteContactResponse,
     ListAddressBooksResponse,
     ListContactsResponse,
-    CreateContactResponse,
     UpdateContactResponse,
-    DeleteContactResponse,
-    CreateAddressBookResponse,
-    DeleteAddressBookResponse,
+)
+
+# Notes models
+from .notes import (
+    AppendContentResponse,
+    CreateNoteResponse,
+    DeleteNoteResponse,
+    Note,
+    NoteSearchResult,
+    NotesSettings,
+    SearchNotesResponse,
+    UpdateNoteResponse,
 )
 
 # Tables models
 from .tables import (
+    CreateRowResponse,
+    DeleteRowResponse,
+    GetSchemaResponse,
+    ListTablesResponse,
+    ReadTableResponse,
     Table,
     TableColumn,
     TableRow,
-    TableView,
     TableSchema,
-    ListTablesResponse,
-    GetSchemaResponse,
-    ReadTableResponse,
-    CreateRowResponse,
+    TableView,
     UpdateRowResponse,
-    DeleteRowResponse,
 )
 
 # WebDAV models
 from .webdav import (
-    FileInfo,
-    DirectoryListing,
-    ReadFileResponse,
-    WriteFileResponse,
+    CopyResourceResponse,
     CreateDirectoryResponse,
     DeleteResourceResponse,
+    DirectoryListing,
+    FileInfo,
+    MoveResourceResponse,
+    ReadFileResponse,
+    SearchFilesResponse,
+    WriteFileResponse,
 )
 
 __all__ = [
@@ -137,4 +136,7 @@ __all__ = [
     "WriteFileResponse",
     "CreateDirectoryResponse",
     "DeleteResourceResponse",
+    "MoveResourceResponse",
+    "CopyResourceResponse",
+    "SearchFilesResponse",
 ]
