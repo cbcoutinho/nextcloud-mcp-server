@@ -62,10 +62,9 @@ services:
     restart: always
     depends_on:
       - app
+      - unstructured
     ports:
       - 127.0.0.1:8000:8000
-    depends_on:
-      - unstructured
     environment:
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_USERNAME=admin
