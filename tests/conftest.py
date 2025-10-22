@@ -184,6 +184,99 @@ async def nc_mcp_oauth_client(
         yield session
 
 
+@pytest.fixture(scope="session")
+async def nc_mcp_oauth_jwt_client(
+    anyio_backend,
+    playwright_oauth_token: str,
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    Fixture to create an MCP client session for JWT OAuth integration tests.
+    Connects to the JWT OAuth-enabled MCP server on port 8002 with OAuth authentication.
+
+    This server uses JWT tokens (RFC 9068) instead of opaque tokens, enabling:
+    - Token introspection via JWT signature verification
+    - Scope information embedded in token claims
+    - Offline token validation without userinfo endpoint
+
+    Uses headless browser automation suitable for CI/CD.
+    Uses anyio pytest plugin for proper async fixture handling.
+    """
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8002/mcp",
+        token=playwright_oauth_token,
+        client_name="OAuth JWT MCP (Playwright)",
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_oauth_client_read_only(
+    anyio_backend,
+    playwright_oauth_token_read_only: str,
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    Fixture to create an MCP client session with only nc:read scope.
+    Connects to the JWT OAuth-enabled MCP server on port 8002.
+
+    This client should only see read tools and should get 403 errors
+    when attempting to call write tools.
+
+    Uses JWT MCP server because JWT tokens embed scope information in claims,
+    enabling proper scope-based filtering.
+    """
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8002/mcp",
+        token=playwright_oauth_token_read_only,
+        client_name="OAuth JWT MCP Read-Only (Playwright)",
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_oauth_client_write_only(
+    anyio_backend,
+    playwright_oauth_token_write_only: str,
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    Fixture to create an MCP client session with only nc:write scope.
+    Connects to the JWT OAuth-enabled MCP server on port 8002.
+
+    This client should only see write tools and should get 403 errors
+    when attempting to call read tools.
+
+    Uses JWT MCP server because JWT tokens embed scope information in claims,
+    enabling proper scope-based filtering.
+    """
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8002/mcp",
+        token=playwright_oauth_token_write_only,
+        client_name="OAuth JWT MCP Write-Only (Playwright)",
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_oauth_client_full_access(
+    anyio_backend,
+    playwright_oauth_token_full_access: str,
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    Fixture to create an MCP client session with both nc:read and nc:write scopes.
+    Connects to the JWT OAuth-enabled MCP server on port 8002.
+
+    This client should see all tools and be able to call all operations.
+
+    Uses JWT MCP server because JWT tokens embed scope information in claims,
+    enabling proper scope-based filtering.
+    """
+    async for session in create_mcp_client_session(
+        url="http://127.0.0.1:8002/mcp",
+        token=playwright_oauth_token_full_access,
+        client_name="OAuth JWT MCP Full Access (Playwright)",
+    ):
+        yield session
+
+
 @pytest.fixture
 async def temporary_note(nc_client: NextcloudClient):
     """
@@ -821,17 +914,37 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
         registration_endpoint = oidc_config.get("registration_endpoint")
         authorization_endpoint = oidc_config.get("authorization_endpoint")
 
-        if not all([token_endpoint, registration_endpoint, authorization_endpoint]):
-            raise ValueError("OIDC discovery missing required endpoints")
+        if not token_endpoint or not authorization_endpoint:
+            raise ValueError(
+                "OIDC discovery missing required endpoints (token_endpoint or authorization_endpoint)"
+            )
 
-        # Register or load shared OAuth client (matches MCP server registration)
-        client_info = await load_or_register_client(
-            nextcloud_url=nextcloud_host,
-            registration_endpoint=registration_endpoint,
-            storage_path=".nextcloud_oauth_shared_test_client.json",
-            client_name="Pytest - Shared Test Client",
-            redirect_uris=[callback_url],
-        )
+        # Try to load existing client first
+        from pathlib import Path
+
+        from nextcloud_mcp_server.auth.client_registration import load_client_from_file
+
+        storage_path = Path(".nextcloud_oauth_shared_test_client.json")
+        client_info = load_client_from_file(storage_path)
+
+        if not client_info and not registration_endpoint:
+            raise ValueError(
+                "Cannot create OAuth client: registration_endpoint not available and no pre-existing credentials found at .nextcloud_oauth_shared_test_client.json"
+            )
+
+        if not client_info:
+            # Register or load shared OAuth client (matches MCP server registration)
+            client_info = await load_or_register_client(
+                nextcloud_url=nextcloud_host,
+                registration_endpoint=registration_endpoint,
+                storage_path=".nextcloud_oauth_shared_test_client.json",
+                client_name="Pytest - Shared Test Client",
+                redirect_uris=[callback_url],
+            )
+        else:
+            logger.info(
+                f"Using existing shared OAuth client: {client_info.client_id[:16]}..."
+            )
 
         logger.info(f"Shared OAuth client ready: {client_info.client_id[:16]}...")
         logger.info("This client will be reused for all test user authentications")
@@ -839,6 +952,185 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
         return (
             client_info.client_id,
             client_info.client_secret,
+            callback_url,
+            token_endpoint,
+            authorization_endpoint,
+        )
+
+
+async def _create_oauth_client_with_scopes(
+    callback_url: str,
+    client_name: str,
+    allowed_scopes: str,
+) -> tuple[str, str]:
+    """
+    Helper function to create an OAuth client with specific allowed_scopes using occ.
+
+    Creates JWT clients (not opaque) so that scope information is embedded in the token.
+
+    Returns:
+        Tuple of (client_id, client_secret)
+    """
+    import json
+    import subprocess
+
+    logger.info(
+        f"Creating JWT OAuth client '{client_name}' with scopes: {allowed_scopes}"
+    )
+
+    # Use occ oidc:create to create JWT client with specific allowed_scopes
+    # JWT tokens are required for scope enforcement (scopes are embedded in token claims)
+    result = subprocess.run(
+        [
+            "docker-compose",
+            "exec",
+            "-T",
+            "-u",
+            "www-data",
+            "app",
+            "php",
+            "/var/www/html/occ",
+            "oidc:create",
+            "--token_type=jwt",
+            f"--allowed_scopes={allowed_scopes}",
+            client_name,
+            callback_url,
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to create OAuth client: {result.stderr}\nStdout: {result.stdout}"
+        )
+
+    # Parse the JSON output from occ
+    try:
+        client_data = json.loads(result.stdout)
+        client_id = client_data["client_id"]
+        client_secret = client_data["client_secret"]
+        logger.info(
+            f"Created OAuth client: {client_id[:16]}... with scopes: {allowed_scopes}"
+        )
+        return client_id, client_secret
+    except (json.JSONDecodeError, KeyError) as e:
+        raise RuntimeError(
+            f"Failed to parse OAuth client response: {e}\nOutput: {result.stdout}"
+        )
+
+
+@pytest.fixture(scope="session")
+async def read_only_oauth_client_credentials(anyio_backend, oauth_callback_server):
+    """
+    Fixture for OAuth client with only nc:read scope.
+
+    Returns:
+        Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
+    """
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    if not nextcloud_host:
+        pytest.skip("Read-only OAuth client requires NEXTCLOUD_HOST")
+
+    auth_states, callback_url = oauth_callback_server
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
+        discovery_response = await http_client.get(discovery_url)
+        discovery_response.raise_for_status()
+        oidc_config = discovery_response.json()
+
+        token_endpoint = oidc_config.get("token_endpoint")
+        authorization_endpoint = oidc_config.get("authorization_endpoint")
+
+        # Create client with READ-ONLY scopes
+        client_id, client_secret = await _create_oauth_client_with_scopes(
+            callback_url=callback_url,
+            client_name="Test Client Read Only",
+            allowed_scopes="openid profile email nc:read",
+        )
+
+        return (
+            client_id,
+            client_secret,
+            callback_url,
+            token_endpoint,
+            authorization_endpoint,
+        )
+
+
+@pytest.fixture(scope="session")
+async def write_only_oauth_client_credentials(anyio_backend, oauth_callback_server):
+    """
+    Fixture for OAuth client with only nc:write scope.
+
+    Returns:
+        Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
+    """
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    if not nextcloud_host:
+        pytest.skip("Write-only OAuth client requires NEXTCLOUD_HOST")
+
+    auth_states, callback_url = oauth_callback_server
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
+        discovery_response = await http_client.get(discovery_url)
+        discovery_response.raise_for_status()
+        oidc_config = discovery_response.json()
+
+        token_endpoint = oidc_config.get("token_endpoint")
+        authorization_endpoint = oidc_config.get("authorization_endpoint")
+
+        # Create client with WRITE-ONLY scopes
+        client_id, client_secret = await _create_oauth_client_with_scopes(
+            callback_url=callback_url,
+            client_name="Test Client Write Only",
+            allowed_scopes="openid profile email nc:write",
+        )
+
+        return (
+            client_id,
+            client_secret,
+            callback_url,
+            token_endpoint,
+            authorization_endpoint,
+        )
+
+
+@pytest.fixture(scope="session")
+async def full_access_oauth_client_credentials(anyio_backend, oauth_callback_server):
+    """
+    Fixture for OAuth client with both nc:read and nc:write scopes.
+
+    Returns:
+        Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
+    """
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    if not nextcloud_host:
+        pytest.skip("Full-access OAuth client requires NEXTCLOUD_HOST")
+
+    auth_states, callback_url = oauth_callback_server
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
+        discovery_response = await http_client.get(discovery_url)
+        discovery_response.raise_for_status()
+        oidc_config = discovery_response.json()
+
+        token_endpoint = oidc_config.get("token_endpoint")
+        authorization_endpoint = oidc_config.get("authorization_endpoint")
+
+        # Create client with FULL ACCESS (both read and write scopes)
+        client_id, client_secret = await _create_oauth_client_with_scopes(
+            callback_url=callback_url,
+            client_name="Test Client Full Access",
+            allowed_scopes="openid profile email nc:read nc:write",
+        )
+
+        return (
+            client_id,
+            client_secret,
             callback_url,
             token_endpoint,
             authorization_endpoint,
@@ -906,7 +1198,7 @@ async def playwright_oauth_token(
         f"client_id={client_id}&"
         f"redirect_uri={quote(callback_url, safe='')}&"
         f"state={state}&"
-        f"scope=openid%20profile%20email"
+        f"scope=openid%20profile%20email%20nc:read%20nc:write"
     )
 
     # Async browser automation using pytest-playwright's browser fixture
@@ -1007,6 +1299,221 @@ async def playwright_oauth_token(
 
         logger.info("Successfully obtained OAuth access token via Playwright")
         return access_token
+
+
+async def _get_oauth_token_with_scopes(
+    browser,
+    shared_oauth_client_credentials,
+    oauth_callback_server,
+    scopes: str,
+) -> str:
+    """
+    Helper function to obtain OAuth token with specific scopes.
+
+    Args:
+        browser: Playwright browser instance
+        shared_oauth_client_credentials: Tuple of OAuth client credentials
+        oauth_callback_server: OAuth callback server fixture
+        scopes: Space-separated list of scopes (e.g., "openid profile email nc:read")
+
+    Returns:
+        OAuth access token string with requested scopes
+    """
+    import secrets
+    import time
+    from urllib.parse import quote
+
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    username = os.getenv("NEXTCLOUD_USERNAME")
+    password = os.getenv("NEXTCLOUD_PASSWORD")
+
+    if not all([nextcloud_host, username, password]):
+        pytest.skip(
+            "Scoped OAuth requires NEXTCLOUD_HOST, NEXTCLOUD_USERNAME, and NEXTCLOUD_PASSWORD"
+        )
+
+    # Get auth_states dict from callback server
+    auth_states, _ = oauth_callback_server
+
+    # Unpack shared client credentials
+    client_id, client_secret, callback_url, token_endpoint, authorization_endpoint = (
+        shared_oauth_client_credentials
+    )
+
+    logger.info(f"Starting Playwright-based OAuth flow with scopes: {scopes}")
+    logger.info(f"Using shared OAuth client: {client_id[:16]}...")
+    logger.info(f"Using real callback server at: {callback_url}")
+
+    # Generate unique state parameter for this OAuth flow
+    state = secrets.token_urlsafe(32)
+    logger.debug(f"Generated state: {state[:16]}...")
+
+    # URL-encode scopes
+    scopes_encoded = quote(scopes, safe="")
+
+    # Construct authorization URL with state parameter and requested scopes
+    auth_url = (
+        f"{authorization_endpoint}?"
+        f"response_type=code&"
+        f"client_id={client_id}&"
+        f"redirect_uri={quote(callback_url, safe='')}&"
+        f"state={state}&"
+        f"scope={scopes_encoded}"
+    )
+
+    # Async browser automation using pytest-playwright's browser fixture
+    context = await browser.new_context(ignore_https_errors=True)
+    page = await context.new_page()
+
+    try:
+        # Navigate to authorization URL
+        logger.debug(f"Navigating to: {auth_url}")
+        await page.goto(auth_url, wait_until="networkidle", timeout=60000)
+
+        # Check if we need to login first
+        current_url = page.url
+        logger.debug(f"Current URL after navigation: {current_url}")
+
+        # If we're on a login page, fill in credentials
+        if "/login" in current_url or "/index.php/login" in current_url:
+            logger.info("Login page detected, filling in credentials...")
+
+            # Wait for login form
+            await page.wait_for_selector('input[name="user"]', timeout=10000)
+
+            # Fill in username and password
+            await page.fill('input[name="user"]', username)
+            await page.fill('input[name="password"]', password)
+
+            logger.debug("Credentials filled, submitting login form...")
+
+            # Submit the form
+            await page.click('button[type="submit"]')
+
+            # Wait for navigation after login
+            await page.wait_for_load_state("networkidle", timeout=60000)
+            current_url = page.url
+            logger.info(f"After login, current URL: {current_url}")
+
+        # Now we should be on the OAuth authorization/consent page or already redirected
+        # Check if there's an authorize button to click
+        try:
+            authorize_button = await page.query_selector(
+                'button:has-text("Authorize"), button:has-text("Allow"), input[type="submit"][value*="uthoriz"]'
+            )
+            if authorize_button:
+                logger.info("Authorization button found, clicking it...")
+                await authorize_button.click()
+                await page.wait_for_load_state("networkidle", timeout=30000)
+                logger.info("Authorization completed")
+            else:
+                logger.info(
+                    "No authorization button found, assuming already authorized"
+                )
+        except Exception as e:
+            logger.debug(f"No authorization button found or already redirected: {e}")
+
+        # Wait for callback server to receive the auth code
+        logger.info(f"Waiting for auth code with state: {state[:16]}...")
+        start_time = time.time()
+        timeout = 30
+
+        while time.time() - start_time < timeout:
+            if state in auth_states:
+                auth_code = auth_states[state]
+                logger.info("Auth code received from callback server")
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise TimeoutError(
+                f"Auth code not received within {timeout}s. State: {state[:16]}..."
+            )
+
+    finally:
+        await context.close()
+
+    # Exchange authorization code for access token
+    logger.info("Exchanging authorization code for access token...")
+    async with httpx.AsyncClient(timeout=30.0) as token_client:
+        token_response = await token_client.post(
+            token_endpoint,
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": callback_url,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+        )
+
+        token_response.raise_for_status()
+        token_data = token_response.json()
+        access_token = token_data.get("access_token")
+
+        if not access_token:
+            raise ValueError(f"No access_token in response: {token_data}")
+
+        logger.info(f"Successfully obtained OAuth access token with scopes: {scopes}")
+        return access_token
+
+
+@pytest.fixture(scope="session")
+async def playwright_oauth_token_read_only(
+    anyio_backend, browser, read_only_oauth_client_credentials, oauth_callback_server
+) -> str:
+    """
+    Fixture to obtain an OAuth access token with only nc:read scope.
+
+    This token will only be able to perform read operations and should
+    have write tools filtered out from the tool list.
+
+    Uses a dedicated OAuth client with allowed_scopes="openid profile email nc:read"
+    """
+    return await _get_oauth_token_with_scopes(
+        browser,
+        read_only_oauth_client_credentials,
+        oauth_callback_server,
+        scopes="openid profile email nc:read",
+    )
+
+
+@pytest.fixture(scope="session")
+async def playwright_oauth_token_write_only(
+    anyio_backend, browser, write_only_oauth_client_credentials, oauth_callback_server
+) -> str:
+    """
+    Fixture to obtain an OAuth access token with only nc:write scope.
+
+    This token will only be able to perform write operations and should
+    have read tools filtered out from the tool list.
+
+    Uses a dedicated OAuth client with allowed_scopes="openid profile email nc:write"
+    """
+    return await _get_oauth_token_with_scopes(
+        browser,
+        write_only_oauth_client_credentials,
+        oauth_callback_server,
+        scopes="openid profile email nc:write",
+    )
+
+
+@pytest.fixture(scope="session")
+async def playwright_oauth_token_full_access(
+    anyio_backend, browser, full_access_oauth_client_credentials, oauth_callback_server
+) -> str:
+    """
+    Fixture to obtain an OAuth access token with both nc:read and nc:write scopes.
+
+    This token will be able to perform all operations.
+
+    Uses a dedicated JWT OAuth client with allowed_scopes="openid profile email nc:read nc:write"
+    """
+    return await _get_oauth_token_with_scopes(
+        browser,
+        full_access_oauth_client_credentials,
+        oauth_callback_server,
+        scopes="openid profile email nc:read nc:write",
+    )
 
 
 @pytest.fixture(scope="session")
@@ -1169,7 +1676,7 @@ async def _get_oauth_token_for_user(
         f"client_id={client_id}&"
         f"redirect_uri={quote(callback_url, safe='')}&"
         f"state={state}&"
-        f"scope=openid%20profile%20email"
+        f"scope=openid%20profile%20email%20nc:read%20nc:write"
     )
 
     logger.info(f"Performing browser OAuth flow for {username}...")

@@ -5,6 +5,8 @@ import time
 from typing import Any
 
 import httpx
+import jwt
+from jwt import PyJWKClient
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 
 logger = logging.getLogger(__name__)
@@ -12,22 +14,30 @@ logger = logging.getLogger(__name__)
 
 class NextcloudTokenVerifier(TokenVerifier):
     """
-    Validates access tokens using Nextcloud OIDC userinfo endpoint.
+    Validates access tokens using JWT verification with JWKS or userinfo endpoint fallback.
 
-    This verifier:
-    1. Calls the userinfo endpoint with the bearer token
-    2. Caches successful responses to avoid repeated API calls
-    3. Extracts username from the 'sub' or 'preferred_username' claim
-    4. Optionally supports JWT validation for performance (future enhancement)
+    This verifier supports both JWT and opaque tokens:
+    1. For JWT tokens: Verifies signature with JWKS and extracts scopes from payload
+    2. For opaque tokens: Falls back to userinfo endpoint validation
+    3. Caches successful responses to avoid repeated API calls/verifications
 
-    The userinfo endpoint validates the token and returns user claims if valid,
-    or returns HTTP 400/401 if the token is invalid or expired.
+    JWT validation provides:
+    - Faster validation (no HTTP call needed)
+    - Direct scope extraction from token payload
+    - Signature verification using JWKS
+
+    Userinfo fallback provides:
+    - Support for opaque tokens
+    - Backward compatibility
+    - Additional validation layer
     """
 
     def __init__(
         self,
         nextcloud_host: str,
         userinfo_uri: str,
+        jwks_uri: str | None = None,
+        issuer: str | None = None,
         cache_ttl: int = 3600,
     ):
         """
@@ -36,10 +46,14 @@ class NextcloudTokenVerifier(TokenVerifier):
         Args:
             nextcloud_host: Base URL of the Nextcloud instance (e.g., https://cloud.example.com)
             userinfo_uri: Full URL to the userinfo endpoint
+            jwks_uri: Full URL to the JWKS endpoint (for JWT verification)
+            issuer: Expected issuer claim value (for JWT verification)
             cache_ttl: Time-to-live for cached tokens in seconds (default: 3600)
         """
         self.nextcloud_host = nextcloud_host.rstrip("/")
         self.userinfo_uri = userinfo_uri
+        self.jwks_uri = jwks_uri
+        self.issuer = issuer
         self.cache_ttl = cache_ttl
 
         # Cache: token -> (userinfo, expiry_timestamp)
@@ -48,14 +62,21 @@ class NextcloudTokenVerifier(TokenVerifier):
         # HTTP client for userinfo requests
         self._client = httpx.AsyncClient(timeout=10.0)
 
+        # PyJWKClient for JWT verification (lazy initialization)
+        self._jwks_client: PyJWKClient | None = None
+        if jwks_uri:
+            logger.info(f"JWT verification enabled with JWKS URI: {jwks_uri}")
+            self._jwks_client = PyJWKClient(jwks_uri, cache_keys=True)
+
     async def verify_token(self, token: str) -> AccessToken | None:
         """
-        Verify a bearer token by calling the userinfo endpoint.
+        Verify a bearer token using JWT verification or userinfo endpoint.
 
         This method:
         1. Checks the cache first for recent validations
-        2. Calls the userinfo endpoint if not cached
-        3. Returns AccessToken with username stored in metadata
+        2. Attempts JWT verification if JWKS is configured and token looks like JWT
+        3. Falls back to userinfo endpoint for opaque tokens or JWT verification failures
+        4. Returns AccessToken with username and scopes
 
         Args:
             token: The bearer token to verify
@@ -69,11 +90,109 @@ class NextcloudTokenVerifier(TokenVerifier):
             logger.debug("Token found in cache")
             return cached
 
-        # Validate via userinfo endpoint
+        # Try JWT verification first if enabled and token looks like JWT
+        if self._jwks_client and self._is_jwt_format(token):
+            logger.debug("Attempting JWT verification...")
+            jwt_result = self._verify_jwt(token)
+            if jwt_result:
+                logger.info("Token validated via JWT verification")
+                return jwt_result
+
+        # Fall back to userinfo endpoint validation
+        logger.debug("Attempting userinfo endpoint validation...")
         try:
             return await self._verify_via_userinfo(token)
         except Exception as e:
             logger.warning(f"Token verification failed: {e}")
+            return None
+
+    def _is_jwt_format(self, token: str) -> bool:
+        """
+        Check if token looks like a JWT (has 3 parts separated by dots).
+
+        Args:
+            token: The token to check
+
+        Returns:
+            True if token appears to be JWT format
+        """
+        return "." in token and token.count(".") == 2
+
+    def _verify_jwt(self, token: str) -> AccessToken | None:
+        """
+        Verify JWT token with signature validation using JWKS.
+
+        Args:
+            token: The JWT token to verify
+
+        Returns:
+            AccessToken if valid, None if invalid
+        """
+        try:
+            # Get signing key from JWKS
+            signing_key = self._jwks_client.get_signing_key_from_jwt(token)
+
+            # Verify and decode JWT
+            payload = jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256"],
+                issuer=self.issuer,
+                options={
+                    "verify_signature": True,
+                    "verify_exp": True,
+                    "verify_iat": True,
+                    "verify_iss": True if self.issuer else False,
+                    "verify_aud": False,  # Skip audience validation for Bearer tokens
+                },
+            )
+
+            logger.debug(f"JWT verified successfully for user: {payload.get('sub')}")
+
+            # Extract username (sub claim)
+            username = payload.get("sub")
+            if not username:
+                logger.error("No 'sub' claim found in JWT payload")
+                return None
+
+            # Extract scopes from scope claim (space-separated string)
+            scope_string = payload.get("scope", "")
+            scopes = scope_string.split() if scope_string else []
+            logger.debug(f"Extracted scopes from JWT: {scopes}")
+
+            # Extract expiration
+            exp = payload.get("exp")
+            if not exp:
+                logger.warning("No 'exp' claim in JWT, using default TTL")
+                exp = int(time.time() + self.cache_ttl)
+
+            # Cache the result
+            userinfo = {
+                "sub": username,
+                "scope": scope_string,
+                **{k: v for k, v in payload.items() if k not in ["sub", "scope"]},
+            }
+            self._token_cache[token] = (userinfo, exp)
+
+            return AccessToken(
+                token=token,
+                client_id=payload.get("client_id", ""),
+                scopes=scopes,
+                expires_at=exp,
+                resource=username,  # Store username in resource field (RFC 8707)
+            )
+
+        except jwt.ExpiredSignatureError:
+            logger.info("JWT token has expired")
+            return None
+        except jwt.InvalidIssuerError as e:
+            logger.warning(f"JWT issuer validation failed: {e}")
+            return None
+        except jwt.InvalidTokenError as e:
+            logger.warning(f"JWT validation failed: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error during JWT verification: {e}")
             return None
 
     async def _verify_via_userinfo(self, token: str) -> AccessToken | None:

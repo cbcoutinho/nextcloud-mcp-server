@@ -11,9 +11,15 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
-from starlette.routing import Mount
+from starlette.responses import JSONResponse
+from starlette.routing import Mount, Route
 
-from nextcloud_mcp_server.auth import NextcloudTokenVerifier, load_or_register_client
+from nextcloud_mcp_server.auth import (
+    InsufficientScopeError,
+    NextcloudTokenVerifier,
+    get_access_token_scopes,
+    has_required_scopes,
+)
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import LOGGING_CONFIG, setup_logging
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
@@ -135,6 +141,86 @@ def is_oauth_mode() -> bool:
     return True
 
 
+async def load_oauth_client_credentials(
+    nextcloud_host: str, registration_endpoint: str | None
+) -> tuple[str, str]:
+    """
+    Load OAuth client credentials from environment, storage file, or dynamic registration.
+
+    This consolidates the client loading logic that was duplicated across multiple functions.
+
+    Args:
+        nextcloud_host: Nextcloud instance URL
+        registration_endpoint: Dynamic registration endpoint URL (or None if not available)
+
+    Returns:
+        Tuple of (client_id, client_secret)
+
+    Raises:
+        ValueError: If credentials cannot be obtained
+    """
+    # Try environment variables first
+    client_id = os.getenv("NEXTCLOUD_OIDC_CLIENT_ID")
+    client_secret = os.getenv("NEXTCLOUD_OIDC_CLIENT_SECRET")
+
+    if client_id and client_secret:
+        logger.info("Using pre-configured OAuth client credentials from environment")
+        return (client_id, client_secret)
+
+    # Try loading from storage file
+    storage_path = os.getenv(
+        "NEXTCLOUD_OIDC_CLIENT_STORAGE", ".nextcloud_oauth_client.json"
+    )
+    from pathlib import Path
+
+    from nextcloud_mcp_server.auth.client_registration import load_client_from_file
+
+    client_info = load_client_from_file(Path(storage_path))
+
+    if client_info:
+        logger.info(
+            f"Loaded OAuth client from storage: {client_info.client_id[:16]}..."
+        )
+        return (client_info.client_id, client_info.client_secret)
+
+    # Try dynamic registration if available
+    if registration_endpoint:
+        logger.info("Dynamic client registration available")
+        mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+        redirect_uris = [f"{mcp_server_url}/oauth/callback"]
+
+        # Get scopes from environment or use defaults
+        scopes = os.getenv(
+            "NEXTCLOUD_OIDC_SCOPES", "openid profile email nc:read nc:write"
+        )
+        logger.info(f"Requesting OAuth scopes: {scopes}")
+
+        # Load or register client
+        from nextcloud_mcp_server.auth.client_registration import (
+            load_or_register_client,
+        )
+
+        client_info = await load_or_register_client(
+            nextcloud_url=nextcloud_host,
+            registration_endpoint=registration_endpoint,
+            storage_path=storage_path,
+            client_name="Nextcloud MCP Server",
+            redirect_uris=redirect_uris,
+            scopes=scopes,
+        )
+
+        logger.info(f"OAuth client ready: {client_info.client_id[:16]}...")
+        return (client_info.client_id, client_info.client_secret)
+
+    # No credentials available
+    raise ValueError(
+        "OAuth mode requires either:\n"
+        "1. NEXTCLOUD_OIDC_CLIENT_ID and NEXTCLOUD_OIDC_CLIENT_SECRET environment variables, OR\n"
+        "2. Pre-existing client credentials file at NEXTCLOUD_OIDC_CLIENT_STORAGE, OR\n"
+        "3. Dynamic client registration enabled on Nextcloud OIDC app"
+    )
+
+
 @asynccontextmanager
 async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
     """
@@ -190,38 +276,10 @@ async def app_lifespan_oauth(server: FastMCP) -> AsyncIterator[OAuthAppContext]:
 
         logger.info(f"Userinfo endpoint: {userinfo_uri}")
 
-        # Handle client registration
-        client_id = os.getenv("NEXTCLOUD_OIDC_CLIENT_ID")
-        client_secret = os.getenv("NEXTCLOUD_OIDC_CLIENT_SECRET")
-        storage_path = os.getenv(
-            "NEXTCLOUD_OIDC_CLIENT_STORAGE", ".nextcloud_oauth_client.json"
+        # Load OAuth client credentials
+        client_id, client_secret = await load_oauth_client_credentials(
+            nextcloud_host=nextcloud_host, registration_endpoint=registration_endpoint
         )
-
-        if client_id and client_secret:
-            logger.info("Using pre-configured OAuth client credentials")
-        elif registration_endpoint:
-            logger.info("Dynamic client registration available")
-            mcp_server_url = os.getenv(
-                "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
-            )
-            redirect_uris = [f"{mcp_server_url}/oauth/callback"]
-
-            # Load or register client
-            client_info = await load_or_register_client(
-                nextcloud_url=nextcloud_host,
-                registration_endpoint=registration_endpoint,
-                storage_path=storage_path,
-                client_name="Nextcloud MCP Server",
-                redirect_uris=redirect_uris,
-            )
-
-            logger.info(f"OAuth client ready: {client_info.client_id[:16]}...")
-        else:
-            raise ValueError(
-                "OAuth mode requires either:\n"
-                "1. NEXTCLOUD_OIDC_CLIENT_ID and NEXTCLOUD_OIDC_CLIENT_SECRET, OR\n"
-                "2. Dynamic client registration enabled on Nextcloud OIDC app"
-            )
 
         # Create token verifier
         token_verifier = NextcloudTokenVerifier(
@@ -278,59 +336,54 @@ async def setup_oauth_config():
     # Extract endpoints
     issuer = discovery["issuer"]
     userinfo_uri = discovery["userinfo_endpoint"]
+    jwks_uri = discovery.get("jwks_uri")
     registration_endpoint = discovery.get("registration_endpoint")
 
-    # Allow override of public issuer URL for clients
-    # (useful when MCP server accesses Nextcloud via internal URL
-    # but needs to advertise a different URL to clients)
+    logger.info("OIDC endpoints discovered:")
+    logger.info(f"  Issuer: {issuer}")
+    logger.info(f"  Userinfo: {userinfo_uri}")
+    logger.info(f"  JWKS: {jwks_uri}")
+
+    # Allow override of public issuer URL for both client configuration and JWT validation
+    # When clients access Nextcloud via a public URL (e.g., http://127.0.0.1:8080),
+    # the OIDC app issues JWT tokens with that public URL in the 'iss' claim,
+    # even though the MCP server accesses Nextcloud via an internal URL (e.g., http://app).
+    # Therefore, we must validate JWT tokens against the public issuer, not the internal one.
     public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
     if public_issuer:
         public_issuer = public_issuer.rstrip("/")
-        logger.info(f"Using public issuer URL for clients: {public_issuer}")
+        logger.info(
+            f"Using public issuer URL for clients and JWT validation: {public_issuer}"
+        )
+        # Use public issuer for both client configuration AND JWT validation
         issuer = public_issuer
-
-    # Handle client registration
-    client_id = os.getenv("NEXTCLOUD_OIDC_CLIENT_ID")
-    client_secret = os.getenv("NEXTCLOUD_OIDC_CLIENT_SECRET")
-
-    if client_id and client_secret:
-        logger.info("Using pre-configured OAuth client credentials")
-    elif registration_endpoint:
-        logger.info("Dynamic client registration available")
-        storage_path = os.getenv(
-            "NEXTCLOUD_OIDC_CLIENT_STORAGE", ".nextcloud_oauth_client.json"
-        )
-        mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
-        redirect_uris = [f"{mcp_server_url}/oauth/callback"]
-
-        # Load or register client
-        client_info = await load_or_register_client(
-            nextcloud_url=nextcloud_host,
-            registration_endpoint=registration_endpoint,
-            storage_path=storage_path,
-            client_name="Nextcloud MCP Server",
-            redirect_uris=redirect_uris,
-        )
-
-        logger.info(f"OAuth client ready: {client_info.client_id[:16]}...")
+        jwt_validation_issuer = public_issuer
     else:
-        raise ValueError(
-            "OAuth mode requires either:\n"
-            "1. NEXTCLOUD_OIDC_CLIENT_ID and NEXTCLOUD_OIDC_CLIENT_SECRET, OR\n"
-            "2. Dynamic client registration enabled on Nextcloud OIDC app"
-        )
+        # Use discovered issuer for both
+        jwt_validation_issuer = issuer
 
-    # Create token verifier
+    # Load OAuth client credentials
+    client_id, client_secret = await load_oauth_client_credentials(
+        nextcloud_host=nextcloud_host, registration_endpoint=registration_endpoint
+    )
+
+    # Create token verifier with JWT support
     token_verifier = NextcloudTokenVerifier(
-        nextcloud_host=nextcloud_host, userinfo_uri=userinfo_uri
+        nextcloud_host=nextcloud_host,
+        userinfo_uri=userinfo_uri,
+        jwks_uri=jwks_uri,  # Enable JWT verification if available
+        issuer=jwt_validation_issuer,  # Use original issuer for JWT validation
     )
 
     # Create auth settings
     mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+
+    # Note: We don't set required_scopes here anymore.
+    # Scopes are now advertised via PRM endpoint and enforced per-tool.
+    # This allows dynamic tool filtering based on user's actual token scopes.
     auth_settings = AuthSettings(
         issuer_url=AnyHttpUrl(issuer),
         resource_server_url=AnyHttpUrl(mcp_server_url),
-        required_scopes=["openid", "profile"],
     )
 
     logger.info("OAuth configuration complete")
@@ -393,6 +446,45 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 f"Unknown app: {app_name}. Available apps: {list(available_apps.keys())}"
             )
 
+    # Override list_tools to filter based on user's token scopes (OAuth mode only)
+    if oauth_enabled:
+        original_list_tools = mcp._tool_manager.list_tools
+
+        def list_tools_filtered():
+            """List tools filtered by user's token scopes."""
+            # Get user's scopes from token using MCP SDK's contextvar
+            # This works for all request types including list_tools
+            user_scopes = get_access_token_scopes()
+            logger.info(f"🔍 list_tools called - User scopes: {user_scopes}")
+
+            # Get all tools
+            all_tools = original_list_tools()
+
+            # If OAuth mode and user has scopes, filter by them
+            if user_scopes:
+                allowed_tools = [
+                    tool
+                    for tool in all_tools
+                    if has_required_scopes(tool.fn, user_scopes)
+                ]
+                logger.info(
+                    f"✂️ Filtered tools: {len(allowed_tools)}/{len(all_tools)} tools "
+                    f"available for scopes: {user_scopes}"
+                )
+            else:
+                # BasicAuth mode or no token - show all tools
+                allowed_tools = all_tools
+                logger.info(
+                    f"📋 No scope filtering: showing all {len(all_tools)} tools"
+                )
+
+            # Return the Tool objects directly (they're already in the correct format)
+            return allowed_tools
+
+        # Replace the tool manager's list_tools method
+        mcp._tool_manager.list_tools = list_tools_filtered
+        logger.info("Dynamic tool filtering enabled for OAuth mode")
+
     if transport == "sse":
         mcp_app = mcp.sse_app()
         lifespan = None
@@ -405,7 +497,66 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 await stack.enter_async_context(mcp.session_manager.run())
                 yield
 
-    app = Starlette(routes=[Mount("/", app=mcp_app)], lifespan=lifespan)
+    # Add Protected Resource Metadata (PRM) endpoint for OAuth mode
+    routes = []
+    if oauth_enabled:
+
+        def oauth_protected_resource_metadata(request):
+            """RFC 8959 Protected Resource Metadata endpoint."""
+            mcp_server_url = os.getenv(
+                "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
+            )
+            nextcloud_host = os.getenv("NEXTCLOUD_HOST", "")
+
+            return JSONResponse(
+                {
+                    "resource": mcp_server_url,
+                    "scopes_supported": ["nc:read", "nc:write"],
+                    "authorization_servers": [nextcloud_host],
+                    "bearer_methods_supported": ["header"],
+                    "resource_signing_alg_values_supported": ["RS256"],
+                }
+            )
+
+        routes.append(
+            Route(
+                "/.well-known/oauth-protected-resource",
+                oauth_protected_resource_metadata,
+                methods=["GET"],
+            )
+        )
+        logger.info("Protected Resource Metadata (PRM) endpoint enabled")
+
+    routes.append(Mount("/", app=mcp_app))
+    app = Starlette(routes=routes, lifespan=lifespan)
+
+    # Add exception handler for scope challenges (OAuth mode only)
+    if oauth_enabled:
+
+        @app.exception_handler(InsufficientScopeError)
+        async def handle_insufficient_scope(request, exc: InsufficientScopeError):
+            """Return 403 with WWW-Authenticate header for scope challenges."""
+            resource_url = os.getenv(
+                "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
+            )
+            scope_str = " ".join(exc.missing_scopes)
+
+            return JSONResponse(
+                status_code=403,
+                headers={
+                    "WWW-Authenticate": (
+                        f'Bearer error="insufficient_scope", '
+                        f'scope="{scope_str}", '
+                        f'resource_metadata="{resource_url}/.well-known/oauth-protected-resource"'
+                    )
+                },
+                content={
+                    "error": "insufficient_scope",
+                    "scopes_required": exc.missing_scopes,
+                },
+            )
+
+        logger.info("WWW-Authenticate scope challenge handler enabled")
 
     return app
 

@@ -215,6 +215,7 @@ async def load_or_register_client(
     storage_path: str | Path,
     client_name: str = "Nextcloud MCP Server",
     redirect_uris: list[str] | None = None,
+    scopes: str = "openid profile email",
 ) -> ClientInfo:
     """
     Load client from storage or register a new one if not found/expired.
@@ -231,6 +232,7 @@ async def load_or_register_client(
         storage_path: Path to store client credentials
         client_name: Name of the client application
         redirect_uris: List of redirect URIs
+        scopes: Space-separated list of scopes to request (default: "openid profile email")
 
     Returns:
         ClientInfo with valid credentials
@@ -253,6 +255,7 @@ async def load_or_register_client(
         registration_endpoint=registration_endpoint,
         client_name=client_name,
         redirect_uris=redirect_uris,
+        scopes=scopes,
     )
 
     # Save to storage
