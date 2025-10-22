@@ -883,16 +883,14 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
     """
     Fixture to obtain shared OAuth client credentials that will be reused for all users.
 
-    This registers a single OAuth client with Nextcloud that matches the MCP server's
-    registration, allowing all test users to authenticate using the same client_id/secret.
+    Creates a JWT OAuth client with full scopes (nc:read and nc:write) to match the MCP server's
+    behavior. This allows all test users to authenticate using the same client_id/secret.
 
     Now uses the real OAuth callback server for reliable token acquisition.
 
     Returns:
         Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
     """
-    from nextcloud_mcp_server.auth.client_registration import load_or_register_client
-
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
         pytest.skip("Shared OAuth client requires NEXTCLOUD_HOST")
@@ -911,7 +909,6 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
         oidc_config = discovery_response.json()
 
         token_endpoint = oidc_config.get("token_endpoint")
-        registration_endpoint = oidc_config.get("registration_endpoint")
         authorization_endpoint = oidc_config.get("authorization_endpoint")
 
         if not token_endpoint or not authorization_endpoint:
@@ -919,39 +916,22 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
                 "OIDC discovery missing required endpoints (token_endpoint or authorization_endpoint)"
             )
 
-        # Try to load existing client first
-        from pathlib import Path
+        # Create JWT client with full scopes (nc:read and nc:write)
+        # This matches what the authorization request in playwright_oauth_token requests
+        client_id, client_secret = await _create_oauth_client_with_scopes(
+            callback_url=callback_url,
+            client_name="Pytest - Shared Test Client (JWT)",
+            allowed_scopes="openid profile email nc:read nc:write",
+        )
 
-        from nextcloud_mcp_server.auth.client_registration import load_client_from_file
-
-        storage_path = Path(".nextcloud_oauth_shared_test_client.json")
-        client_info = load_client_from_file(storage_path)
-
-        if not client_info and not registration_endpoint:
-            raise ValueError(
-                "Cannot create OAuth client: registration_endpoint not available and no pre-existing credentials found at .nextcloud_oauth_shared_test_client.json"
-            )
-
-        if not client_info:
-            # Register or load shared OAuth client (matches MCP server registration)
-            client_info = await load_or_register_client(
-                nextcloud_url=nextcloud_host,
-                registration_endpoint=registration_endpoint,
-                storage_path=".nextcloud_oauth_shared_test_client.json",
-                client_name="Pytest - Shared Test Client",
-                redirect_uris=[callback_url],
-            )
-        else:
-            logger.info(
-                f"Using existing shared OAuth client: {client_info.client_id[:16]}..."
-            )
-
-        logger.info(f"Shared OAuth client ready: {client_info.client_id[:16]}...")
-        logger.info("This client will be reused for all test user authentications")
+        logger.info(f"Shared JWT OAuth client ready: {client_id[:16]}...")
+        logger.info(
+            "This JWT client with full scopes will be reused for all test user authentications"
+        )
 
         return (
-            client_info.client_id,
-            client_info.client_secret,
+            client_id,
+            client_secret,
             callback_url,
             token_endpoint,
             authorization_endpoint,
