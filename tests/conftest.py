@@ -982,7 +982,8 @@ async def _create_oauth_client_with_scopes(
     # JWT tokens are required for scope enforcement (scopes are embedded in token claims)
     result = subprocess.run(
         [
-            "docker-compose",
+            "docker",
+            "compose",
             "exec",
             "-T",
             "-u",
