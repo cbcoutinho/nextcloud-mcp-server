@@ -883,16 +883,13 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
     """
     Fixture to obtain shared OAuth client credentials that will be reused for all users.
 
-    This registers a single OAuth client with Nextcloud that matches the MCP server's
-    registration, allowing all test users to authenticate using the same client_id/secret.
-
-    Uses regular (opaque token) OAuth client for the standard OAuth MCP server (port 8001).
+    Creates an opaque token OAuth client with allowed_scopes for the standard OAuth MCP
+    server (port 8001). While opaque tokens don't embed scopes, the allowed_scopes
+    configuration ensures tokens have proper scopes when introspected.
 
     Returns:
         Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
     """
-    from nextcloud_mcp_server.auth.client_registration import load_or_register_client
-
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
         pytest.skip("Shared OAuth client requires NEXTCLOUD_HOST")
@@ -911,7 +908,6 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
         oidc_config = discovery_response.json()
 
         token_endpoint = oidc_config.get("token_endpoint")
-        registration_endpoint = oidc_config.get("registration_endpoint")
         authorization_endpoint = oidc_config.get("authorization_endpoint")
 
         if not token_endpoint or not authorization_endpoint:
@@ -919,39 +915,23 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
                 "OIDC discovery missing required endpoints (token_endpoint or authorization_endpoint)"
             )
 
-        # Try to load existing client first
-        from pathlib import Path
+        # Create opaque token client with allowed_scopes (not JWT)
+        # This ensures the token has proper scopes even though they're not embedded
+        client_id, client_secret = await _create_oauth_client_with_scopes(
+            callback_url=callback_url,
+            client_name="Pytest - Shared Test Client (Opaque)",
+            allowed_scopes="openid profile email nc:read nc:write",
+            token_type="opaque",  # Opaque tokens for port 8001
+        )
 
-        from nextcloud_mcp_server.auth.client_registration import load_client_from_file
-
-        storage_path = Path(".nextcloud_oauth_shared_test_client.json")
-        client_info = load_client_from_file(storage_path)
-
-        if not client_info and not registration_endpoint:
-            raise ValueError(
-                "Cannot create OAuth client: registration_endpoint not available and no pre-existing credentials found at .nextcloud_oauth_shared_test_client.json"
-            )
-
-        if not client_info:
-            # Register or load shared OAuth client (matches MCP server registration)
-            client_info = await load_or_register_client(
-                nextcloud_url=nextcloud_host,
-                registration_endpoint=registration_endpoint,
-                storage_path=".nextcloud_oauth_shared_test_client.json",
-                client_name="Pytest - Shared Test Client",
-                redirect_uris=[callback_url],
-            )
-        else:
-            logger.info(
-                f"Using existing shared OAuth client: {client_info.client_id[:16]}..."
-            )
-
-        logger.info(f"Shared OAuth client ready: {client_info.client_id[:16]}...")
-        logger.info("This client will be reused for all test user authentications")
+        logger.info(f"Shared OAuth client ready: {client_id[:16]}...")
+        logger.info(
+            "This opaque token client with full scopes will be reused for all test user authentications"
+        )
 
         return (
-            client_info.client_id,
-            client_info.client_secret,
+            client_id,
+            client_secret,
             callback_url,
             token_endpoint,
             authorization_endpoint,
@@ -1019,11 +999,16 @@ async def _create_oauth_client_with_scopes(
     callback_url: str,
     client_name: str,
     allowed_scopes: str,
+    token_type: str = "jwt",
 ) -> tuple[str, str]:
     """
     Helper function to create an OAuth client with specific allowed_scopes using occ.
 
-    Creates JWT clients (not opaque) so that scope information is embedded in the token.
+    Args:
+        callback_url: OAuth callback URL
+        client_name: Name of the OAuth client
+        allowed_scopes: Space-separated list of allowed scopes
+        token_type: Either "jwt" (default) or "opaque"
 
     Returns:
         Tuple of (client_id, client_secret)
@@ -1032,31 +1017,37 @@ async def _create_oauth_client_with_scopes(
     import subprocess
 
     logger.info(
-        f"Creating JWT OAuth client '{client_name}' with scopes: {allowed_scopes}"
+        f"Creating {token_type.upper()} OAuth client '{client_name}' with scopes: {allowed_scopes}"
     )
 
-    # Use occ oidc:create to create JWT client with specific allowed_scopes
-    # JWT tokens are required for scope enforcement (scopes are embedded in token claims)
-    result = subprocess.run(
+    # Build occ command based on token type
+    cmd = [
+        "docker",
+        "compose",
+        "exec",
+        "-T",
+        "-u",
+        "www-data",
+        "app",
+        "php",
+        "/var/www/html/occ",
+        "oidc:create",
+    ]
+
+    # Add token_type flag for JWT clients
+    if token_type == "jwt":
+        cmd.append("--token_type=jwt")
+
+    # Add allowed_scopes for both JWT and opaque clients
+    cmd.extend(
         [
-            "docker",
-            "compose",
-            "exec",
-            "-T",
-            "-u",
-            "www-data",
-            "app",
-            "php",
-            "/var/www/html/occ",
-            "oidc:create",
-            "--token_type=jwt",
             f"--allowed_scopes={allowed_scopes}",
             client_name,
             callback_url,
-        ],
-        capture_output=True,
-        text=True,
+        ]
     )
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
         raise RuntimeError(
