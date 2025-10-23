@@ -659,6 +659,41 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     show_default=True,
     help="MCP server URL for OAuth callbacks (can also use NEXTCLOUD_MCP_SERVER_URL env var)",
 )
+@click.option(
+    "--nextcloud-host",
+    envvar="NEXTCLOUD_HOST",
+    help="Nextcloud instance URL (can also use NEXTCLOUD_HOST env var)",
+)
+@click.option(
+    "--nextcloud-username",
+    envvar="NEXTCLOUD_USERNAME",
+    help="Nextcloud username for BasicAuth (can also use NEXTCLOUD_USERNAME env var)",
+)
+@click.option(
+    "--nextcloud-password",
+    envvar="NEXTCLOUD_PASSWORD",
+    help="Nextcloud password for BasicAuth (can also use NEXTCLOUD_PASSWORD env var)",
+)
+@click.option(
+    "--oauth-scopes",
+    envvar="NEXTCLOUD_OIDC_SCOPES",
+    default="openid profile email nc:read nc:write",
+    show_default=True,
+    help="OAuth scopes to request (can also use NEXTCLOUD_OIDC_SCOPES env var)",
+)
+@click.option(
+    "--oauth-token-type",
+    envvar="NEXTCLOUD_OIDC_TOKEN_TYPE",
+    default="bearer",
+    show_default=True,
+    type=click.Choice(["bearer", "jwt"], case_sensitive=False),
+    help="OAuth token type (can also use NEXTCLOUD_OIDC_TOKEN_TYPE env var)",
+)
+@click.option(
+    "--public-issuer-url",
+    envvar="NEXTCLOUD_PUBLIC_ISSUER_URL",
+    help="Public issuer URL for OAuth (can also use NEXTCLOUD_PUBLIC_ISSUER_URL env var)",
+)
 def run(
     host: str,
     port: int,
@@ -670,6 +705,12 @@ def run(
     oauth_client_secret: str | None,
     oauth_storage_path: str,
     mcp_server_url: str,
+    nextcloud_host: str | None,
+    nextcloud_username: str | None,
+    nextcloud_password: str | None,
+    oauth_scopes: str,
+    oauth_token_type: str,
+    public_issuer_url: str | None,
 ):
     """
     Run the Nextcloud MCP server.
@@ -681,24 +722,52 @@ def run(
 
     \b
     Examples:
-      # BasicAuth mode (legacy)
+      # BasicAuth mode with CLI options
+      $ nextcloud-mcp-server --nextcloud-host=https://cloud.example.com \\
+          --nextcloud-username=admin --nextcloud-password=secret
+
+      # BasicAuth mode with env vars (recommended for credentials)
+      $ export NEXTCLOUD_HOST=https://cloud.example.com
+      $ export NEXTCLOUD_USERNAME=admin
+      $ export NEXTCLOUD_PASSWORD=secret
       $ nextcloud-mcp-server --host 0.0.0.0 --port 8000
 
       # OAuth mode with auto-registration
-      $ nextcloud-mcp-server --oauth
+      $ nextcloud-mcp-server --nextcloud-host=https://cloud.example.com --oauth
 
       # OAuth mode with pre-configured client
-      $ nextcloud-mcp-server --oauth --oauth-client-id=xxx --oauth-client-secret=yyy
+      $ nextcloud-mcp-server --nextcloud-host=https://cloud.example.com --oauth \\
+          --oauth-client-id=xxx --oauth-client-secret=yyy
+
+      # OAuth mode with custom scopes and JWT tokens
+      $ nextcloud-mcp-server --nextcloud-host=https://cloud.example.com --oauth \\
+          --oauth-scopes="openid nc:read" --oauth-token-type=jwt
+
+      # OAuth with public issuer URL (for Docker/proxy setups)
+      $ nextcloud-mcp-server --nextcloud-host=http://app --oauth \\
+          --public-issuer-url=http://localhost:8080
     """
-    # Set OAuth env vars from CLI options if provided
+    # Set env vars from CLI options if provided
+    if nextcloud_host:
+        os.environ["NEXTCLOUD_HOST"] = nextcloud_host
+    if nextcloud_username:
+        os.environ["NEXTCLOUD_USERNAME"] = nextcloud_username
+    if nextcloud_password:
+        os.environ["NEXTCLOUD_PASSWORD"] = nextcloud_password
     if oauth_client_id:
         os.environ["NEXTCLOUD_OIDC_CLIENT_ID"] = oauth_client_id
     if oauth_client_secret:
         os.environ["NEXTCLOUD_OIDC_CLIENT_SECRET"] = oauth_client_secret
     if oauth_storage_path:
         os.environ["NEXTCLOUD_OIDC_CLIENT_STORAGE"] = oauth_storage_path
+    if oauth_scopes:
+        os.environ["NEXTCLOUD_OIDC_SCOPES"] = oauth_scopes
+    if oauth_token_type:
+        os.environ["NEXTCLOUD_OIDC_TOKEN_TYPE"] = oauth_token_type
     if mcp_server_url:
         os.environ["NEXTCLOUD_MCP_SERVER_URL"] = mcp_server_url
+    if public_issuer_url:
+        os.environ["NEXTCLOUD_PUBLIC_ISSUER_URL"] = public_issuer_url
 
     # Force OAuth mode if explicitly requested
     if oauth is True:
