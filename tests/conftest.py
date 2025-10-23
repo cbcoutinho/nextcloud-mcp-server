@@ -917,11 +917,13 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
 
         # Create opaque token client with allowed_scopes (not JWT)
         # This ensures the token has proper scopes even though they're not embedded
+        # Cache to file to avoid creating new client on every test run
         client_id, client_secret = await _create_oauth_client_with_scopes(
             callback_url=callback_url,
             client_name="Pytest - Shared Test Client (Opaque)",
             allowed_scopes="openid profile email nc:read nc:write",
-            token_type="opaque",  # Opaque tokens for port 8001
+            token_type="Bearer",  # Opaque tokens for port 8001
+            cache_file=".nextcloud_oauth_shared_test_client.json",
         )
 
         logger.info(f"Shared OAuth client ready: {client_id[:16]}...")
@@ -975,10 +977,13 @@ async def shared_jwt_oauth_client_credentials(anyio_backend, oauth_callback_serv
             )
 
         # Create JWT client with full scopes (nc:read and nc:write)
+        # Cache to file to avoid creating new client on every test run
         client_id, client_secret = await _create_oauth_client_with_scopes(
             callback_url=callback_url,
             client_name="Pytest - Shared JWT Test Client",
             allowed_scopes="openid profile email nc:read nc:write",
+            token_type="JWT",  # Explicitly set JWT token type
+            cache_file=".nextcloud_oauth_shared_jwt_test_client.json",
         )
 
         logger.info(f"Shared JWT OAuth client ready: {client_id[:16]}...")
@@ -999,74 +1004,112 @@ async def _create_oauth_client_with_scopes(
     callback_url: str,
     client_name: str,
     allowed_scopes: str,
-    token_type: str = "jwt",
+    token_type: str = "JWT",
+    cache_file: str | None = None,
 ) -> tuple[str, str]:
     """
-    Helper function to create an OAuth client with specific allowed_scopes using occ.
+    Helper function to create an OAuth client with specific allowed_scopes using DCR.
+
+    Supports optional file-based caching to avoid creating duplicate clients.
 
     Args:
         callback_url: OAuth callback URL
         client_name: Name of the OAuth client
         allowed_scopes: Space-separated list of allowed scopes
-        token_type: Either "jwt" (default) or "opaque"
+        token_type: Either "JWT" or "Bearer" (default: "JWT")
+        cache_file: Optional path to cache file (e.g., ".nextcloud_oauth_shared_test_client.json")
 
     Returns:
         Tuple of (client_id, client_secret)
     """
     import json
-    import subprocess
+    from pathlib import Path
+
+    from nextcloud_mcp_server.auth.client_registration import register_client
+
+    # Try to load from cache if specified
+    if cache_file:
+        cache_path = Path(cache_file)
+        if cache_path.exists():
+            try:
+                with open(cache_path, "r") as f:
+                    cached_data = json.load(f)
+
+                client_id = cached_data.get("client_id")
+                client_secret = cached_data.get("client_secret")
+
+                if client_id and client_secret:
+                    logger.info(
+                        f"Loaded cached OAuth client from {cache_file}: {client_id[:16]}..."
+                    )
+                    return client_id, client_secret
+            except (json.JSONDecodeError, KeyError, OSError) as e:
+                logger.warning(f"Failed to load cached client from {cache_file}: {e}")
 
     logger.info(
-        f"Creating {token_type.upper()} OAuth client '{client_name}' with scopes: {allowed_scopes}"
+        f"Creating {token_type} OAuth client '{client_name}' with scopes: {allowed_scopes} using DCR"
     )
 
-    # Build occ command based on token type
-    cmd = [
-        "docker",
-        "compose",
-        "exec",
-        "-T",
-        "-u",
-        "www-data",
-        "app",
-        "php",
-        "/var/www/html/occ",
-        "oidc:create",
-    ]
+    # Get Nextcloud host and registration endpoint
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    if not nextcloud_host:
+        raise ValueError("NEXTCLOUD_HOST environment variable not set")
 
-    # Add token_type flag for JWT clients
-    if token_type == "jwt":
-        cmd.append("--token_type=jwt")
+    # Discover registration endpoint
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
+        discovery_response = await http_client.get(discovery_url)
+        discovery_response.raise_for_status()
+        oidc_config = discovery_response.json()
+        registration_endpoint = oidc_config.get("registration_endpoint")
 
-    # Add allowed_scopes for both JWT and opaque clients
-    cmd.extend(
-        [
-            f"--allowed_scopes={allowed_scopes}",
-            client_name,
-            callback_url,
-        ]
+        if not registration_endpoint:
+            raise ValueError("OIDC discovery missing registration_endpoint")
+
+    # Register client using DCR
+    client_info = await register_client(
+        nextcloud_url=nextcloud_host,
+        registration_endpoint=registration_endpoint,
+        client_name=client_name,
+        redirect_uris=[callback_url],
+        scopes=allowed_scopes,
+        token_type=token_type,
     )
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    client_id = client_info.client_id
+    client_secret = client_info.client_secret
 
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Failed to create OAuth client: {result.stderr}\nStdout: {result.stdout}"
-        )
+    logger.info(
+        f"Created OAuth client via DCR: {client_id[:16]}... with scopes: {allowed_scopes}"
+    )
 
-    # Parse the JSON output from occ
-    try:
-        client_data = json.loads(result.stdout)
-        client_id = client_data["client_id"]
-        client_secret = client_data["client_secret"]
-        logger.info(
-            f"Created OAuth client: {client_id[:16]}... with scopes: {allowed_scopes}"
-        )
-        return client_id, client_secret
-    except (json.JSONDecodeError, KeyError) as e:
-        raise RuntimeError(
-            f"Failed to parse OAuth client response: {e}\nOutput: {result.stdout}"
-        )
+    # Save to cache if specified
+    if cache_file:
+        cache_path = Path(cache_file)
+        try:
+            # Create parent directory if needed
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Save client data
+            with open(cache_path, "w") as f:
+                json.dump(
+                    {
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "redirect_uris": [callback_url],
+                    },
+                    f,
+                    indent=2,
+                )
+
+            # Set restrictive permissions
+            cache_path.chmod(0o600)
+
+            logger.info(f"Cached OAuth client to {cache_file}")
+        except OSError as e:
+            logger.warning(f"Failed to cache client to {cache_file}: {e}")
+
+    return client_id, client_secret
 
 
 @pytest.fixture(scope="session")
@@ -1092,11 +1135,12 @@ async def read_only_oauth_client_credentials(anyio_backend, oauth_callback_serve
         token_endpoint = oidc_config.get("token_endpoint")
         authorization_endpoint = oidc_config.get("authorization_endpoint")
 
-        # Create client with READ-ONLY scopes
+        # Create JWT client with READ-ONLY scopes
         client_id, client_secret = await _create_oauth_client_with_scopes(
             callback_url=callback_url,
             client_name="Test Client Read Only",
             allowed_scopes="openid profile email nc:read",
+            token_type="JWT",  # JWT tokens for scope validation
         )
 
         return (
@@ -1131,11 +1175,12 @@ async def write_only_oauth_client_credentials(anyio_backend, oauth_callback_serv
         token_endpoint = oidc_config.get("token_endpoint")
         authorization_endpoint = oidc_config.get("authorization_endpoint")
 
-        # Create client with WRITE-ONLY scopes
+        # Create JWT client with WRITE-ONLY scopes
         client_id, client_secret = await _create_oauth_client_with_scopes(
             callback_url=callback_url,
             client_name="Test Client Write Only",
             allowed_scopes="openid profile email nc:write",
+            token_type="JWT",  # JWT tokens for scope validation
         )
 
         return (
@@ -1170,11 +1215,12 @@ async def full_access_oauth_client_credentials(anyio_backend, oauth_callback_ser
         token_endpoint = oidc_config.get("token_endpoint")
         authorization_endpoint = oidc_config.get("authorization_endpoint")
 
-        # Create client with FULL ACCESS (both read and write scopes)
+        # Create JWT client with FULL ACCESS (both read and write scopes)
         client_id, client_secret = await _create_oauth_client_with_scopes(
             callback_url=callback_url,
             client_name="Test Client Full Access",
             allowed_scopes="openid profile email nc:read nc:write",
+            token_type="JWT",  # JWT tokens for scope validation
         )
 
         return (
@@ -1284,24 +1330,11 @@ async def playwright_oauth_token(
             current_url = page.url
             logger.info(f"After login, current URL: {current_url}")
 
-        # Now we should be on the OAuth authorization/consent page or already redirected
-        # Check if there's an authorize button to click
+        # Handle consent screen if present
         try:
-            # Look for common authorization button patterns
-            authorize_button = await page.query_selector(
-                'button:has-text("Authorize"), button:has-text("Allow"), input[type="submit"][value*="uthoriz"]'
-            )
-
-            if authorize_button:
-                logger.info(
-                    "Authorization consent page detected, clicking authorize..."
-                )
-                await authorize_button.click()
-                await page.wait_for_load_state("networkidle", timeout=10000)
-                current_url = page.url
-                logger.debug(f"After authorization, current_url: {current_url}")
+            await _handle_oauth_consent_screen(page, username)
         except Exception as e:
-            logger.debug(f"No authorization button found or already authorized: {e}")
+            logger.debug(f"No consent screen or already authorized: {e}")
 
         # Wait for callback server to receive the auth code
         # Browser will be redirected to localhost:8081 which will capture the code
@@ -1369,6 +1402,110 @@ async def playwright_oauth_token_jwt(
         oauth_callback_server,
         scopes="openid profile email nc:read nc:write",
     )
+
+
+async def _handle_oauth_consent_screen(page, username: str = "user"):
+    """
+    Handle the OIDC consent screen that appears during OAuth flow.
+
+    The consent screen:
+    - Has a #oidc-consent div with data attributes (client-name, scopes, client-id)
+    - Uses Vue.js to dynamically render scope checkboxes
+    - Has "Allow" and "Deny" buttons
+
+    This function:
+    1. Checks if we're on a consent screen (look for #oidc-consent div)
+    2. Waits for Vue.js to render the content (wait for "Allow" button)
+    3. Logs available scopes (for debugging)
+    4. Clicks the "Allow" button to grant consent
+
+    Args:
+        page: Playwright page instance
+        username: Username for logging purposes
+
+    Returns:
+        True if consent was handled, False if no consent screen was found
+    """
+    try:
+        # Check if consent screen is present
+        consent_div = await page.query_selector("#oidc-consent")
+
+        if not consent_div:
+            logger.debug(f"No consent screen found for {username}")
+            return False
+
+        logger.info(f"Consent screen detected for {username}")
+
+        # Get consent screen data attributes
+        client_name = await consent_div.get_attribute("data-client-name")
+        scopes_attr = await consent_div.get_attribute("data-scopes")
+        logger.info(f"  Client: {client_name}")
+        logger.info(f"  Requested scopes: {scopes_attr}")
+
+        # Wait for Vue.js to render the Allow button (max 10 seconds)
+        try:
+            await page.wait_for_selector('button:has-text("Allow")', timeout=10000)
+            logger.info("  Allow button rendered by Vue.js")
+        except Exception as e:
+            logger.warning(f"  Timeout waiting for Allow button: {e}")
+            # Take a screenshot for debugging
+            screenshot_path = f"/tmp/consent_no_allow_button_{username}.png"
+            await page.screenshot(path=screenshot_path)
+            logger.error(f"  Screenshot saved to {screenshot_path}")
+            raise
+
+        # Check all scope checkboxes
+        scope_checkboxes = await page.query_selector_all('input[type="checkbox"]')
+        if scope_checkboxes:
+            logger.info(f"  Found {len(scope_checkboxes)} scope checkboxes")
+            for i, checkbox in enumerate(scope_checkboxes):
+                # Check if checkbox is not already checked
+                is_checked = await checkbox.is_checked()
+                is_disabled = await checkbox.is_disabled()
+                if not is_checked and not is_disabled:
+                    await checkbox.check()
+                    logger.info(f"    ✓ Checked scope checkbox {i + 1}")
+                elif is_checked:
+                    logger.info(f"    ✓ Scope checkbox {i + 1} already checked")
+                elif is_disabled:
+                    logger.info(
+                        f"    ⊗ Scope checkbox {i + 1} disabled (required scope)"
+                    )
+
+        # Click the Allow button to grant consent
+        # Check button exists first
+        allow_button_locator = page.locator('button:has-text("Allow")')
+
+        if await allow_button_locator.count() > 0:
+            logger.info(f"  Clicking Allow button to grant consent for {username}...")
+
+            # Use JavaScript click to handle consent buttons that may be outside viewport
+            # This is more reliable than Playwright's click which requires element visibility
+            logger.info(
+                "  Using JavaScript click for consent (handles viewport issues)..."
+            )
+            await page.evaluate(
+                """
+                const buttons = document.querySelectorAll('button');
+                for (const btn of buttons) {
+                    if (btn.textContent.trim() === 'Allow') {
+                        btn.click();
+                        break;
+                    }
+                }
+                """
+            )
+
+            await page.wait_for_load_state("networkidle", timeout=30000)
+            logger.info(f"  Consent granted for {username}")
+            return True
+        else:
+            logger.error(f"  Allow button not found for {username}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error handling consent screen for {username}: {e}")
+        raise
 
 
 async def _get_oauth_token_with_scopes(
@@ -1465,23 +1602,11 @@ async def _get_oauth_token_with_scopes(
             current_url = page.url
             logger.info(f"After login, current URL: {current_url}")
 
-        # Now we should be on the OAuth authorization/consent page or already redirected
-        # Check if there's an authorize button to click
+        # Handle consent screen if present
         try:
-            authorize_button = await page.query_selector(
-                'button:has-text("Authorize"), button:has-text("Allow"), input[type="submit"][value*="uthoriz"]'
-            )
-            if authorize_button:
-                logger.info("Authorization button found, clicking it...")
-                await authorize_button.click()
-                await page.wait_for_load_state("networkidle", timeout=30000)
-                logger.info("Authorization completed")
-            else:
-                logger.info(
-                    "No authorization button found, assuming already authorized"
-                )
+            await _handle_oauth_consent_screen(page, username)
         except Exception as e:
-            logger.debug(f"No authorization button found or already redirected: {e}")
+            logger.debug(f"No consent screen or already authorized: {e}")
 
         # Wait for callback server to receive the auth code
         logger.info(f"Waiting for auth code with state: {state[:16]}...")
@@ -1770,17 +1895,11 @@ async def _get_oauth_token_for_user(
             await page.wait_for_load_state("networkidle", timeout=30000)
             current_url = page.url
 
-        # Handle OAuth consent if present
+        # Handle consent screen if present
         try:
-            authorize_button = await page.query_selector(
-                'button:has-text("Authorize"), button:has-text("Allow"), input[type="submit"][value*="uthoriz"]'
-            )
-            if authorize_button:
-                logger.info(f"Authorizing for {username}...")
-                await authorize_button.click()
-                await page.wait_for_load_state("networkidle", timeout=10000)
+            await _handle_oauth_consent_screen(page, username)
         except Exception as e:
-            logger.debug(f"No authorization needed for {username}: {e}")
+            logger.debug(f"No consent screen or already authorized for {username}: {e}")
 
         # Wait for callback server to receive the auth code
         # Browser will be redirected to localhost:8081 which will capture the code

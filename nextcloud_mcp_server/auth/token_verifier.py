@@ -38,6 +38,9 @@ class NextcloudTokenVerifier(TokenVerifier):
         userinfo_uri: str,
         jwks_uri: str | None = None,
         issuer: str | None = None,
+        introspection_uri: str | None = None,
+        client_id: str | None = None,
+        client_secret: str | None = None,
         cache_ttl: int = 3600,
     ):
         """
@@ -48,18 +51,24 @@ class NextcloudTokenVerifier(TokenVerifier):
             userinfo_uri: Full URL to the userinfo endpoint
             jwks_uri: Full URL to the JWKS endpoint (for JWT verification)
             issuer: Expected issuer claim value (for JWT verification)
+            introspection_uri: Full URL to the introspection endpoint (for opaque tokens)
+            client_id: OAuth client ID (required for introspection)
+            client_secret: OAuth client secret (required for introspection)
             cache_ttl: Time-to-live for cached tokens in seconds (default: 3600)
         """
         self.nextcloud_host = nextcloud_host.rstrip("/")
         self.userinfo_uri = userinfo_uri
         self.jwks_uri = jwks_uri
         self.issuer = issuer
+        self.introspection_uri = introspection_uri
+        self.client_id = client_id
+        self.client_secret = client_secret
         self.cache_ttl = cache_ttl
 
         # Cache: token -> (userinfo, expiry_timestamp)
         self._token_cache: dict[str, tuple[dict[str, Any], float]] = {}
 
-        # HTTP client for userinfo requests
+        # HTTP client for userinfo/introspection requests
         self._client = httpx.AsyncClient(timeout=10.0)
 
         # PyJWKClient for JWT verification (lazy initialization)
@@ -68,15 +77,24 @@ class NextcloudTokenVerifier(TokenVerifier):
             logger.info(f"JWT verification enabled with JWKS URI: {jwks_uri}")
             self._jwks_client = PyJWKClient(jwks_uri, cache_keys=True)
 
+        # Introspection support
+        if introspection_uri and client_id and client_secret:
+            logger.info(f"Token introspection enabled: {introspection_uri}")
+        elif introspection_uri:
+            logger.warning(
+                "Introspection URI provided but missing client credentials - introspection disabled"
+            )
+
     async def verify_token(self, token: str) -> AccessToken | None:
         """
-        Verify a bearer token using JWT verification or userinfo endpoint.
+        Verify a bearer token using JWT verification, introspection, or userinfo endpoint.
 
         This method:
         1. Checks the cache first for recent validations
         2. Attempts JWT verification if JWKS is configured and token looks like JWT
-        3. Falls back to userinfo endpoint for opaque tokens or JWT verification failures
-        4. Returns AccessToken with username and scopes
+        3. Falls back to introspection for opaque tokens (if configured)
+        4. Falls back to userinfo endpoint as last resort
+        5. Returns AccessToken with username and scopes
 
         Args:
             token: The bearer token to verify
@@ -91,14 +109,31 @@ class NextcloudTokenVerifier(TokenVerifier):
             return cached
 
         # Try JWT verification first if enabled and token looks like JWT
-        if self._jwks_client and self._is_jwt_format(token):
+        is_jwt_format = self._is_jwt_format(token)
+        logger.debug(
+            f"Token format check: is_jwt_format={is_jwt_format}, _jwks_client={self._jwks_client is not None}"
+        )
+        if self._jwks_client and is_jwt_format:
             logger.debug("Attempting JWT verification...")
             jwt_result = self._verify_jwt(token)
             if jwt_result:
                 logger.info("Token validated via JWT verification")
                 return jwt_result
+            else:
+                logger.warning("JWT verification failed, will try other methods")
 
-        # Fall back to userinfo endpoint validation
+        # For opaque tokens, try introspection if available
+        if self.introspection_uri and self.client_id and self.client_secret:
+            logger.debug("Attempting token introspection...")
+            try:
+                introspection_result = await self._verify_via_introspection(token)
+                if introspection_result:
+                    logger.info("Token validated via introspection")
+                    return introspection_result
+            except Exception as e:
+                logger.warning(f"Introspection failed: {e}")
+
+        # Fall back to userinfo endpoint validation (last resort)
         logger.debug("Attempting userinfo endpoint validation...")
         try:
             return await self._verify_via_userinfo(token)
@@ -148,6 +183,7 @@ class NextcloudTokenVerifier(TokenVerifier):
             )
 
             logger.debug(f"JWT verified successfully for user: {payload.get('sub')}")
+            logger.debug(f"Full JWT payload: {payload}")
 
             # Extract username (sub claim)
             username = payload.get("sub")
@@ -158,7 +194,9 @@ class NextcloudTokenVerifier(TokenVerifier):
             # Extract scopes from scope claim (space-separated string)
             scope_string = payload.get("scope", "")
             scopes = scope_string.split() if scope_string else []
-            logger.debug(f"Extracted scopes from JWT: {scopes}")
+            logger.debug(
+                f"Extracted scopes from JWT - scope claim: '{scope_string}' -> scopes list: {scopes}"
+            )
 
             # Extract expiration
             exp = payload.get("exp")
@@ -193,6 +231,100 @@ class NextcloudTokenVerifier(TokenVerifier):
             return None
         except Exception as e:
             logger.error(f"Unexpected error during JWT verification: {e}")
+            return None
+
+    async def _verify_via_introspection(self, token: str) -> AccessToken | None:
+        """
+        Validate token by calling the introspection endpoint (RFC 7662).
+
+        This method validates opaque tokens and retrieves their scopes.
+
+        Args:
+            token: The bearer token to introspect
+
+        Returns:
+            AccessToken if active, None if inactive or invalid
+        """
+        try:
+            # Introspection requires client authentication
+            response = await self._client.post(
+                self.introspection_uri,
+                data={"token": token},
+                auth=(self.client_id, self.client_secret),
+            )
+
+            if response.status_code == 200:
+                introspection_data = response.json()
+
+                # Check if token is active
+                if not introspection_data.get("active", False):
+                    logger.info("Token introspection returned inactive=false")
+                    return None
+
+                logger.debug(
+                    f"Token introspected successfully for user: {introspection_data.get('sub')}"
+                )
+
+                # Extract username
+                username = introspection_data.get("sub") or introspection_data.get(
+                    "username"
+                )
+                if not username:
+                    logger.error("No username found in introspection response")
+                    return None
+
+                # Extract scopes (space-separated string)
+                scope_string = introspection_data.get("scope", "")
+                scopes = scope_string.split() if scope_string else []
+                logger.debug(f"Extracted scopes from introspection: {scopes}")
+
+                # Extract expiration
+                exp = introspection_data.get("exp")
+                if exp:
+                    expiry = float(exp)
+                else:
+                    logger.warning(
+                        "No 'exp' in introspection response, using default TTL"
+                    )
+                    expiry = time.time() + self.cache_ttl
+
+                # Cache the result
+                cache_data = {
+                    "sub": username,
+                    "scope": scope_string,
+                    **{
+                        k: v
+                        for k, v in introspection_data.items()
+                        if k not in ["sub", "scope", "active"]
+                    },
+                }
+                self._token_cache[token] = (cache_data, expiry)
+
+                return AccessToken(
+                    token=token,
+                    client_id=introspection_data.get("client_id", ""),
+                    scopes=scopes,
+                    expires_at=int(expiry),
+                    resource=username,
+                )
+
+            elif response.status_code in (400, 401, 403):
+                logger.info(f"Token introspection failed: HTTP {response.status_code}")
+                return None
+            else:
+                logger.warning(
+                    f"Unexpected response from introspection: {response.status_code}"
+                )
+                return None
+
+        except httpx.TimeoutException:
+            logger.error("Timeout while introspecting token")
+            return None
+        except httpx.RequestError as e:
+            logger.error(f"Network error while introspecting token: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error during token introspection: {e}")
             return None
 
     async def _verify_via_userinfo(self, token: str) -> AccessToken | None:

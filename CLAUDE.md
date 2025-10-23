@@ -252,3 +252,15 @@ uv run pytest tests/server/test_oauth*.py -v
 - **`pyproject.toml`** - Python project configuration using uv for dependency management
 - **`.env`** (from `env.sample`) - Environment variables for Nextcloud connection
 - **`docker-compose.yml`** - Complete development environment with Nextcloud + database
+
+## Integration testing with docker
+
+### Nextcloud
+
+- The `app` container is running nextcloud.
+- Use `docker compose exec app php occ ...` to get a list of available commands
+
+### Mariadb
+
+- The `db` container is running mariadb
+- Use `docker compose exec db mariadb -u [user] -p [password] [database]` to execute queries. Check the docker-compose file for credentials

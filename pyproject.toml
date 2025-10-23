@@ -41,7 +41,7 @@ Changelog = "https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/CHAN
 
 [tool.pytest.ini_options]
 anyio_mode = "auto"
-addopts = "-p no:asyncio"  # Disable pytest-asyncio plugin, use only anyio
+addopts = "-p no:asyncio -x"  # Disable pytest-asyncio plugin, use only anyio
 log_cli = 1
 log_cli_level = "ERROR"
 log_level = "ERROR"

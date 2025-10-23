@@ -273,17 +273,24 @@ async def app_lifespan_oauth(server: FastMCP) -> AsyncIterator[OAuthAppContext]:
         # Extract endpoints
         userinfo_uri = discovery["userinfo_endpoint"]
         registration_endpoint = discovery.get("registration_endpoint")
+        introspection_uri = discovery.get("introspection_endpoint")
 
         logger.info(f"Userinfo endpoint: {userinfo_uri}")
+        if introspection_uri:
+            logger.info(f"Introspection endpoint: {introspection_uri}")
 
         # Load OAuth client credentials
         client_id, client_secret = await load_oauth_client_credentials(
             nextcloud_host=nextcloud_host, registration_endpoint=registration_endpoint
         )
 
-        # Create token verifier
+        # Create token verifier with introspection support
         token_verifier = NextcloudTokenVerifier(
-            nextcloud_host=nextcloud_host, userinfo_uri=userinfo_uri
+            nextcloud_host=nextcloud_host,
+            userinfo_uri=userinfo_uri,
+            introspection_uri=introspection_uri,
+            client_id=client_id,
+            client_secret=client_secret,
         )
 
         logger.info("OAuth initialization complete")
@@ -337,12 +344,15 @@ async def setup_oauth_config():
     issuer = discovery["issuer"]
     userinfo_uri = discovery["userinfo_endpoint"]
     jwks_uri = discovery.get("jwks_uri")
+    introspection_uri = discovery.get("introspection_endpoint")
     registration_endpoint = discovery.get("registration_endpoint")
 
     logger.info("OIDC endpoints discovered:")
     logger.info(f"  Issuer: {issuer}")
     logger.info(f"  Userinfo: {userinfo_uri}")
     logger.info(f"  JWKS: {jwks_uri}")
+    if introspection_uri:
+        logger.info(f"  Introspection: {introspection_uri}")
 
     # Allow override of public issuer URL for both client configuration and JWT validation
     # When clients access Nextcloud via a public URL (e.g., http://127.0.0.1:8080),
@@ -367,12 +377,15 @@ async def setup_oauth_config():
         nextcloud_host=nextcloud_host, registration_endpoint=registration_endpoint
     )
 
-    # Create token verifier with JWT support
+    # Create token verifier with JWT support and introspection
     token_verifier = NextcloudTokenVerifier(
         nextcloud_host=nextcloud_host,
         userinfo_uri=userinfo_uri,
         jwks_uri=jwks_uri,  # Enable JWT verification if available
         issuer=jwt_validation_issuer,  # Use original issuer for JWT validation
+        introspection_uri=introspection_uri,  # Enable introspection for opaque tokens
+        client_id=client_id,
+        client_secret=client_secret,
     )
 
     # Create auth settings
@@ -461,7 +474,8 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             all_tools = original_list_tools()
 
             # If OAuth mode and user has scopes, filter by them
-            if user_scopes:
+            # TODO: Re-enable once OIDC clients respect allowed_scopes from PRM
+            if 1 == 0:  # user_scopes:
                 allowed_tools = [
                     tool
                     for tool in all_tools
@@ -506,13 +520,18 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             mcp_server_url = os.getenv(
                 "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
             )
-            nextcloud_host = os.getenv("NEXTCLOUD_HOST", "")
+            # Use PUBLIC_ISSUER_URL for authorization server since external clients
+            # (like Claude) need the publicly accessible URL, not internal Docker URLs
+            public_issuer_url = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+            if not public_issuer_url:
+                # Fallback to NEXTCLOUD_HOST if PUBLIC_ISSUER_URL not set
+                public_issuer_url = os.getenv("NEXTCLOUD_HOST", "")
 
             return JSONResponse(
                 {
                     "resource": mcp_server_url,
                     "scopes_supported": ["nc:read", "nc:write"],
-                    "authorization_servers": [nextcloud_host],
+                    "authorization_servers": [public_issuer_url],
                     "bearer_methods_supported": ["header"],
                     "resource_signing_alg_values_supported": ["RS256"],
                 }

@@ -38,7 +38,6 @@ def decode_jwt_without_verification(token: str) -> dict:
 
 
 @pytest.mark.integration
-@pytest.mark.asyncio
 async def test_jwt_token_structure_with_custom_client():
     """
     Test that we can create a JWT-enabled OAuth client and examine the token structure.
@@ -76,7 +75,6 @@ async def test_jwt_token_structure_with_custom_client():
 
 
 @pytest.mark.integration
-@pytest.mark.asyncio
 async def test_opaque_token_vs_jwt_comparison():
     """
     Compare opaque tokens vs JWT tokens to understand the differences.
@@ -165,7 +163,6 @@ async def test_opaque_token_vs_jwt_comparison():
 
 
 @pytest.mark.integration
-@pytest.mark.asyncio
 async def test_scope_presence_in_jwt():
     """
     Verify that custom scopes (nc:read, nc:write) are present in JWT tokens.

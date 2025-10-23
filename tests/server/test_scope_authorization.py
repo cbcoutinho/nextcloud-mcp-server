@@ -27,7 +27,7 @@ async def test_prm_endpoint():
         assert prm_data["resource"] == "http://127.0.0.1:8001"
         assert "nc:read" in prm_data["scopes_supported"]
         assert "nc:write" in prm_data["scopes_supported"]
-        assert "http://app:80" in prm_data["authorization_servers"]
+        assert "http://127.0.0.1:8080" in prm_data["authorization_servers"]
         assert "header" in prm_data["bearer_methods_supported"]
         assert "RS256" in prm_data["resource_signing_alg_values_supported"]
 
