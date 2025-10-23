@@ -1,3 +1,13 @@
+## v0.19.0 (2025-10-23)
+
+### Feat
+
+- Enable token introspection for opaque tokens
+
+### Fix
+
+- Add CORS middleware to allow browser-based clients like MCP Inspector
+
 ## v0.18.0 (2025-10-23)
 
 ### Feat
