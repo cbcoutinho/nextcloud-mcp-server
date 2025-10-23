@@ -5,6 +5,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData
 
+from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.cookbook import (
     Category,
@@ -70,6 +71,7 @@ def configure_cookbook_tools(mcp: FastMCP):
                 )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def nc_cookbook_import_recipe(url: str, ctx: Context) -> ImportRecipeResponse:
         """Import a recipe from a URL using schema.org metadata.
 
@@ -126,6 +128,7 @@ def configure_cookbook_tools(mcp: FastMCP):
                 )
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def nc_cookbook_list_recipes(ctx: Context) -> ListRecipesResponse:
         """Get all recipes in the database"""
         client = get_client(ctx)
@@ -150,6 +153,7 @@ def configure_cookbook_tools(mcp: FastMCP):
                 )
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def nc_cookbook_get_recipe(recipe_id: int, ctx: Context) -> Recipe:
         """Get a specific recipe by its ID"""
         client = get_client(ctx)
@@ -174,6 +178,7 @@ def configure_cookbook_tools(mcp: FastMCP):
                 )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def nc_cookbook_create_recipe(
         name: str,
         description: str | None = None,
@@ -252,6 +257,7 @@ def configure_cookbook_tools(mcp: FastMCP):
                 )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def nc_cookbook_update_recipe(
         recipe_id: int,
         name: str | None = None,
@@ -340,6 +346,7 @@ def configure_cookbook_tools(mcp: FastMCP):
                 )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def nc_cookbook_delete_recipe(
         recipe_id: int, ctx: Context
     ) -> DeleteRecipeResponse:
@@ -374,6 +381,7 @@ def configure_cookbook_tools(mcp: FastMCP):
                 )
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def nc_cookbook_search_recipes(
         query: str, ctx: Context
     ) -> SearchRecipesResponse:
@@ -409,6 +417,7 @@ def configure_cookbook_tools(mcp: FastMCP):
                 )
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def nc_cookbook_list_categories(ctx: Context) -> ListCategoriesResponse:
         """Get all known categories.
 
@@ -435,6 +444,7 @@ def configure_cookbook_tools(mcp: FastMCP):
                 )
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def nc_cookbook_get_recipes_in_category(
         category: str, ctx: Context
     ) -> ListRecipesResponse:
@@ -470,6 +480,7 @@ def configure_cookbook_tools(mcp: FastMCP):
                 )
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def nc_cookbook_list_keywords(ctx: Context) -> ListKeywordsResponse:
         """Get all known keywords/tags"""
         client = get_client(ctx)
@@ -494,6 +505,7 @@ def configure_cookbook_tools(mcp: FastMCP):
                 )
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def nc_cookbook_get_recipes_with_keywords(
         keywords: list[str], ctx: Context
     ) -> ListRecipesResponse:
@@ -527,6 +539,7 @@ def configure_cookbook_tools(mcp: FastMCP):
                 )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def nc_cookbook_set_config(
         folder: str | None = None,
         update_interval: int | None = None,
@@ -569,6 +582,7 @@ def configure_cookbook_tools(mcp: FastMCP):
                 )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def nc_cookbook_reindex(ctx: Context) -> ReindexResponse:
         """Trigger a rescan of all recipes into the caching database.
 

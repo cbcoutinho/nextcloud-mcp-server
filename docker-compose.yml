@@ -21,7 +21,7 @@ services:
     restart: always
 
   app:
-    image: docker.io/library/nextcloud:32.0.0@sha256:4fbd72f05b5e6b82e078542b6cb2ecf021d2f8b5045454ffa7f4e080e488b375
+    image: docker.io/library/nextcloud:32.0.0@sha256:f9bec5c77a8d5603354b990550a4d24487deae6e589dd20ce870e43e28460e18
     restart: always
     ports:
       - 0.0.0.0:8080:80
@@ -31,6 +31,9 @@ services:
     volumes:
       - nextcloud:/var/www/html
       - ./app-hooks/post-installation:/docker-entrypoint-hooks.d/post-installation:ro
+      # Mount OIDC development directory outside /var/www/html to avoid rsync conflicts
+      # The post-installation hook will register /opt/apps as an additional app directory
+      - ./third_party/oidc:/opt/apps/oidc:ro
     environment:
       - NEXTCLOUD_TRUSTED_DOMAINS=app
       - NEXTCLOUD_ADMIN_USER=admin
@@ -86,13 +89,37 @@ services:
       - 127.0.0.1:8001:8001
     environment:
       - NEXTCLOUD_HOST=http://app:80
-      - NEXTCLOUD_MCP_SERVER_URL=http://127.0.0.1:8001
-      - NEXTCLOUD_PUBLIC_ISSUER_URL=http://127.0.0.1:8080
-      # No USERNAME/PASSWORD - will use OAuth
+      - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8001
+      - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
+      - NEXTCLOUD_OIDC_CLIENT_STORAGE=/app/.oauth/nextcloud_oauth_client.json
+      - NEXTCLOUD_OIDC_SCOPES=openid profile email nc:read nc:write
+      # No USERNAME/PASSWORD - will use OAuth with Dynamic Client Registration
+      # Client credentials will be registered and stored in volume on first startup
     volumes:
       - oauth-client-storage:/app/.oauth
+
+  mcp-oauth-jwt:
+    build: .
+    command: ["--transport", "streamable-http", "--oauth", "--port", "8002"]
+    restart: always
+    depends_on:
+      - app
+    ports:
+      - 127.0.0.1:8002:8002
+    environment:
+      - NEXTCLOUD_HOST=http://app:80
+      - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8002
+      - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
+      - NEXTCLOUD_OIDC_CLIENT_STORAGE=/app/.oauth-jwt/nextcloud_oauth_client.json
+      - NEXTCLOUD_OIDC_SCOPES=openid profile email nc:read nc:write
+      - NEXTCLOUD_OIDC_TOKEN_TYPE=jwt
+      # No USERNAME/PASSWORD - will use OAuth with Dynamic Client Registration (DCR)
+      # Client will be registered with token_type=JWT on first startup
+    volumes:
+      - oauth-jwt-client-storage:/app/.oauth-jwt
 
 volumes:
   nextcloud:
   db:
   oauth-client-storage:
+  oauth-jwt-client-storage:

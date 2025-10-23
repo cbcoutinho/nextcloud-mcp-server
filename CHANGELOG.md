@@ -1,3 +1,19 @@
+## v0.18.0 (2025-10-23)
+
+### Feat
+
+- **server**: Add support for custom OIDC scopes and permissions via JWTs
+- Initialize JWT-scoped tools
+
+### Fix
+
+- Use occ-created OAuth clients with allowed_scopes for all tests
+- Separate OAuth fixtures for opaque vs JWT tokens
+
+### Refactor
+
+- Update JWT client to use DCR, re-enable tool filtering
+
 ## v0.17.1 (2025-10-20)
 
 ### Fix
