@@ -31,7 +31,7 @@ The Nextcloud MCP Server supports OAuth authentication with both **JWT** (RFC 90
 - ✅ **Custom Scopes** - `nc:read` and `nc:write` for read/write access control
 - ✅ **Dynamic Tool Filtering** - Tools filtered based on user's token scopes
 - ✅ **Scope Challenges** - RFC-compliant `WWW-Authenticate` headers for insufficient scopes
-- ✅ **Protected Resource Metadata** - RFC 8959 endpoint for scope discovery
+- ✅ **Protected Resource Metadata** - RFC 9728 endpoint for scope discovery
 - ✅ **Backward Compatible** - BasicAuth mode bypasses all scope checks
 
 ### Supported Scopes
@@ -196,21 +196,21 @@ When a tool is called without required scopes, the server returns a `403 Forbidd
 HTTP/1.1 403 Forbidden
 WWW-Authenticate: Bearer error="insufficient_scope",
                   scope="nc:write",
-                  resource_metadata="http://server/.well-known/oauth-protected-resource"
+                  resource_metadata="http://server/.well-known/oauth-protected-resource/mcp"
 ```
 
 This enables **step-up authorization** - clients can detect missing scopes and trigger re-authentication to obtain additional permissions.
 
 ### Protected Resource Metadata (PRM)
 
-The server implements RFC 8959's Protected Resource Metadata endpoint:
+The server implements RFC 9728's Protected Resource Metadata endpoint:
 
-**Endpoint:** `GET /.well-known/oauth-protected-resource`
+**Endpoint:** `GET /.well-known/oauth-protected-resource/mcp`
 
 **Response:**
 ```json
 {
-  "resource": "http://localhost:8002",
+  "resource": "http://localhost:8002/mcp",
   "scopes_supported": ["nc:read", "nc:write"],
   "authorization_servers": ["http://localhost:8080"],
   "bearer_methods_supported": ["header"],
@@ -463,9 +463,9 @@ When credentials are provided via environment variables or storage file, **DCR i
 - Bypassed in BasicAuth mode
 
 **4. PRM Endpoint** (`nextcloud_mcp_server/app.py:503-532`)
-- `GET /.well-known/oauth-protected-resource`
+- `GET /.well-known/oauth-protected-resource/mcp`
 - Advertises `["nc:read", "nc:write"]`
-- RFC 8959 compliant
+- RFC 9728 compliant
 
 **5. Exception Handler** (`nextcloud_mcp_server/app.py:540-563`)
 - Catches `InsufficientScopeError`
@@ -876,7 +876,7 @@ WARNING Missing required scopes: nc:write
 - [RFC 9068: JWT Profile for OAuth 2.0 Access Tokens](https://www.rfc-editor.org/rfc/rfc9068.html)
 - [RFC 7519: JSON Web Token (JWT)](https://www.rfc-editor.org/rfc/rfc7519.html)
 - [RFC 7517: JSON Web Key (JWK)](https://www.rfc-editor.org/rfc/rfc7517.html)
-- [RFC 8959: Protected Resource Metadata](https://www.rfc-editor.org/rfc/rfc8959.html)
+- [RFC 9728: OAuth 2.0 Protected Resource Metadata](https://www.rfc-editor.org/rfc/rfc9728.html)
 - [RFC 7662: OAuth 2.0 Token Introspection](https://www.rfc-editor.org/rfc/rfc7662.html)
 
 ### Related Documentation
