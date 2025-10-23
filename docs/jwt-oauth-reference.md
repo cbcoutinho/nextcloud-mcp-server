@@ -169,24 +169,26 @@ async def nc_notes_create_note(title: str, content: str, ctx: Context):
 
 ### Dynamic Tool Filtering
 
-The MCP server implements **dynamic tool filtering** - users only see tools they have permission to use:
+The MCP server implements **dynamic tool filtering** - users only see tools they have permission to use. This applies to **both JWT and Bearer (opaque) tokens** in OAuth mode:
 
-**JWT with `nc:read` only:**
+**Token with `nc:read` only:**
 - `list_tools()` returns 36 read-only tools
 - Write tools are hidden from the tool list
 
-**JWT with `nc:write` only:**
+**Token with `nc:write` only:**
 - `list_tools()` returns 54 write-only tools
 - Read tools are hidden from the tool list
 
-**JWT with both scopes:**
+**Token with both scopes:**
 - `list_tools()` returns all 90 tools
 
-**JWT with no custom scopes:**
+**Token with no custom scopes:**
 - `list_tools()` returns 0 tools (all require `nc:read` or `nc:write`)
 
 **BasicAuth mode:**
 - `list_tools()` returns all 90 tools (no filtering)
+
+**Note:** JWT tokens include scopes in the token payload, while Bearer tokens retrieve scopes via the introspection endpoint. Both methods provide reliable scope information for filtering.
 
 ### Scope Challenges
 
@@ -456,9 +458,9 @@ When credentials are provided via environment variables or storage file, **DCR i
 - `has_required_scopes()` - Check if user has necessary scopes
 - `InsufficientScopeError` exception for WWW-Authenticate challenges
 
-**3. Dynamic Filtering** (`nextcloud_mcp_server/app.py:433-488`)
+**3. Dynamic Filtering** (`nextcloud_mcp_server/app.py:473-516`)
 - Overrides FastMCP's `list_tools()` method
-- Filters based on user's JWT token scopes
+- Filters based on user's OAuth token scopes (JWT and Bearer)
 - Only active in OAuth mode
 - Bypassed in BasicAuth mode
 

@@ -214,7 +214,7 @@ async def load_oauth_client_credentials(
             nextcloud_url=nextcloud_host,
             registration_endpoint=registration_endpoint,
             storage_path=storage_path,
-            client_name="Nextcloud MCP Server",
+            client_name=f"Nextcloud MCP Server ({token_type})",
             redirect_uris=redirect_uris,
             scopes=scopes,
             token_type=token_type,
@@ -475,7 +475,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         original_list_tools = mcp._tool_manager.list_tools
 
         def list_tools_filtered():
-            """List tools filtered by user's token scopes (JWT tokens only)."""
+            """List tools filtered by user's token scopes (JWT and Bearer tokens)."""
             # Get user's scopes from token using MCP SDK's contextvar
             # This works for all request types including list_tools
             user_scopes = get_access_token_scopes()
@@ -488,35 +488,36 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             # Get all tools
             all_tools = original_list_tools()
 
-            # Only filter for JWT tokens (opaque tokens show all tools)
-            # JWT tokens have scopes embedded, so we can reliably filter
-            # Opaque tokens may not have accurate scope information from introspection
-            if is_jwt and user_scopes:
+            # Filter tools based on user's token scopes (both JWT and opaque tokens)
+            # JWT tokens have scopes embedded in payload
+            # Opaque tokens get scopes via introspection endpoint
+            # Claude Code now properly respects PRM endpoint for scope discovery
+            if user_scopes:
                 allowed_tools = [
                     tool
                     for tool in all_tools
                     if has_required_scopes(tool.fn, user_scopes)
                 ]
+                token_type = "JWT" if is_jwt else "Bearer"
                 logger.info(
-                    f"✂️ JWT scope filtering: {len(allowed_tools)}/{len(all_tools)} tools "
+                    f"✂️ {token_type} scope filtering: {len(allowed_tools)}/{len(all_tools)} tools "
                     f"available for scopes: {user_scopes}"
                 )
             else:
-                # Opaque token, BasicAuth mode, or no token - show all tools
+                # BasicAuth mode or no token - show all tools
                 allowed_tools = all_tools
-                reason = (
-                    "opaque token (no filtering)"
-                    if not is_jwt and user_scopes
-                    else "no token/BasicAuth"
+                logger.info(
+                    f"📋 Showing all {len(all_tools)} tools (no token/BasicAuth)"
                 )
-                logger.info(f"📋 Showing all {len(all_tools)} tools ({reason})")
 
             # Return the Tool objects directly (they're already in the correct format)
             return allowed_tools
 
         # Replace the tool manager's list_tools method
         mcp._tool_manager.list_tools = list_tools_filtered
-        logger.info("Dynamic tool filtering enabled for OAuth mode (JWT tokens only)")
+        logger.info(
+            "Dynamic tool filtering enabled for OAuth mode (JWT and Bearer tokens)"
+        )
 
     if transport == "sse":
         mcp_app = mcp.sse_app()
