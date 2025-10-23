@@ -138,7 +138,7 @@ class OAuthUserPool:
         return profile
 
     async def create_user_session(
-        self, username: str, mcp_url: str = "http://127.0.0.1:8001/mcp"
+        self, username: str, mcp_url: str = "http://localhost:8001/mcp"
     ) -> ClientSession:
         """
         Create an MCP client session for a user.

@@ -68,6 +68,7 @@ async def register_client(
     client_name: str = "Nextcloud MCP Server",
     redirect_uris: list[str] | None = None,
     scopes: str = "openid profile email",
+    token_type: str = "Bearer",
 ) -> ClientInfo:
     """
     Register a new OAuth client with Nextcloud OIDC using dynamic client registration.
@@ -78,6 +79,7 @@ async def register_client(
         client_name: Name of the client application
         redirect_uris: List of redirect URIs (default: http://localhost:8000/oauth/callback)
         scopes: Space-separated list of scopes to request
+        token_type: Type of access tokens to issue (default: "Bearer", also supports "JWT")
 
     Returns:
         ClientInfo with registration details
@@ -96,6 +98,7 @@ async def register_client(
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "scope": scopes,
+        "token_type": token_type,
     }
 
     logger.info(f"Registering OAuth client with Nextcloud: {client_name}")
@@ -215,6 +218,8 @@ async def load_or_register_client(
     storage_path: str | Path,
     client_name: str = "Nextcloud MCP Server",
     redirect_uris: list[str] | None = None,
+    scopes: str = "openid profile email",
+    token_type: str = "Bearer",
 ) -> ClientInfo:
     """
     Load client from storage or register a new one if not found/expired.
@@ -231,6 +236,8 @@ async def load_or_register_client(
         storage_path: Path to store client credentials
         client_name: Name of the client application
         redirect_uris: List of redirect URIs
+        scopes: Space-separated list of scopes to request (default: "openid profile email")
+        token_type: Type of access tokens to issue (default: "Bearer", also supports "JWT")
 
     Returns:
         ClientInfo with valid credentials
@@ -253,6 +260,8 @@ async def load_or_register_client(
         registration_endpoint=registration_endpoint,
         client_name=client_name,
         redirect_uris=redirect_uris,
+        scopes=scopes,
+        token_type=token_type,
     )
 
     # Save to storage

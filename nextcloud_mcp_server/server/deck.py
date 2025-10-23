@@ -3,6 +3,7 @@ from typing import Optional
 
 from mcp.server.fastmcp import Context, FastMCP
 
+from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.deck import (
     CardOperationResponse,
@@ -116,6 +117,7 @@ def configure_deck_tools(mcp: FastMCP):
     # Read Tools (converted from resources)
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def deck_get_boards(ctx: Context) -> list[DeckBoard]:
         """Get all Nextcloud Deck boards"""
         client = get_client(ctx)
@@ -123,6 +125,7 @@ def configure_deck_tools(mcp: FastMCP):
         return boards
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def deck_get_board(ctx: Context, board_id: int) -> DeckBoard:
         """Get details of a specific Nextcloud Deck board"""
         client = get_client(ctx)
@@ -130,6 +133,7 @@ def configure_deck_tools(mcp: FastMCP):
         return board
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def deck_get_stacks(ctx: Context, board_id: int) -> list[DeckStack]:
         """Get all stacks in a Nextcloud Deck board"""
         client = get_client(ctx)
@@ -137,6 +141,7 @@ def configure_deck_tools(mcp: FastMCP):
         return stacks
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def deck_get_stack(ctx: Context, board_id: int, stack_id: int) -> DeckStack:
         """Get details of a specific Nextcloud Deck stack"""
         client = get_client(ctx)
@@ -144,6 +149,7 @@ def configure_deck_tools(mcp: FastMCP):
         return stack
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def deck_get_cards(
         ctx: Context, board_id: int, stack_id: int
     ) -> list[DeckCard]:
@@ -155,6 +161,7 @@ def configure_deck_tools(mcp: FastMCP):
         return []
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def deck_get_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int
     ) -> DeckCard:
@@ -164,6 +171,7 @@ def configure_deck_tools(mcp: FastMCP):
         return card
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def deck_get_labels(ctx: Context, board_id: int) -> list[DeckLabel]:
         """Get all labels in a Nextcloud Deck board"""
         client = get_client(ctx)
@@ -171,6 +179,7 @@ def configure_deck_tools(mcp: FastMCP):
         return board.labels
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def deck_get_label(ctx: Context, board_id: int, label_id: int) -> DeckLabel:
         """Get details of a specific Nextcloud Deck label"""
         client = get_client(ctx)
@@ -180,6 +189,7 @@ def configure_deck_tools(mcp: FastMCP):
     # Create/Update/Delete Tools
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_create_board(
         ctx: Context, title: str, color: str
     ) -> CreateBoardResponse:
@@ -196,6 +206,7 @@ def configure_deck_tools(mcp: FastMCP):
     # Stack Tools
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_create_stack(
         ctx: Context, board_id: int, title: str, order: int
     ) -> CreateStackResponse:
@@ -211,6 +222,7 @@ def configure_deck_tools(mcp: FastMCP):
         return CreateStackResponse(id=stack.id, title=stack.title, order=stack.order)
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_update_stack(
         ctx: Context,
         board_id: int,
@@ -236,6 +248,7 @@ def configure_deck_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_delete_stack(
         ctx: Context, board_id: int, stack_id: int
     ) -> StackOperationResponse:
@@ -256,6 +269,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     # Card Tools
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_create_card(
         ctx: Context,
         board_id: int,
@@ -289,6 +303,7 @@ def configure_deck_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_update_card(
         ctx: Context,
         board_id: int,
@@ -341,6 +356,7 @@ def configure_deck_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_delete_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int
     ) -> CardOperationResponse:
@@ -362,6 +378,7 @@ def configure_deck_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_archive_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int
     ) -> CardOperationResponse:
@@ -383,6 +400,7 @@ def configure_deck_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_unarchive_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int
     ) -> CardOperationResponse:
@@ -404,6 +422,7 @@ def configure_deck_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_reorder_card(
         ctx: Context,
         board_id: int,
@@ -435,6 +454,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     # Label Tools
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_create_label(
         ctx: Context, board_id: int, title: str, color: str
     ) -> CreateLabelResponse:
@@ -450,6 +470,7 @@ def configure_deck_tools(mcp: FastMCP):
         return CreateLabelResponse(id=label.id, title=label.title, color=label.color)
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_update_label(
         ctx: Context,
         board_id: int,
@@ -475,6 +496,7 @@ def configure_deck_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_delete_label(
         ctx: Context, board_id: int, label_id: int
     ) -> LabelOperationResponse:
@@ -495,6 +517,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     # Card-Label Assignment Tools
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_assign_label_to_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int, label_id: int
     ) -> CardOperationResponse:
@@ -517,6 +540,7 @@ def configure_deck_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_remove_label_from_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int, label_id: int
     ) -> CardOperationResponse:
@@ -540,6 +564,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     # Card-User Assignment Tools
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_assign_user_to_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int, user_id: str
     ) -> CardOperationResponse:
@@ -562,6 +587,7 @@ def configure_deck_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def deck_unassign_user_from_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int, user_id: str
     ) -> CardOperationResponse:

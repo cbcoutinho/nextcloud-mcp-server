@@ -2,6 +2,7 @@ import logging
 
 from mcp.server.fastmcp import Context, FastMCP
 
+from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
 
 logger = logging.getLogger(__name__)
@@ -10,18 +11,21 @@ logger = logging.getLogger(__name__)
 def configure_contacts_tools(mcp: FastMCP):
     # Contacts tools
     @mcp.tool()
+    @require_scopes("nc:read")
     async def nc_contacts_list_addressbooks(ctx: Context):
         """List all addressbooks for the user."""
         client = get_client(ctx)
         return await client.contacts.list_addressbooks()
 
     @mcp.tool()
+    @require_scopes("nc:read")
     async def nc_contacts_list_contacts(ctx: Context, *, addressbook: str):
         """List all contacts in the specified addressbook."""
         client = get_client(ctx)
         return await client.contacts.list_contacts(addressbook=addressbook)
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def nc_contacts_create_addressbook(
         ctx: Context, *, name: str, display_name: str
     ):
@@ -37,12 +41,14 @@ def configure_contacts_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def nc_contacts_delete_addressbook(ctx: Context, *, name: str):
         """Delete an addressbook."""
         client = get_client(ctx)
         return await client.contacts.delete_addressbook(name=name)
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def nc_contacts_create_contact(
         ctx: Context, *, addressbook: str, uid: str, contact_data: dict
     ):
@@ -59,12 +65,14 @@ def configure_contacts_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def nc_contacts_delete_contact(ctx: Context, *, addressbook: str, uid: str):
         """Delete a contact."""
         client = get_client(ctx)
         return await client.contacts.delete_contact(addressbook=addressbook, uid=uid)
 
     @mcp.tool()
+    @require_scopes("nc:write")
     async def nc_contacts_update_contact(
         ctx: Context, *, addressbook: str, uid: str, contact_data: dict, etag: str = ""
     ):

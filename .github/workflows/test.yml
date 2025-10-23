@@ -25,6 +25,25 @@ jobs:
 
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          submodules: 'true'
+
+
+      ###### Required to build OIDC App ######
+
+      - name: Set up php 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.4
+          coverage: none
+
+      - name: Install OIDC app composer dependencies
+        run: |
+          cd third_party/oidc
+          composer install --no-dev
+
+      ###### Required to build OIDC App ######
+
 
       - name: Run docker compose
         uses: hoverkraft-tech/compose-action@3846bcd61da338e9eaaf83e7ed0234a12b099b72 # v2.4.1
@@ -62,4 +81,4 @@ jobs:
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
         run: |
-          uv run pytest -v --log-level=INFO
+          uv run pytest -v --log-cli-level=INFO
