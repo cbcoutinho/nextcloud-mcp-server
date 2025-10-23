@@ -10,6 +10,7 @@ from .scope_authorization import (
     get_access_token_scopes,
     get_required_scopes,
     has_required_scopes,
+    is_jwt_token,
     require_scopes,
 )
 from .token_verifier import NextcloudTokenVerifier
@@ -27,4 +28,5 @@ __all__ = [
     "get_access_token_scopes",
     "get_required_scopes",
     "has_required_scopes",
+    "is_jwt_token",
 ]

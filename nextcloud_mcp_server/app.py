@@ -19,6 +19,7 @@ from nextcloud_mcp_server.auth import (
     NextcloudTokenVerifier,
     get_access_token_scopes,
     has_required_scopes,
+    is_jwt_token,
 )
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import LOGGING_CONFIG, setup_logging
@@ -195,6 +196,14 @@ async def load_oauth_client_credentials(
         )
         logger.info(f"Requesting OAuth scopes: {scopes}")
 
+        # Get token type from environment (Bearer or jwt)
+        # Note: Must be lowercase "jwt" to match OIDC app's check
+        token_type = os.getenv("NEXTCLOUD_OIDC_TOKEN_TYPE", "Bearer").lower()
+        # Special case: "bearer" should remain capitalized for compatibility
+        if token_type != "jwt":
+            token_type = "Bearer"
+        logger.info(f"Requesting token type: {token_type}")
+
         # Load or register client
         from nextcloud_mcp_server.auth.client_registration import (
             load_or_register_client,
@@ -207,6 +216,7 @@ async def load_oauth_client_credentials(
             client_name="Nextcloud MCP Server",
             redirect_uris=redirect_uris,
             scopes=scopes,
+            token_type=token_type,
         )
 
         logger.info(f"OAuth client ready: {client_info.client_id[:16]}...")
@@ -464,40 +474,48 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         original_list_tools = mcp._tool_manager.list_tools
 
         def list_tools_filtered():
-            """List tools filtered by user's token scopes."""
+            """List tools filtered by user's token scopes (JWT tokens only)."""
             # Get user's scopes from token using MCP SDK's contextvar
             # This works for all request types including list_tools
             user_scopes = get_access_token_scopes()
-            logger.info(f"🔍 list_tools called - User scopes: {user_scopes}")
+            is_jwt = is_jwt_token()
+            logger.info(
+                f"🔍 list_tools called - Token type: {'JWT' if is_jwt else 'opaque/none'}, "
+                f"User scopes: {user_scopes}"
+            )
 
             # Get all tools
             all_tools = original_list_tools()
 
-            # If OAuth mode and user has scopes, filter by them
-            # TODO: Re-enable once OIDC clients respect allowed_scopes from PRM
-            if 1 == 0:  # user_scopes:
+            # Only filter for JWT tokens (opaque tokens show all tools)
+            # JWT tokens have scopes embedded, so we can reliably filter
+            # Opaque tokens may not have accurate scope information from introspection
+            if is_jwt and user_scopes:
                 allowed_tools = [
                     tool
                     for tool in all_tools
                     if has_required_scopes(tool.fn, user_scopes)
                 ]
                 logger.info(
-                    f"✂️ Filtered tools: {len(allowed_tools)}/{len(all_tools)} tools "
+                    f"✂️ JWT scope filtering: {len(allowed_tools)}/{len(all_tools)} tools "
                     f"available for scopes: {user_scopes}"
                 )
             else:
-                # BasicAuth mode or no token - show all tools
+                # Opaque token, BasicAuth mode, or no token - show all tools
                 allowed_tools = all_tools
-                logger.info(
-                    f"📋 No scope filtering: showing all {len(all_tools)} tools"
+                reason = (
+                    "opaque token (no filtering)"
+                    if not is_jwt and user_scopes
+                    else "no token/BasicAuth"
                 )
+                logger.info(f"📋 Showing all {len(all_tools)} tools ({reason})")
 
             # Return the Tool objects directly (they're already in the correct format)
             return allowed_tools
 
         # Replace the tool manager's list_tools method
         mcp._tool_manager.list_tools = list_tools_filtered
-        logger.info("Dynamic tool filtering enabled for OAuth mode")
+        logger.info("Dynamic tool filtering enabled for OAuth mode (JWT tokens only)")
 
     if transport == "sse":
         mcp_app = mcp.sse_app()

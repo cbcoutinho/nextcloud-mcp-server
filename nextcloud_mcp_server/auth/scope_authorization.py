@@ -213,6 +213,30 @@ def get_required_scopes(func: Callable) -> list[str]:
     return getattr(func, "_required_scopes", [])
 
 
+def is_jwt_token() -> bool:
+    """
+    Check if the current access token is in JWT format.
+
+    JWT tokens have 3 parts separated by dots (header.payload.signature).
+    Opaque tokens are random strings without this structure.
+
+    Returns:
+        True if current token is JWT format, False if opaque or no token
+    """
+    access_token: AccessToken | None = get_access_token()
+
+    if access_token is None:
+        logger.debug("No access token found - not JWT")
+        return False
+
+    # JWT tokens have exactly 2 dots (3 parts)
+    token_string = access_token.token
+    is_jwt = "." in token_string and token_string.count(".") == 2
+
+    logger.debug(f"Token format check: is_jwt={is_jwt}")
+    return is_jwt
+
+
 def has_required_scopes(func: Callable, user_scopes: set[str]) -> bool:
     """
     Check if a user has all scopes required by a function.
