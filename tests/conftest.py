@@ -82,7 +82,7 @@ async def create_mcp_client_session(
     - Ensures proper cleanup without suppressing errors
 
     Args:
-        url: MCP server URL (e.g., "http://127.0.0.1:8000/mcp")
+        url: MCP server URL (e.g., "http://localhost:8000/mcp")
         token: Optional OAuth access token for Bearer authentication
         client_name: Client name for logging (e.g., "OAuth MCP (Playwright)")
 
@@ -159,7 +159,7 @@ async def nc_mcp_client(anyio_backend) -> AsyncGenerator[ClientSession, Any]:
     Uses anyio pytest plugin for proper async fixture handling.
     """
     async for session in create_mcp_client_session(
-        url="http://127.0.0.1:8000/mcp", client_name="Basic MCP"
+        url="http://localhost:8000/mcp", client_name="Basic MCP"
     ):
         yield session
 
@@ -177,7 +177,7 @@ async def nc_mcp_oauth_client(
     Uses anyio pytest plugin for proper async fixture handling.
     """
     async for session in create_mcp_client_session(
-        url="http://127.0.0.1:8001/mcp",
+        url="http://localhost:8001/mcp",
         token=playwright_oauth_token,
         client_name="OAuth MCP (Playwright)",
     ):
@@ -202,7 +202,7 @@ async def nc_mcp_oauth_jwt_client(
     Uses anyio pytest plugin for proper async fixture handling.
     """
     async for session in create_mcp_client_session(
-        url="http://127.0.0.1:8002/mcp",
+        url="http://localhost:8002/mcp",
         token=playwright_oauth_token_jwt,
         client_name="OAuth JWT MCP (Playwright)",
     ):
@@ -225,7 +225,7 @@ async def nc_mcp_oauth_client_read_only(
     enabling proper scope-based filtering.
     """
     async for session in create_mcp_client_session(
-        url="http://127.0.0.1:8002/mcp",
+        url="http://localhost:8002/mcp",
         token=playwright_oauth_token_read_only,
         client_name="OAuth JWT MCP Read-Only (Playwright)",
     ):
@@ -248,7 +248,7 @@ async def nc_mcp_oauth_client_write_only(
     enabling proper scope-based filtering.
     """
     async for session in create_mcp_client_session(
-        url="http://127.0.0.1:8002/mcp",
+        url="http://localhost:8002/mcp",
         token=playwright_oauth_token_write_only,
         client_name="OAuth JWT MCP Write-Only (Playwright)",
     ):
@@ -270,9 +270,34 @@ async def nc_mcp_oauth_client_full_access(
     enabling proper scope-based filtering.
     """
     async for session in create_mcp_client_session(
-        url="http://127.0.0.1:8002/mcp",
+        url="http://localhost:8002/mcp",
         token=playwright_oauth_token_full_access,
         client_name="OAuth JWT MCP Full Access (Playwright)",
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_oauth_client_no_custom_scopes(
+    anyio_backend,
+    playwright_oauth_token_no_custom_scopes: str,
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    Fixture to create an MCP client session with NO custom scopes.
+    Connects to the JWT OAuth-enabled MCP server on port 8002.
+
+    This client has only OIDC default scopes (openid, profile, email) without
+    application-specific scopes (nc:read, nc:write).
+
+    Expected behavior: Should see 0 tools (all tools require custom scopes).
+
+    Uses JWT MCP server because JWT tokens embed scope information in claims,
+    enabling proper scope-based filtering.
+    """
+    async for session in create_mcp_client_session(
+        url="http://localhost:8002/mcp",
+        token=playwright_oauth_token_no_custom_scopes,
+        client_name="OAuth JWT MCP No Custom Scopes (Playwright)",
     ):
         yield session
 
@@ -1233,6 +1258,51 @@ async def full_access_oauth_client_credentials(anyio_backend, oauth_callback_ser
 
 
 @pytest.fixture(scope="session")
+async def no_custom_scopes_oauth_client_credentials(
+    anyio_backend, oauth_callback_server
+):
+    """
+    Fixture for OAuth client with NO custom scopes (only OIDC defaults).
+
+    Tests the security behavior when a user grants only the default OIDC scopes
+    (openid, profile, email) but declines custom application scopes (nc:read, nc:write).
+
+    Returns:
+        Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
+    """
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    if not nextcloud_host:
+        pytest.skip("No-custom-scopes OAuth client requires NEXTCLOUD_HOST")
+
+    auth_states, callback_url = oauth_callback_server
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
+        discovery_response = await http_client.get(discovery_url)
+        discovery_response.raise_for_status()
+        oidc_config = discovery_response.json()
+
+        token_endpoint = oidc_config.get("token_endpoint")
+        authorization_endpoint = oidc_config.get("authorization_endpoint")
+
+        # Create JWT client with NO custom scopes (only OIDC defaults)
+        client_id, client_secret = await _create_oauth_client_with_scopes(
+            callback_url=callback_url,
+            client_name="Test Client No Custom Scopes",
+            allowed_scopes="openid profile email",  # No nc:read or nc:write
+            token_type="JWT",  # JWT tokens for scope validation
+        )
+
+        return (
+            client_id,
+            client_secret,
+            callback_url,
+            token_endpoint,
+            authorization_endpoint,
+        )
+
+
+@pytest.fixture(scope="session")
 async def playwright_oauth_token(
     anyio_backend, browser, shared_oauth_client_credentials, oauth_callback_server
 ) -> str:
@@ -1712,6 +1782,32 @@ async def playwright_oauth_token_full_access(
 
 
 @pytest.fixture(scope="session")
+async def playwright_oauth_token_no_custom_scopes(
+    anyio_backend,
+    browser,
+    no_custom_scopes_oauth_client_credentials,
+    oauth_callback_server,
+) -> str:
+    """
+    Fixture to obtain an OAuth access token with NO custom scopes.
+
+    Tests the security behavior when a user grants only default OIDC scopes
+    (openid, profile, email) but declines application-specific scopes.
+
+    Expected: JWT token will contain only default scopes, and all MCP tools
+    should be filtered out since they all require nc:read or nc:write.
+
+    Uses a dedicated JWT OAuth client with allowed_scopes="openid profile email"
+    """
+    return await _get_oauth_token_with_scopes(
+        browser,
+        no_custom_scopes_oauth_client_credentials,
+        oauth_callback_server,
+        scopes="openid profile email",  # Only OIDC defaults, no custom scopes
+    )
+
+
+@pytest.fixture(scope="session")
 async def test_users_setup(anyio_backend, nc_client: NextcloudClient):
     """
     Create test users for multi-user OAuth testing.
@@ -2047,7 +2143,7 @@ async def alice_mcp_client(
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as alice (owner role)."""
     async for session in create_mcp_client_session(
-        url="http://127.0.0.1:8001/mcp",
+        url="http://localhost:8001/mcp",
         token=alice_oauth_token,
         client_name="Alice MCP",
     ):
@@ -2060,7 +2156,7 @@ async def bob_mcp_client(
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as bob (viewer role)."""
     async for session in create_mcp_client_session(
-        url="http://127.0.0.1:8001/mcp",
+        url="http://localhost:8001/mcp",
         token=bob_oauth_token,
         client_name="Bob MCP",
     ):
@@ -2074,7 +2170,7 @@ async def charlie_mcp_client(
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as charlie (editor role, in 'editors' group)."""
     async for session in create_mcp_client_session(
-        url="http://127.0.0.1:8001/mcp",
+        url="http://localhost:8001/mcp",
         token=charlie_oauth_token,
         client_name="Charlie MCP",
     ):
@@ -2088,7 +2184,7 @@ async def diana_mcp_client(
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as diana (no-access role)."""
     async for session in create_mcp_client_session(
-        url="http://127.0.0.1:8001/mcp",
+        url="http://localhost:8001/mcp",
         token=diana_oauth_token,
         client_name="Diana MCP",
     ):

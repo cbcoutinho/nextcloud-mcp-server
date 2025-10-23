@@ -414,7 +414,7 @@ async def show_progress(
 @click.option(
     "--url",
     "-u",
-    default="http://127.0.0.1:8000/mcp",
+    default="http://localhost:8000/mcp",
     show_default=True,
     help="MCP server URL",
 )
@@ -463,7 +463,7 @@ def main(
         uv run python -m tests.load.benchmark -c 20 -d 60 --output results.json
 
         # Test OAuth server on port 8001
-        uv run python -m tests.load.benchmark --url http://127.0.0.1:8001/mcp
+        uv run python -m tests.load.benchmark --url http://localhost:8001/mcp
     """
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)

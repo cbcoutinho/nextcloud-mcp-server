@@ -19,15 +19,15 @@ async def test_prm_endpoint():
     # Test the PRM endpoint directly
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            "http://127.0.0.1:8001/.well-known/oauth-protected-resource"
+            "http://localhost:8001/.well-known/oauth-protected-resource"
         )
         assert response.status_code == 200
 
         prm_data = response.json()
-        assert prm_data["resource"] == "http://127.0.0.1:8001"
+        assert prm_data["resource"] == "http://localhost:8001"
         assert "nc:read" in prm_data["scopes_supported"]
         assert "nc:write" in prm_data["scopes_supported"]
-        assert "http://127.0.0.1:8080" in prm_data["authorization_servers"]
+        assert "http://localhost:8080" in prm_data["authorization_servers"]
         assert "header" in prm_data["bearer_methods_supported"]
         assert "RS256" in prm_data["resource_signing_alg_values_supported"]
 
@@ -386,6 +386,153 @@ async def test_scope_metadata_coverage(nc_mcp_client):
     # We applied decorators to 90 tools
     # In BasicAuth mode, all should be visible
     assert len(tools_response.tools) >= 90
+
+
+@pytest.mark.integration
+async def test_jwt_with_no_custom_scopes_returns_zero_tools(
+    nc_mcp_oauth_client_no_custom_scopes,
+):
+    """
+    Test that a JWT token with only OIDC default scopes (no nc:read or nc:write) returns 0 tools.
+
+    This tests the security behavior when a user declines to grant custom scopes during consent.
+    Expected: JWT token has scopes=['openid', 'profile', 'email'] but no nc:read or nc:write.
+    All tools require at least one custom scope, so they should all be filtered out.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # Connect with JWT token that has NO custom scopes (only openid, profile, email)
+    result = await nc_mcp_oauth_client_no_custom_scopes.list_tools()
+    assert result is not None
+
+    tool_names = [tool.name for tool in result.tools]
+    logger.info(
+        f"JWT token with no custom scopes sees {len(tool_names)} tools (should be 0)"
+    )
+
+    # All tools require nc:read or nc:write, so should be filtered out
+    assert len(tool_names) == 0, (
+        f"Expected 0 tools but got {len(tool_names)}: {tool_names[:10]}"
+    )
+
+    logger.info(
+        "✅ JWT token without custom scopes correctly returns 0 tools (all filtered out)"
+    )
+
+
+@pytest.mark.integration
+async def test_jwt_consent_scenarios_read_only(nc_mcp_oauth_client_read_only):
+    """
+    Test JWT with only nc:read scope consented.
+
+    Simulates user granting only read permission during OAuth consent.
+    Expected: Should see read tools but not write tools.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    result = await nc_mcp_oauth_client_read_only.list_tools()
+    assert result is not None
+    assert len(result.tools) > 0
+
+    tool_names = [tool.name for tool in result.tools]
+    logger.info(f"JWT with nc:read consent sees {len(tool_names)} tools")
+
+    # Verify read tools are present
+    read_tools = ["nc_notes_get_note", "nc_notes_search_notes", "nc_webdav_read_file"]
+    for tool in read_tools:
+        assert tool in tool_names, f"Expected read tool {tool} not found"
+
+    # Verify write tools are filtered out
+    write_tools = [
+        "nc_notes_create_note",
+        "nc_notes_update_note",
+        "nc_webdav_write_file",
+    ]
+    for tool in write_tools:
+        assert tool not in tool_names, f"Write tool {tool} should be filtered out"
+
+    logger.info(
+        f"✅ JWT with nc:read consent: {len(tool_names)} read tools visible, write tools filtered"
+    )
+
+
+@pytest.mark.integration
+async def test_jwt_consent_scenarios_write_only(nc_mcp_oauth_client_write_only):
+    """
+    Test JWT with only nc:write scope consented.
+
+    Simulates user granting only write permission during OAuth consent.
+    Expected: Should see write tools but not read-only tools.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    result = await nc_mcp_oauth_client_write_only.list_tools()
+    assert result is not None
+    assert len(result.tools) > 0
+
+    tool_names = [tool.name for tool in result.tools]
+    logger.info(f"JWT with nc:write consent sees {len(tool_names)} tools")
+
+    # Verify write tools are present
+    write_tools = [
+        "nc_notes_create_note",
+        "nc_notes_update_note",
+        "nc_webdav_write_file",
+    ]
+    for tool in write_tools:
+        assert tool in tool_names, f"Expected write tool {tool} not found"
+
+    # Verify read-only tools are filtered out
+    read_only_tools = ["nc_notes_get_note", "nc_notes_search_notes"]
+    for tool in read_only_tools:
+        assert tool not in tool_names, f"Read-only tool {tool} should be filtered out"
+
+    logger.info(
+        f"✅ JWT with nc:write consent: {len(tool_names)} write tools visible, read-only tools filtered"
+    )
+
+
+@pytest.mark.integration
+async def test_jwt_consent_scenarios_full_access(nc_mcp_oauth_client_full_access):
+    """
+    Test JWT with both nc:read and nc:write scopes consented.
+
+    Simulates user granting both permissions during OAuth consent.
+    Expected: Should see all 90+ tools (both read and write).
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    result = await nc_mcp_oauth_client_full_access.list_tools()
+    assert result is not None
+    assert len(result.tools) > 0
+
+    tool_names = [tool.name for tool in result.tools]
+    logger.info(f"JWT with full consent sees {len(tool_names)} tools")
+
+    # Verify both read and write tools are present
+    read_tools = ["nc_notes_get_note", "nc_webdav_read_file"]
+    write_tools = ["nc_notes_create_note", "nc_webdav_write_file"]
+
+    for tool in read_tools:
+        assert tool in tool_names, f"Expected read tool {tool} not found"
+
+    for tool in write_tools:
+        assert tool in tool_names, f"Expected write tool {tool} not found"
+
+    # Should have all tools
+    assert len(tool_names) >= 90, f"Expected 90+ tools but got {len(tool_names)}"
+
+    logger.info(
+        f"✅ JWT with full consent: {len(tool_names)} tools visible (all read + write)"
+    )
 
 
 if __name__ == "__main__":

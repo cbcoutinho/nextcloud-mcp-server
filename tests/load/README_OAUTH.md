@@ -145,7 +145,7 @@ uv run python -m tests.load.oauth_benchmark -u 2 -d 30 --verbose
 | `--users` | `-u` | 2 | Number of concurrent users (dynamically created) |
 | `--duration` | `-d` | 30.0 | Test duration in seconds |
 | `--warmup` | `-w` | 5.0 | Warmup period before metrics collection (seconds) |
-| `--url` | | `http://127.0.0.1:8001/mcp` | MCP OAuth server URL |
+| `--url` | | `http://localhost:8001/mcp` | MCP OAuth server URL |
 | `--output` | `-o` | None | JSON output file path |
 | `--workload` | | `mixed` | Workload type: mixed, sharing, collaboration, baseline |
 | `--user-prefix` | | `loadtest` | Prefix for dynamically created usernames |

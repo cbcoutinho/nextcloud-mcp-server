@@ -51,7 +51,7 @@ class OAuthCallbackServer:
     correlation, and stores them in a shared dictionary.
     """
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8081):
+    def __init__(self, host: str = "localhost", port: int = 8081):
         self.host = host
         self.port = port
         self.auth_states: dict[str, str] = {}
@@ -363,13 +363,13 @@ async def run_oauth_benchmark(
     try:
         # Get environment variables
         nextcloud_host = os.getenv("NEXTCLOUD_HOST", "http://localhost:8080")
-        callback_url = "http://127.0.0.1:8081/callback"
+        callback_url = "http://localhost:8081/callback"
 
         # Step 1: Start OAuth callback server
         print("Step 1/6: Starting OAuth callback server...")
-        callback_server = OAuthCallbackServer(host="127.0.0.1", port=8081)
+        callback_server = OAuthCallbackServer(host="localhost", port=8081)
         callback_server.start()
-        print("✓ Callback server listening on http://127.0.0.1:8081\n")
+        print("✓ Callback server listening on http://localhost:8081\n")
 
         # Step 2: Discover OIDC endpoints
         print("Step 2/6: Discovering OIDC endpoints...")
@@ -634,7 +634,7 @@ async def run_oauth_benchmark(
 )
 @click.option(
     "--url",
-    default="http://127.0.0.1:8001/mcp",
+    default="http://localhost:8001/mcp",
     show_default=True,
     help="MCP OAuth server URL",
 )

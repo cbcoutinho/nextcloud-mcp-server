@@ -55,7 +55,7 @@ async def test_jwt_token_structure_with_custom_client():
         pytest.skip("NEXTCLOUD_JWT_CLIENT_ID not set - skipping JWT token test")
 
     _client_secret = os.getenv("NEXTCLOUD_JWT_CLIENT_SECRET")
-    nextcloud_host = os.getenv("NEXTCLOUD_HOST", "http://127.0.0.1:8080")
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST", "http://localhost:8080")
 
     # Fetch discovery
     async with httpx.AsyncClient() as client:
