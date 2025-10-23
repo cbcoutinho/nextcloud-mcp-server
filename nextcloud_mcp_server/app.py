@@ -11,6 +11,7 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
+from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
@@ -534,10 +535,13 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     if oauth_enabled:
 
         def oauth_protected_resource_metadata(request):
-            """RFC 8959 Protected Resource Metadata endpoint."""
+            """RFC 9728 Protected Resource Metadata endpoint."""
             mcp_server_url = os.getenv(
                 "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
             )
+            # Append /mcp to match the actual resource path (FastMCP streamable-http endpoint)
+            resource_url = f"{mcp_server_url}/mcp"
+
             # Use PUBLIC_ISSUER_URL for authorization server since external clients
             # (like Claude) need the publicly accessible URL, not internal Docker URLs
             public_issuer_url = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
@@ -547,14 +551,24 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 
             return JSONResponse(
                 {
-                    "resource": mcp_server_url,
-                    "scopes_supported": ["nc:read", "nc:write"],
+                    "resource": resource_url,
+                    "scopes_supported": ["openid", "nc:read", "nc:write"],
                     "authorization_servers": [public_issuer_url],
                     "bearer_methods_supported": ["header"],
                     "resource_signing_alg_values_supported": ["RS256"],
                 }
             )
 
+        # Register PRM endpoint at both path-based and root locations per RFC 9728
+        # Path-based discovery: /.well-known/oauth-protected-resource{path}
+        routes.append(
+            Route(
+                "/.well-known/oauth-protected-resource/mcp",
+                oauth_protected_resource_metadata,
+                methods=["GET"],
+            )
+        )
+        # Root discovery (fallback): /.well-known/oauth-protected-resource
         routes.append(
             Route(
                 "/.well-known/oauth-protected-resource",
@@ -562,10 +576,22 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 methods=["GET"],
             )
         )
-        logger.info("Protected Resource Metadata (PRM) endpoint enabled")
+        logger.info(
+            "Protected Resource Metadata (PRM) endpoints enabled (path-based + root)"
+        )
 
     routes.append(Mount("/", app=mcp_app))
     app = Starlette(routes=routes, lifespan=lifespan)
+
+    # Add CORS middleware to allow browser-based clients like MCP Inspector
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allow all origins for development
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
 
     # Add exception handler for scope challenges (OAuth mode only)
     if oauth_enabled:
@@ -584,7 +610,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                     "WWW-Authenticate": (
                         f'Bearer error="insufficient_scope", '
                         f'scope="{scope_str}", '
-                        f'resource_metadata="{resource_url}/.well-known/oauth-protected-resource"'
+                        f'resource_metadata="{resource_url}/.well-known/oauth-protected-resource/mcp"'
                     )
                 },
                 content={
