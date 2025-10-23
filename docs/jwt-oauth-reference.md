@@ -27,13 +27,12 @@ The Nextcloud MCP Server supports OAuth authentication with both **JWT** (RFC 90
 
 ### Key Features
 
-✅ **JWT Token Support** - RFC 9068 compliant access tokens with RS256 signatures
-✅ **Custom Scopes** - `nc:read` and `nc:write` for read/write access control
-✅ **Dynamic Tool Filtering** - Tools filtered based on user's token scopes
-✅ **Automatic Client Creation** - JWT OAuth clients auto-generated on container startup
-✅ **Scope Challenges** - RFC-compliant `WWW-Authenticate` headers for insufficient scopes
-✅ **Protected Resource Metadata** - RFC 8959 endpoint for scope discovery
-✅ **Backward Compatible** - BasicAuth mode bypasses all scope checks
+- ✅ **JWT Token Support** - RFC 9068 compliant access tokens with RS256 signatures
+- ✅ **Custom Scopes** - `nc:read` and `nc:write` for read/write access control
+- ✅ **Dynamic Tool Filtering** - Tools filtered based on user's token scopes
+- ✅ **Scope Challenges** - RFC-compliant `WWW-Authenticate` headers for insufficient scopes
+- ✅ **Protected Resource Metadata** - RFC 8959 endpoint for scope discovery
+- ✅ **Backward Compatible** - BasicAuth mode bypasses all scope checks
 
 ### Supported Scopes
 
@@ -88,14 +87,23 @@ The Nextcloud OIDC app supports two token formats, configured per-client:
 **Advantages:**
 - ✅ Smaller size (72 characters)
 - ✅ No payload visible to client
+- ✅ Direct scope access via introspection endpoint (RFC 7662)
 
 **Disadvantages:**
-- ❌ Requires userinfo endpoint call for each validation
-- ❌ Scopes must be inferred from userinfo response (not directly available)
-- ❌ Higher latency (HTTP call required)
+- ❌ Higher latency - Requires HTTP call to introspection endpoint
+- ❌ Slower than JWT signature verification (network roundtrip)
+
+**Validation Method:**
+Opaque tokens are validated using the **introspection endpoint** (`/apps/oidc/introspect`), which returns:
+- Token active status
+- Scope claim (direct access, no inference needed)
+- User information (`sub`, `username`)
+- Token metadata (`exp`, `iat`, `client_id`)
+
+Falls back to userinfo endpoint only if introspection is unavailable.
 
 **When to Use:**
-- Use **JWT tokens** for production (better performance, direct scope access)
+- Use **JWT tokens** for production (better performance, no HTTP call)
 - Use **opaque tokens** for compatibility with clients that don't support JWT
 
 ---
@@ -228,8 +236,9 @@ The development environment includes three MCP server variants:
 
 ### JWT Service Configuration
 
-The `mcp-oauth-jwt` service uses automatic client creation:
+The `mcp-oauth-jwt` service uses **Dynamic Client Registration (DCR)** by default:
 
+**Default Configuration (DCR):**
 ```yaml
 mcp-oauth-jwt:
   build: .
@@ -240,58 +249,149 @@ mcp-oauth-jwt:
     - NEXTCLOUD_HOST=http://app:80
     - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8002
     - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
-    - NEXTCLOUD_OIDC_CLIENT_STORAGE=/var/www/html/.oauth-jwt/nextcloud_oauth_client.json
     - NEXTCLOUD_OIDC_SCOPES=openid profile email nc:read nc:write
     - NEXTCLOUD_OIDC_TOKEN_TYPE=jwt
   volumes:
-    - nextcloud:/var/www/html:ro
+    - ./oauth-storage:/app/.oauth  # Optional: persist DCR credentials
+```
+
+**With Pre-Configured Credentials:**
+```yaml
+mcp-oauth-jwt:
+  build: .
+  command: ["--transport", "streamable-http", "--oauth", "--port", "8002"]
+  ports:
+    - 127.0.0.1:8002:8002
+  environment:
+    - NEXTCLOUD_HOST=http://app:80
+    - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8002
+    - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
+    - NEXTCLOUD_OIDC_CLIENT_ID=<your_client_id>      # Skips DCR
+    - NEXTCLOUD_OIDC_CLIENT_SECRET=<your_client_secret>  # Skips DCR
+    - NEXTCLOUD_OIDC_TOKEN_TYPE=jwt
 ```
 
 **Key Points:**
-- No `NEXTCLOUD_OIDC_CLIENT_ID` or `CLIENT_SECRET` needed (loaded from storage)
-- JWT client auto-created during Nextcloud initialization
-- Credentials stored in `/var/www/html/.oauth-jwt/nextcloud_oauth_client.json`
-- Volume mounted read-only for security
+- **No credentials needed** - DCR automatically registers the client on first start
+- **Credentials persist** - Saved to `.nextcloud_oauth_client.json` and reused
+- **JWT tokens** - Set `TOKEN_TYPE=jwt` for better performance
+- **Pre-configured credentials** - Providing `CLIENT_ID`/`CLIENT_SECRET` skips DCR
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `NEXTCLOUD_HOST` | Nextcloud base URL | `http://localhost:8080` |
-| `NEXTCLOUD_MCP_SERVER_URL` | MCP server external URL | (required) |
+| `NEXTCLOUD_MCP_SERVER_URL` | MCP server external URL for OAuth callbacks | (required in OAuth mode) |
 | `NEXTCLOUD_PUBLIC_ISSUER_URL` | Public issuer URL for JWT validation | (uses `NEXTCLOUD_HOST`) |
-| `NEXTCLOUD_OIDC_CLIENT_STORAGE` | Path to client credentials JSON | (optional - uses DCR if unset) |
+| `NEXTCLOUD_OIDC_CLIENT_ID` | Pre-configured OAuth client ID | (optional - uses DCR if unset) |
+| `NEXTCLOUD_OIDC_CLIENT_SECRET` | Pre-configured OAuth client secret | (optional - uses DCR if unset) |
+| `NEXTCLOUD_OIDC_CLIENT_STORAGE` | Path to persist DCR-registered credentials | `.nextcloud_oauth_client.json` |
 | `NEXTCLOUD_OIDC_SCOPES` | Space-separated scopes to request | `"openid profile email nc:read nc:write"` |
 | `NEXTCLOUD_OIDC_TOKEN_TYPE` | Token format: `"jwt"` or `"Bearer"` | `"Bearer"` |
 
+### Dynamic Client Registration (DCR)
+
+The MCP server supports **automatic OAuth client registration** using the OIDC Discovery registration endpoint. This eliminates the need for manual client creation in most cases.
+
+**How It Works:**
+
+When the MCP server starts in OAuth mode, it follows this **three-tier credential loading strategy**:
+
+```
+1. Environment Variables (Highest Priority)
+   ├─ NEXTCLOUD_OIDC_CLIENT_ID
+   └─ NEXTCLOUD_OIDC_CLIENT_SECRET
+
+2. Storage File (Second Priority)
+   └─ NEXTCLOUD_OIDC_CLIENT_STORAGE (.nextcloud_oauth_client.json)
+
+3. Dynamic Client Registration (Automatic Fallback)
+   ├─ Discovers registration endpoint from /.well-known/openid-configuration
+   ├─ Registers new client with requested scopes and token type
+   ├─ Saves credentials to storage file for future use
+   └─ Client credentials persist across restarts
+```
+
+**Configuration:**
+
+DCR automatically configures the client based on environment variables:
+
+```bash
+# Minimal DCR configuration (no credentials needed!)
+export NEXTCLOUD_HOST=http://localhost:8080
+export NEXTCLOUD_MCP_SERVER_URL=http://localhost:8000
+export NEXTCLOUD_OIDC_SCOPES="openid profile email nc:read nc:write"
+export NEXTCLOUD_OIDC_TOKEN_TYPE=jwt  # or "Bearer" for opaque tokens
+```
+
+**Credential Storage:**
+
+- Registered credentials are saved to `NEXTCLOUD_OIDC_CLIENT_STORAGE` (default: `.nextcloud_oauth_client.json`)
+- File has restrictive permissions (0600 - owner read/write only)
+- Credentials are reused on subsequent starts (no re-registration needed)
+- Storage file is checked for expiration (auto-regenerates if expired)
+
+**Format:**
+```json
+{
+  "client_id": "XBd2xqIisu3Kswg39Ub4BUhC36PEYjwwivx3G5nZdDgigvwKXrTHozs7m9DeoLSY",
+  "client_secret": "xNKcy0qpUSau36T60pGGdb03pMEVLXtqykxjK8YkDpoNxNcZ4ClyAT3IAEse2AKT",
+  "client_id_issued_at": 1761097039,
+  "client_secret_expires_at": 2076457039,
+  "redirect_uris": ["http://localhost:8000/oauth/callback"]
+}
+```
+
+**Benefits:**
+- ✅ Zero-configuration OAuth setup
+- ✅ Automatic credential management
+- ✅ Supports both JWT and opaque tokens
+- ✅ Credentials persist across container restarts
+- ✅ Automatic re-registration if credentials expire
+- ✅ Properly sets `allowed_scopes` for JWT token validation
+
 ### Manual Client Creation
 
-If not using automatic creation, create a JWT client manually:
+Manual client creation is **optional** but may be preferred when:
+- You want explicit control over client configuration
+- You're deploying to production environments with strict security policies
+- You need to pre-provision OAuth clients before deployment
+
+**Create Client via OCC Command:**
 
 ```bash
 docker compose exec app php occ oidc:create \
   --token_type=jwt \
   --allowed_scopes="openid profile email nc:read nc:write" \
   "Nextcloud MCP Server" \
-  "http://localhost:8002/oauth/callback"
+  "http://localhost:8000/oauth/callback"
 ```
 
 **Output:**
 ```json
 {
-  "client_id": "...",
-  "client_secret": "...",
+  "client_id": "XBd2xqIisu3Kswg39Ub4BUhC36PEYjwwivx3G5nZdDgigvwKXrTHozs7m9DeoLSY",
+  "client_secret": "xNKcy0qpUSau36T60pGGdb03pMEVLXtqykxjK8YkDpoNxNcZ4ClyAT3IAEse2AKT",
   "token_type": "jwt",
   "allowed_scopes": "openid profile email nc:read nc:write"
 }
 ```
 
-Then configure the MCP server:
+**Configure MCP Server with Pre-Configured Credentials:**
+
 ```bash
+# Option 1: Environment variables (highest priority)
 export NEXTCLOUD_OIDC_CLIENT_ID="<client_id>"
 export NEXTCLOUD_OIDC_CLIENT_SECRET="<client_secret>"
 export NEXTCLOUD_OIDC_TOKEN_TYPE="jwt"
+
+# Option 2: Storage file (second priority)
+# Save the JSON response to .nextcloud_oauth_client.json
+# Server will automatically load it on startup
 ```
+
+When credentials are provided via environment variables or storage file, **DCR is skipped**.
 
 ---
 
@@ -317,8 +417,8 @@ export NEXTCLOUD_OIDC_TOKEN_TYPE="jwt"
 │  ┌───────────────────────────────────────────────────┐    │
 │  │  NextcloudTokenVerifier                            │    │
 │  │  - JWT signature verification (JWKS)               │    │
-│  │  - Scope extraction from token payload             │    │
-│  │  - Fallback to userinfo endpoint (opaque tokens)   │    │
+│  │  - Introspection endpoint (opaque tokens)          │    │
+│  │  - Userinfo fallback (last resort)                 │    │
 │  └───────────────────┬───────────────────────────────┘    │
 │                      │                                     │
 │                      v                                     │
@@ -342,10 +442,13 @@ export NEXTCLOUD_OIDC_TOKEN_TYPE="jwt"
 ### Key Components
 
 **1. Token Verification** (`nextcloud_mcp_server/auth/token_verifier.py`)
-- JWT signature verification using JWKS (RS256)
-- Scope extraction from `scope` claim
-- Token caching with TTL
-- Fallback to userinfo endpoint for opaque tokens
+- **Three-tier validation strategy:**
+  1. **JWT verification** (lines 116-124): JWKS signature validation for JWT tokens
+  2. **Introspection** (lines 126-134): RFC 7662 endpoint for opaque tokens
+  3. **Userinfo fallback** (lines 137-142): Last resort if introspection unavailable
+- Scope extraction from token payload (JWT) or introspection response (opaque)
+- Token caching with TTL to reduce repeated validations
+- Supports both access token formats transparently
 
 **2. Scope Authorization** (`nextcloud_mcp_server/auth/scope_authorization.py`)
 - `@require_scopes()` decorator for tools
@@ -369,28 +472,66 @@ export NEXTCLOUD_OIDC_TOKEN_TYPE="jwt"
 - Returns 403 with `WWW-Authenticate` header
 - Includes missing scopes and PRM endpoint URL
 
-### Automatic Client Creation
+### Token Validation Flow
 
-**Post-Installation Hook:** `app-hooks/post-installation/90-create-jwt-oauth-client.sh`
+The `NextcloudTokenVerifier` implements a **cascading validation strategy** that handles both JWT and opaque tokens efficiently:
 
-On container startup, this script:
-1. Installs/enables OIDC app
-2. Creates JWT client via `occ oidc:create --token_type=jwt`
-3. Parses JSON output for credentials
-4. Saves to `/var/www/html/.oauth-jwt/nextcloud_oauth_client.json`
-
-**Credential Format:**
-```json
-{
-  "client_id": "XBd2xqIisu3Kswg39Ub4BUhC36PEYjwwivx3G5nZdDgigvwKXrTHozs7m9DeoLSY",
-  "client_secret": "xNKcy0qpUSau36T60pGGdb03pMEVLXtqykxjK8YkDpoNxNcZ4ClyAT3IAEse2AKT",
-  "client_id_issued_at": 1761097039,
-  "client_secret_expires_at": 2076457039,
-  "redirect_uris": ["http://localhost:8002/oauth/callback"]
-}
+```
+┌─────────────────────────────────────────────────────────┐
+│  verify_token(token)                                    │
+│  (nextcloud_mcp_server/auth/token_verifier.py:88-142)  │
+└────────────────────────┬────────────────────────────────┘
+                         │
+                         ├──> 1. Check cache (lines 106-109)
+                         │    ├─ Hit: Return cached AccessToken
+                         │    └─ Miss: Continue to validation
+                         │
+                         ├──> 2. JWT Format Check (lines 112-124)
+                         │    ├─ Token has 3 parts (header.payload.signature)?
+                         │    │   └─ Yes: Attempt JWT verification
+                         │    │       ├─ Verify signature with JWKS (RS256)
+                         │    │       ├─ Validate issuer, expiration
+                         │    │       ├─ Extract scopes from payload
+                         │    │       └─ Success: Return AccessToken
+                         │    └─ Fail/Not JWT: Continue to introspection
+                         │
+                         ├──> 3. Introspection (lines 126-134)
+                         │    ├─ POST to /apps/oidc/introspect
+                         │    ├─ Authenticate with client credentials
+                         │    ├─ Response contains:
+                         │    │   • active: true/false
+                         │    │   • scope: "openid nc:read nc:write"
+                         │    │   • sub, exp, iat, client_id
+                         │    ├─ Extract scopes from response
+                         │    └─ Success: Return AccessToken
+                         │
+                         └──> 4. Userinfo Fallback (lines 137-142)
+                              ├─ GET /apps/oidc/userinfo
+                              ├─ Bearer token in Authorization header
+                              ├─ Infer scopes from response claims
+                              └─ Return AccessToken or None
 ```
 
----
+**Validation Priorities:**
+
+| Token Type | Method | Performance | Scope Access | Code Reference |
+|------------|--------|-------------|--------------|----------------|
+| JWT | JWKS Signature | ⚡ Fastest (local) | Direct (`scope` claim) | `token_verifier.py:156-234` |
+| Opaque | Introspection | 🔄 Medium (HTTP) | Direct (`scope` field) | `token_verifier.py:236-328` |
+| Any | Userinfo | 🐌 Slowest (HTTP + inference) | Inferred (from claims) | `token_verifier.py:330-386` |
+
+**Configuration** (`nextcloud_mcp_server/app.py:391-399`):
+```python
+token_verifier = NextcloudTokenVerifier(
+    nextcloud_host=nextcloud_host,
+    userinfo_uri=userinfo_uri,
+    jwks_uri=jwks_uri,                    # Enables JWT verification
+    issuer=jwt_validation_issuer,         # For JWT issuer validation
+    introspection_uri=introspection_uri,  # Enables introspection for opaque tokens
+    client_id=client_id,                  # Required for introspection auth
+    client_secret=client_secret,          # Required for introspection auth
+)
+```
 
 ## Testing
 
@@ -565,25 +706,25 @@ docker compose exec mcp-oauth-jwt env | grep NEXTCLOUD_OIDC
 # Ensure no NEXTCLOUD_USERNAME or NEXTCLOUD_PASSWORD set
 ```
 
-### Issue: Dynamic Client Registration Doesn't Set Scopes
+### Verifying DCR Scope Configuration
 
-**Symptom:** Client registered via DCR has empty `allowed_scopes`
+DCR **now properly sets `allowed_scopes`** when the `scope` parameter is provided during registration.
 
-**Cause:** OIDC app's registration endpoint doesn't populate `allowed_scopes` from request
+**To verify DCR scopes are working:**
 
-**Workaround:** Use pre-configured clients instead of DCR for JWT tokens:
 ```bash
-# Create client manually via occ
-docker compose exec app php occ oidc:create \
-  --token_type=jwt \
-  --allowed_scopes="openid profile email nc:read nc:write" \
-  "Client Name" \
-  "http://callback"
+# Check the registered client's allowed_scopes via database
+docker compose exec db mariadb -u nextcloud -ppassword nextcloud \
+  -e "SELECT name, allowed_scopes FROM oc_oauth2_clients WHERE name LIKE 'DCR-%' ORDER BY id DESC LIMIT 1;"
 
-# Configure MCP server to use these credentials
-export NEXTCLOUD_OIDC_CLIENT_ID="..."
-export NEXTCLOUD_OIDC_CLIENT_SECRET="..."
+# Should show your requested scopes (e.g., "openid profile email nc:read nc:write")
 ```
+
+**If scopes are missing:**
+1. Ensure `NEXTCLOUD_OIDC_SCOPES` environment variable is set correctly
+2. Check MCP server startup logs for the scopes being requested
+3. Verify DCR is enabled in Nextcloud OIDC app settings
+4. Delete `.nextcloud_oauth_client.json` and restart to force re-registration
 
 ### Issue: Token Type Case Sensitivity
 
@@ -716,9 +857,7 @@ WARNING Missing required scopes: nc:write
 ### Known Limitations
 
 1. **No Fine-Grained Scopes** - Only coarse `nc:read` and `nc:write` (not per-app scopes)
-2. **DCR Doesn't Set Allowed Scopes** - Must use pre-configured clients for JWT
-3. **No Introspection Endpoint** - OIDC app lacks RFC 7662 introspection
-4. **No Refresh Token Support** - Tokens must be reacquired when expired
+2. **No Refresh Token Support** - Tokens must be reacquired when expired
 
 ### Future Enhancements
 
@@ -727,7 +866,6 @@ WARNING Missing required scopes: nc:write
 - Resource-level filtering (apply to MCP resources, not just tools)
 - Automatic scope discovery from decorated tools
 - Admin UI for scope management
-- Token introspection endpoint (RFC 7662)
 
 ---
 
