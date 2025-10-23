@@ -15,7 +15,6 @@ import os
 import secrets
 
 # Import helpers from conftest
-import sys
 import time
 from typing import AsyncGenerator
 from urllib.parse import quote
@@ -23,8 +22,8 @@ from urllib.parse import quote
 import httpx
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from conftest import _handle_oauth_consent_screen
+# Import from the root tests/ conftest.py using relative import
+from ..conftest import _handle_oauth_consent_screen
 
 logger = logging.getLogger(__name__)
 
