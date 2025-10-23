@@ -309,11 +309,18 @@ class NextcloudTokenVerifier(TokenVerifier):
                 )
 
             elif response.status_code in (400, 401, 403):
-                logger.info(f"Token introspection failed: HTTP {response.status_code}")
+                logger.warning(
+                    f"Token introspection failed: HTTP {response.status_code}. "
+                    f"This may indicate: (1) Client credentials mismatch - trying to introspect "
+                    f"token issued to different OAuth client, (2) Expired client credentials, "
+                    f"(3) Invalid token. Will fall back to userinfo endpoint. "
+                    f"Response: {response.text[:200] if response.text else 'empty'}"
+                )
                 return None
             else:
                 logger.warning(
-                    f"Unexpected response from introspection: {response.status_code}"
+                    f"Unexpected response from introspection: {response.status_code}. "
+                    f"Response: {response.text[:200] if response.text else 'empty'}"
                 )
                 return None
 
@@ -420,15 +427,31 @@ class NextcloudTokenVerifier(TokenVerifier):
         """
         Extract scopes from userinfo response.
 
-        Since the userinfo response doesn't include the original scopes,
-        we infer them from the claims present in the response.
+        First attempts to read actual scopes from the 'scope' field (RFC 8693).
+        If not present, infers scopes from the claims present in the response.
 
         Args:
             userinfo: The userinfo response dictionary
 
         Returns:
-            List of inferred scopes
+            List of scopes (actual or inferred)
         """
+        # Try to get actual scopes from userinfo response (if OIDC provider includes it)
+        scope_string = userinfo.get("scope")
+        if scope_string:
+            scopes = scope_string.split() if isinstance(scope_string, str) else []
+            if scopes:
+                logger.debug(
+                    f"Using actual scopes from userinfo: {scopes} (scope field present)"
+                )
+                return scopes
+
+        # Fallback: Infer scopes from claims present in response
+        # This maintains backward compatibility with OIDC providers that don't
+        # include the scope field in userinfo responses
+        logger.debug(
+            "No scope field in userinfo response, inferring scopes from claims"
+        )
         scopes = ["openid"]  # Always present
 
         if "email" in userinfo:
@@ -445,6 +468,7 @@ class NextcloudTokenVerifier(TokenVerifier):
         if "groups" in userinfo:
             scopes.append("groups")
 
+        logger.debug(f"Inferred scopes from userinfo claims: {scopes}")
         return scopes
 
     def clear_cache(self):

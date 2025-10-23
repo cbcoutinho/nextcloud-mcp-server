@@ -16,15 +16,15 @@ async def test_prm_endpoint():
     """Test that the Protected Resource Metadata endpoint returns correct data."""
     import httpx
 
-    # Test the PRM endpoint directly
+    # Test the PRM endpoint directly (RFC 9728 - path includes /mcp resource)
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            "http://localhost:8001/.well-known/oauth-protected-resource"
+            "http://localhost:8001/.well-known/oauth-protected-resource/mcp"
         )
         assert response.status_code == 200
 
         prm_data = response.json()
-        assert prm_data["resource"] == "http://localhost:8001"
+        assert prm_data["resource"] == "http://localhost:8001/mcp"
         assert "nc:read" in prm_data["scopes_supported"]
         assert "nc:write" in prm_data["scopes_supported"]
         assert "http://localhost:8080" in prm_data["authorization_servers"]
