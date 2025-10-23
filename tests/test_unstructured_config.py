@@ -1,13 +1,14 @@
 """Unit tests for Unstructured API configuration."""
 
 import os
+
 import pytest
 
-from nextcloud_mcp_server.config import (
-    get_unstructured_strategy,
-    get_unstructured_languages,
-)
 from nextcloud_mcp_server.client.unstructured_client import UnstructuredClient
+from nextcloud_mcp_server.config import (
+    get_unstructured_languages,
+    get_unstructured_strategy,
+)
 
 
 class TestUnstructuredStrategy:
@@ -134,7 +135,7 @@ class TestUnstructuredClientConfiguration:
         os.environ["UNSTRUCTURED_API_URL"] = "http://test:8000"
 
         try:
-            client = UnstructuredClient()
+            _client = UnstructuredClient()
             # The partition_document method should use get_unstructured_strategy() when strategy is None
             # We can't test the actual call without a running API, but we can verify the config is read
             assert get_unstructured_strategy() == "auto"
@@ -148,7 +149,7 @@ class TestUnstructuredClientConfiguration:
         os.environ["UNSTRUCTURED_API_URL"] = "http://test:8000"
 
         try:
-            client = UnstructuredClient()
+            _client = UnstructuredClient()
             # The partition_document method should use get_unstructured_languages() when languages is None
             assert get_unstructured_languages() == ["eng", "deu"]
         finally:
@@ -162,7 +163,7 @@ class TestUnstructuredClientConfiguration:
         os.environ["UNSTRUCTURED_API_URL"] = "http://test:8000"
 
         try:
-            client = UnstructuredClient()
+            _client = UnstructuredClient()
             assert get_unstructured_strategy() == "hi_res"
             assert get_unstructured_languages() == ["eng", "fra", "spa"]
         finally:

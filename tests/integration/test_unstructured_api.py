@@ -1,10 +1,8 @@
 """Integration tests for Unstructured API functionality."""
 
-import base64
 import json
 import logging
 import uuid
-from typing import Any, Dict
 from io import BytesIO
 
 import pytest
