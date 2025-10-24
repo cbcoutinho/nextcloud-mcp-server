@@ -182,13 +182,36 @@ Or connect from:
 The server exposes Nextcloud functionality through MCP tools (for actions) and resources (for data browsing).
 
 ### Tools
-Tools enable AI assistants to perform actions:
+
+The server provides 90+ tools across 8 Nextcloud apps. When using OAuth, tools are dynamically filtered based on your granted scopes.
+
+#### Available Tool Categories
+
+| App | Tools | Read Scope | Write Scope | Operations |
+|-----|-------|-----------|-------------|------------|
+| **Notes** | 7 | `mcp:notes:read` | `mcp:notes:write` | Create, read, update, delete, search notes |
+| **Calendar** | 20+ | `mcp:calendar:read` | `mcp:calendar:write` | Events, todos (tasks), calendars, recurring events, attendees |
+| **Contacts** | 8 | `mcp:contacts:read` | `mcp:contacts:write` | Create, read, update, delete contacts and address books |
+| **Files (WebDAV)** | 12 | `mcp:files:read` | `mcp:files:write` | List, read, upload, delete, move files and folders |
+| **Deck** | 15 | `mcp:deck:read` | `mcp:deck:write` | Boards, stacks, cards, labels, assignments |
+| **Cookbook** | 13 | `mcp:cookbook:read` | `mcp:cookbook:write` | Recipes, import from URLs, search, categories |
+| **Tables** | 5 | `mcp:tables:read` | `mcp:tables:write` | Row operations on Nextcloud Tables |
+| **Sharing** | 10+ | `mcp:sharing:read` | `mcp:sharing:write` | Create, manage, delete shares |
+
+**Example Tools:**
 - `nc_notes_create_note` - Create a new note
 - `nc_cookbook_import_recipe` - Import recipes from URLs with schema.org metadata
 - `deck_create_card` - Create a Deck card
 - `nc_calendar_create_event` - Create a calendar event
+- `nc_calendar_create_todo` - Create a CalDAV task/todo
 - `nc_contacts_create_contact` - Create a contact
-- And many more...
+- `nc_webdav_upload_file` - Upload a file to Nextcloud
+- And 80+ more...
+
+> [!TIP]
+> **OAuth Scope Filtering**: When connecting via OAuth, MCP clients will only see tools for which you've granted access. For example, granting only `mcp:notes:read` and `mcp:notes:write` will show 7 Notes tools instead of all 90+ tools. See [OAuth Troubleshooting - Limited Scopes](docs/oauth-troubleshooting.md#limited-scopes---only-seeing-notes-tools) if you're only seeing a subset of tools.
+>
+> **Known Issue**: Claude Code and some other MCP clients may only request/grant Notes scopes during initial connection. Track progress at [#234](https://github.com/cbcoutinho/nextcloud-mcp-server/issues/234).
 
 ### Resources
 Resources provide read-only access to Nextcloud data:

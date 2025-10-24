@@ -16,7 +16,7 @@ def configure_sharing_tools(mcp: FastMCP):
     """
 
     @mcp.tool()
-    @require_scopes("nc:write")
+    @require_scopes("sharing:write")
     async def nc_share_create(
         path: str,
         share_with: str,
@@ -55,7 +55,7 @@ def configure_sharing_tools(mcp: FastMCP):
         return json.dumps(share_data, indent=2)
 
     @mcp.tool()
-    @require_scopes("nc:write")
+    @require_scopes("sharing:write")
     async def nc_share_delete(share_id: int, ctx: Context) -> str:
         """Delete a share by its ID.
 
@@ -74,7 +74,7 @@ def configure_sharing_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
-    @require_scopes("nc:write")
+    @require_scopes("sharing:write")
     async def nc_share_get(share_id: int, ctx: Context) -> str:
         """Get information about a specific share.
 
@@ -92,7 +92,7 @@ def configure_sharing_tools(mcp: FastMCP):
         return json.dumps(share_data, indent=2)
 
     @mcp.tool()
-    @require_scopes("nc:write")
+    @require_scopes("sharing:write")
     async def nc_share_list(
         ctx: Context, path: str | None = None, shared_with_me: bool = False
     ) -> str:
@@ -113,7 +113,7 @@ def configure_sharing_tools(mcp: FastMCP):
         return json.dumps(shares, indent=2)
 
     @mcp.tool()
-    @require_scopes("nc:write")
+    @require_scopes("sharing:write")
     async def nc_share_update(share_id: int, permissions: int, ctx: Context) -> str:
         """Update the permissions of an existing share.
 

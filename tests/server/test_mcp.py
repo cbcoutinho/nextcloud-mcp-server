@@ -470,16 +470,21 @@ async def test_mcp_webdav_workflow(
         logger.info(f"Directory listing response: {listing_text}")
         listing_data = json.loads(listing_text)
 
-        # Ensure listing_data is a list
-        if not isinstance(listing_data, list):
-            logger.warning(
-                f"Expected directory listing to be a list, got: {type(listing_data)}"
-            )
-            listing_data = [listing_data] if listing_data else []
+        # Extract files from DirectoryListing response
+        assert "files" in listing_data, "Expected 'files' field in directory listing"
+        files = listing_data["files"]
+        assert isinstance(files, list), (
+            f"Expected files to be a list, got: {type(files)}"
+        )
+
+        # Verify metadata
+        assert listing_data["path"] == test_dir
+        assert listing_data["total_count"] >= 1
+        assert listing_data["files_count"] >= 1
 
         # Find our file in the listing
         found_file = None
-        for item in listing_data:
+        for item in files:
             if isinstance(item, dict) and item.get("name") == test_file:
                 found_file = item
                 break

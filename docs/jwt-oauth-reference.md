@@ -28,7 +28,7 @@ The Nextcloud MCP Server supports OAuth authentication with both **JWT** (RFC 90
 ### Key Features
 
 - ✅ **JWT Token Support** - RFC 9068 compliant access tokens with RS256 signatures
-- ✅ **Custom Scopes** - `nc:read` and `nc:write` for read/write access control
+- ✅ **Custom Scopes** - `mcp:notes:read` and `mcp:notes:write` for read/write access control
 - ✅ **Dynamic Tool Filtering** - Tools filtered based on user's token scopes
 - ✅ **Scope Challenges** - RFC-compliant `WWW-Authenticate` headers for insufficient scopes
 - ✅ **Protected Resource Metadata** - RFC 9728 endpoint for scope discovery
@@ -38,8 +38,8 @@ The Nextcloud MCP Server supports OAuth authentication with both **JWT** (RFC 90
 
 | Scope | Description | Tool Count |
 |-------|-------------|------------|
-| `nc:read` | Read-only access to Nextcloud data | 36 tools |
-| `nc:write` | Write access to create/modify/delete data | 54 tools |
+| `mcp:notes:read` | Read-only access to Nextcloud data | 36 tools |
+| `mcp:notes:write` | Write access to create/modify/delete data | 54 tools |
 
 All MCP tools (90 total) require at least one of these scopes. Standard OIDC scopes (`openid`, `profile`, `email`) are also supported.
 
@@ -75,7 +75,7 @@ The Nextcloud OIDC app supports two token formats, configured per-client:
     "aud": "client_id",
     "exp": 1234567890,
     "iat": 1234567890,
-    "scope": "openid profile email nc:read nc:write",
+    "scope": "openid profile email mcp:notes:read mcp:notes:write",
     "client_id": "...",
     "jti": "..."
   }
@@ -116,8 +116,8 @@ The MCP server uses **coarse-grained scopes** for simplicity:
 
 | Scope | Operations | Examples |
 |-------|------------|----------|
-| `nc:read` | Read-only access | Get notes, search files, list calendars, read contacts |
-| `nc:write` | Write operations | Create notes, update events, delete files, modify contacts |
+| `mcp:notes:read` | Read-only access | Get notes, search files, list calendars, read contacts |
+| `mcp:notes:write` | Write operations | Create notes, update events, delete files, modify contacts |
 
 ### Standard OIDC Scopes
 
@@ -131,12 +131,12 @@ The MCP server uses **coarse-grained scopes** for simplicity:
 
 **Full Access:**
 ```
-openid profile email nc:read nc:write
+openid profile email mcp:notes:read mcp:notes:write
 ```
 
 **Read-Only:**
 ```
-openid profile email nc:read
+openid profile email mcp:notes:read
 ```
 
 **No Custom Scopes (OIDC only):**
@@ -150,32 +150,32 @@ All 90 MCP tools are decorated with scope requirements:
 
 ```python
 @mcp.tool()
-@require_scopes("nc:read")
+@require_scopes("mcp:notes:read")
 async def nc_notes_get_note(note_id: int, ctx: Context):
-    """Get a note by ID (requires nc:read scope)"""
+    """Get a note by ID (requires mcp:notes:read scope)"""
     ...
 
 @mcp.tool()
-@require_scopes("nc:write")
+@require_scopes("mcp:notes:write")
 async def nc_notes_create_note(title: str, content: str, ctx: Context):
-    """Create a note (requires nc:write scope)"""
+    """Create a note (requires mcp:notes:write scope)"""
     ...
 ```
 
 **Coverage:**
-- ✅ 36 read tools decorated with `@require_scopes("nc:read")`
-- ✅ 54 write tools decorated with `@require_scopes("nc:write")`
+- ✅ 36 read tools decorated with `@require_scopes("mcp:notes:read")`
+- ✅ 54 write tools decorated with `@require_scopes("mcp:notes:write")`
 - ✅ 90/90 tools covered (100%)
 
 ### Dynamic Tool Filtering
 
 The MCP server implements **dynamic tool filtering** - users only see tools they have permission to use. This applies to **both JWT and Bearer (opaque) tokens** in OAuth mode:
 
-**Token with `nc:read` only:**
+**Token with `mcp:notes:read` only:**
 - `list_tools()` returns 36 read-only tools
 - Write tools are hidden from the tool list
 
-**Token with `nc:write` only:**
+**Token with `mcp:notes:write` only:**
 - `list_tools()` returns 54 write-only tools
 - Read tools are hidden from the tool list
 
@@ -183,7 +183,7 @@ The MCP server implements **dynamic tool filtering** - users only see tools they
 - `list_tools()` returns all 90 tools
 
 **Token with no custom scopes:**
-- `list_tools()` returns 0 tools (all require `nc:read` or `nc:write`)
+- `list_tools()` returns 0 tools (all require `mcp:notes:read` or `mcp:notes:write`)
 
 **BasicAuth mode:**
 - `list_tools()` returns all 90 tools (no filtering)
@@ -197,7 +197,7 @@ When a tool is called without required scopes, the server returns a `403 Forbidd
 ```http
 HTTP/1.1 403 Forbidden
 WWW-Authenticate: Bearer error="insufficient_scope",
-                  scope="nc:write",
+                  scope="mcp:notes:write",
                   resource_metadata="http://server/.well-known/oauth-protected-resource/mcp"
 ```
 
@@ -212,8 +212,8 @@ The server implements RFC 9728's Protected Resource Metadata endpoint:
 **Response:**
 ```json
 {
-  "resource": "http://localhost:8002/mcp",
-  "scopes_supported": ["nc:read", "nc:write"],
+  "resource": "http://localhost:8001/mcp",
+  "scopes_supported": ["mcp:notes:read", "mcp:notes:write"],
   "authorization_servers": ["http://localhost:8080"],
   "bearer_methods_supported": ["header"],
   "resource_signing_alg_values_supported": ["RS256"]
@@ -228,55 +228,53 @@ This allows OAuth clients to discover supported scopes before requesting authori
 
 ### Docker Services
 
-The development environment includes three MCP server variants:
+The development environment includes two MCP server variants:
 
 | Service | Port | Auth Type | Token Type | Use Case |
 |---------|------|-----------|------------|----------|
 | `mcp` | 8000 | BasicAuth | N/A | Development, testing |
-| `mcp-oauth` | 8001 | OAuth | Opaque | Standard OAuth flows |
-| `mcp-oauth-jwt` | 8002 | OAuth | JWT | Production, JWT testing |
+| `mcp-oauth` | 8001 | OAuth | JWT (configurable) | OAuth testing with JWT tokens |
 
-### JWT Service Configuration
+### OAuth Service Configuration
 
-The `mcp-oauth-jwt` service uses **Dynamic Client Registration (DCR)** by default:
+The `mcp-oauth` service uses **Dynamic Client Registration (DCR)** by default and is configured to request JWT tokens:
 
-**Default Configuration (DCR):**
+**Default Configuration (DCR with JWT tokens):**
 ```yaml
-mcp-oauth-jwt:
+mcp-oauth:
   build: .
-  command: ["--transport", "streamable-http", "--oauth", "--port", "8002"]
+  command: ["--transport", "streamable-http", "--oauth", "--port", "8001", "--oauth-token-type", "jwt"]
   ports:
-    - 127.0.0.1:8002:8002
+    - 127.0.0.1:8001:8001
   environment:
     - NEXTCLOUD_HOST=http://app:80
-    - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8002
+    - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8001
     - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
-    - NEXTCLOUD_OIDC_SCOPES=openid profile email nc:read nc:write
-    - NEXTCLOUD_OIDC_TOKEN_TYPE=jwt
+    - NEXTCLOUD_OIDC_SCOPES=openid profile email mcp:notes:read mcp:notes:write
   volumes:
-    - ./oauth-storage:/app/.oauth  # Optional: persist DCR credentials
+    - oauth-client-storage:/app/.oauth  # Persist DCR credentials
 ```
 
 **With Pre-Configured Credentials:**
 ```yaml
-mcp-oauth-jwt:
+mcp-oauth:
   build: .
-  command: ["--transport", "streamable-http", "--oauth", "--port", "8002"]
+  command: ["--transport", "streamable-http", "--oauth", "--port", "8001", "--oauth-token-type", "jwt"]
   ports:
-    - 127.0.0.1:8002:8002
+    - 127.0.0.1:8001:8001
   environment:
     - NEXTCLOUD_HOST=http://app:80
-    - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8002
+    - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8001
     - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
     - NEXTCLOUD_OIDC_CLIENT_ID=<your_client_id>      # Skips DCR
     - NEXTCLOUD_OIDC_CLIENT_SECRET=<your_client_secret>  # Skips DCR
-    - NEXTCLOUD_OIDC_TOKEN_TYPE=jwt
 ```
 
 **Key Points:**
 - **No credentials needed** - DCR automatically registers the client on first start
 - **Credentials persist** - Saved to `.nextcloud_oauth_client.json` and reused
-- **JWT tokens** - Set `TOKEN_TYPE=jwt` for better performance
+- **JWT tokens** - Use `--oauth-token-type jwt` for better performance
+- **Token verifier supports both** - Can handle JWT and opaque tokens
 - **Pre-configured credentials** - Providing `CLIENT_ID`/`CLIENT_SECRET` skips DCR
 
 ### Environment Variables
@@ -289,7 +287,7 @@ mcp-oauth-jwt:
 | `NEXTCLOUD_OIDC_CLIENT_ID` | Pre-configured OAuth client ID | (optional - uses DCR if unset) |
 | `NEXTCLOUD_OIDC_CLIENT_SECRET` | Pre-configured OAuth client secret | (optional - uses DCR if unset) |
 | `NEXTCLOUD_OIDC_CLIENT_STORAGE` | Path to persist DCR-registered credentials | `.nextcloud_oauth_client.json` |
-| `NEXTCLOUD_OIDC_SCOPES` | Space-separated scopes to request | `"openid profile email nc:read nc:write"` |
+| `NEXTCLOUD_OIDC_SCOPES` | Space-separated scopes to request | `"openid profile email mcp:notes:read mcp:notes:write"` |
 | `NEXTCLOUD_OIDC_TOKEN_TYPE` | Token format: `"jwt"` or `"Bearer"` | `"Bearer"` |
 
 ### Dynamic Client Registration (DCR)
@@ -323,7 +321,7 @@ DCR automatically configures the client based on environment variables:
 # Minimal DCR configuration (no credentials needed!)
 export NEXTCLOUD_HOST=http://localhost:8080
 export NEXTCLOUD_MCP_SERVER_URL=http://localhost:8000
-export NEXTCLOUD_OIDC_SCOPES="openid profile email nc:read nc:write"
+export NEXTCLOUD_OIDC_SCOPES="openid profile email mcp:notes:read mcp:notes:write"
 export NEXTCLOUD_OIDC_TOKEN_TYPE=jwt  # or "Bearer" for opaque tokens
 ```
 
@@ -365,7 +363,7 @@ Manual client creation is **optional** but may be preferred when:
 ```bash
 docker compose exec app php occ oidc:create \
   --token_type=jwt \
-  --allowed_scopes="openid profile email nc:read nc:write" \
+  --allowed_scopes="openid profile email mcp:notes:read mcp:notes:write" \
   "Nextcloud MCP Server" \
   "http://localhost:8000/oauth/callback"
 ```
@@ -376,7 +374,7 @@ docker compose exec app php occ oidc:create \
   "client_id": "XBd2xqIisu3Kswg39Ub4BUhC36PEYjwwivx3G5nZdDgigvwKXrTHozs7m9DeoLSY",
   "client_secret": "xNKcy0qpUSau36T60pGGdb03pMEVLXtqykxjK8YkDpoNxNcZ4ClyAT3IAEse2AKT",
   "token_type": "jwt",
-  "allowed_scopes": "openid profile email nc:read nc:write"
+  "allowed_scopes": "openid profile email mcp:notes:read mcp:notes:write"
 }
 ```
 
@@ -409,7 +407,7 @@ When credentials are provided via environment variables or storage file, **DCR i
          │                                          │
          │ JWT Access Token                         │
          │ {                                        │
-         │   "scope": "openid nc:read nc:write"    │
+         │   "scope": "openid mcp:notes:read mcp:notes:write"    │
          │   ...                                    │
          │ }                                        │
          │                                          │
@@ -466,7 +464,7 @@ When credentials are provided via environment variables or storage file, **DCR i
 
 **4. PRM Endpoint** (`nextcloud_mcp_server/app.py:503-532`)
 - `GET /.well-known/oauth-protected-resource/mcp`
-- Advertises `["nc:read", "nc:write"]`
+- Advertises `["mcp:notes:read", "mcp:notes:write"]`
 - RFC 9728 compliant
 
 **5. Exception Handler** (`nextcloud_mcp_server/app.py:540-563`)
@@ -502,7 +500,7 @@ The `NextcloudTokenVerifier` implements a **cascading validation strategy** that
                          │    ├─ Authenticate with client credentials
                          │    ├─ Response contains:
                          │    │   • active: true/false
-                         │    │   • scope: "openid nc:read nc:write"
+                         │    │   • scope: "openid mcp:notes:read mcp:notes:write"
                          │    │   • sub, exp, iat, client_id
                          │    ├─ Extract scopes from response
                          │    └─ Success: Return AccessToken
@@ -556,7 +554,7 @@ uv run pytest tests/server/test_scope_authorization.py::test_jwt_with_no_custom_
 ```
 
 **Scenario:** JWT token with only OIDC defaults (`openid profile email`)
-**Expected:** 0 tools returned (all require `nc:read` or `nc:write`)
+**Expected:** 0 tools returned (all require `mcp:notes:read` or `mcp:notes:write`)
 **Verifies:** Security - users who decline custom scopes cannot access any MCP tools
 
 #### 2. Read-Only Access (36 tools)
@@ -564,7 +562,7 @@ uv run pytest tests/server/test_scope_authorization.py::test_jwt_with_no_custom_
 uv run pytest tests/server/test_scope_authorization.py::test_jwt_consent_scenarios_read_only -v
 ```
 
-**Scenario:** JWT token with `nc:read` only
+**Scenario:** JWT token with `mcp:notes:read` only
 **Expected:** 36 read-only tools visible, write tools hidden
 **Verifies:** Read tools accessible, write tools filtered out
 
@@ -573,7 +571,7 @@ uv run pytest tests/server/test_scope_authorization.py::test_jwt_consent_scenari
 uv run pytest tests/server/test_scope_authorization.py::test_jwt_consent_scenarios_write_only -v
 ```
 
-**Scenario:** JWT token with `nc:write` only
+**Scenario:** JWT token with `mcp:notes:write` only
 **Expected:** 54 write tools visible, read tools hidden
 **Verifies:** Write tools accessible, read tools filtered out
 
@@ -582,21 +580,21 @@ uv run pytest tests/server/test_scope_authorization.py::test_jwt_consent_scenari
 uv run pytest tests/server/test_scope_authorization.py::test_jwt_consent_scenarios_full_access -v
 ```
 
-**Scenario:** JWT token with both `nc:read` and `nc:write`
+**Scenario:** JWT token with both `mcp:notes:read` and `mcp:notes:write`
 **Expected:** All 90 tools visible
 **Verifies:** Full access when user grants all custom scopes
 
 ### Test Fixtures
 
 **OAuth Client Fixtures:**
-- `read_only_oauth_client_credentials` - Client with `nc:read` only
-- `write_only_oauth_client_credentials` - Client with `nc:write` only
+- `read_only_oauth_client_credentials` - Client with `mcp:notes:read` only
+- `write_only_oauth_client_credentials` - Client with `mcp:notes:write` only
 - `full_access_oauth_client_credentials` - Client with both scopes
 - `no_custom_scopes_oauth_client_credentials` - Client with OIDC defaults only
 
 **Token Fixtures:**
-- `playwright_oauth_token_read_only` - Obtains token with `nc:read`
-- `playwright_oauth_token_write_only` - Obtains token with `nc:write`
+- `playwright_oauth_token_read_only` - Obtains token with `mcp:notes:read`
+- `playwright_oauth_token_write_only` - Obtains token with `mcp:notes:write`
 - `playwright_oauth_token_full_access` - Obtains token with both scopes
 - `playwright_oauth_token_no_custom_scopes` - Obtains token with no custom scopes
 
@@ -684,26 +682,26 @@ docker compose exec app php occ oidc:list
 # If empty, recreate client with --allowed_scopes
 docker compose exec app php occ oidc:create \
   --token_type=jwt \
-  --allowed_scopes="openid profile email nc:read nc:write" \
+  --allowed_scopes="openid profile email mcp:notes:read mcp:notes:write" \
   "Client Name" \
   "http://callback/url"
 ```
 
 ### Issue: All Tools Visible Despite Read-Only Token
 
-**Symptom:** User with `nc:read` token can see all 90 tools including write tools
+**Symptom:** User with `mcp:notes:read` token can see all 90 tools including write tools
 
 **Cause:** Server running in BasicAuth mode, not OAuth mode
 
 **Solution:**
 ```bash
 # Verify OAuth mode is active
-docker compose logs mcp-oauth-jwt | grep "OAuth mode"
+docker compose logs mcp-oauth | grep "OAuth mode"
 
 # Should see: "Running in OAuth mode"
 
 # If not, check environment variables:
-docker compose exec mcp-oauth-jwt env | grep NEXTCLOUD_OIDC
+docker compose exec mcp-oauth env | grep NEXTCLOUD_OIDC
 
 # Ensure no NEXTCLOUD_USERNAME or NEXTCLOUD_PASSWORD set
 ```
@@ -719,7 +717,7 @@ DCR **now properly sets `allowed_scopes`** when the `scope` parameter is provide
 docker compose exec db mariadb -u nextcloud -ppassword nextcloud \
   -e "SELECT name, allowed_scopes FROM oc_oauth2_clients WHERE name LIKE 'DCR-%' ORDER BY id DESC LIMIT 1;"
 
-# Should show your requested scopes (e.g., "openid profile email nc:read nc:write")
+# Should show your requested scopes (e.g., "openid profile email mcp:notes:read mcp:notes:write")
 ```
 
 **If scopes are missing:**
@@ -752,12 +750,12 @@ export NEXTCLOUD_OIDC_TOKEN_TYPE=JWT
 **Solution:**
 ```bash
 # Check server logs for OAuth mode
-docker compose logs mcp-oauth-jwt | grep "WWW-Authenticate scope challenges enabled"
+docker compose logs mcp-oauth | grep "WWW-Authenticate scope challenges enabled"
 
 # Should see this during startup
 
 # Check exception handling
-docker compose logs mcp-oauth-jwt | grep "InsufficientScopeError"
+docker compose logs mcp-oauth | grep "InsufficientScopeError"
 ```
 
 ### Debugging Tools
@@ -782,10 +780,10 @@ docker compose exec db mariadb -u nextcloud -ppassword nextcloud \
 **Check server logs:**
 ```bash
 # Follow JWT verification logs
-docker compose logs -f mcp-oauth-jwt | grep -E "JWT|scope|tool"
+docker compose logs -f mcp-oauth | grep -E "JWT|scope|tool"
 
 # Check for issuer mismatches
-docker compose logs mcp-oauth-jwt | grep -i issuer
+docker compose logs mcp-oauth | grep -i issuer
 ```
 
 ---
@@ -806,18 +804,18 @@ docker compose logs mcp-oauth-jwt | grep -i issuer
 
 ```yaml
 # docker-compose.yml (production)
-mcp-oauth-jwt:
+mcp-oauth:
   image: ghcr.io/yourusername/nextcloud-mcp-server:latest
+  command: ["--transport", "streamable-http", "--oauth", "--port", "8001", "--oauth-token-type", "jwt"]
   environment:
     - NEXTCLOUD_HOST=https://nextcloud.example.com
     - NEXTCLOUD_MCP_SERVER_URL=https://mcp.example.com
     - NEXTCLOUD_PUBLIC_ISSUER_URL=https://nextcloud.example.com
     - NEXTCLOUD_OIDC_CLIENT_ID=${JWT_CLIENT_ID}
     - NEXTCLOUD_OIDC_CLIENT_SECRET=${JWT_CLIENT_SECRET}
-    - NEXTCLOUD_OIDC_SCOPES=openid profile email nc:read nc:write
-    - NEXTCLOUD_OIDC_TOKEN_TYPE=jwt
+    - NEXTCLOUD_OIDC_SCOPES=openid profile email mcp:notes:read mcp:notes:write
   ports:
-    - "8002:8002"
+    - "8001:8001"
 ```
 
 ### Security Considerations
@@ -849,16 +847,16 @@ mcp-oauth-jwt:
 ```bash
 # Success
 INFO JWT verified successfully for user: admin
-INFO ✅ Extracted scopes from access token: {'openid', 'profile', 'email', 'nc:read', 'nc:write'}
+INFO ✅ Extracted scopes from access token: {'openid', 'profile', 'email', 'mcp:notes:read', 'mcp:notes:write'}
 
 # Failures
 WARNING JWT issuer validation failed: Invalid issuer
-WARNING Missing required scopes: nc:write
+WARNING Missing required scopes: mcp:notes:write
 ```
 
 ### Known Limitations
 
-1. **No Fine-Grained Scopes** - Only coarse `nc:read` and `nc:write` (not per-app scopes)
+1. **No Fine-Grained Scopes** - Only coarse `mcp:notes:read` and `mcp:notes:write` (not per-app scopes)
 2. **No Refresh Token Support** - Tokens must be reacquired when expired
 
 ### Future Enhancements

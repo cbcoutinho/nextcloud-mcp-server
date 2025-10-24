@@ -14,6 +14,7 @@ Start here to identify your issue:
 | "OAuth mode requires client credentials OR dynamic registration" | OIDC apps not configured | [Missing OIDC Apps](#missing-or-misconfigured-oidc-apps) |
 | "PKCE support validation failed" | OIDC app doesn't advertise PKCE | [PKCE Not Advertised](#pkce-not-advertised) |
 | "Stored client has expired" | Dynamic client expired | [Client Expired](#client-expired) |
+| Only seeing Notes tools (7 instead of 90+) | Limited OAuth scopes granted | [Limited Scopes](#limited-scopes---only-seeing-notes-tools) |
 | HTTP 401 for Notes API | Bearer token patch missing | [Bearer Token Auth Fails](#bearer-token-authentication-fails) |
 | "OIDC discovery failed" | Network or configuration issue | [Discovery Failed](#oidc-discovery-failed) |
 | "Permission denied" on .nextcloud_oauth_client.json | File permissions issue | [File Permission Error](#file-permission-error) |
@@ -404,6 +405,94 @@ http://localhost:8000/oauth/callback
 **Cause**: Bearer token not working with Nextcloud APIs.
 
 **Solution**: See [Bearer Token Authentication Fails](#bearer-token-authentication-fails) above.
+
+---
+
+### Limited Scopes - Only Seeing Notes Tools
+
+**Symptoms**:
+- MCP client (e.g., Claude Code) successfully connects via OAuth
+- Only Notes tools are available (7 tools instead of 90+)
+- Token scopes show only `mcp:notes:read` and `mcp:notes:write`
+
+**Cause**: During the OAuth consent flow, the user only granted access to Notes scopes, or the client only requested those scopes.
+
+**Diagnosis**:
+
+Check what scopes the client has been granted:
+
+```bash
+# View registered clients and their allowed scopes
+php occ oidc:list | jq '.[] | select(.name | contains("Claude Code")) | {name, allowed_scopes}'
+```
+
+Look for the client's `allowed_scopes` field. If it's empty or only contains notes scopes, that's the issue.
+
+**Solution**:
+
+**Option 1: Delete Client and Reconnect** (Recommended for MCP clients)
+
+```bash
+# Find the client ID
+php occ oidc:list | jq '.[] | select(.name | contains("Claude Code")) | {name, client_id}'
+
+# Delete the client
+php occ oidc:delete <client_id>
+
+# Reconnect from Claude Code
+# This will trigger a new OAuth flow where you can grant all scopes
+```
+
+When reconnecting, you'll see a consent screen listing all available scopes. Make sure to approve all the scopes you want the client to access.
+
+**Option 2: Update Client Scopes via CLI**
+
+```bash
+# Update allowed scopes for an existing client
+php occ oidc:update <client_id> \
+  --allowed-scopes "openid profile email mcp:notes:read mcp:notes:write mcp:calendar:read mcp:calendar:write mcp:contacts:read mcp:contacts:write mcp:cookbook:read mcp:cookbook:write mcp:deck:read mcp:deck:write mcp:tables:read mcp:tables:write mcp:files:read mcp:files:write mcp:sharing:read mcp:sharing:write"
+
+# User will need to reconnect to get new token with updated scopes
+```
+
+**Verify Available Scopes**:
+
+Check what scopes the MCP server advertises:
+
+```bash
+curl http://localhost:8001/.well-known/oauth-protected-resource | jq '.scopes_supported'
+
+# Should show all 16 scope categories:
+# - openid
+# - mcp:notes:read, mcp:notes:write
+# - mcp:calendar:read, mcp:calendar:write
+# - mcp:contacts:read, mcp:contacts:write
+# - mcp:cookbook:read, mcp:cookbook:write
+# - mcp:deck:read, mcp:deck:write
+# - mcp:tables:read, mcp:tables:write
+# - mcp:files:read, mcp:files:write
+# - mcp:sharing:read, mcp:sharing:write
+```
+
+**Understanding Scope Filtering**:
+
+The MCP server dynamically filters tools based on the scopes in your access token:
+- Check server logs for: `✂️ JWT scope filtering: X/90 tools available for scopes: {...}`
+- This shows how many tools are visible vs total available
+- Each tool requires specific scopes (read and/or write)
+
+**Available Scope Categories**:
+
+| Scope Prefix | Nextcloud App | Read Operations | Write Operations |
+|--------------|---------------|-----------------|------------------|
+| `mcp:notes:*` | Notes | Get, search, list | Create, update, delete, append |
+| `mcp:calendar:*` | Calendar (CalDAV) | Get events, todos, calendars | Create/update/delete events, todos |
+| `mcp:contacts:*` | Contacts (CardDAV) | Get contacts, address books | Create/update/delete contacts |
+| `mcp:cookbook:*` | Cookbook | Get recipes, search | Create/update recipes |
+| `mcp:deck:*` | Deck | Get boards, cards | Create/update boards, cards |
+| `mcp:tables:*` | Tables | Get rows, tables | Create/update/delete rows |
+| `mcp:files:*` | Files (WebDAV) | List, read files | Upload, delete, move files |
+| `mcp:sharing:*` | Sharing | Get shares | Create/update shares |
 
 ---
 

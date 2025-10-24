@@ -5,18 +5,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Development Commands
 
 ### Testing
+
+The test suite is organized in layers for fast feedback:
+
 ```bash
-# Run all tests
+# FAST FEEDBACK (recommended for development)
+# Unit tests only - ~5 seconds
+uv run pytest tests/unit/ -v
+
+# Smoke tests - critical path validation - ~30-60 seconds
+uv run pytest -m smoke -v
+
+# INTEGRATION TESTS
+# Integration tests without OAuth - ~2-3 minutes
+uv run pytest -m "integration and not oauth" -v
+
+# Full test suite - ~4-5 minutes
 uv run pytest
 
-# Run integration tests only
-uv run pytest -m integration
+# OAuth tests only (slowest, requires Playwright) - ~3 minutes
+uv run pytest -m oauth -v
 
+# COVERAGE
 # Run tests with coverage
 uv run pytest --cov
 
+# LEGACY COMMANDS (still work)
+# Run all integration tests
+uv run pytest -m integration -v
+
 # Skip integration tests
-uv run pytest -m "not integration"
+uv run pytest -m "not integration" -v
 ```
 
 ### Load Testing
@@ -89,16 +108,18 @@ docker-compose up
 # For basic auth changes (most common) - uses admin credentials
 docker-compose up --build -d mcp
 
-# For OAuth changes - uses OAuth authentication flow
+# For OAuth changes - uses OAuth authentication with JWT tokens
 docker-compose up --build -d mcp-oauth
 
 # Build Docker image
 docker build -t nextcloud-mcp-server .
 ```
 
-**Important: Two MCP Server Containers**
+**Important: MCP Server Containers**
 - **`mcp`** (port 8000): Uses basic auth with admin credentials. Use this for most development and testing.
-- **`mcp-oauth`** (port 8001): Uses OAuth authentication. Only use this when working on OAuth-specific features or tests.
+- **`mcp-oauth`** (port 8001): Uses OAuth authentication with JWT tokens. Use this when working on OAuth-specific features or tests.
+  - JWT tokens are used for testing (faster validation, scopes embedded in token)
+  - The server can handle both JWT and opaque tokens via the token verifier
 
 ### Environment Setup
 ```bash
@@ -108,6 +129,36 @@ uv sync
 # Install development dependencies
 uv sync --group dev
 ```
+
+### Database Inspection
+
+**Docker Compose Database Credentials:**
+- Root user: `root` / password: `password`
+- App user: `nextcloud` / password: `password`
+- Database: `nextcloud`
+
+**Common Database Commands:**
+```bash
+# Connect to database as root (most common for inspection)
+docker compose exec db mariadb -u root -ppassword nextcloud
+
+# Check OAuth clients
+docker compose exec db mariadb -u root -ppassword nextcloud -e "SELECT id, name, token_type FROM oc_oidc_clients ORDER BY id DESC LIMIT 10;"
+
+# Check OAuth client scopes
+docker compose exec db mariadb -u root -ppassword nextcloud -e "SELECT c.id, c.name, s.scope FROM oc_oidc_clients c LEFT JOIN oc_oidc_client_scopes s ON c.id = s.client_id WHERE c.name LIKE '%MCP%';"
+
+# Check OAuth access tokens
+docker compose exec db mariadb -u root -ppassword nextcloud -e "SELECT id, client_id, user_id, created_at FROM oc_oidc_access_tokens ORDER BY created_at DESC LIMIT 10;"
+```
+
+**Important Tables:**
+- `oc_oidc_clients` - OAuth client registrations (DCR clients)
+- `oc_oidc_client_scopes` - Client allowed scopes
+- `oc_oidc_access_tokens` - Issued access tokens
+- `oc_oidc_authorization_codes` - Authorization codes
+- `oc_oidc_registration_tokens` - RFC 7592 registration tokens for client management
+- `oc_oidc_redirect_uris` - Redirect URIs for each client
 
 ## Architecture Overview
 
@@ -179,9 +230,37 @@ FastMCP serialization issue: raw lists get mangled into dicts with numeric strin
 
 ### Testing Structure
 
-- **Integration tests** in `tests/client/` and `tests/server/` - Test real Nextcloud API interactions
-- **Fixtures** in `tests/conftest.py` - Shared test setup and utilities
-- Tests are marked with `@pytest.mark.integration` for selective running
+The test suite follows a layered architecture for fast feedback:
+
+```
+tests/
+├── unit/                    # Fast unit tests (~5s total)
+│   ├── test_scope_decorator.py
+│   └── test_response_models.py
+├── smoke/                   # Critical path tests (~30-60s)
+│   └── test_smoke.py
+├── integration/
+│   ├── client/             # Direct API layer tests
+│   │   ├── notes/
+│   │   ├── calendar/
+│   │   └── ...
+│   └── server/             # MCP tool layer tests
+│       ├── oauth/          # OAuth-specific tests (slow, ~3min)
+│       │   ├── test_oauth_core.py
+│       │   ├── test_scope_authorization.py
+│       │   └── ...
+│       ├── test_mcp.py
+│       └── ...
+└── load/                   # Performance tests
+```
+
+**Test Markers:**
+- `@pytest.mark.unit` - Fast unit tests with mocked dependencies
+- `@pytest.mark.integration` - Integration tests requiring Docker containers
+- `@pytest.mark.oauth` - OAuth tests requiring Playwright (slowest)
+- `@pytest.mark.smoke` - Critical path smoke tests
+
+**Fixtures** in `tests/conftest.py` - Shared test setup and utilities
 - **Important**: Integration tests run against live Docker containers. After making code changes:
   - For basic auth tests: rebuild with `docker-compose up --build -d mcp`
   - For OAuth tests: rebuild with `docker-compose up --build -d mcp-oauth`
@@ -206,16 +285,84 @@ FastMCP serialization issue: raw lists get mangled into dicts with numeric strin
   - For OAuth changes: `uv run pytest tests/server/test_oauth*.py -v` (remember to rebuild `mcp-oauth` container)
 - **Avoid creating standalone test scripts** - use pytest with proper fixtures instead
 
+#### Writing Mocked Unit Tests
+
+For client-layer tests that verify response parsing logic, use mocked HTTP responses instead of real network calls:
+
+**Pattern:**
+```python
+import httpx
+import pytest
+from nextcloud_mcp_server.client.notes import NotesClient
+from tests.conftest import create_mock_note_response
+
+async def test_notes_api_get_note(mocker):
+    """Test that get_note correctly parses the API response."""
+    # Create mock response using helper functions
+    mock_response = create_mock_note_response(
+        note_id=123,
+        title="Test Note",
+        content="Test content",
+        category="Test",
+        etag="abc123",
+    )
+
+    # Mock the _make_request method
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        NotesClient, "_make_request", return_value=mock_response
+    )
+
+    # Create client and test
+    client = NotesClient(mock_client, "testuser")
+    note = await client.get_note(note_id=123)
+
+    # Verify the response was parsed correctly
+    assert note["id"] == 123
+    assert note["title"] == "Test Note"
+    # Verify the correct API endpoint was called
+    mock_make_request.assert_called_once_with("GET", "/apps/notes/api/v1/notes/123")
+```
+
+**Mock Response Helpers in `tests/conftest.py`:**
+- `create_mock_response()` - Generic HTTP response builder
+- `create_mock_note_response()` - Pre-configured note response
+- `create_mock_error_response()` - Error responses (404, 412, etc.)
+
+**Benefits:**
+- ⚡ Fast execution (~0.1s vs minutes for integration tests)
+- 🔒 No Docker dependency
+- 🎯 Tests focus on response parsing logic
+- ♻️ Repeatable and deterministic
+
+**When to use:**
+- Testing client methods that parse JSON responses
+- Testing error handling (404, 412, etc.)
+- Testing request parameter building
+
+**When NOT to use (keep as integration tests):**
+- Complex protocol interactions (CalDAV, CardDAV, WebDAV)
+- Multi-component workflows (Notes + WebDAV attachments)
+- OAuth flows
+- End-to-end MCP tool testing
+
+**Reference Implementation:**
+- See `tests/client/notes/test_notes_api.py` for complete examples
+- Mark unit tests with `pytestmark = pytest.mark.unit`
+- Run with: `uv run pytest tests/unit/ tests/client/notes/test_notes_api.py -v`
+
 #### OAuth/OIDC Testing
 OAuth integration tests use **automated Playwright browser automation** to complete the OAuth flow programmatically.
 
 **OAuth Testing Setup:**
 - **Main fixtures**: `nc_oauth_client`, `nc_mcp_oauth_client` - Use Playwright automation
 - **Shared OAuth Client**: All test users authenticate using a single OAuth client
-  - Stored in `.nextcloud_oauth_shared_test_client.json`
-  - Matches production MCP server behavior
+  - **Created fresh for each test session** via Dynamic Client Registration (DCR)
+  - Matches production MCP server behavior (one client, multiple user tokens)
   - Each user gets their own unique access token
+  - **Automatic cleanup**: Client is registered at session start, deleted at session end (RFC 7592)
   - Implementation: `shared_oauth_client_credentials` fixture in `tests/conftest.py`
+  - **Note**: Client deletion may fail due to Nextcloud middleware (logged as warning). This doesn't affect tests.
 - **Available fixtures**: `playwright_oauth_token`, `nc_oauth_client`, `nc_mcp_oauth_client`
 - **Multi-user fixtures**: `alice_oauth_token`, `bob_oauth_token`, `charlie_oauth_token`, `diana_oauth_token`
 - **Requirements**: `NEXTCLOUD_HOST`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_PASSWORD` environment variables
@@ -226,13 +373,13 @@ OAuth integration tests use **automated Playwright browser automation** to compl
 **Example Commands:**
 ```bash
 # Run all OAuth tests with Playwright automation using Firefox
-uv run pytest tests/server/test_oauth*.py --browser firefox -v
+uv run pytest tests/server/oauth/ --browser firefox -v
 
-# Run specific tests with visible browser for debugging
-uv run pytest tests/server/test_mcp_oauth.py --browser firefox --headed -v
+# Run specific OAuth test file with visible browser for debugging
+uv run pytest tests/server/oauth/test_oauth_core.py --browser firefox --headed -v
 
-# Run with Chromium (default)
-uv run pytest tests/server/test_oauth*.py -v
+# Run with Chromium (default) - use -m oauth marker for all OAuth tests
+uv run pytest -m oauth -v
 ```
 
 **Test Environment:**
@@ -241,7 +388,6 @@ uv run pytest tests/server/test_oauth*.py -v
   - `mcp-oauth` (port 8001): Uses OAuth authentication - for OAuth-specific testing
 - Start OAuth MCP server: `docker-compose up --build -d mcp-oauth`
 - **Important**: When working on OAuth functionality, always rebuild `mcp-oauth` container, not `mcp`
-- OAuth client credentials cached in `.nextcloud_oauth_shared_test_client.json`
 
 **CI/CD Notes:**
 - Playwright tests run in CI/CD environments

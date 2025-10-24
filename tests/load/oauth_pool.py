@@ -4,11 +4,11 @@ OAuth User Pool Management for Load Testing.
 Manages multiple OAuth-authenticated users for realistic multi-user load testing scenarios.
 """
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
 
+import anyio
 import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
@@ -394,7 +394,7 @@ class OAuthUserPool:
                     raise TimeoutError(
                         f"Timeout waiting for OAuth callback for {username}"
                     )
-                await asyncio.sleep(0.5)
+                await anyio.sleep(0.5)
 
             auth_code = auth_states[state]
             logger.info(f"Received auth code for {username}")

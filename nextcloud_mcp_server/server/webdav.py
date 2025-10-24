@@ -4,7 +4,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
-from nextcloud_mcp_server.models import FileInfo, SearchFilesResponse
+from nextcloud_mcp_server.models import DirectoryListing, FileInfo, SearchFilesResponse
 
 logger = logging.getLogger(__name__)
 
@@ -12,21 +12,40 @@ logger = logging.getLogger(__name__)
 def configure_webdav_tools(mcp: FastMCP):
     # WebDAV file system tools
     @mcp.tool()
-    @require_scopes("nc:read")
-    async def nc_webdav_list_directory(ctx: Context, path: str = ""):
+    @require_scopes("files:read")
+    async def nc_webdav_list_directory(
+        ctx: Context, path: str = ""
+    ) -> DirectoryListing:
         """List files and directories in the specified NextCloud path.
 
         Args:
             path: Directory path to list (empty string for root directory)
 
         Returns:
-            List of items with metadata including name, path, is_directory, size, content_type, last_modified
+            DirectoryListing with files, total_count, directories_count, files_count, and total_size
         """
         client = get_client(ctx)
-        return await client.webdav.list_directory(path)
+        items = await client.webdav.list_directory(path)
+
+        # Convert to FileInfo models
+        file_infos = [FileInfo(**item) for item in items]
+
+        # Calculate metadata
+        directories_count = sum(1 for f in file_infos if f.is_directory)
+        files_count = sum(1 for f in file_infos if not f.is_directory)
+        total_size = sum(f.size or 0 for f in file_infos if not f.is_directory)
+
+        return DirectoryListing(
+            path=path,
+            files=file_infos,
+            total_count=len(file_infos),
+            directories_count=directories_count,
+            files_count=files_count,
+            total_size=total_size,
+        )
 
     @mcp.tool()
-    @require_scopes("nc:read")
+    @require_scopes("files:read")
     async def nc_webdav_read_file(path: str, ctx: Context):
         """Read the content of a file from NextCloud.
 
@@ -65,7 +84,7 @@ def configure_webdav_tools(mcp: FastMCP):
         }
 
     @mcp.tool()
-    @require_scopes("nc:write")
+    @require_scopes("files:write")
     async def nc_webdav_write_file(
         path: str, content: str, ctx: Context, content_type: str | None = None
     ):
@@ -93,7 +112,7 @@ def configure_webdav_tools(mcp: FastMCP):
         return await client.webdav.write_file(path, content_bytes, content_type)
 
     @mcp.tool()
-    @require_scopes("nc:write")
+    @require_scopes("files:write")
     async def nc_webdav_create_directory(path: str, ctx: Context):
         """Create a directory in NextCloud.
 
@@ -107,7 +126,7 @@ def configure_webdav_tools(mcp: FastMCP):
         return await client.webdav.create_directory(path)
 
     @mcp.tool()
-    @require_scopes("nc:write")
+    @require_scopes("files:write")
     async def nc_webdav_delete_resource(path: str, ctx: Context):
         """Delete a file or directory in NextCloud.
 
@@ -121,7 +140,7 @@ def configure_webdav_tools(mcp: FastMCP):
         return await client.webdav.delete_resource(path)
 
     @mcp.tool()
-    @require_scopes("nc:write")
+    @require_scopes("files:write")
     async def nc_webdav_move_resource(
         source_path: str, destination_path: str, ctx: Context, overwrite: bool = False
     ):
@@ -141,7 +160,7 @@ def configure_webdav_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
-    @require_scopes("nc:write")
+    @require_scopes("files:write")
     async def nc_webdav_copy_resource(
         source_path: str, destination_path: str, ctx: Context, overwrite: bool = False
     ):
@@ -161,7 +180,7 @@ def configure_webdav_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
-    @require_scopes("nc:read")
+    @require_scopes("files:read")
     async def nc_webdav_search_files(
         ctx: Context,
         scope: str = "",
@@ -277,7 +296,7 @@ def configure_webdav_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
-    @require_scopes("nc:read")
+    @require_scopes("files:read")
     async def nc_webdav_find_by_name(
         pattern: str, ctx: Context, scope: str = "", limit: int | None = None
     ) -> SearchFilesResponse:
@@ -304,7 +323,7 @@ def configure_webdav_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
-    @require_scopes("nc:read")
+    @require_scopes("files:read")
     async def nc_webdav_find_by_type(
         mime_type: str, ctx: Context, scope: str = "", limit: int | None = None
     ) -> SearchFilesResponse:
@@ -331,7 +350,7 @@ def configure_webdav_tools(mcp: FastMCP):
         )
 
     @mcp.tool()
-    @require_scopes("nc:read")
+    @require_scopes("files:read")
     async def nc_webdav_list_favorites(
         ctx: Context, scope: str = "", limit: int | None = None
     ) -> SearchFilesResponse:

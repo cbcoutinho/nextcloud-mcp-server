@@ -1,386 +1,371 @@
-import asyncio
 import logging
-import uuid
 
+import httpx
 import pytest
-from httpx import HTTPStatusError
 
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.client.cookbook import CookbookClient
+from tests.client.conftest import (
+    create_mock_error_response,
+    create_mock_recipe_list_response,
+    create_mock_recipe_response,
+    create_mock_response,
+)
 
 logger = logging.getLogger(__name__)
 
-# Mark all tests in this module as integration tests
-pytestmark = pytest.mark.integration
+# Mark all tests in this module as unit tests
+pytestmark = pytest.mark.unit
 
 
-async def test_cookbook_version(nc_client: NextcloudClient):
-    """Test getting Cookbook app version."""
-    logger.info("Getting Cookbook app version")
-    version_data = await nc_client.cookbook.get_version()
+async def test_cookbook_version(mocker):
+    """Test that get_version correctly parses the API response."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data={
+            "cookbook_version": "1.0.0",
+            "api_version": "1.0.0",
+        },
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        CookbookClient, "_make_request", return_value=mock_response
+    )
+
+    client = CookbookClient(mock_client, "testuser")
+    version_data = await client.get_version()
 
     assert "cookbook_version" in version_data
     assert "api_version" in version_data
-    logger.info(f"Cookbook version: {version_data}")
+    assert version_data["cookbook_version"] == "1.0.0"
+
+    mock_make_request.assert_called_once_with("GET", "/apps/cookbook/api/version")
 
 
-async def test_cookbook_config(nc_client: NextcloudClient):
-    """Test getting Cookbook app configuration."""
-    logger.info("Getting Cookbook app configuration")
-    config_data = await nc_client.cookbook.get_config()
+async def test_cookbook_config(mocker):
+    """Test that get_config correctly parses the API response."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data={
+            "folder": "/recipes",
+            "update_interval": 60,
+            "print_image": True,
+        },
+    )
 
-    # Config may be empty initially, just verify we can get it
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        CookbookClient, "_make_request", return_value=mock_response
+    )
+
+    client = CookbookClient(mock_client, "testuser")
+    config_data = await client.get_config()
+
     assert isinstance(config_data, dict)
-    logger.info(f"Cookbook config: {config_data}")
+    assert config_data["folder"] == "/recipes"
+
+    mock_make_request.assert_called_once_with("GET", "/apps/cookbook/api/v1/config")
 
 
-async def test_cookbook_list_recipes(nc_client: NextcloudClient):
-    """Test listing all recipes."""
-    logger.info("Listing all recipes")
-    recipes = await nc_client.cookbook.list_recipes()
+async def test_cookbook_list_recipes(mocker):
+    """Test that list_recipes correctly parses the API response."""
+    mock_response = create_mock_recipe_list_response(
+        recipes=[
+            {"id": 1, "name": "Recipe 1", "recipeCategory": "Test"},
+            {"id": 2, "name": "Recipe 2", "recipeCategory": "Test"},
+        ]
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        CookbookClient, "_make_request", return_value=mock_response
+    )
+
+    client = CookbookClient(mock_client, "testuser")
+    recipes = await client.list_recipes()
 
     assert isinstance(recipes, list)
-    logger.info(f"Found {len(recipes)} recipes")
+    assert len(recipes) == 2
+    assert recipes[0]["name"] == "Recipe 1"
+
+    mock_make_request.assert_called_once_with("GET", "/apps/cookbook/api/v1/recipes")
 
 
-async def test_cookbook_create_and_read_recipe(nc_client: NextcloudClient):
-    """Test creating a recipe and reading it back."""
-    # Create a test recipe
-    recipe_name = f"Test Recipe {uuid.uuid4().hex[:8]}"
+async def test_cookbook_create_recipe(mocker):
+    """Test that create_recipe correctly parses the API response."""
+    # Create_recipe returns just the recipe ID
+    mock_response = create_mock_response(status_code=200, json_data=123)
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        CookbookClient, "_make_request", return_value=mock_response
+    )
+
+    client = CookbookClient(mock_client, "testuser")
     recipe_data = {
-        "name": recipe_name,
-        "description": "A test recipe for integration testing",
-        "recipeIngredient": ["100g flour", "2 eggs", "200ml milk"],
-        "recipeInstructions": [
-            "Mix ingredients",
-            "Cook for 20 minutes",
-            "Serve hot",
-        ],
-        "recipeCategory": "Test",
-        "keywords": "test,integration",
-        "recipeYield": 4,
-        "prepTime": "PT15M",
-        "cookTime": "PT20M",
-        "totalTime": "PT35M",
-    }
-
-    logger.info(f"Creating recipe: {recipe_name}")
-    recipe_id = await nc_client.cookbook.create_recipe(recipe_data)
-    logger.info(f"Created recipe with ID: {recipe_id}")
-
-    try:
-        # Read the recipe back
-        logger.info(f"Reading recipe ID: {recipe_id}")
-        retrieved_recipe = await nc_client.cookbook.get_recipe(recipe_id)
-
-        assert retrieved_recipe["name"] == recipe_name
-        assert (
-            retrieved_recipe["description"] == "A test recipe for integration testing"
-        )
-        assert len(retrieved_recipe["recipeIngredient"]) == 3
-        assert len(retrieved_recipe["recipeInstructions"]) == 3
-        assert retrieved_recipe["recipeCategory"] == "Test"
-        assert retrieved_recipe["recipeYield"] == 4
-        logger.info(f"Successfully verified recipe: {recipe_name}")
-
-    finally:
-        # Clean up
-        logger.info(f"Deleting recipe ID: {recipe_id}")
-        await nc_client.cookbook.delete_recipe(recipe_id)
-        logger.info(f"Successfully deleted recipe ID: {recipe_id}")
-
-
-async def test_cookbook_update_recipe(nc_client: NextcloudClient):
-    """Test updating a recipe."""
-    # Create a test recipe
-    recipe_name = f"Test Recipe {uuid.uuid4().hex[:8]}"
-    recipe_data = {
-        "name": recipe_name,
-        "description": "Original description",
+        "name": "Test Recipe",
+        "description": "Test description",
         "recipeIngredient": ["100g flour"],
         "recipeInstructions": ["Mix ingredients"],
-        "recipeCategory": "Original",
     }
+    recipe_id = await client.create_recipe(recipe_data)
 
-    logger.info(f"Creating recipe for update test: {recipe_name}")
-    recipe_id = await nc_client.cookbook.create_recipe(recipe_data)
+    assert recipe_id == 123
 
-    try:
-        # Get the current recipe first
-        current_recipe = await nc_client.cookbook.get_recipe(recipe_id)
-
-        # Update the recipe with all required fields
-        updated_data = current_recipe.copy()
-        updated_data["description"] = "Updated description"
-        updated_data["recipeIngredient"] = ["100g flour", "2 eggs"]
-        updated_data["recipeInstructions"] = ["Mix ingredients", "Cook"]
-        updated_data["recipeCategory"] = "Updated"
-
-        logger.info(f"Updating recipe ID: {recipe_id}")
-        updated_id = await nc_client.cookbook.update_recipe(recipe_id, updated_data)
-        assert updated_id == recipe_id
-
-        # Verify the update
-        await asyncio.sleep(1)  # Allow propagation
-        updated_recipe = await nc_client.cookbook.get_recipe(recipe_id)
-        assert updated_recipe["description"] == "Updated description"
-        assert len(updated_recipe["recipeIngredient"]) == 2
-        assert len(updated_recipe["recipeInstructions"]) == 2
-        assert updated_recipe["recipeCategory"] == "Updated"
-        logger.info(f"Successfully updated recipe ID: {recipe_id}")
-
-    finally:
-        # Clean up
-        logger.info(f"Deleting recipe ID: {recipe_id}")
-        await nc_client.cookbook.delete_recipe(recipe_id)
+    mock_make_request.assert_called_once_with(
+        "POST", "/apps/cookbook/api/v1/recipes", json=recipe_data
+    )
 
 
-async def test_cookbook_delete_nonexistent_recipe(nc_client: NextcloudClient):
-    """Test deleting a non-existent recipe.
+async def test_cookbook_get_recipe(mocker):
+    """Test that get_recipe correctly parses the API response."""
+    mock_response = create_mock_recipe_response(
+        recipe_id=123,
+        name="Test Recipe",
+        description="Test description",
+        recipe_category="Test",
+        keywords="test,integration",
+        recipe_yield=4,
+        recipeIngredient=["100g flour", "2 eggs"],
+        recipeInstructions=["Mix ingredients", "Cook"],
+    )
 
-    Note: The Cookbook API may return 502 or succeed silently for non-existent IDs
-    rather than 404. This test verifies the behavior."""
-    non_existent_id = 999999999
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        CookbookClient, "_make_request", return_value=mock_response
+    )
 
-    logger.info(f"Attempting to delete non-existent recipe ID: {non_existent_id}")
-    try:
-        result = await nc_client.cookbook.delete_recipe(non_existent_id)
-        logger.info(f"Delete returned: {result}")
-        # API may succeed silently or return an error message
-        assert isinstance(result, str)
-    except HTTPStatusError as e:
-        # API may return 404 or 502 for non-existent recipes
-        assert e.response.status_code in [404, 502]
-        logger.info(f"Delete correctly failed with {e.response.status_code}")
+    client = CookbookClient(mock_client, "testuser")
+    recipe = await client.get_recipe(recipe_id=123)
 
+    assert recipe["id"] == 123
+    assert recipe["name"] == "Test Recipe"
+    assert recipe["description"] == "Test description"
+    assert len(recipe["recipeIngredient"]) == 2
+    assert len(recipe["recipeInstructions"]) == 2
 
-async def test_cookbook_import_recipe_from_url(nc_client: NextcloudClient):
-    """Test importing a recipe from a URL.
-
-    This is the key feature test - importing recipes from URLs using schema.org metadata.
-    Uses an nginx container to serve reliable, controlled test data.
-    """
-
-    # Use the nginx container hostname within the Docker network
-    test_url = "http://recipes/black-pepper-tofu"
-
-    logger.info(f"Importing recipe from nginx container: {test_url}")
-
-    try:
-        imported_recipe = await nc_client.cookbook.import_recipe(test_url)
-        logger.info(f"Successfully imported recipe: {imported_recipe.get('name')}")
-
-        # Verify basic recipe structure
-        assert "name" in imported_recipe
-        assert imported_recipe["name"] == "Black Pepper Tofu"
-        assert "id" in imported_recipe
-
-        # Verify schema.org fields were imported correctly
-        assert imported_recipe.get("description")
-        assert len(imported_recipe.get("recipeIngredient", [])) > 0
-        assert len(imported_recipe.get("recipeInstructions", [])) > 0
-        assert imported_recipe.get("recipeCategory") == "Main Course"
-        assert "tofu" in imported_recipe.get("keywords", "").lower()
-
-        recipe_id = int(imported_recipe["id"])
-
-        # Verify we can read it back
-        retrieved = await nc_client.cookbook.get_recipe(recipe_id)
-        assert retrieved["name"] == imported_recipe["name"]
-        logger.info(f"Verified imported recipe ID: {recipe_id}")
-
-        # Clean up
-        logger.info(f"Deleting imported recipe ID: {recipe_id}")
-        await nc_client.cookbook.delete_recipe(recipe_id)
-        logger.info("Successfully deleted imported recipe")
-
-    except HTTPStatusError as e:
-        if e.response.status_code == 409:
-            # Recipe already exists - this is acceptable in tests
-            logger.warning("Recipe already exists (409 conflict)")
-            pytest.skip("Recipe already exists in test environment")
-        elif e.response.status_code == 400:
-            # URL couldn't be imported
-            logger.error(
-                f"Failed to import recipe from nginx container: {test_url}. "
-                f"Status: {e.response.status_code}, Response: {e.response.text}"
-            )
-            raise
-        else:
-            raise
+    mock_make_request.assert_called_once_with(
+        "GET", "/apps/cookbook/api/v1/recipes/123"
+    )
 
 
-async def test_cookbook_search_recipes(nc_client: NextcloudClient):
-    """Test searching for recipes."""
-    # Create a test recipe with unique keywords
-    unique_keyword = f"testkeyword{uuid.uuid4().hex[:8]}"
-    recipe_name = f"Test Recipe {uuid.uuid4().hex[:8]}"
-    recipe_data = {
-        "name": recipe_name,
-        "description": f"Recipe for testing search with {unique_keyword}",
-        "keywords": unique_keyword,
-        "recipeIngredient": ["test ingredient"],
-        "recipeInstructions": ["test instruction"],
+async def test_cookbook_update_recipe(mocker):
+    """Test that update_recipe correctly parses the API response."""
+    # Update_recipe returns the recipe ID
+    mock_response = create_mock_response(status_code=200, json_data=123)
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        CookbookClient, "_make_request", return_value=mock_response
+    )
+
+    client = CookbookClient(mock_client, "testuser")
+    updated_data = {
+        "name": "Updated Recipe",
+        "description": "Updated description",
+        "recipeIngredient": ["100g flour", "2 eggs", "200ml milk"],
+        "recipeInstructions": ["Mix ingredients", "Cook", "Serve"],
     }
+    updated_id = await client.update_recipe(recipe_id=123, recipe_data=updated_data)
 
-    logger.info(f"Creating recipe for search test with keyword: {unique_keyword}")
-    recipe_id = await nc_client.cookbook.create_recipe(recipe_data)
+    assert updated_id == 123
 
-    try:
-        # Allow time for indexing
-        await asyncio.sleep(2)
-
-        # Search for the recipe
-        logger.info(f"Searching for recipes with keyword: {unique_keyword}")
-        search_results = await nc_client.cookbook.search_recipes(unique_keyword)
-
-        assert isinstance(search_results, list)
-        # Should find at least our recipe
-        assert len(search_results) > 0
-
-        # Verify our recipe is in the results
-        found = any(str(r.get("id")) == str(recipe_id) for r in search_results)
-        assert found, f"Recipe {recipe_id} not found in search results"
-        logger.info(f"Successfully found recipe {recipe_id} in search results")
-
-    finally:
-        # Clean up
-        logger.info(f"Deleting recipe ID: {recipe_id}")
-        await nc_client.cookbook.delete_recipe(recipe_id)
+    mock_make_request.assert_called_once_with(
+        "PUT", "/apps/cookbook/api/v1/recipes/123", json=updated_data
+    )
 
 
-async def test_cookbook_list_categories(nc_client: NextcloudClient):
-    """Test listing recipe categories."""
-    logger.info("Listing recipe categories")
-    categories = await nc_client.cookbook.list_categories()
+async def test_cookbook_delete_recipe(mocker):
+    """Test that delete_recipe correctly parses the API response."""
+    mock_response = create_mock_response(
+        status_code=200, json_data="Recipe deleted successfully"
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        CookbookClient, "_make_request", return_value=mock_response
+    )
+
+    client = CookbookClient(mock_client, "testuser")
+    result = await client.delete_recipe(recipe_id=123)
+
+    assert isinstance(result, str)
+    assert "deleted" in result.lower()
+
+    mock_make_request.assert_called_once_with(
+        "DELETE", "/apps/cookbook/api/v1/recipes/123"
+    )
+
+
+async def test_cookbook_delete_nonexistent_recipe(mocker):
+    """Test that deleting a non-existent recipe raises HTTPStatusError."""
+    error_response = create_mock_error_response(404, "Recipe not found")
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(CookbookClient, "_make_request")
+    mock_make_request.side_effect = httpx.HTTPStatusError(
+        "404 Not Found",
+        request=httpx.Request("DELETE", "http://test.local"),
+        response=error_response,
+    )
+
+    client = CookbookClient(mock_client, "testuser")
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        await client.delete_recipe(recipe_id=999999999)
+
+    assert excinfo.value.response.status_code == 404
+
+
+async def test_cookbook_search_recipes(mocker):
+    """Test that search_recipes correctly parses the API response."""
+    mock_response = create_mock_recipe_list_response(
+        recipes=[
+            {"id": 1, "name": "Test Recipe 1", "keywords": "test,search"},
+            {"id": 2, "name": "Test Recipe 2", "keywords": "test,search"},
+        ]
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        CookbookClient, "_make_request", return_value=mock_response
+    )
+
+    client = CookbookClient(mock_client, "testuser")
+    search_results = await client.search_recipes("test")
+
+    assert isinstance(search_results, list)
+    assert len(search_results) == 2
+
+    # Verify URL encoding happened
+    mock_make_request.assert_called_once()
+    call_args = mock_make_request.call_args[0]
+    assert "/apps/cookbook/api/v1/search/" in call_args[1]
+
+
+async def test_cookbook_list_categories(mocker):
+    """Test that list_categories correctly parses the API response."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data=[
+            {"name": "Desserts", "recipe_count": 5},
+            {"name": "Main Course", "recipe_count": 10},
+        ],
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        CookbookClient, "_make_request", return_value=mock_response
+    )
+
+    client = CookbookClient(mock_client, "testuser")
+    categories = await client.list_categories()
 
     assert isinstance(categories, list)
-    logger.info(f"Found {len(categories)} categories")
+    assert len(categories) == 2
+    assert categories[0]["name"] == "Desserts"
+    assert categories[0]["recipe_count"] == 5
 
-    # Each category should have name and recipe_count
-    if categories:
-        assert "name" in categories[0]
-        assert "recipe_count" in categories[0]
-
-
-async def test_cookbook_get_recipes_in_category(nc_client: NextcloudClient):
-    """Test getting recipes in a specific category."""
-    # Create a recipe in a test category
-    unique_category = f"TestCategory{uuid.uuid4().hex[:8]}"
-    recipe_name = f"Test Recipe {uuid.uuid4().hex[:8]}"
-    recipe_data = {
-        "name": recipe_name,
-        "recipeCategory": unique_category,
-        "recipeIngredient": ["test"],
-        "recipeInstructions": ["test"],
-    }
-
-    logger.info(f"Creating recipe in category: {unique_category}")
-    recipe_id = await nc_client.cookbook.create_recipe(recipe_data)
-
-    try:
-        # Allow time for indexing
-        await asyncio.sleep(2)
-
-        # Get recipes in this category
-        logger.info(f"Getting recipes in category: {unique_category}")
-        recipes_in_category = await nc_client.cookbook.get_recipes_in_category(
-            unique_category
-        )
-
-        assert isinstance(recipes_in_category, list)
-        assert len(recipes_in_category) > 0
-
-        # Verify our recipe is in the results
-        found = any(str(r.get("id")) == str(recipe_id) for r in recipes_in_category)
-        assert found, f"Recipe {recipe_id} not found in category {unique_category}"
-        logger.info(f"Successfully found recipe in category {unique_category}")
-
-    finally:
-        # Clean up
-        logger.info(f"Deleting recipe ID: {recipe_id}")
-        await nc_client.cookbook.delete_recipe(recipe_id)
+    mock_make_request.assert_called_once_with("GET", "/apps/cookbook/api/v1/categories")
 
 
-async def test_cookbook_list_keywords(nc_client: NextcloudClient):
-    """Test listing recipe keywords."""
-    logger.info("Listing recipe keywords")
-    keywords = await nc_client.cookbook.list_keywords()
+async def test_cookbook_get_recipes_in_category(mocker):
+    """Test that get_recipes_in_category correctly parses the API response."""
+    mock_response = create_mock_recipe_list_response(
+        recipes=[
+            {"id": 1, "name": "Recipe 1", "recipeCategory": "Desserts"},
+            {"id": 2, "name": "Recipe 2", "recipeCategory": "Desserts"},
+        ]
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        CookbookClient, "_make_request", return_value=mock_response
+    )
+
+    client = CookbookClient(mock_client, "testuser")
+    recipes_in_category = await client.get_recipes_in_category("Desserts")
+
+    assert isinstance(recipes_in_category, list)
+    assert len(recipes_in_category) == 2
+    assert recipes_in_category[0]["recipeCategory"] == "Desserts"
+
+    # Verify URL encoding happened
+    mock_make_request.assert_called_once()
+    call_args = mock_make_request.call_args[0]
+    assert "/apps/cookbook/api/v1/category/" in call_args[1]
+
+
+async def test_cookbook_list_keywords(mocker):
+    """Test that list_keywords correctly parses the API response."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data=[
+            {"name": "vegetarian", "recipe_count": 15},
+            {"name": "quick", "recipe_count": 8},
+        ],
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        CookbookClient, "_make_request", return_value=mock_response
+    )
+
+    client = CookbookClient(mock_client, "testuser")
+    keywords = await client.list_keywords()
 
     assert isinstance(keywords, list)
-    logger.info(f"Found {len(keywords)} keywords")
+    assert len(keywords) == 2
+    assert keywords[0]["name"] == "vegetarian"
+    assert keywords[0]["recipe_count"] == 15
 
-    # Each keyword should have name and recipe_count
-    if keywords:
-        assert "name" in keywords[0]
-        assert "recipe_count" in keywords[0]
-
-
-async def test_cookbook_get_recipes_with_keywords(nc_client: NextcloudClient):
-    """Test getting recipes with specific keywords.
-
-    Note: The keywords filtering may require exact keyword matches and sufficient
-    indexing time. This test uses a longer wait time."""
-    # Create a recipe with unique keywords
-    unique_keyword = f"testtag{uuid.uuid4().hex[:8]}"
-    recipe_name = f"Test Recipe {uuid.uuid4().hex[:8]}"
-    recipe_data = {
-        "name": recipe_name,
-        "keywords": f"{unique_keyword},integration",
-        "recipeIngredient": ["test"],
-        "recipeInstructions": ["test"],
-    }
-
-    logger.info(f"Creating recipe with keyword: {unique_keyword}")
-    recipe_id = await nc_client.cookbook.create_recipe(recipe_data)
-
-    try:
-        # Allow extra time for indexing
-        await asyncio.sleep(3)
-
-        # Trigger a reindex to ensure the recipe is indexed
-        await nc_client.cookbook.reindex()
-        await asyncio.sleep(2)
-
-        # Get recipes with this keyword
-        logger.info(f"Getting recipes with keyword: {unique_keyword}")
-        recipes_with_keywords = await nc_client.cookbook.get_recipes_with_keywords(
-            [unique_keyword]
-        )
-
-        assert isinstance(recipes_with_keywords, list)
-        # Keyword filtering might not find recipes immediately due to indexing
-        # Log the results for debugging
-        logger.info(
-            f"Found {len(recipes_with_keywords)} recipes with keyword {unique_keyword}"
-        )
-
-        if len(recipes_with_keywords) > 0:
-            # Verify our recipe is in the results if any are found
-            found = any(
-                str(r.get("id")) == str(recipe_id) for r in recipes_with_keywords
-            )
-            if found:
-                logger.info(f"Successfully found recipe with keyword {unique_keyword}")
-            else:
-                logger.warning(
-                    f"Recipe {recipe_id} not in keyword results, but other recipes found"
-                )
-        else:
-            logger.warning(
-                f"No recipes found with keyword {unique_keyword} - may be indexing delay"
-            )
-
-    finally:
-        # Clean up
-        logger.info(f"Deleting recipe ID: {recipe_id}")
-        await nc_client.cookbook.delete_recipe(recipe_id)
+    mock_make_request.assert_called_once_with("GET", "/apps/cookbook/api/v1/keywords")
 
 
-async def test_cookbook_reindex(nc_client: NextcloudClient):
-    """Test triggering a reindex of recipes."""
-    logger.info("Triggering recipe reindex")
-    result = await nc_client.cookbook.reindex()
+async def test_cookbook_get_recipes_with_keywords(mocker):
+    """Test that get_recipes_with_keywords correctly parses the API response."""
+    mock_response = create_mock_recipe_list_response(
+        recipes=[
+            {"id": 1, "name": "Recipe 1", "keywords": "vegetarian,quick"},
+            {"id": 2, "name": "Recipe 2", "keywords": "vegetarian,healthy"},
+        ]
+    )
 
-    # Should return a success message
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        CookbookClient, "_make_request", return_value=mock_response
+    )
+
+    client = CookbookClient(mock_client, "testuser")
+    recipes_with_keywords = await client.get_recipes_with_keywords(
+        ["vegetarian", "quick"]
+    )
+
+    assert isinstance(recipes_with_keywords, list)
+    assert len(recipes_with_keywords) == 2
+
+    # Verify URL encoding and keyword joining happened
+    mock_make_request.assert_called_once()
+    call_args = mock_make_request.call_args[0]
+    assert "/apps/cookbook/api/v1/tags/" in call_args[1]
+
+
+async def test_cookbook_reindex(mocker):
+    """Test that reindex correctly parses the API response."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data="Reindex completed successfully",
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        CookbookClient, "_make_request", return_value=mock_response
+    )
+
+    client = CookbookClient(mock_client, "testuser")
+    result = await client.reindex()
+
     assert isinstance(result, str)
-    logger.info(f"Reindex result: {result}")
+    assert "reindex" in result.lower() or "completed" in result.lower()
+
+    mock_make_request.assert_called_once_with("POST", "/apps/cookbook/api/v1/reindex")
