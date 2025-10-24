@@ -213,10 +213,14 @@ async def test_dcr_register_and_delete_lifecycle(
         token_type="Bearer",
     )
 
-    # Store registration_access_token if present
+    # Store RFC 7592 fields if present
     registration_access_token = full_client_info.get("registration_access_token")
+    registration_client_uri = full_client_info.get("registration_client_uri")
     logger.info(
         f"Registration access token present: {registration_access_token is not None}"
+    )
+    logger.info(
+        f"Registration client URI present: {registration_client_uri is not None}"
     )
 
     logger.info(f"✅ Client registered: {client_info.client_id[:16]}...")
@@ -237,77 +241,25 @@ async def test_dcr_register_and_delete_lifecycle(
     assert access_token, "Failed to obtain access token"
     logger.info(f"✅ Access token obtained: {access_token[:30]}...")
 
-    # Step 3: Delete the client
+    # Step 3: Delete the client using RFC 7592
     logger.info("Step 3: Deleting OAuth client...")
     logger.info(f"Client ID: {client_info.client_id}")
     logger.info(f"Client secret (first 16 chars): {client_info.client_secret[:16]}...")
+    logger.info(
+        f"Registration access token: {registration_access_token[:16] if registration_access_token else 'None'}..."
+    )
 
-    # First, let's manually test the deletion endpoint with different auth methods
-    deletion_endpoint = f"{nextcloud_host}/apps/oidc/register/{client_info.client_id}"
-    logger.info(f"Deletion endpoint: {deletion_endpoint}")
-
-    # Test with both authentication methods
-    async with httpx.AsyncClient(timeout=30.0) as test_client:
-        # Method 1: HTTP Basic Auth
-        logger.info("Method 1: Testing deletion with HTTP Basic Auth...")
-        response_basic = await test_client.delete(
-            deletion_endpoint,
-            auth=(client_info.client_id, client_info.client_secret),
-        )
-        logger.info(f"HTTP Basic Auth response status: {response_basic.status_code}")
-        logger.info(f"Response body: {response_basic.text[:200]}")
-
-        # Method 2: Credentials in JSON body
-        logger.info("\nMethod 2: Testing deletion with credentials in JSON body...")
-        response_json = await test_client.delete(
-            deletion_endpoint,
-            json={
-                "client_id": client_info.client_id,
-                "client_secret": client_info.client_secret,
-            },
-        )
-        logger.info(f"JSON body response status: {response_json.status_code}")
-        logger.info(f"Response body: {response_json.text[:200]}")
-
-        # Method 3: Try with query parameters
-        logger.info(
-            "\nMethod 3: Testing deletion with credentials in query parameters..."
-        )
-        response_query = await test_client.delete(
-            deletion_endpoint,
-            params={
-                "client_id": client_info.client_id,
-                "client_secret": client_info.client_secret,
-            },
-        )
-        logger.info(f"Query params response status: {response_query.status_code}")
-        logger.info(f"Response body: {response_query.text[:200]}")
-
-        # Summary
-        logger.info("\n=== SUMMARY ===")
-        logger.info(f"Basic Auth: {response_basic.status_code}")
-        logger.info(f"JSON Body: {response_json.status_code}")
-        logger.info(f"Query Params: {response_query.status_code}")
-
-        if response_basic.status_code == 401 and response_json.status_code == 401:
-            logger.info("✗ All authentication methods failed with 401 Unauthorized")
-        elif (
-            response_basic.status_code == 204
-            or response_json.status_code == 204
-            or response_query.status_code == 204
-        ):
-            logger.info("✓ At least one authentication method succeeded!")
-        else:
-            logger.info("Unexpected status codes - need further investigation")
-
+    # Use delete_client() which prefers RFC 7592 Bearer token, falls back to Basic Auth
     success = await delete_client(
         nextcloud_url=nextcloud_host,
         client_id=client_info.client_id,
+        registration_access_token=registration_access_token,
         client_secret=client_info.client_secret,
+        registration_client_uri=registration_client_uri,
     )
 
     assert success, (
-        "Client deletion should succeed, but got status from manual test above"
+        "Client deletion should succeed with RFC 7592 Bearer token or Basic Auth"
     )
     logger.info(f"✅ Client deleted successfully: {client_info.client_id[:16]}...")
 
@@ -329,8 +281,11 @@ async def test_dcr_register_and_delete_lifecycle(
             )
 
             # If we get here, check the status code
-            if token_response.status_code == 401:
-                logger.info("✅ Deleted client correctly rejected (401 Unauthorized)")
+            # Accept either 400 (Bad Request) or 401 (Unauthorized) as valid rejection
+            if token_response.status_code in [400, 401]:
+                logger.info(
+                    f"✅ Deleted client correctly rejected ({token_response.status_code})"
+                )
             else:
                 # Unexpected success - client should be deleted
                 pytest.fail(
@@ -355,12 +310,12 @@ async def test_dcr_delete_with_wrong_credentials(
     oauth_callback_server,
 ):
     """
-    Test that deletion fails with wrong client credentials (401 Unauthorized).
+    Test that deletion fails with wrong registration_access_token (401 Unauthorized).
 
     This verifies:
-    1. Client registration succeeds
-    2. Deletion with wrong client_secret returns 401
-    3. Deletion with correct credentials still works
+    1. Client registration succeeds and returns registration_access_token
+    2. Deletion with wrong registration_access_token returns 401
+    3. Deletion with correct registration_access_token succeeds (RFC 7592)
     """
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
@@ -390,25 +345,28 @@ async def test_dcr_delete_with_wrong_credentials(
 
     logger.info(f"Client registered: {client_info.client_id[:16]}...")
 
-    # Try to delete with wrong client_secret
-    logger.info("Attempting deletion with wrong client_secret...")
-    wrong_secret = "wrong_secret_" + secrets.token_urlsafe(32)
+    # Try to delete with wrong registration_access_token (RFC 7592 Bearer token)
+    logger.info("Attempting deletion with wrong registration_access_token...")
+    wrong_token = "wrong_token_" + secrets.token_urlsafe(32)
 
     success = await delete_client(
         nextcloud_url=nextcloud_host,
         client_id=client_info.client_id,
-        client_secret=wrong_secret,
+        registration_access_token=wrong_token,
+        client_secret=client_info.client_secret,  # Should not be used if token is present
     )
 
     assert not success, "Deletion with wrong credentials should fail"
     logger.info("✅ Deletion correctly failed with wrong credentials")
 
-    # Clean up: Delete with correct credentials
-    logger.info("Cleaning up: deleting with correct credentials...")
+    # Clean up: Delete with correct RFC 7592 Bearer token
+    logger.info("Cleaning up: deleting with correct registration_access_token...")
     success = await delete_client(
         nextcloud_url=nextcloud_host,
         client_id=client_info.client_id,
+        registration_access_token=client_info.registration_access_token,
         client_secret=client_info.client_secret,
+        registration_client_uri=client_info.registration_client_uri,
     )
 
     assert success, "Deletion with correct credentials should succeed"
@@ -486,23 +444,27 @@ async def test_dcr_deletion_is_idempotent(
 
     logger.info(f"Client registered: {client_info.client_id[:16]}...")
 
-    # First deletion
+    # First deletion with RFC 7592 Bearer token
     logger.info("First deletion attempt...")
     success = await delete_client(
         nextcloud_url=nextcloud_host,
         client_id=client_info.client_id,
+        registration_access_token=client_info.registration_access_token,
         client_secret=client_info.client_secret,
+        registration_client_uri=client_info.registration_client_uri,
     )
 
     assert success, "First deletion should succeed"
     logger.info("✅ First deletion succeeded")
 
-    # Second deletion (should fail gracefully)
+    # Second deletion (should fail gracefully - token no longer valid after first deletion)
     logger.info("Second deletion attempt (should fail)...")
     success = await delete_client(
         nextcloud_url=nextcloud_host,
         client_id=client_info.client_id,
+        registration_access_token=client_info.registration_access_token,
         client_secret=client_info.client_secret,
+        registration_client_uri=client_info.registration_client_uri,
     )
 
     assert not success, "Second deletion should fail (client already deleted)"

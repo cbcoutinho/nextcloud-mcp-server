@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -241,6 +242,7 @@ async def delete_client(
     registration_access_token: str | None = None,
     client_secret: str | None = None,
     registration_client_uri: str | None = None,
+    max_retries: int = 3,
 ) -> bool:
     """
     Delete a dynamically registered OAuth client using RFC 7592.
@@ -255,6 +257,7 @@ async def delete_client(
         registration_access_token: RFC 7592 registration access token (preferred)
         client_secret: Client secret for fallback HTTP Basic Auth
         registration_client_uri: RFC 7592 client configuration URI (optional)
+        max_retries: Maximum number of retries for 429 responses (default: 3)
 
     Returns:
         True if deletion successful, False otherwise
@@ -266,6 +269,7 @@ async def delete_client(
         1. Bearer token: Authorization: Bearer {registration_access_token} (RFC 7592 standard)
         2. HTTP Basic Auth: client_id as username, client_secret as password (fallback)
     """
+
     # Determine deletion endpoint
     if registration_client_uri:
         deletion_endpoint = registration_client_uri
@@ -276,58 +280,86 @@ async def delete_client(
     logger.debug(f"Deletion endpoint: {deletion_endpoint}")
 
     async with httpx.AsyncClient(timeout=30.0) as http_client:
-        try:
-            # Prefer RFC 7592 Bearer token authentication
-            if registration_access_token:
-                logger.debug("Using RFC 7592 Bearer token authentication")
-                response = await http_client.delete(
-                    deletion_endpoint,
-                    headers={"Authorization": f"Bearer {registration_access_token}"},
-                )
-            elif client_secret:
-                logger.debug(
-                    "Falling back to HTTP Basic Auth (registration_access_token not available)"
-                )
-                response = await http_client.delete(
-                    deletion_endpoint,
-                    auth=(client_id, client_secret),
-                )
-            else:
+        for attempt in range(max_retries):
+            try:
+                # Prefer RFC 7592 Bearer token authentication
+                if registration_access_token:
+                    logger.debug("Using RFC 7592 Bearer token authentication")
+                    response = await http_client.delete(
+                        deletion_endpoint,
+                        headers={
+                            "Authorization": f"Bearer {registration_access_token}"
+                        },
+                    )
+                elif client_secret:
+                    logger.debug(
+                        "Falling back to HTTP Basic Auth (registration_access_token not available)"
+                    )
+                    response = await http_client.delete(
+                        deletion_endpoint,
+                        auth=(client_id, client_secret),
+                    )
+                else:
+                    logger.error(
+                        "Cannot delete client: no registration_access_token or client_secret provided"
+                    )
+                    return False
+
+                # RFC 7592: Successful deletion returns 204 No Content
+                if response.status_code == 204:
+                    logger.info(
+                        f"Successfully deleted OAuth client: {client_id[:16]}..."
+                    )
+                    return True
+                elif response.status_code == 429:
+                    # Rate limited - retry with exponential backoff
+                    if attempt < max_retries - 1:
+                        retry_after = int(response.headers.get("Retry-After", 2))
+                        wait_time = min(
+                            retry_after, 2**attempt
+                        )  # Exponential backoff, max from header
+                        logger.warning(
+                            f"Rate limited (429) deleting client {client_id[:16]}..., "
+                            f"retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})"
+                        )
+                        await anyio.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error(
+                            f"Failed to delete client {client_id[:16]}... after {max_retries} attempts: Rate limited (429)"
+                        )
+                        return False
+                elif response.status_code == 401:
+                    logger.error(
+                        f"Failed to delete client {client_id[:16]}...: Authentication failed (invalid credentials)"
+                    )
+                    return False
+                elif response.status_code == 403:
+                    logger.error(
+                        f"Failed to delete client {client_id[:16]}...: Not authorized (not a DCR client or wrong client)"
+                    )
+                    return False
+                else:
+                    logger.error(
+                        f"Failed to delete client {client_id[:16]}...: HTTP {response.status_code}"
+                    )
+                    logger.debug(f"Response: {response.text}")
+                    return False
+
+            except httpx.HTTPStatusError as e:
                 logger.error(
-                    "Cannot delete client: no registration_access_token or client_secret provided"
+                    f"HTTP error deleting client {client_id[:16]}...: {e.response.status_code}"
+                )
+                logger.debug(f"Response: {e.response.text}")
+                return False
+            except Exception as e:
+                logger.error(
+                    f"Unexpected error deleting client {client_id[:16]}...: {e}"
                 )
                 return False
 
-            # RFC 7592: Successful deletion returns 204 No Content
-            if response.status_code == 204:
-                logger.info(f"Successfully deleted OAuth client: {client_id[:16]}...")
-                return True
-            elif response.status_code == 401:
-                logger.error(
-                    f"Failed to delete client {client_id[:16]}...: Authentication failed (invalid credentials)"
-                )
-                return False
-            elif response.status_code == 403:
-                logger.error(
-                    f"Failed to delete client {client_id[:16]}...: Not authorized (not a DCR client or wrong client)"
-                )
-                return False
-            else:
-                logger.error(
-                    f"Failed to delete client {client_id[:16]}...: HTTP {response.status_code}"
-                )
-                logger.debug(f"Response: {response.text}")
-                return False
-
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                f"HTTP error deleting client {client_id[:16]}...: {e.response.status_code}"
-            )
-            logger.debug(f"Response: {e.response.text}")
-            return False
-        except Exception as e:
-            logger.error(f"Unexpected error deleting client {client_id[:16]}...: {e}")
-            return False
+        # Should not reach here, but return False if we do
+        return False
 
 
 async def load_or_register_client(
