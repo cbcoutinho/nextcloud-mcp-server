@@ -130,6 +130,36 @@ uv sync
 uv sync --group dev
 ```
 
+### Database Inspection
+
+**Docker Compose Database Credentials:**
+- Root user: `root` / password: `password`
+- App user: `nextcloud` / password: `password`
+- Database: `nextcloud`
+
+**Common Database Commands:**
+```bash
+# Connect to database as root (most common for inspection)
+docker compose exec db mariadb -u root -ppassword nextcloud
+
+# Check OAuth clients
+docker compose exec db mariadb -u root -ppassword nextcloud -e "SELECT id, name, token_type FROM oc_oidc_clients ORDER BY id DESC LIMIT 10;"
+
+# Check OAuth client scopes
+docker compose exec db mariadb -u root -ppassword nextcloud -e "SELECT c.id, c.name, s.scope FROM oc_oidc_clients c LEFT JOIN oc_oidc_client_scopes s ON c.id = s.client_id WHERE c.name LIKE '%MCP%';"
+
+# Check OAuth access tokens
+docker compose exec db mariadb -u root -ppassword nextcloud -e "SELECT id, client_id, user_id, created_at FROM oc_oidc_access_tokens ORDER BY created_at DESC LIMIT 10;"
+```
+
+**Important Tables:**
+- `oc_oidc_clients` - OAuth client registrations (DCR clients)
+- `oc_oidc_client_scopes` - Client allowed scopes
+- `oc_oidc_access_tokens` - Issued access tokens
+- `oc_oidc_authorization_codes` - Authorization codes
+- `oc_oidc_registration_tokens` - RFC 7592 registration tokens for client management
+- `oc_oidc_redirect_uris` - Redirect URIs for each client
+
 ## Architecture Overview
 
 This is a Python MCP (Model Context Protocol) server that provides LLM integration with Nextcloud. The architecture follows a layered pattern:
