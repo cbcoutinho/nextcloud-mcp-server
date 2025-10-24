@@ -327,10 +327,12 @@ OAuth integration tests use **automated Playwright browser automation** to compl
 **OAuth Testing Setup:**
 - **Main fixtures**: `nc_oauth_client`, `nc_mcp_oauth_client` - Use Playwright automation
 - **Shared OAuth Client**: All test users authenticate using a single OAuth client
-  - Stored in `.nextcloud_oauth_shared_test_client.json`
-  - Matches production MCP server behavior
+  - **Created fresh for each test session** via Dynamic Client Registration (DCR)
+  - Matches production MCP server behavior (one client, multiple user tokens)
   - Each user gets their own unique access token
+  - **Automatic cleanup**: Client is registered at session start, deleted at session end (RFC 7592)
   - Implementation: `shared_oauth_client_credentials` fixture in `tests/conftest.py`
+  - **Note**: Client deletion may fail due to Nextcloud middleware (logged as warning). This doesn't affect tests.
 - **Available fixtures**: `playwright_oauth_token`, `nc_oauth_client`, `nc_mcp_oauth_client`
 - **Multi-user fixtures**: `alice_oauth_token`, `bob_oauth_token`, `charlie_oauth_token`, `diana_oauth_token`
 - **Requirements**: `NEXTCLOUD_HOST`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_PASSWORD` environment variables
@@ -356,7 +358,6 @@ uv run pytest -m oauth -v
   - `mcp-oauth` (port 8001): Uses OAuth authentication - for OAuth-specific testing
 - Start OAuth MCP server: `docker-compose up --build -d mcp-oauth`
 - **Important**: When working on OAuth functionality, always rebuild `mcp-oauth` container, not `mcp`
-- OAuth client credentials cached in `.nextcloud_oauth_shared_test_client.json`
 
 **CI/CD Notes:**
 - Playwright tests run in CI/CD environments

@@ -952,9 +952,13 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
     server (port 8001). While opaque tokens don't embed scopes, the allowed_scopes
     configuration ensures tokens have proper scopes when introspected.
 
+    The client is automatically deleted from Nextcloud after the test session completes.
+
     Returns:
         Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
     """
+    from nextcloud_mcp_server.auth.client_registration import delete_client
+
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
         pytest.skip("Shared OAuth client requires NEXTCLOUD_HOST")
@@ -982,13 +986,11 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
 
         # Create opaque token client with allowed_scopes (not JWT)
         # This ensures the token has proper scopes even though they're not embedded
-        # Cache to file to avoid creating new client on every test run
         client_id, client_secret = await _create_oauth_client_with_scopes(
             callback_url=callback_url,
             client_name="Pytest - Shared Test Client (Opaque)",
             allowed_scopes=DEFAULT_FULL_SCOPES,
             token_type="Bearer",  # Opaque tokens for port 8001
-            cache_file=".nextcloud_oauth_shared_test_client.json",
         )
 
         logger.info(f"Shared OAuth client ready: {client_id[:16]}...")
@@ -996,13 +998,34 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
             "This opaque token client with full scopes will be reused for all test user authentications"
         )
 
-        return (
+        yield (
             client_id,
             client_secret,
             callback_url,
             token_endpoint,
             authorization_endpoint,
         )
+
+        # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
+        try:
+            logger.info(f"Cleaning up shared OAuth client: {client_id[:16]}...")
+            success = await delete_client(
+                nextcloud_url=nextcloud_host,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+            if success:
+                logger.info(
+                    f"Successfully deleted shared OAuth client: {client_id[:16]}..."
+                )
+            else:
+                logger.warning(
+                    f"Failed to delete shared OAuth client: {client_id[:16]}..."
+                )
+        except Exception as e:
+            logger.warning(
+                f"Error cleaning up shared OAuth client {client_id[:16]}...: {e}"
+            )
 
 
 @pytest.fixture(scope="session")
@@ -1014,9 +1037,13 @@ async def shared_jwt_oauth_client_credentials(anyio_backend, oauth_callback_serv
     is configured with token_type="JWT" to request JWT-formatted access tokens from the
     OIDC server (instead of opaque tokens).
 
+    The client is automatically deleted from Nextcloud after the test session completes.
+
     Returns:
         Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
     """
+    from nextcloud_mcp_server.auth.client_registration import delete_client
+
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
         pytest.skip("Shared JWT OAuth client requires NEXTCLOUD_HOST")
@@ -1043,13 +1070,11 @@ async def shared_jwt_oauth_client_credentials(anyio_backend, oauth_callback_serv
             )
 
         # Create JWT client with full scopes (all app read/write scopes)
-        # Cache to file to avoid creating new client on every test run
         client_id, client_secret = await _create_oauth_client_with_scopes(
             callback_url=callback_url,
             client_name="Pytest - Shared JWT Test Client",
             allowed_scopes=DEFAULT_FULL_SCOPES,
             token_type="JWT",  # Explicitly set JWT token type
-            cache_file=".nextcloud_oauth_shared_jwt_test_client.json",
         )
 
         logger.info(f"Shared JWT OAuth client ready: {client_id[:16]}...")
@@ -1057,7 +1082,7 @@ async def shared_jwt_oauth_client_credentials(anyio_backend, oauth_callback_serv
             "This JWT client with full scopes will be reused for JWT MCP server tests"
         )
 
-        return (
+        yield (
             client_id,
             client_secret,
             callback_url,
@@ -1065,52 +1090,47 @@ async def shared_jwt_oauth_client_credentials(anyio_backend, oauth_callback_serv
             authorization_endpoint,
         )
 
+        # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
+        try:
+            logger.info(f"Cleaning up shared JWT OAuth client: {client_id[:16]}...")
+            success = await delete_client(
+                nextcloud_url=nextcloud_host,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+            if success:
+                logger.info(
+                    f"Successfully deleted shared JWT OAuth client: {client_id[:16]}..."
+                )
+            else:
+                logger.warning(
+                    f"Failed to delete shared JWT OAuth client: {client_id[:16]}..."
+                )
+        except Exception as e:
+            logger.warning(
+                f"Error cleaning up shared JWT OAuth client {client_id[:16]}...: {e}"
+            )
+
 
 async def _create_oauth_client_with_scopes(
     callback_url: str,
     client_name: str,
     allowed_scopes: str,
     token_type: str = "JWT",
-    cache_file: str | None = None,
 ) -> tuple[str, str]:
     """
     Helper function to create an OAuth client with specific allowed_scopes using DCR.
-
-    Supports optional file-based caching to avoid creating duplicate clients.
 
     Args:
         callback_url: OAuth callback URL
         client_name: Name of the OAuth client
         allowed_scopes: Space-separated list of allowed scopes
         token_type: Either "JWT" or "Bearer" (default: "JWT")
-        cache_file: Optional path to cache file (e.g., ".nextcloud_oauth_shared_test_client.json")
 
     Returns:
         Tuple of (client_id, client_secret)
     """
-    import json
-    from pathlib import Path
-
     from nextcloud_mcp_server.auth.client_registration import register_client
-
-    # Try to load from cache if specified
-    if cache_file:
-        cache_path = Path(cache_file)
-        if cache_path.exists():
-            try:
-                with open(cache_path, "r") as f:
-                    cached_data = json.load(f)
-
-                client_id = cached_data.get("client_id")
-                client_secret = cached_data.get("client_secret")
-
-                if client_id and client_secret:
-                    logger.info(
-                        f"Loaded cached OAuth client from {cache_file}: {client_id[:16]}..."
-                    )
-                    return client_id, client_secret
-            except (json.JSONDecodeError, KeyError, OSError) as e:
-                logger.warning(f"Failed to load cached client from {cache_file}: {e}")
 
     logger.info(
         f"Creating {token_type} OAuth client '{client_name}' with scopes: {allowed_scopes} using DCR"
@@ -1149,32 +1169,6 @@ async def _create_oauth_client_with_scopes(
         f"Created OAuth client via DCR: {client_id[:16]}... with scopes: {allowed_scopes}"
     )
 
-    # Save to cache if specified
-    if cache_file:
-        cache_path = Path(cache_file)
-        try:
-            # Create parent directory if needed
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Save client data
-            with open(cache_path, "w") as f:
-                json.dump(
-                    {
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                        "redirect_uris": [callback_url],
-                    },
-                    f,
-                    indent=2,
-                )
-
-            # Set restrictive permissions
-            cache_path.chmod(0o600)
-
-            logger.info(f"Cached OAuth client to {cache_file}")
-        except OSError as e:
-            logger.warning(f"Failed to cache client to {cache_file}: {e}")
-
     return client_id, client_secret
 
 
@@ -1183,9 +1177,13 @@ async def read_only_oauth_client_credentials(anyio_backend, oauth_callback_serve
     """
     Fixture for OAuth client with only read scopes.
 
+    The client is automatically deleted from Nextcloud after the test session completes.
+
     Returns:
         Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
     """
+    from nextcloud_mcp_server.auth.client_registration import delete_client
+
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
         pytest.skip("Read-only OAuth client requires NEXTCLOUD_HOST")
@@ -1209,7 +1207,7 @@ async def read_only_oauth_client_credentials(anyio_backend, oauth_callback_serve
             token_type="JWT",  # JWT tokens for scope validation
         )
 
-        return (
+        yield (
             client_id,
             client_secret,
             callback_url,
@@ -1217,15 +1215,40 @@ async def read_only_oauth_client_credentials(anyio_backend, oauth_callback_serve
             authorization_endpoint,
         )
 
+        # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
+        try:
+            logger.info(f"Cleaning up read-only OAuth client: {client_id[:16]}...")
+            success = await delete_client(
+                nextcloud_url=nextcloud_host,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+            if success:
+                logger.info(
+                    f"Successfully deleted read-only OAuth client: {client_id[:16]}..."
+                )
+            else:
+                logger.warning(
+                    f"Failed to delete read-only OAuth client: {client_id[:16]}..."
+                )
+        except Exception as e:
+            logger.warning(
+                f"Error cleaning up read-only OAuth client {client_id[:16]}...: {e}"
+            )
+
 
 @pytest.fixture(scope="session")
 async def write_only_oauth_client_credentials(anyio_backend, oauth_callback_server):
     """
     Fixture for OAuth client with only write scopes.
 
+    The client is automatically deleted from Nextcloud after the test session completes.
+
     Returns:
         Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
     """
+    from nextcloud_mcp_server.auth.client_registration import delete_client
+
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
         pytest.skip("Write-only OAuth client requires NEXTCLOUD_HOST")
@@ -1249,7 +1272,7 @@ async def write_only_oauth_client_credentials(anyio_backend, oauth_callback_serv
             token_type="JWT",  # JWT tokens for scope validation
         )
 
-        return (
+        yield (
             client_id,
             client_secret,
             callback_url,
@@ -1257,15 +1280,40 @@ async def write_only_oauth_client_credentials(anyio_backend, oauth_callback_serv
             authorization_endpoint,
         )
 
+        # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
+        try:
+            logger.info(f"Cleaning up write-only OAuth client: {client_id[:16]}...")
+            success = await delete_client(
+                nextcloud_url=nextcloud_host,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+            if success:
+                logger.info(
+                    f"Successfully deleted write-only OAuth client: {client_id[:16]}..."
+                )
+            else:
+                logger.warning(
+                    f"Failed to delete write-only OAuth client: {client_id[:16]}..."
+                )
+        except Exception as e:
+            logger.warning(
+                f"Error cleaning up write-only OAuth client {client_id[:16]}...: {e}"
+            )
+
 
 @pytest.fixture(scope="session")
 async def full_access_oauth_client_credentials(anyio_backend, oauth_callback_server):
     """
     Fixture for OAuth client with both read and write scopes.
 
+    The client is automatically deleted from Nextcloud after the test session completes.
+
     Returns:
         Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
     """
+    from nextcloud_mcp_server.auth.client_registration import delete_client
+
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
         pytest.skip("Full-access OAuth client requires NEXTCLOUD_HOST")
@@ -1289,13 +1337,34 @@ async def full_access_oauth_client_credentials(anyio_backend, oauth_callback_ser
             token_type="JWT",  # JWT tokens for scope validation
         )
 
-        return (
+        yield (
             client_id,
             client_secret,
             callback_url,
             token_endpoint,
             authorization_endpoint,
         )
+
+        # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
+        try:
+            logger.info(f"Cleaning up full-access OAuth client: {client_id[:16]}...")
+            success = await delete_client(
+                nextcloud_url=nextcloud_host,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+            if success:
+                logger.info(
+                    f"Successfully deleted full-access OAuth client: {client_id[:16]}..."
+                )
+            else:
+                logger.warning(
+                    f"Failed to delete full-access OAuth client: {client_id[:16]}..."
+                )
+        except Exception as e:
+            logger.warning(
+                f"Error cleaning up full-access OAuth client {client_id[:16]}...: {e}"
+            )
 
 
 @pytest.fixture(scope="session")
@@ -1308,9 +1377,13 @@ async def no_custom_scopes_oauth_client_credentials(
     Tests the security behavior when a user grants only the default OIDC scopes
     (openid, profile, email) but declines custom application scopes (notes:read, notes:write, etc.).
 
+    The client is automatically deleted from Nextcloud after the test session completes.
+
     Returns:
         Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
     """
+    from nextcloud_mcp_server.auth.client_registration import delete_client
+
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
         pytest.skip("No-custom-scopes OAuth client requires NEXTCLOUD_HOST")
@@ -1334,13 +1407,36 @@ async def no_custom_scopes_oauth_client_credentials(
             token_type="JWT",  # JWT tokens for scope validation
         )
 
-        return (
+        yield (
             client_id,
             client_secret,
             callback_url,
             token_endpoint,
             authorization_endpoint,
         )
+
+        # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
+        try:
+            logger.info(
+                f"Cleaning up no-custom-scopes OAuth client: {client_id[:16]}..."
+            )
+            success = await delete_client(
+                nextcloud_url=nextcloud_host,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+            if success:
+                logger.info(
+                    f"Successfully deleted no-custom-scopes OAuth client: {client_id[:16]}..."
+                )
+            else:
+                logger.warning(
+                    f"Failed to delete no-custom-scopes OAuth client: {client_id[:16]}..."
+                )
+        except Exception as e:
+            logger.warning(
+                f"Error cleaning up no-custom-scopes OAuth client {client_id[:16]}...: {e}"
+            )
 
 
 @pytest.fixture(scope="session")

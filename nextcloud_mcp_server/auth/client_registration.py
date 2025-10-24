@@ -212,6 +212,80 @@ def save_client_to_file(client_info: ClientInfo, storage_path: Path):
         raise
 
 
+async def delete_client(
+    nextcloud_url: str,
+    client_id: str,
+    client_secret: str,
+) -> bool:
+    """
+    Delete a dynamically registered OAuth client using RFC 7592.
+
+    This implements RFC 7592 Section 2.3 (Client Delete Request).
+    The client authenticates using client_secret_post method and
+    requests deletion via DELETE to the client configuration endpoint.
+
+    Args:
+        nextcloud_url: Base URL of the Nextcloud instance
+        client_id: Client identifier to delete
+        client_secret: Client secret for authentication
+
+    Returns:
+        True if deletion successful, False otherwise
+
+    Note:
+        Per RFC 7592, the deletion endpoint is:
+        {nextcloud_url}/apps/oidc/register/{client_id}
+
+        Authentication uses HTTP Basic Auth or client_secret_post:
+        - HTTP Basic Auth: client_id as username, client_secret as password
+        - client_secret_post: credentials in request body
+    """
+    deletion_endpoint = f"{nextcloud_url}/apps/oidc/register/{client_id}"
+
+    logger.info(f"Deleting OAuth client: {client_id[:16]}...")
+    logger.debug(f"Deletion endpoint: {deletion_endpoint}")
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        try:
+            # RFC 7592 requires client authentication
+            # Use HTTP Basic Auth (client_id as username, client_secret as password)
+            response = await http_client.delete(
+                deletion_endpoint,
+                auth=(client_id, client_secret),
+            )
+
+            # RFC 7592: Successful deletion returns 204 No Content
+            if response.status_code == 204:
+                logger.info(f"Successfully deleted OAuth client: {client_id[:16]}...")
+                return True
+            elif response.status_code == 401:
+                logger.error(
+                    f"Failed to delete client {client_id[:16]}...: Authentication failed (invalid credentials)"
+                )
+                return False
+            elif response.status_code == 403:
+                logger.error(
+                    f"Failed to delete client {client_id[:16]}...: Not authorized (not a DCR client or wrong client)"
+                )
+                return False
+            else:
+                logger.error(
+                    f"Failed to delete client {client_id[:16]}...: HTTP {response.status_code}"
+                )
+                logger.debug(f"Response: {response.text}")
+                return False
+
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                f"HTTP error deleting client {client_id[:16]}...: {e.response.status_code}"
+            )
+            logger.debug(f"Response: {e.response.text}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error deleting client {client_id[:16]}...: {e}")
+            return False
+
+
 async def load_or_register_client(
     nextcloud_url: str,
     registration_endpoint: str,
