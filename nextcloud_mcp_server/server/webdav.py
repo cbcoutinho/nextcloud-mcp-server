@@ -4,7 +4,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
-from nextcloud_mcp_server.models import FileInfo, SearchFilesResponse
+from nextcloud_mcp_server.models import DirectoryListing, FileInfo, SearchFilesResponse
 
 logger = logging.getLogger(__name__)
 
@@ -13,17 +13,36 @@ def configure_webdav_tools(mcp: FastMCP):
     # WebDAV file system tools
     @mcp.tool()
     @require_scopes("files:read")
-    async def nc_webdav_list_directory(ctx: Context, path: str = ""):
+    async def nc_webdav_list_directory(
+        ctx: Context, path: str = ""
+    ) -> DirectoryListing:
         """List files and directories in the specified NextCloud path.
 
         Args:
             path: Directory path to list (empty string for root directory)
 
         Returns:
-            List of items with metadata including name, path, is_directory, size, content_type, last_modified
+            DirectoryListing with files, total_count, directories_count, files_count, and total_size
         """
         client = get_client(ctx)
-        return await client.webdav.list_directory(path)
+        items = await client.webdav.list_directory(path)
+
+        # Convert to FileInfo models
+        file_infos = [FileInfo(**item) for item in items]
+
+        # Calculate metadata
+        directories_count = sum(1 for f in file_infos if f.is_directory)
+        files_count = sum(1 for f in file_infos if not f.is_directory)
+        total_size = sum(f.size or 0 for f in file_infos if not f.is_directory)
+
+        return DirectoryListing(
+            path=path,
+            files=file_infos,
+            total_count=len(file_infos),
+            directories_count=directories_count,
+            files_count=files_count,
+            total_size=total_size,
+        )
 
     @mcp.tool()
     @require_scopes("files:read")

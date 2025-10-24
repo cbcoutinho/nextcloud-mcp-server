@@ -40,7 +40,7 @@ class DirectoryListing(BaseResponse):
     """Response model for directory listings."""
 
     path: str = Field(description="Directory path")
-    items: List[FileInfo] = Field(description="Files and directories in the path")
+    files: List[FileInfo] = Field(description="Files and directories in the path")
     total_count: int = Field(description="Total number of items")
     directories_count: int = Field(description="Number of directories")
     files_count: int = Field(description="Number of files")
