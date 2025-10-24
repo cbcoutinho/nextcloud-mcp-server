@@ -1,3 +1,15 @@
+## v0.20.0 (2025-10-24)
+
+### Feat
+
+- **auth**: Add support for client registration deletion
+- Split read/write scopes into app:read/write scopes
+
+### Fix
+
+- Add support for RFC 7592 client registration and deletion
+- Update webdav models for proper serialization
+
 ## v0.19.1 (2025-10-24)
 
 ### Fix
