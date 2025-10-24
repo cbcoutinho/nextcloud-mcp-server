@@ -1211,7 +1211,7 @@ async def read_only_oauth_client_credentials(anyio_backend, oauth_callback_serve
         authorization_endpoint = oidc_config.get("authorization_endpoint")
 
         # Create JWT client with READ-ONLY scopes
-        client_id, client_secret = await _create_oauth_client_with_scopes(
+        client_info = await _create_oauth_client_with_scopes(
             callback_url=callback_url,
             client_name="Test Client Read Only",
             allowed_scopes=DEFAULT_READ_SCOPES,
@@ -1219,8 +1219,8 @@ async def read_only_oauth_client_credentials(anyio_backend, oauth_callback_serve
         )
 
         yield (
-            client_id,
-            client_secret,
+            client_info.client_id,
+            client_info.client_secret,
             callback_url,
             token_endpoint,
             authorization_endpoint,
@@ -1228,23 +1228,27 @@ async def read_only_oauth_client_credentials(anyio_backend, oauth_callback_serve
 
         # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
         try:
-            logger.info(f"Cleaning up read-only OAuth client: {client_id[:16]}...")
+            logger.info(
+                f"Cleaning up read-only OAuth client: {client_info.client_id[:16]}..."
+            )
             success = await delete_client(
                 nextcloud_url=nextcloud_host,
-                client_id=client_id,
-                client_secret=client_secret,
+                client_id=client_info.client_id,
+                registration_access_token=client_info.registration_access_token,
+                client_secret=client_info.client_secret,
+                registration_client_uri=client_info.registration_client_uri,
             )
             if success:
                 logger.info(
-                    f"Successfully deleted read-only OAuth client: {client_id[:16]}..."
+                    f"Successfully deleted read-only OAuth client: {client_info.client_id[:16]}..."
                 )
             else:
                 logger.warning(
-                    f"Failed to delete read-only OAuth client: {client_id[:16]}..."
+                    f"Failed to delete read-only OAuth client: {client_info.client_id[:16]}..."
                 )
         except Exception as e:
             logger.warning(
-                f"Error cleaning up read-only OAuth client {client_id[:16]}...: {e}"
+                f"Error cleaning up read-only OAuth client {client_info.client_id[:16]}...: {e}"
             )
 
 
@@ -1276,7 +1280,7 @@ async def write_only_oauth_client_credentials(anyio_backend, oauth_callback_serv
         authorization_endpoint = oidc_config.get("authorization_endpoint")
 
         # Create JWT client with WRITE-ONLY scopes
-        client_id, client_secret = await _create_oauth_client_with_scopes(
+        client_info = await _create_oauth_client_with_scopes(
             callback_url=callback_url,
             client_name="Test Client Write Only",
             allowed_scopes=DEFAULT_WRITE_SCOPES,
@@ -1284,8 +1288,8 @@ async def write_only_oauth_client_credentials(anyio_backend, oauth_callback_serv
         )
 
         yield (
-            client_id,
-            client_secret,
+            client_info.client_id,
+            client_info.client_secret,
             callback_url,
             token_endpoint,
             authorization_endpoint,
@@ -1293,23 +1297,27 @@ async def write_only_oauth_client_credentials(anyio_backend, oauth_callback_serv
 
         # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
         try:
-            logger.info(f"Cleaning up write-only OAuth client: {client_id[:16]}...")
+            logger.info(
+                f"Cleaning up write-only OAuth client: {client_info.client_id[:16]}..."
+            )
             success = await delete_client(
                 nextcloud_url=nextcloud_host,
-                client_id=client_id,
-                client_secret=client_secret,
+                client_id=client_info.client_id,
+                registration_access_token=client_info.registration_access_token,
+                client_secret=client_info.client_secret,
+                registration_client_uri=client_info.registration_client_uri,
             )
             if success:
                 logger.info(
-                    f"Successfully deleted write-only OAuth client: {client_id[:16]}..."
+                    f"Successfully deleted write-only OAuth client: {client_info.client_id[:16]}..."
                 )
             else:
                 logger.warning(
-                    f"Failed to delete write-only OAuth client: {client_id[:16]}..."
+                    f"Failed to delete write-only OAuth client: {client_info.client_id[:16]}..."
                 )
         except Exception as e:
             logger.warning(
-                f"Error cleaning up write-only OAuth client {client_id[:16]}...: {e}"
+                f"Error cleaning up write-only OAuth client {client_info.client_id[:16]}...: {e}"
             )
 
 
@@ -1341,7 +1349,7 @@ async def full_access_oauth_client_credentials(anyio_backend, oauth_callback_ser
         authorization_endpoint = oidc_config.get("authorization_endpoint")
 
         # Create JWT client with FULL ACCESS (both read and write scopes)
-        client_id, client_secret = await _create_oauth_client_with_scopes(
+        client_info = await _create_oauth_client_with_scopes(
             callback_url=callback_url,
             client_name="Test Client Full Access",
             allowed_scopes=DEFAULT_FULL_SCOPES,
@@ -1349,8 +1357,8 @@ async def full_access_oauth_client_credentials(anyio_backend, oauth_callback_ser
         )
 
         yield (
-            client_id,
-            client_secret,
+            client_info.client_id,
+            client_info.client_secret,
             callback_url,
             token_endpoint,
             authorization_endpoint,
@@ -1358,23 +1366,27 @@ async def full_access_oauth_client_credentials(anyio_backend, oauth_callback_ser
 
         # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
         try:
-            logger.info(f"Cleaning up full-access OAuth client: {client_id[:16]}...")
+            logger.info(
+                f"Cleaning up full-access OAuth client: {client_info.client_id[:16]}..."
+            )
             success = await delete_client(
                 nextcloud_url=nextcloud_host,
-                client_id=client_id,
-                client_secret=client_secret,
+                client_id=client_info.client_id,
+                registration_access_token=client_info.registration_access_token,
+                client_secret=client_info.client_secret,
+                registration_client_uri=client_info.registration_client_uri,
             )
             if success:
                 logger.info(
-                    f"Successfully deleted full-access OAuth client: {client_id[:16]}..."
+                    f"Successfully deleted full-access OAuth client: {client_info.client_id[:16]}..."
                 )
             else:
                 logger.warning(
-                    f"Failed to delete full-access OAuth client: {client_id[:16]}..."
+                    f"Failed to delete full-access OAuth client: {client_info.client_id[:16]}..."
                 )
         except Exception as e:
             logger.warning(
-                f"Error cleaning up full-access OAuth client {client_id[:16]}...: {e}"
+                f"Error cleaning up full-access OAuth client {client_info.client_id[:16]}...: {e}"
             )
 
 
@@ -1411,7 +1423,7 @@ async def no_custom_scopes_oauth_client_credentials(
         authorization_endpoint = oidc_config.get("authorization_endpoint")
 
         # Create JWT client with NO custom scopes (only OIDC defaults)
-        client_id, client_secret = await _create_oauth_client_with_scopes(
+        client_info = await _create_oauth_client_with_scopes(
             callback_url=callback_url,
             client_name="Test Client No Custom Scopes",
             allowed_scopes="openid profile email",  # No app-specific scopes (no app access)
@@ -1419,8 +1431,8 @@ async def no_custom_scopes_oauth_client_credentials(
         )
 
         yield (
-            client_id,
-            client_secret,
+            client_info.client_id,
+            client_info.client_secret,
             callback_url,
             token_endpoint,
             authorization_endpoint,
@@ -1429,24 +1441,26 @@ async def no_custom_scopes_oauth_client_credentials(
         # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
         try:
             logger.info(
-                f"Cleaning up no-custom-scopes OAuth client: {client_id[:16]}..."
+                f"Cleaning up no-custom-scopes OAuth client: {client_info.client_id[:16]}..."
             )
             success = await delete_client(
                 nextcloud_url=nextcloud_host,
-                client_id=client_id,
-                client_secret=client_secret,
+                client_id=client_info.client_id,
+                registration_access_token=client_info.registration_access_token,
+                client_secret=client_info.client_secret,
+                registration_client_uri=client_info.registration_client_uri,
             )
             if success:
                 logger.info(
-                    f"Successfully deleted no-custom-scopes OAuth client: {client_id[:16]}..."
+                    f"Successfully deleted no-custom-scopes OAuth client: {client_info.client_id[:16]}..."
                 )
             else:
                 logger.warning(
-                    f"Failed to delete no-custom-scopes OAuth client: {client_id[:16]}..."
+                    f"Failed to delete no-custom-scopes OAuth client: {client_info.client_id[:16]}..."
                 )
         except Exception as e:
             logger.warning(
-                f"Error cleaning up no-custom-scopes OAuth client {client_id[:16]}...: {e}"
+                f"Error cleaning up no-custom-scopes OAuth client {client_info.client_id[:16]}...: {e}"
             )
 
 
