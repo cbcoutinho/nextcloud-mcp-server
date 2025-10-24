@@ -255,6 +255,72 @@ tests/
   - For OAuth changes: `uv run pytest tests/server/test_oauth*.py -v` (remember to rebuild `mcp-oauth` container)
 - **Avoid creating standalone test scripts** - use pytest with proper fixtures instead
 
+#### Writing Mocked Unit Tests
+
+For client-layer tests that verify response parsing logic, use mocked HTTP responses instead of real network calls:
+
+**Pattern:**
+```python
+import httpx
+import pytest
+from nextcloud_mcp_server.client.notes import NotesClient
+from tests.conftest import create_mock_note_response
+
+async def test_notes_api_get_note(mocker):
+    """Test that get_note correctly parses the API response."""
+    # Create mock response using helper functions
+    mock_response = create_mock_note_response(
+        note_id=123,
+        title="Test Note",
+        content="Test content",
+        category="Test",
+        etag="abc123",
+    )
+
+    # Mock the _make_request method
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        NotesClient, "_make_request", return_value=mock_response
+    )
+
+    # Create client and test
+    client = NotesClient(mock_client, "testuser")
+    note = await client.get_note(note_id=123)
+
+    # Verify the response was parsed correctly
+    assert note["id"] == 123
+    assert note["title"] == "Test Note"
+    # Verify the correct API endpoint was called
+    mock_make_request.assert_called_once_with("GET", "/apps/notes/api/v1/notes/123")
+```
+
+**Mock Response Helpers in `tests/conftest.py`:**
+- `create_mock_response()` - Generic HTTP response builder
+- `create_mock_note_response()` - Pre-configured note response
+- `create_mock_error_response()` - Error responses (404, 412, etc.)
+
+**Benefits:**
+- ⚡ Fast execution (~0.1s vs minutes for integration tests)
+- 🔒 No Docker dependency
+- 🎯 Tests focus on response parsing logic
+- ♻️ Repeatable and deterministic
+
+**When to use:**
+- Testing client methods that parse JSON responses
+- Testing error handling (404, 412, etc.)
+- Testing request parameter building
+
+**When NOT to use (keep as integration tests):**
+- Complex protocol interactions (CalDAV, CardDAV, WebDAV)
+- Multi-component workflows (Notes + WebDAV attachments)
+- OAuth flows
+- End-to-end MCP tool testing
+
+**Reference Implementation:**
+- See `tests/client/notes/test_notes_api.py` for complete examples
+- Mark unit tests with `pytestmark = pytest.mark.unit`
+- Run with: `uv run pytest tests/unit/ tests/client/notes/test_notes_api.py -v`
+
 #### OAuth/OIDC Testing
 OAuth integration tests use **automated Playwright browser automation** to complete the OAuth flow programmatically.
 
