@@ -986,21 +986,21 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
 
         # Create opaque token client with allowed_scopes (not JWT)
         # This ensures the token has proper scopes even though they're not embedded
-        client_id, client_secret = await _create_oauth_client_with_scopes(
+        client_info = await _create_oauth_client_with_scopes(
             callback_url=callback_url,
             client_name="Pytest - Shared Test Client (Opaque)",
             allowed_scopes=DEFAULT_FULL_SCOPES,
             token_type="Bearer",  # Opaque tokens for port 8001
         )
 
-        logger.info(f"Shared OAuth client ready: {client_id[:16]}...")
+        logger.info(f"Shared OAuth client ready: {client_info.client_id[:16]}...")
         logger.info(
             "This opaque token client with full scopes will be reused for all test user authentications"
         )
 
         yield (
-            client_id,
-            client_secret,
+            client_info.client_id,
+            client_info.client_secret,
             callback_url,
             token_endpoint,
             authorization_endpoint,
@@ -1008,23 +1008,27 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
 
         # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
         try:
-            logger.info(f"Cleaning up shared OAuth client: {client_id[:16]}...")
+            logger.info(
+                f"Cleaning up shared OAuth client: {client_info.client_id[:16]}..."
+            )
             success = await delete_client(
                 nextcloud_url=nextcloud_host,
-                client_id=client_id,
-                client_secret=client_secret,
+                client_id=client_info.client_id,
+                registration_access_token=client_info.registration_access_token,
+                client_secret=client_info.client_secret,
+                registration_client_uri=client_info.registration_client_uri,
             )
             if success:
                 logger.info(
-                    f"Successfully deleted shared OAuth client: {client_id[:16]}..."
+                    f"Successfully deleted shared OAuth client: {client_info.client_id[:16]}..."
                 )
             else:
                 logger.warning(
-                    f"Failed to delete shared OAuth client: {client_id[:16]}..."
+                    f"Failed to delete shared OAuth client: {client_info.client_id[:16]}..."
                 )
         except Exception as e:
             logger.warning(
-                f"Error cleaning up shared OAuth client {client_id[:16]}...: {e}"
+                f"Error cleaning up shared OAuth client {client_info.client_id[:16]}...: {e}"
             )
 
 
@@ -1070,21 +1074,21 @@ async def shared_jwt_oauth_client_credentials(anyio_backend, oauth_callback_serv
             )
 
         # Create JWT client with full scopes (all app read/write scopes)
-        client_id, client_secret = await _create_oauth_client_with_scopes(
+        client_info = await _create_oauth_client_with_scopes(
             callback_url=callback_url,
             client_name="Pytest - Shared JWT Test Client",
             allowed_scopes=DEFAULT_FULL_SCOPES,
             token_type="JWT",  # Explicitly set JWT token type
         )
 
-        logger.info(f"Shared JWT OAuth client ready: {client_id[:16]}...")
+        logger.info(f"Shared JWT OAuth client ready: {client_info.client_id[:16]}...")
         logger.info(
             "This JWT client with full scopes will be reused for JWT MCP server tests"
         )
 
         yield (
-            client_id,
-            client_secret,
+            client_info.client_id,
+            client_info.client_secret,
             callback_url,
             token_endpoint,
             authorization_endpoint,
@@ -1092,23 +1096,27 @@ async def shared_jwt_oauth_client_credentials(anyio_backend, oauth_callback_serv
 
         # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
         try:
-            logger.info(f"Cleaning up shared JWT OAuth client: {client_id[:16]}...")
+            logger.info(
+                f"Cleaning up shared JWT OAuth client: {client_info.client_id[:16]}..."
+            )
             success = await delete_client(
                 nextcloud_url=nextcloud_host,
-                client_id=client_id,
-                client_secret=client_secret,
+                client_id=client_info.client_id,
+                registration_access_token=client_info.registration_access_token,
+                client_secret=client_info.client_secret,
+                registration_client_uri=client_info.registration_client_uri,
             )
             if success:
                 logger.info(
-                    f"Successfully deleted shared JWT OAuth client: {client_id[:16]}..."
+                    f"Successfully deleted shared JWT OAuth client: {client_info.client_id[:16]}..."
                 )
             else:
                 logger.warning(
-                    f"Failed to delete shared JWT OAuth client: {client_id[:16]}..."
+                    f"Failed to delete shared JWT OAuth client: {client_info.client_id[:16]}..."
                 )
         except Exception as e:
             logger.warning(
-                f"Error cleaning up shared JWT OAuth client {client_id[:16]}...: {e}"
+                f"Error cleaning up shared JWT OAuth client {client_info.client_id[:16]}...: {e}"
             )
 
 
@@ -1117,7 +1125,7 @@ async def _create_oauth_client_with_scopes(
     client_name: str,
     allowed_scopes: str,
     token_type: str = "JWT",
-) -> tuple[str, str]:
+):
     """
     Helper function to create an OAuth client with specific allowed_scopes using DCR.
 
@@ -1128,7 +1136,7 @@ async def _create_oauth_client_with_scopes(
         token_type: Either "JWT" or "Bearer" (default: "JWT")
 
     Returns:
-        Tuple of (client_id, client_secret)
+        ClientInfo object with full registration details including registration_access_token
     """
     from nextcloud_mcp_server.auth.client_registration import register_client
 
@@ -1162,14 +1170,17 @@ async def _create_oauth_client_with_scopes(
         token_type=token_type,
     )
 
-    client_id = client_info.client_id
-    client_secret = client_info.client_secret
-
     logger.info(
-        f"Created OAuth client via DCR: {client_id[:16]}... with scopes: {allowed_scopes}"
+        f"Created OAuth client via DCR: {client_info.client_id[:16]}... with scopes: {allowed_scopes}"
     )
+    if client_info.registration_access_token:
+        logger.info(
+            "RFC 7592 registration_access_token received - client can be deleted"
+        )
+    else:
+        logger.warning("No registration_access_token - client deletion may fail")
 
-    return client_id, client_secret
+    return client_info
 
 
 @pytest.fixture(scope="session")
