@@ -9,7 +9,6 @@ authorization rules:
 4. Other clients cannot introspect tokens they don't own or aren't the audience for
 """
 
-import asyncio
 import logging
 import os
 import secrets
@@ -19,11 +18,12 @@ import time
 from typing import AsyncGenerator
 from urllib.parse import quote
 
+import anyio
 import httpx
 import pytest
 
 # Import from the root tests/ conftest.py using relative import
-from ..conftest import _handle_oauth_consent_screen
+from ...conftest import _handle_oauth_consent_screen
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,7 @@ async def _obtain_token_for_client(
             logger.info(f"After login: {current_url}")
 
         # Wait a bit for page to fully render after login
-        await asyncio.sleep(2)
+        await anyio.sleep(2)
         current_url = page.url
         logger.info(f"After waiting, current URL: {current_url}")
 
@@ -251,7 +251,7 @@ async def _obtain_token_for_client(
                 raise TimeoutError(
                     f"Timeout waiting for OAuth callback (state={state[:16]}...)"
                 )
-            await asyncio.sleep(0.5)
+            await anyio.sleep(0.5)
 
         auth_code = auth_states[state]
         logger.info(f"Successfully received auth code: {auth_code[:20]}...")

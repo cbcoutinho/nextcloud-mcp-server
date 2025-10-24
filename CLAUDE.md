@@ -5,18 +5,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Development Commands
 
 ### Testing
+
+The test suite is organized in layers for fast feedback:
+
 ```bash
-# Run all tests
+# FAST FEEDBACK (recommended for development)
+# Unit tests only - ~5 seconds
+uv run pytest tests/unit/ -v
+
+# Smoke tests - critical path validation - ~30-60 seconds
+uv run pytest -m smoke -v
+
+# INTEGRATION TESTS
+# Integration tests without OAuth - ~2-3 minutes
+uv run pytest -m "integration and not oauth" -v
+
+# Full test suite - ~4-5 minutes
 uv run pytest
 
-# Run integration tests only
-uv run pytest -m integration
+# OAuth tests only (slowest, requires Playwright) - ~3 minutes
+uv run pytest -m oauth -v
 
+# COVERAGE
 # Run tests with coverage
 uv run pytest --cov
 
+# LEGACY COMMANDS (still work)
+# Run all integration tests
+uv run pytest -m integration -v
+
 # Skip integration tests
-uv run pytest -m "not integration"
+uv run pytest -m "not integration" -v
 ```
 
 ### Load Testing
@@ -89,16 +108,18 @@ docker-compose up
 # For basic auth changes (most common) - uses admin credentials
 docker-compose up --build -d mcp
 
-# For OAuth changes - uses OAuth authentication flow
+# For OAuth changes - uses OAuth authentication with JWT tokens
 docker-compose up --build -d mcp-oauth
 
 # Build Docker image
 docker build -t nextcloud-mcp-server .
 ```
 
-**Important: Two MCP Server Containers**
+**Important: MCP Server Containers**
 - **`mcp`** (port 8000): Uses basic auth with admin credentials. Use this for most development and testing.
-- **`mcp-oauth`** (port 8001): Uses OAuth authentication. Only use this when working on OAuth-specific features or tests.
+- **`mcp-oauth`** (port 8001): Uses OAuth authentication with JWT tokens. Use this when working on OAuth-specific features or tests.
+  - JWT tokens are used for testing (faster validation, scopes embedded in token)
+  - The server can handle both JWT and opaque tokens via the token verifier
 
 ### Environment Setup
 ```bash
@@ -179,9 +200,37 @@ FastMCP serialization issue: raw lists get mangled into dicts with numeric strin
 
 ### Testing Structure
 
-- **Integration tests** in `tests/client/` and `tests/server/` - Test real Nextcloud API interactions
-- **Fixtures** in `tests/conftest.py` - Shared test setup and utilities
-- Tests are marked with `@pytest.mark.integration` for selective running
+The test suite follows a layered architecture for fast feedback:
+
+```
+tests/
+├── unit/                    # Fast unit tests (~5s total)
+│   ├── test_scope_decorator.py
+│   └── test_response_models.py
+├── smoke/                   # Critical path tests (~30-60s)
+│   └── test_smoke.py
+├── integration/
+│   ├── client/             # Direct API layer tests
+│   │   ├── notes/
+│   │   ├── calendar/
+│   │   └── ...
+│   └── server/             # MCP tool layer tests
+│       ├── oauth/          # OAuth-specific tests (slow, ~3min)
+│       │   ├── test_oauth_core.py
+│       │   ├── test_scope_authorization.py
+│       │   └── ...
+│       ├── test_mcp.py
+│       └── ...
+└── load/                   # Performance tests
+```
+
+**Test Markers:**
+- `@pytest.mark.unit` - Fast unit tests with mocked dependencies
+- `@pytest.mark.integration` - Integration tests requiring Docker containers
+- `@pytest.mark.oauth` - OAuth tests requiring Playwright (slowest)
+- `@pytest.mark.smoke` - Critical path smoke tests
+
+**Fixtures** in `tests/conftest.py` - Shared test setup and utilities
 - **Important**: Integration tests run against live Docker containers. After making code changes:
   - For basic auth tests: rebuild with `docker-compose up --build -d mcp`
   - For OAuth tests: rebuild with `docker-compose up --build -d mcp-oauth`
@@ -226,13 +275,13 @@ OAuth integration tests use **automated Playwright browser automation** to compl
 **Example Commands:**
 ```bash
 # Run all OAuth tests with Playwright automation using Firefox
-uv run pytest tests/server/test_oauth*.py --browser firefox -v
+uv run pytest tests/server/oauth/ --browser firefox -v
 
-# Run specific tests with visible browser for debugging
-uv run pytest tests/server/test_mcp_oauth.py --browser firefox --headed -v
+# Run specific OAuth test file with visible browser for debugging
+uv run pytest tests/server/oauth/test_oauth_core.py --browser firefox --headed -v
 
-# Run with Chromium (default)
-uv run pytest tests/server/test_oauth*.py -v
+# Run with Chromium (default) - use -m oauth marker for all OAuth tests
+uv run pytest -m oauth -v
 ```
 
 **Test Environment:**

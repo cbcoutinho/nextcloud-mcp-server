@@ -182,15 +182,15 @@ You can test using the MCP OAuth container or manually:
 
 **Option A: Using MCP OAuth container**
 ```bash
-# The mcp-oauth-jwt container will trigger the OAuth flow
-docker compose logs -f mcp-oauth-jwt
+# The mcp-oauth container will trigger the OAuth flow
+docker compose logs -f mcp-oauth
 ```
 
 **Option B: Manual browser test**
 1. Get client_id from the JWT client JSON
 2. Visit in browser:
 ```
-http://localhost:8080/apps/oidc/authorize?client_id=YOUR_CLIENT_ID&response_type=code&redirect_uri=http://localhost:8002/oauth/callback&scope=openid+profile+email+nc:read+nc:write&state=test123
+http://localhost:8080/apps/oidc/authorize?client_id=YOUR_CLIENT_ID&response_type=code&redirect_uri=http://localhost:8001/oauth/callback&scope=openid+profile+email+mcp:notes:read+mcp:notes:write&state=test123
 ```
 
 ### 3. Expected Behavior
@@ -203,8 +203,8 @@ http://localhost:8080/apps/oidc/authorize?client_id=YOUR_CLIENT_ID&response_type
      - ✓ Basic authentication (openid) - required, cannot deselect
      - ✓ Profile information (profile)
      - ✓ Email address (email)
-     - ✓ nc:read (custom scope, shown as-is)
-     - ✓ nc:write (custom scope, shown as-is)
+     - ✓ mcp:notes:read (custom scope, shown as-is)
+     - ✓ mcp:notes:write (custom scope, shown as-is)
    - "Allow" and "Deny" buttons
 3. User selects scopes and clicks "Allow"
 4. Authorization proceeds with selected scopes

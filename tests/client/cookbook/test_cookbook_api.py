@@ -1,7 +1,7 @@
-import asyncio
 import logging
 import uuid
 
+import anyio
 import pytest
 from httpx import HTTPStatusError
 
@@ -120,7 +120,7 @@ async def test_cookbook_update_recipe(nc_client: NextcloudClient):
         assert updated_id == recipe_id
 
         # Verify the update
-        await asyncio.sleep(1)  # Allow propagation
+        await anyio.sleep(1)  # Allow propagation
         updated_recipe = await nc_client.cookbook.get_recipe(recipe_id)
         assert updated_recipe["description"] == "Updated description"
         assert len(updated_recipe["recipeIngredient"]) == 2
@@ -227,7 +227,7 @@ async def test_cookbook_search_recipes(nc_client: NextcloudClient):
 
     try:
         # Allow time for indexing
-        await asyncio.sleep(2)
+        await anyio.sleep(2)
 
         # Search for the recipe
         logger.info(f"Searching for recipes with keyword: {unique_keyword}")
@@ -279,7 +279,7 @@ async def test_cookbook_get_recipes_in_category(nc_client: NextcloudClient):
 
     try:
         # Allow time for indexing
-        await asyncio.sleep(2)
+        await anyio.sleep(2)
 
         # Get recipes in this category
         logger.info(f"Getting recipes in category: {unique_category}")
@@ -335,11 +335,11 @@ async def test_cookbook_get_recipes_with_keywords(nc_client: NextcloudClient):
 
     try:
         # Allow extra time for indexing
-        await asyncio.sleep(3)
+        await anyio.sleep(3)
 
         # Trigger a reindex to ensure the recipe is indexed
         await nc_client.cookbook.reindex()
-        await asyncio.sleep(2)
+        await anyio.sleep(2)
 
         # Get recipes with this keyword
         logger.info(f"Getting recipes with keyword: {unique_keyword}")

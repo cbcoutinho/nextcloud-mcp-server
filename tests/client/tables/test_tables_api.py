@@ -1,8 +1,8 @@
-import asyncio
 import logging
 import uuid
 from typing import Any, Dict
 
+import anyio
 import pytest
 from httpx import HTTPStatusError
 
@@ -264,7 +264,7 @@ async def test_tables_create_row(
         assert created_row["tableId"] == table_id
 
         # Verify the row was created by reading it back
-        await asyncio.sleep(1)  # Allow potential propagation delay
+        await anyio.sleep(1)  # Allow potential propagation delay
         rows = await nc_client.tables.get_table_rows(table_id)
         created_row_id = created_row["id"]
 
@@ -338,7 +338,7 @@ async def test_tables_update_row(
     assert updated_row["id"] == row_id
 
     # Verify the row was updated by reading it back
-    await asyncio.sleep(1)  # Allow potential propagation delay
+    await anyio.sleep(1)  # Allow potential propagation delay
     table_id = sample_table_info["table_id"]
     rows = await nc_client.tables.get_table_rows(table_id)
 
@@ -401,7 +401,7 @@ async def test_tables_delete_row(
     # The delete response might vary, but it should be successful
 
     # Verify the row was deleted by trying to find it
-    await asyncio.sleep(1)  # Allow potential propagation delay
+    await anyio.sleep(1)  # Allow potential propagation delay
     rows = await nc_client.tables.get_table_rows(table_id)
 
     # Ensure the deleted row is not in the results

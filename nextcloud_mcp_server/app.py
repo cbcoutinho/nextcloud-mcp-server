@@ -192,9 +192,20 @@ async def load_oauth_client_credentials(
         redirect_uris = [f"{mcp_server_url}/oauth/callback"]
 
         # Get scopes from environment or use defaults
-        scopes = os.getenv(
-            "NEXTCLOUD_OIDC_SCOPES", "openid profile email nc:read nc:write"
+        # Default: all app-specific read/write scopes
+        default_scopes = (
+            "openid profile email "
+            "notes:read notes:write "
+            "calendar:read calendar:write "
+            "todo:read todo:write "
+            "contacts:read contacts:write "
+            "cookbook:read cookbook:write "
+            "deck:read deck:write "
+            "tables:read tables:write "
+            "files:read files:write "
+            "sharing:read sharing:write"
         )
+        scopes = os.getenv("NEXTCLOUD_OIDC_SCOPES", default_scopes)
         logger.info(f"Requesting OAuth scopes: {scopes}")
 
         # Get token type from environment (Bearer or jwt)
@@ -424,9 +435,9 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     if oauth_enabled:
         logger.info("Configuring MCP server for OAuth mode")
         # Asynchronously get the OAuth configuration
-        import asyncio
+        import anyio
 
-        _, token_verifier, auth_settings = asyncio.run(setup_oauth_config())
+        _, token_verifier, auth_settings = anyio.run(setup_oauth_config)
         mcp = FastMCP(
             "Nextcloud MCP",
             lifespan=app_lifespan_oauth,
@@ -553,7 +564,27 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             return JSONResponse(
                 {
                     "resource": resource_url,
-                    "scopes_supported": ["openid", "nc:read", "nc:write"],
+                    "scopes_supported": [
+                        "openid",
+                        "notes:read",
+                        "notes:write",
+                        "calendar:read",
+                        "calendar:write",
+                        "todo:read",
+                        "todo:write",
+                        "contacts:read",
+                        "contacts:write",
+                        "cookbook:read",
+                        "cookbook:write",
+                        "deck:read",
+                        "deck:write",
+                        "tables:read",
+                        "tables:write",
+                        "files:read",
+                        "files:write",
+                        "sharing:read",
+                        "sharing:write",
+                    ],
                     "authorization_servers": [public_issuer_url],
                     "bearer_methods_supported": ["header"],
                     "resource_signing_alg_values_supported": ["RS256"],
@@ -704,7 +735,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 @click.option(
     "--oauth-scopes",
     envvar="NEXTCLOUD_OIDC_SCOPES",
-    default="openid profile email nc:read nc:write",
+    default="openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write",
     show_default=True,
     help="OAuth scopes to request (can also use NEXTCLOUD_OIDC_SCOPES env var)",
 )
@@ -768,7 +799,7 @@ def run(
 
       # OAuth mode with custom scopes and JWT tokens
       $ nextcloud-mcp-server --nextcloud-host=https://cloud.example.com --oauth \\
-          --oauth-scopes="openid nc:read" --oauth-token-type=jwt
+          --oauth-scopes="openid notes:read notes:write" --oauth-token-type=jwt
 
       # OAuth with public issuer URL (for Docker/proxy setups)
       $ nextcloud-mcp-server --nextcloud-host=http://app --oauth \\

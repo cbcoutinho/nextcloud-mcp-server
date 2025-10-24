@@ -1,7 +1,7 @@
-import asyncio
 import logging
 import uuid  # Keep uuid if needed for generating unique data within tests
 
+import anyio
 import pytest
 from httpx import HTTPStatusError
 
@@ -66,7 +66,7 @@ async def test_notes_api_update(nc_client: NextcloudClient, temporary_note: dict
     assert updated_note["etag"] != original_etag  # Etag must change
 
     # Optional: Verify update by reading again
-    await asyncio.sleep(1)  # Allow potential propagation delay
+    await anyio.sleep(1)  # Allow potential propagation delay
     read_updated_note = await nc_client.notes.get_note(note_id=note_id)
     assert read_updated_note["title"] == update_title
     assert read_updated_note["content"] == update_content
@@ -96,7 +96,7 @@ async def test_notes_api_update_conflict(
     new_etag = first_updated_note["etag"]
     assert new_etag != original_etag
     logger.info(f"Note ID: {note_id} updated, new etag: {new_etag}")
-    await asyncio.sleep(1)
+    await anyio.sleep(1)
 
     # Now attempt update with the *original* etag
     logger.info(
@@ -155,7 +155,7 @@ async def test_notes_api_append_content_to_existing_note(
     assert updated_note["content"] == expected_content
 
     # Verify by reading the note again
-    await asyncio.sleep(1)  # Allow potential propagation delay
+    await anyio.sleep(1)  # Allow potential propagation delay
     read_note = await nc_client.notes.get_note(note_id=note_id)
     assert read_note["content"] == expected_content
     logger.info(f"Successfully appended content to note ID: {note_id}")
@@ -189,7 +189,7 @@ async def test_notes_api_append_content_to_empty_note(nc_client: NextcloudClient
         assert updated_note["content"] == append_text
 
         # Verify by reading the note again
-        await asyncio.sleep(1)
+        await anyio.sleep(1)
         read_note = await nc_client.notes.get_note(note_id=note_id)
         assert read_note["content"] == append_text
         logger.info(f"Successfully appended content to empty note ID: {note_id}")
@@ -237,7 +237,7 @@ async def test_notes_api_append_content_multiple_times(
     assert updated_note["content"] == expected_content_after_second
 
     # Verify by reading the note again
-    await asyncio.sleep(1)
+    await anyio.sleep(1)
     read_note = await nc_client.notes.get_note(note_id=note_id)
     assert read_note["content"] == expected_content_after_second
     logger.info(f"Successfully performed multiple appends to note ID: {note_id}")

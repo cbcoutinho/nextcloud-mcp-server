@@ -1,8 +1,8 @@
-import asyncio
 import json
 import logging
 import uuid
 
+import anyio
 import pytest
 from mcp import ClientSession
 
@@ -136,7 +136,7 @@ async def test_mcp_cookbook_update_recipe(
         )
 
         # 4. Verify update via direct NextcloudClient
-        await asyncio.sleep(1)  # Allow propagation
+        await anyio.sleep(1)  # Allow propagation
         updated_recipe = await nc_client.cookbook.get_recipe(created_recipe_id)
         assert updated_recipe["description"] == "Updated via MCP"
         assert len(updated_recipe["recipeIngredient"]) == 2
@@ -282,7 +282,7 @@ async def test_mcp_cookbook_search_recipes(
         created_recipe_id = await nc_client.cookbook.create_recipe(recipe_data)
 
         # 2. Allow time for indexing
-        await asyncio.sleep(2)
+        await anyio.sleep(2)
 
         # 3. Search for the recipe via MCP
         logger.info(f"Searching for recipes via MCP with keyword: {unique_keyword}")
@@ -358,7 +358,7 @@ async def test_mcp_cookbook_categories_workflow(
         created_recipe_id = await nc_client.cookbook.create_recipe(recipe_data)
 
         # 2. Allow time for indexing
-        await asyncio.sleep(2)
+        await anyio.sleep(2)
 
         # 3. List categories via MCP
         logger.info("Listing categories via MCP")
@@ -433,9 +433,9 @@ async def test_mcp_cookbook_keywords_workflow(
         created_recipe_id = await nc_client.cookbook.create_recipe(recipe_data)
 
         # 2. Allow extra time for indexing and trigger reindex
-        await asyncio.sleep(3)
+        await anyio.sleep(3)
         await nc_client.cookbook.reindex()
-        await asyncio.sleep(2)
+        await anyio.sleep(2)
 
         # 3. List keywords via MCP
         logger.info("Listing keywords via MCP")
