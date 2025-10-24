@@ -273,9 +273,9 @@ async def test_file_list_permissions(alice_mcp_client, bob_mcp_client):
 
         if not result.isError:
             response_data = json.loads(result.content[0].text)
-            if not isinstance(response_data, list):
-                response_data = [response_data] if response_data else []
-            file_names = [f["name"] for f in response_data]
+            # Extract files from DirectoryListing response
+            files = response_data.get("files", [])
+            file_names = [f["name"] for f in files]
             logger.info(f"Alice can see files: {file_names}")
 
             # Alice should see her own files
@@ -291,9 +291,9 @@ async def test_file_list_permissions(alice_mcp_client, bob_mcp_client):
 
         if not result.isError:
             response_data = json.loads(result.content[0].text)
-            if not isinstance(response_data, list):
-                response_data = [response_data] if response_data else []
-            file_names = [f["name"] for f in response_data]
+            # Extract files from DirectoryListing response
+            files = response_data.get("files", [])
+            file_names = [f["name"] for f in files]
             logger.info(f"Bob can see files: {file_names}")
 
             # Bob should see his own file, but not Alice's private file
@@ -379,12 +379,12 @@ async def test_folder_share_permissions(alice_mcp_client, bob_mcp_client):
 
         if not result.isError:
             response_data = json.loads(result.content[0].text)
-            if not isinstance(response_data, list):
-                response_data = [response_data] if response_data else []
-            logger.info(f"Bob can see {len(response_data)} files in shared folder")
+            # Extract files from DirectoryListing response
+            files = response_data.get("files", [])
+            logger.info(f"Bob can see {len(files)} files in shared folder")
 
             # Bob should see the file in the shared folder
-            file_names = [f["name"] for f in response_data]
+            file_names = [f["name"] for f in files]
             assert "document.txt" in file_names, (
                 "Bob should see the file in shared folder"
             )

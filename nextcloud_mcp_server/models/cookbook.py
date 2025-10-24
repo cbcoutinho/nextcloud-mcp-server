@@ -2,7 +2,7 @@
 
 from typing import List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .base import BaseResponse, IdResponse, StatusResponse
 
@@ -38,8 +38,7 @@ class Nutrition(BaseModel):
         None, description="Unsaturated fat (e.g., '40 g')"
     )
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class RecipeStub(BaseModel):
@@ -91,9 +90,7 @@ class Recipe(BaseModel):
     )
     nutrition: Optional[Nutrition] = Field(None, description="Nutrition information")
 
-    class Config:
-        populate_by_name = True
-        extra = "allow"  # Allow additional schema.org fields
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
 
 
 class Category(BaseModel):
@@ -127,8 +124,7 @@ class VisibleInfoBlocks(BaseModel):
     )
     tools: Optional[bool] = Field(None, description="Show tools list")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class CookbookConfig(BaseModel):
