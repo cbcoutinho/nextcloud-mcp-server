@@ -8,166 +8,463 @@ The Nextcloud MCP Server acts as an **OAuth 2.0 Resource Server**, protecting ac
 
 ## Architecture Diagram
 
+The complete OAuth flow includes server startup (with DCR), client discovery (with PRM), authorization (with PKCE), and API access phases:
+
 ```
+═══════════════════════════════════════════════════════════════════════════════════
+Phase 0: MCP Server Startup & Client Registration (DCR - RFC 7591)
+═══════════════════════════════════════════════════════════════════════════════════
+
+                                 ┌──────────────────┐                  ┌─────────────────┐
+                                 │   MCP Server     │                  │   Nextcloud     │
+                                 │   (Resource      │                  │  (OIDC Provider)│
+                                 │    Server)       │                  │                 │
+                                 └────────┬─────────┘                  └────────┬────────┘
+                                          │                                     │
+                                          │  0a. OIDC Discovery                 │
+                                          ├────────────────────────────────────>│
+                                          │  GET                                │
+                                          |  /.well-known/openid-configuration  │
+                                          │                                     │
+                                          │  0b. Discovery response             │
+                                          │<────────────────────────────────────┤
+                                          │  {issuer, endpoints, PKCE methods}  │
+                                          │                                     │
+                                          │  0c. Register OAuth client (DCR)    │
+                                          ├────────────────────────────────────>│
+                                          │  POST /apps/oidc/register           │
+                                          │  {client_name, redirect_uris,       │
+                                          │   scopes, token_type}               │
+                                          │                                     │
+                                          │  0d. Client credentials             │
+                                          │<────────────────────────────────────┤
+                                          │  {client_id, client_secret}         │
+                                          │  → Saved to .nextcloud_oauth_*.json │
+                                          │                                     │
+                                          │  ✓ Server ready for connections     │
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+Phase 1: Client Connection & Discovery (PRM - RFC 9728)
+═══════════════════════════════════════════════════════════════════════════════════
+
 ┌─────────────┐                  ┌──────────────────┐                  ┌─────────────────┐
-│             │                  │                  │                  │                 │
-│ MCP Client  │                  │   MCP Server     │                  │   Nextcloud     │
-│ (Claude,    │                  │   (Resource      │                  │   Instance      │
-│  etc.)      │                  │    Server)       │                  │                 │
+│             │                  │   MCP Server     │                  │   Nextcloud     │
+│ MCP Client  │                  │   (Resource      │                  │   Instance      │
+│ (Claude)    │                  │    Server)       │                  │                 │
 │             │                  │                  │                  │                 │
 └──────┬──────┘                  └────────┬─────────┘                  └────────┬────────┘
        │                                  │                                     │
-       │                                  │                                     │
-       │  1. Connect to MCP               │                                     │
+       │  1a. Connect to MCP              │                                     │
        ├─────────────────────────────────>│                                     │
        │                                  │                                     │
-       │  2. Return auth settings         │                                     │
-       │     (issuer_url, scopes)         │                                     │
+       │  1b. Return auth settings        │                                     │
        │<─────────────────────────────────┤                                     │
+       │  {issuer_url, resource_url}      │                                     │
        │                                  │                                     │
-       │                                  │                                     │
-       │  3. Start OAuth flow (with PKCE) │                                     │
-       ├──────────────────────────────────┼────────────────────────────────────>│
-       │                                  │   /apps/oidc/authorize              │
-       │                                  │                                     │
-       │  4. User authenticates in browser│                                     │
-       │<─────────────────────────────────┼─────────────────────────────────────┤
-       │                                  │                                     │
-       │  5. Authorization code (redirect)│                                     │
-       │<─────────────────────────────────┤                                     │
-       │                                  │                                     │
-       │  6. Exchange code for token      │                                     │
-       ├──────────────────────────────────┼────────────────────────────────────>│
-       │                                  │   /apps/oidc/token                  │
-       │                                  │                                     │
-       │  7. Access token                 │                                     │
-       │<─────────────────────────────────┼─────────────────────────────────────┤
-       │                                  │                                     │
-       │                                  │                                     │
-       │  8. API request with Bearer token│                                     │
+       │  1c. PRM Discovery (RFC 9728)    │                                     │
        ├─────────────────────────────────>│                                     │
-       │     Authorization: Bearer xxx    │                                     │
+       │  GET /.well-known/oauth-         │                                     │
+       │      protected-resource/mcp      │                                     │
        │                                  │                                     │
-       │                                  │  9. Validate token via userinfo     │
-       │                                  ├────────────────────────────────────>│
-       │                                  │     /apps/oidc/userinfo             │
-       │                                  │                                     │
-       │                                  │  10. User info (token valid)        │
-       │                                  │<────────────────────────────────────┤
-       │                                  │                                     │
-       │                                  │  11. Nextcloud API request          │
-       │                                  ├────────────────────────────────────>│
-       │                                  │     Authorization: Bearer xxx       │
-       │                                  │     (Notes, Calendar, etc.)         │
-       │                                  │                                     │
-       │                                  │  12. API response                   │
-       │                                  │<────────────────────────────────────┤
-       │                                  │                                     │
-       │  13. MCP tool response           │                                     │
+       │  1d. PRM response (scopes!)      │                                     │
        │<─────────────────────────────────┤                                     │
+       │  {resource, scopes_supported,    │  ← Dynamically discovered from      │
+       │   authorization_servers}         │    @require_scopes decorators       │
+       │                                  │                                     │
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+Phase 2: OAuth Authorization Flow (PKCE - RFC 7636)
+═══════════════════════════════════════════════════════════════════════════════════
+
+       │                                  │                                     │
+       │  2a. Generate PKCE challenge     │                                     │
+       │  code_verifier = random(43-128)  │                                     │
+       │  code_challenge = SHA256(verif.) │                                     │
+       │                                  │                                     │
+       │  2b. Authorization request       │                                     │
+       ├──────────────────────────────────┼────────────────────────────────────>│
+       │  /apps/oidc/authorize?           │                                     │
+       │    client_id=xxx                 │                                     │
+       │    &code_challenge=abc...        │                                     │
+       │    &code_challenge_method=S256   │                                     │
+       │    &scope=openid notes:read ...  │                                     │
+       │                                  │                                     │
+       │  2c. User consent page           │                                     │
+       │<─────────────────────────────────┼─────────────────────────────────────┤
+       │  (Browser: Select scopes)        │                                     │
+       │                                  │                                     │
+       │  2d. User grants scopes          │                                     │
+       ├──────────────────────────────────┼────────────────────────────────────>│
+       │                                  │                                     │
+       │  2e. Authorization code redirect │                                     │
+       │<─────────────────────────────────┼─────────────────────────────────────┤
+       │  callback?code=xyz123            │                                     │
+       │                                  │                                     │
+       │  2f. Exchange code for token     │                                     │
+       ├──────────────────────────────────┼────────────────────────────────────>│
+       │  POST /apps/oidc/token           │                                     │
+       │  {code, code_verifier,           │  ← Validates PKCE challenge         │
+       │   client_id, client_secret}      │                                     │
+       │                                  │                                     │
+       │  2g. Access token (JWT/opaque)   │                                     │
+       │<─────────────────────────────────┼─────────────────────────────────────┤
+       │  {access_token, token_type,      │                                     │
+       │   scope: "openid notes:read...") │  ← User's granted scopes            │
+       │                                  │                                     │
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+Phase 3: MCP Tool Access (Scope-based Authorization)
+═══════════════════════════════════════════════════════════════════════════════════
+
+       │                                  │                                     │
+       │  3a. list_tools request          │                                     │
+       ├─────────────────────────────────>│                                     │
+       │  Authorization: Bearer <token>   │                                     │
+       │                                  │                                     │
+       │                                  │  3b. Validate token                 │
+       │                                  ├────────────────────────────────────>│
+       │                                  │  GET /apps/oidc/userinfo            │
+       │                                  │  Authorization: Bearer <token>      │
+       │                                  │                                     │
+       │                                  │  3c. Token valid + scopes           │
+       │                                  │<────────────────────────────────────┤
+       │                                  │  {sub, scopes, ...}                 │
+       │                                  │  ← Cached for 1 hour                │
+       │                                  │                                     │
+       │  3d. Filtered tool list          │                                     │
+       │<─────────────────────────────────┤  ← Only tools matching user's       │
+       │  [tools matching token scopes]   │    token scopes (via @require_scopes)
+       │                                  │                                     │
+       │  3e. Call tool                   │                                     │
+       ├─────────────────────────────────>│                                     │
+       │  nc_notes_get_note(note_id=1)    │  ← @require_scopes("notes:read")    │
+       │  Authorization: Bearer <token>   │                                     │
+       │                                  │                                     │
+       │                                  │  3f. Scope check PASSED             │
+       │                                  │  ✓ Token has notes:read             │
+       │                                  │                                     │
+       │                                  │  3g. Nextcloud API call             │
+       │                                  ├────────────────────────────────────>│
+       │                                  │  GET /apps/notes/api/v1/notes/1     │
+       │                                  │  Authorization: Bearer <token>      │
+       │                                  │  ← user_oidc validates Bearer token │
+       │                                  │                                     │
+       │                                  │  3h. API response                   │
+       │                                  │<────────────────────────────────────┤
+       │                                  │  {id: 1, title: "Note", ...}        │
+       │                                  │                                     │
+       │  3i. MCP tool response           │                                     │
+       │<─────────────────────────────────┤                                     │
+       │  {note data}                     │                                     │
+       │                                  │                                     │
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+Insufficient Scope Example (Step-Up Authorization)
+═══════════════════════════════════════════════════════════════════════════════════
+
+       │  4a. Call write tool             │                                     │
+       ├─────────────────────────────────>│                                     │
+       │  nc_notes_create_note(...)       │  ← @require_scopes("notes:write")   │
+       │  Authorization: Bearer <token>   │                                     │
+       │                                  │                                     │
+       │                                  │  4b. Scope check FAILED             │
+       │                                  │  ✗ Token only has notes:read        │
+       │                                  │                                     │
+       │  4c. 403 Insufficient Scope      │                                     │
+       │<─────────────────────────────────┤                                     │
+       │  WWW-Authenticate: Bearer        │                                     │
+       │    error="insufficient_scope",   │                                     │
+       │    scope="notes:write",          │                                     │
+       │    resource_metadata="..."       │                                     │
+       │                                  │                                     │
+       │  → Client can re-authorize with  │                                     │
+       │    additional scopes (Step-Up)   │                                     │
        │                                  │                                     │
 ```
 
 ## Components
 
-### 1. MCP Client
-- Any MCP-compatible client (Claude Desktop, Claude Code, custom clients)
+### 1. MCP Client (e.g., Claude Desktop, Claude Code)
+
+**Capabilities**:
+- Discovers OAuth configuration via MCP server
+- Queries PRM endpoint for supported scopes
 - Initiates OAuth flow with PKCE (Proof Key for Code Exchange)
 - Stores and sends access token with each request
-- **Example**: Claude Desktop, Claude Code
+- Handles scope-based tool filtering
+- Supports step-up authorization (re-auth for additional scopes)
 
-### 2. MCP Server (Resource Server)
-- **Role**: OAuth 2.0 Resource Server
-- **Location**: This Nextcloud MCP Server implementation
-- **Responsibilities**:
-  - Validates Bearer tokens by calling Nextcloud's userinfo endpoint
-  - Caches validated tokens (default: 1 hour TTL)
-  - Creates authenticated Nextcloud client instances per-user
-  - Enforces PKCE requirements (S256 code challenge method)
-  - Exposes Nextcloud functionality via MCP tools
+**Examples**: Claude Desktop, Claude Code, MCP Inspector, custom MCP clients
+
+### 2. MCP Server (Resource Server - This Implementation)
+
+**Role**: OAuth 2.0 Resource Server (RFC 6749)
+
+**Responsibilities**:
+
+#### Startup Phase
+- **OIDC Discovery**: Queries `/.well-known/openid-configuration` for OAuth endpoints
+- **PKCE Validation**: Verifies server advertises S256 code challenge method
+- **Dynamic Client Registration (DCR)**: Automatically registers OAuth client via `/apps/oidc/register` (RFC 7591)
+  - Or loads pre-configured client credentials
+  - Saves credentials to `.nextcloud_oauth_client.json`
+- **Tool Registration**: Loads all MCP tools with their `@require_scopes` decorators
+
+#### Client Connection Phase
+- **Auth Settings**: Returns OAuth issuer URL and resource URL
+- **PRM Endpoint**: Exposes `/.well-known/oauth-protected-resource/mcp` (RFC 9728)
+  - Dynamically discovers scopes from all registered tools
+  - Returns `scopes_supported` list based on `@require_scopes` decorators
+
+#### Request Processing Phase
+- **Token Validation**: Validates Bearer tokens via Nextcloud userinfo endpoint
+  - Supports both JWT and opaque tokens
+  - Caches validation results (1-hour TTL)
+  - Extracts user identity and granted scopes
+- **Scope Enforcement**:
+  - Filters `list_tools` based on user's token scopes
+  - Validates scopes before executing each tool
+  - Returns 403 with `WWW-Authenticate` header for insufficient scopes
+- **Per-User Clients**: Creates authenticated `NextcloudClient` instance per user
+  - Uses Bearer token for all Nextcloud API requests
+  - User-specific permissions and audit trails
 
 **Key Files**:
-- [`app.py`](../nextcloud_mcp_server/app.py) - OAuth mode detection and configuration
-- [`auth/token_verifier.py`](../nextcloud_mcp_server/auth/token_verifier.py) - Token validation logic
+- [`app.py`](../nextcloud_mcp_server/app.py) - OAuth mode, DCR, PRM endpoint
+- [`auth/token_verifier.py`](../nextcloud_mcp_server/auth/token_verifier.py) - Token validation (userinfo + introspection + JWT)
 - [`auth/context_helper.py`](../nextcloud_mcp_server/auth/context_helper.py) - Per-user client creation
+- [`auth/scope_authorization.py`](../nextcloud_mcp_server/auth/scope_authorization.py) - `@require_scopes` decorator, scope discovery
+- [`auth/client_registration.py`](../nextcloud_mcp_server/auth/client_registration.py) - DCR implementation (RFC 7591)
 
 ### 3. Nextcloud OIDC Apps
 
 #### a) `oidc` - OIDC Identity Provider
-- **Role**: OAuth 2.0 Authorization Server
-- **Location**: Nextcloud app (`apps/oidc`)
-- **Endpoints**:
-  - `/.well-known/openid-configuration` - Discovery endpoint
-  - `/apps/oidc/authorize` - Authorization endpoint
-  - `/apps/oidc/token` - Token endpoint
-  - `/apps/oidc/userinfo` - User info endpoint (token validation)
-  - `/apps/oidc/jwks` - JSON Web Key Set
-  - `/apps/oidc/register` - Dynamic client registration
+
+**Role**: OAuth 2.0 Authorization Server + OIDC Provider
+
+**Location**: Nextcloud app (`apps/oidc`)
+
+**Endpoints**:
+- `/.well-known/openid-configuration` - OIDC Discovery (RFC 8414)
+- `/apps/oidc/authorize` - Authorization endpoint (OAuth 2.0 + PKCE)
+- `/apps/oidc/token` - Token endpoint (issues JWT or opaque tokens)
+- `/apps/oidc/userinfo` - UserInfo endpoint (OIDC Core, used for token validation)
+- `/apps/oidc/jwks` - JSON Web Key Set (for JWT signature verification)
+- `/apps/oidc/register` - Dynamic Client Registration endpoint (RFC 7591)
+- `/apps/oidc/introspect` - Token Introspection endpoint (RFC 7662, optional)
+
+**Token Types**:
+- **JWT tokens**: Self-contained tokens with embedded scopes, validated via JWKS or userinfo
+- **Opaque tokens**: Random strings, validated via userinfo or introspection endpoint
 
 **Configuration**:
 ```bash
-# Enable dynamic client registration (optional)
-# Settings → OIDC → "Allow dynamic client registration"
+# Enable dynamic client registration (recommended for development)
+# Nextcloud Admin → Settings → OIDC → "Allow dynamic client registration"
+
+# Enable token introspection (optional, for opaque token validation)
+# Nextcloud Admin → Settings → OIDC → "Enable token introspection"
 ```
 
 #### b) `user_oidc` - OpenID Connect User Backend
-- **Role**: Bearer token validation middleware
-- **Location**: Nextcloud app (`apps/user_oidc`)
-- **Responsibilities**:
-  - Validates Bearer tokens for Nextcloud API requests
-  - Creates user sessions from valid Bearer tokens
-  - Integrates with Nextcloud's authentication system
+
+**Role**: Bearer token validation middleware for Nextcloud APIs
+
+**Location**: Nextcloud app (`apps/user_oidc`)
+
+**Responsibilities**:
+- Intercepts Nextcloud API requests with `Authorization: Bearer` header
+- Validates tokens against OIDC provider (`oidc` app)
+- Creates authenticated user sessions
+- Enforces user-specific permissions on API requests
 
 **Configuration**:
 ```bash
-# Enable Bearer token validation (required)
+# Enable Bearer token validation (required for OAuth mode)
 php occ config:system:set user_oidc oidc_provider_bearer_validation --value=true --type=boolean
 ```
 
 > [!IMPORTANT]
-> The `user_oidc` app requires a patch to properly support Bearer token authentication for non-OCS endpoints. See [Upstream Status](oauth-upstream-status.md) for details.
+> The `user_oidc` app requires a patch to properly support Bearer token authentication for non-OCS endpoints (like Notes API, Calendar API). See [Upstream Status](oauth-upstream-status.md) for patch details and PR status.
 
 ### 4. Nextcloud Instance
-- **Role**: Resource Owner / API Provider
-- **Provides**: Notes, Calendar, Contacts, Deck, Files, etc.
+
+**Role**: Resource Owner + API Provider
+
+**APIs Exposed**:
+- **Notes API**: `/apps/notes/api/v1/` - Note CRUD operations
+- **Calendar (CalDAV)**: `/remote.php/dav/calendars/` - Events and todos
+- **Contacts (CardDAV)**: `/remote.php/dav/addressbooks/` - Contact management
+- **Cookbook API**: `/apps/cookbook/api/v1/` - Recipe management
+- **Deck API**: `/apps/deck/api/v1.0/` - Kanban boards
+- **Tables API**: `/apps/tables/api/2/` - Table row operations
+- **WebDAV (Files)**: `/remote.php/dav/files/` - File operations
+- **Sharing API**: `/ocs/v2.php/apps/files_sharing/api/v1/` - Share management
 
 ## Authentication Flow
 
-### Phase 1: OAuth Authorization (Steps 1-7)
+The OAuth flow consists of four distinct phases (see diagram above for visual representation):
 
-1. **Client Connects**: MCP client connects to MCP server
-2. **Auth Settings**: MCP server returns OAuth settings:
-   ```json
-   {
-     "issuer_url": "https://nextcloud.example.com",
-     "resource_server_url": "http://localhost:8000",
-     "required_scopes": ["openid", "profile"]
-   }
-   ```
-3. **OAuth Flow**: Client initiates OAuth flow with PKCE
-   - Generates `code_verifier` (random string)
-   - Calculates `code_challenge` = SHA256(code_verifier)
-   - Redirects user to `/apps/oidc/authorize` with `code_challenge`
-4. **User Authentication**: User logs in to Nextcloud via browser
-5. **Authorization Code**: Nextcloud redirects back with authorization code
-6. **Token Exchange**: Client exchanges code for access token
-   - Sends `code` + `code_verifier` to `/apps/oidc/token`
-   - OIDC app validates PKCE challenge
-7. **Access Token**: Client receives access token (JWT or opaque)
+### Phase 0: MCP Server Startup (One-time Setup)
 
-### Phase 2: API Access (Steps 8-13)
+**Happens**: On MCP server first startup
 
-8. **API Request**: Client sends MCP request with Bearer token
-9. **Token Validation**: MCP server validates token:
-   - Checks cache (1-hour TTL by default)
-   - If not cached, calls `/apps/oidc/userinfo` with Bearer token
-   - Extracts username from `sub` or `preferred_username` claim
-10. **User Info**: Nextcloud returns user info if token is valid
-11. **Nextcloud API Call**: MCP server calls Nextcloud API on behalf of user
-    - Creates `NextcloudClient` instance with Bearer token
-    - User-specific permissions apply
-12. **API Response**: Nextcloud returns data
-13. **MCP Response**: MCP server returns formatted response to client
+**Steps**:
+1. **OIDC Discovery** (`GET /.well-known/openid-configuration`)
+   - MCP server queries Nextcloud for OAuth endpoints
+   - Validates PKCE support (requires `S256` code challenge method)
+   - Extracts endpoints: authorize, token, userinfo, jwks, register
+
+2. **Dynamic Client Registration** (`POST /apps/oidc/register`)
+   - If no pre-configured client credentials exist
+   - MCP server registers itself as OAuth client (RFC 7591)
+   - Provides: client name, redirect URIs, requested scopes, token type
+   - Receives: `client_id`, `client_secret`
+   - Saves credentials to `.nextcloud_oauth_client.json`
+
+3. **Tool Registration**
+   - All MCP tools loaded with their `@require_scopes` decorators
+   - Scope metadata stored for later discovery
+
+**Result**: MCP server ready to accept client connections
+
+### Phase 1: Client Discovery (Per MCP Client Connection)
+
+**Happens**: When MCP client first connects
+
+**Steps**:
+1. **MCP Connection**
+   - Client connects to MCP server
+   - Server returns OAuth auth settings (issuer URL, resource URL)
+
+2. **PRM Discovery** (`GET /.well-known/oauth-protected-resource/mcp`)
+   - Client queries Protected Resource Metadata endpoint (RFC 9728)
+   - Server **dynamically discovers** scopes from all registered tools
+   - Returns: resource URL, `scopes_supported` list, authorization servers
+   - Client now knows which scopes are available
+
+**Result**: Client knows OAuth configuration and available scopes
+
+### Phase 2: OAuth Authorization (PKCE Flow - RFC 7636)
+
+**Happens**: User authorizes access
+
+**Steps**:
+1. **PKCE Challenge Generation** (Client-side)
+   - Generate `code_verifier`: random 43-128 character string
+   - Calculate `code_challenge`: `BASE64URL(SHA256(code_verifier))`
+
+2. **Authorization Request** (`GET /apps/oidc/authorize`)
+   - Client redirects user to Nextcloud consent page
+   - Parameters:
+     - `client_id`: OAuth client ID
+     - `code_challenge`: SHA256 hash of verifier
+     - `code_challenge_method`: `S256`
+     - `scope`: Requested scopes (e.g., `openid notes:read notes:write`)
+     - `redirect_uri`: MCP server callback URL
+
+3. **User Consent**
+   - User authenticates to Nextcloud (if not already logged in)
+   - User reviews and approves/denies requested scopes
+   - Can select subset of requested scopes
+
+4. **Authorization Code**
+   - Nextcloud redirects to `callback?code=xyz123`
+   - Code is bound to PKCE challenge
+
+5. **Token Exchange** (`POST /apps/oidc/token`)
+   - Client sends:
+     - Authorization `code`
+     - `code_verifier` (proves possession of original challenge)
+     - `client_id` and `client_secret`
+   - Nextcloud validates PKCE challenge: `SHA256(code_verifier) == code_challenge`
+   - Nextcloud issues access token
+
+6. **Access Token Response**
+   - Token type: JWT or opaque (configurable)
+   - Contains user's **granted scopes** (may be subset of requested)
+   - Client stores token for subsequent requests
+
+**Result**: Client has valid access token with granted scopes
+
+### Phase 3: MCP Tool Access (Scope-Based Authorization)
+
+**Happens**: Every MCP tool invocation
+
+**Steps**:
+
+#### Tool Listing (`list_tools`)
+1. **List Tools Request**
+   - Client sends `list_tools` with `Authorization: Bearer <token>`
+
+2. **Token Validation**
+   - MCP server calls `/apps/oidc/userinfo` with Bearer token
+   - Nextcloud returns user info including **granted scopes**
+   - Result cached for 1 hour
+
+3. **Dynamic Tool Filtering**
+   - Server compares token scopes with each tool's `@require_scopes`
+   - Only returns tools where user has all required scopes
+   - Example: Token with `notes:read` sees 4 read tools, not 3 write tools
+
+4. **Filtered Tool List**
+   - Client receives only tools they can use
+
+#### Tool Execution (e.g., `nc_notes_get_note`)
+1. **Tool Call**
+   - Client invokes tool with `Authorization: Bearer <token>`
+
+2. **Scope Validation**
+   - `@require_scopes` decorator extracts token scopes
+   - Verifies token contains required scope (e.g., `notes:read`)
+   - If missing → 403 with `WWW-Authenticate` header (step-up auth)
+   - If present → continues execution
+
+3. **Nextcloud API Call**
+   - MCP server creates `NextcloudClient` with Bearer token
+   - Calls Nextcloud API (e.g., `GET /apps/notes/api/v1/notes/1`)
+   - `user_oidc` app validates Bearer token again
+   - Request executes as authenticated user
+
+4. **Response**
+   - Nextcloud returns data
+   - MCP server formats response
+   - Returns to client
+
+**Result**: User can only access tools and data they have permissions for
+
+### Phase 4: Insufficient Scope Handling (Step-Up Authorization)
+
+**Happens**: When user lacks required scopes
+
+**Steps**:
+1. **Tool Call with Insufficient Scopes**
+   - User calls `nc_notes_create_note` (requires `notes:write`)
+   - But token only has `notes:read`
+
+2. **Scope Validation Fails**
+   - `@require_scopes("notes:write")` decorator checks token
+   - Finds `notes:write` missing
+
+3. **403 Response with Challenge**
+   - Returns `403 Forbidden`
+   - Includes `WWW-Authenticate` header:
+     ```
+     Bearer error="insufficient_scope",
+            scope="notes:write",
+            resource_metadata="http://localhost:8000/.well-known/oauth-protected-resource/mcp"
+     ```
+
+4. **Client Re-Authorization** (Optional)
+   - Client can initiate new OAuth flow requesting additional scopes
+   - User re-consents with expanded permissions
+   - New token includes both `notes:read` and `notes:write`
+
+**Result**: User can dynamically upgrade permissions without full re-authentication
 
 ## Token Validation
 
