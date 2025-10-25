@@ -254,7 +254,8 @@ def test_default_values(runner, clean_env, monkeypatch):
 
     # Verify default values
     assert (
-        captured_env["NEXTCLOUD_OIDC_SCOPES"] == "openid profile email nc:read nc:write"
+        captured_env["NEXTCLOUD_OIDC_SCOPES"]
+        == "openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write"
     )
     assert captured_env["NEXTCLOUD_OIDC_TOKEN_TYPE"] == "bearer"
     assert captured_env["NEXTCLOUD_MCP_SERVER_URL"] == "http://localhost:8000"

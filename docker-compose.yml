@@ -21,7 +21,7 @@ services:
     restart: always
 
   app:
-    image: docker.io/library/nextcloud:32.0.0@sha256:f9bec5c77a8d5603354b990550a4d24487deae6e589dd20ce870e43e28460e18
+    image: docker.io/library/nextcloud:32.0.1@sha256:42a36b4711191273a9cf8cebfd35602909eb1bee461b7076d4d5a57f7ec2b81e
     restart: always
     ports:
       - 0.0.0.0:8080:80
@@ -81,7 +81,7 @@ services:
 
   mcp-oauth:
     build: .
-    command: ["--transport", "streamable-http", "--oauth", "--port", "8001"]
+    command: ["--transport", "streamable-http", "--oauth", "--port", "8001", "--oauth-token-type", "jwt"]
     restart: always
     depends_on:
       - app
@@ -92,34 +92,14 @@ services:
       - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8001
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
       - NEXTCLOUD_OIDC_CLIENT_STORAGE=/app/.oauth/nextcloud_oauth_client.json
-      - NEXTCLOUD_OIDC_SCOPES=openid profile email nc:read nc:write
+      - NEXTCLOUD_OIDC_SCOPES=openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write
       # No USERNAME/PASSWORD - will use OAuth with Dynamic Client Registration
       # Client credentials will be registered and stored in volume on first startup
+      # JWT token type is used for testing (faster validation, scopes embedded in token)
     volumes:
       - oauth-client-storage:/app/.oauth
-
-  mcp-oauth-jwt:
-    build: .
-    command: ["--transport", "streamable-http", "--oauth", "--port", "8002"]
-    restart: always
-    depends_on:
-      - app
-    ports:
-      - 127.0.0.1:8002:8002
-    environment:
-      - NEXTCLOUD_HOST=http://app:80
-      - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8002
-      - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
-      - NEXTCLOUD_OIDC_CLIENT_STORAGE=/app/.oauth-jwt/nextcloud_oauth_client.json
-      - NEXTCLOUD_OIDC_SCOPES=openid profile email nc:read nc:write
-      - NEXTCLOUD_OIDC_TOKEN_TYPE=jwt
-      # No USERNAME/PASSWORD - will use OAuth with Dynamic Client Registration (DCR)
-      # Client will be registered with token_type=JWT on first startup
-    volumes:
-      - oauth-jwt-client-storage:/app/.oauth-jwt
 
 volumes:
   nextcloud:
   db:
   oauth-client-storage:
-  oauth-jwt-client-storage:

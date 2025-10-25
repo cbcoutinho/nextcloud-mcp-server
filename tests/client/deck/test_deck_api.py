@@ -1,327 +1,511 @@
 import logging
-import uuid
 
+import httpx
 import pytest
-from httpx import HTTPStatusError
 
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.models.deck import DeckCard, DeckLabel, DeckStack
+from nextcloud_mcp_server.client.deck import DeckClient
+from nextcloud_mcp_server.models.deck import (
+    DeckBoard,
+    DeckCard,
+    DeckComment,
+    DeckLabel,
+    DeckStack,
+)
+from tests.client.conftest import (
+    create_mock_deck_board_response,
+    create_mock_deck_card_response,
+    create_mock_deck_comment_response,
+    create_mock_deck_label_response,
+    create_mock_deck_stack_response,
+    create_mock_error_response,
+    create_mock_response,
+)
 
 logger = logging.getLogger(__name__)
-pytestmark = pytest.mark.integration
+
+# Mark all tests in this module as unit tests
+pytestmark = pytest.mark.unit
 
 
-# Board CRUD Tests
+# Board Tests
 
 
-async def test_deck_board_crud_workflow(
-    nc_client: NextcloudClient, temporary_board: dict
-):
-    """
-    Test complete board CRUD workflow using the temporary_board fixture.
-    """
-    board_data = temporary_board
-    board_id = board_data["id"]
-    original_title = board_data["title"]
-    original_color = board_data["color"]
-
-    logger.info(f"Testing CRUD operations on board ID: {board_id}")
-
-    # Read the board
-    read_board = await nc_client.deck.get_board(board_id)
-    assert read_board.id == board_id
-    assert read_board.title == original_title
-    assert read_board.color == original_color
-    logger.info(f"Successfully read board ID: {board_id}")
-
-    # Update the board
-    updated_title = f"Updated {original_title}"
-    updated_color = "00FF00"  # Green color
-    await nc_client.deck.update_board(
-        board_id, title=updated_title, color=updated_color
+async def test_deck_get_boards(mocker):
+    """Test that get_boards correctly parses the API response."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data=[
+            {
+                "id": 1,
+                "title": "Board 1",
+                "color": "FF0000",
+                "owner": {
+                    "primaryKey": "testuser",
+                    "uid": "testuser",
+                    "displayname": "Test User",
+                },
+                "archived": False,
+                "labels": [],
+                "acl": [],
+                "permissions": {
+                    "PERMISSION_READ": True,
+                    "PERMISSION_EDIT": True,
+                    "PERMISSION_MANAGE": True,
+                    "PERMISSION_SHARE": True,
+                },
+                "users": [],
+                "deletedAt": 0,
+            },
+            {
+                "id": 2,
+                "title": "Board 2",
+                "color": "00FF00",
+                "owner": {
+                    "primaryKey": "testuser",
+                    "uid": "testuser",
+                    "displayname": "Test User",
+                },
+                "archived": False,
+                "labels": [],
+                "acl": [],
+                "permissions": {
+                    "PERMISSION_READ": True,
+                    "PERMISSION_EDIT": True,
+                    "PERMISSION_MANAGE": True,
+                    "PERMISSION_SHARE": True,
+                },
+                "users": [],
+                "deletedAt": 0,
+            },
+        ],
     )
 
-    # Verify the update
-    updated_board = await nc_client.deck.get_board(board_id)
-    assert updated_board.title == updated_title
-    assert updated_board.color == updated_color
-    logger.info(f"Successfully updated board ID: {board_id}")
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
 
+    client = DeckClient(mock_client, "testuser")
+    boards = await client.get_boards()
 
-async def test_deck_list_boards(nc_client: NextcloudClient):
-    """
-    Test listing all boards with different options.
-    """
-    # Test basic listing
-    boards = await nc_client.deck.get_boards()
     assert isinstance(boards, list)
-    logger.info(f"Found {len(boards)} boards")
+    assert len(boards) == 2
+    assert all(isinstance(b, DeckBoard) for b in boards)
+    assert boards[0].id == 1
+    assert boards[0].title == "Board 1"
 
-    # Test with details
-    detailed_boards = await nc_client.deck.get_boards(details=True)
-    assert isinstance(detailed_boards, list)
-    logger.info(f"Found {len(detailed_boards)} boards with details")
+    mock_make_request.assert_called_once()
 
 
-async def test_deck_board_operations_nonexistent(nc_client: NextcloudClient):
-    """
-    Test operations on non-existent board return appropriate errors.
-    """
-    non_existent_id = 999999999
-
-    # Test get non-existent board
-    with pytest.raises(HTTPStatusError) as excinfo:
-        await nc_client.deck.get_board(non_existent_id)
-    assert excinfo.value.response.status_code in [
-        404,
-        403,
-    ]  # 403 might be returned for access denied
-    logger.info(
-        f"Get non-existent board correctly failed with {excinfo.value.response.status_code}"
+async def test_deck_create_board(mocker):
+    """Test that create_board correctly parses the API response."""
+    mock_response = create_mock_deck_board_response(
+        board_id=123, title="New Board", color="FF0000"
     )
 
-    # Test update non-existent board
-    with pytest.raises(HTTPStatusError) as excinfo:
-        await nc_client.deck.update_board(non_existent_id, title="Should Fail")
-    assert excinfo.value.response.status_code in [
-        404,
-        403,
-        400,
-    ]  # 400 for bad request on invalid board ID
-    logger.info(
-        f"Update non-existent board correctly failed with {excinfo.value.response.status_code}"
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
     )
 
+    client = DeckClient(mock_client, "testuser")
+    board = await client.create_board(title="New Board", color="FF0000")
 
-# Stack CRUD Tests
+    assert isinstance(board, DeckBoard)
+    assert board.id == 123
+    assert board.title == "New Board"
+    assert board.color == "FF0000"
 
-
-async def test_deck_stack_crud_workflow(
-    nc_client: NextcloudClient, temporary_board: dict
-):
-    """
-    Test complete stack CRUD workflow.
-    """
-    board_id = temporary_board["id"]
-    stack_title = f"Test Stack {uuid.uuid4().hex[:8]}"
-    stack_order = 1
-    stack = None
-
-    try:
-        # Create stack
-        stack = await nc_client.deck.create_stack(board_id, stack_title, stack_order)
-        assert isinstance(stack, DeckStack)
-        assert stack.title == stack_title
-        assert stack.order == stack_order
-        stack_id = stack.id
-        logger.info(f"Created stack ID: {stack_id}")
-
-        # Read stack
-        read_stack = await nc_client.deck.get_stack(board_id, stack_id)
-        assert read_stack.id == stack_id
-        assert read_stack.title == stack_title
-        logger.info(f"Successfully read stack ID: {stack_id}")
-
-        # Update stack
-        updated_title = f"Updated {stack_title}"
-        updated_order = 2
-        await nc_client.deck.update_stack(
-            board_id, stack_id, title=updated_title, order=updated_order
-        )
-
-        # Verify update
-        updated_stack = await nc_client.deck.get_stack(board_id, stack_id)
-        assert updated_stack.title == updated_title
-        assert updated_stack.order == updated_order
-        logger.info(f"Successfully updated stack ID: {stack_id}")
-
-        # List stacks
-        stacks = await nc_client.deck.get_stacks(board_id)
-        assert isinstance(stacks, list)
-        assert any(s.id == stack_id for s in stacks)
-        logger.info(f"Found stack ID: {stack_id} in board stacks list")
-
-    finally:
-        # Clean up - delete stack
-        if stack and hasattr(stack, "id"):
-            try:
-                await nc_client.deck.delete_stack(board_id, stack.id)
-                logger.info(f"Cleaned up stack ID: {stack.id}")
-            except Exception as e:
-                logger.warning(f"Failed to clean up stack ID: {stack.id}: {e}")
+    mock_make_request.assert_called_once()
+    call_args = mock_make_request.call_args
+    assert call_args[0][0] == "POST"
+    assert call_args[1]["json"]["title"] == "New Board"
 
 
-# Card CRUD Tests
+async def test_deck_get_board(mocker):
+    """Test that get_board correctly parses the API response."""
+    mock_response = create_mock_deck_board_response(
+        board_id=123, title="Test Board", color="0000FF"
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    board = await client.get_board(board_id=123)
+
+    assert isinstance(board, DeckBoard)
+    assert board.id == 123
+    assert board.title == "Test Board"
+
+    mock_make_request.assert_called_once()
+    assert "/boards/123" in mock_make_request.call_args[0][1]
 
 
-async def test_deck_card_crud_workflow(
-    nc_client: NextcloudClient, temporary_board_with_stack: tuple
-):
-    """
-    Test complete card CRUD workflow.
-    """
-    board_data, stack_data = temporary_board_with_stack
-    board_id = board_data["id"]
-    stack_id = stack_data["id"]
+async def test_deck_update_board(mocker):
+    """Test that update_board makes the correct API call."""
+    mock_response = create_mock_response(status_code=200, json_data={})
 
-    card_title = f"Test Card {uuid.uuid4().hex[:8]}"
-    card_description = f"Test description for card {uuid.uuid4().hex[:8]}"
-    card = None
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
 
-    try:
-        # Create card
-        card = await nc_client.deck.create_card(
-            board_id, stack_id, card_title, description=card_description
-        )
-        assert isinstance(card, DeckCard)
-        assert card.title == card_title
-        assert card.description == card_description
-        card_id = card.id
-        logger.info(f"Created card ID: {card_id}")
+    client = DeckClient(mock_client, "testuser")
+    await client.update_board(board_id=123, title="Updated Board", color="00FF00")
 
-        # Read card
-        read_card = await nc_client.deck.get_card(board_id, stack_id, card_id)
-        assert read_card.id == card_id
-        assert read_card.title == card_title
-        logger.info(f"Successfully read card ID: {card_id}")
-
-        # Update card
-        updated_title = f"Updated {card_title}"
-        updated_description = f"Updated description for {card_title}"
-        await nc_client.deck.update_card(
-            board_id,
-            stack_id,
-            card_id,
-            title=updated_title,
-            description=updated_description,
-        )
-
-        # Verify update
-        updated_card = await nc_client.deck.get_card(board_id, stack_id, card_id)
-        assert updated_card.title == updated_title
-        assert updated_card.description == updated_description
-        logger.info(f"Successfully updated card ID: {card_id}")
-
-        # Archive and unarchive card
-        await nc_client.deck.archive_card(board_id, stack_id, card_id)
-        logger.info(f"Archived card ID: {card_id}")
-
-        await nc_client.deck.unarchive_card(board_id, stack_id, card_id)
-        logger.info(f"Unarchived card ID: {card_id}")
-
-    finally:
-        # Clean up - delete card
-        if card and hasattr(card, "id"):
-            try:
-                await nc_client.deck.delete_card(board_id, stack_id, card.id)
-                logger.info(f"Cleaned up card ID: {card.id}")
-            except Exception as e:
-                logger.warning(f"Failed to clean up card ID: {card.id}: {e}")
+    mock_make_request.assert_called_once()
+    call_args = mock_make_request.call_args
+    assert call_args[0][0] == "PUT"
+    assert "/boards/123" in call_args[0][1]
+    assert call_args[1]["json"]["title"] == "Updated Board"
 
 
-# Label CRUD Tests
+async def test_deck_get_board_nonexistent(mocker):
+    """Test that getting a non-existent board raises HTTPStatusError."""
+    error_response = create_mock_error_response(404, "Board not found")
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(DeckClient, "_make_request")
+    mock_make_request.side_effect = httpx.HTTPStatusError(
+        "404 Not Found",
+        request=httpx.Request("GET", "http://test.local"),
+        response=error_response,
+    )
+
+    client = DeckClient(mock_client, "testuser")
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        await client.get_board(board_id=999999999)
+
+    assert excinfo.value.response.status_code == 404
 
 
-async def test_deck_label_crud_workflow(
-    nc_client: NextcloudClient, temporary_board: dict
-):
-    """
-    Test complete label CRUD workflow.
-    """
-    board_id = temporary_board["id"]
-    label_title = f"Test Label {uuid.uuid4().hex[:8]}"
-    label_color = "FF0000"  # Red
-    label = None
-
-    try:
-        # Create label
-        label = await nc_client.deck.create_label(board_id, label_title, label_color)
-        assert isinstance(label, DeckLabel)
-        assert label.title == label_title
-        assert label.color == label_color
-        label_id = label.id
-        logger.info(f"Created label ID: {label_id}")
-
-        # Read label
-        read_label = await nc_client.deck.get_label(board_id, label_id)
-        assert read_label.id == label_id
-        assert read_label.title == label_title
-        logger.info(f"Successfully read label ID: {label_id}")
-
-        # Update label
-        updated_title = f"Updated {label_title}"
-        updated_color = "00FF00"  # Green
-        await nc_client.deck.update_label(
-            board_id, label_id, title=updated_title, color=updated_color
-        )
-
-        # Verify update
-        updated_label = await nc_client.deck.get_label(board_id, label_id)
-        assert updated_label.title == updated_title
-        assert updated_label.color == updated_color
-        logger.info(f"Successfully updated label ID: {label_id}")
-
-    finally:
-        # Clean up - delete label
-        if label and hasattr(label, "id"):
-            try:
-                await nc_client.deck.delete_label(board_id, label.id)
-                logger.info(f"Cleaned up label ID: {label.id}")
-            except Exception as e:
-                logger.warning(f"Failed to clean up label ID: {label.id}: {e}")
+# Stack Tests
 
 
-# Configuration and Comments Tests
+async def test_deck_create_stack(mocker):
+    """Test that create_stack correctly parses the API response."""
+    mock_response = create_mock_deck_stack_response(
+        stack_id=456, title="Test Stack", board_id=123, order=1
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    stack = await client.create_stack(board_id=123, title="Test Stack", order=1)
+
+    assert isinstance(stack, DeckStack)
+    assert stack.id == 456
+    assert stack.title == "Test Stack"
+    assert stack.boardId == 123
+
+    mock_make_request.assert_called_once()
 
 
-async def test_deck_config_operations(nc_client: NextcloudClient):
-    """
-    Test deck configuration operations.
-    """
-    # Get config
-    config = await nc_client.deck.get_config()
-    assert config is not None
-    logger.info(f"Retrieved deck config: {config}")
+async def test_deck_get_stack(mocker):
+    """Test that get_stack correctly parses the API response."""
+    mock_response = create_mock_deck_stack_response(
+        stack_id=456, title="Test Stack", board_id=123, order=1
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    stack = await client.get_stack(board_id=123, stack_id=456)
+
+    assert isinstance(stack, DeckStack)
+    assert stack.id == 456
+    assert stack.title == "Test Stack"
+
+    mock_make_request.assert_called_once()
+    assert "/boards/123/stacks/456" in mock_make_request.call_args[0][1]
 
 
-async def test_deck_comments_workflow(
-    nc_client: NextcloudClient, temporary_board_with_card: tuple
-):
-    """
-    Test comment operations on a card.
-    """
-    board_data, stack_data, card_data = temporary_board_with_card
-    card_id = card_data["id"]
+async def test_deck_get_stacks(mocker):
+    """Test that get_stacks correctly parses the API response."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data=[
+            {"id": 1, "title": "Stack 1", "boardId": 123, "order": 1, "deletedAt": 0},
+            {"id": 2, "title": "Stack 2", "boardId": 123, "order": 2, "deletedAt": 0},
+        ],
+    )
 
-    comment_message = f"Test comment {uuid.uuid4().hex[:8]}"
-    comment = None
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
 
-    try:
-        # Create comment
-        comment = await nc_client.deck.create_comment(card_id, comment_message)
-        assert comment.message == comment_message
-        comment_id = comment.id
-        logger.info(f"Created comment ID: {comment_id}")
+    client = DeckClient(mock_client, "testuser")
+    stacks = await client.get_stacks(board_id=123)
 
-        # List comments
-        comments = await nc_client.deck.get_comments(card_id)
-        assert isinstance(comments, list)
-        assert any(c.id == comment_id for c in comments)
-        logger.info(f"Found comment ID: {comment_id} in card comments")
+    assert isinstance(stacks, list)
+    assert len(stacks) == 2
+    assert all(isinstance(s, DeckStack) for s in stacks)
 
-        # Update comment
-        updated_message = f"Updated {comment_message}"
-        updated_comment = await nc_client.deck.update_comment(
-            card_id, comment_id, updated_message
-        )
-        assert updated_comment.message == updated_message
-        logger.info(f"Successfully updated comment ID: {comment_id}")
+    mock_make_request.assert_called_once()
 
-    finally:
-        # Clean up - delete comment
-        if comment and hasattr(comment, "id"):
-            try:
-                await nc_client.deck.delete_comment(card_id, comment.id)
-                logger.info(f"Cleaned up comment ID: {comment.id}")
-            except Exception as e:
-                logger.warning(f"Failed to clean up comment ID: {comment.id}: {e}")
+
+# Card Tests
+
+
+async def test_deck_create_card(mocker):
+    """Test that create_card correctly parses the API response."""
+    mock_response = create_mock_deck_card_response(
+        card_id=789, title="Test Card", stack_id=456, description="Test description"
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    card = await client.create_card(
+        board_id=123, stack_id=456, title="Test Card", description="Test description"
+    )
+
+    assert isinstance(card, DeckCard)
+    assert card.id == 789
+    assert card.title == "Test Card"
+    assert card.description == "Test description"
+
+    mock_make_request.assert_called_once()
+
+
+async def test_deck_get_card(mocker):
+    """Test that get_card correctly parses the API response."""
+    mock_response = create_mock_deck_card_response(
+        card_id=789, title="Test Card", stack_id=456
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    card = await client.get_card(board_id=123, stack_id=456, card_id=789)
+
+    assert isinstance(card, DeckCard)
+    assert card.id == 789
+    assert card.title == "Test Card"
+
+    mock_make_request.assert_called_once()
+    assert "/boards/123/stacks/456/cards/789" in mock_make_request.call_args[0][1]
+
+
+async def test_deck_update_card(mocker):
+    """Test that update_card makes the correct API calls."""
+    # Mock get_card response (update_card calls get_card first)
+    get_response = create_mock_deck_card_response(
+        card_id=789, title="Original Card", stack_id=456
+    )
+
+    # Mock update response
+    update_response = create_mock_response(status_code=200, json_data={})
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(DeckClient, "_make_request")
+    # First call returns the card, second call is the update
+    mock_make_request.side_effect = [get_response, update_response]
+
+    client = DeckClient(mock_client, "testuser")
+    await client.update_card(
+        board_id=123, stack_id=456, card_id=789, title="Updated Card"
+    )
+
+    # Should be called twice: GET then PUT
+    assert mock_make_request.call_count == 2
+
+    # Check the PUT call
+    put_call = mock_make_request.call_args_list[1]
+    assert put_call[0][0] == "PUT"
+    assert "/boards/123/stacks/456/cards/789" in put_call[0][1]
+    assert put_call[1]["json"]["title"] == "Updated Card"
+
+
+# Label Tests
+
+
+async def test_deck_create_label(mocker):
+    """Test that create_label correctly parses the API response."""
+    mock_response = create_mock_deck_label_response(
+        label_id=111, title="Test Label", color="FF0000", board_id=123
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    label = await client.create_label(board_id=123, title="Test Label", color="FF0000")
+
+    assert isinstance(label, DeckLabel)
+    assert label.id == 111
+    assert label.title == "Test Label"
+    assert label.color == "FF0000"
+
+    mock_make_request.assert_called_once()
+
+
+async def test_deck_get_label(mocker):
+    """Test that get_label correctly parses the API response."""
+    mock_response = create_mock_deck_label_response(
+        label_id=111, title="Test Label", color="FF0000", board_id=123
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    label = await client.get_label(board_id=123, label_id=111)
+
+    assert isinstance(label, DeckLabel)
+    assert label.id == 111
+    assert label.title == "Test Label"
+
+    mock_make_request.assert_called_once()
+    assert "/boards/123/labels/111" in mock_make_request.call_args[0][1]
+
+
+# Comment Tests
+
+
+async def test_deck_create_comment(mocker):
+    """Test that create_comment correctly parses the API response (OCS format)."""
+    mock_response = create_mock_deck_comment_response(
+        comment_id=222, message="Test comment", card_id=789
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    comment = await client.create_comment(card_id=789, message="Test comment")
+
+    assert isinstance(comment, DeckComment)
+    assert comment.id == 222
+    assert comment.message == "Test comment"
+
+    mock_make_request.assert_called_once()
+
+
+async def test_deck_get_comments(mocker):
+    """Test that get_comments correctly parses the API response (OCS format)."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data={
+            "ocs": {
+                "meta": {"status": "ok"},
+                "data": [
+                    {
+                        "id": 1,
+                        "objectId": 789,
+                        "message": "Comment 1",
+                        "actorId": "testuser",
+                        "actorDisplayName": "Test User",
+                        "actorType": "users",
+                        "creationDateTime": "2024-01-01T00:00:00+00:00",
+                        "mentions": [],
+                    },
+                    {
+                        "id": 2,
+                        "objectId": 789,
+                        "message": "Comment 2",
+                        "actorId": "testuser",
+                        "actorDisplayName": "Test User",
+                        "actorType": "users",
+                        "creationDateTime": "2024-01-01T00:00:00+00:00",
+                        "mentions": [],
+                    },
+                ],
+            }
+        },
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    comments = await client.get_comments(card_id=789)
+
+    assert isinstance(comments, list)
+    assert len(comments) == 2
+    assert all(isinstance(c, DeckComment) for c in comments)
+    assert comments[0].message == "Comment 1"
+
+    mock_make_request.assert_called_once()
+
+
+async def test_deck_update_comment(mocker):
+    """Test that update_comment correctly parses the API response (OCS format)."""
+    mock_response = create_mock_deck_comment_response(
+        comment_id=222, message="Updated comment", card_id=789
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    comment = await client.update_comment(
+        card_id=789, comment_id=222, message="Updated comment"
+    )
+
+    assert isinstance(comment, DeckComment)
+    assert comment.id == 222
+    assert comment.message == "Updated comment"
+
+    mock_make_request.assert_called_once()
+
+
+# Config Test
+
+
+async def test_deck_get_config(mocker):
+    """Test that get_config correctly parses the API response (OCS format)."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data={
+            "ocs": {
+                "meta": {"status": "ok"},
+                "data": {
+                    "calendar": True,
+                    "cardDetailsInModal": True,
+                    "cardIdBadge": False,
+                },
+            }
+        },
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    config = await client.get_config()
+
+    assert config.calendar is True
+    assert config.cardDetailsInModal is True
+    assert config.cardIdBadge is False
+
+    mock_make_request.assert_called_once()

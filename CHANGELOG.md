@@ -1,3 +1,31 @@
+## v0.20.0 (2025-10-24)
+
+### Feat
+
+- **auth**: Add support for client registration deletion
+- Split read/write scopes into app:read/write scopes
+
+### Fix
+
+- Add support for RFC 7592 client registration and deletion
+- Update webdav models for proper serialization
+
+## v0.19.1 (2025-10-24)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.19,<1.20
+
+## v0.19.0 (2025-10-23)
+
+### Feat
+
+- Enable token introspection for opaque tokens
+
+### Fix
+
+- Add CORS middleware to allow browser-based clients like MCP Inspector
+
 ## v0.18.0 (2025-10-23)
 
 ### Feat

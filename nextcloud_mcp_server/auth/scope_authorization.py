@@ -46,7 +46,7 @@ def require_scopes(*required_scopes: str):
     users who lack the necessary scopes.
 
     Args:
-        *required_scopes: Variable number of scope strings required (e.g., "nc:read", "nc:write")
+        *required_scopes: Variable number of scope strings required (e.g., "notes:read", "notes:write")
 
     Returns:
         Decorated function that checks scopes before execution
@@ -54,15 +54,15 @@ def require_scopes(*required_scopes: str):
     Example:
         ```python
         @mcp.tool()
-        @require_scopes("nc:read")
+        @require_scopes("notes:read")
         async def nc_notes_get_note(ctx: Context, note_id: int):
-            # This tool requires the nc:read scope
+            # This tool requires the notes:read scope
             ...
 
         @mcp.tool()
-        @require_scopes("nc:write")
+        @require_scopes("notes:write")
         async def nc_notes_create_note(ctx: Context, ...):
-            # This tool requires the nc:write scope
+            # This tool requires the notes:write scope
             ...
         ```
 
@@ -173,7 +173,7 @@ def check_scopes(ctx: Context, *required_scopes: str) -> tuple[bool, set[str]]:
     Example:
         ```python
         async def my_tool(ctx: Context):
-            has_scopes, missing = check_scopes(ctx, "nc:read", "nc:write")
+            has_scopes, missing = check_scopes(ctx, "notes:read", "notes:write")
             if not has_scopes:
                 # Handle missing scopes
                 ...
@@ -203,11 +203,11 @@ def get_required_scopes(func: Callable) -> list[str]:
 
     Example:
         ```python
-        @require_scopes("nc:read", "nc:write")
+        @require_scopes("notes:read", "notes:write")
         async def my_tool():
             pass
 
-        scopes = get_required_scopes(my_tool)  # ["nc:read", "nc:write"]
+        scopes = get_required_scopes(my_tool)  # ["notes:read", "notes:write"]
         ```
     """
     return getattr(func, "_required_scopes", [])
@@ -253,14 +253,14 @@ def has_required_scopes(func: Callable, user_scopes: set[str]) -> bool:
 
     Example:
         ```python
-        @require_scopes("nc:write")
+        @require_scopes("notes:write")
         async def create_note():
             pass
 
-        user_scopes = {"nc:read", "nc:write"}
+        user_scopes = {"notes:read", "notes:write"}
         can_see = has_required_scopes(create_note, user_scopes)  # True
 
-        limited_user_scopes = {"nc:read"}
+        limited_user_scopes = {"notes:read"}
         can_see = has_required_scopes(create_note, limited_user_scopes)  # False
         ```
     """

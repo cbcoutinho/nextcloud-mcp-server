@@ -11,6 +11,7 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
+from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
@@ -191,9 +192,20 @@ async def load_oauth_client_credentials(
         redirect_uris = [f"{mcp_server_url}/oauth/callback"]
 
         # Get scopes from environment or use defaults
-        scopes = os.getenv(
-            "NEXTCLOUD_OIDC_SCOPES", "openid profile email nc:read nc:write"
+        # Default: all app-specific read/write scopes
+        default_scopes = (
+            "openid profile email "
+            "notes:read notes:write "
+            "calendar:read calendar:write "
+            "todo:read todo:write "
+            "contacts:read contacts:write "
+            "cookbook:read cookbook:write "
+            "deck:read deck:write "
+            "tables:read tables:write "
+            "files:read files:write "
+            "sharing:read sharing:write"
         )
+        scopes = os.getenv("NEXTCLOUD_OIDC_SCOPES", default_scopes)
         logger.info(f"Requesting OAuth scopes: {scopes}")
 
         # Get token type from environment (Bearer or jwt)
@@ -213,7 +225,7 @@ async def load_oauth_client_credentials(
             nextcloud_url=nextcloud_host,
             registration_endpoint=registration_endpoint,
             storage_path=storage_path,
-            client_name="Nextcloud MCP Server",
+            client_name=f"Nextcloud MCP Server ({token_type})",
             redirect_uris=redirect_uris,
             scopes=scopes,
             token_type=token_type,
@@ -423,9 +435,9 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     if oauth_enabled:
         logger.info("Configuring MCP server for OAuth mode")
         # Asynchronously get the OAuth configuration
-        import asyncio
+        import anyio
 
-        _, token_verifier, auth_settings = asyncio.run(setup_oauth_config())
+        _, token_verifier, auth_settings = anyio.run(setup_oauth_config)
         mcp = FastMCP(
             "Nextcloud MCP",
             lifespan=app_lifespan_oauth,
@@ -474,7 +486,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         original_list_tools = mcp._tool_manager.list_tools
 
         def list_tools_filtered():
-            """List tools filtered by user's token scopes (JWT tokens only)."""
+            """List tools filtered by user's token scopes (JWT and Bearer tokens)."""
             # Get user's scopes from token using MCP SDK's contextvar
             # This works for all request types including list_tools
             user_scopes = get_access_token_scopes()
@@ -487,35 +499,36 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             # Get all tools
             all_tools = original_list_tools()
 
-            # Only filter for JWT tokens (opaque tokens show all tools)
-            # JWT tokens have scopes embedded, so we can reliably filter
-            # Opaque tokens may not have accurate scope information from introspection
-            if is_jwt and user_scopes:
+            # Filter tools based on user's token scopes (both JWT and opaque tokens)
+            # JWT tokens have scopes embedded in payload
+            # Opaque tokens get scopes via introspection endpoint
+            # Claude Code now properly respects PRM endpoint for scope discovery
+            if user_scopes:
                 allowed_tools = [
                     tool
                     for tool in all_tools
                     if has_required_scopes(tool.fn, user_scopes)
                 ]
+                token_type = "JWT" if is_jwt else "Bearer"
                 logger.info(
-                    f"✂️ JWT scope filtering: {len(allowed_tools)}/{len(all_tools)} tools "
+                    f"✂️ {token_type} scope filtering: {len(allowed_tools)}/{len(all_tools)} tools "
                     f"available for scopes: {user_scopes}"
                 )
             else:
-                # Opaque token, BasicAuth mode, or no token - show all tools
+                # BasicAuth mode or no token - show all tools
                 allowed_tools = all_tools
-                reason = (
-                    "opaque token (no filtering)"
-                    if not is_jwt and user_scopes
-                    else "no token/BasicAuth"
+                logger.info(
+                    f"📋 Showing all {len(all_tools)} tools (no token/BasicAuth)"
                 )
-                logger.info(f"📋 Showing all {len(all_tools)} tools ({reason})")
 
             # Return the Tool objects directly (they're already in the correct format)
             return allowed_tools
 
         # Replace the tool manager's list_tools method
         mcp._tool_manager.list_tools = list_tools_filtered
-        logger.info("Dynamic tool filtering enabled for OAuth mode (JWT tokens only)")
+        logger.info(
+            "Dynamic tool filtering enabled for OAuth mode (JWT and Bearer tokens)"
+        )
 
     if transport == "sse":
         mcp_app = mcp.sse_app()
@@ -534,10 +547,13 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     if oauth_enabled:
 
         def oauth_protected_resource_metadata(request):
-            """RFC 8959 Protected Resource Metadata endpoint."""
+            """RFC 9728 Protected Resource Metadata endpoint."""
             mcp_server_url = os.getenv(
                 "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
             )
+            # Append /mcp to match the actual resource path (FastMCP streamable-http endpoint)
+            resource_url = f"{mcp_server_url}/mcp"
+
             # Use PUBLIC_ISSUER_URL for authorization server since external clients
             # (like Claude) need the publicly accessible URL, not internal Docker URLs
             public_issuer_url = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
@@ -547,14 +563,44 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 
             return JSONResponse(
                 {
-                    "resource": mcp_server_url,
-                    "scopes_supported": ["nc:read", "nc:write"],
+                    "resource": resource_url,
+                    "scopes_supported": [
+                        "openid",
+                        "notes:read",
+                        "notes:write",
+                        "calendar:read",
+                        "calendar:write",
+                        "todo:read",
+                        "todo:write",
+                        "contacts:read",
+                        "contacts:write",
+                        "cookbook:read",
+                        "cookbook:write",
+                        "deck:read",
+                        "deck:write",
+                        "tables:read",
+                        "tables:write",
+                        "files:read",
+                        "files:write",
+                        "sharing:read",
+                        "sharing:write",
+                    ],
                     "authorization_servers": [public_issuer_url],
                     "bearer_methods_supported": ["header"],
                     "resource_signing_alg_values_supported": ["RS256"],
                 }
             )
 
+        # Register PRM endpoint at both path-based and root locations per RFC 9728
+        # Path-based discovery: /.well-known/oauth-protected-resource{path}
+        routes.append(
+            Route(
+                "/.well-known/oauth-protected-resource/mcp",
+                oauth_protected_resource_metadata,
+                methods=["GET"],
+            )
+        )
+        # Root discovery (fallback): /.well-known/oauth-protected-resource
         routes.append(
             Route(
                 "/.well-known/oauth-protected-resource",
@@ -562,10 +608,22 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 methods=["GET"],
             )
         )
-        logger.info("Protected Resource Metadata (PRM) endpoint enabled")
+        logger.info(
+            "Protected Resource Metadata (PRM) endpoints enabled (path-based + root)"
+        )
 
     routes.append(Mount("/", app=mcp_app))
     app = Starlette(routes=routes, lifespan=lifespan)
+
+    # Add CORS middleware to allow browser-based clients like MCP Inspector
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allow all origins for development
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
 
     # Add exception handler for scope challenges (OAuth mode only)
     if oauth_enabled:
@@ -584,7 +642,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                     "WWW-Authenticate": (
                         f'Bearer error="insufficient_scope", '
                         f'scope="{scope_str}", '
-                        f'resource_metadata="{resource_url}/.well-known/oauth-protected-resource"'
+                        f'resource_metadata="{resource_url}/.well-known/oauth-protected-resource/mcp"'
                     )
                 },
                 content={
@@ -677,7 +735,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 @click.option(
     "--oauth-scopes",
     envvar="NEXTCLOUD_OIDC_SCOPES",
-    default="openid profile email nc:read nc:write",
+    default="openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write",
     show_default=True,
     help="OAuth scopes to request (can also use NEXTCLOUD_OIDC_SCOPES env var)",
 )
@@ -741,7 +799,7 @@ def run(
 
       # OAuth mode with custom scopes and JWT tokens
       $ nextcloud-mcp-server --nextcloud-host=https://cloud.example.com --oauth \\
-          --oauth-scopes="openid nc:read" --oauth-token-type=jwt
+          --oauth-scopes="openid notes:read notes:write" --oauth-token-type=jwt
 
       # OAuth with public issuer URL (for Docker/proxy setups)
       $ nextcloud-mcp-server --nextcloud-host=http://app --oauth \\

@@ -5,7 +5,6 @@ Defines coordinated workflows that span multiple users, simulating realistic
 collaborative scenarios like note sharing, file collaboration, and permission management.
 """
 
-import asyncio
 import json
 import logging
 import random
@@ -14,6 +13,8 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
+
+import anyio
 
 from tests.load.oauth_pool import UserSessionWrapper
 
@@ -299,7 +300,9 @@ class CollaborativeEditWorkflow(Workflow):
                     )
                 )
 
-            await asyncio.gather(*read_tasks)
+            async with anyio.create_task_group() as tg:
+                for task in read_tasks:
+                    tg.start_soon(task)
 
             # Step 3: Append content concurrently by all collaborators
             append_tasks = []
@@ -318,7 +321,9 @@ class CollaborativeEditWorkflow(Workflow):
                     )
                 )
 
-            await asyncio.gather(*append_tasks)
+            async with anyio.create_task_group() as tg:
+                for task in append_tasks:
+                    tg.start_soon(task)
 
             # Step 4: Owner verifies final state
             await self._execute_step(

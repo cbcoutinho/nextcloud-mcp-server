@@ -8,13 +8,14 @@ import time
 from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx
 
 logger = logging.getLogger(__name__)
 
 
 class ClientInfo:
-    """Client registration information."""
+    """Client registration information with RFC 7592 support."""
 
     def __init__(
         self,
@@ -23,12 +24,16 @@ class ClientInfo:
         client_id_issued_at: int,
         client_secret_expires_at: int,
         redirect_uris: list[str],
+        registration_access_token: str | None = None,
+        registration_client_uri: str | None = None,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
         self.client_id_issued_at = client_id_issued_at
         self.client_secret_expires_at = client_secret_expires_at
         self.redirect_uris = redirect_uris
+        self.registration_access_token = registration_access_token
+        self.registration_client_uri = registration_client_uri
 
     @property
     def is_expired(self) -> bool:
@@ -42,13 +47,18 @@ class ClientInfo:
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for storage."""
-        return {
+        result = {
             "client_id": self.client_id,
             "client_secret": self.client_secret,
             "client_id_issued_at": self.client_id_issued_at,
             "client_secret_expires_at": self.client_secret_expires_at,
             "redirect_uris": self.redirect_uris,
         }
+        if self.registration_access_token:
+            result["registration_access_token"] = self.registration_access_token
+        if self.registration_client_uri:
+            result["registration_client_uri"] = self.registration_client_uri
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ClientInfo":
@@ -59,6 +69,8 @@ class ClientInfo:
             client_id_issued_at=data["client_id_issued_at"],
             client_secret_expires_at=data["client_secret_expires_at"],
             redirect_uris=data["redirect_uris"],
+            registration_access_token=data.get("registration_access_token"),
+            registration_client_uri=data.get("registration_client_uri"),
         )
 
 
@@ -125,6 +137,16 @@ async def register_client(
                 f"(in {client_info.get('client_secret_expires_at', 0) - int(time.time())} seconds)"
             )
 
+            # Log if RFC 7592 fields are present
+            has_reg_token = "registration_access_token" in client_info
+            has_reg_uri = "registration_client_uri" in client_info
+            if has_reg_token and has_reg_uri:
+                logger.info(
+                    "RFC 7592 management fields received - client deletion will be supported"
+                )
+            else:
+                logger.warning("RFC 7592 fields missing - client deletion may not work")
+
             return ClientInfo(
                 client_id=client_info["client_id"],
                 client_secret=client_info["client_secret"],
@@ -135,6 +157,8 @@ async def register_client(
                     "client_secret_expires_at", int(time.time()) + 3600
                 ),
                 redirect_uris=client_info.get("redirect_uris", redirect_uris),
+                registration_access_token=client_info.get("registration_access_token"),
+                registration_client_uri=client_info.get("registration_client_uri"),
             )
 
         except httpx.HTTPStatusError as e:
@@ -210,6 +234,132 @@ def save_client_to_file(client_info: ClientInfo, storage_path: Path):
     except OSError as e:
         logger.error(f"Failed to save client credentials: {e}")
         raise
+
+
+async def delete_client(
+    nextcloud_url: str,
+    client_id: str,
+    registration_access_token: str | None = None,
+    client_secret: str | None = None,
+    registration_client_uri: str | None = None,
+    max_retries: int = 3,
+) -> bool:
+    """
+    Delete a dynamically registered OAuth client using RFC 7592.
+
+    This implements RFC 7592 Section 2.3 (Client Delete Request).
+    Prefers Bearer token authentication (RFC 7592 standard) but falls back
+    to HTTP Basic Auth if registration_access_token is not available.
+
+    Args:
+        nextcloud_url: Base URL of the Nextcloud instance
+        client_id: Client identifier to delete
+        registration_access_token: RFC 7592 registration access token (preferred)
+        client_secret: Client secret for fallback HTTP Basic Auth
+        registration_client_uri: RFC 7592 client configuration URI (optional)
+        max_retries: Maximum number of retries for 429 responses (default: 3)
+
+    Returns:
+        True if deletion successful, False otherwise
+
+    Note:
+        RFC 7592 deletion endpoint: {registration_client_uri} or {nextcloud_url}/apps/oidc/register/{client_id}
+
+        Authentication methods (in order of preference):
+        1. Bearer token: Authorization: Bearer {registration_access_token} (RFC 7592 standard)
+        2. HTTP Basic Auth: client_id as username, client_secret as password (fallback)
+    """
+
+    # Determine deletion endpoint
+    if registration_client_uri:
+        deletion_endpoint = registration_client_uri
+    else:
+        deletion_endpoint = f"{nextcloud_url}/apps/oidc/register/{client_id}"
+
+    logger.info(f"Deleting OAuth client: {client_id[:16]}...")
+    logger.debug(f"Deletion endpoint: {deletion_endpoint}")
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        for attempt in range(max_retries):
+            try:
+                # Prefer RFC 7592 Bearer token authentication
+                if registration_access_token:
+                    logger.debug("Using RFC 7592 Bearer token authentication")
+                    response = await http_client.delete(
+                        deletion_endpoint,
+                        headers={
+                            "Authorization": f"Bearer {registration_access_token}"
+                        },
+                    )
+                elif client_secret:
+                    logger.debug(
+                        "Falling back to HTTP Basic Auth (registration_access_token not available)"
+                    )
+                    response = await http_client.delete(
+                        deletion_endpoint,
+                        auth=(client_id, client_secret),
+                    )
+                else:
+                    logger.error(
+                        "Cannot delete client: no registration_access_token or client_secret provided"
+                    )
+                    return False
+
+                # RFC 7592: Successful deletion returns 204 No Content
+                if response.status_code == 204:
+                    logger.info(
+                        f"Successfully deleted OAuth client: {client_id[:16]}..."
+                    )
+                    return True
+                elif response.status_code == 429:
+                    # Rate limited - retry with exponential backoff
+                    if attempt < max_retries - 1:
+                        retry_after = int(response.headers.get("Retry-After", 2))
+                        wait_time = min(
+                            retry_after, 2**attempt
+                        )  # Exponential backoff, max from header
+                        logger.warning(
+                            f"Rate limited (429) deleting client {client_id[:16]}..., "
+                            f"retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})"
+                        )
+                        await anyio.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error(
+                            f"Failed to delete client {client_id[:16]}... after {max_retries} attempts: Rate limited (429)"
+                        )
+                        return False
+                elif response.status_code == 401:
+                    logger.error(
+                        f"Failed to delete client {client_id[:16]}...: Authentication failed (invalid credentials)"
+                    )
+                    return False
+                elif response.status_code == 403:
+                    logger.error(
+                        f"Failed to delete client {client_id[:16]}...: Not authorized (not a DCR client or wrong client)"
+                    )
+                    return False
+                else:
+                    logger.error(
+                        f"Failed to delete client {client_id[:16]}...: HTTP {response.status_code}"
+                    )
+                    logger.debug(f"Response: {response.text}")
+                    return False
+
+            except httpx.HTTPStatusError as e:
+                logger.error(
+                    f"HTTP error deleting client {client_id[:16]}...: {e.response.status_code}"
+                )
+                logger.debug(f"Response: {e.response.text}")
+                return False
+            except Exception as e:
+                logger.error(
+                    f"Unexpected error deleting client {client_id[:16]}...: {e}"
+                )
+                return False
+
+        # Should not reach here, but return False if we do
+        return False
 
 
 async def load_or_register_client(

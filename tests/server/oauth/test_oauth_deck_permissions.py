@@ -46,7 +46,6 @@ async def delete_board_acl(nc_client, board_id: int, acl_id: int):
     logger.info(f"Deleted ACL {acl_id} from board {board_id}")
 
 
-@pytest.mark.anyio
 async def test_deck_board_view_permissions(
     nc_client, alice_mcp_client, bob_mcp_client, diana_mcp_client
 ):
@@ -119,7 +118,6 @@ async def test_deck_board_view_permissions(
         await nc_client.deck.delete_board(board_id)
 
 
-@pytest.mark.anyio
 async def test_deck_board_edit_permissions(
     nc_client, alice_mcp_client, charlie_mcp_client, bob_mcp_client
 ):
@@ -214,7 +212,6 @@ async def test_deck_board_edit_permissions(
         await nc_client.deck.delete_board(board_id)
 
 
-@pytest.mark.anyio
 async def test_deck_board_manage_permissions(
     nc_client, alice_mcp_client, charlie_mcp_client
 ):
@@ -289,7 +286,6 @@ async def test_deck_board_manage_permissions(
         await nc_client.deck.delete_board(board_id)
 
 
-@pytest.mark.anyio
 async def test_deck_user_isolation(nc_client, alice_mcp_client, bob_mcp_client):
     """
     Test that users can only see their own boards when not shared.
