@@ -2,6 +2,7 @@
 
 import base64
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Optional, Tuple
 
 from nextcloud_mcp_server.config import get_document_processor_config
@@ -35,7 +36,12 @@ def is_parseable_document(content_type: Optional[str]) -> bool:
 
 
 async def parse_document(
-    content: bytes, content_type: Optional[str], filename: Optional[str] = None
+    content: bytes,
+    content_type: Optional[str],
+    filename: Optional[str] = None,
+    progress_callback: Optional[
+        Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
+    ] = None,
 ) -> Tuple[str, dict]:
     """Parse a document using registered processors.
 
@@ -46,6 +52,7 @@ async def parse_document(
         content: The document content as bytes
         content_type: The MIME type of the document
         filename: Optional filename to help with format detection
+        progress_callback: Optional async callback for progress updates during long operations
 
     Returns:
         Tuple of (parsed_text, metadata) where:
@@ -73,6 +80,7 @@ async def parse_document(
             content=content,
             content_type=content_type,
             filename=filename,
+            progress_callback=progress_callback,
         )
 
         logger.info(f"Successfully parsed document with '{result.processor}' processor")

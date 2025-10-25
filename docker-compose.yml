@@ -59,7 +59,7 @@ services:
     # Unstructured API runs on port 8000 internally
     # We expose it on 8002 externally to avoid conflict
     profiles:
-      - text-extraction
+      - unstructured
 
   mcp:
     build: .

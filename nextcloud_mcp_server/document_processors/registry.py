@@ -1,6 +1,7 @@
 """Central registry for document processors."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
@@ -113,6 +114,9 @@ class ProcessorRegistry:
         filename: Optional[str] = None,
         processor_name: Optional[str] = None,
         options: Optional[dict[str, Any]] = None,
+        progress_callback: Optional[
+            Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
+        ] = None,
     ) -> ProcessingResult:
         """Process a document using available processors.
 
@@ -122,6 +126,7 @@ class ProcessorRegistry:
             filename: Optional filename for format detection
             processor_name: Force specific processor (or None for auto-select)
             options: Processing options passed to processor
+            progress_callback: Optional async callback for progress updates
 
         Returns:
             ProcessingResult with extracted text and metadata
@@ -148,7 +153,9 @@ class ProcessorRegistry:
         logger.info(f"Processing with '{processor.name}' processor")
 
         # Process
-        return await processor.process(content, content_type, filename, options)
+        return await processor.process(
+            content, content_type, filename, options, progress_callback
+        )
 
 
 # Global registry instance

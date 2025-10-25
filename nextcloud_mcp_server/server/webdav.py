@@ -85,7 +85,10 @@ def configure_webdav_tools(mcp: FastMCP):
             try:
                 logger.info(f"Parsing document '{path}' of type '{content_type}'")
                 parsed_text, metadata = await parse_document(
-                    content, content_type, filename=path
+                    content,
+                    content_type,
+                    filename=path,
+                    progress_callback=ctx.report_progress,
                 )
                 return {
                     "path": path,

@@ -72,6 +72,7 @@ def initialize_document_processors():
                 timeout=unst_config["timeout"],
                 default_strategy=unst_config["strategy"],
                 default_languages=unst_config["languages"],
+                progress_interval=unst_config.get("progress_interval", 10),
             )
             registry.register(processor, priority=10)
             logger.info(f"Registered Unstructured processor: {unst_config['api_url']}")

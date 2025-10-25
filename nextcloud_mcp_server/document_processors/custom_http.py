@@ -1,6 +1,7 @@
 """Generic HTTP API processor wrapper for custom document processing services."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
 import httpx
@@ -70,6 +71,9 @@ class CustomHTTPProcessor(DocumentProcessor):
         content_type: str,
         filename: Optional[str] = None,
         options: Optional[dict[str, Any]] = None,
+        progress_callback: Optional[
+            Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
+        ] = None,
     ) -> ProcessingResult:
         """Process via custom HTTP API.
 

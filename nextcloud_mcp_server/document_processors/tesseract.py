@@ -2,6 +2,7 @@
 
 import logging
 import shutil
+from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
@@ -86,6 +87,9 @@ class TesseractProcessor(DocumentProcessor):
         content_type: str,
         filename: Optional[str] = None,
         options: Optional[dict[str, Any]] = None,
+        progress_callback: Optional[
+            Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
+        ] = None,
     ) -> ProcessingResult:
         """Process image via Tesseract OCR.
 

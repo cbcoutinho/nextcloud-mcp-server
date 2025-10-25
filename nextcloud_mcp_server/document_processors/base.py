@@ -1,6 +1,7 @@
 """Abstract base class for document processing plugins."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
 from pydantic import BaseModel
@@ -71,6 +72,9 @@ class DocumentProcessor(ABC):
         content_type: str,
         filename: Optional[str] = None,
         options: Optional[dict[str, Any]] = None,
+        progress_callback: Optional[
+            Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
+        ] = None,
     ) -> ProcessingResult:
         """Process a document and extract text.
 
@@ -79,6 +83,11 @@ class DocumentProcessor(ABC):
             content_type: MIME type of the document
             filename: Optional filename for format detection
             options: Processor-specific options (e.g., OCR language, strategy)
+            progress_callback: Optional async callback for progress updates.
+                Called as: await progress_callback(progress, total, message)
+                - progress: Current progress value (monotonically increasing)
+                - total: Optional total value (None if unknown)
+                - message: Optional human-readable status message
 
         Returns:
             ProcessingResult with extracted text and metadata

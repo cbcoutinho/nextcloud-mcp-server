@@ -90,6 +90,7 @@ def get_document_processor_config() -> dict[str, Any]:
                 for lang in os.getenv("UNSTRUCTURED_LANGUAGES", "eng,deu").split(",")
                 if lang.strip()
             ],
+            "progress_interval": int(os.getenv("PROGRESS_INTERVAL", "10")),
         }
 
     # Tesseract configuration
