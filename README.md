@@ -23,6 +23,7 @@ The Nextcloud MCP (Model Context Protocol) server allows Large Language Models l
 | **Calendar** | ✅ Full CalDAV + tasks (20+ tools) | ✅ Events, free/busy, tasks (4 tools) |
 | **Contacts** | ✅ Full CardDAV (8 tools) | ✅ Find person, current user (2 tools) |
 | **Files (WebDAV)** | ✅ Full filesystem access (12 tools) | ✅ Read, folder tree, sharing (3 tools) |
+| **Document Processing** | ✅ OCR with progress (PDF, DOCX, images) | ❌ Not implemented |
 | **Deck** | ✅ Full project management (15 tools) | ✅ Basic board/card ops (2 tools) |
 | **Tables** | ✅ Row operations (5 tools) | ❌ Not implemented |
 | **Cookbook** | ✅ Full recipe management (13 tools) | ❌ Not implemented |
@@ -192,11 +193,58 @@ The server provides 90+ tools across 8 Nextcloud apps. When using OAuth, tools a
 | **Notes** | 7 | `mcp:notes:read` | `mcp:notes:write` | Create, read, update, delete, search notes |
 | **Calendar** | 20+ | `mcp:calendar:read` | `mcp:calendar:write` | Events, todos (tasks), calendars, recurring events, attendees |
 | **Contacts** | 8 | `mcp:contacts:read` | `mcp:contacts:write` | Create, read, update, delete contacts and address books |
-| **Files (WebDAV)** | 12 | `mcp:files:read` | `mcp:files:write` | List, read, upload, delete, move files and folders |
+| **Files (WebDAV)** | 12 | `mcp:files:read` | `mcp:files:write` | List, read, upload, delete, move files; **OCR/document processing** |
 | **Deck** | 15 | `mcp:deck:read` | `mcp:deck:write` | Boards, stacks, cards, labels, assignments |
 | **Cookbook** | 13 | `mcp:cookbook:read` | `mcp:cookbook:write` | Recipes, import from URLs, search, categories |
 | **Tables** | 5 | `mcp:tables:read` | `mcp:tables:write` | Row operations on Nextcloud Tables |
 | **Sharing** | 10+ | `mcp:sharing:read` | `mcp:sharing:write` | Create, manage, delete shares |
+
+#### Document Processing (Optional)
+
+The WebDAV file reading tool (`nc_webdav_read_file`) supports **automatic text extraction** from documents and images:
+
+**Supported Formats:**
+- **Documents**: PDF, DOCX, PPTX, XLSX, RTF, ODT, EPUB
+- **Images**: PNG, JPEG, TIFF, BMP (with OCR)
+- **Email**: EML, MSG files
+
+**Features:**
+- **Progress Notifications**: Long-running OCR operations (up to 120s) send progress updates every 10 seconds to prevent client timeouts
+- **Pluggable Architecture**: Multiple processor backends (Unstructured.io, Tesseract, custom HTTP APIs)
+- **Automatic Detection**: Files are processed based on MIME type
+- **Graceful Fallback**: Returns base64-encoded content if processing fails
+
+**Configuration:**
+```dotenv
+# Enable document processing (optional)
+ENABLE_DOCUMENT_PROCESSING=true
+
+# Unstructured.io processor (cloud/API-based, supports many formats)
+ENABLE_UNSTRUCTURED=true
+UNSTRUCTURED_API_URL=http://localhost:8002
+UNSTRUCTURED_STRATEGY=auto  # auto, fast, or hi_res
+UNSTRUCTURED_LANGUAGES=eng,deu
+PROGRESS_INTERVAL=10  # Progress update interval in seconds
+
+# Tesseract processor (local OCR, images only)
+ENABLE_TESSERACT=false
+TESSERACT_LANG=eng
+
+# Custom HTTP processor
+ENABLE_CUSTOM_PROCESSOR=false
+CUSTOM_PROCESSOR_URL=http://localhost:9000/process
+CUSTOM_PROCESSOR_TYPES=application/pdf,image/jpeg
+```
+
+**Example Usage:**
+```
+AI: "Read the contents of Documents/report.pdf"
+→ Uses nc_webdav_read_file tool with automatic OCR processing
+→ Returns extracted text with parsing metadata
+→ Sends progress updates during long operations
+```
+
+See [env.sample](env.sample) for complete configuration options.
 
 **Example Tools:**
 - `nc_notes_create_note` - Create a new note
