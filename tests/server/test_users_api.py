@@ -1,4 +1,8 @@
+import pytest
+
 from nextcloud_mcp_server.client import NextcloudClient
+
+pytestmark = pytest.mark.integration
 
 
 async def test_create_and_delete_user(nc_client: NextcloudClient, test_user):
