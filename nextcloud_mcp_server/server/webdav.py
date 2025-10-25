@@ -2,15 +2,13 @@ import logging
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.models import DirectoryListing, FileInfo, SearchFilesResponse
 from nextcloud_mcp_server.utils.document_parser import (
     is_parseable_document,
     parse_document,
 )
-from nextcloud_mcp_server.config import is_unstructured_parsing_enabled
-from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.context import get_client
-from nextcloud_mcp_server.models import DirectoryListing, FileInfo, SearchFilesResponse
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +80,8 @@ def configure_webdav_tools(mcp: FastMCP):
         content, content_type = await client.webdav.read_file(path)
 
         # Check if this is a parseable document (PDF, DOCX, etc.)
-        if is_unstructured_parsing_enabled() and is_parseable_document(content_type):
+        # is_parseable_document() checks if document processing is enabled
+        if is_parseable_document(content_type):
             try:
                 logger.info(f"Parsing document '{path}' of type '{content_type}'")
                 parsed_text, metadata = await parse_document(
