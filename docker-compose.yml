@@ -58,6 +58,8 @@ services:
       - 127.0.0.1:8002:8000
     # Unstructured API runs on port 8000 internally
     # We expose it on 8002 externally to avoid conflict
+    profiles:
+      - unstructured
 
   mcp:
     build: .
@@ -65,19 +67,12 @@ services:
     restart: always
     depends_on:
       - app
-      - unstructured
     ports:
       - 127.0.0.1:8000:8000
     environment:
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_USERNAME=admin
       - NEXTCLOUD_PASSWORD=admin
-      - ENABLE_UNSTRUCTURED_PARSING=true
-      - UNSTRUCTURED_API_URL=http://unstructured:8000
-      - UNSTRUCTURED_STRATEGY=hi_res
-      - UNSTRUCTURED_LANGUAGES=deu,eng
-    #volumes:
-      #- ./nextcloud_mcp_server:/app/nextcloud_mcp_server:ro
 
   mcp-oauth:
     build: .

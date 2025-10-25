@@ -1,6 +1,6 @@
 import logging.config
 import os
-from typing import Optional
+from typing import Any
 
 LOGGING_CONFIG = {
     "version": 1,
@@ -55,86 +55,66 @@ def setup_logging():
     logging.config.dictConfig(LOGGING_CONFIG)
 
 
-# Document Parsing Configuration
-def get_unstructured_api_url() -> Optional[str]:
-    """Get the Unstructured API URL from environment variables.
+# Document Processing Configuration
+
+
+def get_document_processor_config() -> dict[str, Any]:
+    """Get document processor configuration from environment.
 
     Returns:
-        The Unstructured API URL if parsing is enabled, None otherwise.
+        Dict with processor configs:
+        {
+            "enabled": bool,
+            "default_processor": str,
+            "processors": {
+                "unstructured": {...},
+                "tesseract": {...},
+                "custom": {...},
+            }
+        }
     """
-    enabled = os.getenv("ENABLE_UNSTRUCTURED_PARSING", "true").lower() == "true"
-    if not enabled:
-        return None
+    config: dict[str, Any] = {
+        "enabled": os.getenv("ENABLE_DOCUMENT_PROCESSING", "false").lower() == "true",
+        "default_processor": os.getenv("DOCUMENT_PROCESSOR", "unstructured"),
+        "processors": {},
+    }
 
-    return os.getenv("UNSTRUCTURED_API_URL", "http://unstructured:8000")
+    # Unstructured configuration
+    if os.getenv("ENABLE_UNSTRUCTURED", "false").lower() == "true":
+        config["processors"]["unstructured"] = {
+            "api_url": os.getenv("UNSTRUCTURED_API_URL", "http://unstructured:8000"),
+            "timeout": int(os.getenv("UNSTRUCTURED_TIMEOUT", "120")),
+            "strategy": os.getenv("UNSTRUCTURED_STRATEGY", "auto"),
+            "languages": [
+                lang.strip()
+                for lang in os.getenv("UNSTRUCTURED_LANGUAGES", "eng,deu").split(",")
+                if lang.strip()
+            ],
+            "progress_interval": int(os.getenv("PROGRESS_INTERVAL", "10")),
+        }
 
+    # Tesseract configuration
+    if os.getenv("ENABLE_TESSERACT", "false").lower() == "true":
+        config["processors"]["tesseract"] = {
+            "tesseract_cmd": os.getenv("TESSERACT_CMD"),  # None = auto-detect
+            "lang": os.getenv("TESSERACT_LANG", "eng"),
+        }
 
-def is_unstructured_parsing_enabled() -> bool:
-    """Check if unstructured document parsing is enabled.
+    # Custom processor (via HTTP API)
+    if os.getenv("ENABLE_CUSTOM_PROCESSOR", "false").lower() == "true":
+        custom_url = os.getenv("CUSTOM_PROCESSOR_URL")
+        if custom_url:
+            supported_types_str = os.getenv("CUSTOM_PROCESSOR_TYPES", "application/pdf")
+            supported_types = {
+                t.strip() for t in supported_types_str.split(",") if t.strip()
+            }
 
-    Returns:
-        True if enabled, False otherwise.
-    """
-    return os.getenv("ENABLE_UNSTRUCTURED_PARSING", "true").lower() == "true"
+            config["processors"]["custom"] = {
+                "name": os.getenv("CUSTOM_PROCESSOR_NAME", "custom"),
+                "api_url": custom_url,
+                "api_key": os.getenv("CUSTOM_PROCESSOR_API_KEY"),
+                "timeout": int(os.getenv("CUSTOM_PROCESSOR_TIMEOUT", "60")),
+                "supported_types": supported_types,
+            }
 
-
-def get_unstructured_strategy() -> str:
-    """Get the parsing strategy for the Unstructured API.
-
-    Valid values are:
-    - 'auto': Automatically choose the best strategy (default)
-    - 'fast': Fast parsing without OCR
-    - 'hi_res': High-resolution parsing with OCR for better accuracy
-
-    Returns:
-        The parsing strategy to use.
-    """
-    strategy = os.getenv("UNSTRUCTURED_STRATEGY", "auto").lower()
-    valid_strategies = ["auto", "fast", "hi_res"]
-
-    if strategy not in valid_strategies:
-        logging.warning(
-            f"Invalid UNSTRUCTURED_STRATEGY '{strategy}'. Using 'hi_res'. "
-            f"Valid options: {', '.join(valid_strategies)}"
-        )
-        return "hi_res"
-
-    return strategy
-
-
-def get_unstructured_languages() -> list[str]:
-    """Get the OCR languages for the Unstructured API.
-
-    Languages should be specified as ISO 639-3 codes (e.g., 'eng', 'deu', 'fra').
-    Multiple languages can be specified separated by commas.
-
-    Default languages: English (eng) and German (deu)
-
-    Common language codes:
-    - eng: English
-    - deu: German
-    - fra: French
-    - spa: Spanish
-    - ita: Italian
-    - por: Portuguese
-    - rus: Russian
-    - ara: Arabic
-    - zho: Chinese
-    - jpn: Japanese
-    - kor: Korean
-
-    Returns:
-        List of language codes for OCR processing.
-    """
-    languages_str = os.getenv("UNSTRUCTURED_LANGUAGES", "eng,deu")
-
-    # Split by comma and clean up whitespace
-    languages = [lang.strip() for lang in languages_str.split(",") if lang.strip()]
-
-    if not languages:
-        logging.warning(
-            "No languages specified in UNSTRUCTURED_LANGUAGES. Using default: eng,deu"
-        )
-        return ["eng", "deu"]
-
-    return languages
+    return config

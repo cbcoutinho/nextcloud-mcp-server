@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import uuid
 from io import BytesIO
 
@@ -37,7 +38,10 @@ def create_test_pdf(text: str) -> bytes:
     return buffer.getvalue()
 
 
-@pytest.mark.integration
+@pytest.mark.skipif(
+    condition=os.getenv("ENABLE_UNSTRUCTURED", "false") != "true",
+    reason="Unstructured is not enabled",
+)
 async def test_unstructured_api_enabled_parsing(
     nc_client: NextcloudClient, test_base_path: str, nc_mcp_client: ClientSession
 ):
@@ -97,7 +101,10 @@ async def test_unstructured_api_enabled_parsing(
             pass  # Ignore cleanup errors
 
 
-@pytest.mark.integration
+@pytest.mark.skipif(
+    condition=os.getenv("ENABLE_UNSTRUCTURED", "false") != "true",
+    reason="Unstructured is not enabled",
+)
 async def test_unstructured_api_with_docx(
     nc_client: NextcloudClient, test_base_path: str, nc_mcp_client: ClientSession
 ):

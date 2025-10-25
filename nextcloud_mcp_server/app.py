@@ -23,8 +23,13 @@ from nextcloud_mcp_server.auth import (
     is_jwt_token,
 )
 from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.config import LOGGING_CONFIG, setup_logging
+from nextcloud_mcp_server.config import (
+    LOGGING_CONFIG,
+    get_document_processor_config,
+    setup_logging,
+)
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
+from nextcloud_mcp_server.document_processors import get_registry
 from nextcloud_mcp_server.server import (
     configure_calendar_tools,
     configure_contacts_tools,
@@ -37,6 +42,92 @@ from nextcloud_mcp_server.server import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def initialize_document_processors():
+    """Initialize and register document processors based on configuration.
+
+    This function reads the environment configuration and registers available
+    processors (Unstructured, Tesseract, Custom HTTP) with the global registry.
+    """
+    config = get_document_processor_config()
+
+    if not config["enabled"]:
+        logger.info("Document processing disabled")
+        return
+
+    registry = get_registry()
+    registered_count = 0
+
+    # Register Unstructured processor
+    if "unstructured" in config["processors"]:
+        unst_config = config["processors"]["unstructured"]
+        try:
+            from nextcloud_mcp_server.document_processors.unstructured import (
+                UnstructuredProcessor,
+            )
+
+            processor = UnstructuredProcessor(
+                api_url=unst_config["api_url"],
+                timeout=unst_config["timeout"],
+                default_strategy=unst_config["strategy"],
+                default_languages=unst_config["languages"],
+                progress_interval=unst_config.get("progress_interval", 10),
+            )
+            registry.register(processor, priority=10)
+            logger.info(f"Registered Unstructured processor: {unst_config['api_url']}")
+            registered_count += 1
+        except Exception as e:
+            logger.warning(f"Failed to register Unstructured processor: {e}")
+
+    # Register Tesseract processor
+    if "tesseract" in config["processors"]:
+        tess_config = config["processors"]["tesseract"]
+        try:
+            from nextcloud_mcp_server.document_processors.tesseract import (
+                TesseractProcessor,
+            )
+
+            processor = TesseractProcessor(
+                tesseract_cmd=tess_config.get("tesseract_cmd"),
+                default_lang=tess_config["lang"],
+            )
+            registry.register(processor, priority=5)
+            logger.info(f"Registered Tesseract processor: lang={tess_config['lang']}")
+            registered_count += 1
+        except Exception as e:
+            logger.warning(f"Failed to register Tesseract processor: {e}")
+
+    # Register custom processor
+    if "custom" in config["processors"]:
+        custom_config = config["processors"]["custom"]
+        try:
+            from nextcloud_mcp_server.document_processors.custom_http import (
+                CustomHTTPProcessor,
+            )
+
+            processor = CustomHTTPProcessor(
+                name=custom_config["name"],
+                api_url=custom_config["api_url"],
+                api_key=custom_config.get("api_key"),
+                timeout=custom_config["timeout"],
+                supported_types=custom_config["supported_types"],
+            )
+            registry.register(processor, priority=1)
+            logger.info(
+                f"Registered Custom processor '{custom_config['name']}': {custom_config['api_url']}"
+            )
+            registered_count += 1
+        except Exception as e:
+            logger.warning(f"Failed to register Custom processor: {e}")
+
+    if registered_count > 0:
+        logger.info(
+            f"Document processing initialized with {registered_count} processor(s): "
+            f"{', '.join(registry.list_processors())}"
+        )
+    else:
+        logger.warning("Document processing enabled but no processors registered")
 
 
 def validate_pkce_support(discovery: dict, discovery_url: str) -> None:
@@ -257,6 +348,9 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
     client = NextcloudClient.from_env()
     logger.info("Client initialization complete")
 
+    # Initialize document processors
+    initialize_document_processors()
+
     try:
         yield AppContext(client=client)
     finally:
@@ -316,6 +410,9 @@ async def app_lifespan_oauth(server: FastMCP) -> AsyncIterator[OAuthAppContext]:
         )
 
         logger.info("OAuth initialization complete")
+
+        # Initialize document processors
+        initialize_document_processors()
 
         try:
             yield OAuthAppContext(
