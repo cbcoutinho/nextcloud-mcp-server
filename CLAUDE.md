@@ -38,6 +38,8 @@ uv run pytest -m integration -v
 uv run pytest -m "not integration" -v
 ```
 
+! Hint: If the tests are failing due to missing environment variables, then usually the correct .env has not been created or not correctly configured yet.
+
 ### Load Testing
 ```bash
 # Run benchmark with default settings (10 workers, 30 seconds)

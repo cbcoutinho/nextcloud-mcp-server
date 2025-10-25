@@ -91,6 +91,7 @@ dev = [
     "pytest-playwright-asyncio>=0.7.1",
     "pytest-timeout>=2.3.1",
     "ruff>=0.11.13",
+    "reportlab>=4.0.0",
 ]
 
 [project.scripts]
