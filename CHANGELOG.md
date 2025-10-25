@@ -1,3 +1,13 @@
+## v0.21.0 (2025-10-25)
+
+### Feat
+
+- Add text processing background worker for telling client about progress
+
+### Refactor
+
+- Transform document parsing into pluggable processor architecture
+
 ## v0.20.0 (2025-10-24)
 
 ### Feat
