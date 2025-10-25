@@ -276,3 +276,68 @@ def has_required_scopes(func: Callable, user_scopes: set[str]) -> bool:
 
     # Check if user has all required scopes
     return set(required).issubset(user_scopes)
+
+
+def discover_all_scopes(mcp) -> list[str]:
+    """
+    Dynamically discover all OAuth scopes required by registered MCP tools.
+
+    This function inspects all registered tools and extracts their required scopes
+    from the @require_scopes decorator metadata. It provides a single source of truth
+    for available scopes based on the actual tool implementations.
+
+    Args:
+        mcp: FastMCP instance with registered tools
+
+    Returns:
+        Sorted list of unique scope strings, including base OIDC scopes
+
+    Example:
+        ```python
+        from mcp.server.fastmcp import FastMCP
+
+        mcp = FastMCP("My Server")
+
+        @mcp.tool()
+        @require_scopes("notes:read")
+        async def get_notes():
+            pass
+
+        @mcp.tool()
+        @require_scopes("notes:write")
+        async def create_note():
+            pass
+
+        scopes = discover_all_scopes(mcp)
+        # Returns: ["notes:read", "notes:write", "openid", "profile", "email"]
+        ```
+
+    Note:
+        - Base OIDC scopes (openid, profile, email) are always included
+        - Scopes are deduplicated and sorted alphabetically
+        - Only scopes from decorated tools are included
+        - Must be called after tools are registered
+    """
+    # Start with base OIDC scopes that are always required
+    all_scopes = {"openid", "profile", "email"}
+
+    # Get all registered tools
+    try:
+        tools = mcp._tool_manager.list_tools()
+    except AttributeError:
+        logger.warning("FastMCP instance does not have _tool_manager attribute")
+        return sorted(all_scopes)
+
+    # Extract scopes from each tool
+    for tool in tools:
+        # Get the original function (tools have a .fn attribute)
+        func = getattr(tool, "fn", None)
+        if func is None:
+            continue
+
+        # Extract scopes using existing helper
+        tool_scopes = get_required_scopes(func)
+        all_scopes.update(tool_scopes)
+
+    # Return sorted list of unique scopes
+    return sorted(all_scopes)

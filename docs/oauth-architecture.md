@@ -272,13 +272,144 @@ client = get_client_from_context(ctx)
 - Protects against authorization code interception
 
 ### Scopes
-- Required scopes: `openid`, `profile`
-- Additional scopes inferred from userinfo response
+- Base required scopes: `openid`, `profile`, `email`
+- App-specific scopes control access to individual Nextcloud apps
+- See [OAuth Scopes](#oauth-scopes) section for complete scope reference
 
 ### Token Validation
 - Every MCP request validates Bearer token
 - Cached for performance (1-hour default)
 - Calls userinfo endpoint for validation
+
+## OAuth Scopes
+
+The Nextcloud MCP Server implements fine-grained OAuth scopes for each Nextcloud app integration. Scopes control which tools are visible and accessible to users based on their granted permissions.
+
+### Scope-Based Access Control
+
+When using OAuth authentication:
+1. **Dynamic Discovery**: The server automatically discovers all required scopes from `@require_scopes` decorators on MCP tools
+2. **Tool Filtering**: Tools are dynamically filtered based on the user's token scopes - users only see tools they have permission to use
+3. **Per-Tool Enforcement**: Each tool validates required scopes before execution, returning a 403 error if insufficient scopes are present
+
+### Supported Scopes
+
+The server supports the following OAuth scopes, organized by Nextcloud app:
+
+#### Base OIDC Scopes
+- `openid` - OpenID Connect authentication (required)
+- `profile` - Access to user profile information (required)
+- `email` - Access to user email address (required)
+
+#### Notes App
+- `notes:read` - Read notes, search notes, get note attachments
+- `notes:write` - Create, update, append to, and delete notes
+
+#### Calendar App
+- `calendar:read` - List calendars, read events, search events
+- `calendar:write` - Create, update, and delete calendars and events
+
+#### Calendar Tasks (VTODO)
+- `todo:read` - List and read CalDAV tasks
+- `todo:write` - Create, update, and delete CalDAV tasks
+
+#### Contacts App
+- `contacts:read` - List address books and read contacts (CardDAV)
+- `contacts:write` - Create, update, and delete address books and contacts
+
+#### Cookbook App
+- `cookbook:read` - Read recipes, search recipes
+- `cookbook:write` - Create, update, and delete recipes
+
+#### Deck App
+- `deck:read` - List boards, stacks, cards, and labels
+- `deck:write` - Create, update, and delete boards, stacks, cards, and labels
+
+#### Tables App
+- `tables:read` - List tables and read rows
+- `tables:write` - Create, update, and delete rows in tables
+
+#### Files (WebDAV)
+- `files:read` - List files, read file contents, search files
+- `files:write` - Upload, update, move, copy, and delete files
+
+#### Sharing
+- `sharing:read` - List shares and read share information
+- `sharing:write` - Create, update, and delete shares
+
+### Scope Discovery
+
+The MCP server provides scope discovery through two mechanisms:
+
+#### 1. Protected Resource Metadata (PRM) Endpoint
+```bash
+# Query the PRM endpoint
+curl http://localhost:8000/.well-known/oauth-protected-resource/mcp
+
+# Response includes dynamically discovered scopes
+{
+  "resource": "http://localhost:8000/mcp",
+  "scopes_supported": ["openid", "profile", "email", "notes:read", ...],
+  "authorization_servers": ["https://nextcloud.example.com"],
+  "bearer_methods_supported": ["header"],
+  "resource_signing_alg_values_supported": ["RS256"]
+}
+```
+
+The `scopes_supported` field is **dynamically generated** from all registered MCP tools, ensuring it always reflects the actual available scopes.
+
+#### 2. Scope Enforcement via Decorators
+
+Tools are decorated with `@require_scopes()` to declare their required permissions:
+
+```python
+from nextcloud_mcp_server.auth import require_scopes
+
+@mcp.tool()
+@require_scopes("notes:read")
+async def nc_notes_get_note(ctx: Context, note_id: int):
+    """Get a specific note by ID"""
+    # Implementation
+```
+
+### Client Registration Scopes
+
+During OAuth client registration (dynamic or manual), clients request a set of scopes that define the **maximum allowed** scopes for that client. The actual per-tool enforcement is handled separately via decorators.
+
+**Environment Variable**:
+```bash
+NEXTCLOUD_OIDC_SCOPES="openid profile email notes:read notes:write calendar:read calendar:write ..."
+```
+
+**Default**: All supported scopes (recommended for development)
+
+> **Note**: Client registration scopes define the maximum permissions. The MCP server's PRM endpoint dynamically advertises the actual supported scopes based on registered tools.
+
+### Step-Up Authorization
+
+The server supports OAuth step-up authorization (RFC 8693). If a user attempts to use a tool requiring scopes they don't have:
+
+1. Tool returns `403 Forbidden` with `InsufficientScopeError`
+2. Response includes `WWW-Authenticate` header listing missing scopes:
+   ```
+   WWW-Authenticate: Bearer error="insufficient_scope", scope="notes:write", resource_metadata="..."
+   ```
+3. Client can re-authorize with additional scopes
+
+### Scope Validation
+
+All scope enforcement happens at two levels:
+
+1. **Tool Visibility**: During `list_tools` requests, only tools matching the user's token scopes are returned
+2. **Execution Time**: When calling a tool, the `@require_scopes` decorator validates the token has necessary scopes
+
+**Example**:
+```python
+# User token has: ["openid", "profile", "email", "notes:read"]
+# They will see: 4 read-only notes tools
+# They will NOT see: 3 write notes tools (notes:write required)
+# Attempting to call a write tool returns 403 Forbidden
+```
 
 ## Configuration
 

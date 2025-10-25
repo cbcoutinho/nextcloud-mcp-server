@@ -186,18 +186,20 @@ The server exposes Nextcloud functionality through MCP tools (for actions) and r
 
 The server provides 90+ tools across 8 Nextcloud apps. When using OAuth, tools are dynamically filtered based on your granted scopes.
 
+For a complete list of all supported OAuth scopes and their descriptions, see [OAuth Scopes Documentation](docs/oauth-architecture.md#oauth-scopes).
+
 #### Available Tool Categories
 
 | App | Tools | Read Scope | Write Scope | Operations |
 |-----|-------|-----------|-------------|------------|
-| **Notes** | 7 | `mcp:notes:read` | `mcp:notes:write` | Create, read, update, delete, search notes |
-| **Calendar** | 20+ | `mcp:calendar:read` | `mcp:calendar:write` | Events, todos (tasks), calendars, recurring events, attendees |
-| **Contacts** | 8 | `mcp:contacts:read` | `mcp:contacts:write` | Create, read, update, delete contacts and address books |
-| **Files (WebDAV)** | 12 | `mcp:files:read` | `mcp:files:write` | List, read, upload, delete, move files; **OCR/document processing** |
-| **Deck** | 15 | `mcp:deck:read` | `mcp:deck:write` | Boards, stacks, cards, labels, assignments |
-| **Cookbook** | 13 | `mcp:cookbook:read` | `mcp:cookbook:write` | Recipes, import from URLs, search, categories |
-| **Tables** | 5 | `mcp:tables:read` | `mcp:tables:write` | Row operations on Nextcloud Tables |
-| **Sharing** | 10+ | `mcp:sharing:read` | `mcp:sharing:write` | Create, manage, delete shares |
+| **Notes** | 7 | `notes:read` | `notes:write` | Create, read, update, delete, search notes |
+| **Calendar** | 20+ | `calendar:read` `todo:read`  | `calendar:write` `todo:write`   | Events, todos (tasks), calendars, recurring events, attendees |
+| **Contacts** | 8 | `contacts:read` | `contacts:write` | Create, read, update, delete contacts and address books |
+| **Files (WebDAV)** | 12 | `files:read` | `files:write` | List, read, upload, delete, move files; **OCR/document processing** |
+| **Deck** | 15 | `deck:read` | `deck:write` | Boards, stacks, cards, labels, assignments |
+| **Cookbook** | 13 | `cookbook:read` | `cookbook:write` | Recipes, import from URLs, search, categories |
+| **Tables** | 5 | `tables:read` | `tables:write` | Row operations on Nextcloud Tables |
+| **Sharing** | 10+ | `sharing:read` | `sharing:write` | Create, manage, delete shares |
 
 #### Document Processing (Optional)
 
@@ -257,7 +259,7 @@ See [env.sample](env.sample) for complete configuration options.
 - And 80+ more...
 
 > [!TIP]
-> **OAuth Scope Filtering**: When connecting via OAuth, MCP clients will only see tools for which you've granted access. For example, granting only `mcp:notes:read` and `mcp:notes:write` will show 7 Notes tools instead of all 90+ tools. See [OAuth Troubleshooting - Limited Scopes](docs/oauth-troubleshooting.md#limited-scopes---only-seeing-notes-tools) if you're only seeing a subset of tools.
+> **OAuth Scope Filtering**: When connecting via OAuth, MCP clients will only see tools for which you've granted access. For example, granting only `notes:read` and `notes:write` will show 7 Notes tools instead of all 90+ tools. See [OAuth Scopes Documentation](docs/oauth-architecture.md#oauth-scopes) for the complete scope reference, or [OAuth Troubleshooting - Limited Scopes](docs/oauth-troubleshooting.md#limited-scopes---only-seeing-notes-tools) if you're only seeing a subset of tools.
 >
 > **Known Issue**: Claude Code and some other MCP clients may only request/grant Notes scopes during initial connection. Track progress at [#234](https://github.com/cbcoutinho/nextcloud-mcp-server/issues/234).
 

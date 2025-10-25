@@ -18,6 +18,7 @@ from starlette.routing import Mount, Route
 from nextcloud_mcp_server.auth import (
     InsufficientScopeError,
     NextcloudTokenVerifier,
+    discover_all_scopes,
     get_access_token_scopes,
     has_required_scopes,
     is_jwt_token,
@@ -283,7 +284,15 @@ async def load_oauth_client_credentials(
         redirect_uris = [f"{mcp_server_url}/oauth/callback"]
 
         # Get scopes from environment or use defaults
-        # Default: all app-specific read/write scopes
+        # Note: Client registration happens BEFORE tools are registered, so we can't
+        # dynamically discover scopes here. These scopes define the "maximum allowed"
+        # scopes for this OAuth client. The actual per-tool scope enforcement happens
+        # via @require_scopes decorators, and the PRM endpoint advertises the actual
+        # supported scopes dynamically.
+        #
+        # IMPORTANT: Keep this list in sync with all @require_scopes decorators
+        # when adding new apps, or set NEXTCLOUD_OIDC_SCOPES environment variable
+        # to override.
         default_scopes = (
             "openid profile email "
             "notes:read notes:write "
@@ -644,7 +653,11 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     if oauth_enabled:
 
         def oauth_protected_resource_metadata(request):
-            """RFC 9728 Protected Resource Metadata endpoint."""
+            """RFC 9728 Protected Resource Metadata endpoint.
+
+            Dynamically discovers supported scopes from registered MCP tools.
+            This ensures the advertised scopes always match the actual tool requirements.
+            """
             mcp_server_url = os.getenv(
                 "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
             )
@@ -658,30 +671,14 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 # Fallback to NEXTCLOUD_HOST if PUBLIC_ISSUER_URL not set
                 public_issuer_url = os.getenv("NEXTCLOUD_HOST", "")
 
+            # Dynamically discover all scopes from registered tools
+            # This provides a single source of truth based on @require_scopes decorators
+            supported_scopes = discover_all_scopes(mcp)
+
             return JSONResponse(
                 {
                     "resource": resource_url,
-                    "scopes_supported": [
-                        "openid",
-                        "notes:read",
-                        "notes:write",
-                        "calendar:read",
-                        "calendar:write",
-                        "todo:read",
-                        "todo:write",
-                        "contacts:read",
-                        "contacts:write",
-                        "cookbook:read",
-                        "cookbook:write",
-                        "deck:read",
-                        "deck:write",
-                        "tables:read",
-                        "tables:write",
-                        "files:read",
-                        "files:write",
-                        "sharing:read",
-                        "sharing:write",
-                    ],
+                    "scopes_supported": supported_scopes,
                     "authorization_servers": [public_issuer_url],
                     "bearer_methods_supported": ["header"],
                     "resource_signing_alg_values_supported": ["RS256"],
@@ -832,9 +829,9 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 @click.option(
     "--oauth-scopes",
     envvar="NEXTCLOUD_OIDC_SCOPES",
-    default="openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write",
+    default="openid profile email notes:read notes:write calendar:read calendar:write todo:read todo:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write",
     show_default=True,
-    help="OAuth scopes to request (can also use NEXTCLOUD_OIDC_SCOPES env var)",
+    help="OAuth scopes to request during client registration. These define the maximum allowed scopes for the client. Note: Actual supported scopes are discovered dynamically from MCP tools at runtime. (can also use NEXTCLOUD_OIDC_SCOPES env var)",
 )
 @click.option(
     "--oauth-token-type",
