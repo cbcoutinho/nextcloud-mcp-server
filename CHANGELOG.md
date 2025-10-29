@@ -1,3 +1,10 @@
+## v0.22.4 (2025-10-29)
+
+### Fix
+
+- **helm**: Update helm version with release
+- **helm**: Update helm version with release
+
 ## v0.22.3 (2025-10-29)
 
 ### Fix
