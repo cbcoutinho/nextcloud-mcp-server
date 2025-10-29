@@ -42,8 +42,6 @@ spec:
           image: "{{ .Values.image.repository }}:{{ include "nextcloud-mcp-server.imageTag" . }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            - "--host"
-            - "0.0.0.0"
             - "--transport"
             - "{{ .Values.mcp.transport }}"
             {{- if eq .Values.auth.mode "oauth" }}
