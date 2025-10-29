@@ -1,3 +1,9 @@
+## v0.22.7 (2025-10-29)
+
+### Fix
+
+- **helm**: Remove image tag overide
+
 ## v0.22.6 (2025-10-29)
 
 ### Fix
