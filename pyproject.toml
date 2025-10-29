@@ -66,7 +66,11 @@ version_provider = "uv"
 update_changelog_on_bump = true
 major_version_zero = true
 version_files = [
-    "charts/nextcloud-mcp-server/Chart.yaml:appVersion"
+    "charts/nextcloud-mcp-server/Chart.yaml:appVersion",
+    "charts/nextcloud-mcp-server/Chart.yaml:version"
+]
+ignored_tag_formats = [
+    "nextcloud-mcp-server-*"
 ]
 
 [tool.ruff.lint]
