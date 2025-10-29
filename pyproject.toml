@@ -65,6 +65,9 @@ version_scheme = "pep440"
 version_provider = "uv"
 update_changelog_on_bump = true
 major_version_zero = true
+version_files = [
+    "charts/nextcloud-mcp-server/Chart.yaml:^appVersion:"
+]
 
 [tool.ruff.lint]
 extend-select = ["I"]
