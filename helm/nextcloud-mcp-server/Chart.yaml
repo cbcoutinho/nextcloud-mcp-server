@@ -1,0 +1,23 @@
+apiVersion: v2
+name: nextcloud-mcp-server
+description: A Helm chart for Nextcloud MCP Server - enables AI assistants to interact with Nextcloud
+type: application
+version: 0.1.0
+appVersion: "0.21.0"
+keywords:
+  - nextcloud
+  - mcp
+  - model-context-protocol
+  - llm
+  - ai
+  - claude
+  - webdav
+  - caldav
+  - carddav
+maintainers:
+  - name: Chris Coutinho
+    email: chris@coutinho.io
+home: https://github.com/cbcoutinho/nextcloud-mcp-server
+sources:
+  - https://github.com/cbcoutinho/nextcloud-mcp-server
+icon: https://raw.githubusercontent.com/nextcloud/server/master/core/img/logo/logo.svg
