@@ -46,10 +46,11 @@ spec:
             - "{{ .Values.mcp.transport }}"
             {{- if eq .Values.auth.mode "oauth" }}
             - "--oauth"
-            - "--port"
-            - "{{ .Values.auth.oauth.port }}"
             - "--oauth-token-type"
             - "{{ .Values.auth.oauth.tokenType }}"
+            {{- end }}
+            {{- with .Values.mcp.extraArgs }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
           ports:
             - name: http

@@ -172,8 +172,6 @@ securityContext:
 service:
   type: ClusterIP
   port: 8000
-  # For OAuth mode, you may want to expose both ports
-  oauthPort: 8001
   annotations: {}
 
 ingress:
