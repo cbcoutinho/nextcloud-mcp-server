@@ -102,10 +102,10 @@ Return the MCP server port
 {{- end }}
 
 {{/*
-Return the image tag
+Return the image tag (always uses chart appVersion)
 */}}
 {{- define "nextcloud-mcp-server.imageTag" -}}
-{{- .Values.image.tag | default .Chart.AppVersion }}
+{{- .Chart.AppVersion }}
 {{- end }}
 
 {{/*
