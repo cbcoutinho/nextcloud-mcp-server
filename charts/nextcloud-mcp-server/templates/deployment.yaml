@@ -1,0 +1,189 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nextcloud-mcp-server.fullname" . }}
+  labels:
+    {{- include "nextcloud-mcp-server.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "nextcloud-mcp-server.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "nextcloud-mcp-server.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "nextcloud-mcp-server.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ include "nextcloud-mcp-server.imageTag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--transport"
+            - "{{ .Values.mcp.transport }}"
+            {{- if eq .Values.auth.mode "oauth" }}
+            - "--oauth"
+            - "--port"
+            - "{{ .Values.auth.oauth.port }}"
+            - "--oauth-token-type"
+            - "{{ .Values.auth.oauth.tokenType }}"
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ include "nextcloud-mcp-server.port" . }}
+              protocol: TCP
+          env:
+            # Nextcloud connection
+            - name: NEXTCLOUD_HOST
+              value: {{ .Values.nextcloud.host | quote }}
+            {{- if eq .Values.auth.mode "basic" }}
+            # Basic auth mode
+            - name: NEXTCLOUD_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nextcloud-mcp-server.basicAuthSecretName" . }}
+                  key: {{ .Values.auth.basic.usernameKey }}
+            - name: NEXTCLOUD_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nextcloud-mcp-server.basicAuthSecretName" . }}
+                  key: {{ .Values.auth.basic.passwordKey }}
+            {{- else if eq .Values.auth.mode "oauth" }}
+            # OAuth mode
+            - name: NEXTCLOUD_MCP_SERVER_URL
+              value: {{ include "nextcloud-mcp-server.mcpServerUrl" . | quote }}
+            - name: NEXTCLOUD_PUBLIC_ISSUER_URL
+              value: {{ include "nextcloud-mcp-server.publicIssuerUrl" . | quote }}
+            - name: NEXTCLOUD_OIDC_CLIENT_STORAGE
+              value: "/app/.oauth/nextcloud_oauth_client.json"
+            - name: NEXTCLOUD_OIDC_SCOPES
+              value: {{ .Values.auth.oauth.scopes | quote }}
+            {{- if .Values.auth.oauth.clientId }}
+            - name: NEXTCLOUD_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nextcloud-mcp-server.oauthSecretName" . }}
+                  key: {{ .Values.auth.oauth.clientIdKey }}
+            - name: NEXTCLOUD_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nextcloud-mcp-server.oauthSecretName" . }}
+                  key: {{ .Values.auth.oauth.clientSecretKey }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.documentProcessing.enabled }}
+            # Document processing
+            - name: ENABLE_DOCUMENT_PROCESSING
+              value: {{ .Values.documentProcessing.enabled | quote }}
+            - name: DOCUMENT_PROCESSOR
+              value: {{ .Values.documentProcessing.defaultProcessor | quote }}
+            - name: PROGRESS_INTERVAL
+              value: {{ .Values.documentProcessing.progressInterval | quote }}
+            {{- if .Values.documentProcessing.unstructured.enabled }}
+            - name: ENABLE_UNSTRUCTURED
+              value: "true"
+            - name: UNSTRUCTURED_API_URL
+              value: {{ .Values.documentProcessing.unstructured.apiUrl | quote }}
+            - name: UNSTRUCTURED_TIMEOUT
+              value: {{ .Values.documentProcessing.unstructured.timeout | quote }}
+            - name: UNSTRUCTURED_STRATEGY
+              value: {{ .Values.documentProcessing.unstructured.strategy | quote }}
+            - name: UNSTRUCTURED_LANGUAGES
+              value: {{ .Values.documentProcessing.unstructured.languages | quote }}
+            {{- end }}
+            {{- if .Values.documentProcessing.tesseract.enabled }}
+            - name: ENABLE_TESSERACT
+              value: "true"
+            {{- if .Values.documentProcessing.tesseract.cmd }}
+            - name: TESSERACT_CMD
+              value: {{ .Values.documentProcessing.tesseract.cmd | quote }}
+            {{- end }}
+            - name: TESSERACT_LANG
+              value: {{ .Values.documentProcessing.tesseract.lang | quote }}
+            {{- end }}
+            {{- if .Values.documentProcessing.custom.enabled }}
+            - name: ENABLE_CUSTOM_PROCESSOR
+              value: "true"
+            - name: CUSTOM_PROCESSOR_NAME
+              value: {{ .Values.documentProcessing.custom.name | quote }}
+            - name: CUSTOM_PROCESSOR_URL
+              value: {{ .Values.documentProcessing.custom.url | quote }}
+            {{- if .Values.documentProcessing.custom.apiKey }}
+            - name: CUSTOM_PROCESSOR_API_KEY
+              value: {{ .Values.documentProcessing.custom.apiKey | quote }}
+            {{- end }}
+            - name: CUSTOM_PROCESSOR_TIMEOUT
+              value: {{ .Values.documentProcessing.custom.timeout | quote }}
+            - name: CUSTOM_PROCESSOR_TYPES
+              value: {{ .Values.documentProcessing.custom.types | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if and (eq .Values.auth.mode "oauth") .Values.auth.oauth.persistence.enabled }}
+            - name: oauth-storage
+              mountPath: /app/.oauth
+            {{- end }}
+            {{- with .Values.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if and (eq .Values.auth.mode "oauth") .Values.auth.oauth.persistence.enabled }}
+        - name: oauth-storage
+          persistentVolumeClaim:
+            claimName: {{ include "nextcloud-mcp-server.oauthPvcName" . }}
+        {{- end }}
+        {{- with .Values.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,268 @@
+# Default values for nextcloud-mcp-server
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Number of replicas
+replicaCount: 1
+
+image:
+  repository: ghcr.io/cbcoutinho/nextcloud-mcp-server
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Nextcloud connection settings
+nextcloud:
+  # URL of your Nextcloud instance (required)
+  # Example: https://cloud.example.com
+  host: ""
+
+  # MCP server URL for OAuth callbacks (OAuth mode only)
+  # If not specified, will be constructed from ingress.hosts[0] if ingress is enabled,
+  # or defaults to http://localhost:8000 (suitable for port-forward setups)
+  # Example: https://mcp.example.com
+  mcpServerUrl: ""
+
+  # Public issuer URL for OAuth (OAuth mode only)
+  # If not specified, defaults to nextcloud.host
+  # Only set this if your Nextcloud is accessible at a different URL for OAuth
+  # Example: https://cloud.example.com
+  publicIssuerUrl: ""
+
+# Authentication configuration
+# Choose either basic auth OR oauth (not both)
+auth:
+  # Authentication mode: "basic" or "oauth"
+  # basic: Uses username/password (recommended for most users)
+  # oauth: Uses OAuth2/OIDC (experimental, requires patches)
+  mode: basic
+
+  # Basic authentication settings
+  basic:
+    # Nextcloud username (ignored if existingSecret is set)
+    username: ""
+    # Nextcloud password or app password (recommended) (ignored if existingSecret is set)
+    password: ""
+    # Use existing secret instead of creating one
+    # If set, username and password above are ignored
+    # Secret must contain keys specified in usernameKey and passwordKey
+    # Example:
+    #   kubectl create secret generic my-nextcloud-creds \
+    #     --from-literal=username=myuser \
+    #     --from-literal=password=mypassword
+    existingSecret: ""
+    # Keys in the existing secret
+    usernameKey: "username"
+    passwordKey: "password"
+
+  # OAuth2/OIDC settings (experimental)
+  oauth:
+    # Port for OAuth MCP server (default: 8001)
+    port: 8001
+    # OAuth token type: "jwt" or "opaque"
+    tokenType: "jwt"
+    # Pre-registered OAuth client ID (optional, ignored if existingSecret is set)
+    # If not provided and no existingSecret, will use Dynamic Client Registration (DCR)
+    clientId: ""
+    # Pre-registered OAuth client secret (optional, ignored if existingSecret is set)
+    clientSecret: ""
+    # OAuth scopes to request (space-separated)
+    scopes: "openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write"
+    # Use existing secret for OAuth client credentials
+    # If set, clientId and clientSecret above are ignored
+    # Secret must contain keys specified in clientIdKey and clientSecretKey
+    # Example:
+    #   kubectl create secret generic my-oauth-creds \
+    #     --from-literal=clientId=my-client-id \
+    #     --from-literal=clientSecret=my-client-secret
+    existingSecret: ""
+    # Keys in the existing secret
+    clientIdKey: "clientId"
+    clientSecretKey: "clientSecret"
+    # Persistent storage for OAuth client credentials
+    persistence:
+      enabled: true
+      # Storage class (leave empty for default)
+      storageClass: ""
+      accessMode: ReadWriteOnce
+      size: 100Mi
+      # Use existing PVC
+      existingClaim: ""
+
+# MCP server configuration
+mcp:
+  # Transport mode (default: streamable-http for SSE)
+  transport: "streamable-http"
+  # Port for basic auth mode
+  port: 8000
+
+# Document processing configuration (optional)
+documentProcessing:
+  # Enable document processing (PDF, DOCX, images, etc.)
+  enabled: false
+  # Default processor: unstructured, tesseract, or custom
+  defaultProcessor: "unstructured"
+  # Progress reporting interval in seconds
+  progressInterval: 10
+
+  # Unstructured.io processor
+  unstructured:
+    enabled: false
+    # Unstructured API endpoint
+    apiUrl: "http://unstructured:8000"
+    # Request timeout in seconds
+    timeout: 120
+    # Parsing strategy: auto, fast, or hi_res
+    strategy: "auto"
+    # OCR languages (comma-separated ISO 639-3 codes)
+    languages: "eng,deu"
+
+  # Tesseract processor (local OCR)
+  tesseract:
+    enabled: false
+    # Path to tesseract executable (optional, auto-detected if in PATH)
+    cmd: ""
+    # OCR language (e.g., eng, deu, eng+deu for multiple)
+    lang: "eng"
+
+  # Custom processor
+  custom:
+    enabled: false
+    # Unique name for your processor
+    name: "my_ocr"
+    # Custom processor API endpoint
+    url: ""
+    # Optional API key for authentication
+    apiKey: ""
+    # Request timeout in seconds
+    timeout: 60
+    # Comma-separated MIME types your processor supports
+    types: "application/pdf,image/jpeg,image/png"
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Automatically mount a ServiceAccount's API credentials?
+  automount: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 2000
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 8000
+  # For OAuth mode, you may want to expose both ports
+  oauthPort: 8001
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: mcp.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: nextcloud-mcp-tls
+  #    hosts:
+  #      - mcp.example.com
+
+resources:
+  # We recommend setting resource requests and limits
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Liveness probe configuration
+# Checks if the application process is running
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: http
+    scheme: HTTP
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Readiness probe configuration
+# Checks if the application is ready to serve traffic
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: http
+    scheme: HTTP
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Autoscaling configuration
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+# Additional volumes on the output Deployment definition.
+volumes: []
+# - name: foo
+#   secret:
+#     secretName: mysecret
+#     optional: false
+
+# Additional volumeMounts on the output Deployment definition.
+volumeMounts: []
+# - name: foo
+#   mountPath: "/etc/foo"
+#   readOnly: true
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Init containers
+initContainers: []
+
+# Additional environment variables
+extraEnv: []
+# - name: CUSTOM_VAR
+#   value: "custom_value"
+
+# Additional environment variables from ConfigMaps or Secrets
+extraEnvFrom: []
+# - configMapRef:
+#     name: my-configmap
+# - secretRef:
+#     name: my-secret
