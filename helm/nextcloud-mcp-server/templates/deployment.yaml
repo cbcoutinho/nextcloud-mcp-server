@@ -76,9 +76,9 @@ spec:
             {{- else if eq .Values.auth.mode "oauth" }}
             # OAuth mode
             - name: NEXTCLOUD_MCP_SERVER_URL
-              value: {{ .Values.nextcloud.mcpServerUrl | quote }}
+              value: {{ include "nextcloud-mcp-server.mcpServerUrl" . | quote }}
             - name: NEXTCLOUD_PUBLIC_ISSUER_URL
-              value: {{ .Values.nextcloud.publicIssuerUrl | quote }}
+              value: {{ include "nextcloud-mcp-server.publicIssuerUrl" . | quote }}
             - name: NEXTCLOUD_OIDC_CLIENT_STORAGE
               value: "/app/.oauth/nextcloud_oauth_client.json"
             - name: NEXTCLOUD_OIDC_SCOPES

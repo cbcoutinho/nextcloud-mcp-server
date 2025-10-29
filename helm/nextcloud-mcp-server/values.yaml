@@ -21,11 +21,15 @@ nextcloud:
   # Example: https://cloud.example.com
   host: ""
 
-  # MCP server URL for OAuth callbacks (only needed for OAuth mode)
+  # MCP server URL for OAuth callbacks (OAuth mode only)
+  # If not specified, will be constructed from ingress.hosts[0] if ingress is enabled,
+  # or defaults to http://localhost:8000 (suitable for port-forward setups)
   # Example: https://mcp.example.com
   mcpServerUrl: ""
 
-  # Public issuer URL for OAuth (only needed for OAuth mode)
+  # Public issuer URL for OAuth (OAuth mode only)
+  # If not specified, defaults to nextcloud.host
+  # Only set this if your Nextcloud is accessible at a different URL for OAuth
   # Example: https://cloud.example.com
   publicIssuerUrl: ""
 
@@ -39,11 +43,17 @@ auth:
 
   # Basic authentication settings
   basic:
-    # Nextcloud username
+    # Nextcloud username (ignored if existingSecret is set)
     username: ""
-    # Nextcloud password or app password (recommended)
+    # Nextcloud password or app password (recommended) (ignored if existingSecret is set)
     password: ""
     # Use existing secret instead of creating one
+    # If set, username and password above are ignored
+    # Secret must contain keys specified in usernameKey and passwordKey
+    # Example:
+    #   kubectl create secret generic my-nextcloud-creds \
+    #     --from-literal=username=myuser \
+    #     --from-literal=password=mypassword
     existingSecret: ""
     # Keys in the existing secret
     usernameKey: "username"
@@ -55,13 +65,20 @@ auth:
     port: 8001
     # OAuth token type: "jwt" or "opaque"
     tokenType: "jwt"
-    # Pre-registered OAuth client ID (optional, will auto-register if not provided)
+    # Pre-registered OAuth client ID (optional, ignored if existingSecret is set)
+    # If not provided and no existingSecret, will use Dynamic Client Registration (DCR)
     clientId: ""
-    # Pre-registered OAuth client secret (optional)
+    # Pre-registered OAuth client secret (optional, ignored if existingSecret is set)
     clientSecret: ""
     # OAuth scopes to request (space-separated)
     scopes: "openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write"
-    # Use existing secret for OAuth credentials
+    # Use existing secret for OAuth client credentials
+    # If set, clientId and clientSecret above are ignored
+    # Secret must contain keys specified in clientIdKey and clientSecretKey
+    # Example:
+    #   kubectl create secret generic my-oauth-creds \
+    #     --from-literal=clientId=my-client-id \
+    #     --from-literal=clientSecret=my-client-secret
     existingSecret: ""
     # Keys in the existing secret
     clientIdKey: "clientId"

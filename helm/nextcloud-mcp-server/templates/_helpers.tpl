@@ -111,3 +111,36 @@ Return the image tag
 {{- define "nextcloud-mcp-server.imageTag" -}}
 {{- .Values.image.tag | default .Chart.AppVersion }}
 {{- end }}
+
+{{/*
+Return the public issuer URL for OAuth
+Defaults to nextcloud.host if not specified
+*/}}
+{{- define "nextcloud-mcp-server.publicIssuerUrl" -}}
+{{- if .Values.nextcloud.publicIssuerUrl }}
+{{- .Values.nextcloud.publicIssuerUrl }}
+{{- else }}
+{{- .Values.nextcloud.host }}
+{{- end }}
+{{- end }}
+
+{{/*
+Return the MCP server URL for OAuth callbacks
+If not specified:
+  - Uses ingress host if ingress is enabled
+  - Otherwise defaults to http://localhost:8000 (for port-forward setups)
+*/}}
+{{- define "nextcloud-mcp-server.mcpServerUrl" -}}
+{{- if .Values.nextcloud.mcpServerUrl }}
+{{- .Values.nextcloud.mcpServerUrl }}
+{{- else if .Values.ingress.enabled }}
+{{- $host := index .Values.ingress.hosts 0 }}
+{{- if .Values.ingress.tls }}
+{{- printf "https://%s" $host.host }}
+{{- else }}
+{{- printf "http://%s" $host.host }}
+{{- end }}
+{{- else }}
+{{- printf "http://localhost:%d" (int .Values.mcp.port) }}
+{{- end }}
+{{- end }}

@@ -31,15 +31,26 @@ Your Nextcloud MCP Server has been deployed in {{ .Values.auth.mode }} authentic
 {{- if eq .Values.auth.mode "basic" }}
 
 3. Basic Authentication Mode:
+   {{- if .Values.auth.basic.existingSecret }}
+   - Credentials: (using existing secret {{ .Values.auth.basic.existingSecret }})
+   {{- else }}
    - Username: {{ .Values.auth.basic.username }}
    - Password: (stored in secret {{ include "nextcloud-mcp-server.basicAuthSecretName" . }})
+   {{- end }}
    - Connected to: {{ .Values.nextcloud.host }}
 {{- else if eq .Values.auth.mode "oauth" }}
 
 3. OAuth Authentication Mode:
-   - Server URL: {{ .Values.nextcloud.mcpServerUrl }}
-   - Issuer URL: {{ .Values.nextcloud.publicIssuerUrl }}
+   - Server URL: {{ include "nextcloud-mcp-server.mcpServerUrl" . }}
+   - Issuer URL: {{ include "nextcloud-mcp-server.publicIssuerUrl" . }}
    - Connected to: {{ .Values.nextcloud.host }}
+   {{- if .Values.auth.oauth.existingSecret }}
+   - Using existing OAuth client secret: {{ .Values.auth.oauth.existingSecret }}
+   {{- else if and .Values.auth.oauth.clientId .Values.auth.oauth.clientSecret }}
+   - Using pre-registered OAuth client
+   {{- else }}
+   - Using Dynamic Client Registration (DCR)
+   {{- end }}
    {{- if .Values.auth.oauth.persistence.enabled }}
    - OAuth client credentials are persisted in PVC: {{ include "nextcloud-mcp-server.oauthPvcName" . }}
    {{- end }}

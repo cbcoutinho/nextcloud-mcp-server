@@ -93,9 +93,13 @@ ingress:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `nextcloud.host` | URL of your Nextcloud instance | `""` |
-| `nextcloud.mcpServerUrl` | MCP server URL for OAuth callbacks (OAuth only) | `""` |
-| `nextcloud.publicIssuerUrl` | Public issuer URL for OAuth (OAuth only) | `""` |
+| `nextcloud.host` | URL of your Nextcloud instance (required) | `""` |
+| `nextcloud.mcpServerUrl` | MCP server URL for OAuth callbacks (OAuth only, optional) | Smart default* |
+| `nextcloud.publicIssuerUrl` | Public issuer URL for OAuth (OAuth only, optional) | Smart default** |
+
+**Smart Defaults:**
+- `*mcpServerUrl`: If not set, automatically uses ingress host (if enabled) or `http://localhost:8000` (for port-forward setups)
+- `**publicIssuerUrl`: If not set, automatically defaults to `nextcloud.host` (which works when both clients and MCP server access Nextcloud at the same URL)
 
 #### Authentication
 
@@ -203,6 +207,8 @@ resources:
 
 ### Example 2: Using Existing Secrets
 
+#### Basic Auth with Existing Secret
+
 Create a secret manually:
 
 ```bash
@@ -214,6 +220,9 @@ kubectl create secret generic nextcloud-credentials \
 Then reference it in your values:
 
 ```yaml
+nextcloud:
+  host: https://cloud.example.com
+
 auth:
   mode: basic
   basic:
@@ -222,17 +231,61 @@ auth:
     passwordKey: password
 ```
 
-### Example 3: OAuth with Document Processing
+#### OAuth with Existing Secret (Pre-registered Client)
+
+If you have a pre-registered OAuth client:
+
+```bash
+kubectl create secret generic nextcloud-oauth-creds \
+  --from-literal=clientId=my-oauth-client-id \
+  --from-literal=clientSecret=my-oauth-client-secret
+```
+
+Then reference it in your values:
 
 ```yaml
 nextcloud:
   host: https://cloud.example.com
-  mcpServerUrl: https://mcp.example.com
-  publicIssuerUrl: https://cloud.example.com
+  # mcpServerUrl and publicIssuerUrl are optional!
+  # If not set, mcpServerUrl defaults to ingress host or localhost
+  # publicIssuerUrl defaults to nextcloud.host
 
 auth:
   mode: oauth
   oauth:
+    existingSecret: nextcloud-oauth-creds
+    clientIdKey: clientId
+    clientSecretKey: clientSecret
+    persistence:
+      enabled: true
+
+ingress:
+  enabled: true
+  hosts:
+    - host: mcp.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: mcp-tls
+      hosts:
+        - mcp.example.com
+```
+
+### Example 3: OAuth with Document Processing and Dynamic Client Registration
+
+This example shows OAuth without pre-registered credentials (using DCR) and optional URL values:
+
+```yaml
+nextcloud:
+  host: https://cloud.example.com
+  # mcpServerUrl will automatically use ingress host (https://mcp.example.com)
+  # publicIssuerUrl will automatically default to nextcloud.host
+
+auth:
+  mode: oauth
+  oauth:
+    # No clientId/clientSecret - will use Dynamic Client Registration!
     persistence:
       enabled: true
       storageClass: fast-ssd
