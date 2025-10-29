@@ -1,3 +1,9 @@
+## v0.22.5 (2025-10-29)
+
+### Fix
+
+- Update helm chart variables
+
 ## v0.22.4 (2025-10-29)
 
 ### Fix
