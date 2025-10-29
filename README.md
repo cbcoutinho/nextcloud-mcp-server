@@ -72,9 +72,17 @@ uv sync
 
 # Or using Docker
 docker pull ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
+
+# Or deploy to Kubernetes with Helm
+helm repo add nextcloud-mcp https://cbcoutinho.github.io/nextcloud-mcp-server
+helm repo update
+helm install nextcloud-mcp nextcloud-mcp/nextcloud-mcp-server \
+  --set nextcloud.host=https://cloud.example.com \
+  --set auth.basic.username=myuser \
+  --set auth.basic.password=mypassword
 ```
 
-See [Installation Guide](docs/installation.md) for detailed instructions.
+See [Installation Guide](docs/installation.md) for detailed instructions, or [Helm Chart README](charts/nextcloud-mcp-server/README.md) for Kubernetes deployment.
 
 ### 2. Configure
 
