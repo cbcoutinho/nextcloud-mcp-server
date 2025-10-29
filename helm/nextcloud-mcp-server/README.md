@@ -157,6 +157,21 @@ ingress:
 | `autoscaling.maxReplicas` | Maximum replicas | `10` |
 | `autoscaling.targetCPUUtilizationPercentage` | Target CPU % | `80` |
 
+#### Health Probes
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `livenessProbe.httpGet.path` | Liveness probe endpoint | `/health/live` |
+| `livenessProbe.initialDelaySeconds` | Initial delay for liveness | `30` |
+| `livenessProbe.periodSeconds` | Check interval for liveness | `10` |
+| `readinessProbe.httpGet.path` | Readiness probe endpoint | `/health/ready` |
+| `readinessProbe.initialDelaySeconds` | Initial delay for readiness | `10` |
+| `readinessProbe.periodSeconds` | Check interval for readiness | `5` |
+
+The application exposes HTTP health check endpoints:
+- `/health/live` - Liveness probe (checks if application is running)
+- `/health/ready` - Readiness probe (checks if application is ready to serve traffic)
+
 #### Document Processing (Optional)
 
 | Parameter | Description | Default |
@@ -382,14 +397,41 @@ kubectl get pods -l app.kubernetes.io/name=nextcloud-mcp-server
 kubectl logs -l app.kubernetes.io/name=nextcloud-mcp-server --tail=100 -f
 ```
 
-### Test connectivity to Nextcloud
+### Check health endpoints
+
+The application exposes health check endpoints for monitoring:
 
 ```bash
 # Port forward to the service
 kubectl port-forward svc/nextcloud-mcp 8000:8000
 
-# In another terminal, test the connection
-curl http://localhost:8000/
+# Check liveness (if app is running)
+curl http://localhost:8000/health/live
+
+# Check readiness (if app is ready to serve traffic)
+curl http://localhost:8000/health/ready
+```
+
+**Example responses:**
+
+Liveness (always returns 200 if running):
+```json
+{
+  "status": "alive",
+  "mode": "basic"
+}
+```
+
+Readiness (returns 200 if ready, 503 if not ready):
+```json
+{
+  "status": "ready",
+  "checks": {
+    "nextcloud_configured": "ok",
+    "auth_mode": "basic",
+    "auth_configured": "ok"
+  }
+}
 ```
 
 ### Common Issues

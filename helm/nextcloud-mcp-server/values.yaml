@@ -202,18 +202,24 @@ resources:
     memory: 128Mi
 
 # Liveness probe configuration
+# Checks if the application process is running
 livenessProbe:
-  tcpSocket:
+  httpGet:
+    path: /health/live
     port: http
+    scheme: HTTP
   initialDelaySeconds: 30
   periodSeconds: 10
   timeoutSeconds: 5
   failureThreshold: 3
 
 # Readiness probe configuration
+# Checks if the application is ready to serve traffic
 readinessProbe:
-  tcpSocket:
+  httpGet:
+    path: /health/ready
     port: http
+    scheme: HTTP
   initialDelaySeconds: 10
   periodSeconds: 5
   timeoutSeconds: 3

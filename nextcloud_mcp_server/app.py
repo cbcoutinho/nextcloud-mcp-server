@@ -648,8 +648,71 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 await stack.enter_async_context(mcp.session_manager.run())
                 yield
 
+    # Health check endpoints for Kubernetes probes
+    def health_live(request):
+        """Liveness probe endpoint.
+
+        Returns 200 OK if the application process is running.
+        This is a simple check that doesn't verify external dependencies.
+        """
+        return JSONResponse(
+            {
+                "status": "alive",
+                "mode": "oauth" if oauth_enabled else "basic",
+            }
+        )
+
+    async def health_ready(request):
+        """Readiness probe endpoint.
+
+        Returns 200 OK if the application is ready to serve traffic.
+        Checks that required configuration is present.
+        """
+        checks = {}
+        is_ready = True
+
+        # Check Nextcloud host configuration
+        nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+        if nextcloud_host:
+            checks["nextcloud_configured"] = "ok"
+        else:
+            checks["nextcloud_configured"] = "error: NEXTCLOUD_HOST not set"
+            is_ready = False
+
+        # Check authentication configuration
+        if oauth_enabled:
+            # OAuth mode - just verify we got this far (token_verifier initialized in lifespan)
+            checks["auth_mode"] = "oauth"
+            checks["auth_configured"] = "ok"
+        else:
+            # BasicAuth mode - verify credentials are set
+            username = os.getenv("NEXTCLOUD_USERNAME")
+            password = os.getenv("NEXTCLOUD_PASSWORD")
+            if username and password:
+                checks["auth_mode"] = "basic"
+                checks["auth_configured"] = "ok"
+            else:
+                checks["auth_mode"] = "basic"
+                checks["auth_configured"] = "error: credentials not set"
+                is_ready = False
+
+        status_code = 200 if is_ready else 503
+        return JSONResponse(
+            {
+                "status": "ready" if is_ready else "not_ready",
+                "checks": checks,
+            },
+            status_code=status_code,
+        )
+
     # Add Protected Resource Metadata (PRM) endpoint for OAuth mode
     routes = []
+
+    # Add health check routes (available in both OAuth and BasicAuth modes)
+    routes.append(Route("/health/live", health_live, methods=["GET"]))
+    routes.append(Route("/health/ready", health_ready, methods=["GET"]))
+    logger.info("Health check endpoints enabled: /health/live, /health/ready")
+
     if oauth_enabled:
 
         def oauth_protected_resource_metadata(request):
