@@ -21,11 +21,3 @@
 .idea/
 *.tmproj
 .vscode/
-# CI/CD
-.github/
-.gitlab-ci.yml
-.circleci/
-# Documentation
-*.md
-!Chart.yaml
-!values.yaml
