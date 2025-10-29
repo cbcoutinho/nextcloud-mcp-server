@@ -9,7 +9,7 @@ image:
   repository: ghcr.io/cbcoutinho/nextcloud-mcp-server
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: ""
+  tag: "@sha256:59f8a9e12e879094936362417b95a74377029f49f8fe3985606a7f45fe7c31f9"
 
 imagePullSecrets: []
 nameOverride: ""
