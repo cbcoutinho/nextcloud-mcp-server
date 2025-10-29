@@ -941,7 +941,7 @@ wheels = [
 
 [[package]]
 name = "nextcloud-mcp-server"
-version = "0.22.0"
+version = "0.22.1"
 source = { editable = "." }
 dependencies = [
     { name = "caldav" },
