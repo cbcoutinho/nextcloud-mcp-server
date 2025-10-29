@@ -114,6 +114,26 @@ ingress:
 | `auth.oauth.persistence.enabled` | Enable persistent storage for OAuth | `true` |
 | `auth.oauth.persistence.size` | Size of OAuth storage PVC | `100Mi` |
 
+#### MCP Server Configuration
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `mcp.transport` | Transport mode | `streamable-http` |
+| `mcp.port` | Server port (used by both auth modes) | `8000` |
+| `mcp.extraArgs` | Additional command-line arguments | `[]` |
+
+The `extraArgs` parameter allows you to pass additional command-line arguments to the MCP server. This is useful for enabling debug logging, enabling specific apps, or other runtime configuration.
+
+**Example:**
+```yaml
+mcp:
+  extraArgs:
+    - "--log-level"
+    - "debug"
+    - "--enable-app"
+    - "notes"
+```
+
 #### Image Configuration
 
 | Parameter | Description | Default |
@@ -137,7 +157,6 @@ ingress:
 |-----------|-------------|---------|
 | `service.type` | Service type | `ClusterIP` |
 | `service.port` | Service port | `8000` |
-| `service.oauthPort` | OAuth service port | `8001` |
 
 #### Ingress
 
