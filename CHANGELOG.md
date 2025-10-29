@@ -1,3 +1,10 @@
+## v0.22.0 (2025-10-29)
+
+### Feat
+
+- **server**: Add /live & /health endpoints
+- Initialize helm chart
+
 ## v0.21.0 (2025-10-25)
 
 ### Feat
