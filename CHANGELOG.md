@@ -1,3 +1,9 @@
+## v0.22.6 (2025-10-29)
+
+### Fix
+
+- **helm**: Update helm chart with extraArgs
+
 ## v0.22.5 (2025-10-29)
 
 ### Fix
