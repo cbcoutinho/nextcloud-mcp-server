@@ -1,357 +1,470 @@
-# Nextcloud MCP Server
+# Nextcloud MCP Server Helm Chart
 
-[![Docker Image](https://img.shields.io/badge/docker-ghcr.io/cbcoutinho/nextcloud--mcp--server-blue)](https://github.com/cbcoutinho/nextcloud-mcp-server/pkgs/container/nextcloud-mcp-server)
+This Helm chart deploys the Nextcloud MCP (Model Context Protocol) Server on a Kubernetes cluster, enabling AI assistants to interact with your Nextcloud instance.
 
-**Enable AI assistants to interact with your Nextcloud instance.**
+## Prerequisites
 
-The Nextcloud MCP (Model Context Protocol) server allows Large Language Models like Claude, GPT, and Gemini to interact with your Nextcloud data through a secure API. Create notes, manage calendars, organize contacts, work with files, and more - all through natural language.
+- Kubernetes 1.19+
+- Helm 3.0+
+- A running Nextcloud instance (accessible from the Kubernetes cluster)
+- Nextcloud credentials (username/password for basic auth OR OAuth client for OAuth mode)
 
-> [!NOTE]
-> **Nextcloud has two ways to enable AI access:** Nextcloud provides [Context Agent](https://github.com/nextcloud/context_agent), an AI agent backend that powers the [Assistant](https://github.com/nextcloud/assistant) app and allows AI to interact with Nextcloud apps like Calendar, Talk, and Contacts. Context Agent runs as an ExApp inside Nextcloud and also _[exposes an MCP server](https://docs.nextcloud.com/server/stable/admin_manual/ai/app_context_agent.html#using-nextcloud-mcp-server)_ for external MCP clients.
->
-> This project (Nextcloud MCP Server) is a **dedicated standalone MCP server** designed specifically for external MCP clients like Claude Code and IDEs, with deep CRUD operations and OAuth support. It does not require any additional AI-features to be enabled in Nextcloud beyond the apps that you intend to interact with.
+## Installation
 
-### High-level Comparison: Nextcloud MCP Server vs. Nextcloud AI Stack
-
-| Aspect | **Nextcloud MCP Server**<br/>(This Project) | **Nextcloud AI Stack**<br/>(Assistant + Context Agent) |
-|--------|---------------------------------------------|--------------------------------------------------------|
-| **Purpose** | External MCP client access to Nextcloud | AI assistance within Nextcloud UI |
-| **Deployment** | Standalone (Docker, VM, K8s) | Inside Nextcloud (ExApp via AppAPI) |
-| **Primary Users** | Claude Code, IDEs, external developers | Nextcloud end users via Assistant app |
-| **Authentication** | OAuth2/OIDC or Basic Auth | Session-based (integrated) |
-| **Notes Support** | ✅ Full CRUD + search (7 tools) | ❌ Not implemented |
-| **Calendar** | ✅ Full CalDAV + tasks (20+ tools) | ✅ Events, free/busy, tasks (4 tools) |
-| **Contacts** | ✅ Full CardDAV (8 tools) | ✅ Find person, current user (2 tools) |
-| **Files (WebDAV)** | ✅ Full filesystem access (12 tools) | ✅ Read, folder tree, sharing (3 tools) |
-| **Document Processing** | ✅ OCR with progress (PDF, DOCX, images) | ❌ Not implemented |
-| **Deck** | ✅ Full project management (15 tools) | ✅ Basic board/card ops (2 tools) |
-| **Tables** | ✅ Row operations (5 tools) | ❌ Not implemented |
-| **Cookbook** | ✅ Full recipe management (13 tools) | ❌ Not implemented |
-| **Talk** | ❌ Not implemented | ✅ Messages, conversations (4 tools) |
-| **Mail** | ❌ Not implemented | ✅ Send email (2 tools) |
-| **AI Features** | ❌ Not implemented | ✅ Image gen, transcription, doc gen (4 tools) |
-| **Web/Maps** | ❌ Not implemented | ✅ Search, weather, transit (5 tools) |
-| **MCP Resources** | ✅ Structured data URIs | ❌ Not supported |
-| **External MCP** | ❌ Pure server | ✅ Consumes external MCP servers |
-| **Safety Model** | Client-controlled | Built-in safe/dangerous distinction |
-| **Best For** | • Deep CRUD operations<br/>• External integrations<br/>• OAuth security<br/>• IDE/editor integration | • AI-driven actions in Nextcloud UI<br/>• Multi-service orchestration<br/>• User task automation<br/>• MCP aggregation hub |
-
-See our [detailed comparison](docs/comparison-context-agent.md) for architecture diagrams, workflow examples, and guidance on when to use each approach.
-
-Want to see another Nextcloud app supported? [Open an issue](https://github.com/cbcoutinho/nextcloud-mcp-server/issues) or contribute a pull request!
-
-### Authentication
-
-| Mode | Security | Best For |
-|------|----------|----------|
-| **OAuth2/OIDC** ⚠️ **Experimental** | 🔒 High | Testing, evaluation (requires patch for app-specific APIs) |
-| **Basic Auth** ✅ | Lower | Development, testing, production |
-
-> [!IMPORTANT]
-> **OAuth is experimental** and requires a manual patch to the `user_oidc` app for full functionality:
-> - **Required patch**: `user_oidc` app needs modifications for Bearer token support ([issue #1221](https://github.com/nextcloud/user_oidc/issues/1221))
-> - **Impact**: Without the patch, most app-specific APIs (Notes, Calendar, Contacts, Deck, etc.) will fail with 401 errors
-> - **What works without patches**: OAuth flow, PKCE support (with `oidc` v1.10.0+), OCS APIs
-> - **Production use**: Wait for upstream patch to be merged into official releases
->
-> See [OAuth Upstream Status](docs/oauth-upstream-status.md) for detailed information on required patches and workarounds.
-
-OAuth2/OIDC provides secure, per-user authentication with access tokens. See [Authentication Guide](docs/authentication.md) for details.
-
-## Quick Start
-
-### 1. Install
+### Quick Start with Basic Authentication
 
 ```bash
-# Clone the repository
-git clone https://github.com/cbcoutinho/nextcloud-mcp-server.git
-cd nextcloud-mcp-server
-
-# Install with uv (recommended)
-uv sync
-
-# Or using Docker
-docker pull ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
+# Install with basic auth (recommended for most users)
+helm install nextcloud-mcp ./helm/nextcloud-mcp-server \
+  --set nextcloud.host=https://cloud.example.com \
+  --set auth.basic.username=myuser \
+  --set auth.basic.password=mypassword
 ```
 
-See [Installation Guide](docs/installation.md) for detailed instructions.
+### Using a values file
 
-### 2. Configure
+Create a `custom-values.yaml` file:
 
-Create a `.env` file:
+```yaml
+nextcloud:
+  host: https://cloud.example.com
+
+auth:
+  mode: basic
+  basic:
+    username: myuser
+    password: mypassword
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+```
+
+Install with your custom values:
 
 ```bash
-# Copy the sample
-cp env.sample .env
+helm install nextcloud-mcp ./helm/nextcloud-mcp-server -f custom-values.yaml
 ```
 
-**For Basic Auth (recommended for most users):**
-```dotenv
-NEXTCLOUD_HOST=https://your.nextcloud.instance.com
-NEXTCLOUD_USERNAME=your_username
-NEXTCLOUD_PASSWORD=your_app_password
+### OAuth Authentication Mode (Experimental)
+
+**Warning:** OAuth mode is experimental and requires patches to the Nextcloud `user_oidc` app. See the [Authentication Guide](https://github.com/cbcoutinho/nextcloud-mcp-server#authentication) for details.
+
+```yaml
+nextcloud:
+  host: https://cloud.example.com
+  mcpServerUrl: https://mcp.example.com
+  publicIssuerUrl: https://cloud.example.com
+
+auth:
+  mode: oauth
+  oauth:
+    # Optional: provide pre-registered client credentials
+    # If not provided, will use Dynamic Client Registration
+    clientId: "your-client-id"
+    clientSecret: "your-client-secret"
+    persistence:
+      enabled: true
+      size: 100Mi
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: mcp.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: nextcloud-mcp-tls
+      hosts:
+        - mcp.example.com
 ```
 
-**For OAuth (experimental - requires patches):**
-```dotenv
-NEXTCLOUD_HOST=https://your.nextcloud.instance.com
-```
+## Configuration
 
-See [Configuration Guide](docs/configuration.md) for all options.
+### Key Configuration Parameters
 
-### 3. Set Up Authentication
+#### Nextcloud Connection
 
-**Basic Auth Setup (recommended):**
-1. Create an app password in Nextcloud (Settings → Security → Devices & sessions)
-2. Add credentials to `.env` file
-3. Start the server
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `nextcloud.host` | URL of your Nextcloud instance (required) | `""` |
+| `nextcloud.mcpServerUrl` | MCP server URL for OAuth callbacks (OAuth only, optional) | Smart default* |
+| `nextcloud.publicIssuerUrl` | Public issuer URL for OAuth (OAuth only, optional) | Smart default** |
 
-**OAuth Setup (experimental):**
-1. Install Nextcloud OIDC apps (`oidc` v1.10.0+ + `user_oidc`)
-2. **Apply required patch** to `user_oidc` app for Bearer token support (see [OAuth Upstream Status](docs/oauth-upstream-status.md))
-3. Enable dynamic client registration or create an OIDC client with id & secret
-4. Configure Bearer token validation in `user_oidc`
-5. Start the server
+**Smart Defaults:**
+- `*mcpServerUrl`: If not set, automatically uses ingress host (if enabled) or `http://localhost:8000` (for port-forward setups)
+- `**publicIssuerUrl`: If not set, automatically defaults to `nextcloud.host` (which works when both clients and MCP server access Nextcloud at the same URL)
 
-See [OAuth Quick Start](docs/quickstart-oauth.md) for 5-minute setup or [OAuth Setup Guide](docs/oauth-setup.md) for detailed instructions.
+#### Authentication
 
-### 4. Run the Server
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `auth.mode` | Authentication mode: `basic` or `oauth` | `basic` |
+| `auth.basic.username` | Nextcloud username (basic auth) | `""` |
+| `auth.basic.password` | Nextcloud password (basic auth) | `""` |
+| `auth.basic.existingSecret` | Use existing secret for credentials | `""` |
+| `auth.oauth.clientId` | OAuth client ID (OAuth mode, optional) | `""` |
+| `auth.oauth.clientSecret` | OAuth client secret (OAuth mode, optional) | `""` |
+| `auth.oauth.persistence.enabled` | Enable persistent storage for OAuth | `true` |
+| `auth.oauth.persistence.size` | Size of OAuth storage PVC | `100Mi` |
 
-```bash
-# Load environment variables
-export $(grep -v '^#' .env | xargs)
+#### Image Configuration
 
-# Start with Basic Auth (default)
-uv run nextcloud-mcp-server
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `image.repository` | Container image repository | `ghcr.io/cbcoutinho/nextcloud-mcp-server` |
+| `image.tag` | Container image tag | `""` (uses chart appVersion) |
+| `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 
-# Or start with OAuth (experimental - requires patches)
-uv run nextcloud-mcp-server --oauth
+#### Resources
 
-# Or with Docker
-docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
-  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
-```
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `resources.limits.cpu` | CPU limit | `1000m` |
+| `resources.limits.memory` | Memory limit | `512Mi` |
+| `resources.requests.cpu` | CPU request | `100m` |
+| `resources.requests.memory` | Memory request | `128Mi` |
 
-The server starts on `http://127.0.0.1:8000` by default.
+#### Service
 
-See [Running the Server](docs/running.md) for more options.
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `service.type` | Service type | `ClusterIP` |
+| `service.port` | Service port | `8000` |
+| `service.oauthPort` | OAuth service port | `8001` |
 
-### 5. Connect an MCP Client
+#### Ingress
 
-Test with MCP Inspector:
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `ingress.enabled` | Enable ingress | `false` |
+| `ingress.className` | Ingress class name | `""` |
+| `ingress.hosts` | Ingress host configuration | See values.yaml |
+| `ingress.tls` | Ingress TLS configuration | `[]` |
 
-```bash
-uv run mcp dev
-```
+#### Autoscaling
 
-Or connect from:
-- Claude Desktop
-- Any MCP-compatible client
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `autoscaling.enabled` | Enable HPA | `false` |
+| `autoscaling.minReplicas` | Minimum replicas | `1` |
+| `autoscaling.maxReplicas` | Maximum replicas | `10` |
+| `autoscaling.targetCPUUtilizationPercentage` | Target CPU % | `80` |
 
-## Documentation
+#### Health Probes
 
-### Getting Started
-- **[Installation](docs/installation.md)** - Install the server
-- **[Configuration](docs/configuration.md)** - Environment variables and settings
-- **[Authentication](docs/authentication.md)** - OAuth vs BasicAuth
-- **[Running the Server](docs/running.md)** - Start and manage the server
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `livenessProbe.httpGet.path` | Liveness probe endpoint | `/health/live` |
+| `livenessProbe.initialDelaySeconds` | Initial delay for liveness | `30` |
+| `livenessProbe.periodSeconds` | Check interval for liveness | `10` |
+| `readinessProbe.httpGet.path` | Readiness probe endpoint | `/health/ready` |
+| `readinessProbe.initialDelaySeconds` | Initial delay for readiness | `10` |
+| `readinessProbe.periodSeconds` | Check interval for readiness | `5` |
 
-### Architecture
-- **[Comparison with Context Agent](docs/comparison-context-agent.md)** - How this MCP server differs from Nextcloud's Context Agent
-
-### OAuth Documentation (Experimental)
-- **[OAuth Quick Start](docs/quickstart-oauth.md)** - 5-minute setup guide
-- **[OAuth Setup Guide](docs/oauth-setup.md)** - Detailed setup instructions
-- **[OAuth Architecture](docs/oauth-architecture.md)** - How OAuth works
-- **[OAuth Troubleshooting](docs/oauth-troubleshooting.md)** - OAuth-specific issues
-- **[Upstream Status](docs/oauth-upstream-status.md)** - **Required patches and PRs** ⚠️
-
-### Reference
-- **[Troubleshooting](docs/troubleshooting.md)** - Common issues and solutions
-
-### App-Specific Documentation
-- [Notes API](docs/notes.md)
-- [Calendar (CalDAV)](docs/calendar.md)
-- [Contacts (CardDAV)](docs/contacts.md)
-- [Cookbook](docs/cookbook.md)
-- [Deck](docs/deck.md)
-- [Tables](docs/table.md)
-- [WebDAV](docs/webdav.md)
-
-## MCP Tools & Resources
-
-The server exposes Nextcloud functionality through MCP tools (for actions) and resources (for data browsing).
-
-### Tools
-
-The server provides 90+ tools across 8 Nextcloud apps. When using OAuth, tools are dynamically filtered based on your granted scopes.
-
-For a complete list of all supported OAuth scopes and their descriptions, see [OAuth Scopes Documentation](docs/oauth-architecture.md#oauth-scopes).
-
-#### Available Tool Categories
-
-| App | Tools | Read Scope | Write Scope | Operations |
-|-----|-------|-----------|-------------|------------|
-| **Notes** | 7 | `notes:read` | `notes:write` | Create, read, update, delete, search notes |
-| **Calendar** | 20+ | `calendar:read` `todo:read`  | `calendar:write` `todo:write`   | Events, todos (tasks), calendars, recurring events, attendees |
-| **Contacts** | 8 | `contacts:read` | `contacts:write` | Create, read, update, delete contacts and address books |
-| **Files (WebDAV)** | 12 | `files:read` | `files:write` | List, read, upload, delete, move files; **OCR/document processing** |
-| **Deck** | 15 | `deck:read` | `deck:write` | Boards, stacks, cards, labels, assignments |
-| **Cookbook** | 13 | `cookbook:read` | `cookbook:write` | Recipes, import from URLs, search, categories |
-| **Tables** | 5 | `tables:read` | `tables:write` | Row operations on Nextcloud Tables |
-| **Sharing** | 10+ | `sharing:read` | `sharing:write` | Create, manage, delete shares |
+The application exposes HTTP health check endpoints:
+- `/health/live` - Liveness probe (checks if application is running)
+- `/health/ready` - Readiness probe (checks if application is ready to serve traffic)
 
 #### Document Processing (Optional)
 
-The WebDAV file reading tool (`nc_webdav_read_file`) supports **automatic text extraction** from documents and images:
-
-**Supported Formats:**
-- **Documents**: PDF, DOCX, PPTX, XLSX, RTF, ODT, EPUB
-- **Images**: PNG, JPEG, TIFF, BMP (with OCR)
-- **Email**: EML, MSG files
-
-**Features:**
-- **Progress Notifications**: Long-running OCR operations (up to 120s) send progress updates every 10 seconds to prevent client timeouts
-- **Pluggable Architecture**: Multiple processor backends (Unstructured.io, Tesseract, custom HTTP APIs)
-- **Automatic Detection**: Files are processed based on MIME type
-- **Graceful Fallback**: Returns base64-encoded content if processing fails
-
-**Configuration:**
-```dotenv
-# Enable document processing (optional)
-ENABLE_DOCUMENT_PROCESSING=true
-
-# Unstructured.io processor (cloud/API-based, supports many formats)
-ENABLE_UNSTRUCTURED=true
-UNSTRUCTURED_API_URL=http://localhost:8002
-UNSTRUCTURED_STRATEGY=auto  # auto, fast, or hi_res
-UNSTRUCTURED_LANGUAGES=eng,deu
-PROGRESS_INTERVAL=10  # Progress update interval in seconds
-
-# Tesseract processor (local OCR, images only)
-ENABLE_TESSERACT=false
-TESSERACT_LANG=eng
-
-# Custom HTTP processor
-ENABLE_CUSTOM_PROCESSOR=false
-CUSTOM_PROCESSOR_URL=http://localhost:9000/process
-CUSTOM_PROCESSOR_TYPES=application/pdf,image/jpeg
-```
-
-**Example Usage:**
-```
-AI: "Read the contents of Documents/report.pdf"
-→ Uses nc_webdav_read_file tool with automatic OCR processing
-→ Returns extracted text with parsing metadata
-→ Sends progress updates during long operations
-```
-
-See [env.sample](env.sample) for complete configuration options.
-
-**Example Tools:**
-- `nc_notes_create_note` - Create a new note
-- `nc_cookbook_import_recipe` - Import recipes from URLs with schema.org metadata
-- `deck_create_card` - Create a Deck card
-- `nc_calendar_create_event` - Create a calendar event
-- `nc_calendar_create_todo` - Create a CalDAV task/todo
-- `nc_contacts_create_contact` - Create a contact
-- `nc_webdav_upload_file` - Upload a file to Nextcloud
-- And 80+ more...
-
-> [!TIP]
-> **OAuth Scope Filtering**: When connecting via OAuth, MCP clients will only see tools for which you've granted access. For example, granting only `notes:read` and `notes:write` will show 7 Notes tools instead of all 90+ tools. See [OAuth Scopes Documentation](docs/oauth-architecture.md#oauth-scopes) for the complete scope reference, or [OAuth Troubleshooting - Limited Scopes](docs/oauth-troubleshooting.md#limited-scopes---only-seeing-notes-tools) if you're only seeing a subset of tools.
->
-> **Known Issue**: Claude Code and some other MCP clients may only request/grant Notes scopes during initial connection. Track progress at [#234](https://github.com/cbcoutinho/nextcloud-mcp-server/issues/234).
-
-### Resources
-Resources provide read-only access to Nextcloud data:
-- `nc://capabilities` - Server capabilities
-- `cookbook://version` - Cookbook app version info
-- `nc://Deck/boards/{board_id}` - Deck board data
-- `notes://settings` - Notes app settings
-- And more...
-
-Run `uv run nextcloud-mcp-server --help` to see all available options.
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `documentProcessing.enabled` | Enable document processing | `false` |
+| `documentProcessing.defaultProcessor` | Default processor | `unstructured` |
+| `documentProcessing.unstructured.enabled` | Enable Unstructured.io processor | `false` |
+| `documentProcessing.unstructured.apiUrl` | Unstructured API URL | `http://unstructured:8000` |
+| `documentProcessing.tesseract.enabled` | Enable Tesseract OCR | `false` |
 
 ## Examples
 
-### Create a Note
-```
-AI: "Create a note called 'Meeting Notes' with today's agenda"
-→ Uses nc_notes_create_note tool
+### Example 1: Basic Auth with Ingress
+
+```yaml
+nextcloud:
+  host: https://cloud.example.com
+
+auth:
+  mode: basic
+  basic:
+    username: admin
+    password: secure-password
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: mcp.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: mcp-tls
+      hosts:
+        - mcp.example.com
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 1Gi
+  requests:
+    cpu: 200m
+    memory: 256Mi
 ```
 
-### Manage Recipes
-```
-AI: "Import the recipe from this URL: https://www.example.com/recipe/chocolate-cake"
-→ Uses nc_cookbook_import_recipe tool to extract schema.org metadata
-```
+### Example 2: Using Existing Secrets
 
-### Manage Calendar
-```
-AI: "Schedule a team meeting for next Tuesday at 2pm"
-→ Uses nc_calendar_create_event tool
-```
+#### Basic Auth with Existing Secret
 
-### Organize Files
-```
-AI: "Create a folder called 'Project X' and move all PDFs there"
-→ Uses WebDAV tools (nc_webdav_create_directory, nc_webdav_move)
-```
-
-### Project Management
-```
-AI: "Create a new Deck board for Q1 planning with Todo, In Progress, and Done stacks"
-→ Uses deck_create_board and deck_create_stack tools
-```
-
-## Transport Protocols
-
-The server supports multiple MCP transport protocols:
-
-- **streamable-http** (recommended) - Modern streaming protocol
-- **sse** (default, deprecated) - Server-Sent Events for backward compatibility
-- **http** - Standard HTTP protocol
+Create a secret manually:
 
 ```bash
-# Use streamable-http (recommended)
-uv run nextcloud-mcp-server --transport streamable-http
+kubectl create secret generic nextcloud-credentials \
+  --from-literal=username=myuser \
+  --from-literal=password=mypassword
 ```
 
-> [!WARNING]
-> SSE transport is deprecated and will be removed in a future MCP specification version. Please migrate to `streamable-http`.
+Then reference it in your values:
 
-## Contributing
+```yaml
+nextcloud:
+  host: https://cloud.example.com
 
-Contributions are welcome!
+auth:
+  mode: basic
+  basic:
+    existingSecret: nextcloud-credentials
+    usernameKey: username
+    passwordKey: password
+```
 
-- Report bugs or request features: [GitHub Issues](https://github.com/cbcoutinho/nextcloud-mcp-server/issues)
-- Submit improvements: [Pull Requests](https://github.com/cbcoutinho/nextcloud-mcp-server/pulls)
-- Read [CLAUDE.md](CLAUDE.md) for development guidelines
+#### OAuth with Existing Secret (Pre-registered Client)
 
-## Security
+If you have a pre-registered OAuth client:
 
-[![MseeP.ai Security Assessment](https://mseep.net/pr/cbcoutinho-nextcloud-mcp-server-badge.png)](https://mseep.ai/app/cbcoutinho-nextcloud-mcp-server)
+```bash
+kubectl create secret generic nextcloud-oauth-creds \
+  --from-literal=clientId=my-oauth-client-id \
+  --from-literal=clientSecret=my-oauth-client-secret
+```
 
-This project takes security seriously:
-- OAuth2/OIDC support (experimental - requires upstream patches)
-- Basic Auth with app-specific passwords (recommended)
-- No credential storage with OAuth mode
-- Per-user access tokens
-- Regular security assessments
+Then reference it in your values:
 
-Found a security issue? Please report it privately to the maintainers.
+```yaml
+nextcloud:
+  host: https://cloud.example.com
+  # mcpServerUrl and publicIssuerUrl are optional!
+  # If not set, mcpServerUrl defaults to ingress host or localhost
+  # publicIssuerUrl defaults to nextcloud.host
+
+auth:
+  mode: oauth
+  oauth:
+    existingSecret: nextcloud-oauth-creds
+    clientIdKey: clientId
+    clientSecretKey: clientSecret
+    persistence:
+      enabled: true
+
+ingress:
+  enabled: true
+  hosts:
+    - host: mcp.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: mcp-tls
+      hosts:
+        - mcp.example.com
+```
+
+### Example 3: OAuth with Document Processing and Dynamic Client Registration
+
+This example shows OAuth without pre-registered credentials (using DCR) and optional URL values:
+
+```yaml
+nextcloud:
+  host: https://cloud.example.com
+  # mcpServerUrl will automatically use ingress host (https://mcp.example.com)
+  # publicIssuerUrl will automatically default to nextcloud.host
+
+auth:
+  mode: oauth
+  oauth:
+    # No clientId/clientSecret - will use Dynamic Client Registration!
+    persistence:
+      enabled: true
+      storageClass: fast-ssd
+      size: 200Mi
+
+documentProcessing:
+  enabled: true
+  defaultProcessor: unstructured
+  unstructured:
+    enabled: true
+    apiUrl: http://unstructured-api:8000
+    strategy: hi_res
+    languages: eng,deu,fra
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: mcp.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+```
+
+### Example 4: High Availability with Autoscaling
+
+```yaml
+replicaCount: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 1Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - nextcloud-mcp-server
+          topologyKey: kubernetes.io/hostname
+```
+
+## Upgrading
+
+### To upgrade an existing deployment:
+
+```bash
+helm upgrade nextcloud-mcp ./helm/nextcloud-mcp-server -f custom-values.yaml
+```
+
+### To upgrade with new values:
+
+```bash
+helm upgrade nextcloud-mcp ./helm/nextcloud-mcp-server \
+  --set image.tag=0.21.0 \
+  --set resources.limits.memory=1Gi
+```
+
+## Uninstalling
+
+```bash
+helm uninstall nextcloud-mcp
+```
+
+**Note:** This will delete all resources including PVCs. If you want to preserve OAuth client data, backup the PVC before uninstalling.
+
+## Troubleshooting
+
+### Check pod status
+
+```bash
+kubectl get pods -l app.kubernetes.io/name=nextcloud-mcp-server
+```
+
+### View logs
+
+```bash
+kubectl logs -l app.kubernetes.io/name=nextcloud-mcp-server --tail=100 -f
+```
+
+### Check health endpoints
+
+The application exposes health check endpoints for monitoring:
+
+```bash
+# Port forward to the service
+kubectl port-forward svc/nextcloud-mcp 8000:8000
+
+# Check liveness (if app is running)
+curl http://localhost:8000/health/live
+
+# Check readiness (if app is ready to serve traffic)
+curl http://localhost:8000/health/ready
+```
+
+**Example responses:**
+
+Liveness (always returns 200 if running):
+```json
+{
+  "status": "alive",
+  "mode": "basic"
+}
+```
+
+Readiness (returns 200 if ready, 503 if not ready):
+```json
+{
+  "status": "ready",
+  "checks": {
+    "nextcloud_configured": "ok",
+    "auth_mode": "basic",
+    "auth_configured": "ok"
+  }
+}
+```
+
+### Common Issues
+
+1. **Connection refused to Nextcloud**
+   - Verify `nextcloud.host` is accessible from the Kubernetes cluster
+   - Check network policies and firewall rules
+
+2. **Authentication failures**
+   - For basic auth: verify username/password are correct
+   - For OAuth: check that OIDC app is properly configured
+
+3. **OAuth persistence issues**
+   - Verify PVC is bound: `kubectl get pvc`
+   - Check storage class exists: `kubectl get storageclass`
+
+4. **Resource constraints**
+   - Increase memory limits if seeing OOM errors
+   - Adjust CPU requests based on load
+
+## Security Considerations
+
+1. **Secrets Management**: Consider using external secret management (e.g., Sealed Secrets, External Secrets Operator)
+2. **TLS**: Always use TLS/HTTPS for production deployments
+3. **Network Policies**: Restrict network access to necessary services only
+4. **RBAC**: Review and customize ServiceAccount permissions as needed
+5. **App Passwords**: For basic auth, use Nextcloud app passwords instead of main account passwords
+
+## Support
+
+- GitHub Issues: https://github.com/cbcoutinho/nextcloud-mcp-server/issues
+- Documentation: https://github.com/cbcoutinho/nextcloud-mcp-server#readme
 
 ## License
 
-This project is licensed under the AGPL-3.0 License. See [LICENSE](./LICENSE) for details.
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=cbcoutinho/nextcloud-mcp-server&type=Date)](https://www.star-history.com/#cbcoutinho/nextcloud-mcp-server&Date)
-
-## References
-
-- [Model Context Protocol](https://github.com/modelcontextprotocol)
-- [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
-- [Nextcloud](https://nextcloud.com/)
+This chart is licensed under AGPL-3.0, consistent with the Nextcloud MCP Server project.
