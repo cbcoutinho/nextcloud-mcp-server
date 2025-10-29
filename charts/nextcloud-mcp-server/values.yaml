@@ -61,8 +61,6 @@ auth:
 
   # OAuth2/OIDC settings (experimental)
   oauth:
-    # Port for OAuth MCP server (default: 8001)
-    port: 8001
     # OAuth token type: "jwt" or "opaque"
     tokenType: "jwt"
     # Pre-registered OAuth client ID (optional, ignored if existingSecret is set)
@@ -97,8 +95,11 @@ auth:
 mcp:
   # Transport mode (default: streamable-http for SSE)
   transport: "streamable-http"
-  # Port for basic auth mode
+  # Port for MCP server (both basic auth and OAuth modes)
   port: 8000
+  # Additional command-line arguments to pass to nextcloud-mcp-server
+  # Example: ["--log-level", "debug", "--enable-app", "notes"]
+  extraArgs: []
 
 # Document processing configuration (optional)
 documentProcessing:

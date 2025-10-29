@@ -95,14 +95,10 @@ Create the name of the PVC to use for OAuth storage
 {{- end }}
 
 {{/*
-Return the appropriate MCP server port based on auth mode
+Return the MCP server port
 */}}
 {{- define "nextcloud-mcp-server.port" -}}
-{{- if eq .Values.auth.mode "oauth" }}
-{{- .Values.auth.oauth.port }}
-{{- else }}
 {{- .Values.mcp.port }}
-{{- end }}
 {{- end }}
 
 {{/*
