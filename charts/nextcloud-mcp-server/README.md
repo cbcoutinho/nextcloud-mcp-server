@@ -139,8 +139,9 @@ mcp:
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `image.repository` | Container image repository | `ghcr.io/cbcoutinho/nextcloud-mcp-server` |
-| `image.tag` | Container image tag | `""` (uses chart appVersion) |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
+
+**Note:** Image tag is automatically set to the chart's `appVersion` and cannot be overridden.
 
 #### Resources
 
@@ -390,7 +391,6 @@ helm upgrade nextcloud-mcp ./helm/nextcloud-mcp-server -f custom-values.yaml
 
 ```bash
 helm upgrade nextcloud-mcp ./helm/nextcloud-mcp-server \
-  --set image.tag=0.21.0 \
   --set resources.limits.memory=1Gi
 ```
 
