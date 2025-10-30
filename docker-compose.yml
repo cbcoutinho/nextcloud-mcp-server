@@ -94,7 +94,7 @@ services:
     volumes:
       - oauth-client-storage:/app/.oauth
 
-  keykloak:
+  keycloak:
     image: quay.io/keycloak/keycloak:26.4.2
     command: ["start-dev"]
     ports:
