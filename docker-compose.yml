@@ -96,14 +96,59 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.4.2
-    command: ["start-dev"]
+    command: ["start-dev", "--import-realm"]
     ports:
       - 127.0.0.1:8888:8080
     environment:
       - KC_BOOTSTRAP_ADMIN_USERNAME=admin
       - KC_BOOTSTRAP_ADMIN_PASSWORD=admin
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /realms/nextcloud-mcp HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q 'HTTP/1.1 200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  mcp-keycloak:
+    build: .
+    command: ["--transport", "streamable-http", "--oauth", "--port", "8002"]
+    restart: always
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      app:
+        condition: service_started
+    ports:
+      - 127.0.0.1:8002:8002
+    environment:
+      # OAuth Provider: Keycloak
+      - OAUTH_PROVIDER=keycloak
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=nextcloud-mcp
+      - KEYCLOAK_CLIENT_ID=nextcloud-mcp-server
+      - KEYCLOAK_CLIENT_SECRET=mcp-secret-change-in-production
+      - KEYCLOAK_DISCOVERY_URL=http://keycloak:8080/realms/nextcloud-mcp/.well-known/openid-configuration
+
+      # Nextcloud API endpoint (for accessing APIs with validated token)
+      - NEXTCLOUD_HOST=http://app:80
+      - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8002
+      - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8888
+
+      # Refresh token storage (ADR-002 Tier 1)
+      - ENABLE_OFFLINE_ACCESS=true
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY:-}
+      - TOKEN_STORAGE_DB=/app/data/tokens.db
+      - NEXTCLOUD_OIDC_CLIENT_STORAGE=/app/.oauth/keycloak_oauth_client.json
+
+      # NO admin credentials - using Keycloak OAuth only!
+    volumes:
+      - keycloak-tokens:/app/data
+      - keycloak-oauth-storage:/app/.oauth
 
 volumes:
   nextcloud:
   db:
   oauth-client-storage:
+  keycloak-tokens:
+  keycloak-oauth-storage:
