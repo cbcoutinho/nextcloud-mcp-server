@@ -440,6 +440,10 @@ async def setup_oauth_config():
     """
     Setup OAuth configuration by performing OIDC discovery and client registration.
 
+    Supports two OAuth providers (via OAUTH_PROVIDER environment variable):
+    - "nextcloud" (default): Nextcloud OIDC app as both IdP and API server
+    - "keycloak": Keycloak as IdP, Nextcloud user_oidc validates tokens
+
     This is done synchronously before FastMCP initialization because FastMCP
     requires token_verifier at construction time.
 
@@ -453,70 +457,155 @@ async def setup_oauth_config():
         )
 
     nextcloud_host = nextcloud_host.rstrip("/")
-    discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
 
-    logger.info(f"Performing OIDC discovery: {discovery_url}")
+    # Determine OAuth provider
+    oauth_provider = os.getenv("OAUTH_PROVIDER", "nextcloud").lower()
+    logger.info(f"OAuth provider: {oauth_provider}")
 
-    # Fetch OIDC discovery
-    async with httpx.AsyncClient() as client:
-        response = await client.get(discovery_url)
-        response.raise_for_status()
-        discovery = response.json()
+    if oauth_provider == "keycloak":
+        # Keycloak mode: Use Keycloak for OAuth, Nextcloud for token validation
+        logger.info("Using Keycloak as OAuth identity provider")
 
-    logger.info("OIDC discovery successful")
+        keycloak_discovery_url = os.getenv("KEYCLOAK_DISCOVERY_URL")
+        if not keycloak_discovery_url:
+            raise ValueError(
+                "KEYCLOAK_DISCOVERY_URL environment variable is required for Keycloak mode. "
+                "Example: http://keycloak:8080/realms/nextcloud-mcp/.well-known/openid-configuration"
+            )
 
-    # Validate PKCE support
-    validate_pkce_support(discovery, discovery_url)
+        logger.info(f"Performing OIDC discovery: {keycloak_discovery_url}")
 
-    # Extract endpoints
-    issuer = discovery["issuer"]
-    userinfo_uri = discovery["userinfo_endpoint"]
-    jwks_uri = discovery.get("jwks_uri")
-    introspection_uri = discovery.get("introspection_endpoint")
-    registration_endpoint = discovery.get("registration_endpoint")
+        # Fetch Keycloak OIDC discovery
+        async with httpx.AsyncClient() as client:
+            response = await client.get(keycloak_discovery_url)
+            response.raise_for_status()
+            discovery = response.json()
 
-    logger.info("OIDC endpoints discovered:")
-    logger.info(f"  Issuer: {issuer}")
-    logger.info(f"  Userinfo: {userinfo_uri}")
-    logger.info(f"  JWKS: {jwks_uri}")
-    if introspection_uri:
-        logger.info(f"  Introspection: {introspection_uri}")
+        logger.info("Keycloak OIDC discovery successful")
 
-    # Allow override of public issuer URL for both client configuration and JWT validation
-    # When clients access Nextcloud via a public URL (e.g., http://127.0.0.1:8080),
-    # the OIDC app issues JWT tokens with that public URL in the 'iss' claim,
-    # even though the MCP server accesses Nextcloud via an internal URL (e.g., http://app).
-    # Therefore, we must validate JWT tokens against the public issuer, not the internal one.
-    public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
-    if public_issuer:
-        public_issuer = public_issuer.rstrip("/")
-        logger.info(
-            f"Using public issuer URL for clients and JWT validation: {public_issuer}"
+        # Validate PKCE support
+        validate_pkce_support(discovery, keycloak_discovery_url)
+
+        # Extract Keycloak endpoints (for OAuth flows)
+        issuer = discovery["issuer"]
+        keycloak_userinfo_uri = discovery["userinfo_endpoint"]
+        keycloak_jwks_uri = discovery.get("jwks_uri")
+
+        logger.info("Keycloak OIDC endpoints discovered:")
+        logger.info(f"  Issuer: {issuer}")
+        logger.info(f"  Userinfo: {keycloak_userinfo_uri}")
+        logger.info(f"  JWKS: {keycloak_jwks_uri}")
+
+        # Get static client credentials from environment
+        client_id = os.getenv("KEYCLOAK_CLIENT_ID")
+        client_secret = os.getenv("KEYCLOAK_CLIENT_SECRET")
+
+        if not client_id or not client_secret:
+            raise ValueError(
+                "KEYCLOAK_CLIENT_ID and KEYCLOAK_CLIENT_SECRET environment variables "
+                "are required for Keycloak mode"
+            )
+
+        logger.info(f"Using Keycloak client: {client_id}")
+
+        # Token validation: Use Nextcloud's userinfo endpoint
+        # Nextcloud's user_oidc app validates Keycloak tokens and provisions users
+        nextcloud_userinfo_uri = f"{nextcloud_host}/apps/user_oidc/userinfo"
+
+        # Override issuer for public access if needed
+        public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+        if public_issuer:
+            public_issuer = public_issuer.rstrip("/")
+            logger.info(
+                f"Using public issuer URL for client configuration: {public_issuer}"
+            )
+            issuer = public_issuer
+
+        # Create token verifier pointing to Nextcloud (validates via user_oidc)
+        token_verifier = NextcloudTokenVerifier(
+            nextcloud_host=nextcloud_host,
+            userinfo_uri=nextcloud_userinfo_uri,  # Nextcloud validates Keycloak tokens
+            jwks_uri=keycloak_jwks_uri,  # Keycloak's JWKS for JWT validation
+            issuer=issuer,  # Keycloak issuer
+            introspection_uri=None,  # Not used in Keycloak mode
+            client_id=client_id,
+            client_secret=client_secret,
         )
-        # Use public issuer for both client configuration AND JWT validation
-        issuer = public_issuer
-        jwt_validation_issuer = public_issuer
+
+        logger.info(
+            "✓ Keycloak OAuth configured - tokens validated by Nextcloud user_oidc app"
+        )
+
     else:
-        # Use discovered issuer for both
-        jwt_validation_issuer = issuer
+        # Nextcloud mode (default): Use Nextcloud for both OAuth and validation
+        logger.info("Using Nextcloud OIDC app as OAuth provider")
 
-    # Load OAuth client credentials
-    client_id, client_secret = await load_oauth_client_credentials(
-        nextcloud_host=nextcloud_host, registration_endpoint=registration_endpoint
-    )
+        discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
 
-    # Create token verifier with JWT support and introspection
-    token_verifier = NextcloudTokenVerifier(
-        nextcloud_host=nextcloud_host,
-        userinfo_uri=userinfo_uri,
-        jwks_uri=jwks_uri,  # Enable JWT verification if available
-        issuer=jwt_validation_issuer,  # Use original issuer for JWT validation
-        introspection_uri=introspection_uri,  # Enable introspection for opaque tokens
-        client_id=client_id,
-        client_secret=client_secret,
-    )
+        logger.info(f"Performing OIDC discovery: {discovery_url}")
 
-    # Create auth settings
+        # Fetch OIDC discovery
+        async with httpx.AsyncClient() as client:
+            response = await client.get(discovery_url)
+            response.raise_for_status()
+            discovery = response.json()
+
+        logger.info("OIDC discovery successful")
+
+        # Validate PKCE support
+        validate_pkce_support(discovery, discovery_url)
+
+        # Extract endpoints
+        issuer = discovery["issuer"]
+        userinfo_uri = discovery["userinfo_endpoint"]
+        jwks_uri = discovery.get("jwks_uri")
+        introspection_uri = discovery.get("introspection_endpoint")
+        registration_endpoint = discovery.get("registration_endpoint")
+
+        logger.info("OIDC endpoints discovered:")
+        logger.info(f"  Issuer: {issuer}")
+        logger.info(f"  Userinfo: {userinfo_uri}")
+        logger.info(f"  JWKS: {jwks_uri}")
+        if introspection_uri:
+            logger.info(f"  Introspection: {introspection_uri}")
+
+        # Allow override of public issuer URL for both client configuration and JWT validation
+        # When clients access Nextcloud via a public URL (e.g., http://127.0.0.1:8080),
+        # the OIDC app issues JWT tokens with that public URL in the 'iss' claim,
+        # even though the MCP server accesses Nextcloud via an internal URL (e.g., http://app).
+        # Therefore, we must validate JWT tokens against the public issuer, not the internal one.
+        public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+        if public_issuer:
+            public_issuer = public_issuer.rstrip("/")
+            logger.info(
+                f"Using public issuer URL for clients and JWT validation: {public_issuer}"
+            )
+            # Use public issuer for both client configuration AND JWT validation
+            issuer = public_issuer
+            jwt_validation_issuer = public_issuer
+        else:
+            # Use discovered issuer for both
+            jwt_validation_issuer = issuer
+
+        # Load OAuth client credentials (dynamic registration or environment)
+        client_id, client_secret = await load_oauth_client_credentials(
+            nextcloud_host=nextcloud_host, registration_endpoint=registration_endpoint
+        )
+
+        # Create token verifier with JWT support and introspection
+        token_verifier = NextcloudTokenVerifier(
+            nextcloud_host=nextcloud_host,
+            userinfo_uri=userinfo_uri,
+            jwks_uri=jwks_uri,  # Enable JWT verification if available
+            issuer=jwt_validation_issuer,  # Use original issuer for JWT validation
+            introspection_uri=introspection_uri,  # Enable introspection for opaque tokens
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+
+        logger.info("✓ Nextcloud OAuth configured")
+
+    # Create auth settings (same for both modes)
     mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
 
     # Note: We don't set required_scopes here anymore.
