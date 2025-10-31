@@ -3,8 +3,8 @@ Tests for Dynamic Client Registration (DCR) token_type parameter.
 
 These tests verify that the Nextcloud OIDC server properly honors the token_type
 parameter during client registration, issuing the correct type of access tokens:
-- token_type="JWT" → JWT-formatted tokens (RFC 9068)
-- token_type="Bearer" → Opaque tokens (standard OAuth2)
+- token_type="jwt" → JWT-formatted tokens (RFC 9068)
+- token_type="opaque" → Opaque tokens (standard OAuth2)
 
 This is critical for ensuring:
 1. Client choice is respected by the OIDC server
@@ -208,12 +208,14 @@ async def test_dcr_respects_jwt_token_type(
     oauth_callback_server,
 ):
     """
-    Test that DCR honors token_type=JWT and issues JWT-formatted tokens.
+    Test that DCR honors token_type=jwt and issues JWT-formatted tokens.
 
     This verifies:
-    1. Client registration with token_type="JWT" succeeds
+    1. Client registration with token_type="jwt" succeeds
     2. Tokens obtained via this client are JWT format (base64.base64.signature)
     3. JWT payload contains expected claims (sub, iss, scope, etc.)
+
+    Note: The OIDC app uses lowercase 'jwt' (not 'JWT').
     """
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
@@ -232,15 +234,15 @@ async def test_dcr_respects_jwt_token_type(
         token_endpoint = oidc_config.get("token_endpoint")
         authorization_endpoint = oidc_config.get("authorization_endpoint")
 
-    # Register client with token_type="JWT"
-    logger.info("Registering OAuth client with token_type=JWT...")
+    # Register client with token_type="jwt"
+    logger.info("Registering OAuth client with token_type=jwt...")
     client_info = await register_client(
         nextcloud_url=nextcloud_host,
         registration_endpoint=registration_endpoint,
         client_name="DCR Test - JWT Token Type",
         redirect_uris=[callback_url],
         scopes="openid profile email notes:read notes:write",
-        token_type="JWT",
+        token_type="jwt",
     )
 
     logger.info(f"Registered JWT client: {client_info.client_id[:16]}...")
@@ -278,7 +280,7 @@ async def test_dcr_respects_jwt_token_type(
     assert "notes:write" in scopes, "JWT scope claim missing notes:write"
 
     logger.info(
-        f"✅ DCR with token_type=JWT works correctly! "
+        f"✅ DCR with token_type=jwt works correctly! "
         f"Token is JWT format with scope claim: {payload['scope']}"
     )
 
@@ -290,12 +292,14 @@ async def test_dcr_respects_bearer_token_type(
     oauth_callback_server,
 ):
     """
-    Test that DCR honors token_type=Bearer and issues opaque tokens.
+    Test that DCR honors token_type=opaque and issues opaque tokens.
 
     This verifies:
-    1. Client registration with token_type="Bearer" succeeds
+    1. Client registration with token_type="opaque" succeeds
     2. Tokens obtained via this client are opaque (NOT JWT format)
     3. Opaque tokens are simple strings, not base64-encoded structures
+
+    Note: The OIDC app uses 'opaque' or 'jwt' as token_type values (not 'Bearer').
     """
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
@@ -314,18 +318,18 @@ async def test_dcr_respects_bearer_token_type(
         token_endpoint = oidc_config.get("token_endpoint")
         authorization_endpoint = oidc_config.get("authorization_endpoint")
 
-    # Register client with token_type="Bearer" (opaque tokens)
-    logger.info("Registering OAuth client with token_type=Bearer...")
+    # Register client with token_type="opaque" (opaque tokens)
+    logger.info("Registering OAuth client with token_type=opaque...")
     client_info = await register_client(
         nextcloud_url=nextcloud_host,
         registration_endpoint=registration_endpoint,
-        client_name="DCR Test - Bearer Token Type",
+        client_name="DCR Test - Opaque Token Type",
         redirect_uris=[callback_url],
         scopes="openid profile email notes:read notes:write",
-        token_type="Bearer",
+        token_type="opaque",
     )
 
-    logger.info(f"Registered Bearer client: {client_info.client_id[:16]}...")
+    logger.info(f"Registered Opaque token client: {client_info.client_id[:16]}...")
 
     # Obtain token via OAuth flow
     access_token = await get_oauth_token_with_client(
@@ -353,7 +357,7 @@ async def test_dcr_respects_bearer_token_type(
         pass
 
     logger.info(
-        f"✅ DCR with token_type=Bearer works correctly! "
+        f"✅ DCR with token_type=opaque works correctly! "
         f"Token is opaque (not JWT format): {access_token[:30]}..."
     )
 
