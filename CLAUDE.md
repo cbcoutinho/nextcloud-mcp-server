@@ -395,6 +395,125 @@ uv run pytest -m oauth -v
 - Playwright tests run in CI/CD environments
 - Use Firefox browser in CI: `--browser firefox` (Chromium may have issues with localhost redirects)
 
+#### Keycloak OAuth/OIDC Testing (ADR-002 Integration)
+
+The MCP server supports using **Keycloak as an external OAuth/OIDC identity provider** instead of Nextcloud's built-in OIDC app. This validates the ADR-002 architecture for background jobs and external identity providers.
+
+**Architecture:**
+```
+MCP Client → Keycloak (OAuth) → MCP Server → Nextcloud user_oidc (validates token) → APIs
+```
+
+**Key Benefits:**
+- ✅ **No admin credentials needed** - All API access uses user's Keycloak token
+- ✅ **External identity provider** - Demonstrates integration with enterprise IdPs
+- ✅ **ADR-002 validation** - Tests offline_access and refresh token patterns
+- ✅ **User provisioning** - Nextcloud automatically provisions users from Keycloak
+
+**Setup and Testing:**
+```bash
+# 1. Start Keycloak and MCP server with Keycloak OAuth
+docker-compose up -d keycloak app mcp-keycloak
+
+# 2. Verify Keycloak realm is available
+curl http://localhost:8888/realms/nextcloud-mcp/.well-known/openid-configuration
+
+# 3. Verify user_oidc provider is configured
+docker compose exec app php occ user_oidc:provider keycloak
+
+# 4. Generate encryption key for refresh token storage (optional, for ADR-002 Tier 1)
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Set in environment: export TOKEN_ENCRYPTION_KEY='<key>'
+
+# 5. Test OAuth flow manually
+# Get token from Keycloak:
+TOKEN=$(curl -s -X POST "http://localhost:8888/realms/nextcloud-mcp/protocol/openid-connect/token" \
+  -d "grant_type=password" \
+  -d "client_id=mcp-client" \
+  -d "client_secret=mcp-secret-change-in-production" \
+  -d "username=admin" \
+  -d "password=admin" \
+  -d "scope=openid profile email offline_access" | jq -r .access_token)
+
+# Use token with Nextcloud API (validated by user_oidc):
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/ocs/v2.php/cloud/capabilities
+
+# 6. Connect MCP client
+# Point client to: http://localhost:8002
+# Complete OAuth flow using Keycloak credentials: admin/admin
+```
+
+**Three MCP Server Containers:**
+- **`mcp`** (port 8000): Basic auth with admin credentials
+- **`mcp-oauth`** (port 8001): Nextcloud OIDC provider (JWT tokens)
+- **`mcp-keycloak`** (port 8002): Keycloak OIDC provider (external IdP)
+
+**Keycloak Configuration:**
+- **Realm**: `nextcloud-mcp` (auto-imported from `keycloak/realm-export.json`)
+- **Client**: `mcp-client` (pre-configured with PKCE, offline_access)
+- **Admin user**: `admin/admin` (created in realm export)
+- **Redirect URIs**: `http://localhost:*/callback`, `http://127.0.0.1:*/callback`
+
+**Environment Variables** (see `.env.keycloak.sample`):
+```bash
+OAUTH_PROVIDER=keycloak                    # Use Keycloak instead of Nextcloud
+KEYCLOAK_URL=http://keycloak:8080          # Keycloak base URL
+KEYCLOAK_REALM=nextcloud-mcp               # Realm name
+KEYCLOAK_CLIENT_ID=mcp-client              # OAuth client ID
+KEYCLOAK_CLIENT_SECRET=mcp-secret-...      # OAuth client secret
+KEYCLOAK_DISCOVERY_URL=http://...          # OIDC discovery URL
+NEXTCLOUD_HOST=http://app:80               # Nextcloud API (token validation)
+ENABLE_OFFLINE_ACCESS=true                 # Enable refresh tokens (ADR-002)
+TOKEN_ENCRYPTION_KEY=<fernet-key>          # Encrypt refresh tokens
+```
+
+**Nextcloud user_oidc Configuration:**
+The `user_oidc` app is automatically configured by `app-hooks/post-installation/15-setup-keycloak-provider.sh`:
+```bash
+# Configured with:
+--check-bearer=1          # Validate bearer tokens
+--bearer-provisioning=1   # Auto-provision users
+--unique-uid=1            # Hash user IDs
+--scope="openid profile email offline_access"
+```
+
+**Troubleshooting:**
+```bash
+# Check Keycloak is running
+docker-compose ps keycloak
+docker-compose logs keycloak
+
+# Check user_oidc provider configuration
+docker compose exec app php occ user_oidc:provider keycloak
+
+# Check MCP server logs
+docker-compose logs -f mcp-keycloak
+
+# Check Nextcloud logs for token validation
+docker compose exec app tail -f /var/www/html/data/nextcloud.log
+
+# Verify Keycloak is accessible from Nextcloud container
+docker compose exec app curl http://keycloak:8080/realms/nextcloud-mcp/.well-known/openid-configuration
+```
+
+**ADR-002 Offline Access Testing:**
+The Keycloak integration enables testing ADR-002 Tier 1 (offline access with refresh tokens):
+
+1. **Refresh token storage**: Tokens stored encrypted in SQLite (`/app/data/tokens.db`)
+2. **Token refresh**: Access tokens refreshed automatically when expired
+3. **Background workers**: Can access APIs using stored refresh tokens
+4. **No admin credentials**: All operations use user's OAuth tokens
+
+See `docs/ADR-002-vector-sync-authentication.md` for architectural details.
+
+**Audience Validation:**
+Tokens include `aud: ["mcp-server", "nextcloud"]` claims for proper security:
+- MCP server validates tokens are intended for it
+- Nextcloud validates tokens include it as audience
+- Prevents token misuse across services
+
+See `docs/audience-validation-setup.md` for configuration details and `docs/keycloak-multi-client-validation.md` for realm-level validation behavior.
+
 ### Configuration Files
 
 - **`pyproject.toml`** - Python project configuration using uv for dependency management
