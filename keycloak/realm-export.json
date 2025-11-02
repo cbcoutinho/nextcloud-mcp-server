@@ -150,6 +150,16 @@
           "1073741824"
         ]
       }
+    },
+    {
+      "username": "service-account-nextcloud-mcp-server",
+      "enabled": true,
+      "serviceAccountClientId": "nextcloud-mcp-server",
+      "clientRoles": {
+        "realm-management": [
+          "impersonation"
+        ]
+      }
     }
   ],
   "clients": [
