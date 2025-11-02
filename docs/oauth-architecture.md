@@ -39,7 +39,7 @@ Phase 0: MCP Server Startup & Client Registration (DCR - RFC 7591)
                                           │  0d. Client credentials             │
                                           │<────────────────────────────────────┤
                                           │  {client_id, client_secret}         │
-                                          │  → Saved to .nextcloud_oauth_*.json │
+                                          │  → Saved to SQLite database         │
                                           │                                     │
                                           │  ✓ Server ready for connections     │
 
@@ -211,7 +211,7 @@ Insufficient Scope Example (Step-Up Authorization)
 - **PKCE Validation**: Verifies server advertises S256 code challenge method
 - **Dynamic Client Registration (DCR)**: Automatically registers OAuth client via `/apps/oidc/register` (RFC 7591)
   - Or loads pre-configured client credentials
-  - Saves credentials to `.nextcloud_oauth_client.json`
+  - Saves credentials to SQLite database
 - **Tool Registration**: Loads all MCP tools with their `@require_scopes` decorators
 
 #### Client Connection Phase
@@ -324,7 +324,7 @@ The OAuth flow consists of four distinct phases (see diagram above for visual re
    - MCP server registers itself as OAuth client (RFC 7591)
    - Provides: client name, redirect URIs, requested scopes, token type
    - Receives: `client_id`, `client_secret`
-   - Saves credentials to `.nextcloud_oauth_client.json`
+   - Saves credentials to SQLite database
 
 3. **Tool Registration**
    - All MCP tools loaded with their `@require_scopes` decorators
@@ -515,7 +515,7 @@ NEXTCLOUD_HOST=https://nextcloud.example.com
 **How it works**:
 1. Server checks `/.well-known/openid-configuration` for `registration_endpoint`
 2. Calls `/apps/oidc/register` to register a client on first startup
-3. Saves credentials to `.nextcloud_oauth_client.json`
+3. Saves credentials to SQLite database
 4. Reuses these credentials on subsequent startups
 5. Re-registers only if credentials are missing or expired
 
@@ -718,7 +718,6 @@ See [Configuration Guide](configuration.md) for all OAuth environment variables:
 | `NEXTCLOUD_OIDC_CLIENT_ID` | Pre-configured client ID (optional) |
 | `NEXTCLOUD_OIDC_CLIENT_SECRET` | Pre-configured client secret (optional) |
 | `NEXTCLOUD_MCP_SERVER_URL` | MCP server URL for OAuth callbacks |
-| `NEXTCLOUD_OIDC_CLIENT_STORAGE` | Path for auto-registered credentials |
 
 ## Testing
 

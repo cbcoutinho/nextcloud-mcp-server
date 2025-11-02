@@ -170,7 +170,7 @@ You have two options for managing OAuth clients:
 **How it works**:
 - MCP server automatically registers an OAuth client on first startup
 - Uses Nextcloud's dynamic client registration endpoint
-- Saves credentials to `.nextcloud_oauth_client.json`
+- Saves credentials to SQLite database
 - Reuses stored credentials on subsequent restarts
 - Re-registers automatically if credentials expire
 
@@ -253,9 +253,6 @@ NEXTCLOUD_PASSWORD=
 
 # Optional: MCP server URL (for OAuth callbacks)
 NEXTCLOUD_MCP_SERVER_URL=http://localhost:8000
-
-# Optional: Client storage path
-NEXTCLOUD_OIDC_CLIENT_STORAGE=.nextcloud_oauth_client.json
 EOF
 ```
 
@@ -291,7 +288,6 @@ EOF
 | `NEXTCLOUD_OIDC_CLIENT_ID` | ⚠️ Mode B only | - | OAuth client ID |
 | `NEXTCLOUD_OIDC_CLIENT_SECRET` | ⚠️ Mode B only | - | OAuth client secret |
 | `NEXTCLOUD_MCP_SERVER_URL` | ⚠️ Optional | `http://localhost:8000` | MCP server URL for callbacks |
-| `NEXTCLOUD_OIDC_CLIENT_STORAGE` | ⚠️ Optional | `.nextcloud_oauth_client.json` | Client credentials storage path |
 | `NEXTCLOUD_USERNAME` | ❌ Must be empty | - | Leave empty for OAuth |
 | `NEXTCLOUD_PASSWORD` | ❌ Must be empty | - | Leave empty for OAuth |
 
@@ -334,7 +330,7 @@ INFO     OIDC discovery successful
 INFO     Attempting dynamic client registration...
 INFO     Dynamic client registration successful
 INFO     OAuth client ready: <client-id>...
-INFO     Saved OAuth client credentials to .nextcloud_oauth_client.json
+INFO     Saved OAuth client credentials to SQLite database
 INFO     OAuth initialization complete
 INFO     MCP server ready at http://127.0.0.1:8000
 ```
@@ -427,9 +423,9 @@ uv run nextcloud-mcp-server --oauth --log-level debug
 
 2. **Secure Credential Storage**
    ```bash
-   # Set restrictive permissions
-   chmod 600 .nextcloud_oauth_client.json
+   # Set restrictive permissions on environment file
    chmod 600 .env
+   # Database permissions are handled automatically
    ```
 
 3. **Use HTTPS for MCP Server**
@@ -474,7 +470,7 @@ services:
       NEXTCLOUD_OIDC_CLIENT_SECRET: ${NEXTCLOUD_OIDC_CLIENT_SECRET}
       NEXTCLOUD_MCP_SERVER_URL: http://your-server:8000
     volumes:
-      - ./oauth_client.json:/app/.nextcloud_oauth_client.json
+      - ./data:/app/data  # For SQLite database persistence
     command: ["--oauth", "--transport", "streamable-http"]
     restart: unless-stopped
 ```

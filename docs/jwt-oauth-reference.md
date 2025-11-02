@@ -272,7 +272,7 @@ mcp-oauth:
 
 **Key Points:**
 - **No credentials needed** - DCR automatically registers the client on first start
-- **Credentials persist** - Saved to `.nextcloud_oauth_client.json` and reused
+- **Credentials persist** - Saved to SQLite database and reused
 - **JWT tokens** - Use `--oauth-token-type jwt` for better performance
 - **Token verifier supports both** - Can handle JWT and opaque tokens
 - **Pre-configured credentials** - Providing `CLIENT_ID`/`CLIENT_SECRET` skips DCR
@@ -286,7 +286,6 @@ mcp-oauth:
 | `NEXTCLOUD_PUBLIC_ISSUER_URL` | Public issuer URL for JWT validation | (uses `NEXTCLOUD_HOST`) |
 | `NEXTCLOUD_OIDC_CLIENT_ID` | Pre-configured OAuth client ID | (optional - uses DCR if unset) |
 | `NEXTCLOUD_OIDC_CLIENT_SECRET` | Pre-configured OAuth client secret | (optional - uses DCR if unset) |
-| `NEXTCLOUD_OIDC_CLIENT_STORAGE` | Path to persist DCR-registered credentials | `.nextcloud_oauth_client.json` |
 | `NEXTCLOUD_OIDC_SCOPES` | Space-separated scopes to request | `"openid profile email mcp:notes:read mcp:notes:write"` |
 | `NEXTCLOUD_OIDC_TOKEN_TYPE` | Token format: `"jwt"` or `"Bearer"` | `"Bearer"` |
 
@@ -303,8 +302,8 @@ When the MCP server starts in OAuth mode, it follows this **three-tier credentia
    ├─ NEXTCLOUD_OIDC_CLIENT_ID
    └─ NEXTCLOUD_OIDC_CLIENT_SECRET
 
-2. Storage File (Second Priority)
-   └─ NEXTCLOUD_OIDC_CLIENT_STORAGE (.nextcloud_oauth_client.json)
+2. SQLite Database (Second Priority)
+   └─ OAuth client credentials table
 
 3. Dynamic Client Registration (Automatic Fallback)
    ├─ Discovers registration endpoint from /.well-known/openid-configuration
@@ -327,10 +326,10 @@ export NEXTCLOUD_OIDC_TOKEN_TYPE=jwt  # or "Bearer" for opaque tokens
 
 **Credential Storage:**
 
-- Registered credentials are saved to `NEXTCLOUD_OIDC_CLIENT_STORAGE` (default: `.nextcloud_oauth_client.json`)
-- File has restrictive permissions (0600 - owner read/write only)
+- Registered credentials are saved to SQLite database
+- Database is encrypted and protected by file system permissions
 - Credentials are reused on subsequent starts (no re-registration needed)
-- Storage file is checked for expiration (auto-regenerates if expired)
+- Stored credentials are checked for expiration (auto-regenerates if expired)
 
 **Format:**
 ```json
@@ -386,9 +385,9 @@ export NEXTCLOUD_OIDC_CLIENT_ID="<client_id>"
 export NEXTCLOUD_OIDC_CLIENT_SECRET="<client_secret>"
 export NEXTCLOUD_OIDC_TOKEN_TYPE="jwt"
 
-# Option 2: Storage file (second priority)
-# Save the JSON response to .nextcloud_oauth_client.json
-# Server will automatically load it on startup
+# Option 2: SQLite database (second priority)
+# Credentials are automatically saved to the database after DCR
+# Server will automatically load them on startup
 ```
 
 When credentials are provided via environment variables or storage file, **DCR is skipped**.
@@ -724,7 +723,7 @@ docker compose exec db mariadb -u nextcloud -ppassword nextcloud \
 1. Ensure `NEXTCLOUD_OIDC_SCOPES` environment variable is set correctly
 2. Check MCP server startup logs for the scopes being requested
 3. Verify DCR is enabled in Nextcloud OIDC app settings
-4. Delete `.nextcloud_oauth_client.json` and restart to force re-registration
+4. Clear the SQLite database OAuth client entry and restart to force re-registration
 
 ### Issue: Token Type Case Sensitivity
 
