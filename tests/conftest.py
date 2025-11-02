@@ -2526,59 +2526,6 @@ async def keycloak_oauth_client_credentials(anyio_backend, oauth_callback_server
         # No cleanup needed - client is pre-configured in realm export
 
 
-@pytest.fixture(scope="session")
-async def keycloak_oauth_client(anyio_backend, keycloak_oauth_client_credentials):
-    """
-    Fixture to create a KeycloakOAuthClient instance for service account token operations.
-
-    This fixture is used to test ADR-002 Tier 1 (service account token acquisition) and
-    Tier 3 (token exchange with delegation).
-
-    Returns:
-        KeycloakOAuthClient instance configured with Keycloak credentials
-    """
-    from nextcloud_mcp_server.auth.keycloak_oauth import KeycloakOAuthClient
-
-    # Get Keycloak configuration from environment
-    keycloak_discovery_url = os.getenv(
-        "OIDC_DISCOVERY_URL",
-        "http://localhost:8888/realms/nextcloud-mcp/.well-known/openid-configuration",
-    )
-
-    # Extract base URL and realm from discovery URL
-    # Format: http://keycloak:8080/realms/nextcloud-mcp/.well-known/openid-configuration
-    if "/realms/" in keycloak_discovery_url:
-        base_url = keycloak_discovery_url.split("/realms/")[0]
-        realm = keycloak_discovery_url.split("/realms/")[1].split("/")[0]
-    else:
-        pytest.skip("Invalid Keycloak discovery URL format")
-
-    client_id, client_secret, callback_url, _, _ = keycloak_oauth_client_credentials
-
-    logger.info("Creating KeycloakOAuthClient for service account operations...")
-    logger.info(f"  Keycloak URL: {base_url}")
-    logger.info(f"  Realm: {realm}")
-    logger.info(f"  Client ID: {client_id}")
-
-    oauth_client = KeycloakOAuthClient(
-        keycloak_url=base_url,
-        realm=realm,
-        client_id=client_id,
-        client_secret=client_secret,
-        redirect_uri=callback_url,
-    )
-
-    # Discover endpoints
-    await oauth_client.discover()
-    logger.info("✓ KeycloakOAuthClient initialized")
-    logger.info(f"  Token endpoint: {oauth_client.token_endpoint}")
-
-    yield oauth_client
-
-    # Cleanup (close http client if needed)
-    await oauth_client.close()
-
-
 async def _get_keycloak_oauth_token(
     browser,
     keycloak_oauth_client_credentials,

@@ -51,14 +51,8 @@ We will implement a **tiered OAuth authentication strategy** for background oper
 - Background worker uses service account token directly
 - No user-specific delegation or impersonation
 - **Implementation**: `KeycloakOAuthClient.get_service_account_token()` (keycloak_oauth.py:341-395)
-- **Testing**:
-  - ✅ **Automated test**: `tests/server/oauth/test_keycloak_external_idp.py::test_keycloak_service_account_token_acquisition`
-  - ✅ **Manual test**: `tests/manual/test_token_exchange.py`
-- **Supported Providers**:
-  - ✅ **Keycloak** (external IdP mode) - Fully tested and validated
-  - ❌ **Nextcloud OIDC app** (integrated mode) - Not yet implemented (see app.py:631-635)
-    - The `KeycloakOAuthClient` class is provider-agnostic and works with any OIDC provider
-    - Extending support to Nextcloud OIDC app requires configuration/initialization only
+- **Testing**: Manual test in `tests/manual/test_token_exchange.py`
+- **TODO**: Automated integration tests needed for both Keycloak and Nextcloud OIDC app
 
 **Trade-offs**:
 - ✅ Works with nearly all OIDC providers

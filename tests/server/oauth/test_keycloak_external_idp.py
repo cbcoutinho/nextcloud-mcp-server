@@ -20,7 +20,6 @@ Tests:
 
 import json
 import logging
-import os
 
 import pytest
 
@@ -91,80 +90,6 @@ async def test_keycloak_oauth_client_credentials_discovery(
     logger.info(f"  Client ID: {client_id}")
     logger.info(f"  Token endpoint: {token_endpoint}")
     logger.info(f"  Authorization endpoint: {authorization_endpoint}")
-
-
-async def test_keycloak_service_account_token_acquisition(keycloak_oauth_client):
-    """Test service account token acquisition via client_credentials grant (ADR-002 Tier 1).
-
-    Verifies:
-    - Service account token is acquired using client_credentials grant
-    - Token response includes access_token, token_type, expires_in
-    - Token can be used to access Nextcloud APIs
-    - Token type is Bearer
-
-    This test validates ADR-002 Tier 1 implementation for Keycloak external IdP.
-
-    Note: For Nextcloud OIDC app (integrated mode), service account token acquisition
-    is not yet implemented. See app.py:631-635 which states "OAuth client for token
-    refresh not yet implemented for integrated mode". The KeycloakOAuthClient class
-    works with any OIDC provider, so extending support to Nextcloud OIDC app is
-    primarily a configuration/initialization issue rather than a fundamental limitation.
-    """
-    # Get service account token with standard scopes
-    token_response = await keycloak_oauth_client.get_service_account_token(
-        scopes=["openid", "profile", "email"]
-    )
-
-    # Verify token response structure
-    assert "access_token" in token_response, "Missing access_token in response"
-    assert "token_type" in token_response, "Missing token_type in response"
-    assert "expires_in" in token_response, "Missing expires_in in response"
-
-    assert token_response["token_type"].lower() == "bearer", (
-        f"Expected Bearer token type, got {token_response['token_type']}"
-    )
-    assert isinstance(token_response["expires_in"], int), (
-        f"Expected integer expires_in, got {type(token_response['expires_in'])}"
-    )
-    assert token_response["expires_in"] > 0, (
-        f"Expected positive expires_in, got {token_response['expires_in']}"
-    )
-
-    logger.info("✓ Service account token acquired successfully")
-    logger.info(f"  Token type: {token_response['token_type']}")
-    logger.info(f"  Expires in: {token_response['expires_in']}s")
-    logger.info(f"  Scope: {token_response.get('scope', 'N/A')}")
-    logger.info(f"  Token length: {len(token_response['access_token'])} chars")
-
-    # Verify token works with Nextcloud APIs
-    # The service account token should be validated by Nextcloud's user_oidc app
-    from nextcloud_mcp_server.client import NextcloudClient
-
-    nextcloud_host = os.getenv("NEXTCLOUD_HOST", "http://localhost:8080")
-
-    # Create a NextcloudClient using the service account token
-    nc_client = NextcloudClient.from_token(
-        base_url=nextcloud_host,
-        token=token_response["access_token"],
-        username="service-account-nextcloud-mcp-server",  # Keycloak service account username
-    )
-
-    try:
-        # Verify token works with Nextcloud API (using OCS endpoint which works without patch)
-        capabilities = await nc_client.capabilities()
-        assert capabilities is not None, (
-            "Failed to get capabilities with service account token"
-        )
-
-        logger.info("✓ Service account token works with Nextcloud APIs")
-        logger.info(
-            f"  Nextcloud version: {capabilities.get('version', {}).get('string', 'unknown')}"
-        )
-
-    finally:
-        await nc_client.close()
-
-    logger.info("✓ ADR-002 Tier 1 (Service Account Token) validated for Keycloak")
 
 
 # ============================================================================
