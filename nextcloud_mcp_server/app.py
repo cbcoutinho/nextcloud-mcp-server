@@ -268,21 +268,22 @@ async def load_oauth_client_credentials(
         logger.info("Using pre-configured OAuth client credentials from environment")
         return (client_id, client_secret)
 
-    # Try loading from storage file
-    storage_path = os.getenv(
-        "NEXTCLOUD_OIDC_CLIENT_STORAGE", ".nextcloud_oauth_client.json"
-    )
-    from pathlib import Path
+    # Try loading from SQLite storage
+    try:
+        from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
 
-    from nextcloud_mcp_server.auth.client_registration import load_client_from_file
+        storage = RefreshTokenStorage.from_env()
+        await storage.initialize()
 
-    client_info = load_client_from_file(Path(storage_path))
-
-    if client_info:
-        logger.info(
-            f"Loaded OAuth client from storage: {client_info.client_id[:16]}..."
-        )
-        return (client_info.client_id, client_info.client_secret)
+        client_data = await storage.get_oauth_client()
+        if client_data:
+            logger.info(
+                f"Loaded OAuth client from SQLite: {client_data['client_id'][:16]}..."
+            )
+            return (client_data["client_id"], client_data["client_secret"])
+    except ValueError:
+        # TOKEN_ENCRYPTION_KEY not set, skip SQLite storage check
+        logger.debug("SQLite storage not available (TOKEN_ENCRYPTION_KEY not set)")
 
     # Try dynamic registration if available
     if registration_endpoint:
@@ -334,15 +335,17 @@ async def load_oauth_client_credentials(
             token_type = "Bearer"
         logger.info(f"Requesting token type: {token_type}")
 
-        # Load or register client
-        from nextcloud_mcp_server.auth.client_registration import (
-            load_or_register_client,
-        )
+        # Ensure OAuth client in SQLite storage
+        from nextcloud_mcp_server.auth.client_registration import ensure_oauth_client
+        from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
 
-        client_info = await load_or_register_client(
+        storage = RefreshTokenStorage.from_env()
+        await storage.initialize()
+
+        client_info = await ensure_oauth_client(
             nextcloud_url=nextcloud_host,
             registration_endpoint=registration_endpoint,
-            storage_path=storage_path,
+            storage=storage,
             client_name=f"Nextcloud MCP Server ({token_type})",
             redirect_uris=redirect_uris,
             scopes=scopes,
@@ -356,8 +359,9 @@ async def load_oauth_client_credentials(
     raise ValueError(
         "OAuth mode requires either:\n"
         "1. NEXTCLOUD_OIDC_CLIENT_ID and NEXTCLOUD_OIDC_CLIENT_SECRET environment variables, OR\n"
-        "2. Pre-existing client credentials file at NEXTCLOUD_OIDC_CLIENT_STORAGE, OR\n"
-        "3. Dynamic client registration enabled on Nextcloud OIDC app"
+        "2. Pre-existing client credentials in SQLite storage (TOKEN_STORAGE_DB), OR\n"
+        "3. Dynamic client registration enabled on Nextcloud OIDC app\n\n"
+        "Note: TOKEN_ENCRYPTION_KEY is required for SQLite storage"
     )
 
 
@@ -1027,13 +1031,6 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     help="OAuth client secret (can also use NEXTCLOUD_OIDC_CLIENT_SECRET env var)",
 )
 @click.option(
-    "--oauth-storage-path",
-    envvar="NEXTCLOUD_OIDC_CLIENT_STORAGE",
-    default=".nextcloud_oauth_client.json",
-    show_default=True,
-    help="Path to store OAuth client credentials (can also use NEXTCLOUD_OIDC_CLIENT_STORAGE env var)",
-)
-@click.option(
     "--mcp-server-url",
     envvar="NEXTCLOUD_MCP_SERVER_URL",
     default="http://localhost:8000",
@@ -1084,7 +1081,6 @@ def run(
     oauth: bool | None,
     oauth_client_id: str | None,
     oauth_client_secret: str | None,
-    oauth_storage_path: str,
     mcp_server_url: str,
     nextcloud_host: str | None,
     nextcloud_username: str | None,
@@ -1139,8 +1135,6 @@ def run(
         os.environ["NEXTCLOUD_OIDC_CLIENT_ID"] = oauth_client_id
     if oauth_client_secret:
         os.environ["NEXTCLOUD_OIDC_CLIENT_SECRET"] = oauth_client_secret
-    if oauth_storage_path:
-        os.environ["NEXTCLOUD_OIDC_CLIENT_STORAGE"] = oauth_storage_path
     if oauth_scopes:
         os.environ["NEXTCLOUD_OIDC_SCOPES"] = oauth_scopes
     if oauth_token_type:
@@ -1183,13 +1177,7 @@ def run(
             click.echo("OAuth Configuration:", err=True)
             click.echo("  Mode: Dynamic Client Registration", err=True)
             click.echo("  Host: " + nextcloud_host, err=True)
-            click.echo(
-                "  Storage: "
-                + os.getenv(
-                    "NEXTCLOUD_OIDC_CLIENT_STORAGE", ".nextcloud_oauth_client.json"
-                ),
-                err=True,
-            )
+            click.echo("  Storage: SQLite (TOKEN_STORAGE_DB)", err=True)
             click.echo("", err=True)
             click.echo(
                 "Note: Make sure 'Dynamic Client Registration' is enabled", err=True

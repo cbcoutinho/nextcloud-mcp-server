@@ -27,7 +27,7 @@ from nextcloud_mcp_server.client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 
-pytestmark = [pytest.mark.integration, pytest.mark.oauth]
+pytestmark = [pytest.mark.integration, pytest.mark.keycloak]
 
 
 # ============================================================================

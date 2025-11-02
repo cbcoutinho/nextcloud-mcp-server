@@ -1,15 +1,14 @@
 """Dynamic client registration for Nextcloud OIDC."""
 
 import datetime as dt
-import json
 import logging
-import os
 import time
-from pathlib import Path
 from typing import Any
 
 import anyio
 import httpx
+
+from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
 
 logger = logging.getLogger(__name__)
 
@@ -170,72 +169,6 @@ async def register_client(
             raise ValueError(f"Invalid registration response: missing {e}")
 
 
-def load_client_from_file(storage_path: Path) -> ClientInfo | None:
-    """
-    Load client credentials from storage file.
-
-    Args:
-        storage_path: Path to the JSON file containing client credentials
-
-    Returns:
-        ClientInfo if file exists and is valid, None otherwise
-    """
-    if not storage_path.exists():
-        logger.debug(f"Client storage file not found: {storage_path}")
-        return None
-
-    try:
-        with open(storage_path, "r") as f:
-            data = json.load(f)
-
-        client_info = ClientInfo.from_dict(data)
-
-        if client_info.is_expired:
-            logger.warning(
-                f"Stored client has expired (expired at {client_info.client_secret_expires_at})"
-            )
-            return None
-
-        logger.info(f"Loaded client from storage: {client_info.client_id[:16]}...")
-        if client_info.expires_soon:
-            logger.warning("Client expires soon (within 5 minutes)")
-
-        return client_info
-
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
-        logger.error(f"Failed to load client from file: {e}")
-        return None
-
-
-def save_client_to_file(client_info: ClientInfo, storage_path: Path):
-    """
-    Save client credentials to storage file.
-
-    Args:
-        client_info: Client information to save
-        storage_path: Path to save the JSON file
-
-    Raises:
-        OSError: If file cannot be written
-    """
-    try:
-        # Create directory if it doesn't exist
-        storage_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Write client info
-        with open(storage_path, "w") as f:
-            json.dump(client_info.to_dict(), f, indent=2)
-
-        # Set restrictive permissions (owner read/write only)
-        os.chmod(storage_path, 0o600)
-
-        logger.info(f"Saved client credentials to {storage_path}")
-
-    except OSError as e:
-        logger.error(f"Failed to save client credentials: {e}")
-        raise
-
-
 async def delete_client(
     nextcloud_url: str,
     client_id: str,
@@ -362,28 +295,28 @@ async def delete_client(
         return False
 
 
-async def load_or_register_client(
+async def ensure_oauth_client(
     nextcloud_url: str,
     registration_endpoint: str,
-    storage_path: str | Path,
+    storage: RefreshTokenStorage,
     client_name: str = "Nextcloud MCP Server",
     redirect_uris: list[str] | None = None,
     scopes: str = "openid profile email",
     token_type: str = "Bearer",
 ) -> ClientInfo:
     """
-    Load client from storage or register a new one if not found/expired.
+    Ensure OAuth client exists in SQLite storage.
 
     This function:
-    1. Checks for existing client credentials in storage
+    1. Checks for existing client credentials in SQLite storage
     2. Validates the credentials are not expired
     3. Registers a new client if needed (no stored credentials or expired)
-    4. Saves the new client credentials
+    4. Saves the new client credentials to SQLite
 
     Args:
         nextcloud_url: Base URL of the Nextcloud instance
         registration_endpoint: Full URL to the registration endpoint
-        storage_path: Path to store client credentials
+        storage: RefreshTokenStorage instance for SQLite storage
         client_name: Name of the client application
         redirect_uris: List of redirect URIs
         scopes: Space-separated list of scopes to request (default: "openid profile email")
@@ -396,12 +329,13 @@ async def load_or_register_client(
         httpx.HTTPStatusError: If registration fails
         ValueError: If response is invalid
     """
-    storage_path = Path(storage_path)
-
-    # Try to load existing client
-    client_info = load_client_from_file(storage_path)
-    if client_info:
-        return client_info
+    # Try to load existing client from SQLite
+    client_data = await storage.get_oauth_client()
+    if client_data:
+        logger.info(
+            f"Loaded OAuth client from SQLite: {client_data['client_id'][:16]}..."
+        )
+        return ClientInfo.from_dict(client_data)
 
     # Register new client
     logger.info("Registering new OAuth client...")
@@ -414,7 +348,15 @@ async def load_or_register_client(
         token_type=token_type,
     )
 
-    # Save to storage
-    save_client_to_file(client_info, storage_path)
+    # Save to SQLite storage
+    await storage.store_oauth_client(
+        client_id=client_info.client_id,
+        client_secret=client_info.client_secret,
+        client_id_issued_at=client_info.client_id_issued_at,
+        client_secret_expires_at=client_info.client_secret_expires_at,
+        redirect_uris=client_info.redirect_uris,
+        registration_access_token=client_info.registration_access_token,
+        registration_client_uri=client_info.registration_client_uri,
+    )
 
     return client_info

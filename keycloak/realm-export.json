@@ -45,7 +45,10 @@
         "description": "${role_default-roles}",
         "composite": true,
         "composites": {
-          "realm": ["offline_access", "uma_authorization"]
+          "realm": [
+            "offline_access",
+            "uma_authorization"
+          ]
         },
         "clientRole": false
       }
@@ -66,9 +69,14 @@
           "temporary": false
         }
       ],
-      "realmRoles": ["default-roles-nextcloud-mcp", "offline_access"],
+      "realmRoles": [
+        "default-roles-nextcloud-mcp",
+        "offline_access"
+      ],
       "attributes": {
-        "quota": ["1073741824"]
+        "quota": [
+          "1073741824"
+        ]
       }
     }
   ],
@@ -108,7 +116,9 @@
         "http://localhost:*/callback",
         "http://127.0.0.1:*/callback"
       ],
-      "webOrigins": ["+"],
+      "webOrigins": [
+        "+"
+      ],
       "bearerOnly": false,
       "consentRequired": false,
       "standardFlowEnabled": true,
@@ -212,7 +222,12 @@
           }
         }
       ],
-      "defaultClientScopes": ["web-origins", "profile", "roles", "email"],
+      "defaultClientScopes": [
+        "web-origins",
+        "profile",
+        "roles",
+        "email"
+      ],
       "optionalClientScopes": [
         "address",
         "phone",
@@ -267,6 +282,48 @@
             "id.token.claim": "true",
             "access.token.claim": "true",
             "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "userinfo.token.claim": "true",
+            "user.attribute": "username",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "given name",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "userinfo.token.claim": "true",
+            "user.attribute": "firstName",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "given_name",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "family name",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "userinfo.token.claim": "true",
+            "user.attribute": "lastName",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "family_name",
+            "jsonType.label": "String"
           }
         }
       ]
@@ -544,6 +601,101 @@
         "display.on.consent.screen": "true",
         "consent.screen.text": "Create, update, and delete tasks"
       }
+    },
+    {
+      "name": "audience",
+      "description": "Audience scope for token validation",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "mcp-server-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "nextcloud-mcp-server",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "nextcloud-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "nextcloud",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
     }
+  ],
+  "components": {
+    "org.keycloak.services.clientregistration.policy.ClientRegistrationPolicy": [
+      {
+        "name": "Trusted Hosts",
+        "providerId": "trusted-hosts",
+        "subType": "anonymous",
+        "subComponents": {},
+        "config": {
+          "trusted-hosts": [
+            "localhost",
+            "127.0.0.1",
+            "172.19.0.1"
+          ],
+          "host-sending-registration-request-must-match": [
+            "false"
+          ],
+          "client-uris-must-match": [
+            "true"
+          ]
+        }
+      },
+      {
+        "name": "Max Clients",
+        "providerId": "max-clients",
+        "subType": "anonymous",
+        "subComponents": {},
+        "config": {
+          "max-clients": [
+            "200"
+          ]
+        }
+      }
+    ]
+  },
+  "defaultDefaultClientScopes": [
+    "profile",
+    "email",
+    "roles",
+    "web-origins",
+    "audience"
+  ],
+  "defaultOptionalClientScopes": [
+    "offline_access",
+    "notes:read",
+    "notes:write",
+    "calendar:read",
+    "calendar:write",
+    "contacts:read",
+    "contacts:write",
+    "cookbook:read",
+    "cookbook:write",
+    "deck:read",
+    "deck:write",
+    "tables:read",
+    "tables:write",
+    "files:read",
+    "files:write",
+    "sharing:read",
+    "sharing:write",
+    "todo:read",
+    "todo:write"
   ]
 }

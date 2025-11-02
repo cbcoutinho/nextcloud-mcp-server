@@ -1,7 +1,7 @@
 """OAuth authentication components for Nextcloud MCP server."""
 
 from .bearer_auth import BearerAuth
-from .client_registration import load_or_register_client, register_client
+from .client_registration import ensure_oauth_client, register_client
 from .context_helper import get_client_from_context
 from .scope_authorization import (
     InsufficientScopeError,
@@ -20,7 +20,7 @@ __all__ = [
     "BearerAuth",
     "NextcloudTokenVerifier",
     "register_client",
-    "load_or_register_client",
+    "ensure_oauth_client",
     "get_client_from_context",
     "require_scopes",
     "ScopeAuthorizationError",

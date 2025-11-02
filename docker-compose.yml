@@ -30,10 +30,10 @@ services:
       - db
     volumes:
       - nextcloud:/var/www/html
-      - ./app-hooks/post-installation:/docker-entrypoint-hooks.d/post-installation:ro
+      - ./app-hooks:/docker-entrypoint-hooks.d:ro
       # Mount OIDC development directory outside /var/www/html to avoid rsync conflicts
       # The post-installation hook will register /opt/apps as an additional app directory
-      - ./third_party/oidc:/opt/apps/oidc:ro
+      - ./third_party:/opt/apps:ro
     environment:
       - NEXTCLOUD_TRUSTED_DOMAINS=app
       - NEXTCLOUD_ADMIN_USER=admin
@@ -43,11 +43,11 @@ services:
       - MYSQL_USER=nextcloud
       - MYSQL_HOST=db
       - REDIS_HOST=redis
-    healthcheck:
-      test: ["CMD-SHELL", "curl -Ss http://localhost/status.php | grep '\"installed\":true' || exit 1"]
-      interval: 10s
-      timeout: 30s
-      retries: 30
+    #healthcheck:
+      #test: ["CMD-SHELL", "curl -Ss http://localhost/status.php | grep '\"installed\":true' || exit 1"]
+      #interval: 10s
+      #timeout: 30s
+      #retries: 30
 
   recipes:
     image: docker.io/library/nginx:alpine@sha256:b3c656d55d7ad751196f21b7fd2e8d4da9cb430e32f646adcf92441b72f82b14
@@ -115,6 +115,7 @@ services:
       - "start-dev"
       - "--import-realm"
       - "--hostname=http://localhost:8888"
+      - "--hostname-strict=false"
       - "--hostname-backchannel-dynamic=true"
     ports:
       - 127.0.0.1:8888:8080

@@ -15,4 +15,4 @@ php /var/www/html/occ config:system:set user_oidc httpclient.allowselfsigned --v
 # This enables user_oidc to fetch JWKS from internal Keycloak container
 php /var/www/html/occ config:system:set allow_local_remote_servers --value=true --type=boolean
 
-patch -u /var/www/html/custom_apps/user_oidc/lib/User/Backend.php -i /docker-entrypoint-hooks.d/post-installation/0001-Fix-Bearer-token-authentication-causing-session-logo.patch
+patch -u /var/www/html/custom_apps/user_oidc/lib/User/Backend.php -i /docker-entrypoint-hooks.d/patches/0001-Fix-Bearer-token-authentication-causing-session-logo.patch

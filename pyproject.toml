@@ -51,6 +51,7 @@ markers = [
     "integration: Integration tests requiring Docker containers",
     "oauth: OAuth tests requiring Playwright (slowest)",
     "smoke: Critical path smoke tests for quick validation",
+    "keycloak: OAuth tests that utilize keycloak external identity provider",
 ]
 testpaths = [
     "tests",

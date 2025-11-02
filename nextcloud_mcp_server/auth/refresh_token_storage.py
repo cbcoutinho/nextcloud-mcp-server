@@ -5,6 +5,7 @@ Securely stores and manages user refresh tokens for background operations.
 Tokens are encrypted at rest using Fernet symmetric encryption.
 """
 
+import json
 import logging
 import os
 import time
@@ -121,6 +122,24 @@ class RefreshTokenStorage:
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_audit_user_timestamp "
                 "ON audit_logs(user_id, timestamp)"
+            )
+
+            # OAuth client credentials storage
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS oauth_clients (
+                    id INTEGER PRIMARY KEY,
+                    client_id TEXT UNIQUE NOT NULL,
+                    encrypted_client_secret BLOB NOT NULL,
+                    client_id_issued_at INTEGER NOT NULL,
+                    client_secret_expires_at INTEGER NOT NULL,
+                    redirect_uris TEXT NOT NULL,
+                    encrypted_registration_access_token BLOB,
+                    registration_client_uri TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+                """
             )
 
             await db.commit()
@@ -294,6 +313,213 @@ class RefreshTokenStorage:
             logger.info(f"Cleaned up {deleted} expired refresh token(s)")
 
         return deleted
+
+    async def store_oauth_client(
+        self,
+        client_id: str,
+        client_secret: str,
+        client_id_issued_at: int,
+        client_secret_expires_at: int,
+        redirect_uris: list[str],
+        registration_access_token: Optional[str] = None,
+        registration_client_uri: Optional[str] = None,
+    ) -> None:
+        """
+        Store encrypted OAuth client credentials.
+
+        Args:
+            client_id: OAuth client identifier
+            client_secret: OAuth client secret (will be encrypted)
+            client_id_issued_at: Unix timestamp when client was issued
+            client_secret_expires_at: Unix timestamp when secret expires
+            redirect_uris: List of redirect URIs
+            registration_access_token: RFC 7592 registration token (will be encrypted)
+            registration_client_uri: RFC 7592 client management URI
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        # Encrypt sensitive data
+        encrypted_secret = self.cipher.encrypt(client_secret.encode())
+        encrypted_reg_token = (
+            self.cipher.encrypt(registration_access_token.encode())
+            if registration_access_token
+            else None
+        )
+
+        # Serialize redirect_uris as JSON
+        redirect_uris_json = json.dumps(redirect_uris)
+        now = int(time.time())
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO oauth_clients
+                (id, client_id, encrypted_client_secret, client_id_issued_at,
+                 client_secret_expires_at, redirect_uris, encrypted_registration_access_token,
+                 registration_client_uri, created_at, updated_at)
+                VALUES (
+                    1, ?, ?, ?, ?, ?, ?, ?,
+                    COALESCE((SELECT created_at FROM oauth_clients WHERE id = 1), ?),
+                    ?
+                )
+                """,
+                (
+                    client_id,
+                    encrypted_secret,
+                    client_id_issued_at,
+                    client_secret_expires_at,
+                    redirect_uris_json,
+                    encrypted_reg_token,
+                    registration_client_uri,
+                    now,
+                    now,
+                ),
+            )
+            await db.commit()
+
+        logger.info(
+            f"Stored OAuth client credentials (client_id: {client_id[:16]}..., "
+            f"expires at {client_secret_expires_at})"
+        )
+
+        # Audit log
+        await self._audit_log(
+            event="store_oauth_client",
+            user_id="system",
+            auth_method="oauth",
+        )
+
+    async def get_oauth_client(self) -> Optional[dict]:
+        """
+        Retrieve and decrypt OAuth client credentials.
+
+        Returns:
+            Dictionary with client credentials, or None if not found or expired:
+            {
+                "client_id": str,
+                "client_secret": str,
+                "client_id_issued_at": int,
+                "client_secret_expires_at": int,
+                "redirect_uris": list[str],
+                "registration_access_token": str | None,
+                "registration_client_uri": str | None,
+            }
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                """
+                SELECT client_id, encrypted_client_secret, client_id_issued_at,
+                       client_secret_expires_at, redirect_uris,
+                       encrypted_registration_access_token, registration_client_uri
+                FROM oauth_clients WHERE id = 1
+                """
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        if not row:
+            logger.debug("No OAuth client credentials found in storage")
+            return None
+
+        (
+            client_id,
+            encrypted_secret,
+            issued_at,
+            expires_at,
+            redirect_uris_json,
+            encrypted_reg_token,
+            reg_client_uri,
+        ) = row
+
+        # Check expiration
+        if expires_at < time.time():
+            logger.warning(
+                f"OAuth client has expired (expired at {expires_at}), deleting"
+            )
+            await self.delete_oauth_client()
+            return None
+
+        try:
+            # Decrypt sensitive data
+            client_secret = self.cipher.decrypt(encrypted_secret).decode()
+            reg_token = (
+                self.cipher.decrypt(encrypted_reg_token).decode()
+                if encrypted_reg_token
+                else None
+            )
+
+            # Deserialize redirect_uris
+            redirect_uris = json.loads(redirect_uris_json)
+
+            logger.debug(
+                f"Retrieved OAuth client credentials (client_id: {client_id[:16]}...)"
+            )
+
+            return {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "client_id_issued_at": issued_at,
+                "client_secret_expires_at": expires_at,
+                "redirect_uris": redirect_uris,
+                "registration_access_token": reg_token,
+                "registration_client_uri": reg_client_uri,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to decrypt OAuth client credentials: {e}")
+            return None
+
+    async def delete_oauth_client(self) -> bool:
+        """
+        Delete OAuth client credentials.
+
+        Returns:
+            True if client was deleted, False if not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("DELETE FROM oauth_clients WHERE id = 1")
+            await db.commit()
+            deleted = cursor.rowcount > 0
+
+        if deleted:
+            logger.info("Deleted OAuth client credentials from storage")
+            await self._audit_log(
+                event="delete_oauth_client",
+                user_id="system",
+                auth_method="oauth",
+            )
+        else:
+            logger.debug("No OAuth client credentials to delete")
+
+        return deleted
+
+    async def has_oauth_client(self) -> bool:
+        """
+        Check if OAuth client credentials exist (and are not expired).
+
+        Returns:
+            True if valid client exists, False otherwise
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT client_secret_expires_at FROM oauth_clients WHERE id = 1"
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        if not row:
+            return False
+
+        expires_at = row[0]
+        return expires_at >= time.time()
 
     async def _audit_log(
         self,
