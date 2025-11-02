@@ -111,7 +111,11 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.4.2
-    command: ["start-dev", "--import-realm"]
+    command:
+      - "start-dev"
+      - "--import-realm"
+      - "--hostname=http://localhost:8888"
+      - "--hostname-backchannel-dynamic=true"
     ports:
       - 127.0.0.1:8888:8080
     environment:
@@ -139,6 +143,7 @@ services:
     environment:
       # Generic OIDC configuration (external IdP mode - Keycloak)
       # Provider auto-detected from OIDC_DISCOVERY_URL issuer
+      # Using internal Docker hostname for discovery to get consistent issuer
       - OIDC_DISCOVERY_URL=http://keycloak:8080/realms/nextcloud-mcp/.well-known/openid-configuration
       - OIDC_CLIENT_ID=nextcloud-mcp-server
       - OIDC_CLIENT_SECRET=mcp-secret-change-in-production

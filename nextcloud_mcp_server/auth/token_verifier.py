@@ -191,10 +191,13 @@ class NextcloudTokenVerifier(TokenVerifier):
             logger.debug(f"JWT verified successfully for user: {payload.get('sub')}")
             logger.debug(f"Full JWT payload: {payload}")
 
-            # Extract username (sub claim)
-            username = payload.get("sub")
+            # Extract username (sub claim, with fallback to preferred_username)
+            # Some OIDC providers (like Keycloak) may not include sub in access tokens
+            username = payload.get("sub") or payload.get("preferred_username")
             if not username:
-                logger.error("No 'sub' claim found in JWT payload")
+                logger.error(
+                    "No 'sub' or 'preferred_username' claim found in JWT payload"
+                )
                 return None
 
             # Extract scopes from scope claim (space-separated string)

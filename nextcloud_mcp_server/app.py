@@ -385,49 +385,6 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
         await client.close()
 
 
-@asynccontextmanager
-async def app_lifespan_oauth(server: FastMCP) -> AsyncIterator[OAuthAppContext]:
-    """
-    Manage application lifecycle for OAuth mode.
-
-    Uses pre-initialized OAuth configuration from setup_oauth_config().
-    Does NOT create a Nextcloud client - clients are created per-request.
-    """
-    logger.info("Starting MCP server in OAuth mode")
-
-    # Get pre-initialized OAuth context from server dependencies
-    oauth_ctx = server.dependencies
-
-    nextcloud_host = oauth_ctx["nextcloud_host"]
-    token_verifier = oauth_ctx["token_verifier"]
-    refresh_token_storage = oauth_ctx["refresh_token_storage"]
-    oauth_client = oauth_ctx["oauth_client"]
-    oauth_provider = oauth_ctx["oauth_provider"]
-
-    logger.info(f"Using OAuth provider: {oauth_provider}")
-    if refresh_token_storage:
-        logger.info("Refresh token storage is available")
-    if oauth_client:
-        logger.info("OAuth client is available for token refresh")
-
-    # Initialize document processors
-    initialize_document_processors()
-
-    try:
-        yield OAuthAppContext(
-            nextcloud_host=nextcloud_host,
-            token_verifier=token_verifier,
-            refresh_token_storage=refresh_token_storage,
-            oauth_client=oauth_client,
-            oauth_provider=oauth_provider,
-        )
-    finally:
-        logger.info("Shutting down OAuth mode")
-        # Close OAuth client if it exists
-        if oauth_client and hasattr(oauth_client, "close"):
-            await oauth_client.close()
-
-
 async def setup_oauth_config():
     """
     Setup OAuth configuration by performing OIDC discovery and client registration.
@@ -498,7 +455,25 @@ async def setup_oauth_config():
 
     # Auto-detect provider mode based on issuer
     # External IdP mode: issuer doesn't match Nextcloud host
-    is_external_idp = not issuer.startswith(nextcloud_host)
+    # Normalize URLs for comparison (handle port differences like :80 for HTTP)
+    from urllib.parse import urlparse
+
+    def normalize_url(url: str) -> str:
+        """Normalize URL by removing default ports (80 for HTTP, 443 for HTTPS)."""
+        parsed = urlparse(url)
+        # Remove default ports
+        if (parsed.scheme == "http" and parsed.port == 80) or (
+            parsed.scheme == "https" and parsed.port == 443
+        ):
+            # Remove explicit default port
+            hostname = parsed.hostname or parsed.netloc.split(":")[0]
+            return f"{parsed.scheme}://{hostname}"
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    issuer_normalized = normalize_url(issuer)
+    nextcloud_normalized = normalize_url(nextcloud_host)
+
+    is_external_idp = not issuer_normalized.startswith(nextcloud_normalized)
 
     if is_external_idp:
         oauth_provider = "external"  # Could be Keycloak, Auth0, Okta, etc.
@@ -700,22 +675,46 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             oauth_provider,
         ) = anyio.run(setup_oauth_config)
 
-        # Store OAuth context for lifespan to access
-        # We'll pass this to the lifespan via server.deps
-        oauth_context = {
-            "nextcloud_host": nextcloud_host,
-            "token_verifier": token_verifier,
-            "refresh_token_storage": refresh_token_storage,
-            "oauth_client": oauth_client,
-            "oauth_provider": oauth_provider,
-        }
+        # Create lifespan function with captured OAuth context (closure)
+        @asynccontextmanager
+        async def oauth_lifespan(server: FastMCP) -> AsyncIterator[OAuthAppContext]:
+            """
+            Lifespan context for OAuth mode - captures OAuth configuration from outer scope.
+            """
+            logger.info("Starting MCP server in OAuth mode")
+            logger.info(f"Using OAuth provider: {oauth_provider}")
+            if refresh_token_storage:
+                logger.info("Refresh token storage is available")
+            if oauth_client:
+                logger.info("OAuth client is available for token refresh")
+
+            # Initialize document processors
+            initialize_document_processors()
+
+            try:
+                yield OAuthAppContext(
+                    nextcloud_host=nextcloud_host,
+                    token_verifier=token_verifier,
+                    refresh_token_storage=refresh_token_storage,
+                    oauth_client=oauth_client,
+                    oauth_provider=oauth_provider,
+                )
+            finally:
+                logger.info("Shutting down MCP server")
+                # RefreshTokenStorage uses context managers, no close() needed
+                # OAuth client cleanup (if it has a close method)
+                if oauth_client and hasattr(oauth_client, "close"):
+                    try:
+                        await oauth_client.close()
+                    except Exception as e:
+                        logger.warning(f"Error closing OAuth client: {e}")
+                logger.info("MCP server shutdown complete")
 
         mcp = FastMCP(
             "Nextcloud MCP",
-            lifespan=app_lifespan_oauth,
+            lifespan=oauth_lifespan,
             token_verifier=token_verifier,
             auth=auth_settings,
-            dependencies=oauth_context,
         )
     else:
         logger.info("Configuring MCP server for BasicAuth mode")
