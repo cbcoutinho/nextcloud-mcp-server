@@ -43,83 +43,137 @@ The MCP server will:
 
 ## Architecture
 
-### Federated OAuth Architecture
+### Token Broker Architecture with Linked Authorization
+
+The MCP server acts as a **token broker** using a linked authorization pattern:
+
+#### The Core Challenge
+When the MCP client authenticates to the MCP server, we need to:
+1. Authenticate the client to the MCP server (audience: "mcp-server")
+2. Obtain refresh tokens for Nextcloud access (audience: "nextcloud")
+3. Do this in a single OAuth flow from the user's perspective
+
+#### Solution: Linked Authorization with Scope-Based Audiences
+
+During initial OAuth authorization, the MCP server requests:
+- **Scopes**: `openid profile offline_access nextcloud:*`
+- **Initial audience**: `mcp-server` (for client authentication)
+- **Linked resources**: Configured in Keycloak to allow refresh tokens to mint tokens for Nextcloud
+
+The IdP (Keycloak) is configured to:
+1. Issue initial access token with `audience: "mcp-server"`
+2. Issue refresh token that can obtain tokens for BOTH audiences based on requested scopes
+3. Allow the MCP server to request different audiences when using the refresh token
+
+#### Token Types and Lifecycles
+
+1. **MCP Access Tokens** (audience: "mcp-server")
+   - Initial token from OAuth flow
+   - Authenticates MCP clients to MCP server
+   - Short-lived (1 hour)
+   - Cannot access Nextcloud directly
+
+2. **Nextcloud Access Tokens** (audience: "nextcloud")
+   - Obtained by MCP server using refresh token with audience parameter
+   - Used for Nextcloud API access
+   - Never exposed to MCP clients
+   - Refreshed as needed using stored refresh token
+
+3. **Master Refresh Token**
+   - Issued during initial OAuth with `offline_access` scope
+   - Can mint tokens for multiple configured audiences
+   - Stored encrypted by MCP server
+   - Enables both MCP authentication and Nextcloud access
 
 ```
 ┌─────────────┐                ┌─────────────────┐                ┌──────────────┐              ┌────────────┐
-│  MCP Client │◄──────401──────│   MCP Server    │◄────OAuth──────│  Shared IdP  │──Validates──►│ Nextcloud  │
-│  (Claude)   │                │  (OAuth Client) │   (On-Behalf)  │  (Keycloak)  │   Tokens     │(Resource)  │
+│  MCP Client │◄──────401──────│   MCP Server    │◄───Exchange────│  Shared IdP  │──Validates──►│ Nextcloud  │
+│  (Native)   │                │  (Token Broker) │    Tokens      │  (Keycloak)  │   Tokens     │(Resource)  │
 └─────────────┘                └─────────────────┘                └──────────────┘              └────────────┘
-                                        │
-                                ┌───────▼────────┐
-                                │ Token Storage  │
-                                │ (IdP Tokens)   │
-                                └────────────────┘
+       │                                │                                 │
+       │ Token (aud: mcp-server)        │                                 │
+       │ Via PKCE OAuth                 ├── Refresh Token ────────────────┤
+       ▼                                │                                 │
+┌─────────────┐                        ├── Get Token (aud: nextcloud) ───┤
+│   Validate  │                        │                                 │
+│ aud == "mcp"│                        ▼                                 ▼
+└─────────────┘                ┌───────────────┐                  ┌──────────────┐
+                               │Refresh Tokens │                  │Token Exchange│
+                               │   (Encrypted) │                  │   Endpoint   │
+                               └───────────────┘                  └──────────────┘
 ```
 
 **Key Components:**
-- **MCP Client**: Initiates connection, receives 401, opens OAuth flow
-- **MCP Server**: OAuth client to IdP, stores tokens, generates session tokens
-- **Shared IdP**: Central authentication, issues tokens with Nextcloud scopes
-- **Nextcloud**: Resource server, validates IdP tokens for API access
+- **MCP Client**: Native application using PKCE flow, receives tokens with `aud: "mcp-server"`
+- **MCP Server**: Token broker that validates MCP tokens, exchanges for Nextcloud tokens
+- **Shared IdP**: Issues audience-specific tokens, supports token exchange/refresh
+- **Nextcloud**: Validates tokens with `aud: "nextcloud"` for API access
 
 ### Authentication Flows
 
-#### Initial Setup (One-Time)
+#### Initial Setup with Linked Authorization (One-Time)
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant Browser
-    participant MCPClient as MCP Client
+    participant MCPClient as MCP Client<br/>(Native App)
     participant MCPServer as MCP Server
     participant IdP as Shared IdP (Keycloak)
     participant Nextcloud
 
     User->>MCPClient: Connect to MCP
     MCPClient->>MCPServer: Initial request
-    MCPServer-->>MCPClient: 401 Unauthorized
+    MCPServer-->>MCPClient: 401 Unauthorized + OAuth config
 
-    Note over MCPClient: WWW-Authenticate header<br/>points to IdP OAuth
+    Note over MCPClient: Generate PKCE values:<br/>code_verifier = random string<br/>code_challenge = SHA256(code_verifier)
 
-    MCPClient->>Browser: Open IdP OAuth URL
-    Browser->>MCPServer: GET /oauth/authorize
-    MCPServer->>Browser: Redirect to IdP
+    MCPClient->>MCPClient: Start local HTTP server<br/>on random port (e.g., :51234)
 
-    Browser->>IdP: Authorization Request
-    Note over IdP: Scopes include:<br/>- openid profile email<br/>- offline_access<br/>- nextcloud:notes:*
+    MCPClient->>MCPServer: GET /oauth/authorize<br/>+ code_challenge<br/>+ redirect_uri=http://localhost:51234/callback
+
+    MCPServer->>MCPServer: Store session with PKCE
+    MCPServer->>MCPClient: 302 Redirect to IdP
+
+    MCPClient->>IdP: Authorization Request<br/>+ code_challenge<br/>+ code_challenge_method=S256
+    Note over IdP: Requested scopes:<br/>- openid profile email<br/>- offline_access<br/>- nextcloud:notes:*<br/>Initial audience: mcp-server
 
     IdP->>User: Login page
     User->>IdP: Authenticate once
 
     IdP->>User: Consent screen
-    Note over IdP: "Allow MCP Server to:<br/>- Verify your identity<br/>- Access data offline<br/>- Read/write Nextcloud"
+    Note over IdP: "Allow MCP Server to:<br/>- Authenticate you<br/>- Access data offline<br/>- Access Nextcloud on your behalf"
 
     User->>IdP: Grant consent
-    IdP->>Browser: Redirect with code
-    Browser->>MCPServer: /oauth/callback?code=...
+    IdP->>MCPClient: 302 Redirect to localhost:51234<br/>with authorization code
 
-    MCPServer->>IdP: Exchange code for tokens
-    IdP->>MCPServer: id_token, access_token, refresh_token
+    MCPClient->>MCPServer: POST /oauth/token<br/>code + code_verifier
 
-    Note over MCPServer: Two token sets created:<br/>1. Store IdP refresh token<br/>2. Issue MCP session token
+    MCPServer->>MCPServer: Verify PKCE<br/>(SHA256(code_verifier) == code_challenge)
 
-    MCPServer->>MCPServer: Store IdP tokens (encrypted)
-    MCPServer->>MCPServer: Generate MCP session token
-    MCPServer-->>Browser: Success + session info
+    MCPServer->>IdP: Exchange code for tokens<br/>+ code_verifier
+    IdP->>MCPServer: Tokens with aud:"mcp-server"<br/>+ Master refresh token
 
-    Browser-->>MCPClient: Authentication complete
-    MCPClient->>MCPServer: Retry with session token
+    Note over MCPServer: Received:<br/>- Access token (aud: mcp-server)<br/>- Master refresh token<br/>(can mint both audiences)
 
-    MCPServer->>IdP: Use stored access token
-    MCPServer->>Nextcloud: API call with IdP token
-    Nextcloud->>IdP: Validate token (introspection)
-    IdP-->>Nextcloud: Token valid + scopes
+    MCPServer->>MCPServer: Store master refresh token<br/>(encrypted)
+    MCPServer-->>MCPClient: Return access token<br/>(aud: mcp-server)
+
+    MCPClient->>MCPServer: Retry with token<br/>(aud: mcp-server)
+    MCPServer->>MCPServer: Validate audience
+
+    Note over MCPServer: Need Nextcloud access,<br/>use refresh token
+
+    MCPServer->>IdP: POST /token<br/>refresh_token + audience=nextcloud
+    IdP->>MCPServer: New token (aud: nextcloud)
+
+    MCPServer->>Nextcloud: API call with token<br/>(aud: nextcloud)
+    Nextcloud->>IdP: Validate token + audience
+    IdP-->>Nextcloud: Valid for Nextcloud
     Nextcloud-->>MCPServer: API response
     MCPServer-->>MCPClient: Success
 ```
 
-#### Subsequent MCP Sessions
+#### Subsequent MCP Sessions (Token Broker Pattern)
 
 ```mermaid
 sequenceDiagram
@@ -129,24 +183,29 @@ sequenceDiagram
     participant IdP as Shared IdP
     participant Nextcloud
 
-    MCPClient->>MCPServer: Request with MCP session token
-    MCPServer->>MCPServer: Validate MCP session
-    MCPServer->>TokenStore: Get user's IdP tokens
-    TokenStore-->>MCPServer: Encrypted tokens (status='active')
-    MCPServer->>MCPServer: Check expiry
+    MCPClient->>MCPServer: Request with token<br/>(aud: mcp-server)
+    MCPServer->>MCPServer: Validate token audience<br/>Must be "mcp-server"
 
-    alt Token Expired
-        MCPServer->>TokenStore: Mark token as 'used'
-        MCPServer->>IdP: Refresh token request
-        IdP->>MCPServer: New access + refresh tokens
-        MCPServer->>TokenStore: Store new tokens (status='active')
+    Note over MCPServer: MCP auth valid,<br/>need Nextcloud token
+
+    MCPServer->>TokenStore: Get master refresh token
+    TokenStore-->>MCPServer: Encrypted refresh token
+
+    MCPServer->>MCPServer: Check cached<br/>Nextcloud token expiry
+
+    alt Nextcloud Token Expired or Missing
+        MCPServer->>IdP: POST /token<br/>grant_type=refresh_token<br/>audience=nextcloud
+        IdP->>MCPServer: New access token<br/>(aud: nextcloud)
+        MCPServer->>TokenStore: Cache Nextcloud token<br/>(short TTL)
     end
 
-    MCPServer->>Nextcloud: API call with IdP access token
-    Nextcloud->>IdP: Validate token
-    IdP-->>Nextcloud: Valid + scopes
+    MCPServer->>Nextcloud: API call with token<br/>(aud: nextcloud)
+    Nextcloud->>IdP: Validate token + audience
+    IdP-->>Nextcloud: Valid for Nextcloud
     Nextcloud-->>MCPServer: API response
     MCPServer-->>MCPClient: MCP response
+
+    Note over MCPClient,MCPServer: Client only sees<br/>aud:"mcp-server" tokens
 ```
 
 #### Background Operations
@@ -177,124 +236,225 @@ sequenceDiagram
 
 ## Implementation
 
-### 1. Federated Token Verifier
+### 1. Token Broker Verifier
 
 ```python
-class FederatedTokenVerifier(TokenVerifier):
-    """Verifies MCP session tokens and manages IdP tokens."""
+import jwt
+from datetime import datetime, timedelta
 
-    def __init__(self, token_storage: RefreshTokenStorage, idp_client: OAuthClient):
+class TokenBrokerVerifier(TokenVerifier):
+    """Token broker that maintains audience isolation between MCP and Nextcloud."""
+
+    def __init__(self,
+                 token_storage: RefreshTokenStorage,
+                 idp_client: OAuthClient):
         self.storage = token_storage
         self.idp_client = idp_client
+        self.nextcloud_token_cache = {}  # Short-lived cache
 
-    async def verify_token(self, token: str) -> AccessToken | None:
-        # Verify MCP session token
-        session = await self.verify_mcp_session(token)
-        if not session:
-            return None  # Will trigger 401 response
-
-        # Get stored IdP tokens for this user
-        idp_tokens = await self.storage.get_active_tokens(session.user_id)
-
-        if not idp_tokens:
-            # User needs to complete OAuth flow with IdP
-            return None  # Triggers 401 with WWW-Authenticate header
-
-        # Refresh if expired (with rotation)
-        if idp_tokens.is_expired():
-            idp_tokens = await self.rotate_refresh_token(
-                session.user_id,
-                idp_tokens
+    async def verify_mcp_token(self, token: str) -> dict | None:
+        """Verify IdP-issued token has MCP server audience."""
+        try:
+            # Decode without verification (IdP signed it)
+            # In production, verify with IdP public key
+            payload = jwt.decode(
+                token,
+                options={"verify_signature": False}
             )
 
-        # Return IdP access token for Nextcloud API use
+            # CRITICAL: Verify audience is MCP server
+            audiences = payload.get('aud', [])
+            if isinstance(audiences, str):
+                audiences = [audiences]
+
+            if 'mcp-server' not in audiences:
+                logger.warning(f"Token rejected: wrong audience {audiences}")
+                return None  # Not for MCP server
+
+            # Check expiry
+            if payload.get('exp', 0) < datetime.utcnow().timestamp():
+                return None
+
+            return {
+                'user_id': payload['sub'],
+                'session_id': payload.get('jti'),
+                'scopes': payload.get('scope', '').split()
+            }
+        except jwt.InvalidTokenError:
+            return None
+
+    async def get_nextcloud_token(self, user_id: str) -> str | None:
+        """Get or refresh token with Nextcloud audience."""
+        # Check cache first
+        cached = self.nextcloud_token_cache.get(user_id)
+        if cached and cached['exp'] > datetime.utcnow().timestamp():
+            return cached['token']
+
+        # Get master refresh token
+        refresh_token = await self.storage.get_refresh_token(user_id)
+        if not refresh_token:
+            return None  # User needs to re-authenticate
+
+        try:
+            # Request new token with Nextcloud audience
+            response = await self.idp_client.refresh_token(
+                refresh_token=refresh_token,
+                audience='nextcloud'  # CRITICAL: Request Nextcloud audience
+            )
+
+            # Verify the new token has correct audience
+            payload = jwt.decode(
+                response.access_token,
+                options={"verify_signature": False}
+            )
+
+            audiences = payload.get('aud', [])
+            if isinstance(audiences, str):
+                audiences = [audiences]
+
+            if 'nextcloud' not in audiences:
+                raise ValueError(f"IdP returned wrong audience: {audiences}")
+
+            # Cache for short period (5 minutes)
+            self.nextcloud_token_cache[user_id] = {
+                'token': response.access_token,
+                'exp': payload.get('exp', 0)
+            }
+
+            return response.access_token
+
+        except Exception as e:
+            logger.error(f"Failed to get Nextcloud token: {e}")
+            return None
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        """Main verification for MCP protocol with token brokering."""
+        # Step 1: Verify token has MCP audience
+        mcp_auth = await self.verify_mcp_token(token)
+        if not mcp_auth:
+            return None  # Triggers 401 response
+
+        # Step 2: Get separate token for Nextcloud access
+        nextcloud_token = await self.get_nextcloud_token(mcp_auth['user_id'])
+        if not nextcloud_token:
+            return None  # Failed to get backend token
+
+        # Return Nextcloud token for backend use
+        # MCP client never sees this token
         return AccessToken(
-            token=idp_tokens.access_token,
-            scopes=idp_tokens.scopes,
+            token=nextcloud_token,  # Token with aud: nextcloud
+            scopes=mcp_auth['scopes'],
             resource=json.dumps({
-                "user_id": session.user_id,
-                "idp_sub": idp_tokens.subject
+                "user_id": mcp_auth['user_id'],
+                "session_id": mcp_auth.get('session_id')
             })
         )
 
-    async def rotate_refresh_token(self, user_id: str, old_tokens: TokenSet):
-        """Rotate IdP refresh tokens with reuse detection."""
-        # Mark old token as 'used'
-        await self.storage.mark_token_used(old_tokens.token_id)
+    async def refresh_master_token(self, user_id: str):
+        """Refresh the master refresh token (with rotation)."""
+        old_refresh = await self.storage.get_refresh_token(user_id)
+        if not old_refresh:
+            raise ValueError("No refresh token found")
+
+        # Mark as used (rotation)
+        await self.storage.mark_token_used(old_refresh.token_id)
 
         try:
-            # Exchange with IdP for new tokens
-            new_tokens = await self.idp_client.refresh(old_tokens.refresh_token)
+            # Get new refresh token from IdP
+            response = await self.idp_client.refresh_token(
+                refresh_token=old_refresh.token,
+                scope='openid profile offline_access nextcloud:*'
+            )
 
-            # Store new tokens in same family
-            await self.storage.store_tokens(
+            # Store new refresh token
+            await self.storage.store_refresh_token(
                 user_id=user_id,
-                token_family_id=old_tokens.token_family_id,
-                access_token=new_tokens.access_token,
-                refresh_token=new_tokens.refresh_token,
+                token_family_id=old_refresh.token_family_id,
+                refresh_token=response.refresh_token,
                 status='active'
             )
 
-            return new_tokens
+            return response.refresh_token
 
         except RefreshTokenReuseError:
             # Possible token theft - revoke entire family
-            await self.storage.revoke_token_family(old_tokens.token_family_id)
+            await self.storage.revoke_token_family(old_refresh.token_family_id)
             await self.alert_user_possible_breach(user_id)
             raise
 ```
 
-### 2. OAuth Endpoints (MCP Server as OAuth Client)
+### 2. OAuth Endpoints with PKCE (Native Client Support)
 
 ```python
+import hashlib
+import secrets
+from urllib.parse import urlencode
+
 @app.get("/oauth/authorize")
 async def oauth_authorize(
     response_type: str = "code",
     client_id: str = None,
     redirect_uri: str = None,
     scope: str = None,
-    state: str = None
+    state: str = None,
+    code_challenge: str = None,  # PKCE
+    code_challenge_method: str = "S256"  # PKCE
 ):
-    """MCP Server OAuth endpoint - redirects to Shared IdP."""
-    # Store MCP client details for callback
+    """MCP Server OAuth endpoint with PKCE support."""
+    # Validate redirect_uri is localhost (native client)
+    if not redirect_uri or not redirect_uri.startswith(('http://localhost:', 'http://127.0.0.1:')):
+        return {"error": "invalid_request", "error_description": "Invalid redirect_uri for native client"}
+
+    # Store MCP client details with PKCE
     session_id = str(uuid4())
+    authorization_code = secrets.token_urlsafe(32)
+
     await store_oauth_session(
         session_id=session_id,
         client_id=client_id,
         redirect_uri=redirect_uri,
-        state=state
+        state=state,
+        code_challenge=code_challenge,
+        code_challenge_method=code_challenge_method,
+        authorization_code=authorization_code  # Pre-generate for later
     )
 
     # Build IdP authorization URL with all needed scopes
-    idp_state = f"{session_id}:{generate_secure_state()}"
-    idp_auth_url = (
-        f"{IDP_AUTHORIZATION_ENDPOINT}?"
-        f"client_id={MCP_SERVER_CLIENT_ID}&"
-        f"redirect_uri={MCP_SERVER_URL}/oauth/callback&"
-        f"response_type=code&"
-        f"scope=openid profile email offline_access "  # Identity + offline
-        f"nextcloud:notes:read nextcloud:notes:write "  # Nextcloud scopes
-        f"nextcloud:calendar:read nextcloud:calendar:write&"
-        f"state={idp_state}&"
-        f"prompt=consent"  # Ensure refresh token is issued
-    )
+    idp_params = {
+        "client_id": MCP_SERVER_CLIENT_ID,
+        "redirect_uri": f"{MCP_SERVER_URL}/oauth/callback",
+        "response_type": "code",
+        "scope": "openid profile email offline_access "  # Identity + offline
+                 "nextcloud:notes:read nextcloud:notes:write "  # Nextcloud scopes
+                 "nextcloud:calendar:read nextcloud:calendar:write",
+        "state": f"{session_id}:{state}",  # Preserve client state
+        "prompt": "consent",  # Ensure refresh token
+        # Pass PKCE to IdP if supported
+        "code_challenge": code_challenge,
+        "code_challenge_method": code_challenge_method
+    }
 
+    idp_auth_url = f"{IDP_AUTHORIZATION_ENDPOINT}?{urlencode(idp_params)}"
     return RedirectResponse(idp_auth_url)
 
 @app.get("/oauth/callback")
 async def oauth_callback(code: str, state: str):
-    """Handle callback from Shared IdP."""
-    # Extract session ID from state
-    session_id, _ = state.split(":", 1)
-    oauth_session = await get_oauth_session(session_id)
+    """Handle IdP callback and redirect to native client."""
+    # Extract session ID and original client state
+    try:
+        session_id, client_state = state.split(":", 1)
+    except ValueError:
+        return {"error": "invalid_state"}
 
+    oauth_session = await get_oauth_session(session_id)
     if not oauth_session:
-        return {"error": "Invalid session"}
+        return {"error": "invalid_session"}
 
     # Exchange code with IdP for tokens
     tokens = await idp_client.exchange_code(
         code=code,
-        redirect_uri=f"{MCP_SERVER_URL}/oauth/callback"
+        redirect_uri=f"{MCP_SERVER_URL}/oauth/callback",
+        code_verifier=oauth_session.get('code_verifier')  # If IdP supports PKCE
     )
 
     # Decode ID token to get user info
@@ -321,52 +481,140 @@ async def oauth_callback(code: str, state: str):
         idp_subject=userinfo.sub
     )
 
-    # Generate MCP session token for the client
-    mcp_session_token = generate_mcp_session_token(user.id)
+    # Update session with user_id for token exchange
+    await update_oauth_session(session_id, user_id=user.id)
 
-    # Store MCP session
-    await store_mcp_session(mcp_session_token, user.id)
+    # CRITICAL: Redirect to native client with authorization code
+    # No HTML page! Native clients expect 302 redirect
+    redirect_params = {
+        "code": oauth_session.authorization_code,
+        "state": client_state  # Return original client state
+    }
 
-    # Return success page with session info
-    # (Implementation depends on client type - could be redirect, postMessage, etc.)
-    return HTMLResponse(f"""
-        <html>
-        <body>
-            <h1>Authorization Successful!</h1>
-            <p>Session token: {mcp_session_token}</p>
-            <p>You can now close this window and return to your MCP client.</p>
-            <script>
-                // Post message to opener if available
-                if (window.opener) {{
-                    window.opener.postMessage({{
-                        type: 'auth_complete',
-                        session_token: '{mcp_session_token}'
-                    }}, '*');
-                }}
-                window.close();
-            </script>
-        </body>
-        </html>
-    """)
+    redirect_url = f"{oauth_session.redirect_uri}?{urlencode(redirect_params)}"
+    return RedirectResponse(redirect_url, status_code=302)
 
 @app.post("/oauth/token")
 async def oauth_token(
     grant_type: str = Form(...),
     code: str = Form(None),
+    code_verifier: str = Form(None),  # PKCE
+    redirect_uri: str = Form(None),
+    client_id: str = Form(None),
     refresh_token: str = Form(None)
 ):
-    """Token endpoint for MCP clients."""
-    if grant_type == "authorization_code":
-        # Exchange authorization code for MCP tokens
-        # (This would be used if implementing full OAuth server)
-        pass
-    elif grant_type == "refresh_token":
-        # Refresh MCP session token
-        # (Separate from IdP token refresh)
-        pass
+    """Token endpoint that returns IdP tokens with MCP audience."""
 
-    # For now, session tokens are issued directly in callback
-    return {"error": "Not implemented"}
+    if grant_type == "authorization_code":
+        # Find session by authorization code
+        oauth_session = await get_oauth_session_by_code(code)
+        if not oauth_session:
+            return JSONResponse(
+                {"error": "invalid_grant", "error_description": "Invalid authorization code"},
+                status_code=400
+            )
+
+        # Verify PKCE
+        if oauth_session.code_challenge:
+            if not code_verifier:
+                return JSONResponse(
+                    {"error": "invalid_request", "error_description": "code_verifier required"},
+                    status_code=400
+                )
+
+            # Compute challenge from verifier
+            computed_challenge = base64.urlsafe_b64encode(
+                hashlib.sha256(code_verifier.encode()).digest()
+            ).decode().rstrip('=')
+
+            if computed_challenge != oauth_session.code_challenge:
+                return JSONResponse(
+                    {"error": "invalid_grant", "error_description": "PKCE verification failed"},
+                    status_code=400
+                )
+
+        # Verify redirect_uri matches
+        if redirect_uri != oauth_session.redirect_uri:
+            return JSONResponse(
+                {"error": "invalid_grant", "error_description": "redirect_uri mismatch"},
+                status_code=400
+            )
+
+        # Get stored IdP tokens for this session
+        # These were stored during the callback from IdP
+        idp_tokens = await get_idp_tokens_for_session(oauth_session.session_id)
+
+        # Verify the access token has MCP audience
+        payload = jwt.decode(
+            idp_tokens.access_token,
+            options={"verify_signature": False}
+        )
+
+        audiences = payload.get('aud', [])
+        if isinstance(audiences, str):
+            audiences = [audiences]
+
+        if 'mcp-server' not in audiences:
+            return JSONResponse(
+                {"error": "invalid_grant", "error_description": "Token missing MCP audience"},
+                status_code=400
+            )
+
+        # Invalidate authorization code
+        await invalidate_oauth_session(oauth_session.session_id)
+
+        # Return IdP tokens (with aud: mcp-server)
+        # Client gets the actual IdP token, not an MCP-generated one
+        return {
+            "access_token": idp_tokens.access_token,  # IdP token with aud: mcp-server
+            "token_type": "Bearer",
+            "expires_in": idp_tokens.expires_in,
+            "scope": idp_tokens.scope,
+            "refresh_token": idp_tokens.refresh_token  # Master refresh token
+        }
+
+    elif grant_type == "refresh_token":
+        # Refresh with IdP for new MCP-audience token
+        try:
+            # Use master refresh token to get new MCP token
+            response = await idp_client.refresh_token(
+                refresh_token=refresh_token,
+                audience='mcp-server'  # Request MCP audience
+            )
+
+            # Verify audience
+            payload = jwt.decode(
+                response.access_token,
+                options={"verify_signature": False}
+            )
+
+            audiences = payload.get('aud', [])
+            if isinstance(audiences, str):
+                audiences = [audiences]
+
+            if 'mcp-server' not in audiences:
+                return JSONResponse(
+                    {"error": "invalid_grant", "error_description": "Refreshed token missing MCP audience"},
+                    status_code=400
+                )
+
+            return {
+                "access_token": response.access_token,
+                "token_type": "Bearer",
+                "expires_in": response.expires_in,
+                "scope": response.scope,
+                "refresh_token": response.refresh_token  # New refresh token if rotated
+            }
+        except Exception as e:
+            return JSONResponse(
+                {"error": "invalid_grant", "error_description": str(e)},
+                status_code=400
+            )
+
+    return JSONResponse(
+        {"error": "unsupported_grant_type"},
+        status_code=400
+    )
 ```
 
 ### 3. 401 Response with WWW-Authenticate
@@ -440,12 +688,16 @@ CREATE TABLE mcp_sessions (
     last_used INTEGER
 );
 
--- OAuth flow sessions (temporary during auth)
+-- OAuth flow sessions with PKCE support (temporary during auth)
 CREATE TABLE oauth_sessions (
     session_id TEXT PRIMARY KEY,
     client_id TEXT,
-    redirect_uri TEXT,
+    redirect_uri TEXT NOT NULL,
     state TEXT,
+    code_challenge TEXT,            -- PKCE code challenge
+    code_challenge_method TEXT,     -- PKCE method (S256)
+    authorization_code TEXT UNIQUE,  -- Pre-generated auth code
+    user_id TEXT,                   -- Set after IdP authentication
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
 );
@@ -463,11 +715,11 @@ CREATE TABLE token_audit_log (
 );
 ```
 
-### 5. Background Worker with IdP Token Refresh
+### 5. Background Worker (IdP Tokens Only)
 
 ```python
 class BackgroundSyncWorker:
-    """Sync user data using IdP tokens."""
+    """Background workers use IdP tokens directly - no MCP session tokens."""
 
     def __init__(self, token_storage: RefreshTokenStorage):
         self.storage = token_storage
@@ -475,51 +727,82 @@ class BackgroundSyncWorker:
         self.nextcloud_url = os.getenv("NEXTCLOUD_HOST")
 
     async def sync_user_data(self, user_id: str):
-        """Sync data using IdP tokens with Nextcloud scopes."""
-        # Get active refresh token from IdP
-        tokens = await self.storage.get_active_tokens(user_id)
-        if not tokens:
+        """
+        Sync data using IdP tokens ONLY.
+
+        Key Points:
+        - Workers NEVER use MCP session tokens (those are for client auth)
+        - Workers directly refresh IdP tokens with the IdP
+        - IdP tokens have audience: "nextcloud" for backend access
+        - No MCP client involvement required
+        """
+        # Get active IdP refresh token (NOT MCP token)
+        idp_tokens = await self.storage.get_active_tokens(user_id)
+        if not idp_tokens:
             logger.warning(f"No active IdP tokens for user {user_id}")
             return
 
         # Mark token as used immediately (rotation)
-        await self.storage.mark_token_used(tokens.id)
+        await self.storage.mark_token_used(idp_tokens.id)
 
         try:
-            # Exchange with IdP for new tokens
-            new_tokens = await self.idp_client.refresh(tokens.refresh_token)
+            # Exchange with IdP for new tokens (direct IdP communication)
+            new_tokens = await self.idp_client.refresh(idp_tokens.refresh_token)
+
+            # Verify audience is for Nextcloud (security check)
+            id_token_claims = jwt.decode(
+                new_tokens.id_token,
+                options={"verify_signature": False}
+            )
+            if 'nextcloud' not in id_token_claims.get('aud', []):
+                raise ValueError("IdP token missing Nextcloud audience")
 
             # Store new tokens in same family
             await self.storage.store_tokens(
                 user_id=user_id,
-                token_family_id=tokens.token_family_id,
+                token_family_id=idp_tokens.token_family_id,
                 access_token=new_tokens.access_token,
                 refresh_token=new_tokens.refresh_token,
                 status='active'
             )
 
             # Create Nextcloud client with IdP access token
-            # Nextcloud will validate this token with the IdP
+            # Token has audience: "nextcloud" and proper scopes
             client = NextcloudClient.from_token(
                 base_url=self.nextcloud_url,
-                token=new_tokens.access_token,
-                username=tokens.username
+                token=new_tokens.access_token,  # IdP token, NOT MCP token
+                username=idp_tokens.username
             )
 
-            # Perform sync operations
+            # Perform sync operations with Nextcloud
             await self.sync_notes(user_id, client)
             await self.sync_calendar(user_id, client)
             await self.sync_contacts(user_id, client)
 
+            logger.info(f"Background sync completed for user {user_id}")
+
         except HTTPStatusError as e:
             if e.response.status_code == 401:
                 # Token rejected by IdP or Nextcloud
-                await self.storage.revoke_token_family(tokens.token_family_id)
-                await self.log_security_event(user_id, "token_revoked", tokens.token_family_id)
+                await self.storage.revoke_token_family(idp_tokens.token_family_id)
+                await self.log_security_event(
+                    user_id,
+                    "token_revoked",
+                    f"Token family {idp_tokens.token_family_id} revoked due to 401"
+                )
+            raise
+        except RefreshTokenReuseError:
+            # Detected token reuse - possible security breach
+            await self.log_security_event(
+                user_id,
+                "reuse_detected",
+                f"Token reuse detected for family {idp_tokens.token_family_id}"
+            )
             raise
         except Exception as e:
             # Revert token status on failure
-            await self.storage.revert_token_status(tokens.id)
+            await self.storage.revert_token_status(idp_tokens.id)
+            logger.error(f"Background sync failed for user {user_id}: {e}")
             raise
 
     async def log_security_event(self, user_id: str, event: str, details: str):
@@ -527,7 +810,8 @@ class BackgroundSyncWorker:
         await self.storage.log_audit(
             user_id=user_id,
             operation=event,
-            details=details
+            details=details,
+            timestamp=datetime.utcnow().isoformat()
         )
 ```
 
@@ -579,28 +863,103 @@ async def setup_idp_client():
 
 ## Security Considerations
 
-### Token Storage
-- All refresh tokens MUST be encrypted at rest (Fernet or similar)
-- Database access must be restricted to the MCP server process
-- Consider using hardware security modules (HSM) for production
+### Audience Isolation Architecture
 
-### Token Rotation
-- **Full rotation implemented**: Each refresh creates new access AND refresh tokens
-- **Reuse detection**: Any attempt to use an already-used token revokes the entire family
-- **Atomic operations**: Token status updates must be atomic to prevent race conditions
-- **Audit logging**: All token operations are logged for security analysis
+#### Core Security Principle: Token Audience Separation
+The architecture enforces **strict audience isolation** to prevent token misuse:
 
-### Trust Relationships
-- **IdP Trust**: Both MCP server and Nextcloud must trust the IdP
-- **Audience Validation**: Tokens must include proper audience claims
-- **Scope Verification**: Each service validates only its required scopes
-- **Certificate Pinning**: Consider pinning IdP certificates in production
+- **Tokens with `audience: "mcp-server"`** can ONLY authenticate to MCP server
+- **Tokens with `audience: "nextcloud"`** can ONLY access Nextcloud APIs
+- **No token has multiple audiences** - this would be a security boundary violation
+- **Compromised MCP tokens cannot access Nextcloud** directly
 
-### Revocation
-- Implement webhook listener for IdP revocation events
-- Immediate family revocation on reuse detection
-- Clear MCP sessions on logout
-- Propagate revocation to Nextcloud if needed
+#### Token Broker Security Model
+
+The MCP server acts as a **secure token broker**:
+1. Validates incoming tokens have `audience: "mcp-server"`
+2. Uses stored refresh tokens to obtain `audience: "nextcloud"` tokens
+3. Never exposes Nextcloud tokens to MCP clients
+4. Maintains separate token lifecycles for each audience
+
+#### Audience Validation Examples
+```python
+# MCP Access Token (from IdP)
+{
+  "aud": "mcp-server",      # Single audience ONLY
+  "sub": "user-123",
+  "scope": "mcp:full",
+  "exp": 1234567890
+}
+
+# Nextcloud Access Token (obtained via refresh)
+{
+  "aud": "nextcloud",        # Different audience
+  "sub": "user-123",
+  "scope": "notes:read calendar:write",
+  "exp": 1234567890
+}
+
+# Master Refresh Token Claims
+{
+  "sub": "user-123",
+  "scope": "openid profile offline_access nextcloud:*",
+  "allowed_audiences": ["mcp-server", "nextcloud"]  # Can mint both
+}
+```
+
+### PKCE Protection
+- **Mandatory for native clients** (RFC 7636)
+- Code verifier: 43-128 character random string
+- Code challenge: SHA256(code_verifier)
+- Prevents authorization code interception
+- Validated before token issuance
+
+### Native Client Security
+- **Localhost redirect only** (RFC 8252)
+  - Restrict to `http://localhost:*` or `http://127.0.0.1:*`
+  - Dynamic port allocation per session
+  - No custom URL schemes allowed
+- **System browser required** - no embedded browsers
+- **302 redirect flow** - direct redirect, no HTML page
+
+### Token Storage Security
+- **Master refresh tokens**: Encrypted at rest (Fernet/AES-256)
+- **Audience-specific caching**: Short-lived cache for Nextcloud tokens
+- **Database isolation**: Refresh tokens never exposed to application layer
+- **Key rotation**: Support for encryption key rotation
+- **Hardware security**: Consider HSM for production
+
+### Token Rotation with Audience Preservation
+- **Rotation maintains audience**: New tokens keep same audience
+- **Reuse detection**: Previous use revokes entire token family
+- **Atomic operations**: Database transactions prevent races
+- **Audit trail**: All exchanges logged with audience info
+
+### Trust Boundaries
+
+```
+┌──────────────┐     aud:"mcp-server"     ┌──────────────┐
+│  MCP Client  │──────────────────────────►│  MCP Server  │
+└──────────────┘                           └───────┬──────┘
+                                                   │
+                                          Refresh for different
+                                               audience
+                                                   │
+┌──────────────┐     aud:"nextcloud"      ┌───────▼──────┐
+│  Nextcloud   │◄──────────────────────────│     IdP      │
+└──────────────┘                           └──────────────┘
+```
+
+1. **MCP Client → MCP Server**: Only `aud:"mcp-server"` tokens
+2. **MCP Server → IdP**: Refresh with audience parameter
+3. **MCP Server → Nextcloud**: Only `aud:"nextcloud"` tokens
+4. **No direct path**: Client cannot use MCP tokens for Nextcloud
+
+### Revocation and Breach Response
+- **Audience-specific revocation**: Can revoke MCP without affecting Nextcloud
+- **Token family tracking**: All tokens from same refresh chain
+- **Immediate propagation**: Revocation flows through trust chain
+- **Breach isolation**: Compromised MCP tokens don't grant Nextcloud access
 
 ## Migration Strategy
 
@@ -655,16 +1014,137 @@ async def setup_idp_client():
 - **Cons**: Poor UX with two login prompts
 - **Rejected**: Users shouldn't authenticate twice
 
+## Token Exchange Pattern Implementation
+
+### How Audience-Specific Token Exchange Works
+
+The key to this architecture is the IdP's ability to issue tokens with different audiences from a single refresh token. This is achieved through:
+
+#### 1. Keycloak Configuration
+
+```javascript
+// Keycloak Client Configuration for MCP Server
+{
+  "clientId": "mcp-server",
+  "standardFlowEnabled": true,
+  "serviceAccountsEnabled": false,
+  "publicClient": false,
+  "attributes": {
+    // Allow refresh tokens to request different audiences
+    "oauth2.device.authorization.grant.enabled": "false",
+    "oidc.ciba.grant.enabled": "false",
+    "oauth2.token.exchange.grant.enabled": "true"  // Enable token exchange
+  }
+}
+
+// Audience Mapper Configuration
+{
+  "name": "dynamic-audience-mapper",
+  "protocol": "openid-connect",
+  "protocolMapper": "oidc-audience-mapper",
+  "config": {
+    "included.client.audience": "mcp-server",  // Default audience
+    "access.token.claim": "true",
+    "id.token.claim": "false"
+  }
+}
+
+// Scope-to-Audience Mapping
+{
+  "mcp:*": "mcp-server",        // MCP scopes → mcp-server audience
+  "nextcloud:*": "nextcloud"     // Nextcloud scopes → nextcloud audience
+}
+```
+
+#### 2. Refresh Token with Audience Parameter
+
+When the MCP server needs a token for a specific audience:
+
+```http
+POST /realms/nextcloud-mcp/protocol/openid-connect/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=refresh_token
+&refresh_token=eyJhbGc...
+&client_id=mcp-server
+&client_secret=secret
+&audience=nextcloud  # Request specific audience
+```
+
+Response:
+```json
+{
+  "access_token": "eyJhbGc...",  // Token with aud: "nextcloud"
+  "expires_in": 300,
+  "refresh_token": "eyJhbGc...",  // Same or rotated refresh token
+  "token_type": "Bearer"
+}
+```
+
+#### 3. Alternative: Token Exchange (RFC 8693)
+
+For IdPs that support token exchange:
+
+```http
+POST /realms/nextcloud-mcp/protocol/openid-connect/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+&subject_token=eyJhbGc...  # Token with aud: "mcp-server"
+&subject_token_type=urn:ietf:params:oauth:token-type:access_token
+&requested_token_type=urn:ietf:params:oauth:token-type:access_token
+&audience=nextcloud  # Request different audience
+```
+
+### Why This Pattern Is Secure
+
+1. **Audience Validation at Every Layer**:
+   - MCP server validates `aud: "mcp-server"` for incoming requests
+   - Nextcloud validates `aud: "nextcloud"` for API calls
+   - Tokens with wrong audience are rejected
+
+2. **Unidirectional Token Flow**:
+   - Client → MCP: Only `aud: "mcp-server"`
+   - MCP → Nextcloud: Only `aud: "nextcloud"`
+   - No reverse flow possible
+
+3. **Breach Containment**:
+   - Stolen MCP token: Cannot access Nextcloud
+   - Stolen Nextcloud token: Cannot authenticate to MCP
+   - Stolen refresh token: Requires client credentials to use
+
+### Configuration for Popular IdPs
+
+#### Keycloak
+- Enable Token Exchange in realm settings
+- Configure audience mappers per client
+- Use protocol mappers for dynamic audiences
+
+#### Auth0
+- Use custom rules for audience selection
+- Configure API identifiers as audiences
+- Enable refresh token rotation
+
+#### Azure AD
+- Configure app registrations for each audience
+- Use scope-to-resource mapping
+- Enable conditional access policies
+
+#### Okta
+- Define custom authorization servers
+- Configure audience claim per API
+- Use inline hooks for dynamic audiences
+
 ## Decision Outcome
 
-The Federated Authentication Architecture provides a clean, enterprise-ready solution for offline access while maintaining OAuth compliance. By using a shared identity provider, we achieve:
+The Token Broker Architecture with Audience Isolation provides a secure, enterprise-ready solution for offline access while maintaining strict security boundaries. By using a shared identity provider with audience-specific tokens, we achieve:
 
-1. **Single user authentication** to a trusted IdP
-2. **Delegated access** to Nextcloud resources via scoped tokens
-3. **Offline capabilities** through secure refresh token storage and rotation
-4. **Enterprise integration** with existing identity infrastructure
+1. **Security through isolation**: Different audiences prevent token misuse
+2. **Single authentication**: Users authenticate once to the IdP
+3. **Offline capabilities**: Master refresh tokens enable background operations
+4. **Enterprise compliance**: Follows OAuth best practices and security standards
 
-This architecture follows industry best practices for federated systems and positions the MCP server as a standard OAuth client in an enterprise identity ecosystem.
+This architecture follows industry best practices for federated systems and positions the MCP server as a secure token broker in an enterprise identity ecosystem.
 
 ## References
 
