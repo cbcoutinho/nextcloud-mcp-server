@@ -5,6 +5,23 @@
 **Status**: Implementation Complete - Token Exchange Working
 **Conclusion**: Keycloak Standard Token Exchange (RFC 8693) working for internal-to-internal token exchange. User impersonation requires Legacy V1.
 
+---
+
+## ⚠️ IMPORTANT UPDATE (2025-11-02)
+
+**This document contains outdated information regarding service account tokens.**
+
+After implementation and testing, we discovered that service account tokens (`client_credentials` grant) **violate OAuth "act on-behalf-of" principles** by creating Nextcloud user accounts (e.g., `service-account-nextcloud-mcp-server`). This approach has been **REJECTED** and moved to ADR-002's "Will Not Implement" section.
+
+**Key Changes:**
+- ❌ **Service account tokens (client_credentials) are INVALID** - Creates user accounts, breaks audit trail
+- ✅ **Token exchange (RFC 8693) is the correct approach** - Implemented and working (ADR-002 Tier 2)
+- ✅ **Offline access with refresh tokens** - Still valid for background operations (ADR-002 primary approach)
+
+**For current architecture, see**: `docs/ADR-002-vector-sync-authentication.md`
+
+---
+
 ## Summary
 
 We investigated options for implementing user impersonation to enable background operations without requiring admin credentials (ADR-002 Tier 2). Here are the findings:

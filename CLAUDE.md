@@ -421,7 +421,7 @@ curl http://localhost:8888/realms/nextcloud-mcp/.well-known/openid-configuration
 # 3. Verify user_oidc provider is configured
 docker compose exec app php occ user_oidc:provider keycloak
 
-# 4. Generate encryption key for refresh token storage (optional, for ADR-002 Tier 1)
+# 4. Generate encryption key for refresh token storage (optional, for offline access)
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 # Set in environment: export TOKEN_ENCRYPTION_KEY='<key>'
 
@@ -507,12 +507,14 @@ docker compose exec app curl http://keycloak:8080/realms/nextcloud-mcp/.well-kno
 ```
 
 **ADR-002 Offline Access Testing:**
-The Keycloak integration enables testing ADR-002 Tier 1 (offline access with refresh tokens):
+The Keycloak integration enables testing ADR-002's primary authentication pattern (offline access with refresh tokens):
 
 1. **Refresh token storage**: Tokens stored encrypted in SQLite (`/app/data/tokens.db`)
 2. **Token refresh**: Access tokens refreshed automatically when expired
 3. **Background workers**: Can access APIs using stored refresh tokens
 4. **No admin credentials**: All operations use user's OAuth tokens
+
+**Note**: Service account tokens (client_credentials grant) were considered but rejected as they create Nextcloud user accounts and violate OAuth "act on-behalf-of" principles. See ADR-002 "Will Not Implement" section.
 
 See `docs/ADR-002-vector-sync-authentication.md` for architectural details.
 

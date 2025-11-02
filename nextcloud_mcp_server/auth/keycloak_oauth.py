@@ -342,9 +342,27 @@ class KeycloakOAuthClient:
         """
         Get a service account token using client_credentials grant.
 
-        This requires the client to have serviceAccountsEnabled=true in Keycloak.
-        The service account token can be used for server-initiated operations
-        or as the subject_token for token exchange.
+        ⚠️ **WARNING: DO NOT USE FOR DIRECT API ACCESS IN OAUTH MODE** ⚠️
+
+        This method creates a service account user in Nextcloud which VIOLATES
+        OAuth "act on-behalf-of" principles. Using this token directly for API
+        access will:
+        - Create a Nextcloud user: `service-account-{client_id}`
+        - Attribute all actions to service account instead of real user
+        - Break audit trail and user attribution
+        - Create stateful server identity in Nextcloud
+        - Violate OAuth security model
+
+        **Valid Use Case**: ONLY as subject_token for RFC 8693 token exchange
+        (ADR-002 Tier 2) where it's immediately exchanged for a user token.
+
+        **Invalid Use Case**: Direct API access with this token (ADR-002 rejected
+        this as "Tier 1" - see docs/ADR-002-vector-sync-authentication.md).
+
+        **Alternative**: Use token exchange (impersonation/delegation) for
+        background operations, or use BasicAuth mode if truly need service account.
+
+        This requires the client to have serviceAccountsEnabled=true in provider.
 
         Args:
             scopes: Optional list of scopes to request (default: openid profile email)
@@ -359,9 +377,9 @@ class KeycloakOAuthClient:
         Raises:
             httpx.HTTPError: If token request fails
 
-        Note:
-            This is used for ADR-002 Tier 2 (Token Exchange). The service account
-            token is exchanged for user-scoped tokens via RFC 8693.
+        See Also:
+            - ADR-002 "Will Not Implement" section for detailed critique
+            - exchange_token_for_user() for proper token exchange usage
         """
         if not self.token_endpoint:
             await self.discover()

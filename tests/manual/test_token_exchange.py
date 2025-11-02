@@ -83,6 +83,16 @@ async def main():
     logger.info("")
 
     # Step 3: Get service account token
+    # ⚠️ WARNING: Service account tokens MUST NOT be used directly with Nextcloud APIs!
+    # Using this token directly violates OAuth "act on-behalf-of" principles:
+    # - Creates Nextcloud user: service-account-{client_id}
+    # - Breaks audit trail (actions not attributable to real user)
+    # - Creates stateful server identity in Nextcloud
+    #
+    # VALID USE: ONLY as subject_token for RFC 8693 token exchange (Step 4 below)
+    # INVALID USE: Direct API access (see ADR-002 "Will Not Implement" section)
+    #
+    # If you need background operations without token exchange support, use BasicAuth mode.
     logger.info("Step 3: Requesting service account token (client_credentials)...")
     try:
         service_token_response = await oauth_client.get_service_account_token(

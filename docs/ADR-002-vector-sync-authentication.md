@@ -1,7 +1,9 @@
 # ADR-002: Vector Database Background Sync Authentication
 
 ## Status
-Accepted - Tier 2 (Token Exchange) Implemented
+Accepted - Tier 2 (Token Exchange with Delegation) Implemented
+
+**Important**: Service account tokens (old Tier 1) have been rejected as they violate OAuth "act on-behalf-of" principles by creating Nextcloud user accounts for the MCP server.
 
 ## Context
 
@@ -43,26 +45,28 @@ We will implement a **tiered OAuth authentication strategy** for background oper
 
 **Note**: This ADR applies only to **OAuth mode**. In BasicAuth mode (single-user deployments), credentials are already available via environment variables, and background operations work without additional configuration.
 
-### Tier 1: Service Account Token (client_credentials) ✅ **IMPLEMENTED**
+### OAuth "Act On-Behalf-Of" Principle
 
-**Most Compatible Option** - Works with all OIDC providers supporting `client_credentials`
+**Core Requirement**: The MCP server must NEVER create its own user identity in Nextcloud when operating in OAuth mode.
 
-- MCP server obtains service account token via `client_credentials` grant
-- Background worker uses service account token directly
-- No user-specific delegation or impersonation
-- **Implementation**: `KeycloakOAuthClient.get_service_account_token()` (keycloak_oauth.py:341-395)
-- **Testing**: Manual test in `tests/manual/test_token_exchange.py`
-- **TODO**: Automated integration tests needed for both Keycloak and Nextcloud OIDC app
+**Valid Patterns**:
+- ✅ **Foreground operations**: Use user's access token from MCP request (currently implemented)
+- ✅ **Background operations**: Token exchange to impersonate/delegate as user (requires provider support)
+- ❌ **Service account**: Creates independent identity in Nextcloud (violates OAuth principles)
 
-**Trade-offs**:
-- ✅ Works with nearly all OIDC providers
-- ✅ Simple implementation and configuration
-- ✅ No additional provider features required
-- ❌ Service account needs broad permissions across users
-- ❌ Less granular audit trail (all actions attributed to service account)
-- ❌ No per-user permission enforcement
+**Why This Matters**:
+1. **Audit Trail**: All operations must be attributable to the actual user, not a service account
+2. **Stateless Server**: MCP server should not have persistent identity/state in Nextcloud
+3. **Security Model**: Avoid creating "admin by another name" with broad cross-user permissions
+4. **OAuth Design**: OAuth tokens represent user authorization, not server authorization
 
-### Tier 2: Token Exchange with Impersonation (RFC 8693) ⚠️ **NOT IMPLEMENTED**
+**If Token Exchange Not Available**:
+- Background operations simply cannot happen in OAuth mode
+- This is correct behavior - not a limitation to work around
+- Don't create service accounts as "workaround" - this defeats OAuth's purpose
+- Use BasicAuth mode if background operations are critical to your deployment
+
+### Tier 1: Token Exchange with Impersonation (RFC 8693) ⚠️ **NOT IMPLEMENTED**
 
 **Better Security** - Requires provider support for user impersonation
 
@@ -79,7 +83,7 @@ We will implement a **tiered OAuth authentication strategy** for background oper
 **Status**: ⚠️ Not implemented - Keycloak Standard V2 doesn't support impersonation
 **Reference**: See `docs/oauth-impersonation-findings.md` for investigation details
 
-### Tier 3: Token Exchange with Delegation (RFC 8693) ✅ **IMPLEMENTED**
+### Tier 2: Token Exchange with Delegation (RFC 8693) ✅ **IMPLEMENTED**
 
 **Best Security** - Requires provider support for delegation with `act` claim
 
@@ -100,13 +104,26 @@ We will implement a **tiered OAuth authentication strategy** for background oper
 
 ### ❌ Will Not Implement
 
-**1. Offline Access with Refresh Tokens**
+**1. Service Account with Independent Identity (client_credentials)**
+- **Status**: Previously proposed as Tier 1, now rejected
+- **Why Invalid**: Creates Nextcloud user account for MCP server (e.g., `service-account-nextcloud-mcp-server`)
+- **Problems**:
+  - **Violates OAuth "act on-behalf-of" principle**: Actions attributed to service account instead of real user
+  - **Breaks audit trail**: Can't determine which user initiated the action
+  - **Creates stateful server identity**: MCP server has persistent identity/data in Nextcloud
+  - **Security risk**: Service account becomes "admin by another name" with broad cross-user permissions
+  - **User provisioning side effect**: Nextcloud's `user_oidc` app auto-provisions service account as real user
+- **Code Status**: Implementation exists (`KeycloakOAuthClient.get_service_account_token()`) but marked with warnings
+- **Alternative**: If service account pattern truly needed, use BasicAuth mode instead of OAuth mode
+- **Reference**: See commit c12df98 for detailed analysis of why this approach was rejected
+
+**2. Offline Access with Refresh Tokens**
 - **MCP Protocol Architecture**: FastMCP SDK manages OAuth where MCP Client handles refresh tokens
 - **Security Model**: Refresh tokens must never be shared between client and server (OAuth best practice)
 - **Technical Impossibility**: MCP Server has no access to refresh tokens from the OAuth callback
 - **Alternative**: Token exchange provides similar benefits without violating OAuth security model
 
-**2. Admin Credentials Fallback**
+**3. Admin Credentials Fallback**
 - **Out of Scope**: This ADR focuses on OAuth mode only
 - **Not Appropriate**: Admin credentials bypass OAuth security model
 - **BasicAuth Mode**: For single-user deployments needing background operations, use BasicAuth mode instead
@@ -122,50 +139,11 @@ We will implement a **tiered OAuth authentication strategy** for background oper
 
 ## Implementation Details
 
-### 1. Service Account Token (Tier 1 - Primary) ✅ IMPLEMENTED
-
-#### 1.1 Service Account Token Acquisition
-```python
-async def get_service_token() -> str:
-    """Get token for MCP server's service account"""
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            token_endpoint,
-            data={
-                "grant_type": "client_credentials",
-                "scope": "notes:read files:read calendar:read"
-            },
-            auth=(client_id, client_secret)
-        )
-        response.raise_for_status()
-        return response.json()["access_token"]
-```
-
-**Implementation**: `KeycloakOAuthClient.get_service_account_token()` (keycloak_oauth.py:341-395)
-
-**Usage**:
-```python
-# Background worker uses service account token directly
-service_token_data = await oauth_client.get_service_account_token(
-    scopes=["notes:read", "files:read", "calendar:read"]
-)
-
-client = NextcloudClient.from_token(
-    base_url=nextcloud_host,
-    token=service_token_data["access_token"],
-    username="service-account"
-)
-
-# All operations are performed as the service account
-notes = await client.notes.list_notes()
-```
-
-### 2. Token Exchange with Impersonation (Tier 2) ⚠️ NOT IMPLEMENTED
+### 1. Token Exchange with Impersonation (Tier 1) ⚠️ NOT IMPLEMENTED
 
 This tier is documented for completeness but is not currently implemented due to lack of provider support.
 
-#### 2.1 Impersonation Flow (Conceptual)
+#### 1.1 Impersonation Flow (Conceptual)
 
 ```python
 async def exchange_for_impersonated_user_token(
@@ -201,9 +179,9 @@ async def exchange_for_impersonated_user_token(
 
 **See**: `docs/oauth-impersonation-findings.md` for detailed investigation
 
-### 3. Token Exchange with Delegation (Tier 3) ✅ IMPLEMENTED
+### 2. Token Exchange with Delegation (Tier 2) ✅ IMPLEMENTED
 
-#### 3.1 Capability Detection
+#### 2.1 Capability Detection
 ```python
 async def check_token_exchange_support(discovery_url: str) -> bool:
     """Check if OIDC provider supports RFC 8693 token exchange"""
@@ -217,7 +195,7 @@ async def check_token_exchange_support(discovery_url: str) -> bool:
         return "urn:ietf:params:oauth:grant-type:token-exchange" in grant_types
 ```
 
-#### 3.2 Delegation Token Exchange
+#### 2.2 Delegation Token Exchange
 ```python
 async def exchange_for_user_token(
     service_token: str,

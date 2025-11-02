@@ -389,9 +389,11 @@ Security: Refresh tokens stored encrypted, rotated on use
 
 ## Authentication Strategies for Background Jobs
 
-### Current Approach: Offline Access with Refresh Tokens (Tier 1)
+> **Note on Service Account Tokens**: Service account tokens (`client_credentials` grant) were evaluated but **rejected** as they create Nextcloud user accounts (e.g., `service-account-{client_id}`) which violates OAuth "act on-behalf-of" principles. See ADR-002 "Will Not Implement" section for details.
 
-The MCP server currently uses **offline_access** scope to enable background operations:
+### Current Approach: Offline Access with Refresh Tokens
+
+The MCP server uses **offline_access** scope to enable background operations:
 
 **How it works:**
 1. User grants `offline_access` scope during OAuth consent
@@ -412,7 +414,7 @@ The MCP server currently uses **offline_access** scope to enable background oper
 - ⚠️ Weak audit trail - API requests appear to come from user directly
 - ⚠️ No visibility that MCP Server is the actual actor
 
-### Future Enhancement: Token Exchange with Delegation (Tier 2)
+### Token Exchange with Delegation (ADR-002 Tier 2 - Implemented)
 
 **RFC 8693 Delegation** would provide better audit trail and security:
 
