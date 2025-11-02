@@ -94,7 +94,6 @@ services:
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8001
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
-      - NEXTCLOUD_OIDC_CLIENT_STORAGE=/app/.oauth/nextcloud_oauth_client.json
       - NEXTCLOUD_OIDC_SCOPES=openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write
 
       # Refresh token storage (ADR-002 Tier 1)
@@ -159,7 +158,6 @@ services:
       - ENABLE_OFFLINE_ACCESS=true
       - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
       - TOKEN_STORAGE_DB=/app/data/tokens.db
-      - NEXTCLOUD_OIDC_CLIENT_STORAGE=/app/.oauth/external_idp_oauth_client.json
 
       # OAuth scopes (optional - uses defaults if not specified)
       - NEXTCLOUD_OIDC_SCOPES=openid profile email offline_access notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write
