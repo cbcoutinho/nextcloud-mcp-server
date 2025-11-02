@@ -83,17 +83,22 @@ services:
     ports:
       - 127.0.0.1:8001:8001
     environment:
+      # Generic OIDC configuration (integrated mode - Nextcloud OIDC app)
+      # OIDC_DISCOVERY_URL not set - defaults to NEXTCLOUD_HOST/.well-known/openid-configuration
+      # OIDC_CLIENT_ID not set - uses Dynamic Client Registration (DCR)
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8001
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
       - NEXTCLOUD_OIDC_CLIENT_STORAGE=/app/.oauth/nextcloud_oauth_client.json
       - NEXTCLOUD_OIDC_SCOPES=openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write
-      # Offline access / refresh tokens
+
+      # Refresh token storage (ADR-002 Tier 1)
       - ENABLE_OFFLINE_ACCESS=true
       - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
       - TOKEN_STORAGE_DB=/app/data/tokens.db
-      # No USERNAME/PASSWORD - will use OAuth with Dynamic Client Registration
-      # Client credentials will be registered and stored in volume on first startup
+
+      # NO admin credentials - using OAuth with Dynamic Client Registration (DCR)
+      # Client credentials registered via RFC 7591 and stored in volume
       # JWT token type is used for testing (faster validation, scopes embedded in token)
     volumes:
       - oauth-client-storage:/app/.oauth
@@ -127,26 +132,27 @@ services:
     ports:
       - 127.0.0.1:8002:8002
     environment:
-      # OAuth Provider: Keycloak
-      - OAUTH_PROVIDER=keycloak
-      - KEYCLOAK_URL=http://keycloak:8080
-      - KEYCLOAK_REALM=nextcloud-mcp
-      - KEYCLOAK_CLIENT_ID=nextcloud-mcp-server
-      - KEYCLOAK_CLIENT_SECRET=mcp-secret-change-in-production
-      - KEYCLOAK_DISCOVERY_URL=http://keycloak:8080/realms/nextcloud-mcp/.well-known/openid-configuration
+      # Generic OIDC configuration (external IdP mode - Keycloak)
+      # Provider auto-detected from OIDC_DISCOVERY_URL issuer
+      - OIDC_DISCOVERY_URL=http://keycloak:8080/realms/nextcloud-mcp/.well-known/openid-configuration
+      - OIDC_CLIENT_ID=nextcloud-mcp-server
+      - OIDC_CLIENT_SECRET=mcp-secret-change-in-production
 
       # Nextcloud API endpoint (for accessing APIs with validated token)
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8002
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8888
 
-      # Refresh token storage (ADR-002 Tier 1)
+      # Refresh token storage (ADR-002 Tier 1 & 2)
       - ENABLE_OFFLINE_ACCESS=true
       - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
       - TOKEN_STORAGE_DB=/app/data/tokens.db
-      - NEXTCLOUD_OIDC_CLIENT_STORAGE=/app/.oauth/keycloak_oauth_client.json
+      - NEXTCLOUD_OIDC_CLIENT_STORAGE=/app/.oauth/external_idp_oauth_client.json
 
-      # NO admin credentials - using Keycloak OAuth only!
+      # OAuth scopes (optional - uses defaults if not specified)
+      - NEXTCLOUD_OIDC_SCOPES=openid profile email offline_access notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write
+
+      # NO admin credentials - using external IdP OAuth only!
     volumes:
       - keycloak-tokens:/app/data
       - keycloak-oauth-storage:/app/.oauth

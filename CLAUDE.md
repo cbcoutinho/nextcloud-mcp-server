@@ -454,18 +454,28 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/ocs/v2.php/cloud/ca
 - **Admin user**: `admin/admin` (created in realm export)
 - **Redirect URIs**: `http://localhost:*/callback`, `http://127.0.0.1:*/callback`
 
-**Environment Variables** (see `.env.keycloak.sample`):
+**Environment Variables** (Generic OIDC - works with any provider):
 ```bash
-OAUTH_PROVIDER=keycloak                    # Use Keycloak instead of Nextcloud
-KEYCLOAK_URL=http://keycloak:8080          # Keycloak base URL
-KEYCLOAK_REALM=nextcloud-mcp               # Realm name
-KEYCLOAK_CLIENT_ID=mcp-client              # OAuth client ID
-KEYCLOAK_CLIENT_SECRET=mcp-secret-...      # OAuth client secret
-KEYCLOAK_DISCOVERY_URL=http://...          # OIDC discovery URL
-NEXTCLOUD_HOST=http://app:80               # Nextcloud API (token validation)
-ENABLE_OFFLINE_ACCESS=true                 # Enable refresh tokens (ADR-002)
+# Generic OIDC configuration (provider-agnostic)
+OIDC_DISCOVERY_URL=http://keycloak:8080/realms/nextcloud-mcp/.well-known/openid-configuration
+OIDC_CLIENT_ID=nextcloud-mcp-server        # OAuth client ID
+OIDC_CLIENT_SECRET=mcp-secret-...          # OAuth client secret
+
+# Nextcloud API configuration
+NEXTCLOUD_HOST=http://app:80               # Nextcloud API (token validation in external IdP mode)
+
+# Refresh tokens and token exchange (ADR-002)
+ENABLE_OFFLINE_ACCESS=true                 # Enable refresh tokens
 TOKEN_ENCRYPTION_KEY=<fernet-key>          # Encrypt refresh tokens
+TOKEN_STORAGE_DB=/app/data/tokens.db       # Token storage path
+
+# OAuth scopes (optional - uses defaults if not specified)
+NEXTCLOUD_OIDC_SCOPES=openid profile email offline_access notes:read notes:write ...
 ```
+
+**Provider Mode Detection:**
+- **External IdP mode**: If `OIDC_DISCOVERY_URL` issuer ≠ `NEXTCLOUD_HOST` → Uses external provider (Keycloak, Auth0, Okta, etc.)
+- **Integrated mode**: If `OIDC_DISCOVERY_URL` not set or issuer = `NEXTCLOUD_HOST` → Uses Nextcloud OIDC app
 
 **Nextcloud user_oidc Configuration:**
 The `user_oidc` app is automatically configured by `app-hooks/post-installation/15-setup-keycloak-provider.sh`:
