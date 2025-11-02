@@ -43,6 +43,11 @@ services:
       - MYSQL_USER=nextcloud
       - MYSQL_HOST=db
       - REDIS_HOST=redis
+    healthcheck:
+      test: ["CMD-SHELL", "curl -Ss http://localhost/status.php | grep '\"installed\":true' || exit 1"]
+      interval: 10s
+      timeout: 30s
+      retries: 30
 
   recipes:
     image: docker.io/library/nginx:alpine@sha256:b3c656d55d7ad751196f21b7fd2e8d4da9cb430e32f646adcf92441b72f82b14
@@ -137,11 +142,12 @@ services:
       - OIDC_DISCOVERY_URL=http://keycloak:8080/realms/nextcloud-mcp/.well-known/openid-configuration
       - OIDC_CLIENT_ID=nextcloud-mcp-server
       - OIDC_CLIENT_SECRET=mcp-secret-change-in-production
+      - OIDC_JWKS_URI=http://keycloak:8080/realms/nextcloud-mcp/protocol/openid-connect/certs
 
       # Nextcloud API endpoint (for accessing APIs with validated token)
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8002
-      - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8888
+      - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8888/realms/nextcloud-mcp
 
       # Refresh token storage (ADR-002 Tier 1 & 2)
       - ENABLE_OFFLINE_ACCESS=true

@@ -481,6 +481,13 @@ async def setup_oauth_config():
     introspection_uri = discovery.get("introspection_endpoint")
     registration_endpoint = discovery.get("registration_endpoint")
 
+    # Allow overriding JWKS URI (useful when running in Docker with frontendUrl)
+    # Example: frontendUrl=http://localhost:8888 but MCP server needs http://keycloak:8080
+    jwks_uri_override = os.getenv("OIDC_JWKS_URI")
+    if jwks_uri_override:
+        logger.info(f"OIDC_JWKS_URI override: {jwks_uri} → {jwks_uri_override}")
+        jwks_uri = jwks_uri_override
+
     logger.info("OIDC endpoints discovered:")
     logger.info(f"  Issuer: {issuer}")
     logger.info(f"  Userinfo: {userinfo_uri}")

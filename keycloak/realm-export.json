@@ -23,6 +23,9 @@
   "resetPasswordAllowed": false,
   "editUsernameAllowed": false,
   "bruteForceProtected": false,
+  "attributes": {
+    "frontendUrl": "http://localhost:8888"
+  },
   "roles": {
     "realm": [
       {
@@ -196,7 +199,30 @@
         }
       ],
       "defaultClientScopes": ["web-origins", "profile", "roles", "email"],
-      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"]
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt",
+        "notes:read",
+        "notes:write",
+        "calendar:read",
+        "calendar:write",
+        "contacts:read",
+        "contacts:write",
+        "cookbook:read",
+        "cookbook:write",
+        "deck:read",
+        "deck:write",
+        "tables:read",
+        "tables:write",
+        "files:read",
+        "files:write",
+        "sharing:read",
+        "sharing:write",
+        "todo:read",
+        "todo:write"
+      ]
     }
   ],
   "clientScopes": [
@@ -324,6 +350,186 @@
           "config": {}
         }
       ]
+    },
+    {
+      "name": "notes:read",
+      "description": "Nextcloud Notes read access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Read your notes"
+      }
+    },
+    {
+      "name": "notes:write",
+      "description": "Nextcloud Notes write access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Create, update, and delete your notes"
+      }
+    },
+    {
+      "name": "calendar:read",
+      "description": "Nextcloud Calendar read access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Read your calendars and events"
+      }
+    },
+    {
+      "name": "calendar:write",
+      "description": "Nextcloud Calendar write access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Create, update, and delete calendars and events"
+      }
+    },
+    {
+      "name": "contacts:read",
+      "description": "Nextcloud Contacts read access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Read your contacts"
+      }
+    },
+    {
+      "name": "contacts:write",
+      "description": "Nextcloud Contacts write access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Create, update, and delete contacts"
+      }
+    },
+    {
+      "name": "cookbook:read",
+      "description": "Nextcloud Cookbook read access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Read your recipes"
+      }
+    },
+    {
+      "name": "cookbook:write",
+      "description": "Nextcloud Cookbook write access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Create, update, and delete recipes"
+      }
+    },
+    {
+      "name": "deck:read",
+      "description": "Nextcloud Deck read access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Read your boards and cards"
+      }
+    },
+    {
+      "name": "deck:write",
+      "description": "Nextcloud Deck write access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Create, update, and delete boards and cards"
+      }
+    },
+    {
+      "name": "tables:read",
+      "description": "Nextcloud Tables read access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Read your tables and rows"
+      }
+    },
+    {
+      "name": "tables:write",
+      "description": "Nextcloud Tables write access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Create, update, and delete tables and rows"
+      }
+    },
+    {
+      "name": "files:read",
+      "description": "Nextcloud Files read access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Read your files"
+      }
+    },
+    {
+      "name": "files:write",
+      "description": "Nextcloud Files write access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Upload, update, and delete files"
+      }
+    },
+    {
+      "name": "sharing:read",
+      "description": "Nextcloud Sharing read access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "View shared resources"
+      }
+    },
+    {
+      "name": "sharing:write",
+      "description": "Nextcloud Sharing write access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Create and manage shares"
+      }
+    },
+    {
+      "name": "todo:read",
+      "description": "Nextcloud Tasks/Todo read access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Read your tasks"
+      }
+    },
+    {
+      "name": "todo:write",
+      "description": "Nextcloud Tasks/Todo write access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Create, update, and delete tasks"
+      }
     }
   ]
 }

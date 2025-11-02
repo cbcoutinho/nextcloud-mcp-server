@@ -2456,3 +2456,286 @@ async def test_user_in_group(nc_client: NextcloudClient, test_user, test_group):
     logger.debug(f"Added user {user_config['userid']} to group {groupid}")
 
     yield (user_config, groupid)
+
+
+# ===========================================================================================
+# Keycloak External IdP OAuth Fixtures
+# ===========================================================================================
+
+
+@pytest.fixture(scope="session")
+async def keycloak_oauth_client_credentials(anyio_backend, oauth_callback_server):
+    """
+    Fixture to obtain Keycloak OAuth client credentials for external IdP testing.
+
+    Uses pre-configured client from keycloak/realm-export.json (no DCR needed).
+    The client (nextcloud-mcp-server) is already configured with:
+    - serviceAccountsEnabled=true
+    - token.exchange.grant.enabled=true
+    - client.token.exchange.standard.enabled=true
+
+    Returns:
+        Tuple of (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
+    """
+    # Get Keycloak configuration from environment
+    keycloak_discovery_url = os.getenv(
+        "OIDC_DISCOVERY_URL",
+        "http://localhost:8888/realms/nextcloud-mcp/.well-known/openid-configuration",
+    )
+    client_id = os.getenv("OIDC_CLIENT_ID", "nextcloud-mcp-server")
+    client_secret = os.getenv("OIDC_CLIENT_SECRET", "mcp-secret-change-in-production")
+
+    if not all([keycloak_discovery_url, client_id, client_secret]):
+        pytest.skip(
+            "Keycloak OAuth requires OIDC_DISCOVERY_URL, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET"
+        )
+
+    # Get callback URL from the real callback server
+    auth_states, callback_url = oauth_callback_server
+
+    logger.info("Setting up Keycloak external IdP OAuth client credentials...")
+    logger.info(f"Using Keycloak discovery URL: {keycloak_discovery_url}")
+    logger.info(f"Using static client credentials: {client_id}")
+    logger.info(f"Using real callback server at: {callback_url}")
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        # OIDC Discovery
+        discovery_response = await http_client.get(keycloak_discovery_url)
+        discovery_response.raise_for_status()
+        oidc_config = discovery_response.json()
+
+        token_endpoint = oidc_config.get("token_endpoint")
+        authorization_endpoint = oidc_config.get("authorization_endpoint")
+
+        if not token_endpoint or not authorization_endpoint:
+            raise ValueError(
+                "Keycloak OIDC discovery missing required endpoints (token_endpoint or authorization_endpoint)"
+            )
+
+        logger.info(f"✓ Discovered token endpoint: {token_endpoint}")
+        logger.info(f"✓ Discovered authorization endpoint: {authorization_endpoint}")
+
+        yield (
+            client_id,
+            client_secret,
+            callback_url,
+            token_endpoint,
+            authorization_endpoint,
+        )
+
+        # No cleanup needed - client is pre-configured in realm export
+
+
+async def _get_keycloak_oauth_token(
+    browser,
+    keycloak_oauth_client_credentials,
+    oauth_callback_server,
+    scopes: str,
+    username: str = "admin",
+    password: str = "admin",
+) -> str:
+    """
+    Helper function to obtain OAuth token from Keycloak using Playwright.
+
+    Args:
+        browser: Playwright browser instance
+        keycloak_oauth_client_credentials: Tuple of Keycloak OAuth client credentials
+        oauth_callback_server: OAuth callback server fixture
+        scopes: Space-separated list of scopes
+        username: Keycloak username (default: admin)
+        password: Keycloak password (default: admin)
+
+    Returns:
+        OAuth access token string from Keycloak
+    """
+    import base64
+    import hashlib
+    import secrets
+    import time
+    from urllib.parse import quote
+
+    # Get auth_states dict from callback server
+    auth_states, _ = oauth_callback_server
+
+    # Unpack Keycloak client credentials
+    client_id, client_secret, callback_url, token_endpoint, authorization_endpoint = (
+        keycloak_oauth_client_credentials
+    )
+
+    logger.info(f"Starting Playwright-based Keycloak OAuth flow with scopes: {scopes}")
+    logger.info(f"Using Keycloak client: {client_id}")
+    logger.info(f"Using real callback server at: {callback_url}")
+    logger.info(f"Authenticating as Keycloak user: {username}")
+
+    # Generate unique state parameter for this OAuth flow
+    state = secrets.token_urlsafe(32)
+    logger.debug(f"Generated state: {state[:16]}...")
+
+    # Generate PKCE parameters (required by Keycloak client configuration)
+    code_verifier = secrets.token_urlsafe(64)  # 86 chars base64url
+    code_challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
+        .decode()
+        .rstrip("=")
+    )
+    logger.debug(f"Generated PKCE code_challenge: {code_challenge[:20]}...")
+
+    # URL-encode scopes
+    scopes_encoded = quote(scopes, safe="")
+
+    # Construct authorization URL with state, scopes, and PKCE parameters
+    auth_url = (
+        f"{authorization_endpoint}?"
+        f"response_type=code&"
+        f"client_id={client_id}&"
+        f"redirect_uri={quote(callback_url, safe='')}&"
+        f"state={state}&"
+        f"scope={scopes_encoded}&"
+        f"code_challenge={code_challenge}&"
+        f"code_challenge_method=S256"
+    )
+
+    logger.info(f"Authorization URL: {auth_url[:100]}...")
+
+    # Create browser context and page
+    context = await browser.new_context()
+    page = await context.new_page()
+
+    try:
+        # Navigate to Keycloak authorization endpoint
+        logger.info("Navigating to Keycloak authorization endpoint...")
+        await page.goto(auth_url, wait_until="networkidle", timeout=30000)
+
+        # Handle Keycloak login page
+        # Keycloak uses input#username and input#password (different from Nextcloud)
+        logger.info(f"Filling Keycloak login credentials for {username}...")
+        await page.wait_for_selector("input#username", timeout=10000)
+        await page.fill("input#username", username)
+        await page.fill("input#password", password)
+
+        logger.info("Submitting Keycloak login form...")
+        # Submit the form and wait for navigation
+        # Use JavaScript to submit the form directly (more reliable than clicking button)
+        async with page.expect_navigation(timeout=30000):
+            await page.evaluate("document.querySelector('form').submit()")
+
+        logger.info(f"Keycloak login submitted for {username}, redirected to callback")
+
+        # Check if we need to handle consent screen
+        # Keycloak consent screen has "Yes" button
+        consent_button = page.locator('input[name="accept"][value="Yes"]')
+        if await consent_button.count() > 0:
+            logger.info("Keycloak consent screen detected, clicking Yes...")
+            await consent_button.click()
+            await page.wait_for_load_state("networkidle", timeout=30000)
+            logger.info("Keycloak consent granted")
+
+        # Wait for callback server to receive auth code with timeout
+        logger.info(f"Waiting for auth code with state: {state[:16]}...")
+        timeout = 30  # seconds
+        start_time = time.time()
+        auth_code = None
+
+        while time.time() - start_time < timeout:
+            if state in auth_states:
+                auth_code = auth_states[state]
+                logger.info("Auth code received from callback server")
+                break
+            await anyio.sleep(0.1)
+        else:
+            raise TimeoutError(
+                f"Auth code not received within {timeout}s. State: {state[:16]}..."
+            )
+
+    finally:
+        await context.close()
+
+    # Exchange authorization code for access token (with PKCE code_verifier)
+    logger.info("Exchanging authorization code for access token with PKCE...")
+    async with httpx.AsyncClient(timeout=30.0) as token_client:
+        token_response = await token_client.post(
+            token_endpoint,
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": callback_url,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code_verifier": code_verifier,  # PKCE verifier
+            },
+        )
+
+        token_response.raise_for_status()
+        token_data = token_response.json()
+        access_token = token_data.get("access_token")
+
+        if not access_token:
+            raise ValueError(f"No access_token in response: {token_data}")
+
+        logger.info(
+            f"Successfully obtained Keycloak OAuth access token with scopes: {scopes}"
+        )
+        return access_token
+
+
+@pytest.fixture(scope="session")
+async def keycloak_oauth_token(
+    anyio_backend, browser, keycloak_oauth_client_credentials, oauth_callback_server
+) -> str:
+    """
+    Fixture to obtain an OAuth access token from Keycloak using Playwright automation.
+
+    This fixture tests the external IdP flow where:
+    1. User authenticates with Keycloak (external IdP)
+    2. Keycloak issues an access token with Nextcloud custom scopes
+    3. Token is used to access Nextcloud APIs via user_oidc app validation
+
+    The Nextcloud custom scopes (notes:read, calendar:write, etc.) are now defined
+    in Keycloak's realm configuration and can be requested in the OAuth flow.
+
+    Returns:
+        OAuth access token from Keycloak for the admin user with full scopes
+    """
+    # Standard OIDC scopes + Nextcloud custom scopes (now defined in Keycloak realm)
+    default_scopes = "openid profile email offline_access notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write"
+
+    return await _get_keycloak_oauth_token(
+        browser,
+        keycloak_oauth_client_credentials,
+        oauth_callback_server,
+        scopes=default_scopes,
+        username="admin",
+        password="admin",
+    )
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_keycloak_client(
+    anyio_backend, keycloak_oauth_token
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    Session-scoped fixture providing an MCP client session authenticated with Keycloak tokens.
+
+    This MCP client connects to the mcp-keycloak service (port 8002) which is configured
+    to use Keycloak as an external identity provider. The token flow is:
+
+    1. Keycloak issues OAuth token (via keycloak_oauth_token fixture)
+    2. MCP client uses token to authenticate with MCP server
+    3. MCP server validates token via Nextcloud user_oidc app
+    4. MCP server uses validated token to access Nextcloud APIs
+
+    This tests ADR-002 external IdP integration.
+
+    Yields:
+        MCP client session for testing tools/resources with Keycloak auth
+    """
+    mcp_url = "http://localhost:8002/mcp"
+    logger.info(f"Creating MCP client session for Keycloak external IdP at {mcp_url}")
+    logger.info("Using Keycloak OAuth token for authentication")
+
+    async for session in create_mcp_client_session(
+        url=mcp_url, token=keycloak_oauth_token, client_name="Keycloak External IdP MCP"
+    ):
+        logger.info("✓ MCP client session established with Keycloak authentication")
+        yield session
+        logger.info("✓ MCP client session closed")
