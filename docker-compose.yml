@@ -116,6 +116,7 @@ services:
       - "--hostname=http://localhost:8888"
       - "--hostname-strict=false"
       - "--hostname-backchannel-dynamic=true"
+      - "--features=preview"  # Enable Legacy V1 token exchange (supports both Standard V2 and Legacy V1)
     ports:
       - 127.0.0.1:8888:8080
     environment:

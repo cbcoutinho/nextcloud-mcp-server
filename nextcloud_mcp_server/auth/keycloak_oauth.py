@@ -455,11 +455,27 @@ class KeycloakOAuthClient:
             )
 
         Note:
-            This implements ADR-002 Tier 2. Requires:
-            - Keycloak Standard Token Exchange V2 enabled (default in modern Keycloak)
+            This implements BOTH ADR-002 tiers:
+
+            **Tier 2 (Delegation - Recommended)**: When target_user_id is None
+            - Uses Keycloak Standard V2 (production-ready)
+            - Service account maintains its identity (sub claim unchanged)
+            - No special permissions required
+
+            **Tier 1 (Impersonation - Advanced)**: When target_user_id is provided
+            - Requires Keycloak Legacy V1 (--features=preview)
+            - Subject claim changes to target user
+            - Requires impersonation role granted via Keycloak CLI:
+              ```
+              kcadm.sh add-roles -r <realm> \
+                --uusername service-account-<client-id> \
+                --cclientid realm-management \
+                --rolename impersonation
+              ```
+
+            Both tiers require:
             - Client has token.exchange.grant.enabled=true
             - Client has serviceAccountsEnabled=true
-            - Appropriate exchange permissions configured in Keycloak
         """
         if not self.token_endpoint:
             await self.discover()
@@ -483,10 +499,17 @@ class KeycloakOAuthClient:
             data["scope"] = " ".join(scopes)
 
         if target_user_id:
+            # Tier 1: Impersonation (Legacy V1)
             # Use requested_subject for user impersonation
             data["requested_subject"] = target_user_id
-
-        logger.info(f"Exchanging token for user: {target_user_id or 'current'}")
+            logger.info(
+                f"Exchanging token with impersonation (Tier 1): target_user={target_user_id}"
+            )
+        else:
+            # Tier 2: Delegation (Standard V2)
+            logger.info(
+                "Exchanging token with delegation (Tier 2): service account identity preserved"
+            )
 
         client = await self._get_http_client()
         response = await client.post(

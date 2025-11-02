@@ -139,47 +139,160 @@ We will implement a **tiered OAuth authentication strategy** for background oper
 
 ## Implementation Details
 
-### 1. Token Exchange with Impersonation (Tier 1) ⚠️ NOT IMPLEMENTED
+### 1. Token Exchange with Impersonation (Tier 1) ✅ IMPLEMENTED (Legacy V1 only)
 
-This tier is documented for completeness but is not currently implemented due to lack of provider support.
+**Status**: Implemented and working with Keycloak Legacy V1 (`--features=preview`). Requires additional permission configuration. Recommended for advanced use cases only.
 
-#### 1.1 Impersonation Flow (Conceptual)
+**When to Use**: When you need the exchanged token to have the exact same identity as the target user (sub claim changes). This provides the cleanest separation but requires preview features.
+
+#### 1.1 Impersonation Flow
 
 ```python
-async def exchange_for_impersonated_user_token(
-    service_token: str,
+async def exchange_token_for_user(
+    subject_token: str,
     target_user_id: str,
-    scopes: list[str]
-) -> str:
-    """Exchange service token to impersonate specific user (NOT IMPLEMENTED)"""
+    audience: str | None = None,
+    scopes: list[str] | None = None,
+) -> dict:
+    """Exchange service token to impersonate specific user.
 
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            token_endpoint,
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
-                "subject_token": service_token,
-                "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
-                "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
-                "requested_subject": target_user_id,  # Impersonate this user
-                "audience": "nextcloud",
-                "scope": " ".join(scopes)
-            },
-            auth=(client_id, client_secret)
-        )
+    Requires Keycloak Legacy V1 (--features=preview) and impersonation permissions.
+    The returned token will have the target_user_id as the 'sub' claim.
+    """
+    data = {
+        "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+        "subject_token": subject_token,
+        "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+        "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
+        "requested_subject": target_user_id,  # ← KEY: Impersonate this user
+    }
 
-        response.raise_for_status()
-        return response.json()["access_token"]
+    if audience:
+        data["audience"] = audience
+    if scopes:
+        data["scope"] = " ".join(scopes)
+
+    response = await self._http_client.post(
+        self.token_endpoint,
+        data=data,
+        auth=(self.client_id, self.client_secret),
+    )
+    response.raise_for_status()
+    return response.json()
 ```
 
-**Why Not Implemented**:
-- Keycloak Standard V2 doesn't support `requested_subject` parameter
-- Requires Legacy Keycloak V1 with preview features (not production-ready)
-- Very few OIDC providers support user impersonation via token exchange
+**Implementation Requirements**:
+- ✅ Keycloak Legacy V1 with `--features=preview` flag
+- ✅ Impersonation role granted to service account (see configuration below)
+- ❌ NOT supported in Keycloak Standard V2 (rejects `requested_subject` parameter)
+- ⚠️ Very few OIDC providers support user impersonation via token exchange
 
-**See**: `docs/oauth-impersonation-findings.md` for detailed investigation
+**Empirical Testing (2025-11-02)**:
 
-### 2. Token Exchange with Delegation (Tier 2) ✅ IMPLEMENTED
+Tested impersonation with `requested_subject` parameter against Keycloak 26.4.2:
+
+**Test Command**: `uv run python tests/manual/test_impersonation.py`
+
+**Keycloak Standard V2 Result**:
+```
+HTTP/1.1 400 Bad Request
+{
+  "error": "invalid_request",
+  "error_description": "Parameter 'requested_subject' is not supported for standard token exchange"
+}
+```
+
+**Confirmation**: Keycloak explicitly rejects `requested_subject` in Standard V2, confirming this feature is unsupported. The error message is unambiguous - this parameter is not available in the current production token exchange implementation.
+
+**Keycloak Legacy V1 Result - Initial Test** (with `--features=preview`):
+```
+HTTP/1.1 403 Forbidden
+{
+  "error": "access_denied",
+  "error_description": "Client not allowed to exchange"
+}
+
+Keycloak logs:
+reason="subject not allowed to impersonate"
+impersonator="service-account-nextcloud-mcp-server"
+requested_subject="admin"
+```
+
+**Analysis**: Legacy V1 **accepts** the `requested_subject` parameter (error changed from "not supported" to "not allowed"), indicating the feature is present but requires permission configuration.
+
+**Configuration Steps to Enable Impersonation**:
+
+1. **Enable Keycloak preview features** (in docker-compose.yml):
+   ```yaml
+   command:
+     - "start-dev"
+     - "--features=preview"  # Required for Legacy V1 token exchange
+   ```
+
+2. **Grant impersonation role to service account** (using Keycloak CLI):
+   ```bash
+   docker compose exec keycloak /opt/keycloak/bin/kcadm.sh config credentials \
+     --server http://localhost:8080 \
+     --realm master \
+     --user admin \
+     --password admin
+
+   docker compose exec keycloak /opt/keycloak/bin/kcadm.sh add-roles \
+     -r nextcloud-mcp \
+     --uusername service-account-nextcloud-mcp-server \
+     --cclientid realm-management \
+     --rolename impersonation
+   ```
+
+**Keycloak Legacy V1 Result - After Permission Grant**:
+```
+✅ Token exchange with impersonation SUCCEEDED!
+
+📊 Response details:
+  Issued token type: urn:ietf:params:oauth:token-type:access_token
+  Token type: Bearer
+  Expires in: 300s
+
+📋 Token claims analysis:
+  Subject (sub): 47c3ba5a-9104-45e0-b84e-0e39ab942c9c  (admin user)
+  Preferred username: admin
+  Client ID (azp): nextcloud-mcp-server
+
+✅ IMPERSONATION VERIFIED:
+   Original sub: service-account-nextcloud-mcp-server
+   New sub:      47c3ba5a-9104-45e0-b84e-0e39ab942c9c
+   ➡️  The subject claim CHANGED - impersonation worked!
+```
+
+**Nextcloud API Validation**:
+The impersonated token successfully authenticated with Nextcloud APIs, confirming the token is valid and properly represents the target user.
+
+**Implementation Status**: Impersonation **IS IMPLEMENTED** and working with Keycloak Legacy V1. The implementation has been tested and verified to work correctly when properly configured.
+
+**Production Considerations**:
+- ⚠️ Requires preview features (`--features=preview`) - not production-ready
+- ⚠️ Requires Legacy V1 token exchange (may be deprecated in future Keycloak versions)
+- ⚠️ Requires manual CLI configuration for each service account
+- ⚠️ More complex permission model compared to delegation
+
+**When to Use Tier 1 (Impersonation)**:
+- ✅ You need the exchanged token to have the exact same identity as the target user
+- ✅ You want the cleanest separation (sub claim changes completely)
+- ✅ Your environment can support preview features
+- ✅ You have operational processes to manage impersonation permissions
+
+**Recommendation**: For most use cases, use Tier 2 (Delegation) instead. It provides equivalent "act on-behalf-of" capability using production-ready Standard V2 token exchange. Use Tier 1 only when you specifically need identity impersonation.
+
+**Test Scripts**:
+- `tests/manual/test_impersonation.py` - Complete impersonation test with validation
+- `tests/manual/configure_impersonation.py` - Automated permission configuration helper
+- **See**: `docs/oauth-impersonation-findings.md` for detailed investigation
+
+### 2. Token Exchange with Delegation (Tier 2) ✅ IMPLEMENTED (Standard V2)
+
+**Status**: Implemented and working with Keycloak Standard V2 (production-ready). This is the **recommended** approach for most use cases.
+
+**When to Use**: When you need "act on-behalf-of" functionality with production-ready features. The service account maintains its identity (sub claim unchanged) but acts on behalf of the user. Fully supported in Keycloak Standard V2 without preview features.
 
 #### 2.1 Capability Detection
 ```python
@@ -229,6 +342,35 @@ async def exchange_for_user_token(
 **Implementation**: `KeycloakOAuthClient.exchange_token_for_user()` (keycloak_oauth.py:397-495)
 
 **Note**: Full delegation with `act` claim requires provider support that is currently very rare. Keycloak tracking: [Issue #38279](https://github.com/keycloak/keycloak/issues/38279)
+
+### 3. Comparison: When to Use Each Tier
+
+| Feature | Tier 1: Impersonation | Tier 2: Delegation (Recommended) |
+|---------|----------------------|-----------------------------------|
+| **Status** | ✅ Implemented (Legacy V1) | ✅ Implemented (Standard V2) |
+| **Token Identity** | Target user (`sub` changes) | Service account (`sub` unchanged) |
+| **Keycloak Version** | Legacy V1 (`--features=preview`) | Standard V2 (production-ready) |
+| **Setup Complexity** | High (manual permissions) | Low (automatic) |
+| **Production Ready** | ⚠️ Preview features required | ✅ Fully production-ready |
+| **Permission Grant** | Manual CLI per service account | Automatic via token exchange |
+| **Audit Trail** | Shows as target user | Shows as service account acting for user |
+| **Token Claims** | `sub: user-id` | `sub: service-account-id` |
+| **Provider Support** | Rare (Keycloak Legacy V1 only) | Common (Keycloak, Auth0, Okta) |
+| **Use Case** | Need exact user identity | Standard OAuth workflows |
+| **Recommendation** | Advanced use only | **Default choice** |
+
+**Decision Guide**:
+- ✅ **Use Tier 2 (Delegation)** for:
+  - Production deployments
+  - Standard OAuth workflows
+  - Clear audit trails (service account visible)
+  - Maximum provider compatibility
+
+- ⚠️ **Use Tier 1 (Impersonation)** only if:
+  - You specifically need exact user identity (sub claim must match)
+  - You can accept preview/experimental features
+  - You have operational processes for permission management
+  - Your IdP supports `requested_subject` parameter
 
 ### 4. Sync Worker with Tiered Authentication
 
