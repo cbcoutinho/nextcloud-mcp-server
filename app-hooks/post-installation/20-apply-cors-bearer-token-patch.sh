@@ -6,7 +6,7 @@
 # authentication issues with app-specific APIs (Notes, Calendar, etc.)
 # when using OAuth/OIDC Bearer tokens.
 #
-# Upstream PR: https://github.com/nextcloud/server/pull/XXXXX
+# Upstream PR: https://github.com/nextcloud/server/pull/55878
 # Commit: 8fb5e77db82 (fix(cors): Allow Bearer token authentication)
 #
 
