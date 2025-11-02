@@ -2710,6 +2710,77 @@ async def keycloak_oauth_token(
 
 
 @pytest.fixture(scope="session")
+async def keycloak_oauth_token_read_only(
+    anyio_backend, browser, keycloak_oauth_client_credentials, oauth_callback_server
+) -> str:
+    """
+    Fixture to obtain a Keycloak OAuth token with only read scopes.
+
+    This token will only be able to perform read operations and should
+    have write tools filtered out from the tool list.
+
+    Returns:
+        OAuth access token from Keycloak for test_read_only user with read-only scopes
+    """
+    return await _get_keycloak_oauth_token(
+        browser,
+        keycloak_oauth_client_credentials,
+        oauth_callback_server,
+        scopes=DEFAULT_READ_SCOPES,
+        username="test_read_only",
+        password="test123",
+    )
+
+
+@pytest.fixture(scope="session")
+async def keycloak_oauth_token_write_only(
+    anyio_backend, browser, keycloak_oauth_client_credentials, oauth_callback_server
+) -> str:
+    """
+    Fixture to obtain a Keycloak OAuth token with only write scopes.
+
+    This token will only be able to perform write operations and should
+    have read tools filtered out from the tool list.
+
+    Returns:
+        OAuth access token from Keycloak for test_write_only user with write-only scopes
+    """
+    return await _get_keycloak_oauth_token(
+        browser,
+        keycloak_oauth_client_credentials,
+        oauth_callback_server,
+        scopes=DEFAULT_WRITE_SCOPES,
+        username="test_write_only",
+        password="test123",
+    )
+
+
+@pytest.fixture(scope="session")
+async def keycloak_oauth_token_no_custom_scopes(
+    anyio_backend, browser, keycloak_oauth_client_credentials, oauth_callback_server
+) -> str:
+    """
+    Fixture to obtain a Keycloak OAuth token with NO custom scopes.
+
+    Tests the security behavior when a user grants only default OIDC scopes
+    (openid, profile, email) but declines application-specific scopes.
+
+    Expected behavior: Should see 0 tools (all tools require custom scopes).
+
+    Returns:
+        OAuth access token from Keycloak for test_no_scopes user with no custom scopes
+    """
+    return await _get_keycloak_oauth_token(
+        browser,
+        keycloak_oauth_client_credentials,
+        oauth_callback_server,
+        scopes="openid profile email",  # No custom scopes
+        username="test_no_scopes",
+        password="test123",
+    )
+
+
+@pytest.fixture(scope="session")
 async def nc_mcp_keycloak_client(
     anyio_backend, keycloak_oauth_token
 ) -> AsyncGenerator[ClientSession, Any]:
@@ -2739,3 +2810,79 @@ async def nc_mcp_keycloak_client(
         logger.info("✓ MCP client session established with Keycloak authentication")
         yield session
         logger.info("✓ MCP client session closed")
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_keycloak_client_read_only(
+    anyio_backend, keycloak_oauth_token_read_only
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    MCP client session authenticated with Keycloak read-only token.
+
+    This client should only see read tools and should get filtered
+    write tools based on token scopes.
+
+    Uses JWT tokens because they embed scope information in claims,
+    enabling proper scope-based tool filtering.
+    """
+    mcp_url = "http://localhost:8002/mcp"
+    logger.info(f"Creating read-only MCP client session for Keycloak at {mcp_url}")
+
+    async for session in create_mcp_client_session(
+        url=mcp_url,
+        token=keycloak_oauth_token_read_only,
+        client_name="Keycloak Read-Only MCP",
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_keycloak_client_write_only(
+    anyio_backend, keycloak_oauth_token_write_only
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    MCP client session authenticated with Keycloak write-only token.
+
+    This client should only see write tools and should get filtered
+    read tools based on token scopes.
+
+    Uses JWT tokens because they embed scope information in claims,
+    enabling proper scope-based tool filtering.
+    """
+    mcp_url = "http://localhost:8002/mcp"
+    logger.info(f"Creating write-only MCP client session for Keycloak at {mcp_url}")
+
+    async for session in create_mcp_client_session(
+        url=mcp_url,
+        token=keycloak_oauth_token_write_only,
+        client_name="Keycloak Write-Only MCP",
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_keycloak_client_no_custom_scopes(
+    anyio_backend, keycloak_oauth_token_no_custom_scopes
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    MCP client session authenticated with Keycloak token without custom scopes.
+
+    This client has only OIDC default scopes (openid, profile, email) without
+    application-specific scopes (notes:read, notes:write, etc.).
+
+    Expected behavior: Should see 0 tools (all tools require custom scopes).
+
+    Uses JWT tokens because they embed scope information in claims,
+    enabling proper scope-based tool filtering.
+    """
+    mcp_url = "http://localhost:8002/mcp"
+    logger.info(
+        f"Creating no-custom-scopes MCP client session for Keycloak at {mcp_url}"
+    )
+
+    async for session in create_mcp_client_session(
+        url=mcp_url,
+        token=keycloak_oauth_token_no_custom_scopes,
+        client_name="Keycloak No Custom Scopes MCP",
+    ):
+        yield session

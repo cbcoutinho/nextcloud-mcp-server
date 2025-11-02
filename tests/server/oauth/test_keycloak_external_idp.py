@@ -406,3 +406,161 @@ async def test_external_idp_architecture():
     logger.info(json.dumps(architecture, indent=2))
 
     assert True
+
+
+# ============================================================================
+# Scope-Based Authorization Tests (JWT Token Filtering)
+# ============================================================================
+
+
+async def test_keycloak_read_only_token_filters_write_tools(
+    nc_mcp_keycloak_client_read_only,
+):
+    """Test that a Keycloak token with only read scopes filters out write tools."""
+    # Connect with token that has only read scopes
+    result = await nc_mcp_keycloak_client_read_only.list_tools()
+    assert result is not None
+    assert len(result.tools) > 0
+
+    tool_names = [tool.name for tool in result.tools]
+    logger.info(f"Keycloak read-only token sees {len(tool_names)} tools")
+
+    # Verify read tools are present
+    expected_read_tools = [
+        "nc_notes_get_note",  # notes:read
+        "nc_notes_search_notes",  # notes:read
+        "nc_calendar_list_calendars",  # calendar:read
+        "nc_calendar_get_event",  # calendar:read
+    ]
+
+    for tool in expected_read_tools:
+        assert tool in tool_names, f"Expected read tool {tool} not found in tool list"
+
+    # Verify write tools are NOT present (filtered out)
+    write_tools_should_be_filtered = [
+        "nc_notes_create_note",  # notes:write
+        "nc_notes_update_note",  # notes:write
+        "nc_notes_delete_note",  # notes:write
+        "nc_calendar_create_event",  # calendar:write
+        "nc_calendar_update_event",  # calendar:write
+        "nc_calendar_delete_event",  # calendar:write
+    ]
+
+    for tool in write_tools_should_be_filtered:
+        assert tool not in tool_names, (
+            f"Write tool {tool} should be filtered out but was found in tool list"
+        )
+
+    logger.info(
+        f"✅ Keycloak read-only token properly filters tools: {len(tool_names)} read tools visible, "
+        f"write tools hidden"
+    )
+
+
+async def test_keycloak_write_only_token_filters_read_tools(
+    nc_mcp_keycloak_client_write_only,
+):
+    """Test that a Keycloak token with only write scopes filters out read tools."""
+    # Connect with token that has only write scopes
+    result = await nc_mcp_keycloak_client_write_only.list_tools()
+    assert result is not None
+    assert len(result.tools) > 0
+
+    tool_names = [tool.name for tool in result.tools]
+    logger.info(f"Keycloak write-only token sees {len(tool_names)} tools")
+
+    # Verify write tools are present
+    expected_write_tools = [
+        "nc_notes_create_note",  # notes:write
+        "nc_notes_update_note",  # notes:write
+        "nc_notes_delete_note",  # notes:write
+        "nc_calendar_create_event",  # calendar:write
+        "nc_calendar_update_event",  # calendar:write
+        "nc_calendar_delete_event",  # calendar:write
+    ]
+
+    for tool in expected_write_tools:
+        assert tool in tool_names, f"Expected write tool {tool} not found in tool list"
+
+    # Verify read-only tools are NOT present (write-only scope)
+    read_tools_should_be_filtered = [
+        "nc_notes_get_note",  # notes:read
+        "nc_notes_search_notes",  # notes:read
+        "nc_calendar_list_calendars",  # calendar:read
+        "nc_calendar_get_event",  # calendar:read
+    ]
+
+    for tool in read_tools_should_be_filtered:
+        assert tool not in tool_names, (
+            f"Read tool {tool} should be filtered out but was found in tool list"
+        )
+
+    logger.info(
+        f"✅ Keycloak write-only token properly filters tools: {len(tool_names)} write tools visible, "
+        f"read tools hidden"
+    )
+
+
+async def test_keycloak_full_access_token_shows_all_tools(nc_mcp_keycloak_client):
+    """Test that a Keycloak token with both read and write scopes sees all tools."""
+    # Connect with token that has both read and write scopes
+    result = await nc_mcp_keycloak_client.list_tools()
+    assert result is not None
+    assert len(result.tools) > 0
+
+    tool_names = [tool.name for tool in result.tools]
+    logger.info(f"Keycloak full access token sees {len(tool_names)} tools")
+
+    # Verify both read and write tools are present
+    expected_read_tools = [
+        "nc_notes_get_note",  # notes:read
+        "nc_notes_search_notes",  # notes:read
+        "nc_calendar_list_calendars",  # calendar:read
+    ]
+
+    expected_write_tools = [
+        "nc_notes_create_note",  # notes:write
+        "nc_calendar_create_event",  # calendar:write
+    ]
+
+    for tool in expected_read_tools:
+        assert tool in tool_names, f"Expected read tool {tool} not found"
+
+    for tool in expected_write_tools:
+        assert tool in tool_names, f"Expected write tool {tool} not found"
+
+    # Should have all 90+ tools (both read and write)
+    assert len(tool_names) >= 90
+
+    logger.info(
+        f"✅ Keycloak full access token sees all tools: {len(tool_names)} total (read + write)"
+    )
+
+
+async def test_keycloak_no_custom_scopes_returns_zero_tools(
+    nc_mcp_keycloak_client_no_custom_scopes,
+):
+    """
+    Test that a Keycloak JWT token with only OIDC default scopes returns 0 tools.
+
+    This tests the security behavior when a user declines to grant custom scopes during consent.
+    Expected: JWT token has scopes=['openid', 'profile', 'email'] but no custom scopes.
+    All tools require at least one custom scope, so they should all be filtered out.
+    """
+    # Connect with JWT token that has NO custom scopes (only openid, profile, email)
+    result = await nc_mcp_keycloak_client_no_custom_scopes.list_tools()
+    assert result is not None
+
+    tool_names = [tool.name for tool in result.tools]
+    logger.info(
+        f"Keycloak JWT token with no custom scopes sees {len(tool_names)} tools (should be 0)"
+    )
+
+    # All tools require custom scopes, so should be filtered out
+    assert len(tool_names) == 0, (
+        f"Expected 0 tools but got {len(tool_names)}: {tool_names[:10]}"
+    )
+
+    logger.info(
+        "✅ Keycloak JWT token without custom scopes correctly returns 0 tools (all filtered out)"
+    )

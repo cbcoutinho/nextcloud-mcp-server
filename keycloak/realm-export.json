@@ -78,6 +78,78 @@
           "1073741824"
         ]
       }
+    },
+    {
+      "username": "test_read_only",
+      "enabled": true,
+      "email": "readonly@example.com",
+      "emailVerified": true,
+      "firstName": "Read",
+      "lastName": "Only",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "default-roles-nextcloud-mcp",
+        "offline_access"
+      ],
+      "attributes": {
+        "quota": [
+          "1073741824"
+        ]
+      }
+    },
+    {
+      "username": "test_write_only",
+      "enabled": true,
+      "email": "writeonly@example.com",
+      "emailVerified": true,
+      "firstName": "Write",
+      "lastName": "Only",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "default-roles-nextcloud-mcp",
+        "offline_access"
+      ],
+      "attributes": {
+        "quota": [
+          "1073741824"
+        ]
+      }
+    },
+    {
+      "username": "test_no_scopes",
+      "enabled": true,
+      "email": "noscopes@example.com",
+      "emailVerified": true,
+      "firstName": "No",
+      "lastName": "Scopes",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "default-roles-nextcloud-mcp",
+        "offline_access"
+      ],
+      "attributes": {
+        "quota": [
+          "1073741824"
+        ]
+      }
     }
   ],
   "clients": [
