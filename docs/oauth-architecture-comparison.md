@@ -102,101 +102,141 @@ A: MCP server never sees refresh tokens (by design)
 
 ---
 
-## Pattern 3: MCP Server as OAuth Client (ADR-004 - Solution)
+## Pattern 3: Sign-in with Nextcloud (Previous ADR-004 Draft)
 
 ### Architecture
 ```
-        Layer 1: MCP Authentication          Layer 2: Nextcloud Authorization
-┌─────────────┐                      ┌─────────────────┐                ┌─────────────┐
-│ MCP Client  │                      │   MCP Server    │                │  Nextcloud  │
-│  (Claude)   │                      │  (OAuth Client) │                │OAuth Provider
-└──────┬──────┘                      └────────┬────────┘                └──────┬──────┘
-       │                                      │                                │
-       │ 1. MCP Request                       │ 2. Check stored tokens         │
-       ├─────────────────────────────────────►│                                │
-       │                                      │                                │
-       │ 3. "Need Nextcloud Auth"             │                                │
-       │◄─────────────────────────────────────┤                                │
-       │                                      │                                │
-       │ 4. User initiates OAuth              │ 5. OAuth Authorization         │
-       ├─────────────────────────────────────►├───────────────────────────────►│
-       │                                      │                                │
-       │                                      │ 6. Access + Refresh Tokens     │
-       │                                      │◄───────────────────────────────┤
-       │                                      │                                │
-       │                                      │ 7. Store encrypted tokens      │
-       │                                      ├────────┐                       │
-       │                                      │        ▼                       │
-       │                                      │ ┌─────────────┐               │
-       │                                      │ │Token Storage│               │
-       │                                      │ └─────────────┘               │
-       │ 8. "Auth Complete"                   │                                │
-       │◄─────────────────────────────────────┤                                │
-       │                                      │                                │
-       │ 9. Subsequent requests               │ 10. Use stored tokens         │
-       ├─────────────────────────────────────►├───────────────────────────────►│
-       │                                      │                         Nextcloud APIs
-       │                                      │                                │
-       │                           Background │ 11. Refresh when expired       │
-       │                              Worker──►├───────────────────────────────►│
-       │                           (No client needed!)                         │
+┌─────────────┐                      ┌─────────────────┐                     ┌────────────┐
+│  MCP Client ├───────────────────>  │   MCP Server    ├────────────────────>│ Nextcloud  │
+│  (Claude)   │  (MCP Protocol)      │  (OAuth Client) │   (OIDC + APIs)     │   (IdP)    │
+└─────────────┘                      └─────────────────┘                     └────────────┘
+                                             │
+                                      ┌──────▼────────┐
+                                      │ Token Storage │
+                                      │ (NC Tokens)   │
+                                      └───────────────┘
 ```
 
 ### Characteristics
 | Aspect | Description |
 |--------|-------------|
-| **Token Flow** | MCP Server owns Nextcloud tokens |
-| **Token Storage** | ✅ Encrypted refresh tokens |
+| **Token Flow** | MCP Server uses Nextcloud as identity provider |
+| **Token Storage** | ✅ Encrypted Nextcloud refresh tokens |
 | **Offline Access** | ✅ Full support |
 | **Background Workers** | ✅ Use stored refresh tokens |
-| **User Consent** | Two OAuth flows (app + Nextcloud) |
-| **Complexity** | Medium-High |
-| **Security** | High (proper OAuth compliance) |
+| **User Consent** | Single OAuth flow (Nextcloud only) |
+| **Complexity** | Medium |
+| **Security** | High (with token rotation) |
 
 ### How It Works
 1. **Initial Setup**:
-   - User connects to MCP server (Layer 1 auth)
-   - MCP server checks for stored Nextcloud tokens
-   - If missing, triggers OAuth flow with Nextcloud
-   - User authorizes MCP server to access Nextcloud
-   - MCP server stores refresh token (encrypted)
+   - User tries to use MCP tool
+   - MCP server returns auth required
+   - User authenticates with Nextcloud's OIDC endpoint
+   - Nextcloud may use user_oidc to delegate to external IdP (Keycloak, etc.)
+   - MCP server stores Nextcloud-issued refresh token (encrypted)
 
 2. **Subsequent Requests**:
-   - MCP server uses stored access token
+   - MCP server uses stored Nextcloud tokens
    - Refreshes automatically when expired
    - No client involvement needed
 
 3. **Background Operations**:
    - Worker retrieves stored refresh token
-   - Gets new access token from Nextcloud
+   - Refreshes with Nextcloud directly
    - Performs operations independently
 
 ### Advantages
+- ✅ Single sign-on with Nextcloud
 - ✅ True offline access capability
 - ✅ OAuth-compliant with proper consent
-- ✅ Background workers can operate independently
-- ✅ Tokens persist across MCP sessions
-- ✅ Users can revoke access anytime
+- ✅ Supports external IdPs via user_oidc
+- ✅ Simpler integration - only one OAuth endpoint
 
 ### Trade-offs
-- Users must authorize twice (MCP + Nextcloud)
-- More complex token management
-- Requires secure token storage
+- Authentication flows through Nextcloud
+- Nextcloud manages IdP relationships (via user_oidc)
+- MCP server only knows about Nextcloud, not the underlying IdP
+
+---
+
+## Pattern 4: Federated Authentication Architecture (ADR-004 - Solution)
+
+### Architecture
+```
+┌─────────────┐                ┌─────────────────┐                ┌──────────────┐              ┌────────────┐
+│  MCP Client │◄──────401──────│   MCP Server    │◄────OAuth──────│  Shared IdP  │──Validates──►│ Nextcloud  │
+│  (Claude)   │                │  (OAuth Client) │   (On-Behalf)  │  (Keycloak)  │   Tokens     │(Resource)  │
+└─────────────┘                └─────────────────┘                └──────────────┘              └────────────┘
+                                        │
+                                ┌───────▼────────┐
+                                │ Token Storage  │
+                                │ (IdP Tokens)   │
+                                └────────────────┘
+```
+
+### Characteristics
+| Aspect | Description |
+|--------|-------------|
+| **Token Flow** | Shared IdP issues tokens for Nextcloud access |
+| **Token Storage** | ✅ Encrypted IdP refresh tokens |
+| **Offline Access** | ✅ Full support |
+| **Background Workers** | ✅ Use stored IdP refresh tokens |
+| **User Consent** | Single OAuth flow (IdP manages consent) |
+| **Complexity** | Medium-High |
+| **Security** | Highest (enterprise-grade IdP) |
+
+### How It Works
+1. **Initial Setup**:
+   - MCP client connects, receives 401
+   - Browser opens MCP server OAuth URL
+   - MCP server redirects to shared IdP
+   - User authenticates once to IdP
+   - IdP shows consent for both identity and Nextcloud access
+   - MCP server stores IdP refresh token (encrypted)
+   - MCP server issues session token to client
+
+2. **Subsequent Requests**:
+   - MCP server validates session token
+   - Uses stored IdP token for Nextcloud
+   - Refreshes with IdP when expired
+   - No client involvement needed
+
+3. **Background Operations**:
+   - Worker retrieves stored IdP refresh token
+   - Gets new access token from IdP
+   - Uses token to access Nextcloud
+   - Performs operations independently
+
+### Advantages
+- ✅ True single sign-on (SSO)
+- ✅ Enterprise-ready with SAML/LDAP support
+- ✅ OAuth-compliant with proper delegation
+- ✅ Direct IdP relationship - no intermediary
+- ✅ Flexible - can swap resource servers
+- ✅ Industry-standard federated pattern
+
+### Trade-offs
+- Requires shared IdP infrastructure
+- More complex initial setup
+- Token validation overhead
 
 ---
 
 ## Comparison Matrix
 
-| Feature | Pass-Through | Token Exchange | MCP as OAuth Client |
-|---------|--------------|----------------|-------------------|
-| **Offline Access** | ❌ No | ❌ No | ✅ Yes |
-| **Background Workers** | ❌ No | ❌ No* | ✅ Yes |
-| **Token Storage** | None | None | Refresh tokens |
-| **OAuth Compliance** | ✅ Full | ⚠️ Violates | ✅ Full |
-| **User Consent** | Once | Implicit | Twice |
-| **Implementation Complexity** | Low | High | Medium |
-| **Security** | High | Medium | High |
-| **Suitable For** | Interactive only | N/A (flawed) | Full platform |
+| Feature | Pass-Through | Token Exchange | Sign-in with NC | Federated Auth |
+|---------|--------------|----------------|-----------------|----------------|
+| **Offline Access** | ❌ No | ❌ No | ✅ Yes | ✅ Yes |
+| **Background Workers** | ❌ No | ❌ No* | ✅ Yes | ✅ Yes |
+| **Token Storage** | None | None | NC refresh tokens | IdP refresh tokens |
+| **OAuth Compliance** | ✅ Full | ⚠️ Violates | ✅ Full | ✅ Full |
+| **User Consent** | Once | Implicit | Once (NC) | Once (IdP) |
+| **Implementation Complexity** | Low | High | Medium | Medium-High |
+| **Security** | High | Medium | High | Highest |
+| **Enterprise Ready** | ❌ No | ❌ No | ⚠️ Indirect | ✅ Yes |
+| **Identity Provider** | Client-managed | N/A | Nextcloud (+user_oidc) | Shared IdP |
+| **Suitable For** | Interactive only | N/A (flawed) | Small teams | Enterprise |
 
 \* *Requires service accounts that violate OAuth principles*
 
@@ -214,24 +254,34 @@ A: MCP server never sees refresh tokens (by design)
 - **Result**: Circular dependencies, OAuth violations
 - **Learning**: MCP protocol constraints are fundamental
 
-### Stage 3: Application Pattern ✅
+### Stage 3: Sign-in with Nextcloud ⚠️
 - **Goal**: True offline access with OAuth compliance
-- **Result**: MCP server as independent OAuth client
-- **Trade-off**: Additional complexity justified by requirements
+- **Result**: MCP server uses Nextcloud as identity provider
+- **Limitation**: Tight coupling to Nextcloud, no enterprise IdP
+
+### Stage 4: Federated Pattern ✅
+- **Goal**: Enterprise-ready offline access
+- **Result**: Shared IdP for both MCP server and Nextcloud
+- **Trade-off**: Additional infrastructure justified by enterprise needs
 
 ---
 
 ## Key Insights
 
-1. **The MCP Protocol Boundary**: The MCP protocol creates a fundamental boundary between client and server token management. Attempting to breach this boundary (ADR-002) leads to architectural contradictions.
+1. **Pattern 3 vs Pattern 4**: Both support external IdPs, but differ in integration approach:
+   - Pattern 3: MCP → Nextcloud OIDC → (user_oidc) → External IdP
+   - Pattern 4: MCP → External IdP directly (Nextcloud also uses same IdP)
+   - Choose Pattern 3 for Nextcloud-centric deployments, Pattern 4 for IdP-centric enterprises
 
-2. **Service Accounts Don't Solve User Problems**: Using service accounts for user operations violates OAuth's core principle of acting on behalf of users, not as a service identity.
+2. **The MCP Protocol Boundary**: The MCP protocol creates a fundamental boundary between client and server token management. Attempting to breach this boundary (ADR-002) leads to architectural contradictions.
 
-3. **Double OAuth is Industry Standard**: Major platforms (Zapier, IFTTT, Microsoft Power Automate) use this pattern - the integration platform is an OAuth client that maintains its own relationships with upstream services.
+3. **Service Accounts Don't Solve User Problems**: Using service accounts for user operations violates OAuth's core principle of acting on behalf of users, not as a service identity.
 
-4. **Refresh Tokens Are The Solution**: The OAuth spec designed refresh tokens specifically for offline access. Rejecting them (as ADR-002 did) means rejecting the standard solution.
+4. **Double OAuth is Industry Standard**: Major platforms (Zapier, IFTTT, Microsoft Power Automate) use this pattern - the integration platform is an OAuth client that maintains its own relationships with upstream services.
 
-5. **Complexity is Justified**: The additional complexity of managing two OAuth flows is acceptable when offline access is a requirement. The alternative is no offline access at all.
+5. **Refresh Tokens Are The Solution**: The OAuth spec designed refresh tokens specifically for offline access. Rejecting them (as ADR-002 did) means rejecting the standard solution.
+
+6. **Complexity is Justified**: The additional complexity of managing OAuth flows is acceptable when offline access is a requirement. The alternative is no offline access at all.
 
 ---
 
@@ -243,12 +293,19 @@ Use **Pattern 1 (Pass-Through)** if:
 - Only interactive operations required
 - Simplicity is priority
 
-### For Platform Deployments
-Use **Pattern 3 (MCP as OAuth Client)** if:
+### For Teams Using Nextcloud
+Use **Pattern 3 (Sign-in with Nextcloud)** if:
 - Background sync/indexing required
-- Multiple users need service
-- Building integration platform
-- Offline operations critical
+- Nextcloud manages your authentication
+- Can use external IdPs via user_oidc
+- Prefer single integration point through Nextcloud
+
+### For Enterprise Deployments
+Use **Pattern 4 (Federated Authentication)** if:
+- Enterprise IdP already exists (Keycloak, Okta, Azure AD)
+- Multiple resource servers beyond Nextcloud
+- Compliance requirements for centralized auth
+- Building platform for multiple organizations
 
 ### Never Use Pattern 2
 Token Exchange with service accounts should not be used as it:
