@@ -1,7 +1,12 @@
 # ADR-002: Vector Database Background Sync Authentication
 
+> **⚠️ DEPRECATED**: This ADR has been superseded by [ADR-004: MCP Server as OAuth Client for Offline Access](./ADR-004-mcp-application-oauth.md).
+>
+> **Reason for Deprecation**: This ADR fundamentally misunderstood the MCP protocol's authentication architecture. The MCP server receives tokens from clients but cannot initiate OAuth flows or store refresh tokens, making the proposed solutions ineffective for true offline access. ADR-004 provides the correct architectural pattern where the MCP server acts as its own OAuth client.
+
 ## Status
-Accepted - Tier 2 (Token Exchange with Delegation) Implemented
+~~Accepted - Tier 2 (Token Exchange with Delegation) Implemented~~
+**Superseded by ADR-004** - The token exchange implementation exists but doesn't solve the offline access problem.
 
 **Important**: Service account tokens (old Tier 1) have been rejected as they violate OAuth "act on-behalf-of" principles by creating Nextcloud user accounts for the MCP server.
 
