@@ -111,7 +111,7 @@
       "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": true,
-      "serviceAccountsEnabled": false,
+      "serviceAccountsEnabled": true,
       "publicClient": false,
       "frontchannelLogout": false,
       "protocol": "openid-connect",
@@ -123,7 +123,9 @@
         "oauth2.device.authorization.grant.enabled": "false",
         "oidc.ciba.grant.enabled": "false",
         "client_credentials.use_refresh_token": "false",
-        "display.on.consent.screen": "false"
+        "display.on.consent.screen": "false",
+        "token.exchange.grant.enabled": "true",
+        "client.token.exchange.standard.enabled": "true"
       },
       "fullScopeAllowed": true,
       "nodeReRegistrationTimeout": -1,

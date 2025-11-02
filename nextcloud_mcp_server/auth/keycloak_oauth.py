@@ -17,8 +17,6 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 
-from nextcloud_mcp_server.auth.client_registration import generate_state, verify_state
-
 logger = logging.getLogger(__name__)
 
 
@@ -340,6 +338,165 @@ class KeycloakOAuthClient:
 
         return userinfo
 
+    async def get_service_account_token(self, scopes: list[str] | None = None) -> dict:
+        """
+        Get a service account token using client_credentials grant.
+
+        This requires the client to have serviceAccountsEnabled=true in Keycloak.
+        The service account token can be used for server-initiated operations
+        or as the subject_token for token exchange.
+
+        Args:
+            scopes: Optional list of scopes to request (default: openid profile email)
+
+        Returns:
+            Token response dictionary with:
+                - access_token: Service account access token
+                - token_type: Bearer
+                - expires_in: Token lifetime in seconds
+                - scope: Granted scopes
+
+        Raises:
+            httpx.HTTPError: If token request fails
+
+        Note:
+            This is used for ADR-002 Tier 2 (Token Exchange). The service account
+            token is exchanged for user-scoped tokens via RFC 8693.
+        """
+        if not self.token_endpoint:
+            await self.discover()
+
+        if not self.token_endpoint:
+            raise RuntimeError("Token endpoint not discovered")
+
+        # Default scopes
+        if scopes is None:
+            scopes = ["openid", "profile", "email"]
+
+        scope_str = " ".join(scopes)
+
+        logger.info(f"Requesting service account token with scopes: {scope_str}")
+
+        client = await self._get_http_client()
+        response = await client.post(
+            self.token_endpoint,
+            data={
+                "grant_type": "client_credentials",
+                "scope": scope_str,
+            },
+            auth=(self.client_id, self.client_secret),
+        )
+
+        response.raise_for_status()
+        token_data = response.json()
+
+        logger.info("✓ Service account token acquired")
+
+        return token_data
+
+    async def exchange_token_for_user(
+        self,
+        subject_token: str,
+        target_user_id: str | None = None,
+        audience: str | None = None,
+        scopes: list[str] | None = None,
+    ) -> dict:
+        """
+        Exchange a token for a user-scoped token using RFC 8693 Token Exchange.
+
+        This allows the MCP server (with a service account token) to obtain
+        user-scoped access tokens for background operations without needing
+        refresh tokens.
+
+        Args:
+            subject_token: The token being exchanged (service account or user token)
+            target_user_id: Optional user ID to impersonate/exchange for
+            audience: Optional target audience (client ID)
+            scopes: Optional list of scopes for the new token
+
+        Returns:
+            Token response dictionary with:
+                - access_token: User-scoped access token
+                - issued_token_type: urn:ietf:params:oauth:token-type:access_token
+                - token_type: Bearer
+                - expires_in: Token lifetime in seconds
+
+        Raises:
+            httpx.HTTPError: If token exchange fails (403 if not authorized)
+
+        Example:
+            # Get service account token
+            service_token = await client.get_service_account_token()
+
+            # Exchange for user-scoped token
+            user_token = await client.exchange_token_for_user(
+                subject_token=service_token["access_token"],
+                target_user_id="admin",  # Username or sub claim
+                audience="nextcloud",
+                scopes=["notes:read", "files:read"]
+            )
+
+        Note:
+            This implements ADR-002 Tier 2. Requires:
+            - Keycloak Standard Token Exchange V2 enabled (default in modern Keycloak)
+            - Client has token.exchange.grant.enabled=true
+            - Client has serviceAccountsEnabled=true
+            - Appropriate exchange permissions configured in Keycloak
+        """
+        if not self.token_endpoint:
+            await self.discover()
+
+        if not self.token_endpoint:
+            raise RuntimeError("Token endpoint not discovered")
+
+        # Build token exchange request
+        data = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+            "subject_token": subject_token,
+            "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+            "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
+        }
+
+        # Add optional parameters
+        if audience:
+            data["audience"] = audience
+
+        if scopes:
+            data["scope"] = " ".join(scopes)
+
+        if target_user_id:
+            # Use requested_subject for user impersonation
+            data["requested_subject"] = target_user_id
+
+        logger.info(f"Exchanging token for user: {target_user_id or 'current'}")
+
+        client = await self._get_http_client()
+        response = await client.post(
+            self.token_endpoint,
+            data=data,
+            auth=(self.client_id, self.client_secret),
+        )
+
+        if response.status_code != 200:
+            error_data = (
+                response.json()
+                if response.headers.get("content-type", "").startswith(
+                    "application/json"
+                )
+                else {"error": "unknown"}
+            )
+            logger.error(f"Token exchange failed: {response.status_code}")
+            logger.error(f"Error response: {error_data}")
+
+        response.raise_for_status()
+        token_data = response.json()
+
+        logger.info(
+            f"✓ Token exchange successful, issued_token_type: {token_data.get('issued_token_type')}"
+        )
+
+        return token_data
+
     async def check_token_exchange_support(self) -> bool:
         """
         Check if Keycloak supports RFC 8693 token exchange.
@@ -380,4 +537,4 @@ class KeycloakOAuthClient:
             return False
 
 
-__all__ = ["KeycloakOAuthClient", "generate_state", "verify_state"]
+__all__ = ["KeycloakOAuthClient"]

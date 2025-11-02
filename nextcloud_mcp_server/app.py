@@ -3,6 +3,10 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
 
 import click
 import httpx
@@ -208,6 +212,9 @@ class OAuthAppContext:
 
     nextcloud_host: str
     token_verifier: NextcloudTokenVerifier
+    refresh_token_storage: Optional["RefreshTokenStorage"] = None
+    oauth_client: Optional[object] = None  # NextcloudOAuthClient or KeycloakOAuthClient
+    oauth_provider: str = "nextcloud"  # "nextcloud" or "keycloak"
 
 
 def is_oauth_mode() -> bool:
@@ -306,6 +313,17 @@ async def load_oauth_client_credentials(
             "sharing:read sharing:write"
         )
         scopes = os.getenv("NEXTCLOUD_OIDC_SCOPES", default_scopes)
+
+        # Add offline_access scope if refresh tokens are enabled
+        enable_offline_access = os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+        if enable_offline_access and "offline_access" not in scopes:
+            scopes = f"{scopes} offline_access"
+            logger.info("✓ offline_access scope enabled for refresh tokens")
+
         logger.info(f"Requesting OAuth scopes: {scopes}")
 
         # Get token type from environment (Bearer or jwt)
@@ -372,68 +390,42 @@ async def app_lifespan_oauth(server: FastMCP) -> AsyncIterator[OAuthAppContext]:
     """
     Manage application lifecycle for OAuth mode.
 
-    Initializes OAuth client registration and token verifier.
+    Uses pre-initialized OAuth configuration from setup_oauth_config().
     Does NOT create a Nextcloud client - clients are created per-request.
     """
     logger.info("Starting MCP server in OAuth mode")
 
-    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
-    if not nextcloud_host:
-        raise ValueError("NEXTCLOUD_HOST environment variable is required")
+    # Get pre-initialized OAuth context from server dependencies
+    oauth_ctx = server.dependencies
 
-    nextcloud_host = nextcloud_host.rstrip("/")
+    nextcloud_host = oauth_ctx["nextcloud_host"]
+    token_verifier = oauth_ctx["token_verifier"]
+    refresh_token_storage = oauth_ctx["refresh_token_storage"]
+    oauth_client = oauth_ctx["oauth_client"]
+    oauth_provider = oauth_ctx["oauth_provider"]
 
-    # Get OAuth discovery endpoint
-    discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
+    logger.info(f"Using OAuth provider: {oauth_provider}")
+    if refresh_token_storage:
+        logger.info("Refresh token storage is available")
+    if oauth_client:
+        logger.info("OAuth client is available for token refresh")
+
+    # Initialize document processors
+    initialize_document_processors()
 
     try:
-        # Fetch OIDC discovery
-        async with httpx.AsyncClient() as client:
-            response = await client.get(discovery_url)
-            response.raise_for_status()
-            discovery = response.json()
-
-        logger.info(f"OIDC discovery successful: {discovery_url}")
-
-        # Extract endpoints
-        userinfo_uri = discovery["userinfo_endpoint"]
-        registration_endpoint = discovery.get("registration_endpoint")
-        introspection_uri = discovery.get("introspection_endpoint")
-
-        logger.info(f"Userinfo endpoint: {userinfo_uri}")
-        if introspection_uri:
-            logger.info(f"Introspection endpoint: {introspection_uri}")
-
-        # Load OAuth client credentials
-        client_id, client_secret = await load_oauth_client_credentials(
-            nextcloud_host=nextcloud_host, registration_endpoint=registration_endpoint
-        )
-
-        # Create token verifier with introspection support
-        token_verifier = NextcloudTokenVerifier(
+        yield OAuthAppContext(
             nextcloud_host=nextcloud_host,
-            userinfo_uri=userinfo_uri,
-            introspection_uri=introspection_uri,
-            client_id=client_id,
-            client_secret=client_secret,
+            token_verifier=token_verifier,
+            refresh_token_storage=refresh_token_storage,
+            oauth_client=oauth_client,
+            oauth_provider=oauth_provider,
         )
-
-        logger.info("OAuth initialization complete")
-
-        # Initialize document processors
-        initialize_document_processors()
-
-        try:
-            yield OAuthAppContext(
-                nextcloud_host=nextcloud_host, token_verifier=token_verifier
-            )
-        finally:
-            logger.info("Shutting down OAuth mode")
-            await token_verifier.close()
-
-    except Exception as e:
-        logger.error(f"Failed to initialize OAuth mode: {e}")
-        raise
+    finally:
+        logger.info("Shutting down OAuth mode")
+        # Close OAuth client if it exists
+        if oauth_client and hasattr(oauth_client, "close"):
+            await oauth_client.close()
 
 
 async def setup_oauth_config():
@@ -448,7 +440,7 @@ async def setup_oauth_config():
     requires token_verifier at construction time.
 
     Returns:
-        Tuple of (nextcloud_host, token_verifier, auth_settings)
+        Tuple of (nextcloud_host, token_verifier, auth_settings, refresh_token_storage, oauth_client, oauth_provider)
     """
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
@@ -461,6 +453,41 @@ async def setup_oauth_config():
     # Determine OAuth provider
     oauth_provider = os.getenv("OAUTH_PROVIDER", "nextcloud").lower()
     logger.info(f"OAuth provider: {oauth_provider}")
+
+    # Check if offline access (refresh tokens) is enabled
+    enable_offline_access = os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+
+    # Initialize refresh token storage if enabled
+    refresh_token_storage = None
+    if enable_offline_access:
+        try:
+            from nextcloud_mcp_server.auth.refresh_token_storage import (
+                RefreshTokenStorage,
+            )
+
+            # Validate encryption key before initializing
+            encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
+            if not encryption_key:
+                logger.warning(
+                    "ENABLE_OFFLINE_ACCESS=true but TOKEN_ENCRYPTION_KEY not set. "
+                    "Refresh tokens will NOT be stored. Generate a key with:\n"
+                    '  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
+                )
+            else:
+                refresh_token_storage = RefreshTokenStorage.from_env()
+                await refresh_token_storage.initialize()
+                logger.info(
+                    "✓ Refresh token storage initialized (offline_access enabled)"
+                )
+        except Exception as e:
+            logger.error(f"Failed to initialize refresh token storage: {e}")
+            logger.warning(
+                "Continuing without refresh token storage - users will need to re-authenticate after token expiration"
+            )
 
     if oauth_provider == "keycloak":
         # Keycloak mode: Use Keycloak for OAuth, Nextcloud for token validation
@@ -536,6 +563,26 @@ async def setup_oauth_config():
             "✓ Keycloak OAuth configured - tokens validated by Nextcloud user_oidc app"
         )
 
+        # Create Keycloak OAuth client for server-initiated flows (e.g., background workers)
+        oauth_client = None
+        if enable_offline_access and refresh_token_storage:
+            from nextcloud_mcp_server.auth.keycloak_oauth import KeycloakOAuthClient
+
+            mcp_server_url = os.getenv(
+                "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
+            )
+            redirect_uri = f"{mcp_server_url}/oauth/callback"
+
+            oauth_client = KeycloakOAuthClient(
+                keycloak_url=os.getenv("KEYCLOAK_URL", ""),
+                realm=os.getenv("KEYCLOAK_REALM", ""),
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=redirect_uri,
+            )
+            await oauth_client.discover()
+            logger.info("✓ Keycloak OAuth client initialized for token refresh")
+
     else:
         # Nextcloud mode (default): Use Nextcloud for both OAuth and validation
         logger.info("Using Nextcloud OIDC app as OAuth provider")
@@ -605,6 +652,11 @@ async def setup_oauth_config():
 
         logger.info("✓ Nextcloud OAuth configured")
 
+        # For Nextcloud mode, we could create a generic OAuth client for token refresh
+        # For now, set to None - token refresh can use httpx directly with discovered endpoints
+        oauth_client = None
+        # TODO: Create NextcloudOAuthClient or use generic OAuth 2.0 client for Nextcloud mode
+
     # Create auth settings (same for both modes)
     mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
 
@@ -618,7 +670,14 @@ async def setup_oauth_config():
 
     logger.info("OAuth configuration complete")
 
-    return nextcloud_host, token_verifier, auth_settings
+    return (
+        nextcloud_host,
+        token_verifier,
+        auth_settings,
+        refresh_token_storage,
+        oauth_client,
+        oauth_provider,
+    )
 
 
 def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
@@ -632,12 +691,31 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         # Asynchronously get the OAuth configuration
         import anyio
 
-        _, token_verifier, auth_settings = anyio.run(setup_oauth_config)
+        (
+            nextcloud_host,
+            token_verifier,
+            auth_settings,
+            refresh_token_storage,
+            oauth_client,
+            oauth_provider,
+        ) = anyio.run(setup_oauth_config)
+
+        # Store OAuth context for lifespan to access
+        # We'll pass this to the lifespan via server.deps
+        oauth_context = {
+            "nextcloud_host": nextcloud_host,
+            "token_verifier": token_verifier,
+            "refresh_token_storage": refresh_token_storage,
+            "oauth_client": oauth_client,
+            "oauth_provider": oauth_provider,
+        }
+
         mcp = FastMCP(
             "Nextcloud MCP",
             lifespan=app_lifespan_oauth,
             token_verifier=token_verifier,
             auth=auth_settings,
+            dependencies=oauth_context,
         )
     else:
         logger.info("Configuring MCP server for BasicAuth mode")

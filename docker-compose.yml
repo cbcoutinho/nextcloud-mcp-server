@@ -88,11 +88,16 @@ services:
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
       - NEXTCLOUD_OIDC_CLIENT_STORAGE=/app/.oauth/nextcloud_oauth_client.json
       - NEXTCLOUD_OIDC_SCOPES=openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write
+      # Offline access / refresh tokens
+      - ENABLE_OFFLINE_ACCESS=true
+      - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
+      - TOKEN_STORAGE_DB=/app/data/tokens.db
       # No USERNAME/PASSWORD - will use OAuth with Dynamic Client Registration
       # Client credentials will be registered and stored in volume on first startup
       # JWT token type is used for testing (faster validation, scopes embedded in token)
     volumes:
       - oauth-client-storage:/app/.oauth
+      - oauth-tokens:/app/data
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.4.2
@@ -137,7 +142,7 @@ services:
 
       # Refresh token storage (ADR-002 Tier 1)
       - ENABLE_OFFLINE_ACCESS=true
-      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY:-}
+      - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
       - TOKEN_STORAGE_DB=/app/data/tokens.db
       - NEXTCLOUD_OIDC_CLIENT_STORAGE=/app/.oauth/keycloak_oauth_client.json
 
@@ -150,5 +155,6 @@ volumes:
   nextcloud:
   db:
   oauth-client-storage:
+  oauth-tokens:
   keycloak-tokens:
   keycloak-oauth-storage:

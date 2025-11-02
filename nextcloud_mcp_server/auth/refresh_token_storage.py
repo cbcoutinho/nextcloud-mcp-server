@@ -5,7 +5,6 @@ Securely stores and manages user refresh tokens for background operations.
 Tokens are encrypted at rest using Fernet symmetric encryption.
 """
 
-import base64
 import logging
 import os
 import time
@@ -58,12 +57,21 @@ class RefreshTokenStorage:
                 "print(Fernet.generate_key().decode())'"
             )
 
+        # Fernet expects a base64url-encoded key as bytes, not decoded bytes
+        # The key from Fernet.generate_key() is already base64url-encoded
         try:
-            encryption_key = base64.b64decode(encryption_key_b64)
+            # Convert string to bytes if needed
+            if isinstance(encryption_key_b64, str):
+                encryption_key = encryption_key_b64.encode()
+            else:
+                encryption_key = encryption_key_b64
+
+            # Validate the key by trying to create a Fernet instance
+            Fernet(encryption_key)
         except Exception as e:
             raise ValueError(
                 f"Invalid TOKEN_ENCRYPTION_KEY: {e}. "
-                "Must be a base64-encoded Fernet key."
+                "Must be a valid Fernet key (base64url-encoded 32 bytes)."
             ) from e
 
         return cls(db_path=db_path, encryption_key=encryption_key)
