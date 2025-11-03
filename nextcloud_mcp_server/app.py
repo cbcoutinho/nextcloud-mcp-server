@@ -22,7 +22,6 @@ from starlette.routing import Mount, Route
 
 from nextcloud_mcp_server.auth import (
     InsufficientScopeError,
-    NextcloudTokenVerifier,
     discover_all_scopes,
     get_access_token_scopes,
     has_required_scopes,
@@ -547,91 +546,45 @@ async def setup_oauth_config():
         logger.info(
             f"Using public issuer URL override for JWT validation: {public_issuer}"
         )
-        jwt_validation_issuer = public_issuer
         client_issuer = public_issuer
     else:
-        jwt_validation_issuer = issuer
         client_issuer = issuer
 
-    # Check if Progressive Consent mode is enabled (opt-in, defaults to false)
-    enable_progressive = (
-        os.getenv("ENABLE_PROGRESSIVE_CONSENT", "false").lower() == "true"
-    )
+    # Progressive Consent mode (always enabled) - dual OAuth flows with audience separation
+    logger.info("✓ Progressive Consent mode enabled - dual OAuth flows active")
 
-    # Create token verifier
-    if enable_progressive:
-        # Progressive Consent mode: Use specialized verifier with audience separation
-        logger.info("✓ Progressive Consent mode enabled - dual OAuth flows active")
+    # Get encryption key for token broker
+    encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
+    if not encryption_key:
+        logger.warning(
+            "TOKEN_ENCRYPTION_KEY not set - token broker will not be available"
+        )
 
-        # Get encryption key for token broker
-        encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
-        if not encryption_key:
-            logger.warning(
-                "TOKEN_ENCRYPTION_KEY not set - token broker will not be available"
-            )
+    # Create token broker service
+    from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
 
-        # Create token broker service
-        from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
-
-        token_broker = None
-        if encryption_key and refresh_token_storage:
-            token_broker = TokenBrokerService(
-                storage=refresh_token_storage,
-                oidc_discovery_url=discovery_url,
-                nextcloud_host=nextcloud_host,
-                encryption_key=encryption_key,
-            )
-            logger.info(
-                "✓ Token Broker service initialized for audience-specific tokens"
-            )
-
-        # Create Progressive Consent token verifier
-        token_verifier = ProgressiveConsentTokenVerifier(
-            token_storage=refresh_token_storage,
-            token_broker=token_broker,
+    token_broker = None
+    if encryption_key and refresh_token_storage:
+        token_broker = TokenBrokerService(
+            storage=refresh_token_storage,
             oidc_discovery_url=discovery_url,
             nextcloud_host=nextcloud_host,
             encryption_key=encryption_key,
         )
+        logger.info("✓ Token Broker service initialized for audience-specific tokens")
 
-        logger.info(
-            "✓ Progressive Consent verifier configured - enforcing audience separation"
-        )
+    # Create Progressive Consent token verifier
+    token_verifier = ProgressiveConsentTokenVerifier(
+        token_storage=refresh_token_storage,
+        token_broker=token_broker,
+        oidc_discovery_url=discovery_url,
+        nextcloud_host=nextcloud_host,
+        encryption_key=encryption_key,
+    )
 
-    elif is_external_idp:
-        # External IdP mode: Validate via Nextcloud user_oidc app
-        # The user_oidc app accepts tokens from the external IdP and provisions users
-        nextcloud_userinfo_uri = f"{nextcloud_host}/apps/user_oidc/userinfo"
-
-        token_verifier = NextcloudTokenVerifier(
-            nextcloud_host=nextcloud_host,
-            userinfo_uri=nextcloud_userinfo_uri,  # Nextcloud validates external tokens
-            jwks_uri=jwks_uri,  # External IdP's JWKS for JWT validation
-            issuer=jwt_validation_issuer,  # External IdP issuer
-            introspection_uri=None,  # External IdP introspection not used
-            client_id=client_id,
-            client_secret=client_secret,
-        )
-
-        logger.info(
-            "✓ External IdP mode configured - tokens validated via Nextcloud user_oidc app"
-        )
-
-    else:
-        # Integrated mode: Nextcloud provides both OAuth and validation
-        token_verifier = NextcloudTokenVerifier(
-            nextcloud_host=nextcloud_host,
-            userinfo_uri=userinfo_uri,  # Nextcloud userinfo endpoint
-            jwks_uri=jwks_uri,  # Nextcloud JWKS for JWT validation
-            issuer=jwt_validation_issuer,  # Nextcloud issuer (or public override)
-            introspection_uri=introspection_uri,  # Nextcloud introspection for opaque tokens
-            client_id=client_id,
-            client_secret=client_secret,
-        )
-
-        logger.info(
-            "✓ Integrated mode configured - Nextcloud provides OAuth and validation"
-        )
+    logger.info(
+        "✓ Progressive Consent verifier configured - enforcing audience separation"
+    )
 
     # Create OAuth client for server-initiated flows (e.g., token exchange, background workers)
     oauth_client = None
@@ -800,14 +753,10 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 f"Unknown app: {app_name}. Available apps: {list(available_apps.keys())}"
             )
 
-    # Register OAuth provisioning tools if in OAuth mode with Progressive Consent
+    # Register OAuth provisioning tools (Progressive Consent always enabled in OAuth mode)
     if oauth_enabled:
-        enable_progressive = (
-            os.getenv("ENABLE_PROGRESSIVE_CONSENT", "false").lower() == "true"
-        )
-        if enable_progressive:
-            logger.info("Registering OAuth provisioning tools for Progressive Consent")
-            register_oauth_tools(mcp)
+        logger.info("Registering OAuth provisioning tools for Progressive Consent")
+        register_oauth_tools(mcp)
 
     # Override list_tools to filter based on user's token scopes (OAuth mode only)
     if oauth_enabled:

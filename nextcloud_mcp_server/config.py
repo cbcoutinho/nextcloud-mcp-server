@@ -135,8 +135,7 @@ class Settings:
     nextcloud_username: Optional[str] = None
     nextcloud_password: Optional[str] = None
 
-    # Progressive Consent settings
-    enable_progressive_consent: bool = False
+    # Progressive Consent settings (always enabled - no flag needed)
     enable_token_exchange: bool = False
     enable_offline_access: bool = False
 
@@ -160,10 +159,7 @@ def get_settings() -> Settings:
         nextcloud_host=os.getenv("NEXTCLOUD_HOST"),
         nextcloud_username=os.getenv("NEXTCLOUD_USERNAME"),
         nextcloud_password=os.getenv("NEXTCLOUD_PASSWORD"),
-        # Progressive Consent settings
-        enable_progressive_consent=(
-            os.getenv("ENABLE_PROGRESSIVE_CONSENT", "false").lower() == "true"
-        ),
+        # Progressive Consent settings (always enabled)
         enable_token_exchange=(
             os.getenv("ENABLE_TOKEN_EXCHANGE", "false").lower() == "true"
         ),

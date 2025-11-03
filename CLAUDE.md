@@ -165,32 +165,36 @@ docker compose exec db mariadb -u root -ppassword nextcloud -e \
 3. MCP tools use context pattern: `get_client(ctx)` → `NextcloudClient`
 4. All operations are async using httpx
 
-### Progressive Consent Mode (ADR-004)
+### Progressive Consent Architecture (ADR-004)
 
-**Status**: Opt-in feature (disabled by default)
-
-**Enable**: Set `ENABLE_PROGRESSIVE_CONSENT=true`
-
-**Default**: Hybrid Flow (backward compatible, single OAuth flow)
+**Status**: Always enabled in OAuth mode (default)
 
 **What is Progressive Consent?**
 - Dual OAuth flow architecture that separates client authentication (Flow 1) from resource provisioning (Flow 2)
-- Flow 1: MCP client authenticates directly to IdP (aud: "mcp-server")
-- Flow 2: User explicitly provisions Nextcloud access via separate login (not during MCP session)
-- Provides clear separation between session tokens and background job tokens
+- Flow 1: MCP client authenticates directly to IdP with resource scopes (notes:*, calendar:*, etc.)
+  - Token audience: "mcp-server"
+  - Client receives resource-scoped token for MCP session
+- Flow 2: Server explicitly provisions Nextcloud access via separate login
+  - Server requests: openid, profile, email, offline_access
+  - Token audience: "nextcloud"
+  - Server receives refresh token for offline access
+  - Client never sees this token
+- Provides clear separation between session tokens and offline access tokens
 
-**When to use:**
+**When to use OAuth mode:**
+- Multi-user deployments
 - Background jobs requiring offline access
 - Enhanced security with separate authorization contexts
 - Explicit user control over resource access
 
-**When NOT to use:**
-- Simple single-user deployments (use BasicAuth)
-- Standard OAuth without background jobs (use default Hybrid Flow)
+**When to use BasicAuth instead:**
+- Simple single-user deployments
+- Local development and testing
 
-**Key difference from Hybrid Flow:**
-- Hybrid Flow: Server intercepts OAuth callback, stores refresh token automatically
-- Progressive Consent: User explicitly authorizes via `provision_nextcloud_access` tool
+**Key features:**
+- No scope escalation - client gets exactly what it requests
+- User explicitly authorizes via `provision_nextcloud_access` tool
+- Clear security boundaries between MCP session and Nextcloud access
 
 ## MCP Response Patterns (CRITICAL)
 

@@ -105,7 +105,6 @@ services:
 
       # ADR-004: Use Hybrid Flow (server intercepts OAuth callback)
       # Set to false to enable Hybrid Flow tests - server stores refresh token and issues MCP codes
-      - ENABLE_PROGRESSIVE_CONSENT=false
 
       # NO admin credentials - using OAuth with Dynamic Client Registration (DCR)
       # Client credentials registered via RFC 7591 and stored in volume
