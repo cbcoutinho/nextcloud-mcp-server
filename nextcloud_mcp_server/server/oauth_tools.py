@@ -56,7 +56,7 @@ class RevocationResult(BaseModel):
     message: str = Field(description="Status message for the user")
 
 
-async def get_provisioning_status(mcp: Context, user_id: str) -> ProvisioningStatus:
+async def get_provisioning_status(ctx: Context, user_id: str) -> ProvisioningStatus:
     """
     Check the provisioning status for Nextcloud access.
 
@@ -140,7 +140,7 @@ def generate_oauth_url_for_flow2(
 
 
 async def provision_nextcloud_access(
-    mcp: Context, user_id: Optional[str] = None
+    ctx: Context, user_id: Optional[str] = None
 ) -> ProvisioningResult:
     """
     MCP Tool: Provision offline access to Nextcloud resources.
@@ -151,20 +151,33 @@ async def provision_nextcloud_access(
     The user must complete the OAuth flow in their browser to grant access.
 
     Args:
-        mcp: MCP context
+        ctx: MCP context with user's Flow 1 token
         user_id: Optional user identifier (extracted from token if not provided)
 
     Returns:
         ProvisioningResult with authorization URL or status
     """
     try:
-        # Get user ID from context if not provided
+        # Extract user ID from the MCP access token (Flow 1 token)
         if not user_id:
-            # In a real implementation, extract from the MCP access token
-            user_id = mcp.context.get("user_id", "default_user")
+            # Get the authorization token from context
+            if hasattr(ctx, "authorization") and ctx.authorization:
+                token = ctx.authorization.token
+                # Decode token to get user info
+                try:
+                    import jwt
+
+                    payload = jwt.decode(token, options={"verify_signature": False})
+                    user_id = payload.get("sub", "unknown")
+                    logger.info(f"Extracted user_id from Flow 1 token: {user_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to decode token: {e}")
+                    user_id = "default_user"
+            else:
+                user_id = "default_user"
 
         # Check if already provisioned
-        status = await get_provisioning_status(mcp, user_id)
+        status = await get_provisioning_status(ctx, user_id)
         if status.is_provisioned:
             return ProvisioningResult(
                 success=True,
@@ -271,7 +284,7 @@ async def provision_nextcloud_access(
 
 
 async def revoke_nextcloud_access(
-    mcp: Context, user_id: Optional[str] = None
+    ctx: Context, user_id: Optional[str] = None
 ) -> RevocationResult:
     """
     MCP Tool: Revoke offline access to Nextcloud resources.
@@ -289,10 +302,14 @@ async def revoke_nextcloud_access(
     try:
         # Get user ID from context if not provided
         if not user_id:
-            user_id = mcp.context.get("user_id", "default_user")
+            user_id = (
+                ctx.context.get("user_id", "default_user")
+                if hasattr(ctx, "context")
+                else "default_user"
+            )
 
         # Check current status
-        status = await get_provisioning_status(mcp, user_id)
+        status = await get_provisioning_status(ctx, user_id)
         if not status.is_provisioned:
             return RevocationResult(
                 success=True,
@@ -346,7 +363,7 @@ async def revoke_nextcloud_access(
 
 
 async def check_provisioning_status(
-    mcp: Context, user_id: Optional[str] = None
+    ctx: Context, user_id: Optional[str] = None
 ) -> ProvisioningStatus:
     """
     MCP Tool: Check the current provisioning status.
@@ -363,9 +380,13 @@ async def check_provisioning_status(
     """
     # Get user ID from context if not provided
     if not user_id:
-        user_id = mcp.context.get("user_id", "default_user")
+        user_id = (
+            ctx.context.get("user_id", "default_user")
+            if hasattr(ctx, "context")
+            else "default_user"
+        )
 
-    return await get_provisioning_status(mcp, user_id)
+    return await get_provisioning_status(ctx, user_id)
 
 
 # Register MCP tools
@@ -381,20 +402,25 @@ def register_oauth_tools(mcp):
         ),
     )
     async def tool_provision_access(
+        ctx: Context,
         user_id: Optional[str] = None,
     ) -> ProvisioningResult:
-        return await provision_nextcloud_access(mcp, user_id)
+        return await provision_nextcloud_access(ctx, user_id)
 
     @mcp.tool(
         name="revoke_nextcloud_access",
         description="Revoke offline access to Nextcloud resources.",
     )
-    async def tool_revoke_access(user_id: Optional[str] = None) -> RevocationResult:
-        return await revoke_nextcloud_access(mcp, user_id)
+    async def tool_revoke_access(
+        ctx: Context, user_id: Optional[str] = None
+    ) -> RevocationResult:
+        return await revoke_nextcloud_access(ctx, user_id)
 
     @mcp.tool(
         name="check_provisioning_status",
         description="Check whether Nextcloud access is provisioned.",
     )
-    async def tool_check_status(user_id: Optional[str] = None) -> ProvisioningStatus:
-        return await check_provisioning_status(mcp, user_id)
+    async def tool_check_status(
+        ctx: Context, user_id: Optional[str] = None
+    ) -> ProvisioningStatus:
+        return await check_provisioning_status(ctx, user_id)

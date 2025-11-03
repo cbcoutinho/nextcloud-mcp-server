@@ -29,6 +29,7 @@ import jwt
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
 
+from nextcloud_mcp_server.auth.client_registry import get_client_registry
 from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
 
 logger = logging.getLogger(__name__)
@@ -60,9 +61,9 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     Returns:
         302 redirect to IdP authorization endpoint
     """
-    # Check if Progressive Consent is enabled
+    # Check if Progressive Consent is enabled (default: true for ADR-004)
     enable_progressive = (
-        os.getenv("ENABLE_PROGRESSIVE_CONSENT", "false").lower() == "true"
+        os.getenv("ENABLE_PROGRESSIVE_CONSENT", "true").lower() == "true"
     )
 
     # Extract parameters
@@ -129,7 +130,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
             status_code=400,
         )
 
-    # In Progressive Consent mode, validate client_id
+    # In Progressive Consent mode, validate client_id using registry
     if enable_progressive:
         if not client_id:
             return JSONResponse(
@@ -140,16 +141,22 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
                 status_code=400,
             )
 
-        # Check if client_id is in allowed list
-        allowed_clients = os.getenv("ALLOWED_MCP_CLIENTS", "").split(",")
-        allowed_clients = [c.strip() for c in allowed_clients if c.strip()]
+        # Validate client using registry
+        registry = get_client_registry()
+        is_valid, error_msg = registry.validate_client(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            scopes=request.query_params.get("scope", "").split()
+            if request.query_params.get("scope")
+            else None,
+        )
 
-        if allowed_clients and client_id not in allowed_clients:
-            logger.warning(f"Unauthorized client_id: {client_id}")
+        if not is_valid:
+            logger.warning(f"Client validation failed: {error_msg}")
             return JSONResponse(
                 {
                     "error": "unauthorized_client",
-                    "error_description": f"Client {client_id} is not authorized",
+                    "error_description": error_msg,
                 },
                 status_code=401,
             )
@@ -169,44 +176,61 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     oauth_client = oauth_ctx["oauth_client"]
     oauth_config = oauth_ctx["config"]
 
-    # Generate session ID and MCP authorization code
-    session_id = str(uuid4())
-    mcp_authorization_code = f"mcp-code-{secrets.token_urlsafe(32)}"
-
-    logger.info(
-        f"Starting OAuth authorization flow - session={session_id[:8]}..., "
-        f"client_redirect={redirect_uri}"
-    )
-
-    # Store session with client details and PKCE challenge
-    flow_type = "flow1" if enable_progressive else "hybrid"
-    await storage.store_oauth_session(
-        session_id=session_id,
-        client_id=client_id,
-        client_redirect_uri=redirect_uri,
-        state=state,
-        code_challenge=code_challenge,
-        code_challenge_method=code_challenge_method,
-        mcp_authorization_code=mcp_authorization_code,
-        flow_type=flow_type,
-        ttl_seconds=600,  # 10 minutes
-    )
-
     # Build IdP authorization URL
     mcp_server_url = oauth_config["mcp_server_url"]
 
     if enable_progressive:
-        # Flow 1: Client authenticates directly to IdP
-        # Use client's redirect_uri for direct callback
+        # Flow 1: Client authenticates directly to IdP WITHOUT server interception
+        # CRITICAL: This is a direct pass-through to IdP
+        # The IdP will redirect directly back to the client's callback
+        # The MCP server does NOT see the IdP authorization code!
+
+        logger.info(
+            f"Starting Progressive Consent Flow 1 - no server session needed, "
+            f"client will handle IdP response directly at {redirect_uri}"
+        )
+
+        # Use client's redirect_uri for DIRECT callback (bypasses server)
         callback_uri = redirect_uri
-        # Only request MCP authentication scopes
+
+        # Only request MCP authentication scopes (no Nextcloud scopes!)
+        # The token will have aud: "mcp-server" claim
         scopes = "openid profile email"
+
         # Pass through client's state directly
         idp_state = state
-        # Use client's own client_id (if IdP requires it)
+
+        # Use client's own client_id (client must be pre-registered at IdP)
         idp_client_id = client_id
+
+        logger.info("Flow 1 (Progressive Consent): Direct client auth to IdP")
+        logger.info(f"  Client ID: {client_id}")
+        logger.info(f"  Client will receive IdP code directly at: {callback_uri}")
+        logger.info(f"  Scopes: {scopes} (no resource access)")
     else:
-        # Hybrid Flow: Server intercepts callback
+        # Hybrid Flow: Server intercepts callback (backward compatible)
+        # Generate session ID and MCP authorization code for Hybrid Flow
+        session_id = str(uuid4())
+        mcp_authorization_code = f"mcp-code-{secrets.token_urlsafe(32)}"
+
+        logger.info(
+            f"Starting Hybrid OAuth flow - session={session_id[:8]}..., "
+            f"client_redirect={redirect_uri}"
+        )
+
+        # Store session with client details and PKCE challenge
+        await storage.store_oauth_session(
+            session_id=session_id,
+            client_id=client_id,
+            client_redirect_uri=redirect_uri,
+            state=state,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+            mcp_authorization_code=mcp_authorization_code,
+            flow_type="hybrid",
+            ttl_seconds=600,  # 10 minutes
+        )
+
         callback_uri = f"{mcp_server_url}/oauth/callback"
         # Combine session_id and client state for IdP state parameter
         idp_state = f"{session_id}:{state}"
@@ -216,6 +240,10 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
         scopes = f"{default_scopes} {nextcloud_scopes}".strip()
         # Use server's client_id
         idp_client_id = oauth_config["client_id"]
+
+        logger.info("Hybrid Flow: Server intercepts callback")
+        logger.info(f"  Server callback: {callback_uri}")
+        logger.info(f"  Combined scopes: {scopes}")
 
     # Get authorization endpoint from OAuth client
     if oauth_client:
@@ -615,9 +643,9 @@ async def oauth_authorize_nextcloud(
     Returns:
         302 redirect to IdP authorization endpoint
     """
-    # Check if Progressive Consent is enabled
+    # Check if Progressive Consent is enabled (default: true for ADR-004)
     enable_progressive = (
-        os.getenv("ENABLE_PROGRESSIVE_CONSENT", "false").lower() == "true"
+        os.getenv("ENABLE_PROGRESSIVE_CONSENT", "true").lower() == "true"
     )
     if not enable_progressive:
         return JSONResponse(
@@ -724,7 +752,7 @@ async def oauth_authorize_nextcloud(
     return RedirectResponse(auth_url, status_code=302)
 
 
-async def oauth_callback_nextcloud(request: Request) -> JSONResponse:
+async def oauth_callback_nextcloud(request: Request):
     """
     OAuth callback endpoint for Flow 2: Resource Provisioning.
 

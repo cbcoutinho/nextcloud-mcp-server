@@ -27,6 +27,9 @@ from nextcloud_mcp_server.auth import (
     has_required_scopes,
     is_jwt_token,
 )
+from nextcloud_mcp_server.auth.progressive_token_verifier import (
+    ProgressiveConsentTokenVerifier,
+)
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import (
     LOGGING_CONFIG,
@@ -45,6 +48,7 @@ from nextcloud_mcp_server.server import (
     configure_tables_tools,
     configure_webdav_tools,
 )
+from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +215,9 @@ class OAuthAppContext:
     """Application context for OAuth mode."""
 
     nextcloud_host: str
-    token_verifier: NextcloudTokenVerifier
+    token_verifier: (
+        object  # Can be NextcloudTokenVerifier or ProgressiveConsentTokenVerifier
+    )
     refresh_token_storage: Optional["RefreshTokenStorage"] = None
     oauth_client: Optional[object] = None  # NextcloudOAuthClient or KeycloakOAuthClient
     oauth_provider: str = "nextcloud"  # "nextcloud" or "keycloak"
@@ -558,8 +564,52 @@ async def setup_oauth_config():
         jwt_validation_issuer = issuer
         client_issuer = issuer
 
+    # Check if Progressive Consent mode is enabled
+    enable_progressive = (
+        os.getenv("ENABLE_PROGRESSIVE_CONSENT", "true").lower() == "true"
+    )
+
     # Create token verifier
-    if is_external_idp:
+    if enable_progressive:
+        # Progressive Consent mode: Use specialized verifier with audience separation
+        logger.info("✓ Progressive Consent mode enabled - dual OAuth flows active")
+
+        # Get encryption key for token broker
+        encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
+        if not encryption_key:
+            logger.warning(
+                "TOKEN_ENCRYPTION_KEY not set - token broker will not be available"
+            )
+
+        # Create token broker service
+        from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
+
+        token_broker = None
+        if encryption_key and refresh_token_storage:
+            token_broker = TokenBrokerService(
+                storage=refresh_token_storage,
+                oidc_discovery_url=discovery_url,
+                nextcloud_host=nextcloud_host,
+                encryption_key=encryption_key,
+            )
+            logger.info(
+                "✓ Token Broker service initialized for audience-specific tokens"
+            )
+
+        # Create Progressive Consent token verifier
+        token_verifier = ProgressiveConsentTokenVerifier(
+            token_storage=refresh_token_storage,
+            token_broker=token_broker,
+            oidc_discovery_url=discovery_url,
+            nextcloud_host=nextcloud_host,
+            encryption_key=encryption_key,
+        )
+
+        logger.info(
+            "✓ Progressive Consent verifier configured - enforcing audience separation"
+        )
+
+    elif is_external_idp:
         # External IdP mode: Validate via Nextcloud user_oidc app
         # The user_oidc app accepts tokens from the external IdP and provisions users
         nextcloud_userinfo_uri = f"{nextcloud_host}/apps/user_oidc/userinfo"
@@ -760,6 +810,15 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             logger.warning(
                 f"Unknown app: {app_name}. Available apps: {list(available_apps.keys())}"
             )
+
+    # Register OAuth provisioning tools if in OAuth mode with Progressive Consent
+    if oauth_enabled:
+        enable_progressive = (
+            os.getenv("ENABLE_PROGRESSIVE_CONSENT", "true").lower() == "true"
+        )
+        if enable_progressive:
+            logger.info("Registering OAuth provisioning tools for Progressive Consent")
+            register_oauth_tools(mcp)
 
     # Override list_tools to filter based on user's token scopes (OAuth mode only)
     if oauth_enabled:
