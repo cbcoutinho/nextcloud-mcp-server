@@ -45,8 +45,7 @@ NEXTCLOUD_HOST=https://your.nextcloud.instance.com
 NEXTCLOUD_OIDC_CLIENT_ID=your-client-id
 NEXTCLOUD_OIDC_CLIENT_SECRET=your-client-secret
 
-# OAuth Storage and Callback Settings (optional)
-NEXTCLOUD_OIDC_CLIENT_STORAGE=.nextcloud_oauth_client.json
+# OAuth Callback Settings (optional)
 NEXTCLOUD_MCP_SERVER_URL=http://localhost:8000
 
 # Leave these EMPTY for OAuth mode
@@ -61,7 +60,6 @@ NEXTCLOUD_PASSWORD=
 | `NEXTCLOUD_HOST` | ✅ Yes | - | Full URL of your Nextcloud instance (e.g., `https://cloud.example.com`) |
 | `NEXTCLOUD_OIDC_CLIENT_ID` | ⚠️ Optional | - | OAuth client ID (auto-registers if empty) |
 | `NEXTCLOUD_OIDC_CLIENT_SECRET` | ⚠️ Optional | - | OAuth client secret (auto-registers if empty) |
-| `NEXTCLOUD_OIDC_CLIENT_STORAGE` | ⚠️ Optional | `.nextcloud_oauth_client.json` | Path to store auto-registered client credentials |
 | `NEXTCLOUD_MCP_SERVER_URL` | ⚠️ Optional | `http://localhost:8000` | MCP server URL for OAuth callbacks |
 | `NEXTCLOUD_USERNAME` | ❌ Must be empty | - | Leave empty to enable OAuth mode |
 | `NEXTCLOUD_PASSWORD` | ❌ Must be empty | - | Leave empty to enable OAuth mode |
@@ -160,10 +158,6 @@ Options:
                                   NEXTCLOUD_OIDC_CLIENT_ID env var)
   --oauth-client-secret TEXT      OAuth client secret (can also use
                                   NEXTCLOUD_OIDC_CLIENT_SECRET env var)
-  --oauth-storage-path TEXT       Path to store OAuth client credentials
-                                  (can also use
-                                  NEXTCLOUD_OIDC_CLIENT_STORAGE env var)
-                                  [default: .nextcloud_oauth_client.json]
   --mcp-server-url TEXT           MCP server URL for OAuth callbacks (can
                                   also use NEXTCLOUD_MCP_SERVER_URL env
                                   var)  [default: http://localhost:8000]
@@ -225,10 +219,7 @@ uv run nextcloud-mcp-server --no-oauth \
 - Store OAuth client credentials securely
 - Use environment variables from your deployment platform (Docker secrets, Kubernetes ConfigMaps, etc.)
 - Never commit credentials to version control
-- Set appropriate file permissions on credential storage:
-  ```bash
-  chmod 600 .nextcloud_oauth_client.json
-  ```
+- SQLite database permissions are handled automatically by the server
 
 ### For Docker
 

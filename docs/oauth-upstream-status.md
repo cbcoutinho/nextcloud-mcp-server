@@ -16,35 +16,79 @@ While the core OAuth flow works, there are **pending upstream improvements** tha
 
 **Status**: 🟡 **Patch Required** (Pending Upstream)
 
-**Affected Component**: `user_oidc` app
+**Affected Component**: **Nextcloud core server** (`CORSMiddleware`)
 
 **Issue**: Bearer token authentication fails for app-specific APIs (Notes, Calendar, etc.) with `401 Unauthorized` errors, even though OCS APIs work correctly.
 
-**Root Cause**: The `CORSMiddleware` in Nextcloud logs out sessions created by Bearer token authentication when CSRF tokens are missing, which breaks API requests.
+**Root Cause**: The `CORSMiddleware` in Nextcloud core server logs out sessions when CSRF tokens are missing. Bearer token authentication creates a session (via `user_oidc` app), but doesn't include CSRF tokens (stateless authentication). The middleware detects the logged-in session without CSRF token and calls `session->logout()`, invalidating the request.
 
-**Solution**: Set the `app_api` session flag during Bearer token authentication to bypass CSRF checks.
+**Solution**: Allow Bearer token requests to bypass CORS/CSRF checks in `CORSMiddleware`, since Bearer tokens are stateless and don't require CSRF protection.
 
-**Upstream PR**: [nextcloud/user_oidc#1221](https://github.com/nextcloud/user_oidc/issues/1221)
+**Upstream PR**: [nextcloud/server#55878](https://github.com/nextcloud/server/pull/55878)
 
-**Workaround**: Manually apply the patch to `lib/User/Backend.php` in the `user_oidc` app
+**Workaround**: Manually apply the patch to `lib/private/AppFramework/Middleware/Security/CORSMiddleware.php` in Nextcloud core server
 
 **Impact**:
 - ✅ **Works**: OCS APIs (`/ocs/v2.php/cloud/capabilities`)
 - ❌ **Requires Patch**: App APIs (`/apps/notes/api/`, `/apps/calendar/`, etc.)
 
-**Files Modified**: `lib/User/Backend.php` in `user_oidc` app
+**Files Modified**: `lib/private/AppFramework/Middleware/Security/CORSMiddleware.php` in **Nextcloud core server**
 
 **Patch Summary**:
 ```php
-// Add before successful Bearer token authentication returns
-$this->session->set('app_api', true);
+// Allow Bearer token authentication for CORS requests
+// Bearer tokens are stateless and don't require CSRF protection
+$authorizationHeader = $this->request->getHeader('Authorization');
+if (!empty($authorizationHeader) && str_starts_with($authorizationHeader, 'Bearer ')) {
+    return;
+}
 ```
 
-This is added at lines ~243, ~310, ~315, and ~337 in `Backend.php`.
+This is added before the CSRF check at line ~73 in `CORSMiddleware.php`.
 
 ---
 
-### 2. PKCE Support (RFC 7636)
+### 2. JWT Token Support, Introspection, and Scope Validation
+
+**Status**: ✅ **Complete** (Merged Upstream)
+
+**Affected Component**: `oidc` app
+
+**Issue**: The OIDC app needed support for JWT tokens, token introspection, and enhanced scope validation for fine-grained authorization.
+
+**Resolution**: Complete JWT and scope validation support has been implemented and merged:
+
+**Upstream PR**: [H2CK/oidc#585](https://github.com/H2CK/oidc/pull/585) - ✅ **Merged**
+- **Changes**:
+  - JWT token generation and validation
+  - Token introspection endpoint (RFC 7662)
+  - Enhanced scope validation and parsing
+  - Custom scope support for Nextcloud apps
+- **Status**: Merged and available in v1.10.0+ of the `oidc` app
+
+---
+
+### 3. User Consent Management
+
+**Status**: ✅ **Complete** (Merged Upstream)
+
+**Affected Component**: `oidc` app
+
+**Issue**: The OIDC app needed proper user consent management for OAuth authorization flows.
+
+**Resolution**: Complete user consent management has been implemented and merged:
+
+**Upstream PR**: [H2CK/oidc#586](https://github.com/H2CK/oidc/pull/586) - ✅ **Merged**
+- **Changes**:
+  - User consent UI for OAuth authorization
+  - Consent expiration and cleanup
+  - Admin control for user consent settings
+  - Consent tracking and management
+- **Status**: Merged and available in v1.11.0+ of the `oidc` app
+
+---
+
+### 4. PKCE Support (RFC 7636)
 
 **Status**: ✅ **Complete** (Merged Upstream)
 
@@ -97,24 +141,34 @@ This is added at lines ~243, ~310, ~315, and ~337 in `Backend.php`.
 
 | PR/Issue | Component | Status | Priority | Notes |
 |----------|-----------|--------|----------|-------|
-| [user_oidc#1221](https://github.com/nextcloud/user_oidc/issues/1221) | `user_oidc` | 🟡 Open | High | Required for app-specific APIs |
-| [H2CK/oidc#584](https://github.com/H2CK/oidc/pull/584) | `oidc` | ✅ Merged | ~~Medium~~ | ✅ PKCE advertisement complete (v1.10.0+) |
+| [server#55878](https://github.com/nextcloud/server/pull/55878) | Nextcloud core server | 🟡 Open | High | CORSMiddleware patch for Bearer tokens |
+| [H2CK/oidc#586](https://github.com/H2CK/oidc/pull/586) | `oidc` | ✅ Merged | Medium | ✅ User consent complete (v1.11.0+) |
+| [H2CK/oidc#585](https://github.com/H2CK/oidc/pull/585) | `oidc` | ✅ Merged | Medium | ✅ JWT tokens, introspection, scope validation (v1.10.0+) |
+| [H2CK/oidc#584](https://github.com/H2CK/oidc/pull/584) | `oidc` | ✅ Merged | ~~High~~ | ✅ PKCE support (RFC 7636) (v1.10.0+) |
 
 ## What Works Without Patches
 
 The following functionality works **out of the box** without any patches:
 
-✅ **OAuth Flow**:
-- OIDC discovery with full PKCE support (requires `oidc` app v1.10.0+)
+✅ **OAuth Flow** (requires `oidc` app v1.10.0+):
+- OIDC discovery with full PKCE support (RFC 7636)
 - Dynamic client registration
 - Authorization code flow with PKCE (S256 and plain methods)
 - Token exchange with code_verifier verification
+- User consent management
 - Userinfo endpoint
+
+✅ **Token Features** (requires `oidc` app v1.10.0+):
+- JWT token generation and validation
+- Token introspection endpoint (RFC 7662)
+- Enhanced scope validation and parsing
+- Custom scope support for Nextcloud apps
 
 ✅ **MCP Server as Resource Server**:
 - Token validation via userinfo
 - Per-user client instances
 - Token caching
+- Scope-based authorization
 
 ✅ **Nextcloud OCS APIs**:
 - Capabilities endpoint
@@ -124,7 +178,7 @@ The following functionality works **out of the box** without any patches:
 
 The following functionality requires upstream patches:
 
-🟡 **App-Specific APIs** (Requires user_oidc#1221):
+🟡 **App-Specific APIs** (Requires Nextcloud core server CORSMiddleware patch):
 - Notes API (`/apps/notes/api/`)
 - Calendar API (CalDAV)
 - Contacts API (CardDAV)
@@ -198,19 +252,23 @@ uv run pytest tests/client/test_oauth_playwright.py --browser firefox -v
 
 ## Monitoring Upstream Progress
 
-To track progress on these issues:
+To track progress on remaining issues:
 
-1. **Watch the upstream repositories**:
-   - [nextcloud/user_oidc](https://github.com/nextcloud/user_oidc)
-   - [nextcloud/oidc](https://github.com/nextcloud/oidc)
+1. **Watch the upstream repository**:
+   - [nextcloud/server](https://github.com/nextcloud/server)
 
-2. **Subscribe to specific issues**:
-   - [user_oidc#1221](https://github.com/nextcloud/user_oidc/issues/1221) - Bearer token support
+2. **Subscribe to the CORSMiddleware PR**:
+   - [server#55878](https://github.com/nextcloud/server/pull/55878) - CORSMiddleware Bearer token support
 
-3. **Check Nextcloud release notes** for mentions of:
+3. **Check Nextcloud server release notes** for mentions of:
    - Bearer token authentication improvements
-   - OIDC/OAuth enhancements
-   - AppAPI compatibility
+   - CORS middleware enhancements
+   - OAuth/OIDC API compatibility
+
+4. **Completed upstream work** (no monitoring needed):
+   - ✅ [H2CK/oidc#584](https://github.com/H2CK/oidc/pull/584) - PKCE support (v1.10.0+)
+   - ✅ [H2CK/oidc#585](https://github.com/H2CK/oidc/pull/585) - JWT, introspection, scopes (v1.10.0+)
+   - ✅ [H2CK/oidc#586](https://github.com/H2CK/oidc/pull/586) - User consent (v1.11.0+)
 
 ## Contributing
 
@@ -237,6 +295,6 @@ Want to help get these patches merged?
 
 ---
 
-**Last Updated**: 2025-10-20
+**Last Updated**: 2025-11-02
 
-**Next Review**: When issue #1221 (Bearer token support) has activity
+**Next Review**: When Nextcloud server CORSMiddleware PR has activity

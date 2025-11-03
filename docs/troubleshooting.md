@@ -136,24 +136,27 @@ A patch for the `user_oidc` app is required to fix Bearer token support. See [oa
 
 ---
 
-### Issue: "Permission denied" when reading/writing OAuth client credentials file
+### Issue: "Permission denied" or "Database is locked" when accessing OAuth client storage
 
-**Cause:** The server cannot access the OAuth client storage file (default: `.nextcloud_oauth_client.json`).
+**Cause:** The server cannot access the SQLite database for OAuth client credentials storage.
 
 **Solution:**
 
 ```bash
-# Check file permissions
-ls -la .nextcloud_oauth_client.json
+# Check database directory permissions
+ls -la data/
 
-# Fix file permissions (should be 0600 - owner read/write only)
-chmod 600 .nextcloud_oauth_client.json
+# Ensure directory is writable
+chmod 755 data/
 
-# Ensure the directory is writable
-chmod 755 $(dirname .nextcloud_oauth_client.json)
+# Check if database file exists and has correct permissions
+ls -la data/tokens.db
+chmod 644 data/tokens.db
 
-# If the file doesn't exist, ensure the directory is writable so it can be created
-mkdir -p $(dirname .nextcloud_oauth_client.json)
+# For Docker deployments, ensure volume is mounted correctly:
+# docker-compose.yml should have:
+#   volumes:
+#     - ./data:/app/data
 ```
 
 ---

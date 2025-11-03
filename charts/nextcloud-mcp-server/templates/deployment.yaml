@@ -78,8 +78,6 @@ spec:
               value: {{ include "nextcloud-mcp-server.mcpServerUrl" . | quote }}
             - name: NEXTCLOUD_PUBLIC_ISSUER_URL
               value: {{ include "nextcloud-mcp-server.publicIssuerUrl" . | quote }}
-            - name: NEXTCLOUD_OIDC_CLIENT_STORAGE
-              value: "/app/.oauth/nextcloud_oauth_client.json"
             - name: NEXTCLOUD_OIDC_SCOPES
               value: {{ .Values.auth.oauth.scopes | quote }}
             {{- if .Values.auth.oauth.clientId }}

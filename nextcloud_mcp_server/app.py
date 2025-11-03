@@ -3,6 +3,10 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
 
 import click
 import httpx
@@ -208,6 +212,9 @@ class OAuthAppContext:
 
     nextcloud_host: str
     token_verifier: NextcloudTokenVerifier
+    refresh_token_storage: Optional["RefreshTokenStorage"] = None
+    oauth_client: Optional[object] = None  # NextcloudOAuthClient or KeycloakOAuthClient
+    oauth_provider: str = "nextcloud"  # "nextcloud" or "keycloak"
 
 
 def is_oauth_mode() -> bool:
@@ -261,21 +268,22 @@ async def load_oauth_client_credentials(
         logger.info("Using pre-configured OAuth client credentials from environment")
         return (client_id, client_secret)
 
-    # Try loading from storage file
-    storage_path = os.getenv(
-        "NEXTCLOUD_OIDC_CLIENT_STORAGE", ".nextcloud_oauth_client.json"
-    )
-    from pathlib import Path
+    # Try loading from SQLite storage
+    try:
+        from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
 
-    from nextcloud_mcp_server.auth.client_registration import load_client_from_file
+        storage = RefreshTokenStorage.from_env()
+        await storage.initialize()
 
-    client_info = load_client_from_file(Path(storage_path))
-
-    if client_info:
-        logger.info(
-            f"Loaded OAuth client from storage: {client_info.client_id[:16]}..."
-        )
-        return (client_info.client_id, client_info.client_secret)
+        client_data = await storage.get_oauth_client()
+        if client_data:
+            logger.info(
+                f"Loaded OAuth client from SQLite: {client_data['client_id'][:16]}..."
+            )
+            return (client_data["client_id"], client_data["client_secret"])
+    except ValueError:
+        # TOKEN_ENCRYPTION_KEY not set, skip SQLite storage check
+        logger.debug("SQLite storage not available (TOKEN_ENCRYPTION_KEY not set)")
 
     # Try dynamic registration if available
     if registration_endpoint:
@@ -306,6 +314,17 @@ async def load_oauth_client_credentials(
             "sharing:read sharing:write"
         )
         scopes = os.getenv("NEXTCLOUD_OIDC_SCOPES", default_scopes)
+
+        # Add offline_access scope if refresh tokens are enabled
+        enable_offline_access = os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+        if enable_offline_access and "offline_access" not in scopes:
+            scopes = f"{scopes} offline_access"
+            logger.info("✓ offline_access scope enabled for refresh tokens")
+
         logger.info(f"Requesting OAuth scopes: {scopes}")
 
         # Get token type from environment (Bearer or jwt)
@@ -316,15 +335,17 @@ async def load_oauth_client_credentials(
             token_type = "Bearer"
         logger.info(f"Requesting token type: {token_type}")
 
-        # Load or register client
-        from nextcloud_mcp_server.auth.client_registration import (
-            load_or_register_client,
-        )
+        # Ensure OAuth client in SQLite storage
+        from nextcloud_mcp_server.auth.client_registration import ensure_oauth_client
+        from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
 
-        client_info = await load_or_register_client(
+        storage = RefreshTokenStorage.from_env()
+        await storage.initialize()
+
+        client_info = await ensure_oauth_client(
             nextcloud_url=nextcloud_host,
             registration_endpoint=registration_endpoint,
-            storage_path=storage_path,
+            storage=storage,
             client_name=f"Nextcloud MCP Server ({token_type})",
             redirect_uris=redirect_uris,
             scopes=scopes,
@@ -338,8 +359,9 @@ async def load_oauth_client_credentials(
     raise ValueError(
         "OAuth mode requires either:\n"
         "1. NEXTCLOUD_OIDC_CLIENT_ID and NEXTCLOUD_OIDC_CLIENT_SECRET environment variables, OR\n"
-        "2. Pre-existing client credentials file at NEXTCLOUD_OIDC_CLIENT_STORAGE, OR\n"
-        "3. Dynamic client registration enabled on Nextcloud OIDC app"
+        "2. Pre-existing client credentials in SQLite storage (TOKEN_STORAGE_DB), OR\n"
+        "3. Dynamic client registration enabled on Nextcloud OIDC app\n\n"
+        "Note: TOKEN_ENCRYPTION_KEY is required for SQLite storage"
     )
 
 
@@ -367,84 +389,26 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
         await client.close()
 
 
-@asynccontextmanager
-async def app_lifespan_oauth(server: FastMCP) -> AsyncIterator[OAuthAppContext]:
-    """
-    Manage application lifecycle for OAuth mode.
-
-    Initializes OAuth client registration and token verifier.
-    Does NOT create a Nextcloud client - clients are created per-request.
-    """
-    logger.info("Starting MCP server in OAuth mode")
-
-    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
-    if not nextcloud_host:
-        raise ValueError("NEXTCLOUD_HOST environment variable is required")
-
-    nextcloud_host = nextcloud_host.rstrip("/")
-
-    # Get OAuth discovery endpoint
-    discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
-
-    try:
-        # Fetch OIDC discovery
-        async with httpx.AsyncClient() as client:
-            response = await client.get(discovery_url)
-            response.raise_for_status()
-            discovery = response.json()
-
-        logger.info(f"OIDC discovery successful: {discovery_url}")
-
-        # Extract endpoints
-        userinfo_uri = discovery["userinfo_endpoint"]
-        registration_endpoint = discovery.get("registration_endpoint")
-        introspection_uri = discovery.get("introspection_endpoint")
-
-        logger.info(f"Userinfo endpoint: {userinfo_uri}")
-        if introspection_uri:
-            logger.info(f"Introspection endpoint: {introspection_uri}")
-
-        # Load OAuth client credentials
-        client_id, client_secret = await load_oauth_client_credentials(
-            nextcloud_host=nextcloud_host, registration_endpoint=registration_endpoint
-        )
-
-        # Create token verifier with introspection support
-        token_verifier = NextcloudTokenVerifier(
-            nextcloud_host=nextcloud_host,
-            userinfo_uri=userinfo_uri,
-            introspection_uri=introspection_uri,
-            client_id=client_id,
-            client_secret=client_secret,
-        )
-
-        logger.info("OAuth initialization complete")
-
-        # Initialize document processors
-        initialize_document_processors()
-
-        try:
-            yield OAuthAppContext(
-                nextcloud_host=nextcloud_host, token_verifier=token_verifier
-            )
-        finally:
-            logger.info("Shutting down OAuth mode")
-            await token_verifier.close()
-
-    except Exception as e:
-        logger.error(f"Failed to initialize OAuth mode: {e}")
-        raise
-
-
 async def setup_oauth_config():
     """
     Setup OAuth configuration by performing OIDC discovery and client registration.
+
+    Auto-detects OAuth provider mode:
+    - Integrated mode: OIDC_DISCOVERY_URL points to NEXTCLOUD_HOST (or not set)
+      → Nextcloud OIDC app provides both OAuth and API access
+    - External IdP mode: OIDC_DISCOVERY_URL points to external provider
+      → External IdP for OAuth, Nextcloud user_oidc validates tokens and provides API access
+
+    Uses generic OIDC environment variables:
+    - OIDC_DISCOVERY_URL: OIDC discovery endpoint (optional, defaults to NEXTCLOUD_HOST)
+    - OIDC_CLIENT_ID / OIDC_CLIENT_SECRET: Static credentials (optional, uses DCR if not provided)
+    - NEXTCLOUD_OIDC_SCOPES: Requested OAuth scopes
 
     This is done synchronously before FastMCP initialization because FastMCP
     requires token_verifier at construction time.
 
     Returns:
-        Tuple of (nextcloud_host, token_verifier, auth_settings)
+        Tuple of (nextcloud_host, token_verifier, auth_settings, refresh_token_storage, oauth_client, oauth_provider)
     """
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
@@ -453,68 +417,222 @@ async def setup_oauth_config():
         )
 
     nextcloud_host = nextcloud_host.rstrip("/")
-    discovery_url = f"{nextcloud_host}/.well-known/openid-configuration"
 
+    # Get OIDC discovery URL (defaults to Nextcloud integrated mode)
+    discovery_url = os.getenv(
+        "OIDC_DISCOVERY_URL", f"{nextcloud_host}/.well-known/openid-configuration"
+    )
     logger.info(f"Performing OIDC discovery: {discovery_url}")
 
-    # Fetch OIDC discovery
+    # Perform OIDC discovery
     async with httpx.AsyncClient() as client:
         response = await client.get(discovery_url)
         response.raise_for_status()
         discovery = response.json()
 
-    logger.info("OIDC discovery successful")
+    logger.info("✓ OIDC discovery successful")
 
     # Validate PKCE support
     validate_pkce_support(discovery, discovery_url)
 
-    # Extract endpoints
+    # Extract OIDC endpoints
     issuer = discovery["issuer"]
     userinfo_uri = discovery["userinfo_endpoint"]
     jwks_uri = discovery.get("jwks_uri")
     introspection_uri = discovery.get("introspection_endpoint")
     registration_endpoint = discovery.get("registration_endpoint")
 
+    # Allow overriding JWKS URI (useful when running in Docker with frontendUrl)
+    # Example: frontendUrl=http://localhost:8888 but MCP server needs http://keycloak:8080
+    jwks_uri_override = os.getenv("OIDC_JWKS_URI")
+    if jwks_uri_override:
+        logger.info(f"OIDC_JWKS_URI override: {jwks_uri} → {jwks_uri_override}")
+        jwks_uri = jwks_uri_override
+
     logger.info("OIDC endpoints discovered:")
     logger.info(f"  Issuer: {issuer}")
     logger.info(f"  Userinfo: {userinfo_uri}")
-    logger.info(f"  JWKS: {jwks_uri}")
+    if jwks_uri:
+        logger.info(f"  JWKS: {jwks_uri}")
     if introspection_uri:
         logger.info(f"  Introspection: {introspection_uri}")
 
-    # Allow override of public issuer URL for both client configuration and JWT validation
+    # Auto-detect provider mode based on issuer
+    # External IdP mode: issuer doesn't match Nextcloud host
+    # Normalize URLs for comparison (handle port differences like :80 for HTTP)
+    from urllib.parse import urlparse
+
+    def normalize_url(url: str) -> str:
+        """Normalize URL by removing default ports (80 for HTTP, 443 for HTTPS)."""
+        parsed = urlparse(url)
+        # Remove default ports
+        if (parsed.scheme == "http" and parsed.port == 80) or (
+            parsed.scheme == "https" and parsed.port == 443
+        ):
+            # Remove explicit default port
+            hostname = parsed.hostname or parsed.netloc.split(":")[0]
+            return f"{parsed.scheme}://{hostname}"
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    issuer_normalized = normalize_url(issuer)
+    nextcloud_normalized = normalize_url(nextcloud_host)
+
+    is_external_idp = not issuer_normalized.startswith(nextcloud_normalized)
+
+    if is_external_idp:
+        oauth_provider = "external"  # Could be Keycloak, Auth0, Okta, etc.
+        logger.info(
+            f"✓ Detected external IdP mode (issuer: {issuer} != Nextcloud: {nextcloud_host})"
+        )
+        logger.info("  Tokens will be validated via Nextcloud user_oidc app")
+    else:
+        oauth_provider = "nextcloud"
+        logger.info("✓ Detected integrated mode (Nextcloud OIDC app)")
+
+    # Check if offline access (refresh tokens) is enabled
+    enable_offline_access = os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+
+    # Initialize refresh token storage if enabled
+    refresh_token_storage = None
+    if enable_offline_access:
+        try:
+            from nextcloud_mcp_server.auth.refresh_token_storage import (
+                RefreshTokenStorage,
+            )
+
+            # Validate encryption key before initializing
+            encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
+            if not encryption_key:
+                logger.warning(
+                    "ENABLE_OFFLINE_ACCESS=true but TOKEN_ENCRYPTION_KEY not set. "
+                    "Refresh tokens will NOT be stored. Generate a key with:\n"
+                    '  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
+                )
+            else:
+                refresh_token_storage = RefreshTokenStorage.from_env()
+                await refresh_token_storage.initialize()
+                logger.info(
+                    "✓ Refresh token storage initialized (offline_access enabled)"
+                )
+        except Exception as e:
+            logger.error(f"Failed to initialize refresh token storage: {e}")
+            logger.warning(
+                "Continuing without refresh token storage - users will need to re-authenticate after token expiration"
+            )
+
+    # Load client credentials (static or dynamic registration)
+    client_id = os.getenv("OIDC_CLIENT_ID")
+    client_secret = os.getenv("OIDC_CLIENT_SECRET")
+
+    if client_id and client_secret:
+        logger.info(f"Using static OIDC client credentials: {client_id}")
+    elif registration_endpoint:
+        logger.info("OIDC_CLIENT_ID not set, attempting Dynamic Client Registration")
+        client_id, client_secret = await load_oauth_client_credentials(
+            nextcloud_host=nextcloud_host, registration_endpoint=registration_endpoint
+        )
+    else:
+        raise ValueError(
+            "OIDC_CLIENT_ID and OIDC_CLIENT_SECRET environment variables are required "
+            "when the OIDC provider does not support Dynamic Client Registration. "
+            f"Discovery URL: {discovery_url}"
+        )
+
+    # Handle public issuer override (for clients accessing via different URL)
     # When clients access Nextcloud via a public URL (e.g., http://127.0.0.1:8080),
-    # the OIDC app issues JWT tokens with that public URL in the 'iss' claim,
-    # even though the MCP server accesses Nextcloud via an internal URL (e.g., http://app).
-    # Therefore, we must validate JWT tokens against the public issuer, not the internal one.
+    # but the MCP server accesses via internal URL (e.g., http://app:80),
+    # we need to use the public URL for JWT validation and client configuration
     public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
     if public_issuer:
         public_issuer = public_issuer.rstrip("/")
         logger.info(
-            f"Using public issuer URL for clients and JWT validation: {public_issuer}"
+            f"Using public issuer URL override for JWT validation: {public_issuer}"
         )
-        # Use public issuer for both client configuration AND JWT validation
-        issuer = public_issuer
         jwt_validation_issuer = public_issuer
+        client_issuer = public_issuer
     else:
-        # Use discovered issuer for both
         jwt_validation_issuer = issuer
+        client_issuer = issuer
 
-    # Load OAuth client credentials
-    client_id, client_secret = await load_oauth_client_credentials(
-        nextcloud_host=nextcloud_host, registration_endpoint=registration_endpoint
-    )
+    # Create token verifier
+    if is_external_idp:
+        # External IdP mode: Validate via Nextcloud user_oidc app
+        # The user_oidc app accepts tokens from the external IdP and provisions users
+        nextcloud_userinfo_uri = f"{nextcloud_host}/apps/user_oidc/userinfo"
 
-    # Create token verifier with JWT support and introspection
-    token_verifier = NextcloudTokenVerifier(
-        nextcloud_host=nextcloud_host,
-        userinfo_uri=userinfo_uri,
-        jwks_uri=jwks_uri,  # Enable JWT verification if available
-        issuer=jwt_validation_issuer,  # Use original issuer for JWT validation
-        introspection_uri=introspection_uri,  # Enable introspection for opaque tokens
-        client_id=client_id,
-        client_secret=client_secret,
-    )
+        token_verifier = NextcloudTokenVerifier(
+            nextcloud_host=nextcloud_host,
+            userinfo_uri=nextcloud_userinfo_uri,  # Nextcloud validates external tokens
+            jwks_uri=jwks_uri,  # External IdP's JWKS for JWT validation
+            issuer=jwt_validation_issuer,  # External IdP issuer
+            introspection_uri=None,  # External IdP introspection not used
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+
+        logger.info(
+            "✓ External IdP mode configured - tokens validated via Nextcloud user_oidc app"
+        )
+
+    else:
+        # Integrated mode: Nextcloud provides both OAuth and validation
+        token_verifier = NextcloudTokenVerifier(
+            nextcloud_host=nextcloud_host,
+            userinfo_uri=userinfo_uri,  # Nextcloud userinfo endpoint
+            jwks_uri=jwks_uri,  # Nextcloud JWKS for JWT validation
+            issuer=jwt_validation_issuer,  # Nextcloud issuer (or public override)
+            introspection_uri=introspection_uri,  # Nextcloud introspection for opaque tokens
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+
+        logger.info(
+            "✓ Integrated mode configured - Nextcloud provides OAuth and validation"
+        )
+
+    # Create OAuth client for server-initiated flows (e.g., token exchange, background workers)
+    oauth_client = None
+    if enable_offline_access and refresh_token_storage and is_external_idp:
+        # For external IdP mode, create generic OIDC client for token operations
+        from nextcloud_mcp_server.auth.keycloak_oauth import KeycloakOAuthClient
+
+        mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+        redirect_uri = f"{mcp_server_url}/oauth/callback"
+
+        # Extract base URL and realm from discovery URL
+        # Format: http://keycloak:8080/realms/nextcloud-mcp/.well-known/openid-configuration
+        # → base_url: http://keycloak:8080, realm: nextcloud-mcp
+        if "/realms/" in discovery_url:
+            base_url = discovery_url.split("/realms/")[0]
+            realm = discovery_url.split("/realms/")[1].split("/")[0]
+        else:
+            # Fallback: use issuer to extract base URL
+            base_url = (
+                issuer.rsplit("/realms/", 1)[0] if "/realms/" in issuer else issuer
+            )
+            realm = issuer.split("/realms/")[1] if "/realms/" in issuer else ""
+
+        oauth_client = KeycloakOAuthClient(
+            keycloak_url=base_url,
+            realm=realm,
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+        )
+        await oauth_client.discover()
+        logger.info(
+            "✓ OIDC client initialized for token operations (token exchange, refresh)"
+        )
+    elif enable_offline_access and refresh_token_storage:
+        # For integrated mode, OAuth client could be added later
+        # For now, token refresh can use httpx directly with discovered endpoints
+        logger.info(
+            "OAuth client for token refresh not yet implemented for integrated mode"
+        )
 
     # Create auth settings
     mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
@@ -523,13 +641,22 @@ async def setup_oauth_config():
     # Scopes are now advertised via PRM endpoint and enforced per-tool.
     # This allows dynamic tool filtering based on user's actual token scopes.
     auth_settings = AuthSettings(
-        issuer_url=AnyHttpUrl(issuer),
+        issuer_url=AnyHttpUrl(
+            client_issuer
+        ),  # Use client issuer (may be public override)
         resource_server_url=AnyHttpUrl(mcp_server_url),
     )
 
     logger.info("OAuth configuration complete")
 
-    return nextcloud_host, token_verifier, auth_settings
+    return (
+        nextcloud_host,
+        token_verifier,
+        auth_settings,
+        refresh_token_storage,
+        oauth_client,
+        oauth_provider,
+    )
 
 
 def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
@@ -543,10 +670,53 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         # Asynchronously get the OAuth configuration
         import anyio
 
-        _, token_verifier, auth_settings = anyio.run(setup_oauth_config)
+        (
+            nextcloud_host,
+            token_verifier,
+            auth_settings,
+            refresh_token_storage,
+            oauth_client,
+            oauth_provider,
+        ) = anyio.run(setup_oauth_config)
+
+        # Create lifespan function with captured OAuth context (closure)
+        @asynccontextmanager
+        async def oauth_lifespan(server: FastMCP) -> AsyncIterator[OAuthAppContext]:
+            """
+            Lifespan context for OAuth mode - captures OAuth configuration from outer scope.
+            """
+            logger.info("Starting MCP server in OAuth mode")
+            logger.info(f"Using OAuth provider: {oauth_provider}")
+            if refresh_token_storage:
+                logger.info("Refresh token storage is available")
+            if oauth_client:
+                logger.info("OAuth client is available for token refresh")
+
+            # Initialize document processors
+            initialize_document_processors()
+
+            try:
+                yield OAuthAppContext(
+                    nextcloud_host=nextcloud_host,
+                    token_verifier=token_verifier,
+                    refresh_token_storage=refresh_token_storage,
+                    oauth_client=oauth_client,
+                    oauth_provider=oauth_provider,
+                )
+            finally:
+                logger.info("Shutting down MCP server")
+                # RefreshTokenStorage uses context managers, no close() needed
+                # OAuth client cleanup (if it has a close method)
+                if oauth_client and hasattr(oauth_client, "close"):
+                    try:
+                        await oauth_client.close()
+                    except Exception as e:
+                        logger.warning(f"Error closing OAuth client: {e}")
+                logger.info("MCP server shutdown complete")
+
         mcp = FastMCP(
             "Nextcloud MCP",
-            lifespan=app_lifespan_oauth,
+            lifespan=oauth_lifespan,
             token_verifier=token_verifier,
             auth=auth_settings,
         )
@@ -861,13 +1031,6 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     help="OAuth client secret (can also use NEXTCLOUD_OIDC_CLIENT_SECRET env var)",
 )
 @click.option(
-    "--oauth-storage-path",
-    envvar="NEXTCLOUD_OIDC_CLIENT_STORAGE",
-    default=".nextcloud_oauth_client.json",
-    show_default=True,
-    help="Path to store OAuth client credentials (can also use NEXTCLOUD_OIDC_CLIENT_STORAGE env var)",
-)
-@click.option(
     "--mcp-server-url",
     envvar="NEXTCLOUD_MCP_SERVER_URL",
     default="http://localhost:8000",
@@ -918,7 +1081,6 @@ def run(
     oauth: bool | None,
     oauth_client_id: str | None,
     oauth_client_secret: str | None,
-    oauth_storage_path: str,
     mcp_server_url: str,
     nextcloud_host: str | None,
     nextcloud_username: str | None,
@@ -973,8 +1135,6 @@ def run(
         os.environ["NEXTCLOUD_OIDC_CLIENT_ID"] = oauth_client_id
     if oauth_client_secret:
         os.environ["NEXTCLOUD_OIDC_CLIENT_SECRET"] = oauth_client_secret
-    if oauth_storage_path:
-        os.environ["NEXTCLOUD_OIDC_CLIENT_STORAGE"] = oauth_storage_path
     if oauth_scopes:
         os.environ["NEXTCLOUD_OIDC_SCOPES"] = oauth_scopes
     if oauth_token_type:
@@ -1017,13 +1177,7 @@ def run(
             click.echo("OAuth Configuration:", err=True)
             click.echo("  Mode: Dynamic Client Registration", err=True)
             click.echo("  Host: " + nextcloud_host, err=True)
-            click.echo(
-                "  Storage: "
-                + os.getenv(
-                    "NEXTCLOUD_OIDC_CLIENT_STORAGE", ".nextcloud_oauth_client.json"
-                ),
-                err=True,
-            )
+            click.echo("  Storage: SQLite (TOKEN_STORAGE_DB)", err=True)
             click.echo("", err=True)
             click.echo(
                 "Note: Make sure 'Dynamic Client Registration' is enabled", err=True

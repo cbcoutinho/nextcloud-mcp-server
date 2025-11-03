@@ -30,10 +30,10 @@ services:
       - db
     volumes:
       - nextcloud:/var/www/html
-      - ./app-hooks/post-installation:/docker-entrypoint-hooks.d/post-installation:ro
+      - ./app-hooks:/docker-entrypoint-hooks.d:ro
       # Mount OIDC development directory outside /var/www/html to avoid rsync conflicts
       # The post-installation hook will register /opt/apps as an additional app directory
-      - ./third_party/oidc:/opt/apps/oidc:ro
+      - ./third_party:/opt/apps:ro
     environment:
       - NEXTCLOUD_TRUSTED_DOMAINS=app
       - NEXTCLOUD_ADMIN_USER=admin
@@ -43,6 +43,11 @@ services:
       - MYSQL_USER=nextcloud
       - MYSQL_HOST=db
       - REDIS_HOST=redis
+    #healthcheck:
+      #test: ["CMD-SHELL", "curl -Ss http://localhost/status.php | grep '\"installed\":true' || exit 1"]
+      #interval: 10s
+      #timeout: 30s
+      #retries: 30
 
   recipes:
     image: docker.io/library/nginx:alpine@sha256:b3c656d55d7ad751196f21b7fd2e8d4da9cb430e32f646adcf92441b72f82b14
@@ -83,18 +88,90 @@ services:
     ports:
       - 127.0.0.1:8001:8001
     environment:
+      # Generic OIDC configuration (integrated mode - Nextcloud OIDC app)
+      # OIDC_DISCOVERY_URL not set - defaults to NEXTCLOUD_HOST/.well-known/openid-configuration
+      # OIDC_CLIENT_ID not set - uses Dynamic Client Registration (DCR)
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8001
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
-      - NEXTCLOUD_OIDC_CLIENT_STORAGE=/app/.oauth/nextcloud_oauth_client.json
       - NEXTCLOUD_OIDC_SCOPES=openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write
-      # No USERNAME/PASSWORD - will use OAuth with Dynamic Client Registration
-      # Client credentials will be registered and stored in volume on first startup
+
+      # Refresh token storage (ADR-002 Tier 1)
+      - ENABLE_OFFLINE_ACCESS=true
+      - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
+      - TOKEN_STORAGE_DB=/app/data/tokens.db
+
+      # NO admin credentials - using OAuth with Dynamic Client Registration (DCR)
+      # Client credentials registered via RFC 7591 and stored in volume
       # JWT token type is used for testing (faster validation, scopes embedded in token)
     volumes:
       - oauth-client-storage:/app/.oauth
+      - oauth-tokens:/app/data
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.2
+    command:
+      - "start-dev"
+      - "--import-realm"
+      - "--hostname=http://localhost:8888"
+      - "--hostname-strict=false"
+      - "--hostname-backchannel-dynamic=true"
+      - "--features=preview"  # Enable Legacy V1 token exchange (supports both Standard V2 and Legacy V1)
+    ports:
+      - 127.0.0.1:8888:8080
+    environment:
+      - KC_BOOTSTRAP_ADMIN_USERNAME=admin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=admin
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /realms/nextcloud-mcp HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q 'HTTP/1.1 200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  mcp-keycloak:
+    build: .
+    command: ["--transport", "streamable-http", "--oauth", "--port", "8002"]
+    restart: always
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      app:
+        condition: service_started
+    ports:
+      - 127.0.0.1:8002:8002
+    environment:
+      # Generic OIDC configuration (external IdP mode - Keycloak)
+      # Provider auto-detected from OIDC_DISCOVERY_URL issuer
+      # Using internal Docker hostname for discovery to get consistent issuer
+      - OIDC_DISCOVERY_URL=http://keycloak:8080/realms/nextcloud-mcp/.well-known/openid-configuration
+      - OIDC_CLIENT_ID=nextcloud-mcp-server
+      - OIDC_CLIENT_SECRET=mcp-secret-change-in-production
+      - OIDC_JWKS_URI=http://keycloak:8080/realms/nextcloud-mcp/protocol/openid-connect/certs
+
+      # Nextcloud API endpoint (for accessing APIs with validated token)
+      - NEXTCLOUD_HOST=http://app:80
+      - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8002
+      - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8888/realms/nextcloud-mcp
+
+      # Refresh token storage (ADR-002 Tier 1 & 2)
+      - ENABLE_OFFLINE_ACCESS=true
+      - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
+      - TOKEN_STORAGE_DB=/app/data/tokens.db
+
+      # OAuth scopes (optional - uses defaults if not specified)
+      - NEXTCLOUD_OIDC_SCOPES=openid profile email offline_access notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write
+
+      # NO admin credentials - using external IdP OAuth only!
+    volumes:
+      - keycloak-tokens:/app/data
+      - keycloak-oauth-storage:/app/.oauth
 
 volumes:
   nextcloud:
   db:
   oauth-client-storage:
+  oauth-tokens:
+  keycloak-tokens:
+  keycloak-oauth-storage:

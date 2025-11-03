@@ -168,27 +168,36 @@ class NextcloudTokenVerifier(TokenVerifier):
             signing_key = self._jwks_client.get_signing_key_from_jwt(token)
 
             # Verify and decode JWT
+            # Accept tokens with audience: "mcp-server" or ["mcp-server", "nextcloud"]
+            # This allows:
+            # 1. Tokens from MCP clients (aud: "mcp-server")
+            # 2. Tokens for Nextcloud APIs (aud: "nextcloud")
+            # 3. Tokens for both (aud: ["mcp-server", "nextcloud"])
             payload = jwt.decode(
                 token,
                 signing_key.key,
                 algorithms=["RS256"],
                 issuer=self.issuer,
+                audience=["mcp-server", "nextcloud"],  # Accept either audience
                 options={
                     "verify_signature": True,
                     "verify_exp": True,
                     "verify_iat": True,
                     "verify_iss": True if self.issuer else False,
-                    "verify_aud": False,  # Skip audience validation for Bearer tokens
+                    "verify_aud": True,  # Enable audience validation
                 },
             )
 
             logger.debug(f"JWT verified successfully for user: {payload.get('sub')}")
             logger.debug(f"Full JWT payload: {payload}")
 
-            # Extract username (sub claim)
-            username = payload.get("sub")
+            # Extract username (sub claim, with fallback to preferred_username)
+            # Some OIDC providers (like Keycloak) may not include sub in access tokens
+            username = payload.get("sub") or payload.get("preferred_username")
             if not username:
-                logger.error("No 'sub' claim found in JWT payload")
+                logger.error(
+                    "No 'sub' or 'preferred_username' claim found in JWT payload"
+                )
                 return None
 
             # Extract scopes from scope claim (space-separated string)

@@ -18,7 +18,8 @@ dependencies = [
     "pydantic>=2.11.4",
     "click>=8.1.8",
     "caldav",
-    "pyjwt[crypto]>=2.8.0", # Async I/O library for better compatibility
+    "pyjwt[crypto]>=2.8.0",
+    "aiosqlite>=0.20.0",  # Async SQLite for refresh token storage
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -50,6 +51,7 @@ markers = [
     "integration: Integration tests requiring Docker containers",
     "oauth: OAuth tests requiring Playwright (slowest)",
     "smoke: Critical path smoke tests for quick validation",
+    "keycloak: OAuth tests that utilize keycloak external identity provider",
 ]
 testpaths = [
     "tests",

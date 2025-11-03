@@ -23,7 +23,6 @@ def clean_env(monkeypatch):
         "NEXTCLOUD_PASSWORD",
         "NEXTCLOUD_OIDC_CLIENT_ID",
         "NEXTCLOUD_OIDC_CLIENT_SECRET",
-        "NEXTCLOUD_OIDC_CLIENT_STORAGE",
         "NEXTCLOUD_OIDC_SCOPES",
         "NEXTCLOUD_OIDC_TOKEN_TYPE",
         "NEXTCLOUD_MCP_SERVER_URL",
@@ -240,9 +239,6 @@ def test_default_values(runner, clean_env, monkeypatch):
                     "NEXTCLOUD_OIDC_TOKEN_TYPE"
                 ),
                 "NEXTCLOUD_MCP_SERVER_URL": os.environ.get("NEXTCLOUD_MCP_SERVER_URL"),
-                "NEXTCLOUD_OIDC_CLIENT_STORAGE": os.environ.get(
-                    "NEXTCLOUD_OIDC_CLIENT_STORAGE"
-                ),
             }
         )
         raise SystemExit(0)
@@ -267,9 +263,6 @@ def test_default_values(runner, clean_env, monkeypatch):
     )
     assert captured_env["NEXTCLOUD_OIDC_TOKEN_TYPE"] == "bearer"
     assert captured_env["NEXTCLOUD_MCP_SERVER_URL"] == "http://localhost:8000"
-    assert (
-        captured_env["NEXTCLOUD_OIDC_CLIENT_STORAGE"] == ".nextcloud_oauth_client.json"
-    )
 
 
 def test_oauth_token_type_case_normalization(runner, clean_env, monkeypatch):

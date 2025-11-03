@@ -17,7 +17,7 @@ Start here to identify your issue:
 | Only seeing Notes tools (7 instead of 90+) | Limited OAuth scopes granted | [Limited Scopes](#limited-scopes---only-seeing-notes-tools) |
 | HTTP 401 for Notes API | Bearer token patch missing | [Bearer Token Auth Fails](#bearer-token-authentication-fails) |
 | "OIDC discovery failed" | Network or configuration issue | [Discovery Failed](#oidc-discovery-failed) |
-| "Permission denied" on .nextcloud_oauth_client.json | File permissions issue | [File Permission Error](#file-permission-error) |
+| "Database error" on OAuth client storage | Database permissions issue | [Database Permission Error](#database-permission-error) |
 
 ## Configuration Issues
 
@@ -161,39 +161,38 @@ php occ config:app:set oidc expire_time --value "86400"  # 24 hours
 
 ---
 
-### File Permission Error
+### Database Permission Error
 
 **Error Message**:
 ```
-Permission denied when reading/writing .nextcloud_oauth_client.json
+Permission denied when accessing SQLite database
+Database is locked
 ```
 
-**Cause**: The server cannot access the OAuth client storage file.
+**Cause**: The server cannot access the SQLite database file.
 
 **Solution**:
 
 ```bash
-# Check file permissions
-ls -la .nextcloud_oauth_client.json
-
-# Fix file permissions (owner read/write only)
-chmod 600 .nextcloud_oauth_client.json
+# Check database directory permissions
+ls -la /app/data/
 
 # Ensure directory is writable
-chmod 755 $(dirname .nextcloud_oauth_client.json)
+chmod 755 /app/data
 
-# If file doesn't exist, ensure directory is writable
-mkdir -p $(dirname .nextcloud_oauth_client.json)
+# Check if database file exists and has correct permissions
+ls -la /app/data/tokens.db
+chmod 644 /app/data/tokens.db
+
+# If running in Docker, ensure volume is mounted correctly
+docker compose logs mcp-oauth | grep -i "database\|sqlite"
 ```
 
-For custom storage paths:
-```bash
-# Set custom path in .env
-NEXTCLOUD_OIDC_CLIENT_STORAGE=/path/to/custom/oauth_client.json
-
-# Ensure directory exists and is writable
-mkdir -p $(dirname /path/to/custom/oauth_client.json)
-chmod 755 $(dirname /path/to/custom/oauth_client.json)
+**For Docker deployments**:
+Ensure the data directory is properly mounted as a volume:
+```yaml
+volumes:
+  - ./data:/app/data  # Persistent storage for SQLite database
 ```
 
 ---

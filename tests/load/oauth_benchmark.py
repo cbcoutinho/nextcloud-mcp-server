@@ -27,7 +27,8 @@ import click
 import httpx
 from playwright.async_api import async_playwright
 
-from nextcloud_mcp_server.auth.client_registration import load_or_register_client
+from nextcloud_mcp_server.auth.client_registration import ensure_oauth_client
+from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
 from nextcloud_mcp_server.client import NextcloudClient
 from tests.load.oauth_metrics import OAuthBenchmarkMetrics
 from tests.load.oauth_pool import (
@@ -142,7 +143,7 @@ async def setup_oauth_client(
     nextcloud_host: str, callback_url: str, registration_endpoint: str
 ) -> dict[str, str]:
     """
-    Setup OAuth client using load_or_register_client.
+    Setup OAuth client using ensure_oauth_client with SQLite storage.
 
     Args:
         nextcloud_host: Nextcloud host URL
@@ -154,11 +155,15 @@ async def setup_oauth_client(
     """
     logger.info("Setting up OAuth client...")
 
-    # Use the client registration utility
-    client_info = await load_or_register_client(
+    # Initialize SQLite storage
+    storage = RefreshTokenStorage.from_env()
+    await storage.initialize()
+
+    # Use the client registration utility with SQLite storage
+    client_info = await ensure_oauth_client(
         nextcloud_url=nextcloud_host,
         registration_endpoint=registration_endpoint,
-        storage_path=".nextcloud_oauth_benchmark_client.json",
+        storage=storage,
         client_name="OAuth Benchmark Test Client",
         redirect_uris=[callback_url],
     )
