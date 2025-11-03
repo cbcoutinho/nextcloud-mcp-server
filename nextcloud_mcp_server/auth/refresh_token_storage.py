@@ -711,10 +711,14 @@ class RefreshTokenStorage:
         code_challenge: Optional[str] = None,
         code_challenge_method: Optional[str] = None,
         mcp_authorization_code: Optional[str] = None,
+        client_id: Optional[str] = None,
+        flow_type: str = "hybrid",
+        is_provisioning: bool = False,
+        requested_scopes: Optional[str] = None,
         ttl_seconds: int = 600,  # 10 minutes
     ) -> None:
         """
-        Store OAuth session for Hybrid Flow (ADR-004).
+        Store OAuth session for ADR-004 Progressive Consent.
 
         Args:
             session_id: Unique session identifier
@@ -723,6 +727,10 @@ class RefreshTokenStorage:
             code_challenge: PKCE code challenge
             code_challenge_method: PKCE method (S256)
             mcp_authorization_code: Pre-generated MCP authorization code
+            client_id: Client identifier (for Flow 1)
+            flow_type: Type of flow ('hybrid', 'flow1', 'flow2')
+            is_provisioning: Whether this is a Flow 2 provisioning session
+            requested_scopes: Requested OAuth scopes
             ttl_seconds: Session TTL in seconds
         """
         if not self._initialized:
@@ -735,17 +743,22 @@ class RefreshTokenStorage:
             await db.execute(
                 """
                 INSERT INTO oauth_sessions
-                (session_id, client_redirect_uri, state, code_challenge,
-                 code_challenge_method, mcp_authorization_code, created_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (session_id, client_id, client_redirect_uri, state, code_challenge,
+                 code_challenge_method, mcp_authorization_code, flow_type,
+                 is_provisioning, requested_scopes, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
+                    client_id,
                     client_redirect_uri,
                     state,
                     code_challenge,
                     code_challenge_method,
                     mcp_authorization_code,
+                    flow_type,
+                    is_provisioning,
+                    requested_scopes,
                     now,
                     expires_at,
                 ),
