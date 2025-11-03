@@ -915,12 +915,8 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     logger.info("Health check endpoints enabled: /health/live, /health/ready")
 
     if oauth_enabled:
-        # Import OAuth routes (ADR-004 Hybrid Flow)
-        from nextcloud_mcp_server.auth.oauth_routes import (
-            oauth_authorize,
-            oauth_callback,
-            oauth_token,
-        )
+        # Import OAuth routes (ADR-004 Progressive Consent)
+        from nextcloud_mcp_server.auth.oauth_routes import oauth_authorize
 
         def oauth_protected_resource_metadata(request):
             """RFC 9728 Protected Resource Metadata endpoint.
@@ -976,13 +972,9 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             "Protected Resource Metadata (PRM) endpoints enabled (path-based + root)"
         )
 
-        # Add OAuth login routes (ADR-004 Hybrid Flow)
+        # Add OAuth login routes (ADR-004 Progressive Consent Flow 1)
         routes.append(Route("/oauth/authorize", oauth_authorize, methods=["GET"]))
-        routes.append(Route("/oauth/callback", oauth_callback, methods=["GET"]))
-        routes.append(Route("/oauth/token", oauth_token, methods=["POST"]))
-        logger.info(
-            "OAuth login routes enabled: /oauth/authorize, /oauth/callback, /oauth/token"
-        )
+        logger.info("OAuth login routes enabled: /oauth/authorize (Flow 1)")
 
     # Add browser OAuth login routes (OAuth mode only)
     if oauth_enabled:
