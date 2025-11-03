@@ -98,7 +98,13 @@ class RefreshTokenStorage:
                     encrypted_token BLOB NOT NULL,
                     expires_at INTEGER,
                     created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
+                    updated_at INTEGER NOT NULL,
+                    -- ADR-004 Progressive Consent fields
+                    flow_type TEXT DEFAULT 'hybrid',  -- 'hybrid', 'flow1', 'flow2'
+                    token_audience TEXT DEFAULT 'nextcloud',  -- 'mcp-server' or 'nextcloud'
+                    provisioned_at INTEGER,  -- When Flow 2 was completed
+                    provisioning_client_id TEXT,  -- Which MCP client initiated Flow 1
+                    scopes TEXT  -- JSON array of granted scopes
                 )
                 """
             )
@@ -142,7 +148,7 @@ class RefreshTokenStorage:
                 """
             )
 
-            # OAuth flow sessions (ADR-004 Hybrid Flow)
+            # OAuth flow sessions (ADR-004 Progressive Consent)
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS oauth_sessions (
@@ -157,7 +163,12 @@ class RefreshTokenStorage:
                     idp_refresh_token TEXT,
                     user_id TEXT,
                     created_at INTEGER NOT NULL,
-                    expires_at INTEGER NOT NULL
+                    expires_at INTEGER NOT NULL,
+                    -- ADR-004 Progressive Consent fields
+                    flow_type TEXT DEFAULT 'hybrid',  -- 'hybrid', 'flow1', 'flow2'
+                    requested_scopes TEXT,  -- JSON array of requested scopes
+                    granted_scopes TEXT,  -- JSON array of granted scopes
+                    is_provisioning BOOLEAN DEFAULT FALSE  -- True if this is a Flow 2 provisioning session
                 )
                 """
             )
@@ -181,6 +192,10 @@ class RefreshTokenStorage:
         user_id: str,
         refresh_token: str,
         expires_at: Optional[int] = None,
+        flow_type: str = "hybrid",
+        token_audience: str = "nextcloud",
+        provisioning_client_id: Optional[str] = None,
+        scopes: Optional[list[str]] = None,
     ) -> None:
         """
         Store encrypted refresh token for user.
@@ -189,6 +204,10 @@ class RefreshTokenStorage:
             user_id: User identifier (from OIDC 'sub' claim)
             refresh_token: Refresh token to store
             expires_at: Token expiration timestamp (Unix epoch), if known
+            flow_type: Type of flow ('hybrid', 'flow1', 'flow2')
+            token_audience: Token audience ('mcp-server' or 'nextcloud')
+            provisioning_client_id: Client ID that initiated Flow 1
+            scopes: List of granted scopes
 
         """
         if not self._initialized:
@@ -196,15 +215,33 @@ class RefreshTokenStorage:
 
         encrypted_token = self.cipher.encrypt(refresh_token.encode())
         now = int(time.time())
+        scopes_json = json.dumps(scopes) if scopes else None
+
+        # For Flow 2, set provisioned_at timestamp
+        provisioned_at = now if flow_type == "flow2" else None
 
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO refresh_tokens
-                (user_id, encrypted_token, expires_at, created_at, updated_at)
-                VALUES (?, ?, ?, COALESCE((SELECT created_at FROM refresh_tokens WHERE user_id = ?), ?), ?)
+                (user_id, encrypted_token, expires_at, created_at, updated_at,
+                 flow_type, token_audience, provisioned_at, provisioning_client_id, scopes)
+                VALUES (?, ?, ?, COALESCE((SELECT created_at FROM refresh_tokens WHERE user_id = ?), ?), ?,
+                        ?, ?, ?, ?, ?)
                 """,
-                (user_id, encrypted_token, expires_at, user_id, now, now),
+                (
+                    user_id,
+                    encrypted_token,
+                    expires_at,
+                    user_id,
+                    now,
+                    now,
+                    flow_type,
+                    token_audience,
+                    provisioned_at,
+                    provisioning_client_id,
+                    scopes_json,
+                ),
             )
             await db.commit()
 
@@ -220,7 +257,7 @@ class RefreshTokenStorage:
             auth_method="offline_access",
         )
 
-    async def get_refresh_token(self, user_id: str) -> Optional[str]:
+    async def get_refresh_token(self, user_id: str) -> Optional[dict]:
         """
         Retrieve and decrypt refresh token for user.
 
@@ -228,14 +265,28 @@ class RefreshTokenStorage:
             user_id: User identifier
 
         Returns:
-            Decrypted refresh token, or None if not found or expired
+            Dictionary with token data including ADR-004 fields:
+            {
+                "refresh_token": str,
+                "expires_at": int | None,
+                "flow_type": str,
+                "token_audience": str,
+                "provisioned_at": int | None,
+                "provisioning_client_id": str | None,
+                "scopes": list[str] | None
+            }
+            or None if not found or expired
         """
         if not self._initialized:
             await self.initialize()
 
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
-                "SELECT encrypted_token, expires_at FROM refresh_tokens WHERE user_id = ?",
+                """
+                SELECT encrypted_token, expires_at, flow_type, token_audience,
+                       provisioned_at, provisioning_client_id, scopes
+                FROM refresh_tokens WHERE user_id = ?
+                """,
                 (user_id,),
             ) as cursor:
                 row = await cursor.fetchone()
@@ -244,7 +295,15 @@ class RefreshTokenStorage:
             logger.debug(f"No refresh token found for user {user_id}")
             return None
 
-        encrypted_token, expires_at = row
+        (
+            encrypted_token,
+            expires_at,
+            flow_type,
+            token_audience,
+            provisioned_at,
+            provisioning_client_id,
+            scopes_json,
+        ) = row
 
         # Check expiration
         if expires_at is not None and expires_at < time.time():
@@ -256,8 +315,22 @@ class RefreshTokenStorage:
 
         try:
             decrypted_token = self.cipher.decrypt(encrypted_token).decode()
-            logger.debug(f"Retrieved refresh token for user {user_id}")
-            return decrypted_token
+            scopes = json.loads(scopes_json) if scopes_json else None
+
+            logger.debug(
+                f"Retrieved refresh token for user {user_id} (flow_type: {flow_type})"
+            )
+
+            return {
+                "refresh_token": decrypted_token,
+                "expires_at": expires_at,
+                "flow_type": flow_type or "hybrid",  # Default for existing tokens
+                "token_audience": token_audience
+                or "nextcloud",  # Default for existing tokens
+                "provisioned_at": provisioned_at,
+                "provisioning_client_id": provisioning_client_id,
+                "scopes": scopes,
+            }
         except Exception as e:
             logger.error(f"Failed to decrypt refresh token for user {user_id}: {e}")
             return None
