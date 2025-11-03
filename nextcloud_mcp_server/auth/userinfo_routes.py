@@ -19,6 +19,62 @@ from starlette.responses import HTMLResponse, JSONResponse
 logger = logging.getLogger(__name__)
 
 
+async def _get_userinfo_endpoint(oauth_ctx: dict[str, Any]) -> str | None:
+    """Get the correct userinfo endpoint based on OAuth mode.
+
+    Args:
+        oauth_ctx: OAuth context from app.state
+
+    Returns:
+        Userinfo endpoint URL, or None if unavailable
+    """
+    oauth_client = oauth_ctx.get("oauth_client")
+
+    # External IdP mode (Keycloak): use oauth_client's userinfo endpoint
+    if oauth_client:
+        # Ensure discovery has been performed
+        if not oauth_client.userinfo_endpoint:
+            try:
+                await oauth_client.discover()
+            except Exception as e:
+                logger.error(f"Failed to discover IdP endpoints: {e}")
+                return None
+
+        logger.debug(
+            f"Using external IdP userinfo endpoint: {oauth_client.userinfo_endpoint}"
+        )
+        return oauth_client.userinfo_endpoint
+
+    # Integrated mode (Nextcloud): query discovery document
+    oauth_config = oauth_ctx.get("config")
+    if not oauth_config:
+        return None
+
+    discovery_url = oauth_config.get("discovery_url")
+    if not discovery_url:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(discovery_url)
+            response.raise_for_status()
+            discovery = response.json()
+            userinfo_endpoint = discovery.get("userinfo_endpoint")
+
+            if userinfo_endpoint:
+                logger.debug(
+                    f"Using Nextcloud userinfo endpoint from discovery: {userinfo_endpoint}"
+                )
+                return userinfo_endpoint
+
+            logger.warning("No userinfo_endpoint in discovery document")
+            return None
+
+    except Exception as e:
+        logger.error(f"Failed to query discovery document for userinfo endpoint: {e}")
+        return None
+
+
 async def _query_idp_userinfo(
     access_token_str: str, userinfo_uri: str
 ) -> dict[str, Any] | None:
@@ -109,6 +165,17 @@ async def _get_user_info(request: Request) -> dict[str, Any]:
                 response.raise_for_status()
                 token_response = response.json()
                 access_token = token_response["access_token"]
+
+                # Update stored refresh token if a new one was issued (token rotation)
+                new_refresh_token = token_response.get("refresh_token")
+                if new_refresh_token and new_refresh_token != refresh_token:
+                    logger.info(
+                        f"Refresh token rotated, updating storage for session: {session_id[:16]}..."
+                    )
+                    await storage.store_refresh_token(
+                        user_id=session_id,
+                        refresh_token=new_refresh_token,
+                    )
         else:
             # Integrated mode (Nextcloud OIDC)
             # Note: This is server-side code, so we use internal Docker hostnames
@@ -135,9 +202,31 @@ async def _get_user_info(request: Request) -> dict[str, Any]:
                         "client_secret": oauth_config["client_secret"],
                     },
                 )
+
+                if response.status_code != 200:
+                    error_body = response.text
+                    logger.error(
+                        f"Token refresh failed: HTTP {response.status_code}\n"
+                        f"Request data: grant_type=refresh_token, "
+                        f"refresh_token={refresh_token[:20] if refresh_token else 'None'}..., "
+                        f"client_id={oauth_config.get('client_id')}\n"
+                        f"Response: {error_body}"
+                    )
+
                 response.raise_for_status()
                 token_response = response.json()
                 access_token = token_response["access_token"]
+
+                # Update stored refresh token if a new one was issued (token rotation)
+                new_refresh_token = token_response.get("refresh_token")
+                if new_refresh_token and new_refresh_token != refresh_token:
+                    logger.info(
+                        f"Refresh token rotated, updating storage for session: {session_id[:16]}..."
+                    )
+                    await storage.store_refresh_token(
+                        user_id=session_id,
+                        refresh_token=new_refresh_token,
+                    )
 
         # Build basic user context
         user_context = {
@@ -147,17 +236,19 @@ async def _get_user_info(request: Request) -> dict[str, Any]:
         }
 
         # Query IdP userinfo for enhanced profile
-        token_verifier = oauth_ctx.get("token_verifier")
-        if token_verifier and hasattr(token_verifier, "userinfo_uri"):
-            idp_profile = await _query_idp_userinfo(
-                access_token, token_verifier.userinfo_uri
-            )
+        # Get the correct userinfo endpoint based on OAuth mode (Keycloak vs Nextcloud)
+        userinfo_endpoint = await _get_userinfo_endpoint(oauth_ctx)
+        if userinfo_endpoint:
+            idp_profile = await _query_idp_userinfo(access_token, userinfo_endpoint)
             if idp_profile:
                 user_context["idp_profile"] = idp_profile
             else:
                 user_context["idp_profile_error"] = (
                     "Failed to retrieve profile from IdP"
                 )
+        else:
+            logger.warning("Could not determine userinfo endpoint")
+            user_context["idp_profile_error"] = "Userinfo endpoint not available"
 
         return user_context
 
