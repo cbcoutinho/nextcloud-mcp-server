@@ -63,20 +63,20 @@ def require_provisioning(func: Callable) -> Callable:
             logger.debug("BasicAuth mode detected - skipping provisioning check")
             return await func(*args, **kwargs)
 
-        # Check if provisioning is required (opt-in, defaults to false)
-        # Provisioning is only needed when using Progressive Consent with Flow 2
+        # Check if Progressive Consent is enabled (opt-in, defaults to false)
+        # Provisioning checks only apply when using Progressive Consent Flow 2
         import os
 
-        require_provisioning = (
-            os.getenv("REQUIRE_PROVISIONING", "false").lower() == "true"
+        enable_progressive = (
+            os.getenv("ENABLE_PROGRESSIVE_CONSENT", "false").lower() == "true"
         )
-        if not require_provisioning:
+        if not enable_progressive:
             logger.debug(
-                "Provisioning not required (REQUIRE_PROVISIONING=false) - skipping check"
+                "Progressive Consent disabled (ENABLE_PROGRESSIVE_CONSENT=false) - skipping provisioning check"
             )
             return await func(*args, **kwargs)
 
-        # OAuth mode with provisioning required - check provisioning status
+        # Progressive Consent mode - check if user has completed Flow 2 provisioning
         # Get user_id from authorization token
         user_id = None
         if hasattr(ctx, "authorization") and ctx.authorization:

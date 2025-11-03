@@ -2,12 +2,13 @@
 OAuth 2.0 Login Routes for ADR-004 Progressive Consent Architecture
 
 Implements OAuth endpoints that support both:
-1. Hybrid Flow (backward compatible) - Single OAuth flow with server interception
-2. Progressive Consent (ADR-004) - Dual OAuth flows with explicit provisioning
+1. Hybrid Flow (default, backward compatible) - Single OAuth flow with server interception
+2. Progressive Consent (opt-in via ENABLE_PROGRESSIVE_CONSENT=true) - Dual OAuth flows with explicit provisioning
 
-Progressive Consent Mode (when ENABLE_PROGRESSIVE_CONSENT=true):
+Progressive Consent Mode (opt-in, requires separate login):
+- Enable with ENABLE_PROGRESSIVE_CONSENT=true
 - Flow 1: Client Authentication - MCP client authenticates directly to IdP
-- Flow 2: Resource Provisioning - MCP server gets delegated Nextcloud access
+- Flow 2: Resource Provisioning - MCP server gets delegated Nextcloud access (separate login, not during MCP session)
 
 Hybrid Flow Mode (default, backward compatible):
 1. MCP client initiates OAuth at /oauth/authorize
@@ -39,9 +40,9 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     """
     OAuth authorization endpoint with PKCE support.
 
-    Supports both Hybrid Flow (default) and Progressive Consent Flow 1.
+    Supports both Hybrid Flow (default) and Progressive Consent Flow 1 (opt-in).
 
-    In Progressive Consent mode (ENABLE_PROGRESSIVE_CONSENT=true):
+    In Progressive Consent mode (opt-in, ENABLE_PROGRESSIVE_CONSENT=true):
     - Flow 1: Client authenticates directly to IdP with its own client_id
     - Server validates client_id is in ALLOWED_MCP_CLIENTS list
     - Issues tokens with aud: "mcp-server" for MCP authentication only
@@ -61,9 +62,9 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     Returns:
         302 redirect to IdP authorization endpoint
     """
-    # Check if Progressive Consent is enabled (default: true for ADR-004)
+    # Check if Progressive Consent is enabled (opt-in, defaults to false)
     enable_progressive = (
-        os.getenv("ENABLE_PROGRESSIVE_CONSENT", "true").lower() == "true"
+        os.getenv("ENABLE_PROGRESSIVE_CONSENT", "false").lower() == "true"
     )
 
     # Extract parameters
@@ -635,7 +636,10 @@ async def oauth_authorize_nextcloud(
     OAuth authorization endpoint for Flow 2: Resource Provisioning.
 
     This endpoint is used by the provision_nextcloud_access MCP tool
-    to initiate delegated resource access to Nextcloud.
+    to initiate delegated resource access to Nextcloud. Requires a separate
+    login flow outside of the MCP session.
+
+    Only available when Progressive Consent is enabled (opt-in).
 
     Query parameters:
         state: Session state for tracking
@@ -643,9 +647,9 @@ async def oauth_authorize_nextcloud(
     Returns:
         302 redirect to IdP authorization endpoint
     """
-    # Check if Progressive Consent is enabled (default: true for ADR-004)
+    # Check if Progressive Consent is enabled (opt-in, defaults to false)
     enable_progressive = (
-        os.getenv("ENABLE_PROGRESSIVE_CONSENT", "true").lower() == "true"
+        os.getenv("ENABLE_PROGRESSIVE_CONSENT", "false").lower() == "true"
     )
     if not enable_progressive:
         return JSONResponse(

@@ -564,9 +564,9 @@ async def setup_oauth_config():
         jwt_validation_issuer = issuer
         client_issuer = issuer
 
-    # Check if Progressive Consent mode is enabled
+    # Check if Progressive Consent mode is enabled (opt-in, defaults to false)
     enable_progressive = (
-        os.getenv("ENABLE_PROGRESSIVE_CONSENT", "true").lower() == "true"
+        os.getenv("ENABLE_PROGRESSIVE_CONSENT", "false").lower() == "true"
     )
 
     # Create token verifier
@@ -814,7 +814,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     # Register OAuth provisioning tools if in OAuth mode with Progressive Consent
     if oauth_enabled:
         enable_progressive = (
-            os.getenv("ENABLE_PROGRESSIVE_CONSENT", "true").lower() == "true"
+            os.getenv("ENABLE_PROGRESSIVE_CONSENT", "false").lower() == "true"
         )
         if enable_progressive:
             logger.info("Registering OAuth provisioning tools for Progressive Consent")

@@ -165,6 +165,33 @@ docker compose exec db mariadb -u root -ppassword nextcloud -e \
 3. MCP tools use context pattern: `get_client(ctx)` → `NextcloudClient`
 4. All operations are async using httpx
 
+### Progressive Consent Mode (ADR-004)
+
+**Status**: Opt-in feature (disabled by default)
+
+**Enable**: Set `ENABLE_PROGRESSIVE_CONSENT=true`
+
+**Default**: Hybrid Flow (backward compatible, single OAuth flow)
+
+**What is Progressive Consent?**
+- Dual OAuth flow architecture that separates client authentication (Flow 1) from resource provisioning (Flow 2)
+- Flow 1: MCP client authenticates directly to IdP (aud: "mcp-server")
+- Flow 2: User explicitly provisions Nextcloud access via separate login (not during MCP session)
+- Provides clear separation between session tokens and background job tokens
+
+**When to use:**
+- Background jobs requiring offline access
+- Enhanced security with separate authorization contexts
+- Explicit user control over resource access
+
+**When NOT to use:**
+- Simple single-user deployments (use BasicAuth)
+- Standard OAuth without background jobs (use default Hybrid Flow)
+
+**Key difference from Hybrid Flow:**
+- Hybrid Flow: Server intercepts OAuth callback, stores refresh token automatically
+- Progressive Consent: User explicitly authorizes via `provision_nextcloud_access` tool
+
 ## MCP Response Patterns (CRITICAL)
 
 **Never return raw `List[Dict]` from MCP tools** - FastMCP mangles them into dicts with numeric string keys.
