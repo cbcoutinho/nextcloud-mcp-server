@@ -97,7 +97,6 @@ def create_test_jwt(
 class TestTokenExchange:
     """Test RFC 8693 token exchange implementation."""
 
-    @pytest.mark.asyncio
     async def test_validate_flow1_token_success(self, token_exchange_service):
         """Test validation of Flow 1 token with correct audience."""
         # Create token with correct audience
@@ -106,7 +105,6 @@ class TestTokenExchange:
         # Should not raise an exception
         await token_exchange_service._validate_flow1_token(flow1_token)
 
-    @pytest.mark.asyncio
     async def test_validate_flow1_token_wrong_audience(self, token_exchange_service):
         """Test validation fails with wrong audience."""
         # Create token with wrong audience
@@ -115,7 +113,6 @@ class TestTokenExchange:
         with pytest.raises(ValueError, match="Invalid token audience"):
             await token_exchange_service._validate_flow1_token(flow1_token)
 
-    @pytest.mark.asyncio
     async def test_validate_flow1_token_expired(self, token_exchange_service):
         """Test validation fails with expired token."""
         # Create expired token
@@ -124,7 +121,6 @@ class TestTokenExchange:
         with pytest.raises(ValueError, match="Token has expired"):
             await token_exchange_service._validate_flow1_token(flow1_token)
 
-    @pytest.mark.asyncio
     async def test_extract_user_id(self, token_exchange_service):
         """Test extraction of user ID from token."""
         flow1_token = create_test_jwt(user_id="alice")
@@ -132,13 +128,11 @@ class TestTokenExchange:
         user_id = token_exchange_service._extract_user_id(flow1_token)
         assert user_id == "alice"
 
-    @pytest.mark.asyncio
     async def test_check_provisioning_not_provisioned(self, token_exchange_service):
         """Test provisioning check when user not provisioned."""
         result = await token_exchange_service._check_provisioning("unknown_user")
         assert result is False
 
-    @pytest.mark.asyncio
     async def test_check_provisioning_is_provisioned(
         self, token_exchange_service, token_storage
     ):
@@ -151,7 +145,6 @@ class TestTokenExchange:
         result = await token_exchange_service._check_provisioning("alice")
         assert result is True
 
-    @pytest.mark.asyncio
     async def test_exchange_token_not_provisioned(self, token_exchange_service):
         """Test token exchange fails when user not provisioned."""
         flow1_token = create_test_jwt(user_id="unprovisioneduser")
@@ -163,7 +156,6 @@ class TestTokenExchange:
                 requested_audience="nextcloud",
             )
 
-    @pytest.mark.asyncio
     async def test_exchange_token_with_fallback(
         self, token_exchange_service, token_storage
     ):
@@ -211,7 +203,6 @@ class TestTokenExchange:
 class TestTokenBroker:
     """Test Token Broker session/background separation."""
 
-    @pytest.mark.asyncio
     async def test_get_session_token(self, token_broker, token_storage):
         """Test getting ephemeral session token via exchange."""
         # Store refresh token for user
@@ -239,7 +230,6 @@ class TestTokenBroker:
             cached = await token_broker.cache.get("alice")
             assert cached is None  # Should not be in cache
 
-    @pytest.mark.asyncio
     async def test_get_background_token(self, token_broker, token_storage):
         """Test getting background token with stored refresh."""
         # Store encrypted refresh token for user
@@ -284,7 +274,6 @@ class TestTokenBroker:
                     cached = await token_broker.cache.get(cache_key)
                     assert cached == "background_token_abc"
 
-    @pytest.mark.asyncio
     async def test_session_background_separation(self, token_broker, token_storage):
         """Test that session and background tokens are kept separate."""
         # Store refresh token
@@ -350,7 +339,6 @@ class TestTokenBroker:
 class TestScopeDownscoping:
     """Test that tokens request only necessary scopes."""
 
-    @pytest.mark.asyncio
     async def test_session_token_minimal_scopes(
         self, token_exchange_service, token_storage
     ):
@@ -396,7 +384,6 @@ class TestScopeDownscoping:
                 assert "notes:write" not in requested_scopes
                 assert "calendar:write" not in requested_scopes
 
-    @pytest.mark.asyncio
     async def test_background_token_different_scopes(self, token_broker, token_storage):
         """Test background tokens can request different scopes than session."""
         from cryptography.fernet import Fernet

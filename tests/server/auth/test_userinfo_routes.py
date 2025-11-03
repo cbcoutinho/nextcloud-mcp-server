@@ -17,7 +17,6 @@ from nextcloud_mcp_server.auth.userinfo_routes import _query_idp_userinfo
 pytestmark = pytest.mark.unit
 
 
-@pytest.mark.asyncio
 async def test_query_idp_userinfo_success(mocker):
     """Test successful IdP userinfo query."""
     mock_response = Mock()
@@ -52,7 +51,6 @@ async def test_query_idp_userinfo_success(mocker):
     )
 
 
-@pytest.mark.asyncio
 async def test_query_idp_userinfo_failure(mocker):
     """Test IdP userinfo query failure handling."""
     mock_client = AsyncMock()

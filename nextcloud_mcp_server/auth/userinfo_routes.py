@@ -103,11 +103,19 @@ async def _query_idp_userinfo(
 async def _get_user_info(request: Request) -> dict[str, Any]:
     """Get user information for the currently authenticated user.
 
+    IMPORTANT: This function reads from cached profile data stored at login time.
+    It does NOT perform token refresh or query the IdP on every request. The
+    profile was cached once during oauth_login_callback and is displayed from
+    storage thereafter.
+
+    This is for BROWSER UI DISPLAY ONLY. Do not use this for authorization
+    decisions or background job authentication.
+
     Args:
         request: Starlette request object (must be authenticated)
 
     Returns:
-        Dictionary containing user information
+        Dictionary containing user information from cache
     """
     username = request.user.display_name
     oauth_ctx = getattr(request.app.state, "oauth_context", None)
@@ -120,7 +128,7 @@ async def _get_user_info(request: Request) -> dict[str, Any]:
             "nextcloud_host": os.getenv("NEXTCLOUD_HOST", "unknown"),
         }
 
-    # OAuth mode - get user's refresh token and current access token
+    # OAuth mode - read cached profile from browser session
     storage = oauth_ctx.get("storage")
     session_id = request.cookies.get("mcp_session")
 
@@ -132,123 +140,30 @@ async def _get_user_info(request: Request) -> dict[str, Any]:
         }
 
     try:
-        # Get refresh token data
+        # Check if background access was granted (refresh token exists)
         token_data = await storage.get_refresh_token(session_id)
-        if not token_data:
-            return {
-                "error": "No refresh token found",
-                "username": username,
-                "auth_mode": "oauth",
-            }
+        background_access_granted = token_data is not None
 
-        refresh_token = token_data.get("refresh_token")
+        # Retrieve cached user profile (no token operations!)
+        profile_data = await storage.get_user_profile(session_id)
 
-        # Exchange refresh token for fresh access token
-        oauth_client = oauth_ctx.get("oauth_client")
-        oauth_config = oauth_ctx.get("config")
-
-        if oauth_client:
-            # External IdP mode (Keycloak)
-            # Create fresh HTTP client to avoid event loop issues
-            if not oauth_client.token_endpoint:
-                await oauth_client.discover()
-
-            async with httpx.AsyncClient(timeout=30.0) as http_client:
-                response = await http_client.post(
-                    oauth_client.token_endpoint,
-                    data={
-                        "grant_type": "refresh_token",
-                        "refresh_token": refresh_token,
-                    },
-                    auth=(oauth_client.client_id, oauth_client.client_secret),
-                )
-                response.raise_for_status()
-                token_response = response.json()
-                access_token = token_response["access_token"]
-
-                # Update stored refresh token if a new one was issued (token rotation)
-                new_refresh_token = token_response.get("refresh_token")
-                if new_refresh_token and new_refresh_token != refresh_token:
-                    logger.info(
-                        f"Refresh token rotated, updating storage for session: {session_id[:16]}..."
-                    )
-                    await storage.store_refresh_token(
-                        user_id=session_id,
-                        refresh_token=new_refresh_token,
-                    )
-        else:
-            # Integrated mode (Nextcloud OIDC)
-            # Note: This is server-side code, so we use internal Docker hostnames
-            # (not public URLs) for server-to-server communication
-            discovery_url = oauth_config.get("discovery_url")
-            logger.info(f"Querying discovery URL: {discovery_url}")
-
-            async with httpx.AsyncClient() as http_client:
-                response = await http_client.get(discovery_url)
-                response.raise_for_status()
-                discovery = response.json()
-                token_endpoint = discovery["token_endpoint"]
-                logger.info(
-                    f"Using token endpoint for server-side refresh: {token_endpoint}"
-                )
-
-            async with httpx.AsyncClient() as http_client:
-                response = await http_client.post(
-                    token_endpoint,
-                    data={
-                        "grant_type": "refresh_token",
-                        "refresh_token": refresh_token,
-                        "client_id": oauth_config["client_id"],
-                        "client_secret": oauth_config["client_secret"],
-                    },
-                )
-
-                if response.status_code != 200:
-                    error_body = response.text
-                    logger.error(
-                        f"Token refresh failed: HTTP {response.status_code}\n"
-                        f"Request data: grant_type=refresh_token, "
-                        f"refresh_token={refresh_token[:20] if refresh_token else 'None'}..., "
-                        f"client_id={oauth_config.get('client_id')}\n"
-                        f"Response: {error_body}"
-                    )
-
-                response.raise_for_status()
-                token_response = response.json()
-                access_token = token_response["access_token"]
-
-                # Update stored refresh token if a new one was issued (token rotation)
-                new_refresh_token = token_response.get("refresh_token")
-                if new_refresh_token and new_refresh_token != refresh_token:
-                    logger.info(
-                        f"Refresh token rotated, updating storage for session: {session_id[:16]}..."
-                    )
-                    await storage.store_refresh_token(
-                        user_id=session_id,
-                        refresh_token=new_refresh_token,
-                    )
-
-        # Build basic user context
+        # Build user context
         user_context = {
-            "username": username,  # From request.user.display_name
+            "username": username,  # From request.user.display_name (session_id)
             "auth_mode": "oauth",
             "session_id": session_id[:16] + "...",  # Truncated for security
+            "background_access_granted": background_access_granted,
         }
 
-        # Query IdP userinfo for enhanced profile
-        # Get the correct userinfo endpoint based on OAuth mode (Keycloak vs Nextcloud)
-        userinfo_endpoint = await _get_userinfo_endpoint(oauth_ctx)
-        if userinfo_endpoint:
-            idp_profile = await _query_idp_userinfo(access_token, userinfo_endpoint)
-            if idp_profile:
-                user_context["idp_profile"] = idp_profile
-            else:
-                user_context["idp_profile_error"] = (
-                    "Failed to retrieve profile from IdP"
-                )
+        # Include cached profile if available
+        if profile_data:
+            user_context["idp_profile"] = profile_data
+            logger.debug(f"Loaded cached profile for {session_id[:16]}...")
         else:
-            logger.warning("Could not determine userinfo endpoint")
-            user_context["idp_profile_error"] = "Userinfo endpoint not available"
+            logger.warning(f"No cached profile found for {session_id[:16]}...")
+            user_context["idp_profile_error"] = (
+                "Profile not cached. Try logging out and back in."
+            )
 
         return user_context
 

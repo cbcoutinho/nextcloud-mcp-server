@@ -14,6 +14,11 @@ import jwt
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from nextcloud_mcp_server.auth.userinfo_routes import (
+    _get_userinfo_endpoint,
+    _query_idp_userinfo,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -307,7 +312,7 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
         user_id = f"user-{secrets.token_hex(8)}"
         username = "unknown"
 
-    # Store refresh token
+    # Store refresh token (for background jobs ONLY)
     if refresh_token:
         logger.info(f"Storing refresh token for user_id: {user_id}")
         await storage.store_refresh_token(
@@ -319,6 +324,32 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
         logger.info(f"✓ Refresh token stored successfully for user_id: {user_id}")
     else:
         logger.warning("No refresh token in token response - cannot store session")
+
+    # Query and cache user profile (for browser UI display)
+    access_token = token_data.get("access_token")
+    if access_token:
+        try:
+            # Get the OAuth context to determine correct userinfo endpoint
+            oauth_ctx = getattr(request.app.state, "oauth_context", {})
+            userinfo_endpoint = await _get_userinfo_endpoint(oauth_ctx)
+
+            if userinfo_endpoint:
+                # Query userinfo endpoint with fresh access token
+                profile_data = await _query_idp_userinfo(
+                    access_token, userinfo_endpoint
+                )
+
+                if profile_data:
+                    # Cache profile for browser UI (no token needed to display)
+                    await storage.store_user_profile(user_id, profile_data)
+                    logger.info(f"✓ User profile cached for {user_id}")
+                else:
+                    logger.warning(f"Failed to query userinfo endpoint for {user_id}")
+            else:
+                logger.warning("Could not determine userinfo endpoint")
+        except Exception as e:
+            logger.error(f"Error caching user profile: {e}")
+            # Continue anyway - profile cache is optional for browser UI
 
     # Create response and set session cookie
     response = RedirectResponse("/user/page", status_code=302)

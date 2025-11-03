@@ -1,7 +1,22 @@
 """
 Refresh Token Storage for ADR-002 Tier 1: Offline Access
 
-Securely stores and manages user refresh tokens for background operations.
+Manages two separate concerns for OAuth authentication:
+
+1. **Refresh Tokens** (for background jobs ONLY)
+   - Securely stores encrypted refresh tokens for offline access
+   - Used ONLY by background jobs to obtain access tokens
+   - NEVER used within MCP client sessions or browser sessions
+
+2. **User Profile Cache** (for browser UI display ONLY)
+   - Caches IdP user profile data for browser-based admin UI
+   - Queried ONCE at login, displayed from cache thereafter
+   - NOT used for authorization decisions or background jobs
+
+IMPORTANT: These are separate concerns. Browser sessions read profile cache for
+display purposes. Background jobs use refresh tokens for API access. Never mix
+the two.
+
 Tokens are encrypted at rest using Fernet symmetric encryption.
 """
 
@@ -19,7 +34,14 @@ logger = logging.getLogger(__name__)
 
 
 class RefreshTokenStorage:
-    """Securely store and manage user refresh tokens"""
+    """Securely store and manage user refresh tokens and profile cache.
+
+    This class manages two separate concerns:
+    - Refresh tokens: Encrypted storage for background job access (write-only by OAuth, read-only by background jobs)
+    - User profiles: Plain JSON cache for browser UI display (written at login, read by UI)
+
+    These concerns are architecturally separate and should never be mixed.
+    """
 
     def __init__(self, db_path: str, encryption_key: bytes):
         """
@@ -104,7 +126,10 @@ class RefreshTokenStorage:
                     token_audience TEXT DEFAULT 'nextcloud',  -- 'mcp-server' or 'nextcloud'
                     provisioned_at INTEGER,  -- When Flow 2 was completed
                     provisioning_client_id TEXT,  -- Which MCP client initiated Flow 1
-                    scopes TEXT  -- JSON array of granted scopes
+                    scopes TEXT,  -- JSON array of granted scopes
+                    -- Browser session profile cache
+                    user_profile TEXT,  -- JSON cache of IdP user profile (for browser UI only)
+                    profile_cached_at INTEGER  -- When profile was last cached
                 )
                 """
             )
@@ -256,6 +281,76 @@ class RefreshTokenStorage:
             user_id=user_id,
             auth_method="offline_access",
         )
+
+    async def store_user_profile(
+        self, user_id: str, profile_data: dict[str, any]
+    ) -> None:
+        """
+        Store user profile data (cached from IdP userinfo endpoint).
+
+        This profile is cached ONLY for browser UI display purposes, not for
+        authorization decisions. Background jobs should NOT rely on this data.
+
+        Args:
+            user_id: User identifier (must match refresh_tokens.user_id)
+            profile_data: User profile dict from IdP userinfo endpoint
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        profile_json = json.dumps(profile_data)
+        now = int(time.time())
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE refresh_tokens
+                SET user_profile = ?, profile_cached_at = ?
+                WHERE user_id = ?
+                """,
+                (profile_json, now, user_id),
+            )
+            await db.commit()
+
+        logger.debug(f"Cached user profile for {user_id}")
+
+    async def get_user_profile(self, user_id: str) -> Optional[dict[str, any]]:
+        """
+        Retrieve cached user profile data.
+
+        This returns cached profile data from the initial OAuth login,
+        NOT fresh data from the IdP. Use this for browser UI display only.
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            User profile dict or None if not cached
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                """
+                SELECT user_profile, profile_cached_at
+                FROM refresh_tokens
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        if not row or not row[0]:
+            return None
+
+        profile_json, cached_at = row
+        profile_data = json.loads(profile_json)
+
+        # Optionally add cache metadata
+        profile_data["_cached_at"] = cached_at
+
+        return profile_data
 
     async def get_refresh_token(self, user_id: str) -> Optional[dict]:
         """
