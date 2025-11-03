@@ -1,3 +1,25 @@
+## v0.23.0 (2025-11-03)
+
+### Feat
+
+- Auto-configure impersonation role in Keycloak realm import
+- Implement dual-tier token exchange (Standard V2 + Legacy V1 impersonation)
+- Add Keycloak external IdP integration with custom scopes
+- Implement RFC 8693 token exchange for Keycloak (ADR-002 Tier 2)
+- Add Keycloak OAuth provider support with refresh token storage
+
+### Fix
+
+- Complete Keycloak external IdP integration with all tests passing
+- Complete Keycloak external IdP integration with all tests passing
+- Update DCR token_type tests for OIDC app changes
+
+### Refactor
+
+- Remove NEXTCLOUD_OIDC_CLIENT_STORAGE environment variable
+- Remove unnecessary user_oidc patch - CORSMiddleware patch is sufficient
+- Unify OAuth configuration to be provider-agnostic
+
 ## v0.22.7 (2025-10-29)
 
 ### Fix
