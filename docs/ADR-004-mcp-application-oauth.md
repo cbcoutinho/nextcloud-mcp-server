@@ -1243,6 +1243,48 @@ The **Hybrid Flow** solves the critical problem of getting the master refresh to
 
 This architecture follows industry best practices for federated systems and positions the MCP server as a secure token broker in an enterprise identity ecosystem.
 
+## Testing
+
+The ADR-004 Hybrid Flow is fully tested via automated integration tests:
+
+### Integration Tests
+
+```bash
+# Run all ADR-004 tests
+uv run pytest tests/server/oauth/test_adr004_hybrid_flow.py --browser firefox -v
+
+# Run specific test
+uv run pytest tests/server/oauth/test_adr004_hybrid_flow.py::test_adr004_hybrid_flow_tool_execution --browser firefox -v
+```
+
+**Test Coverage:**
+- `test_adr004_hybrid_flow_connection`: Verifies MCP session establishment with hybrid flow token
+- `test_adr004_hybrid_flow_tool_execution`: Tests complete flow including tool execution
+- `test_adr004_hybrid_flow_multiple_operations`: Validates persistent access without re-authentication
+
+**What the tests verify:**
+1. ✅ PKCE code challenge/verifier flow
+2. ✅ MCP server intercepts OAuth callback and stores master refresh token
+3. ✅ Client receives MCP access token (not master token)
+4. ✅ MCP session establishment with hybrid flow token
+5. ✅ Tool execution using stored refresh tokens (on-behalf-of pattern)
+6. ✅ Multiple operations without re-authentication
+
+### Test Implementation
+
+The tests use Playwright automation to complete the OAuth flow:
+1. Generate PKCE challenge/verifier
+2. Navigate to MCP server `/oauth/authorize` endpoint
+3. MCP server redirects to IdP
+4. Playwright fills login form and consents
+5. IdP redirects to MCP server `/oauth/callback`
+6. MCP server stores master refresh token
+7. MCP server redirects client with MCP authorization code
+8. Client exchanges MCP code for access token using PKCE verifier
+9. Create MCP session and execute tools
+
+See `tests/server/oauth/test_adr004_hybrid_flow.py` for complete implementation.
+
 ## References
 
 - [RFC 6749: OAuth 2.0](https://datatracker.ietf.org/doc/html/rfc6749)

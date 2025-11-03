@@ -142,6 +142,32 @@ class RefreshTokenStorage:
                 """
             )
 
+            # OAuth flow sessions (ADR-004 Hybrid Flow)
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS oauth_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    client_id TEXT,
+                    client_redirect_uri TEXT NOT NULL,
+                    state TEXT,
+                    code_challenge TEXT,
+                    code_challenge_method TEXT,
+                    mcp_authorization_code TEXT UNIQUE,
+                    idp_access_token TEXT,
+                    idp_refresh_token TEXT,
+                    user_id TEXT,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL
+                )
+                """
+            )
+
+            # Create index for MCP authorization code lookups
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_oauth_sessions_mcp_code "
+                "ON oauth_sessions(mcp_authorization_code)"
+            )
+
             await db.commit()
 
         # Set restrictive permissions after creation
@@ -603,6 +629,221 @@ class RefreshTokenStorage:
                 rows = await cursor.fetchall()
 
         return [dict(row) for row in rows]
+
+    async def store_oauth_session(
+        self,
+        session_id: str,
+        client_redirect_uri: str,
+        state: Optional[str] = None,
+        code_challenge: Optional[str] = None,
+        code_challenge_method: Optional[str] = None,
+        mcp_authorization_code: Optional[str] = None,
+        ttl_seconds: int = 600,  # 10 minutes
+    ) -> None:
+        """
+        Store OAuth session for Hybrid Flow (ADR-004).
+
+        Args:
+            session_id: Unique session identifier
+            client_redirect_uri: Client's localhost redirect URI
+            state: CSRF protection state parameter
+            code_challenge: PKCE code challenge
+            code_challenge_method: PKCE method (S256)
+            mcp_authorization_code: Pre-generated MCP authorization code
+            ttl_seconds: Session TTL in seconds
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        now = int(time.time())
+        expires_at = now + ttl_seconds
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO oauth_sessions
+                (session_id, client_redirect_uri, state, code_challenge,
+                 code_challenge_method, mcp_authorization_code, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    client_redirect_uri,
+                    state,
+                    code_challenge,
+                    code_challenge_method,
+                    mcp_authorization_code,
+                    now,
+                    expires_at,
+                ),
+            )
+            await db.commit()
+
+        logger.debug(f"Stored OAuth session {session_id} (expires in {ttl_seconds}s)")
+
+    async def get_oauth_session(self, session_id: str) -> Optional[dict]:
+        """
+        Retrieve OAuth session by session ID.
+
+        Returns:
+            Session dictionary or None if not found/expired
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM oauth_sessions WHERE session_id = ?", (session_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        if not row:
+            return None
+
+        session = dict(row)
+
+        # Check expiration
+        if session["expires_at"] < time.time():
+            logger.debug(f"OAuth session {session_id} has expired")
+            await self.delete_oauth_session(session_id)
+            return None
+
+        return session
+
+    async def get_oauth_session_by_mcp_code(
+        self, mcp_authorization_code: str
+    ) -> Optional[dict]:
+        """
+        Retrieve OAuth session by MCP authorization code.
+
+        Returns:
+            Session dictionary or None if not found/expired
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM oauth_sessions WHERE mcp_authorization_code = ?",
+                (mcp_authorization_code,),
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        if not row:
+            return None
+
+        session = dict(row)
+
+        # Check expiration
+        if session["expires_at"] < time.time():
+            logger.debug(
+                f"OAuth session with MCP code {mcp_authorization_code[:16]}... has expired"
+            )
+            await self.delete_oauth_session(session["session_id"])
+            return None
+
+        return session
+
+    async def update_oauth_session(
+        self,
+        session_id: str,
+        user_id: Optional[str] = None,
+        idp_access_token: Optional[str] = None,
+        idp_refresh_token: Optional[str] = None,
+    ) -> bool:
+        """
+        Update OAuth session with IdP token data.
+
+        Returns:
+            True if session was updated, False if not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        update_fields = []
+        params = []
+
+        if user_id is not None:
+            update_fields.append("user_id = ?")
+            params.append(user_id)
+
+        if idp_access_token is not None:
+            update_fields.append("idp_access_token = ?")
+            params.append(idp_access_token)
+
+        if idp_refresh_token is not None:
+            update_fields.append("idp_refresh_token = ?")
+            params.append(idp_refresh_token)
+
+        if not update_fields:
+            return False
+
+        params.append(session_id)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                f"""
+                UPDATE oauth_sessions
+                SET {", ".join(update_fields)}
+                WHERE session_id = ?
+                """,
+                params,
+            )
+            await db.commit()
+            updated = cursor.rowcount > 0
+
+        if updated:
+            logger.debug(f"Updated OAuth session {session_id}")
+
+        return updated
+
+    async def delete_oauth_session(self, session_id: str) -> bool:
+        """
+        Delete OAuth session.
+
+        Returns:
+            True if session was deleted, False if not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM oauth_sessions WHERE session_id = ?", (session_id,)
+            )
+            await db.commit()
+            deleted = cursor.rowcount > 0
+
+        if deleted:
+            logger.debug(f"Deleted OAuth session {session_id}")
+
+        return deleted
+
+    async def cleanup_expired_sessions(self) -> int:
+        """
+        Remove expired OAuth sessions from storage.
+
+        Returns:
+            Number of sessions deleted
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        now = int(time.time())
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM oauth_sessions WHERE expires_at < ?", (now,)
+            )
+            await db.commit()
+            deleted = cursor.rowcount
+
+        if deleted > 0:
+            logger.info(f"Cleaned up {deleted} expired OAuth session(s)")
+
+        return deleted
 
 
 async def generate_encryption_key() -> str:

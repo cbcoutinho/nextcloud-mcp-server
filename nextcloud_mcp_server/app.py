@@ -408,7 +408,7 @@ async def setup_oauth_config():
     requires token_verifier at construction time.
 
     Returns:
-        Tuple of (nextcloud_host, token_verifier, auth_settings, refresh_token_storage, oauth_client, oauth_provider)
+        Tuple of (nextcloud_host, token_verifier, auth_settings, refresh_token_storage, oauth_client, oauth_provider, client_id, client_secret)
     """
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
@@ -656,6 +656,8 @@ async def setup_oauth_config():
         refresh_token_storage,
         oauth_client,
         oauth_provider,
+        client_id,
+        client_secret,
     )
 
 
@@ -677,6 +679,8 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             refresh_token_storage,
             oauth_client,
             oauth_provider,
+            client_id,
+            client_secret,
         ) = anyio.run(setup_oauth_config)
 
         # Create lifespan function with captured OAuth context (closure)
@@ -808,12 +812,41 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 
     if transport == "sse":
         mcp_app = mcp.sse_app()
-        lifespan = None
+        starlette_lifespan = None
     elif transport in ("http", "streamable-http"):
         mcp_app = mcp.streamable_http_app()
 
         @asynccontextmanager
-        async def lifespan(app: Starlette):
+        async def starlette_lifespan(app: Starlette):
+            # Set OAuth context for OAuth login routes (ADR-004)
+            if oauth_enabled:
+                # Prepare OAuth config from setup_oauth_config closure variables
+                mcp_server_url = os.getenv(
+                    "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
+                )
+                discovery_url = os.getenv(
+                    "OIDC_DISCOVERY_URL",
+                    f"{nextcloud_host}/.well-known/openid-configuration",
+                )
+                scopes = os.getenv("NEXTCLOUD_OIDC_SCOPES", "")
+
+                app.state.oauth_context = {
+                    "storage": refresh_token_storage,
+                    "oauth_client": oauth_client,
+                    "config": {
+                        "mcp_server_url": mcp_server_url,
+                        "discovery_url": discovery_url,
+                        "client_id": client_id,  # From setup_oauth_config (DCR or static)
+                        "client_secret": client_secret,  # From setup_oauth_config (DCR or static)
+                        "scopes": scopes,
+                        "nextcloud_host": nextcloud_host,
+                        "oauth_provider": oauth_provider,
+                    },
+                }
+                logger.info(
+                    f"OAuth context initialized for login routes (client_id={client_id[:16]}...)"
+                )
+
             async with AsyncExitStack() as stack:
                 await stack.enter_async_context(mcp.session_manager.run())
                 yield
@@ -884,6 +917,12 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     logger.info("Health check endpoints enabled: /health/live, /health/ready")
 
     if oauth_enabled:
+        # Import OAuth routes (ADR-004 Hybrid Flow)
+        from nextcloud_mcp_server.auth.oauth_routes import (
+            oauth_authorize,
+            oauth_callback,
+            oauth_token,
+        )
 
         def oauth_protected_resource_metadata(request):
             """RFC 9728 Protected Resource Metadata endpoint.
@@ -939,8 +978,16 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             "Protected Resource Metadata (PRM) endpoints enabled (path-based + root)"
         )
 
+        # Add OAuth login routes (ADR-004 Hybrid Flow)
+        routes.append(Route("/oauth/authorize", oauth_authorize, methods=["GET"]))
+        routes.append(Route("/oauth/callback", oauth_callback, methods=["GET"]))
+        routes.append(Route("/oauth/token", oauth_token, methods=["POST"]))
+        logger.info(
+            "OAuth login routes enabled: /oauth/authorize, /oauth/callback, /oauth/token"
+        )
+
     routes.append(Mount("/", app=mcp_app))
-    app = Starlette(routes=routes, lifespan=lifespan)
+    app = Starlette(routes=routes, lifespan=starlette_lifespan)
 
     # Add CORS middleware to allow browser-based clients like MCP Inspector
     app.add_middleware(
