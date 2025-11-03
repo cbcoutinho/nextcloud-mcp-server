@@ -43,71 +43,122 @@ The MCP server will:
 
 ## Architecture
 
-### Token Broker Architecture with Linked Authorization
+### Progressive Consent Architecture with Dual OAuth Flows
 
-The MCP server acts as a **token broker** using a linked authorization pattern:
+The MCP server implements **progressive consent** - separate authorization flows for client authentication and resource access. This architecture uses **two distinct, sequential OAuth flows**:
 
-#### The Core Challenge
-When the MCP client authenticates to the MCP server, we need to:
-1. Authenticate the client to the MCP server (audience: "mcp-server")
-2. Obtain refresh tokens for Nextcloud access (audience: "nextcloud")
-3. Do this in a single OAuth flow from the user's perspective
+#### The Core Principle
 
-#### Solution: Linked Authorization with Scope-Based Audiences
+Three separate OAuth clients are registered at the Identity Provider (IdP):
+1. **MCP Client** (e.g., `client_id="claude-desktop"`) - The native application
+2. **MCP Server** (e.g., `client_id="mcp-server"`) - The intermediary server
+3. **Nextcloud** (e.g., `client_id="nextcloud"`) - The resource server
 
-During initial OAuth authorization, the MCP server requests:
-- **Scopes**: `openid profile offline_access nextcloud:*`
-- **Initial audience**: `mcp-server` (for client authentication)
-- **Linked resources**: Configured in Keycloak to allow refresh tokens to mint tokens for Nextcloud
+**CRITICAL**: Each flow uses a DIFFERENT `client_id` for proper OAuth delegation.
 
-The IdP (Keycloak) is configured to:
-1. Issue initial access token with `audience: "mcp-server"`
-2. Issue refresh token that can obtain tokens for BOTH audiences based on requested scopes
-3. Allow the MCP server to request different audiences when using the refresh token
+#### Flow 1: Client Authentication (Always Required)
+
+The MCP client authenticates itself to the MCP server using its own OAuth credentials:
+
+- **Initiator**: MCP Client
+- **Client ID**: `claude-desktop` (the MCP client's own ID)
+- **Scopes**: `openid profile mcp-server:api`
+- **Flow**: Standard PKCE OAuth 2.0
+- **User Consent**: "Allow **Claude Desktop** to access **MCP Server**?"
+- **Result**: Access token with `aud: "mcp-server"`
+- **Server State**: **STATELESS** - server just validates tokens, has no Nextcloud access
+
+At this point:
+- ✅ MCP client can authenticate to MCP server
+- ❌ MCP server CANNOT access Nextcloud APIs
+- ❌ No refresh tokens stored anywhere
+
+#### Flow 2: Resource Provisioning (Triggered Explicitly)
+
+When the user attempts to use a Nextcloud tool, the server initiates a second OAuth flow to obtain delegated access:
+
+- **Trigger**: User calls a Nextcloud tool (e.g., `list_notes`) and server has no refresh token
+- **Server Response**: Error message directing user to call `provision_nextcloud_access` tool
+- **Initiator**: MCP Server (on user's explicit request)
+- **Client ID**: `mcp-server` (the SERVER's own ID)
+- **Scopes**: `openid offline_access nextcloud:api nextcloud:notes:* nextcloud:calendar:*`
+- **Flow**: Standard OAuth 2.0 authorization code flow
+- **User Consent**: "Allow **MCP Server** to access **Nextcloud** offline on your behalf?"
+- **Result**: Refresh token with `aud: "nextcloud"`
+- **Server State**: **STATEFUL** - server stores encrypted refresh token
+
+After provisioning:
+- ✅ MCP client still authenticates with `aud: "mcp-server"` tokens
+- ✅ MCP server can now access Nextcloud APIs using stored refresh token
+- ✅ Background workers can operate offline
 
 #### Token Types and Lifecycles
 
 1. **MCP Access Tokens** (audience: "mcp-server")
-   - Initial token from OAuth flow
-   - Authenticates MCP clients to MCP server
+   - Issued to MCP client in Flow 1
+   - Authenticates MCP client to MCP server
    - Short-lived (1 hour)
    - Cannot access Nextcloud directly
+   - MCP client sends with every request
 
 2. **Nextcloud Access Tokens** (audience: "nextcloud")
-   - Obtained by MCP server using refresh token with audience parameter
+   - Obtained by MCP server using stored refresh token
    - Used for Nextcloud API access
    - Never exposed to MCP clients
-   - Refreshed as needed using stored refresh token
+   - Short-lived (5-15 minutes), cached by server
 
-3. **Master Refresh Token**
-   - Issued during initial OAuth with `offline_access` scope
-   - Can mint tokens for multiple configured audiences
-   - Stored encrypted by MCP server
-   - Enables both MCP authentication and Nextcloud access
+3. **Master Refresh Token** (can mint audience: "nextcloud" tokens)
+   - Issued to MCP server in Flow 2
+   - Stored encrypted in server's database
+   - Enables offline access to Nextcloud
+   - Used by server to mint Nextcloud access tokens
 
 ```
-┌─────────────┐                ┌─────────────────┐                ┌──────────────┐              ┌────────────┐
-│  MCP Client │◄──────401──────│   MCP Server    │◄───Exchange────│  Shared IdP  │──Validates──►│ Nextcloud  │
-│  (Native)   │                │  (Token Broker) │    Tokens      │  (Keycloak)  │   Tokens     │(Resource)  │
-└─────────────┘                └─────────────────┘                └──────────────┘              └────────────┘
-       │                                │                                 │
-       │ Token (aud: mcp-server)        │                                 │
-       │ Via PKCE OAuth                 ├── Refresh Token ────────────────┤
-       ▼                                │                                 │
-┌─────────────┐                        ├── Get Token (aud: nextcloud) ───┤
-│   Validate  │                        │                                 │
-│ aud == "mcp"│                        ▼                                 ▼
-└─────────────┘                ┌───────────────┐                  ┌──────────────┐
-                               │Refresh Tokens │                  │Token Exchange│
-                               │   (Encrypted) │                  │   Endpoint   │
-                               └───────────────┘                  └──────────────┘
+┌──────────────┐                                  ┌──────────────┐
+│  MCP Client  │──────Flow 1: Authenticate───────►│   Shared IdP │
+│ (Native App) │  client_id="claude-desktop"      │  (Keycloak)  │
+│              │  scope="mcp-server:api"          │              │
+│              │◄─────────────────────────────────┤              │
+│              │  access_token (aud: mcp-server)  │              │
+└──────┬───────┘                                  └──────────────┘
+       │
+       │ Bearer token
+       │ (aud: mcp-server)
+       ▼
+┌──────────────┐
+│  MCP Server  │  1. Validate aud == "mcp-server" ✓
+│  (Stateless) │  2. Check for Nextcloud refresh token ✗
+│              │  3. Return: "Not provisioned - run provision_nextcloud_access"
+└──────┬───────┘
+       │
+       │ User calls provision_nextcloud_access tool
+       │
+       ▼
+┌──────────────┐                                  ┌──────────────┐
+│  MCP Server  │──────Flow 2: Provision Access───►│   Shared IdP │
+│              │  client_id="mcp-server"          │  (Keycloak)  │
+│              │  scope="offline_access nextcloud:*" │           │
+│              │◄─────────────────────────────────┤              │
+│              │  refresh_token (aud: nextcloud)  │              │
+└──────┬───────┘                                  └──────────────┘
+       │
+       │ Store encrypted refresh token
+       ▼
+┌──────────────┐
+│  MCP Server  │  Now STATEFUL - can access Nextcloud
+│ (Stateful)   │  ├─ Validate MCP tokens (aud: mcp-server)
+│              │  ├─ Mint Nextcloud tokens (aud: nextcloud)
+│              │  └─ Access Nextcloud APIs
+└──────────────┘
 ```
 
-**Key Components:**
-- **MCP Client**: Native application using PKCE flow, receives tokens with `aud: "mcp-server"`
-- **MCP Server**: Token broker that validates MCP tokens, exchanges for Nextcloud tokens
-- **Shared IdP**: Issues audience-specific tokens, supports token exchange/refresh
-- **Nextcloud**: Validates tokens with `aud: "nextcloud"` for API access
+**Key Innovations:**
+
+1. **Separate Client Identities**: MCP client uses its own `client_id`, not the server's
+2. **Stateless by Default**: Server starts with zero stored state
+3. **Explicit Provisioning**: Resource access requested via separate tool call
+4. **Progressive Consent**: Users understand what they're authorizing at each step
+5. **SSO Efficiency**: If authenticated in Flow 1, Flow 2 only needs consent (no re-login)
 
 ### MCP Client Registration
 
@@ -149,55 +200,66 @@ async def register_with_idp():
 
 ### Authentication Flows
 
-#### Initial Setup with Progressive Consent (One-Time Per User)
+#### Flow 1: MCP Client Authentication (Always Required)
 
-This flow demonstrates **progressive consent**: separate authorization for MCP client authentication and Nextcloud resource access.
-
-**Phase 1: MCP Client Authentication (Always Required)**
+This is a standard OAuth 2.0 PKCE flow where the MCP client authenticates to the MCP server. **The server has no involvement in this flow beyond returning the challenge endpoint.**
 
 ```mermaid
 sequenceDiagram
     participant User
     participant MCPClient as MCP Client<br/>(Claude Desktop)
-    participant MCPServer as MCP Server
-    participant IdP as Shared IdP<br/>(Nextcloud OIDC)
+    participant MCPServer as MCP Server<br/>(Stateless)
+    participant IdP as Shared IdP<br/>(Keycloak)
 
     User->>MCPClient: Connect to MCP Server
     MCPClient->>MCPServer: Initial request
-    MCPServer-->>MCPClient: 401 + OAuth endpoints
+    MCPServer-->>MCPClient: 401 Unauthorized<br/>WWW-Authenticate: Bearer realm="Keycloak"<br/>auth_endpoint=https://keycloak/auth
 
     Note over MCPClient: Generate PKCE:<br/>verifier + challenge
 
     MCPClient->>MCPClient: Start local callback server<br/>http://localhost:51234/callback
 
-    MCPClient->>MCPServer: GET /oauth/authorize<br/>client_id="claude-desktop"<br/>redirect_uri=http://localhost:51234/callback<br/>code_challenge + S256
+    MCPClient->>IdP: GET /auth<br/>client_id="claude-desktop" ← Client's own ID!<br/>redirect_uri=http://localhost:51234/callback<br/>scope=openid profile mcp-server:api<br/>code_challenge + S256<br/>response_type=code
 
-    MCPServer->>IdP: Validate client_id exists<br/>(query registration endpoint)
-    IdP-->>MCPServer: Client valid ✓
+    Note over IdP: Standard OAuth flow<br/>MCP Server NOT involved!
 
-    MCPServer->>MCPServer: Store session:<br/>- mcp_client_id="claude-desktop"<br/>- client_redirect_uri<br/>- code_challenge<br/>- consent_stage="client_auth"
-
-    MCPServer->>MCPClient: 302 Redirect to IdP<br/>client_id="claude-desktop" ← MCP client's ID!<br/>redirect_uri=https://mcp-server/oauth/callback<br/>scope=openid profile email
-
-    Note over MCPServer,IdP: MCP Server intercepts with its own<br/>callback to manage token flow
-
-    MCPClient->>IdP: Follow redirect
-    IdP->>User: Login page (if not SSO)
-    User->>IdP: Authenticate
+    IdP->>User: Login page (if not authenticated)
+    User->>IdP: Authenticate (username + password)
 
     IdP->>User: Consent: "Allow Claude Desktop<br/>to access MCP Server?"
     User->>IdP: Approve
 
-    IdP->>MCPServer: 302 to /oauth/callback<br/>code={client_auth_code}
+    IdP->>MCPClient: 302 to http://localhost:51234/callback<br/>code={authorization_code}
 
-    MCPServer->>IdP: POST /token<br/>code={client_auth_code}<br/>client_id="claude-desktop"<br/>redirect_uri=https://mcp-server/oauth/callback
+    MCPClient->>IdP: POST /token<br/>code={authorization_code}<br/>client_id="claude-desktop"<br/>code_verifier={verifier}<br/>redirect_uri=http://localhost:51234/callback
 
-    IdP->>MCPServer: Tokens:<br/>- access_token (aud: mcp-server)<br/>- id_token (user_id)
+    IdP->>MCPClient: Tokens:<br/>- access_token (aud: mcp-server)<br/>- id_token<br/>- token_type: Bearer<br/>- expires_in: 3600
 
-    MCPServer->>MCPServer: Extract user_id from id_token<br/>Store MCP client access token
+    Note over MCPClient: Client has token with<br/>aud: "mcp-server"
+
+    MCPClient->>MCPServer: MCP request<br/>Authorization: Bearer {token}
+
+    MCPServer->>MCPServer: Validate:<br/>1. aud == "mcp-server" ✓<br/>2. Scopes include required scope ✓
+
+    MCPServer-->>MCPClient: Success (or 403 if wrong audience)
 ```
 
-**Phase 2: Conditional Nextcloud Consent (Only If No Refresh Token)**
+**Key Points:**
+- **No server interception**: MCP server is NOT involved in the OAuth flow
+- **Client's credentials**: Flow uses `client_id="claude-desktop"`, not the server's ID
+- **Direct callback**: IdP redirects directly to client's localhost callback
+- **Stateless server**: Server just validates the resulting token's audience
+
+**After Flow 1:**
+- ✅ MCP client authenticated with token (aud: "mcp-server")
+- ❌ MCP server has NO Nextcloud access
+- ❌ MCP server has NO stored tokens
+
+---
+
+#### Flow 2: Nextcloud Resource Provisioning (Triggered Explicitly)
+
+This flow is initiated when the user calls a Nextcloud tool and the server discovers it has no refresh token. **This is a completely separate OAuth flow using the server's credentials.**
 
 ```mermaid
 sequenceDiagram
@@ -208,117 +270,118 @@ sequenceDiagram
     participant IdP as Shared IdP
     participant Nextcloud
 
+    Note over User,MCPClient: User authenticated from Flow 1
+
+    MCPClient->>MCPServer: list_notes()<br/>Authorization: Bearer {mcp_token}
+
+    MCPServer->>MCPServer: Validate token:<br/>aud == "mcp-server" ✓
+
+    MCPServer->>MCPServer: Extract user_id from token
+
     MCPServer->>TokenStore: Check: Has refresh token<br/>for user_id?
+    TokenStore-->>MCPServer: NOT FOUND
 
-    alt Refresh Token EXISTS
-        Note over MCPServer: Skip Nextcloud consent ✓
-        MCPServer->>MCPServer: Generate mcp_auth_code
-        MCPServer->>MCPClient: 302 to client callback<br/>code=mcp-code-xyz
-        Note over MCPServer,MCPClient: Jump to Phase 3
-    else NO Refresh Token
-        MCPServer->>MCPServer: Update session:<br/>consent_stage="nextcloud_access"<br/>Store intermediate state
+    MCPServer-->>MCPClient: Error Response:<br/>"Not provisioned for Nextcloud access.<br/>Please call provision_nextcloud_access tool."
 
-        MCPServer->>MCPClient: 302 to IdP (SECOND OAuth!)<br/>client_id="nextcloud-mcp-server" ← MCP server's ID!<br/>redirect_uri=https://mcp-server/oauth/callback_nextcloud<br/>scope=openid offline_access notes:* calendar:*
+    Note over User,MCPClient: User explicitly calls provisioning
 
-        MCPClient->>IdP: Follow redirect
-        Note over IdP: User may already be logged in (SSO)<br/>Only need consent, not re-auth
+    MCPClient->>MCPServer: provision_nextcloud_access()<br/>Authorization: Bearer {mcp_token}
 
-        IdP->>User: Consent: "Allow MCP Server<br/>to access Nextcloud offline?"
-        User->>IdP: Approve offline_access
+    MCPServer->>MCPServer: Validate token:<br/>aud == "mcp-server" ✓
 
-        IdP->>MCPServer: 302 to /oauth/callback_nextcloud<br/>code={nextcloud_auth_code}
+    MCPServer->>MCPServer: Generate state linking to user_id
 
-        MCPServer->>IdP: POST /token<br/>code={nextcloud_auth_code}<br/>client_id="nextcloud-mcp-server"<br/>client_secret={mcp_server_secret}
+    MCPServer-->>MCPClient: Return OAuth URL:<br/>{<br/>  "auth_url": "https://keycloak/auth?...",<br/>  "message": "Open this URL to authorize"<br/>}
 
-        IdP->>MCPServer: Tokens:<br/>- access_token (aud: nextcloud)<br/>- refresh_token ← MASTER TOKEN!
+    Note over MCPClient,IdP: This is a SECOND, SEPARATE OAuth flow!<br/>Uses MCP server's client_id!
 
-        MCPServer->>TokenStore: Store refresh token<br/>(encrypted, user_id)
+    User->>IdP: Navigate to auth_url:<br/>client_id="mcp-server" ← Server's ID!<br/>redirect_uri=https://mcp-server.com/callback-nextcloud<br/>scope=openid offline_access nextcloud:api<br/>state={user_id_link}
 
-        MCPServer->>MCPServer: Retrieve intermediate state<br/>Generate mcp_auth_code
+    Note over IdP: User may already be logged in (SSO)<br/>Just need consent, not re-authentication
 
-        MCPServer->>MCPClient: 302 to client callback<br/>code=mcp-code-xyz
-    end
+    IdP->>User: Consent: "Allow MCP Server<br/>to access Nextcloud offline<br/>on your behalf?"
+    User->>IdP: Approve offline_access
+
+    IdP->>MCPServer: 302 to /callback-nextcloud<br/>code={authorization_code}<br/>state={user_id_link}
+
+    MCPServer->>MCPServer: Validate state,<br/>extract user_id
+
+    MCPServer->>IdP: POST /token<br/>code={authorization_code}<br/>client_id="mcp-server"<br/>client_secret={server_secret}<br/>redirect_uri=https://mcp-server.com/callback-nextcloud
+
+    IdP->>MCPServer: Tokens:<br/>- access_token (aud: nextcloud)<br/>- refresh_token ← MASTER TOKEN!<br/>- id_token
+
+    MCPServer->>TokenStore: Store refresh token<br/>(encrypted, linked to user_id)
+
+    MCPServer-->>User: "Provisioning complete!<br/>You can now access Nextcloud."
+
+    Note over MCPServer: Server is now STATEFUL<br/>Has refresh token for this user
 ```
 
-**Phase 3: Complete MCP Client Flow (Standard PKCE)**
+**Key Points:**
+- **Separate flow**: This is Flow 2, completely independent from Flow 1
+- **Server's credentials**: Uses `client_id="mcp-server"`, the SERVER's own ID
+- **Server callback**: IdP redirects to server's callback endpoint
+- **User intent**: User explicitly requested this provisioning
+- **SSO benefit**: If user authenticated in Flow 1, only consent needed here
+
+**After Flow 2:**
+- ✅ MCP client still uses same token (aud: "mcp-server")
+- ✅ MCP server now has refresh token (can mint aud: "nextcloud" tokens)
+- ✅ Background workers can operate offline
+
+---
+
+#### Subsequent Sessions (Using Provisioned Access)
+
+Once provisioned, subsequent MCP sessions work seamlessly:
 
 ```mermaid
 sequenceDiagram
     participant MCPClient as MCP Client
-    participant MCPServer as MCP Server
-    participant TokenStore as Token Storage
-
-    MCPClient->>MCPClient: Callback received:<br/>code=mcp-code-xyz
-
-    MCPClient->>MCPServer: POST /oauth/token<br/>code=mcp-code-xyz<br/>code_verifier + PKCE<br/>client_id="claude-desktop"
-
-    MCPServer->>MCPServer: Validate PKCE:<br/>SHA256(verifier) == challenge
-
-    MCPServer->>TokenStore: Retrieve MCP client<br/>access token from Phase 1
-
-    MCPServer-->>MCPClient: Response:<br/>- access_token (aud: mcp-server)<br/>- token_type: Bearer<br/>- expires_in: 3600
-
-    Note over MCPClient: Client NEVER sees<br/>master refresh token!
-
-    MCPClient->>MCPServer: Connect MCP session<br/>Authorization: Bearer {token}
-
-    MCPServer->>MCPServer: Validate token audience
-
-    MCPServer->>MCPServer: For Nextcloud API calls,<br/>use stored refresh token
-```
-
-**Key Innovations in Progressive Consent:**
-
-1. **Dual OAuth Flows**:
-   - Flow 1: Authenticate MCP client with IdP using client's own `client_id`
-   - Flow 2: Obtain Nextcloud permissions with MCP server's `client_id` (conditional)
-
-2. **IdP-Level Client Validation**: MCP clients are registered at IdP, validated against registry
-
-3. **Conditional Consent**: Nextcloud access only requested once per user, reused for subsequent sessions
-
-4. **Token Isolation**:
-   - MCP client receives: `access_token` (aud: mcp-server)
-   - MCP server stores: `refresh_token` for Nextcloud access
-   - Complete separation of concerns
-
-5. **SSO Efficiency**: If user authenticated in Phase 1, Phase 2 only requires consent (no re-login)
-
-#### Subsequent MCP Sessions (Token Broker Pattern)
-
-```mermaid
-sequenceDiagram
-    participant MCPClient as MCP Client
-    participant MCPServer as MCP Server
+    participant MCPServer as MCP Server<br/>(Stateful)
     participant TokenStore as Token Storage
     participant IdP as Shared IdP
     participant Nextcloud
 
-    MCPClient->>MCPServer: Request with token<br/>(aud: mcp-server)
-    MCPServer->>MCPServer: Validate token audience<br/>Must be "mcp-server"
+    Note over MCPClient: User reconnects (new MCP session)
 
-    Note over MCPServer: MCP auth valid,<br/>need Nextcloud token
+    MCPClient->>MCPServer: list_notes()<br/>Authorization: Bearer {new_mcp_token}
 
-    MCPServer->>TokenStore: Get master refresh token
-    TokenStore-->>MCPServer: Encrypted refresh token
+    MCPServer->>MCPServer: Validate token:<br/>aud == "mcp-server" ✓
 
-    MCPServer->>MCPServer: Check cached<br/>Nextcloud token expiry
+    MCPServer->>MCPServer: Extract user_id from token
+
+    MCPServer->>TokenStore: Check: Has refresh token<br/>for user_id?
+    TokenStore-->>MCPServer: FOUND ✓
+
+    MCPServer->>MCPServer: Check cached Nextcloud token
 
     alt Nextcloud Token Expired or Missing
-        MCPServer->>IdP: POST /token<br/>grant_type=refresh_token<br/>audience=nextcloud
-        IdP->>MCPServer: New access token ONLY<br/>(aud: nextcloud)
-        Note over IdP,MCPServer: NO refresh token rotation here!<br/>Master refresh token unchanged
-        MCPServer->>TokenStore: Cache Nextcloud access token<br/>(5 min TTL)
+        MCPServer->>IdP: POST /token<br/>grant_type=refresh_token<br/>refresh_token={stored_token}<br/>audience=nextcloud
+
+        IdP->>MCPServer: access_token (aud: nextcloud)
+
+        MCPServer->>MCPServer: Cache token (5 min TTL)
     end
 
-    MCPServer->>Nextcloud: API call with token<br/>(aud: nextcloud)
-    Nextcloud->>IdP: Validate token + audience
-    IdP-->>Nextcloud: Valid for Nextcloud
-    Nextcloud-->>MCPServer: API response
-    MCPServer-->>MCPClient: MCP response
+    MCPServer->>Nextcloud: GET /notes<br/>Authorization: Bearer {nextcloud_token}
 
-    Note over MCPClient,MCPServer: Client only sees<br/>aud:"mcp-server" tokens
+    Nextcloud->>IdP: Validate token + audience
+    IdP-->>Nextcloud: Valid, aud: nextcloud ✓
+
+    Nextcloud-->>MCPServer: [list of notes]
+
+    MCPServer-->>MCPClient: MCP response with notes
+
+    Note over MCPClient: Client only sees MCP response,<br/>never sees Nextcloud token!
 ```
+
+**Key Points:**
+- **No re-provisioning**: Refresh token persists across MCP sessions
+- **Token caching**: Nextcloud access tokens cached to reduce IdP calls
+- **Audience isolation**: MCP client never sees Nextcloud tokens
+
+---
 
 #### Background Operations
 
@@ -497,256 +560,169 @@ class MCPTokenVerifier(TokenVerifier):
             return None
 ```
 
-### 2. OAuth Endpoints with PKCE (Native Client Support)
+### 2. MCP Tool for Resource Provisioning
+
+**CRITICAL**: Flow 1 (client authentication) does NOT use MCP server endpoints. The MCP client authenticates directly with the IdP using its own `client_id`. The server only validates the resulting tokens.
+
+For Flow 2 (Nextcloud provisioning), we provide an MCP tool that returns an OAuth URL:
 
 ```python
-import hashlib
-import secrets
 from urllib.parse import urlencode
+import secrets
 
-@app.get("/oauth/authorize")
-async def oauth_authorize(
-    response_type: str = "code",
-    client_id: str = None,
-    redirect_uri: str = None,
-    scope: str = None,
-    state: str = None,
-    code_challenge: str = None,  # PKCE
-    code_challenge_method: str = "S256"  # PKCE
-):
-    """MCP Server OAuth endpoint with PKCE support."""
-    # Validate redirect_uri is localhost (native client)
-    if not redirect_uri or not redirect_uri.startswith(('http://localhost:', 'http://127.0.0.1:')):
-        return {"error": "invalid_request", "error_description": "Invalid redirect_uri for native client"}
-
-    # Store MCP client details with PKCE
-    session_id = str(uuid4())
-    mcp_authorization_code = f"mcp-code-{secrets.token_urlsafe(32)}"
-
-    await store_oauth_session(
-        session_id=session_id,
-        client_id=client_id,
-        client_redirect_uri=redirect_uri,  # Store client's redirect URI
-        state=state,
-        code_challenge=code_challenge,
-        code_challenge_method=code_challenge_method,
-        mcp_authorization_code=mcp_authorization_code  # Pre-generate MCP code
-    )
-
-    # Build IdP authorization URL
-    # CRITICAL: Use MCP server's callback URL, NOT the client's!
-    idp_params = {
-        "client_id": MCP_SERVER_CLIENT_ID,
-        "redirect_uri": f"{MCP_SERVER_URL}/oauth/callback",  # Server's callback!
-        "response_type": "code",
-        "scope": "openid profile email offline_access "  # Identity + offline
-                 "nextcloud:notes:read nextcloud:notes:write "  # Nextcloud scopes
-                 "nextcloud:calendar:read nextcloud:calendar:write",
-        "state": f"{session_id}:{state}",  # Preserve client state
-        "prompt": "consent"  # Ensure refresh token
-    }
-
-    idp_auth_url = f"{IDP_AUTHORIZATION_ENDPOINT}?{urlencode(idp_params)}"
-    return RedirectResponse(idp_auth_url)
-
-@app.get("/oauth/callback")
-async def oauth_callback(code: str, state: str):
+@mcp.tool()
+@required_scopes("mcp:provision")  # Or allow all authenticated users
+async def provision_nextcloud_access(ctx: Context) -> dict:
     """
-    Handle IdP callback - the server receives the IdP code!
-    This is the CRITICAL difference in the Hybrid Flow.
+    Initiate OAuth flow to grant MCP server access to Nextcloud on your behalf.
+
+    This starts Flow 2, where you authorize the MCP server to access Nextcloud
+    resources offline (when you're not connected).
+
+    Returns:
+        dict: OAuth authorization URL to visit in your browser
     """
-    # Extract session ID and original client state
-    try:
-        session_id, client_state = state.split(":", 1)
-    except ValueError:
-        return {"error": "invalid_state"}
-
-    oauth_session = await get_oauth_session(session_id)
-    if not oauth_session:
-        return {"error": "invalid_session"}
-
-    # STEP 1: Exchange IdP code for master tokens
-    # The server gets the master refresh token!
-    tokens = await idp_client.exchange_code(
-        code=code,  # IdP authorization code
-        redirect_uri=f"{MCP_SERVER_URL}/oauth/callback",
-        client_id=MCP_SERVER_CLIENT_ID,
-        client_secret=MCP_SERVER_CLIENT_SECRET  # Server has client secret
-    )
-
-    # Verify the access token has correct audience
-    payload = jwt.decode(
-        tokens.access_token,
+    # Get user_id from MCP token (already validated by required_scopes)
+    token_payload = jwt.decode(
+        ctx.authorization.token,
         options={"verify_signature": False}
     )
+    user_id = token_payload['sub']
 
-    audiences = payload.get('aud', [])
-    if isinstance(audiences, str):
-        audiences = [audiences]
-
-    if 'mcp-server' not in audiences:
-        logger.error(f"IdP returned token with wrong audience: {audiences}")
-        return {"error": "invalid_token", "error_description": "Wrong audience"}
-
-    # Decode ID token to get user info
-    userinfo = decode_id_token(tokens.id_token)
-
-    # Create or update user account
-    user = await create_or_update_user(
-        idp_sub=userinfo.sub,
-        username=userinfo.preferred_username,
-        email=userinfo.email
-    )
-
-    # Generate new token family for rotation
-    token_family_id = str(uuid4())
-
-    # STEP 2: Store master tokens (encrypted)
-    # These are the IdP tokens with offline_access!
-    await token_storage.store_tokens(
-        user_id=user.id,
-        token_family_id=token_family_id,
-        access_token=tokens.access_token,  # Initial MCP access token
-        refresh_token=tokens.refresh_token,  # Master refresh token!
-        status='active',
-        scopes=tokens.scope,
-        idp_subject=userinfo.sub
-    )
-
-    # Link session to user and store the access token for later
-    await update_oauth_session(
-        session_id,
-        user_id=user.id,
-        idp_access_token=tokens.access_token  # Store for /oauth/token endpoint
-    )
-
-    # STEP 3: Redirect to native client with MCP-generated code
-    # Client will exchange this code for tokens at /oauth/token
-    redirect_params = {
-        "code": oauth_session.mcp_authorization_code,  # MCP code, NOT IdP code!
-        "state": client_state  # Return original client state
-    }
-
-    redirect_url = f"{oauth_session.client_redirect_uri}?{urlencode(redirect_params)}"
-    return RedirectResponse(redirect_url, status_code=302)
-
-@app.post("/oauth/token")
-async def oauth_token(
-    grant_type: str = Form(...),
-    code: str = Form(None),
-    code_verifier: str = Form(None),  # PKCE
-    redirect_uri: str = Form(None),
-    client_id: str = Form(None),
-    refresh_token: str = Form(None)
-):
-    """
-    Token endpoint - client exchanges MCP code for tokens.
-    CRITICAL: The client sends the MCP-generated code, NOT the IdP code!
-    """
-
-    if grant_type == "authorization_code":
-        # Find session by MCP authorization code (e.g., mcp-code-xyz...)
-        oauth_session = await get_oauth_session_by_mcp_code(code)
-        if not oauth_session:
-            return JSONResponse(
-                {"error": "invalid_grant", "error_description": "Invalid authorization code"},
-                status_code=400
-            )
-
-        # Verify PKCE
-        if oauth_session.code_challenge:
-            if not code_verifier:
-                return JSONResponse(
-                    {"error": "invalid_request", "error_description": "code_verifier required"},
-                    status_code=400
-                )
-
-            # Compute challenge from verifier
-            computed_challenge = base64.urlsafe_b64encode(
-                hashlib.sha256(code_verifier.encode()).digest()
-            ).decode().rstrip('=')
-
-            if computed_challenge != oauth_session.code_challenge:
-                return JSONResponse(
-                    {"error": "invalid_grant", "error_description": "PKCE verification failed"},
-                    status_code=400
-                )
-
-        # Verify redirect_uri matches
-        if redirect_uri != oauth_session.client_redirect_uri:
-            return JSONResponse(
-                {"error": "invalid_grant", "error_description": "redirect_uri mismatch"},
-                status_code=400
-            )
-
-        # Get the IdP access token that was stored during /oauth/callback
-        # This token was already obtained when the server exchanged the IdP code
-        idp_access_token = oauth_session.idp_access_token
-
-        # Get user's refresh token from storage (for creating response)
-        # But DO NOT return the master refresh token to the client!
-        user_tokens = await get_user_tokens(oauth_session.user_id)
-
-        # Invalidate MCP authorization code (one-time use)
-        await invalidate_oauth_session(oauth_session.session_id)
-
-        # Return tokens to client
-        # CRITICAL: Client gets access token but NOT the master refresh token
+    # Check if already provisioned
+    token_storage = get_token_storage(ctx)
+    existing_token = await token_storage.get_refresh_token(user_id)
+    if existing_token:
         return {
-            "access_token": idp_access_token,  # IdP token with aud: mcp-server
-            "token_type": "Bearer",
-            "expires_in": 3600,
-            "scope": user_tokens.scope,
-            # Optional: Return an MCP session refresh token (NOT the master token!)
-            # This allows the client to refresh without re-auth
-            "refresh_token": await generate_mcp_session_refresh_token(oauth_session.user_id)
+            "status": "already_provisioned",
+            "message": "MCP server already has Nextcloud access for this user."
         }
 
-    elif grant_type == "refresh_token":
-        # Refresh with IdP for new MCP-audience token
-        try:
-            # Use master refresh token to get new MCP token
-            response = await idp_client.refresh_token(
-                refresh_token=refresh_token,
-                audience='mcp-server'  # Request MCP audience
-            )
-
-            # Verify audience
-            payload = jwt.decode(
-                response.access_token,
-                options={"verify_signature": False}
-            )
-
-            audiences = payload.get('aud', [])
-            if isinstance(audiences, str):
-                audiences = [audiences]
-
-            if 'mcp-server' not in audiences:
-                return JSONResponse(
-                    {"error": "invalid_grant", "error_description": "Refreshed token missing MCP audience"},
-                    status_code=400
-                )
-
-            return {
-                "access_token": response.access_token,
-                "token_type": "Bearer",
-                "expires_in": response.expires_in,
-                "scope": response.scope,
-                "refresh_token": response.refresh_token  # New refresh token if rotated
-            }
-        except Exception as e:
-            return JSONResponse(
-                {"error": "invalid_grant", "error_description": str(e)},
-                status_code=400
-            )
-
-    return JSONResponse(
-        {"error": "unsupported_grant_type"},
-        status_code=400
+    # Generate state to link callback to this user
+    state = secrets.token_urlsafe(32)
+    await store_provisioning_session(
+        state=state,
+        user_id=user_id,
+        created_at=datetime.utcnow()
     )
+
+    # Build OAuth URL for Flow 2
+    # CRITICAL: This uses the MCP server's client_id, not the MCP client's!
+    idp_params = {
+        "client_id": MCP_SERVER_CLIENT_ID,  # Server's ID!
+        "redirect_uri": f"{MCP_SERVER_URL}/oauth/callback-nextcloud",
+        "response_type": "code",
+        "scope": "openid offline_access "
+                 "nextcloud:notes:read nextcloud:notes:write "
+                 "nextcloud:calendar:read nextcloud:calendar:write",
+        "state": state,
+        "prompt": "consent"  # Ensure user sees consent screen
+    }
+
+    auth_url = f"{IDP_AUTHORIZATION_ENDPOINT}?{urlencode(idp_params)}"
+
+    return {
+        "status": "pending",
+        "auth_url": auth_url,
+        "message": "Please open the URL in your browser to authorize Nextcloud access.",
+        "instructions": "After authorizing, the MCP server will be able to access Nextcloud on your behalf."
+    }
+
 ```
 
-### 3. MCP Tool Token Verification with Audience Check
+### 3. OAuth Callback for Resource Provisioning (Flow 2)
+
+```python
+@app.get("/oauth/callback-nextcloud")
+async def oauth_callback_nextcloud(code: str, state: str):
+    """
+    Handle IdP callback for Flow 2 (Nextcloud resource provisioning).
+
+    This endpoint receives the authorization code after the user consents to
+    the MCP server accessing Nextcloud on their behalf.
+    """
+    # Retrieve provisioning session
+    session = await get_provisioning_session(state)
+    if not session:
+        return HTMLResponse(
+            "<html><body>"
+            "<h1>Error</h1>"
+            "<p>Invalid or expired authorization request.</p>"
+            "</body></html>",
+            status_code=400
+        )
+
+    user_id = session.user_id
+
+    try:
+        # Exchange authorization code for tokens
+        # CRITICAL: This uses the MCP server's client credentials!
+        tokens = await idp_client.exchange_code(
+            code=code,
+            redirect_uri=f"{MCP_SERVER_URL}/oauth/callback-nextcloud",
+            client_id=MCP_SERVER_CLIENT_ID,
+            client_secret=MCP_SERVER_CLIENT_SECRET
+        )
+
+        # Verify the refresh token has correct audience
+        # NOTE: The access token will have aud: "nextcloud", and the
+        # refresh token should be able to mint tokens with that audience
+        payload = jwt.decode(
+            tokens.access_token,
+            options={"verify_signature": False}
+        )
+
+        audiences = payload.get('aud', [])
+        if isinstance(audiences, str):
+            audiences = [audiences]
+
+        if 'nextcloud' not in audiences:
+            raise ValueError(f"IdP returned token with wrong audience: {audiences}")
+
+        # Generate new token family for rotation
+        token_family_id = str(uuid4())
+
+        # Store master refresh token (encrypted)
+        # This token can mint tokens with aud: "nextcloud"
+        token_storage = get_token_storage()
+        await token_storage.store_tokens(
+            user_id=user_id,
+            token_family_id=token_family_id,
+            access_token=tokens.access_token,  # Initial Nextcloud access token
+            refresh_token=tokens.refresh_token,  # Master refresh token!
+            status='active',
+            scopes=tokens.scope,
+            idp_subject=payload['sub']
+        )
+
+        # Delete provisioning session
+        await delete_provisioning_session(state)
+
+        # Return success page
+        return HTMLResponse(
+            "<html><body>"
+            "<h1>Success!</h1>"
+            "<p>MCP server has been granted access to Nextcloud on your behalf.</p>"
+            "<p>You can close this window and return to your MCP client.</p>"
+            "</body></html>"
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to exchange authorization code: {e}")
+        return HTMLResponse(
+            "<html><body>"
+            "<h1>Error</h1>"
+            "<p>Failed to complete authorization. Please try again.</p>"
+            f"<p>Error: {str(e)}</p>"
+            "</body></html>",
+            status_code=500
+        )
+
+```
+
+**NOTE**: The MCP server does NOT need to provide `/oauth/authorize` or `/oauth/token` endpoints for Flow 1. The MCP client authenticates directly with the IdP using its own `client_id`, and the IdP issues tokens directly to the client. The MCP server only validates these tokens.
+
+### 4. MCP Tool Token Verification with Audience Check
 
 ```python
 from functools import wraps
@@ -1041,6 +1017,39 @@ async def setup_idp_client():
 
 ## Security Considerations
 
+### Progressive Consent Security Model
+
+The dual OAuth flow architecture provides enhanced security through:
+
+1. **Separate Client Identities**:
+   - MCP client authenticates with its own `client_id` (e.g., "claude-desktop")
+   - MCP server has its own `client_id` (e.g., "mcp-server")
+   - Each entity's permissions are independently managed at IdP level
+   - Compromised client credentials don't grant server-level access
+
+2. **Explicit User Consent**:
+   - Flow 1: User consents to "Claude Desktop accessing MCP Server"
+   - Flow 2: User consents to "MCP Server accessing Nextcloud offline"
+   - Two separate, understandable authorization decisions
+   - Users understand the security model
+
+3. **Stateless by Default**:
+   - Server starts with zero stored credentials
+   - No automatic provisioning of resource access
+   - User must explicitly authorize offline access via `provision_nextcloud_access` tool
+   - Reduces attack surface for initial deployment
+
+4. **Least Privilege**:
+   - Flow 1 only grants MCP server authentication, no resource access
+   - Flow 2 only requested when user actually needs Nextcloud functionality
+   - Unused features don't get provisioned
+
+5. **Defense in Depth**:
+   - Even if MCP client is compromised, attacker only gets `aud:"mcp-server"` tokens
+   - Cannot directly access Nextcloud without server's stored refresh token
+   - Server-side refresh token is encrypted at rest
+   - Multiple layers of protection
+
 ### Audience Isolation Architecture
 
 #### Core Security Principle: Token Audience Separation
@@ -1077,20 +1086,22 @@ The MCP server acts as a **secure token broker**:
   "exp": 1234567890
 }
 
-# Master Refresh Token Claims
+# Master Refresh Token Claims (stored by server)
 {
   "sub": "user-123",
-  "scope": "openid profile offline_access nextcloud:*",
-  "allowed_audiences": ["mcp-server", "nextcloud"]  # Can mint both
+  "scope": "openid offline_access nextcloud:notes:read nextcloud:calendar:write",
+  # Can mint tokens with aud: "nextcloud" via refresh grant
 }
 ```
 
-### PKCE Protection
+### PKCE Protection (Flow 1)
 - **Mandatory for native clients** (RFC 7636)
+- Applied in Flow 1 (MCP client → IdP authentication)
 - Code verifier: 43-128 character random string
 - Code challenge: SHA256(code_verifier)
 - Prevents authorization code interception
-- Validated before token issuance
+- Validated by IdP before token issuance
+- **Note**: Flow 2 uses confidential client pattern (server has client_secret)
 
 ### Native Client Security
 - **Localhost redirect only** (RFC 8252)
@@ -1315,41 +1326,46 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 
 ## Decision Outcome
 
-The Token Broker Architecture with **Hybrid Flow** and Audience Isolation provides a secure, enterprise-ready solution for offline access while maintaining strict security boundaries. By using a shared identity provider with audience-specific tokens, we achieve:
+The **Progressive Consent Architecture with Dual OAuth Flows** provides a secure, enterprise-ready solution for offline access while maintaining strict security boundaries and user transparency. By using separate OAuth flows for client authentication and resource provisioning, we achieve:
 
-1. **Security through isolation**: Different audiences prevent token misuse
-2. **Single authentication**: Users authenticate once to the IdP
+1. **Security through separation**: Two distinct OAuth flows with different client identities
+2. **Explicit user consent**: Users understand exactly what they're authorizing
 3. **Offline capabilities**: Master refresh tokens enable background operations
 4. **Enterprise compliance**: Follows OAuth best practices and security standards
+5. **Stateless by default**: Server only stores credentials when explicitly provisioned
 
-### Key Implementation: Progressive Consent with Dual OAuth Flows
+### Key Implementation: Two Completely Separate OAuth Flows
 
-The **Progressive Consent architecture** (see "Initial Setup with Progressive Consent" above) solves the critical challenges of token brokering while maintaining standards compliance:
+The **Progressive Consent architecture** solves the critical challenges of token brokering while maintaining standards compliance:
 
-1. **MCP Client Authentication** (Phase 1):
-   - MCP clients are registered at IdP level (DCR or pre-configured)
-   - Client uses own `client_id` (e.g., "claude-desktop") for authentication
-   - MCP server validates client exists at IdP before proceeding
-   - User consents to "Claude Desktop accessing MCP Server"
+#### Flow 1: MCP Client Authentication (Always Required)
+- **Purpose**: Authenticate MCP client to MCP server
+- **Participants**: MCP Client (e.g., Claude Desktop) ↔ IdP
+- **Client ID**: MCP client's own ID (e.g., "claude-desktop")
+- **Scopes**: `openid profile mcp-server:api`
+- **User Consent**: "Allow **Claude Desktop** to access **MCP Server**?"
+- **Result**: Access token with `aud: "mcp-server"`
+- **Server State**: STATELESS - server just validates tokens
+- **Key Point**: **MCP server is NOT involved in this flow** - client authenticates directly with IdP
 
-2. **Conditional Nextcloud Consent** (Phase 2):
-   - Only triggered if MCP server doesn't have refresh token for user
-   - MCP server uses own `client_id` ("nextcloud-mcp-server") to request Nextcloud access
-   - User consents to "MCP Server accessing Nextcloud offline"
-   - MCP server stores master refresh token (encrypted)
-
-3. **Token Exchange** (Phase 3):
-   - Standard PKCE flow between MCP client and MCP server
-   - Client exchanges MCP authorization code for access token
-   - Client never sees master refresh token
-   - Complete token isolation
+#### Flow 2: Resource Provisioning (Explicit, On-Demand)
+- **Purpose**: Grant MCP server offline access to Nextcloud
+- **Trigger**: User calls `provision_nextcloud_access` tool
+- **Participants**: User → MCP Server ↔ IdP
+- **Client ID**: MCP server's own ID (e.g., "mcp-server")
+- **Scopes**: `openid offline_access nextcloud:*`
+- **User Consent**: "Allow **MCP Server** to access **Nextcloud** offline?"
+- **Result**: Refresh token with `aud: "nextcloud"`
+- **Server State**: STATEFUL - server stores encrypted refresh token
+- **Key Point**: **This is a separate, independent OAuth flow** initiated by server
 
 **Benefits:**
-- **Standards-compliant**: Proper OAuth 2.0 patterns throughout
-- **Secure**: Client validation at IdP level, not local storage
+- **Standards-compliant**: Two proper OAuth 2.0 flows, no server interception
+- **Secure**: Separate client identities, no credential sharing
+- **Transparent**: Users explicitly understand each authorization
 - **Efficient**: Nextcloud consent only needed once per user
-- **Transparent**: Users understand what they're authorizing at each step
-- **SSO-friendly**: If authenticated in Phase 1, Phase 2 only requires consent
+- **SSO-friendly**: If authenticated in Flow 1, Flow 2 only requires consent (no re-login)
+- **Least privilege**: Flow 2 only triggered when user needs Nextcloud functionality
 
 ### Token Lifecycle Clarification
 
