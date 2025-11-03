@@ -33,7 +33,7 @@ def configure_cookbook_tools(mcp: FastMCP):
     async def cookbook_get_version():
         """Get the Cookbook app and API version"""
         ctx: Context = mcp.get_context()
-        client = get_client(ctx)
+        client = await get_client(ctx)
         version_data = await client.cookbook.get_version()
         return Version(**version_data)
 
@@ -41,7 +41,7 @@ def configure_cookbook_tools(mcp: FastMCP):
     async def cookbook_get_config():
         """Get the Cookbook app configuration"""
         ctx: Context = mcp.get_context()
-        client = get_client(ctx)
+        client = await get_client(ctx)
         config_data = await client.cookbook.get_config()
         return CookbookConfig(**config_data)
 
@@ -49,7 +49,7 @@ def configure_cookbook_tools(mcp: FastMCP):
     async def nc_cookbook_get_recipe_resource(recipe_id: int):
         """Get a recipe by ID using resource URI"""
         ctx: Context = mcp.get_context()
-        client = get_client(ctx)
+        client = await get_client(ctx)
         try:
             recipe_data = await client.cookbook.get_recipe(recipe_id)
             return Recipe(**recipe_data)
@@ -77,7 +77,7 @@ def configure_cookbook_tools(mcp: FastMCP):
 
         This extracts recipe data from websites that use schema.org Recipe markup.
         Many popular recipe sites support this standard."""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         try:
             recipe_data = await client.cookbook.import_recipe(url)
             recipe = Recipe(**recipe_data)
@@ -131,7 +131,7 @@ def configure_cookbook_tools(mcp: FastMCP):
     @require_scopes("cookbook:read")
     async def nc_cookbook_list_recipes(ctx: Context) -> ListRecipesResponse:
         """Get all recipes in the database"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         try:
             recipes_data = await client.cookbook.list_recipes()
             recipes = [RecipeStub(**r) for r in recipes_data]
@@ -156,7 +156,7 @@ def configure_cookbook_tools(mcp: FastMCP):
     @require_scopes("cookbook:read")
     async def nc_cookbook_get_recipe(recipe_id: int, ctx: Context) -> Recipe:
         """Get a specific recipe by its ID"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         try:
             recipe_data = await client.cookbook.get_recipe(recipe_id)
             return Recipe(**recipe_data)
@@ -199,7 +199,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         Optional: All other recipe fields following schema.org/Recipe format.
 
         Times should be in ISO8601 duration format (e.g., 'PT30M' for 30 minutes)."""
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         recipe_data = {"name": name}
         if description:
@@ -276,7 +276,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         """Update an existing recipe.
 
         Provide only the fields you want to update. Unspecified fields remain unchanged."""
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         # First get the current recipe
         try:
@@ -352,7 +352,7 @@ def configure_cookbook_tools(mcp: FastMCP):
     ) -> DeleteRecipeResponse:
         """Delete a recipe permanently"""
         logger.info("Deleting recipe %s", recipe_id)
-        client = get_client(ctx)
+        client = await get_client(ctx)
         try:
             message = await client.cookbook.delete_recipe(recipe_id)
             return DeleteRecipeResponse(
@@ -386,7 +386,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         query: str, ctx: Context
     ) -> SearchRecipesResponse:
         """Search for recipes by keywords, tags, and categories"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         try:
             recipes_data = await client.cookbook.search_recipes(query)
             recipes = [RecipeStub(**r) for r in recipes_data]
@@ -422,7 +422,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         """Get all known categories.
 
         Note: A category name of '*' indicates recipes with no category."""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         try:
             categories_data = await client.cookbook.list_categories()
             categories = [Category(**c) for c in categories_data]
@@ -451,7 +451,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         """Get all recipes in a specific category.
 
         Use '_' as the category name to get recipes with no category."""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         try:
             recipes_data = await client.cookbook.get_recipes_in_category(category)
             recipes = [RecipeStub(**r) for r in recipes_data]
@@ -483,7 +483,7 @@ def configure_cookbook_tools(mcp: FastMCP):
     @require_scopes("cookbook:read")
     async def nc_cookbook_list_keywords(ctx: Context) -> ListKeywordsResponse:
         """Get all known keywords/tags"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         try:
             keywords_data = await client.cookbook.list_keywords()
             keywords = [Keyword(**k) for k in keywords_data]
@@ -510,7 +510,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         keywords: list[str], ctx: Context
     ) -> ListRecipesResponse:
         """Get all recipes that have specific keywords/tags"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         try:
             recipes_data = await client.cookbook.get_recipes_with_keywords(keywords)
             recipes = [RecipeStub(**r) for r in recipes_data]
@@ -552,7 +552,7 @@ def configure_cookbook_tools(mcp: FastMCP):
             folder: Recipe folder path in user's files
             update_interval: Automatic rescan interval in minutes
             print_image: Whether to print images with recipes"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         config_data = {}
         if folder is not None:
@@ -587,7 +587,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         """Trigger a rescan of all recipes into the caching database.
 
         This rebuilds the search index and should be used after manual file changes."""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         try:
             message = await client.cookbook.reindex()
             return ReindexResponse(status_code=200, message=message)

@@ -1324,6 +1324,160 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 - Configure audience claim per API
 - Use inline hooks for dynamic audiences
 
+## Token Acquisition Patterns for MCP Tool Calls
+
+### Progressive Consent vs Token Exchange
+
+**IMPORTANT**: Progressive Consent and Token Exchange are complementary patterns that serve different purposes:
+
+- **Progressive Consent** = Authorization architecture (when and why users grant access)
+  - Flow 1: MCP client authenticates to MCP server
+  - Flow 2: MCP server provisions Nextcloud access
+  - Results in stored refresh tokens for background jobs
+
+- **Token Exchange** = Token acquisition pattern (how tokens are obtained during tool execution)
+  - Pass-through mode: Verify and pass Flow 1 token to Nextcloud
+  - Token exchange mode: Exchange Flow 1 token for ephemeral Nextcloud token
+  - Results in short-lived, operation-specific tokens
+
+**Key Principle**: Refresh tokens from Progressive Consent (Flow 2) should **NEVER** be used for MCP tool calls - they are exclusively for background jobs. This maintains clear separation between user-initiated operations and offline background work.
+
+### Two Token Acquisition Modes
+
+The MCP server supports two modes for obtaining Nextcloud tokens during tool execution:
+
+#### Mode 1: Pass-Through (Default - ENABLE_TOKEN_EXCHANGE=false)
+
+**How it works:**
+1. MCP client sends Flow 1 token (aud: "mcp-server") with tool call
+2. MCP server validates token audience and scopes
+3. MCP server passes the same token to Nextcloud
+4. Nextcloud validates token with IdP
+
+**Characteristics:**
+- Simple, stateless operation
+- Single token flows through the system
+- Lower latency (no token exchange round-trip)
+- Token lifetime determined by IdP's Flow 1 token settings
+
+**Use case**: Simple deployments where Flow 1 tokens are trusted to access Nextcloud directly.
+
+#### Mode 2: Token Exchange (Opt-In - ENABLE_TOKEN_EXCHANGE=true)
+
+**How it works:**
+1. MCP client sends Flow 1 token (aud: "mcp-server") with tool call
+2. MCP server validates token audience and scopes
+3. MCP server exchanges Flow 1 token for ephemeral Nextcloud token via RFC 8693
+4. MCP server uses ephemeral token for Nextcloud API call
+5. Ephemeral token is discarded (not cached)
+
+**Characteristics:**
+- Enhanced security through token delegation
+- Ephemeral tokens with minimal lifetime (5 minutes default)
+- Token exchange provides audit trail
+- Fallback to refresh grant if RFC 8693 not supported
+- Tokens never cached or stored
+
+**Use case**: High-security environments requiring token delegation, audit trails, and minimal token lifetimes.
+
+### Implementation in get_client()
+
+The token acquisition mode is handled transparently by `get_client()`:
+
+```python
+async def get_client(ctx: Context) -> NextcloudClient:
+    """
+    Get the appropriate Nextcloud client based on authentication mode.
+
+    This function handles three modes:
+    1. BasicAuth mode: Returns shared client from lifespan context
+    2. OAuth pass-through mode (ENABLE_TOKEN_EXCHANGE=false, default):
+       Verifies Flow 1 token and passes it to Nextcloud
+    3. OAuth token exchange mode (ENABLE_TOKEN_EXCHANGE=true):
+       Exchanges Flow 1 token for ephemeral Nextcloud token via RFC 8693
+    """
+    settings = get_settings()
+    lifespan_ctx = ctx.request_context.lifespan_context
+
+    # BasicAuth mode
+    if hasattr(lifespan_ctx, "client"):
+        return lifespan_ctx.client
+
+    # OAuth mode
+    if hasattr(lifespan_ctx, "nextcloud_host"):
+        if settings.enable_token_exchange:
+            # Token exchange mode
+            return await get_session_client_from_context(ctx, lifespan_ctx.nextcloud_host)
+        else:
+            # Pass-through mode (default)
+            return get_client_from_context(ctx, lifespan_ctx.nextcloud_host)
+```
+
+### Nextcloud Scope Limitation
+
+**CRITICAL**: Nextcloud does not support OAuth scopes natively. The scopes used in this architecture (e.g., "notes:read", "calendar:write") are **soft-scopes** enforced by the MCP server via the `@require_scopes` decorator, **not by the IdP or Nextcloud**.
+
+**Implications:**
+1. Token exchange requests don't pass scopes to the IdP (Nextcloud doesn't validate them)
+2. The MCP server's `@require_scopes` decorator handles authorization checks
+3. All Nextcloud tokens have equivalent permissions at the Nextcloud level
+4. Fine-grained access control is enforced by the MCP server, not Nextcloud
+
+**Why this matters:**
+- You cannot request a "notes-only" token from the IdP
+- Token exchange provides audit and delegation benefits, not scope restriction
+- Scopes are a convenience for MCP server authorization logic, not a security boundary
+
+### Background Job Pattern
+
+Background jobs use a **completely different** token acquisition pattern:
+
+```python
+class BackgroundSyncWorker:
+    async def sync_user_data(self, user_id: str):
+        """Background workers use refresh tokens from Flow 2, never from tool calls."""
+
+        # Get refresh token stored during Flow 2 (Progressive Consent)
+        refresh_token = await self.storage.get_refresh_token(user_id)
+
+        # Use refresh token to get Nextcloud access token
+        response = await self.idp_client.refresh_token(
+            refresh_token=refresh_token,
+            audience='nextcloud'
+        )
+
+        # Use access token for background operations
+        client = NextcloudClient.from_token(
+            base_url=self.nextcloud_url,
+            token=response.access_token,
+            username=user_id
+        )
+
+        await self.sync_notes(user_id, client)
+```
+
+**Key differences:**
+- Uses refresh tokens from Flow 2 (Progressive Consent provisioning)
+- Tokens can be cached for efficiency (longer-lived operations)
+- No user interaction possible (offline)
+- Different scopes than tool calls (e.g., "notes:sync" vs "notes:read")
+
+### When to Enable Token Exchange
+
+**Enable token exchange when:**
+- You need audit trails showing token delegation
+- You want minimal token lifetimes for security
+- Your IdP supports RFC 8693
+- You operate in a high-security environment
+
+**Use pass-through mode when:**
+- Simplicity is more important than token delegation
+- Your IdP doesn't support RFC 8693
+- You trust Flow 1 tokens to access Nextcloud directly
+- Lower latency is a priority
+
+**Both modes maintain the same security boundary**: Refresh tokens from Flow 2 are never used for tool calls, only for background jobs.
+
 ## Decision Outcome
 
 The **Progressive Consent Architecture with Dual OAuth Flows** provides a secure, enterprise-ready solution for offline access while maintaining strict security boundaries and user transparency. By using separate OAuth flows for client authentication and resource provisioning, we achieve:

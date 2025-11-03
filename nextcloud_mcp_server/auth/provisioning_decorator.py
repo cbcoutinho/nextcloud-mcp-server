@@ -55,6 +55,15 @@ def require_provisioning(func: Callable) -> Callable:
                 )
             )
 
+        # Check if we're in BasicAuth mode - if so, skip provisioning check
+        # In BasicAuth mode, there's no OAuth and no provisioning needed
+        lifespan_ctx = ctx.request_context.lifespan_context
+        if hasattr(lifespan_ctx, "client"):
+            # BasicAuth mode - no provisioning needed, just proceed
+            logger.debug("BasicAuth mode detected - skipping provisioning check")
+            return await func(*args, **kwargs)
+
+        # OAuth mode - check provisioning
         # Get user_id from authorization token
         user_id = None
         if hasattr(ctx, "authorization") and ctx.authorization:

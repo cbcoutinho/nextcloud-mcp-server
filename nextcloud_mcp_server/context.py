@@ -3,14 +3,22 @@
 from mcp.server.fastmcp import Context
 
 from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.config import get_settings
 
 
-def get_client(ctx: Context) -> NextcloudClient:
+async def get_client(ctx: Context) -> NextcloudClient:
     """
     Get the appropriate Nextcloud client based on authentication mode.
 
-    In BasicAuth mode, returns the shared client from lifespan context.
-    In OAuth mode, creates a new client per-request using the OAuth context.
+    This function handles three modes:
+    1. BasicAuth mode: Returns shared client from lifespan context
+    2. OAuth pass-through mode (ENABLE_TOKEN_EXCHANGE=false, default):
+       Verifies Flow 1 token and passes it to Nextcloud
+    3. OAuth token exchange mode (ENABLE_TOKEN_EXCHANGE=true):
+       Exchanges Flow 1 token for ephemeral Nextcloud token via RFC 8693
+
+    Note: Nextcloud doesn't support OAuth scopes natively. Scopes are enforced
+    by the MCP server via @require_scopes decorator, not by the IdP.
 
     This function automatically detects the authentication mode by checking
     the type of the lifespan context.
@@ -28,21 +36,34 @@ def get_client(ctx: Context) -> NextcloudClient:
         ```python
         @mcp.tool()
         async def my_tool(ctx: Context):
-            client = get_client(ctx)
+            client = await get_client(ctx)
             return await client.capabilities()
         ```
     """
+    settings = get_settings()
     lifespan_ctx = ctx.request_context.lifespan_context
 
-    # Try BasicAuth mode first (has 'client' attribute)
+    # BasicAuth mode - use shared client (no token exchange)
     if hasattr(lifespan_ctx, "client"):
         return lifespan_ctx.client
 
     # OAuth mode (has 'nextcloud_host' attribute)
     if hasattr(lifespan_ctx, "nextcloud_host"):
-        from nextcloud_mcp_server.auth import get_client_from_context
+        # Check if token exchange is enabled
+        if settings.enable_token_exchange:
+            from nextcloud_mcp_server.auth.context_helper import (
+                get_session_client_from_context,
+            )
 
-        return get_client_from_context(ctx, lifespan_ctx.nextcloud_host)
+            # Token exchange mode: Exchange Flow 1 token for ephemeral Nextcloud token
+            return await get_session_client_from_context(
+                ctx, lifespan_ctx.nextcloud_host
+            )
+        else:
+            # Pass-through mode (default): Verify and pass Flow 1 token to Nextcloud
+            from nextcloud_mcp_server.auth import get_client_from_context
+
+            return get_client_from_context(ctx, lifespan_ctx.nextcloud_host)
 
     # Unknown context type
     raise AttributeError(

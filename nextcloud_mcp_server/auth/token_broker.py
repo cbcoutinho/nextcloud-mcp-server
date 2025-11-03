@@ -11,6 +11,7 @@ The Token Broker provides:
 - Short-lived token caching (5-minute TTL)
 - Master refresh token rotation
 - Audience-specific token validation
+- Session vs background token separation (RFC 8693)
 """
 
 import asyncio
@@ -23,6 +24,7 @@ import jwt
 from cryptography.fernet import Fernet
 
 from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.token_exchange import exchange_token_for_delegation
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +152,10 @@ class TokenBrokerService:
         """
         Get a valid Nextcloud access token for the user.
 
+        DEPRECATED: This method uses the old pattern of stored refresh tokens
+        for all operations. Use get_session_token() or get_background_token()
+        instead for proper session/background separation.
+
         This method:
         1. Checks the cache for a valid token
         2. If not cached, checks for stored refresh token
@@ -192,9 +198,118 @@ class TokenBrokerService:
             await self.cache.invalidate(user_id)
             return None
 
+    async def get_session_token(
+        self,
+        flow1_token: str,
+        required_scopes: list[str],
+        requested_audience: str = "nextcloud",
+    ) -> Optional[str]:
+        """
+        Get ephemeral token for MCP session operations (on-demand).
+
+        This implements the correct Progressive Consent pattern where:
+        1. Client provides Flow 1 token (aud: "mcp-server")
+        2. Server exchanges it for ephemeral Nextcloud token
+        3. Token is NOT stored, only used for current operation
+
+        Key properties:
+        - On-demand generation during tool execution
+        - Ephemeral (not stored, discarded after use)
+        - Limited scopes (only what tool needs)
+        - Short-lived (5 minutes)
+
+        Args:
+            flow1_token: The MCP session token (aud: "mcp-server")
+            required_scopes: Minimal scopes needed for this operation
+            requested_audience: Target audience (usually "nextcloud")
+
+        Returns:
+            Ephemeral Nextcloud access token or None if exchange fails
+        """
+        try:
+            # Perform RFC 8693 token exchange
+            delegated_token, expires_in = await exchange_token_for_delegation(
+                flow1_token=flow1_token,
+                requested_scopes=required_scopes,
+                requested_audience=requested_audience,
+            )
+
+            # NOTE: We intentionally do NOT cache session tokens
+            # They are ephemeral and should be discarded after use
+            logger.info(
+                f"Generated ephemeral session token with scopes: {required_scopes}, "
+                f"expires in {expires_in}s"
+            )
+
+            return delegated_token
+
+        except Exception as e:
+            logger.error(f"Failed to get session token: {e}")
+            return None
+
+    async def get_background_token(
+        self, user_id: str, required_scopes: list[str]
+    ) -> Optional[str]:
+        """
+        Get token for background job operations (uses stored refresh token).
+
+        This is for background/offline operations that run without user interaction.
+        Uses the stored refresh token from Flow 2 provisioning.
+
+        Key properties:
+        - Uses stored refresh token from Flow 2
+        - Different scopes than session tokens
+        - Longer-lived for background operations
+        - Can be cached for efficiency
+
+        Args:
+            user_id: The user identifier
+            required_scopes: Scopes needed for background operation
+
+        Returns:
+            Nextcloud access token for background operations or None if not provisioned
+        """
+        # Check cache first (background tokens can be cached)
+        cache_key = f"{user_id}:background:{','.join(sorted(required_scopes))}"
+        cached_token = await self.cache.get(cache_key)
+        if cached_token:
+            return cached_token
+
+        # Get stored refresh token
+        refresh_data = await self.storage.get_refresh_token(user_id)
+        if not refresh_data:
+            logger.info(f"No refresh token found for user {user_id}")
+            return None
+
+        try:
+            # Decrypt refresh token
+            encrypted_token = refresh_data["refresh_token"]
+            refresh_token = self.fernet.decrypt(encrypted_token.encode()).decode()
+
+            # Get token with specific scopes for background operation
+            access_token, expires_in = await self._refresh_access_token_with_scopes(
+                refresh_token, required_scopes
+            )
+
+            # Cache the background token
+            await self.cache.set(cache_key, access_token, expires_in)
+
+            logger.info(
+                f"Generated background token for user {user_id} with scopes: {required_scopes}"
+            )
+
+            return access_token
+
+        except Exception as e:
+            logger.error(f"Failed to get background token for user {user_id}: {e}")
+            await self.cache.invalidate(cache_key)
+            return None
+
     async def _refresh_access_token(self, refresh_token: str) -> Tuple[str, int]:
         """
         Exchange refresh token for new access token.
+
+        DEPRECATED: Use _refresh_access_token_with_scopes() for scope-specific requests.
 
         Args:
             refresh_token: The refresh token
@@ -234,6 +349,60 @@ class TokenBrokerService:
         await self._validate_token_audience(access_token, "nextcloud")
 
         logger.info(f"Refreshed access token (expires in {expires_in}s)")
+        return access_token, expires_in
+
+    async def _refresh_access_token_with_scopes(
+        self, refresh_token: str, required_scopes: list[str]
+    ) -> Tuple[str, int]:
+        """
+        Exchange refresh token for new access token with specific scopes.
+
+        This method implements scope downscoping for least privilege.
+
+        Args:
+            refresh_token: The refresh token
+            required_scopes: Minimal scopes needed for this operation
+
+        Returns:
+            Tuple of (access_token, expires_in_seconds)
+        """
+        config = await self._get_oidc_config()
+        token_endpoint = config["token_endpoint"]
+
+        client = await self._get_http_client()
+
+        # Always include basic OpenID scopes
+        scopes = list(set(["openid", "profile", "email"] + required_scopes))
+
+        # Request new access token with specific scopes
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "scope": " ".join(scopes),
+        }
+
+        response = await client.post(
+            token_endpoint,
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        if response.status_code != 200:
+            logger.error(
+                f"Token refresh with scopes failed: {response.status_code} - {response.text}"
+            )
+            raise Exception(f"Token refresh failed: {response.status_code}")
+
+        token_data = response.json()
+        access_token = token_data["access_token"]
+        expires_in = token_data.get("expires_in", 3600)  # Default 1 hour
+
+        # Validate audience
+        await self._validate_token_audience(access_token, "nextcloud")
+
+        logger.info(
+            f"Refreshed access token with scopes {scopes} (expires in {expires_in}s)"
+        )
         return access_token, expires_in
 
     async def _validate_token_audience(self, token: str, expected_audience: str):

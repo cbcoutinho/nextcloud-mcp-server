@@ -14,14 +14,14 @@ def configure_tables_tools(mcp: FastMCP):
     @require_scopes("tables:read")
     async def nc_tables_list_tables(ctx: Context):
         """List all tables available to the user"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.tables.list_tables()
 
     @mcp.tool()
     @require_scopes("tables:read")
     async def nc_tables_get_schema(table_id: int, ctx: Context):
         """Get the schema/structure of a specific table including columns and views"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.tables.get_table_schema(table_id)
 
     @mcp.tool()
@@ -33,7 +33,7 @@ def configure_tables_tools(mcp: FastMCP):
         offset: int | None = None,
     ):
         """Read rows from a table with optional pagination"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.tables.get_table_rows(table_id, limit, offset)
 
     @mcp.tool()
@@ -43,7 +43,7 @@ def configure_tables_tools(mcp: FastMCP):
 
         Data should be a dictionary mapping column IDs to values, e.g. {1: "text", 2: 42}
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.tables.create_row(table_id, data)
 
     @mcp.tool()
@@ -53,12 +53,12 @@ def configure_tables_tools(mcp: FastMCP):
 
         Data should be a dictionary mapping column IDs to new values, e.g. {1: "new text", 2: 99}
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.tables.update_row(row_id, data)
 
     @mcp.tool()
     @require_scopes("tables:write")
     async def nc_tables_delete_row(row_id: int, ctx: Context):
         """Delete a row from a table"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.tables.delete_row(row_id)

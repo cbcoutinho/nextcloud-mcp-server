@@ -28,7 +28,7 @@ def configure_webdav_tools(mcp: FastMCP):
         Returns:
             DirectoryListing with files, total_count, directories_count, files_count, and total_size
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         items = await client.webdav.list_directory(path)
 
         # Convert to FileInfo models
@@ -76,7 +76,7 @@ def configure_webdav_tools(mcp: FastMCP):
             result = await nc_webdav_read_file("Images/photo.jpg")
             logger.info(result['encoding'])  # 'base64'
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         content, content_type = await client.webdav.read_file(path)
 
         # Check if this is a parseable document (PDF, DOCX, etc.)
@@ -143,7 +143,7 @@ def configure_webdav_tools(mcp: FastMCP):
         Returns:
             Dict with status_code indicating success
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         # Handle base64 encoded content
         if content_type and "base64" in content_type.lower():
@@ -167,7 +167,7 @@ def configure_webdav_tools(mcp: FastMCP):
         Returns:
             Dict with status_code (201 for created, 405 if already exists)
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.webdav.create_directory(path)
 
     @mcp.tool()
@@ -181,7 +181,7 @@ def configure_webdav_tools(mcp: FastMCP):
         Returns:
             Dict with status_code indicating result (404 if not found)
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.webdav.delete_resource(path)
 
     @mcp.tool()
@@ -199,7 +199,7 @@ def configure_webdav_tools(mcp: FastMCP):
         Returns:
             Dict with status_code indicating result (404 if source not found, 412 if destination exists and overwrite is False)
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.webdav.move_resource(
             source_path, destination_path, overwrite
         )
@@ -219,7 +219,7 @@ def configure_webdav_tools(mcp: FastMCP):
         Returns:
             Dict with status_code indicating result (404 if source not found, 412 if destination exists and overwrite is False)
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.webdav.copy_resource(
             source_path, destination_path, overwrite
         )
@@ -249,7 +249,7 @@ def configure_webdav_tools(mcp: FastMCP):
         Returns:
             SearchFilesResponse with list of matching files
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         # Build where conditions based on filters
         conditions = []
@@ -355,7 +355,7 @@ def configure_webdav_tools(mcp: FastMCP):
         Returns:
             SearchFilesResponse with list of matching files
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         results = await client.webdav.find_by_name(
             pattern=pattern, scope=scope, limit=limit
         )
@@ -382,7 +382,7 @@ def configure_webdav_tools(mcp: FastMCP):
         Returns:
             SearchFilesResponse with list of matching files
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         results = await client.webdav.find_by_type(
             mime_type=mime_type, scope=scope, limit=limit
         )
@@ -408,7 +408,7 @@ def configure_webdav_tools(mcp: FastMCP):
         Returns:
             SearchFilesResponse with list of favorite files
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         results = await client.webdav.list_favorites(scope=scope, limit=limit)
         file_infos = [FileInfo(**result) for result in results]
         return SearchFilesResponse(

@@ -22,7 +22,7 @@ def configure_calendar_tools(mcp: FastMCP):
     @require_scopes("calendar:read")
     async def nc_calendar_list_calendars(ctx: Context) -> ListCalendarsResponse:
         """List all available calendars for the user"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         calendars_data = await client.calendar.list_calendars()
 
         calendars = [Calendar(**cal_data) for cal_data in calendars_data]
@@ -79,7 +79,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             Dict with event creation result
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         event_data = {
             "title": title,
@@ -139,7 +139,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             List of events matching the filters
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         # Convert YYYY-MM-DD format dates to datetime objects
         start_datetime = None
@@ -214,7 +214,7 @@ def configure_calendar_tools(mcp: FastMCP):
         ctx: Context,
     ):
         """Get detailed information about a specific event"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         event_data, etag = await client.calendar.get_event(calendar_name, event_uid)
         return event_data
 
@@ -248,7 +248,7 @@ def configure_calendar_tools(mcp: FastMCP):
         etag: str = "",
     ):
         """Update any aspect of an existing event"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         # Build update data with only non-None values
         event_data = {}
@@ -299,7 +299,7 @@ def configure_calendar_tools(mcp: FastMCP):
         ctx: Context,
     ):
         """Delete a calendar event"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.calendar.delete_event(calendar_name, event_uid)
 
     @mcp.tool()
@@ -342,7 +342,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             Dict with meeting creation result
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         # Combine date and time for start_datetime
         start_datetime = f"{date}T{time}:00"
@@ -377,7 +377,7 @@ def configure_calendar_tools(mcp: FastMCP):
         limit: int = 10,
     ):
         """Get upcoming events in next N days"""
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         now = dt.datetime.now()
         end_datetime = now + dt.timedelta(days=days_ahead)
@@ -447,7 +447,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             List of available time slots with start/end times and duration
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         # Parse attendees
         attendee_list = []
@@ -549,7 +549,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             Summary of operation results including counts and details
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         if operation not in ["update", "delete", "move"]:
             raise ValueError("Operation must be 'update', 'delete', or 'move'")
@@ -772,7 +772,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             Result of the calendar management operation
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         if action == "list":
             return await client.calendar.list_calendars()
@@ -839,7 +839,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             List of todos matching the filters
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         # Build filters dictionary
         filters = {}
@@ -890,7 +890,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             Dict with todo creation result
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         todo_data = {
             "summary": summary,
@@ -939,7 +939,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             Dict with todo update result
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         # Build update data with only non-None values
         todo_data = {}
@@ -981,7 +981,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             Dict with deletion status
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.calendar.delete_todo(calendar_name, todo_uid)
 
     @mcp.tool()
@@ -1005,7 +1005,7 @@ def configure_calendar_tools(mcp: FastMCP):
         Returns:
             List of todos matching the filters from all calendars
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
 
         # Build filters dictionary
         filters = {}
