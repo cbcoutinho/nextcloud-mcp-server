@@ -15,6 +15,7 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
+from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
@@ -295,31 +296,19 @@ async def load_oauth_client_credentials(
     if registration_endpoint:
         logger.info("Dynamic client registration available")
         mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
-        redirect_uris = [f"{mcp_server_url}/oauth/callback"]
+        redirect_uris = [
+            f"{mcp_server_url}/oauth/callback",  # MCP OAuth flow
+            f"{mcp_server_url}/oauth/login-callback",  # Browser OAuth flow for /user/page
+        ]
 
-        # Get scopes from environment or use defaults
-        # Note: Client registration happens BEFORE tools are registered, so we can't
-        # dynamically discover scopes here. These scopes define the "maximum allowed"
-        # scopes for this OAuth client. The actual per-tool scope enforcement happens
-        # via @require_scopes decorators, and the PRM endpoint advertises the actual
-        # supported scopes dynamically.
+        # MCP server DCR: Only request basic OIDC scopes for the server's own authentication
+        # Note: Nextcloud app scopes (notes:read, calendar:write, etc.) are for MCP *clients*
+        # that request access tokens. The MCP server itself only needs to authenticate
+        # as a client application, not request any Nextcloud resource access.
         #
-        # IMPORTANT: Keep this list in sync with all @require_scopes decorators
-        # when adding new apps, or set NEXTCLOUD_OIDC_SCOPES environment variable
-        # to override.
-        default_scopes = (
-            "openid profile email "
-            "notes:read notes:write "
-            "calendar:read calendar:write "
-            "todo:read todo:write "
-            "contacts:read contacts:write "
-            "cookbook:read cookbook:write "
-            "deck:read deck:write "
-            "tables:read tables:write "
-            "files:read files:write "
-            "sharing:read sharing:write"
-        )
-        scopes = os.getenv("NEXTCLOUD_OIDC_SCOPES", default_scopes)
+        # The PRM endpoint will advertise the full list of supported scopes dynamically
+        # by discovering all @require_scopes decorators on registered tools.
+        dcr_scopes = "openid profile email"
 
         # Add offline_access scope if refresh tokens are enabled
         enable_offline_access = os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() in (
@@ -327,11 +316,11 @@ async def load_oauth_client_credentials(
             "1",
             "yes",
         )
-        if enable_offline_access and "offline_access" not in scopes:
-            scopes = f"{scopes} offline_access"
+        if enable_offline_access:
+            dcr_scopes = f"{dcr_scopes} offline_access"
             logger.info("✓ offline_access scope enabled for refresh tokens")
 
-        logger.info(f"Requesting OAuth scopes: {scopes}")
+        logger.info(f"MCP server DCR scopes: {dcr_scopes}")
 
         # Get token type from environment (Bearer or jwt)
         # Note: Must be lowercase "jwt" to match OIDC app's check
@@ -354,7 +343,7 @@ async def load_oauth_client_credentials(
             storage=storage,
             client_name=f"Nextcloud MCP Server ({token_type})",
             redirect_uris=redirect_uris,
-            scopes=scopes,
+            scopes=dcr_scopes,  # Use DCR-specific scopes (basic OIDC only)
             token_type=token_type,
         )
 
@@ -892,6 +881,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 app.state.oauth_context = {
                     "storage": refresh_token_storage,
                     "oauth_client": oauth_client,
+                    "token_verifier": token_verifier,  # For querying IdP userinfo endpoint
                     "config": {
                         "mcp_server_url": mcp_server_url,
                         "discovery_url": discovery_url,
@@ -1045,8 +1035,54 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             "OAuth login routes enabled: /oauth/authorize, /oauth/callback, /oauth/token"
         )
 
+    # Add browser OAuth login routes (OAuth mode only)
+    if oauth_enabled:
+        from nextcloud_mcp_server.auth.browser_oauth_routes import (
+            oauth_login,
+            oauth_login_callback,
+            oauth_logout,
+        )
+
+        routes.append(
+            Route("/oauth/login", oauth_login, methods=["GET"], name="oauth_login")
+        )
+        routes.append(
+            Route(
+                "/oauth/login-callback",
+                oauth_login_callback,
+                methods=["GET"],
+                name="oauth_login_callback",
+            )
+        )
+        routes.append(
+            Route("/oauth/logout", oauth_logout, methods=["GET"], name="oauth_logout")
+        )
+        logger.info(
+            "Browser OAuth routes enabled: /oauth/login, /oauth/login-callback, /oauth/logout"
+        )
+
+    # Add user info routes (available in both BasicAuth and OAuth modes)
+    from nextcloud_mcp_server.auth.userinfo_routes import (
+        user_info_html,
+        user_info_json,
+    )
+
+    routes.append(Route("/user", user_info_json, methods=["GET"]))
+    routes.append(Route("/user/page", user_info_html, methods=["GET"]))
+    logger.info("User info routes enabled: /user (JSON), /user/page (HTML)")
+
     routes.append(Mount("/", app=mcp_app))
     app = Starlette(routes=routes, lifespan=starlette_lifespan)
+
+    # Add authentication middleware for browser-based routes
+    from nextcloud_mcp_server.auth.session_backend import SessionAuthBackend
+
+    # SessionAuthBackend will look up oauth_context from app.state at runtime
+    app.add_middleware(
+        AuthenticationMiddleware,
+        backend=SessionAuthBackend(oauth_enabled=oauth_enabled),
+    )
+    logger.info("Authentication middleware enabled for browser routes")
 
     # Add CORS middleware to allow browser-based clients like MCP Inspector
     app.add_middleware(
