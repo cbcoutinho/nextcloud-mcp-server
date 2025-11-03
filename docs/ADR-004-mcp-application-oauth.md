@@ -109,83 +109,180 @@ The IdP (Keycloak) is configured to:
 - **Shared IdP**: Issues audience-specific tokens, supports token exchange/refresh
 - **Nextcloud**: Validates tokens with `aud: "nextcloud"` for API access
 
+### MCP Client Registration
+
+**IMPORTANT**: MCP SDK clients (like Claude Desktop) are **proper OAuth clients registered at the IdP level**, not with the MCP server itself.
+
+#### Client Registration Options
+
+**Option 1: Dynamic Client Registration (DCR) - Recommended**
+```python
+# MCP client registers itself at IdP startup
+import httpx
+
+async def register_with_idp():
+    response = await httpx.post(
+        "https://idp.example.com/register",
+        json={
+            "client_name": "Claude Desktop",
+            "redirect_uris": ["http://localhost:51234/callback"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "token_endpoint_auth_method": "none",  # Public client with PKCE
+            "application_type": "native",
+        }
+    )
+    client_id = response.json()["client_id"]
+    # Store client_id for subsequent OAuth flows
+```
+
+**Option 2: Pre-registered Client**
+```bash
+# Admin pre-registers known MCP clients in Keycloak/Nextcloud
+# Client IDs: "claude-desktop", "continue-dev", "zed-editor", etc.
+```
+
+**Key Points:**
+- MCP clients are registered at **IdP level** (Nextcloud OIDC, Keycloak, Auth0, etc.)
+- MCP server validates `client_id` against IdP registry during authorization
+- Public clients use PKCE (no client_secret) per RFC 8252
+- Each MCP client has its own identity and permissions
+
 ### Authentication Flows
 
-#### Initial Setup with Hybrid Flow (One-Time)
+#### Initial Setup with Progressive Consent (One-Time Per User)
+
+This flow demonstrates **progressive consent**: separate authorization for MCP client authentication and Nextcloud resource access.
+
+**Phase 1: MCP Client Authentication (Always Required)**
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant MCPClient as MCP Client<br/>(Native App)
+    participant MCPClient as MCP Client<br/>(Claude Desktop)
     participant MCPServer as MCP Server
-    participant IdP as Shared IdP (Keycloak)
-    participant Nextcloud
+    participant IdP as Shared IdP<br/>(Nextcloud OIDC)
 
-    User->>MCPClient: Connect to MCP
+    User->>MCPClient: Connect to MCP Server
     MCPClient->>MCPServer: Initial request
-    MCPServer-->>MCPClient: 401 Unauthorized + OAuth config
+    MCPServer-->>MCPClient: 401 + OAuth endpoints
 
-    Note over MCPClient: Generate PKCE values:<br/>code_verifier = random string<br/>code_challenge = SHA256(code_verifier)
+    Note over MCPClient: Generate PKCE:<br/>verifier + challenge
 
-    MCPClient->>MCPClient: Start local HTTP server<br/>on random port (e.g., :51234)
+    MCPClient->>MCPClient: Start local callback server<br/>http://localhost:51234/callback
 
-    MCPClient->>MCPServer: GET /oauth/authorize<br/>+ code_challenge<br/>+ redirect_uri=http://localhost:51234/callback
+    MCPClient->>MCPServer: GET /oauth/authorize<br/>client_id="claude-desktop"<br/>redirect_uri=http://localhost:51234/callback<br/>code_challenge + S256
 
-    MCPServer->>MCPServer: Store session with:<br/>- client_redirect_uri<br/>- code_challenge<br/>- state
-    MCPServer->>MCPClient: 302 Redirect to IdP<br/>redirect_uri=https://mcp-server.com/oauth/callback
+    MCPServer->>IdP: Validate client_id exists<br/>(query registration endpoint)
+    IdP-->>MCPServer: Client valid ✓
 
-    Note over MCPServer,IdP: CRITICAL: Server's callback URL,<br/>NOT client's!
+    MCPServer->>MCPServer: Store session:<br/>- mcp_client_id="claude-desktop"<br/>- client_redirect_uri<br/>- code_challenge<br/>- consent_stage="client_auth"
 
-    MCPClient->>IdP: Authorization Request<br/>redirect_uri=https://mcp-server.com/oauth/callback
-    Note over IdP: Requested scopes:<br/>- openid profile email<br/>- offline_access<br/>- nextcloud:notes:*
+    MCPServer->>MCPClient: 302 Redirect to IdP<br/>client_id="claude-desktop" ← MCP client's ID!<br/>redirect_uri=https://mcp-server/oauth/callback<br/>scope=openid profile email
 
-    IdP->>User: Login page
-    User->>IdP: Authenticate once
+    Note over MCPServer,IdP: MCP Server intercepts with its own<br/>callback to manage token flow
 
-    IdP->>User: Consent screen
-    Note over IdP: "Allow MCP Server to:<br/>- Authenticate you<br/>- Access data offline<br/>- Access Nextcloud on your behalf"
+    MCPClient->>IdP: Follow redirect
+    IdP->>User: Login page (if not SSO)
+    User->>IdP: Authenticate
 
-    User->>IdP: Grant consent
-    IdP->>MCPServer: 302 Redirect to MCP server<br/>with IdP authorization code
+    IdP->>User: Consent: "Allow Claude Desktop<br/>to access MCP Server?"
+    User->>IdP: Approve
 
-    Note over MCPServer: Server receives IdP code!
+    IdP->>MCPServer: 302 to /oauth/callback<br/>code={client_auth_code}
 
-    MCPServer->>IdP: Exchange IdP code for tokens<br/>+ client_secret
-    IdP->>MCPServer: Master tokens:<br/>- Access token (aud: mcp-server)<br/>- Master refresh token
+    MCPServer->>IdP: POST /token<br/>code={client_auth_code}<br/>client_id="claude-desktop"<br/>redirect_uri=https://mcp-server/oauth/callback
 
-    MCPServer->>MCPServer: 1. Store master refresh token (encrypted)<br/>2. Generate MCP auth code: mcp-code-xyz<br/>3. Link to stored code_challenge
+    IdP->>MCPServer: Tokens:<br/>- access_token (aud: mcp-server)<br/>- id_token (user_id)
 
-    MCPServer->>MCPClient: 302 Redirect to client<br/>http://localhost:51234/callback<br/>?code=mcp-code-xyz&state=...
-
-    Note over MCPClient: Client receives MCP code<br/>(not IdP code!)
-
-    MCPClient->>MCPServer: POST /oauth/token<br/>code=mcp-code-xyz<br/>+ code_verifier
-
-    MCPServer->>MCPServer: 1. Find session by mcp-code-xyz<br/>2. Verify PKCE: SHA256(code_verifier) == code_challenge<br/>3. Get stored access token from step 4
-
-    MCPServer-->>MCPClient: Return:<br/>- Access token (aud: mcp-server)<br/>- NO master refresh token!<br/>- Optional: MCP session refresh token
-
-    MCPClient->>MCPServer: API call with token<br/>(aud: mcp-server)
-    MCPServer->>MCPServer: Validate audience
-
-    Note over MCPServer: Need Nextcloud access,<br/>use stored master refresh token
-
-    MCPServer->>IdP: POST /token<br/>refresh_token + audience=nextcloud
-    IdP->>MCPServer: New token (aud: nextcloud)
-
-    MCPServer->>Nextcloud: API call with token<br/>(aud: nextcloud)
-    Nextcloud->>IdP: Validate token + audience
-    IdP-->>Nextcloud: Valid for Nextcloud
-    Nextcloud-->>MCPServer: API response
-    MCPServer-->>MCPClient: Success
+    MCPServer->>MCPServer: Extract user_id from id_token<br/>Store MCP client access token
 ```
 
-**Key Changes in the Hybrid Flow:**
-1. **Server Intercepts Code**: The IdP redirects to the MCP server's `/oauth/callback`, not the client's
-2. **Token Swap**: The server exchanges the IdP code for master tokens and stores them
-3. **Client Handoff**: The server generates its own code (`mcp-code-xyz`) and redirects the client with it
-4. **PKCE Completion**: The client exchanges the server's code using the original code_verifier
-5. **Master Token Protection**: The client never receives the master refresh token
+**Phase 2: Conditional Nextcloud Consent (Only If No Refresh Token)**
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant MCPClient as MCP Client
+    participant MCPServer as MCP Server
+    participant TokenStore as Token Storage
+    participant IdP as Shared IdP
+    participant Nextcloud
+
+    MCPServer->>TokenStore: Check: Has refresh token<br/>for user_id?
+
+    alt Refresh Token EXISTS
+        Note over MCPServer: Skip Nextcloud consent ✓
+        MCPServer->>MCPServer: Generate mcp_auth_code
+        MCPServer->>MCPClient: 302 to client callback<br/>code=mcp-code-xyz
+        Note over MCPServer,MCPClient: Jump to Phase 3
+    else NO Refresh Token
+        MCPServer->>MCPServer: Update session:<br/>consent_stage="nextcloud_access"<br/>Store intermediate state
+
+        MCPServer->>MCPClient: 302 to IdP (SECOND OAuth!)<br/>client_id="nextcloud-mcp-server" ← MCP server's ID!<br/>redirect_uri=https://mcp-server/oauth/callback_nextcloud<br/>scope=openid offline_access notes:* calendar:*
+
+        MCPClient->>IdP: Follow redirect
+        Note over IdP: User may already be logged in (SSO)<br/>Only need consent, not re-auth
+
+        IdP->>User: Consent: "Allow MCP Server<br/>to access Nextcloud offline?"
+        User->>IdP: Approve offline_access
+
+        IdP->>MCPServer: 302 to /oauth/callback_nextcloud<br/>code={nextcloud_auth_code}
+
+        MCPServer->>IdP: POST /token<br/>code={nextcloud_auth_code}<br/>client_id="nextcloud-mcp-server"<br/>client_secret={mcp_server_secret}
+
+        IdP->>MCPServer: Tokens:<br/>- access_token (aud: nextcloud)<br/>- refresh_token ← MASTER TOKEN!
+
+        MCPServer->>TokenStore: Store refresh token<br/>(encrypted, user_id)
+
+        MCPServer->>MCPServer: Retrieve intermediate state<br/>Generate mcp_auth_code
+
+        MCPServer->>MCPClient: 302 to client callback<br/>code=mcp-code-xyz
+    end
+```
+
+**Phase 3: Complete MCP Client Flow (Standard PKCE)**
+
+```mermaid
+sequenceDiagram
+    participant MCPClient as MCP Client
+    participant MCPServer as MCP Server
+    participant TokenStore as Token Storage
+
+    MCPClient->>MCPClient: Callback received:<br/>code=mcp-code-xyz
+
+    MCPClient->>MCPServer: POST /oauth/token<br/>code=mcp-code-xyz<br/>code_verifier + PKCE<br/>client_id="claude-desktop"
+
+    MCPServer->>MCPServer: Validate PKCE:<br/>SHA256(verifier) == challenge
+
+    MCPServer->>TokenStore: Retrieve MCP client<br/>access token from Phase 1
+
+    MCPServer-->>MCPClient: Response:<br/>- access_token (aud: mcp-server)<br/>- token_type: Bearer<br/>- expires_in: 3600
+
+    Note over MCPClient: Client NEVER sees<br/>master refresh token!
+
+    MCPClient->>MCPServer: Connect MCP session<br/>Authorization: Bearer {token}
+
+    MCPServer->>MCPServer: Validate token audience
+
+    MCPServer->>MCPServer: For Nextcloud API calls,<br/>use stored refresh token
+```
+
+**Key Innovations in Progressive Consent:**
+
+1. **Dual OAuth Flows**:
+   - Flow 1: Authenticate MCP client with IdP using client's own `client_id`
+   - Flow 2: Obtain Nextcloud permissions with MCP server's `client_id` (conditional)
+
+2. **IdP-Level Client Validation**: MCP clients are registered at IdP, validated against registry
+
+3. **Conditional Consent**: Nextcloud access only requested once per user, reused for subsequent sessions
+
+4. **Token Isolation**:
+   - MCP client receives: `access_token` (aud: mcp-server)
+   - MCP server stores: `refresh_token` for Nextcloud access
+   - Complete separation of concerns
+
+5. **SSO Efficiency**: If user authenticated in Phase 1, Phase 2 only requires consent (no re-login)
 
 #### Subsequent MCP Sessions (Token Broker Pattern)
 
@@ -1225,15 +1322,34 @@ The Token Broker Architecture with **Hybrid Flow** and Audience Isolation provid
 3. **Offline capabilities**: Master refresh tokens enable background operations
 4. **Enterprise compliance**: Follows OAuth best practices and security standards
 
-### Key Implementation: The Hybrid Flow
+### Key Implementation: Progressive Consent with Dual OAuth Flows
 
-The **Hybrid Flow** solves the critical problem of getting the master refresh token to the server while maintaining PKCE security for the client:
+The **Progressive Consent architecture** (see "Initial Setup with Progressive Consent" above) solves the critical challenges of token brokering while maintaining standards compliance:
 
-1. **Server Intercepts Code**: The IdP redirects to the MCP server's `/oauth/callback`, not the client's
-2. **Server Gets Master Token**: The server exchanges the IdP code for the master refresh token and stores it
-3. **Client Handoff**: The server generates its own authorization code and redirects the client
-4. **PKCE Completion**: The client exchanges the server's code using the original PKCE verifier
-5. **Token Protection**: The client never sees or handles the master refresh token
+1. **MCP Client Authentication** (Phase 1):
+   - MCP clients are registered at IdP level (DCR or pre-configured)
+   - Client uses own `client_id` (e.g., "claude-desktop") for authentication
+   - MCP server validates client exists at IdP before proceeding
+   - User consents to "Claude Desktop accessing MCP Server"
+
+2. **Conditional Nextcloud Consent** (Phase 2):
+   - Only triggered if MCP server doesn't have refresh token for user
+   - MCP server uses own `client_id` ("nextcloud-mcp-server") to request Nextcloud access
+   - User consents to "MCP Server accessing Nextcloud offline"
+   - MCP server stores master refresh token (encrypted)
+
+3. **Token Exchange** (Phase 3):
+   - Standard PKCE flow between MCP client and MCP server
+   - Client exchanges MCP authorization code for access token
+   - Client never sees master refresh token
+   - Complete token isolation
+
+**Benefits:**
+- **Standards-compliant**: Proper OAuth 2.0 patterns throughout
+- **Secure**: Client validation at IdP level, not local storage
+- **Efficient**: Nextcloud consent only needed once per user
+- **Transparent**: Users understand what they're authorizing at each step
+- **SSO-friendly**: If authenticated in Phase 1, Phase 2 only requires consent
 
 ### Token Lifecycle Clarification
 
@@ -1243,9 +1359,55 @@ The **Hybrid Flow** solves the critical problem of getting the master refresh to
 
 This architecture follows industry best practices for federated systems and positions the MCP server as a secure token broker in an enterprise identity ecosystem.
 
+## Implementation Status
+
+**Current Status**: Partially Implemented (Refactoring Required)
+
+The current implementation (`nextcloud_mcp_server/auth/oauth_routes.py`) implements a **simplified hybrid flow** but needs refactoring to match the progressive consent architecture documented above:
+
+### What's Currently Implemented ✅
+
+1. **Basic OAuth endpoints**: `/oauth/authorize`, `/oauth/callback`, `/oauth/token`
+2. **PKCE validation**: Code challenge/verifier flow works
+3. **Session storage**: OAuth sessions stored in SQLite
+4. **Token storage**: Master refresh tokens stored encrypted
+5. **Integration tests**: Playwright-based tests pass (3/3)
+
+### What Needs Refactoring 🔄
+
+1. **Client Validation**:
+   - Current: `client_id` is ignored
+   - Needed: Validate `client_id` exists at IdP registry
+
+2. **Dual OAuth Flow**:
+   - Current: Single OAuth using MCP server's `client_id`
+   - Needed: Phase 1 (MCP client auth) + Phase 2 (conditional Nextcloud consent)
+
+3. **Consent Separation**:
+   - Current: Monolithic consent screen
+   - Needed: Separate consents for client authentication vs resource access
+
+4. **Intermediate Session State**:
+   - Current: Simple session with MCP code generated upfront
+   - Needed: Store state between OAuth phases, support `consent_stage` field
+
+5. **New Callback Endpoint**:
+   - Current: Single `/oauth/callback`
+   - Needed: Add `/oauth/callback_nextcloud` for Phase 2
+
+### Migration Plan
+
+The refactoring will be tracked in a separate issue. The current implementation serves as a proof-of-concept for the hybrid flow pattern and demonstrates:
+- MCP server can intercept OAuth callbacks
+- Refresh tokens can be securely stored
+- MCP clients can connect using PKCE
+- End-to-end tool execution works
+
+The progressive consent architecture documented here represents the **target state** for production deployments.
+
 ## Testing
 
-The ADR-004 Hybrid Flow is fully tested via automated integration tests:
+The ADR-004 Hybrid Flow is currently tested via automated integration tests (using the simplified implementation):
 
 ### Integration Tests
 
