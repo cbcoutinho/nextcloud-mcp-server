@@ -34,6 +34,10 @@ async def token_storage():
 
     storage = RefreshTokenStorage(db_path=db_path, encryption_key=encryption_key)
     await storage.initialize()
+
+    # Expose encryption key for tests that need to manually encrypt/decrypt
+    storage._test_encryption_key = encryption_key
+
     yield storage
 
     # Cleanup
@@ -59,9 +63,7 @@ async def token_exchange_service(token_storage):
 async def token_broker(token_storage):
     """Create test token broker service."""
     # Use the same encryption key as storage
-    from cryptography.fernet import Fernet
-
-    encryption_key = Fernet.generate_key()
+    encryption_key = token_storage._test_encryption_key
 
     broker = TokenBrokerService(
         storage=token_storage,
@@ -235,7 +237,8 @@ class TestTokenBroker:
         # Store encrypted refresh token for user
         from cryptography.fernet import Fernet
 
-        fernet = Fernet(b"test-key-" + b"0" * 32)
+        # Use the same encryption key as token_storage/token_broker
+        fernet = Fernet(token_storage._test_encryption_key)
         encrypted_token = fernet.encrypt(b"background_refresh_token").decode()
 
         await token_storage.store_refresh_token(
@@ -279,7 +282,8 @@ class TestTokenBroker:
         # Store refresh token
         from cryptography.fernet import Fernet
 
-        fernet = Fernet(b"test-key-" + b"0" * 32)
+        # Use the same encryption key as token_storage/token_broker
+        fernet = Fernet(token_storage._test_encryption_key)
         encrypted_token = fernet.encrypt(b"master_refresh_token").decode()
 
         await token_storage.store_refresh_token(
@@ -388,7 +392,8 @@ class TestScopeDownscoping:
         """Test background tokens can request different scopes than session."""
         from cryptography.fernet import Fernet
 
-        fernet = Fernet(b"test-key-" + b"0" * 32)
+        # Use the same encryption key as token_storage/token_broker
+        fernet = Fernet(token_storage._test_encryption_key)
         encrypted_token = fernet.encrypt(b"refresh_token").decode()
 
         await token_storage.store_refresh_token(
