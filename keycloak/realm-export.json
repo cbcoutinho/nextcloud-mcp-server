@@ -301,8 +301,7 @@
         "web-origins",
         "profile",
         "roles",
-        "email",
-        "token-exchange-nextcloud"
+        "email"
       ],
       "optionalClientScopes": [
         "address",
