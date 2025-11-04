@@ -140,27 +140,23 @@ class ProgressiveConsentTokenVerifier:
 
             # Audience validation:
             # - Accept tokens with no audience (will validate via introspection if needed)
-            # - Accept tokens with MCP client ID in audience
-            # - Reject tokens with "nextcloud" audience (wrong flow)
+            # - Accept tokens with MCP client ID in audience (regardless of other audiences)
+            # - Reject tokens without MCP client ID (if audience is present)
             if audiences:
-                # Check if this is a Nextcloud token (wrong flow)
-                if "nextcloud" in audiences:
+                # Check if MCP client ID is in the audience
+                if self.mcp_client_id in audiences:
+                    logger.debug(
+                        f"Token has audience {audiences} - MCP client ID present"
+                    )
+                else:
                     logger.warning(
                         f"Token rejected: wrong audience {audiences}, expected {self.mcp_client_id} or no audience"
                     )
                     logger.error(
-                        "Received Nextcloud token in MCP context - "
+                        "Token does not include MCP client ID in audience - "
                         "client may be using wrong token"
                     )
                     return None
-
-                # If audience is present but doesn't match, log warning but continue
-                # (token might use resource URL instead of client ID)
-                if self.mcp_client_id not in audiences:
-                    logger.info(
-                        f"Token has audience {audiences}, expected {self.mcp_client_id}. "
-                        "Accepting token with non-standard audience (may use resource URL)."
-                    )
             else:
                 logger.info(
                     "Token has no audience claim - accepting for MCP server validation"

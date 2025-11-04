@@ -177,7 +177,8 @@
       "standardFlowEnabled": false,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
-      "serviceAccountsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "authorizationServicesEnabled": true,
       "publicClient": false,
       "protocol": "openid-connect",
       "attributes": {
@@ -185,6 +186,56 @@
         "token.exchange.grant.enabled": "true",
         "client.token.exchange.standard.enabled": "true",
         "standard.token.exchange.enabled": "true"
+      },
+      "authorizationSettings": {
+        "allowRemoteResourceManagement": true,
+        "policyEnforcementMode": "ENFORCING",
+        "resources": [
+          {
+            "name": "token-exchange",
+            "type": "urn:keycloak:token-exchange",
+            "ownerManagedAccess": false,
+            "displayName": "Token Exchange",
+            "attributes": {},
+            "uris": [],
+            "scopes": [
+              {
+                "name": "token-exchange"
+              }
+            ]
+          }
+        ],
+        "policies": [
+          {
+            "name": "allow-nextcloud-mcp-server-to-exchange",
+            "description": "",
+            "type": "client",
+            "logic": "POSITIVE",
+            "decisionStrategy": "UNANIMOUS",
+            "config": {
+              "clients": "[\"nextcloud-mcp-server\",\"nextcloud\"]"
+            }
+          },
+          {
+            "name": "token-exchange-permission",
+            "description": "",
+            "type": "scope",
+            "logic": "POSITIVE",
+            "decisionStrategy": "AFFIRMATIVE",
+            "config": {
+              "resources": "[\"token-exchange\"]",
+              "scopes": "[\"token-exchange\"]",
+              "applyPolicies": "[\"allow-nextcloud-mcp-server-to-exchange\"]"
+            }
+          }
+        ],
+        "scopes": [
+          {
+            "name": "token-exchange",
+            "displayName": "Token Exchange"
+          }
+        ],
+        "decisionStrategy": "UNANIMOUS"
       },
       "fullScopeAllowed": true,
       "nodeReRegistrationTimeout": -1
@@ -229,6 +280,18 @@
       "fullScopeAllowed": true,
       "nodeReRegistrationTimeout": -1,
       "protocolMappers": [
+        {
+          "name": "mcp-server-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "nextcloud-mcp-server",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
         {
           "name": "nextcloud-audience",
           "protocol": "openid-connect",
