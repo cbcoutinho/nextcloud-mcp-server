@@ -734,7 +734,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     async def nc_get_capabilities():
         """Get the Nextcloud Host capabilities"""
         ctx: Context = mcp.get_context()
-        client = get_nextcloud_client(ctx)
+        client = await get_nextcloud_client(ctx)
         return await client.capabilities()
 
     # Define available apps and their configuration functions
