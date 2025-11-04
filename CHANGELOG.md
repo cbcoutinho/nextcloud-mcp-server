@@ -1,3 +1,41 @@
+## v0.24.0 (2025-11-04)
+
+### Feat
+
+- add scope protection to OAuth provisioning tools
+- enable authorization services for token exchange in Keycloak
+- implement scope-based audience mapping and RFC 9728 support
+- integrate token exchange into MCP server application
+- implement RFC 8693 Standard Token Exchange for Keycloak
+- Add userinfo route/page
+- add browser-based user info page with separate OAuth flow
+- Implement ADR-004 Progressive Consent foundation (partial)
+- Complete ADR-004 Progressive Consent OAuth flows implementation
+- Implement ADR-004 Progressive Consent foundation components
+- Implement ADR-004 Hybrid Flow with comprehensive integration tests
+
+### Fix
+
+- add missing await for get_nextcloud_client in capabilities resource
+- use valid Fernet encryption keys in token exchange tests
+- accept resource URL in token audience for Nextcloud JWT tokens
+- remove token-exchange-nextcloud scope and accept tokens without audience
+- move audience mapper from scope to nextcloud-mcp-server client
+- move token-exchange-nextcloud from default to optional scopes
+- restructure routes to prevent SessionAuthBackend from interfering with FastMCP OAuth
+- allow OAuth Bearer tokens on /mcp endpoint by excluding from session auth
+- correct OAuth token audience validation using RFC 8707 resource parameter
+- remove remaining references to deleted oauth_callback and oauth_token
+- remove Hybrid Flow, make Progressive Consent default (ADR-004)
+- browser OAuth userinfo endpoint and refresh token rotation
+- make ENABLE_PROGRESSIVE_CONSENT consistently opt-in (default false)
+- make provisioning checks opt-in (default false)
+- Disable Progressive Consent for mcp-oauth to enable Hybrid Flow tests
+
+### Refactor
+
+- integrate token exchange into unified get_client() pattern
+
 ## v0.23.0 (2025-11-03)
 
 ### Feat
