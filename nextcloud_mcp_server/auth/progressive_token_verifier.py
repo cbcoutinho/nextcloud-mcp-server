@@ -140,23 +140,30 @@ class ProgressiveConsentTokenVerifier:
 
             # Audience validation:
             # - Accept tokens with no audience (will validate via introspection if needed)
-            # - Accept tokens with MCP client ID in audience (regardless of other audiences)
-            # - Reject tokens without MCP client ID (if audience is present)
+            # - Accept tokens with MCP client ID in audience (Keycloak multi-audience)
+            # - Accept tokens with resource URL in audience (Nextcloud JWT redirect URI)
+            # - Reject tokens with "nextcloud" audience only (wrong flow)
             if audiences:
-                # Check if MCP client ID is in the audience
+                # Check if MCP client ID is in the audience (Keycloak multi-audience)
                 if self.mcp_client_id in audiences:
                     logger.debug(
                         f"Token has audience {audiences} - MCP client ID present"
                     )
-                else:
+                # Check if this is a Nextcloud-only token (wrong flow)
+                elif audiences == ["nextcloud"]:
                     logger.warning(
-                        f"Token rejected: wrong audience {audiences}, expected {self.mcp_client_id} or no audience"
+                        f"Token rejected: Nextcloud-only audience {audiences}"
                     )
                     logger.error(
-                        "Token does not include MCP client ID in audience - "
+                        "Received Nextcloud token in MCP context - "
                         "client may be using wrong token"
                     )
                     return None
+                # Otherwise accept (likely resource URL audience from Nextcloud JWT)
+                else:
+                    logger.info(
+                        f"Token has audience {audiences} (resource URL or non-standard) - accepting"
+                    )
             else:
                 logger.info(
                     "Token has no audience claim - accepting for MCP server validation"
