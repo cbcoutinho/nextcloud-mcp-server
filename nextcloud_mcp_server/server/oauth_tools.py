@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 from mcp.server.fastmcp import Context
 from pydantic import BaseModel, Field
 
+from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
 from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
 
@@ -401,6 +402,7 @@ def register_oauth_tools(mcp):
             "You'll need to complete an OAuth authorization in your browser."
         ),
     )
+    @require_scopes("openid")
     async def tool_provision_access(
         ctx: Context,
         user_id: Optional[str] = None,
@@ -411,6 +413,7 @@ def register_oauth_tools(mcp):
         name="revoke_nextcloud_access",
         description="Revoke offline access to Nextcloud resources.",
     )
+    @require_scopes("openid")
     async def tool_revoke_access(
         ctx: Context, user_id: Optional[str] = None
     ) -> RevocationResult:
@@ -420,6 +423,7 @@ def register_oauth_tools(mcp):
         name="check_provisioning_status",
         description="Check whether Nextcloud access is provisioned.",
     )
+    @require_scopes("openid")
     async def tool_check_status(
         ctx: Context, user_id: Optional[str] = None
     ) -> ProvisioningStatus:

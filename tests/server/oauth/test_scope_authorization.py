@@ -394,11 +394,13 @@ async def test_jwt_with_no_custom_scopes_returns_zero_tools(
     nc_mcp_oauth_client_no_custom_scopes,
 ):
     """
-    Test that a JWT token with only OIDC default scopes (no nc:read or nc:write) returns 0 tools.
+    Test that a JWT token with only OIDC default scopes shows only OAuth provisioning tools.
 
     This tests the security behavior when a user declines to grant custom scopes during consent.
-    Expected: JWT token has scopes=['openid', 'profile', 'email'] but no nc:read or nc:write.
-    All tools require at least one custom scope, so they should all be filtered out.
+    Expected: JWT token has scopes=['openid', 'profile', 'email'] but no resource scopes.
+    - Resource tools (notes:*, calendar:*, etc.) are filtered out
+    - OAuth provisioning tools (requiring only 'openid') remain visible
+      so users can provision Nextcloud access after authentication
     """
     import logging
 
@@ -410,16 +412,24 @@ async def test_jwt_with_no_custom_scopes_returns_zero_tools(
 
     tool_names = [tool.name for tool in result.tools]
     logger.info(
-        f"JWT token with no custom scopes sees {len(tool_names)} tools (should be 0)"
+        f"JWT token with no custom scopes sees {len(tool_names)} tools (should be 3 OAuth tools)"
     )
 
-    # All tools require nc:read or nc:write, so should be filtered out
-    assert len(tool_names) == 0, (
-        f"Expected 0 tools but got {len(tool_names)}: {tool_names[:10]}"
+    # Only OAuth provisioning tools should be visible (they require 'openid' scope)
+    expected_oauth_tools = [
+        "provision_nextcloud_access",
+        "revoke_nextcloud_access",
+        "check_provisioning_status",
+    ]
+
+    assert set(tool_names) == set(expected_oauth_tools), (
+        f"Expected only OAuth provisioning tools {expected_oauth_tools} "
+        f"but got {tool_names}"
     )
 
     logger.info(
-        "✅ JWT token without custom scopes correctly returns 0 tools (all filtered out)"
+        f"✅ JWT token with only openid scope correctly shows {len(tool_names)} OAuth provisioning tools, "
+        "resource tools filtered out"
     )
 
 
