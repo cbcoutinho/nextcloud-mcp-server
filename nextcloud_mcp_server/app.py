@@ -1008,27 +1008,37 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         )
 
     # Add user info routes (available in both BasicAuth and OAuth modes)
+    # These require session authentication, so we wrap them in a separate app
+    from nextcloud_mcp_server.auth.session_backend import SessionAuthBackend
     from nextcloud_mcp_server.auth.userinfo_routes import (
         user_info_html,
         user_info_json,
     )
 
-    routes.append(Route("/user", user_info_json, methods=["GET"]))
-    routes.append(Route("/user/page", user_info_html, methods=["GET"]))
-    logger.info("User info routes enabled: /user (JSON), /user/page (HTML)")
+    # Create a separate Starlette app for browser routes that need session auth
+    # This prevents SessionAuthBackend from interfering with FastMCP's OAuth
+    browser_routes = [
+        Route("/", user_info_json, methods=["GET"]),  # /user/ → user_info_json
+        Route("/page", user_info_html, methods=["GET"]),  # /user/page → user_info_html
+    ]
 
-    routes.append(Mount("/", app=mcp_app))
-    app = Starlette(routes=routes, lifespan=starlette_lifespan)
-
-    # Add authentication middleware for browser-based routes
-    from nextcloud_mcp_server.auth.session_backend import SessionAuthBackend
-
-    # SessionAuthBackend will look up oauth_context from app.state at runtime
-    app.add_middleware(
+    browser_app = Starlette(routes=browser_routes)
+    browser_app.add_middleware(
         AuthenticationMiddleware,
         backend=SessionAuthBackend(oauth_enabled=oauth_enabled),
     )
-    logger.info("Authentication middleware enabled for browser routes")
+
+    # Mount browser app at /user (so /user and /user/page work)
+    routes.append(Mount("/user", app=browser_app))
+    logger.info("User info routes with session auth: /user, /user/page")
+
+    # Mount FastMCP at root last (catch-all, handles OAuth via token_verifier)
+    routes.append(Mount("/", app=mcp_app))
+
+    app = Starlette(routes=routes, lifespan=starlette_lifespan)
+    logger.info(
+        "Routes: /user/* with SessionAuth, /mcp with FastMCP OAuth Bearer tokens"
+    )
 
     # Add CORS middleware to allow browser-based clients like MCP Inspector
     app.add_middleware(

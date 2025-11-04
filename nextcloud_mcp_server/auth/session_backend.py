@@ -37,9 +37,9 @@ class SessionAuthBackend(AuthenticationBackend):
     ) -> tuple[AuthCredentials, SimpleUser] | None:
         """Authenticate the request based on session cookie or BasicAuth mode.
 
-        For paths that use other authentication mechanisms (OAuth Bearer tokens,
-        public endpoints), this backend returns None to skip session authentication
-        and allow those mechanisms to handle the request.
+        This backend is only applied to browser routes (/user/*) via a separate
+        Starlette app mount. FastMCP routes use their own OAuth Bearer token
+        authentication.
 
         Args:
             conn: HTTP connection
@@ -47,23 +47,6 @@ class SessionAuthBackend(AuthenticationBackend):
         Returns:
             Tuple of (credentials, user) if authenticated, None otherwise
         """
-        # Skip session auth for paths that use other authentication methods
-        # or are publicly accessible
-        excluded_paths = [
-            "/mcp",  # FastMCP OAuth Bearer tokens (handled by FastMCP's auth provider)
-            "/.well-known/oauth-protected-resource",  # Public PRM metadata
-            "/health/live",  # Health checks (public)
-            "/health/ready",
-            "/oauth/login",  # Login flow (no auth required to access login page)
-            "/oauth/login-callback",  # OAuth callback (receives code from IdP)
-            "/oauth/authorize",  # Flow 1 authorize endpoint (no session required)
-        ]
-
-        if any(conn.url.path.startswith(path) for path in excluded_paths):
-            # Don't interfere - let other auth mechanisms handle these paths
-            logger.debug(f"Skipping session auth for excluded path: {conn.url.path}")
-            return None
-
         # BasicAuth mode: Always authenticated as the configured user
         if not self.oauth_enabled:
             username = os.getenv("NEXTCLOUD_USERNAME", "admin")
