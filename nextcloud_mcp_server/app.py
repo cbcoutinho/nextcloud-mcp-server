@@ -930,13 +930,11 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 
             Dynamically discovers supported scopes from registered MCP tools.
             This ensures the advertised scopes always match the actual tool requirements.
-            """
-            mcp_server_url = os.getenv(
-                "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
-            )
-            # Append /mcp to match the actual resource path (FastMCP streamable-http endpoint)
-            resource_url = f"{mcp_server_url}/mcp"
 
+            The 'resource' field is set to the MCP server's OAuth client ID, which is
+            used as the audience claim in access tokens. This ensures tokens obtained
+            with the resource parameter match the audience validation in progressive_token_verifier.
+            """
             # Use PUBLIC_ISSUER_URL for authorization server since external clients
             # (like Claude) need the publicly accessible URL, not internal Docker URLs
             public_issuer_url = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
@@ -950,7 +948,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 
             return JSONResponse(
                 {
-                    "resource": resource_url,
+                    "resource": client_id,  # MCP server's OAuth client ID (for audience validation)
                     "scopes_supported": supported_scopes,
                     "authorization_servers": [public_issuer_url],
                     "bearer_methods_supported": ["header"],
