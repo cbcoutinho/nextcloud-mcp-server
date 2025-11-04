@@ -81,4 +81,4 @@ jobs:
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
         run: |
-          uv run pytest -v --log-cli-level=INFO
+          uv run pytest -v --log-cli-level=WARN --ignore=tests/manual

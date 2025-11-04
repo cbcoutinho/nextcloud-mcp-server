@@ -14,14 +14,14 @@ def configure_contacts_tools(mcp: FastMCP):
     @require_scopes("contacts:read")
     async def nc_contacts_list_addressbooks(ctx: Context):
         """List all addressbooks for the user."""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.contacts.list_addressbooks()
 
     @mcp.tool()
     @require_scopes("contacts:read")
     async def nc_contacts_list_contacts(ctx: Context, *, addressbook: str):
         """List all contacts in the specified addressbook."""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.contacts.list_contacts(addressbook=addressbook)
 
     @mcp.tool()
@@ -35,7 +35,7 @@ def configure_contacts_tools(mcp: FastMCP):
             name: The name of the addressbook.
             display_name: The display name of the addressbook.
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.contacts.create_addressbook(
             name=name, display_name=display_name
         )
@@ -44,7 +44,7 @@ def configure_contacts_tools(mcp: FastMCP):
     @require_scopes("contacts:write")
     async def nc_contacts_delete_addressbook(ctx: Context, *, name: str):
         """Delete an addressbook."""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.contacts.delete_addressbook(name=name)
 
     @mcp.tool()
@@ -59,7 +59,7 @@ def configure_contacts_tools(mcp: FastMCP):
             uid: The unique ID for the contact.
             contact_data: A dictionary with the contact's details, e.g. {"fn": "John Doe", "email": "john.doe@example.com"}.
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.contacts.create_contact(
             addressbook=addressbook, uid=uid, contact_data=contact_data
         )
@@ -68,7 +68,7 @@ def configure_contacts_tools(mcp: FastMCP):
     @require_scopes("contacts:write")
     async def nc_contacts_delete_contact(ctx: Context, *, addressbook: str, uid: str):
         """Delete a contact."""
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.contacts.delete_contact(addressbook=addressbook, uid=uid)
 
     @mcp.tool()
@@ -84,7 +84,7 @@ def configure_contacts_tools(mcp: FastMCP):
             contact_data: A dictionary with the contact's updated details, e.g. {"fn": "Jane Doe", "email": "jane.doe@example.com"}.
             etag: Optional ETag for optimistic concurrency control.
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         return await client.contacts.update_contact(
             addressbook=addressbook, uid=uid, contact_data=contact_data, etag=etag
         )

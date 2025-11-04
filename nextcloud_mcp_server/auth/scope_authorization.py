@@ -1,6 +1,7 @@
 """Scope-based authorization for MCP tools."""
 
 import logging
+import os
 from functools import wraps
 from typing import Callable
 
@@ -30,6 +31,23 @@ class InsufficientScopeError(ScopeAuthorizationError):
         self.missing_scopes = missing_scopes
         super().__init__(
             message or f"Missing required scopes: {', '.join(missing_scopes)}"
+        )
+
+
+class ProvisioningRequiredError(ScopeAuthorizationError):
+    """Raised when Nextcloud resource access requires provisioning (Flow 2).
+
+    In Progressive Consent mode, users must explicitly provision Nextcloud
+    access using the provision_nextcloud_access MCP tool.
+    """
+
+    def __init__(self, message: str | None = None):
+        super().__init__(
+            message
+            or (
+                "Nextcloud resource access not provisioned. "
+                "Please run the 'provision_nextcloud_access' tool to grant access."
+            )
         )
 
 
@@ -108,6 +126,58 @@ def require_scopes(*required_scopes: str):
             # Extract scopes from access token
             token_scopes = set(access_token.scopes or [])
             required_scopes_set = set(required_scopes)
+
+            # Check if Progressive Consent is enabled
+            enable_progressive = (
+                os.getenv("ENABLE_PROGRESSIVE_CONSENT", "false").lower() == "true"
+            )
+
+            # In Progressive Consent mode, check if Nextcloud scopes require provisioning
+            if enable_progressive:
+                # Check if any required scopes are Nextcloud-specific
+                nextcloud_scopes = [
+                    s
+                    for s in required_scopes
+                    if any(
+                        s.startswith(prefix)
+                        for prefix in [
+                            "notes:",
+                            "calendar:",
+                            "contacts:",
+                            "files:",
+                            "tables:",
+                            "deck:",
+                        ]
+                    )
+                ]
+
+                if nextcloud_scopes:
+                    # Check if user has completed Flow 2 provisioning
+                    # This would be indicated by having a stored refresh token
+                    # In production, we'd check the token broker or storage
+                    # For now, we check if the token has the required scopes
+                    # (Flow 1 tokens won't have Nextcloud scopes)
+                    has_nextcloud_scopes = any(
+                        s.startswith(prefix)
+                        for s in token_scopes
+                        for prefix in [
+                            "notes:",
+                            "calendar:",
+                            "contacts:",
+                            "files:",
+                            "tables:",
+                            "deck:",
+                        ]
+                    )
+
+                    if not has_nextcloud_scopes:
+                        error_msg = (
+                            f"Access denied to {func.__name__}: "
+                            f"Nextcloud resource access not provisioned. "
+                            f"Please run the 'provision_nextcloud_access' tool first."
+                        )
+                        logger.warning(error_msg)
+                        raise ProvisioningRequiredError(error_msg)
 
             # Check if all required scopes are present
             missing_scopes = required_scopes_set - token_scopes

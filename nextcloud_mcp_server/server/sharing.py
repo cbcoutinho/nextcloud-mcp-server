@@ -45,7 +45,7 @@ def configure_sharing_tools(mcp: FastMCP):
         Returns:
             JSON string with share information including share ID
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         share_data = await client.sharing.create_share(
             path=path,
             share_with=share_with,
@@ -67,7 +67,7 @@ def configure_sharing_tools(mcp: FastMCP):
         Returns:
             JSON string confirming deletion
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         await client.sharing.delete_share(share_id)
         return json.dumps(
             {"success": True, "message": f"Share {share_id} deleted"}, indent=2
@@ -87,7 +87,7 @@ def configure_sharing_tools(mcp: FastMCP):
         Returns:
             JSON string with share information
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         share_data = await client.sharing.get_share(share_id)
         return json.dumps(share_data, indent=2)
 
@@ -106,7 +106,7 @@ def configure_sharing_tools(mcp: FastMCP):
         Returns:
             JSON string with list of shares
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         shares = await client.sharing.list_shares(
             path=path, shared_with_me=shared_with_me
         )
@@ -133,7 +133,7 @@ def configure_sharing_tools(mcp: FastMCP):
         Returns:
             JSON string with updated share information
         """
-        client = get_client(ctx)
+        client = await get_client(ctx)
         share_data = await client.sharing.update_share(
             share_id=share_id, permissions=permissions
         )

@@ -19,7 +19,8 @@ dependencies = [
     "click>=8.1.8",
     "caldav",
     "pyjwt[crypto]>=2.8.0",
-    "aiosqlite>=0.20.0",  # Async SQLite for refresh token storage
+    "aiosqlite>=0.20.0", # Async SQLite for refresh token storage
+    "authlib>=1.6.5",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

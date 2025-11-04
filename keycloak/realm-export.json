@@ -166,22 +166,76 @@
     {
       "clientId": "nextcloud",
       "name": "Nextcloud Resource Server",
-      "description": "Resource server for Nextcloud APIs - used by user_oidc app for bearer token validation",
+      "description": "Resource server for Nextcloud APIs - used by user_oidc app for bearer token validation and as token exchange target",
       "enabled": true,
       "clientAuthenticatorType": "client-secret",
       "secret": "nextcloud-secret-change-in-production",
       "redirectUris": [],
       "webOrigins": [],
-      "bearerOnly": true,
+      "bearerOnly": false,
       "consentRequired": false,
       "standardFlowEnabled": false,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
-      "serviceAccountsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "authorizationServicesEnabled": true,
       "publicClient": false,
       "protocol": "openid-connect",
       "attributes": {
-        "display.on.consent.screen": "false"
+        "display.on.consent.screen": "false",
+        "token.exchange.grant.enabled": "true",
+        "client.token.exchange.standard.enabled": "true",
+        "standard.token.exchange.enabled": "true"
+      },
+      "authorizationSettings": {
+        "allowRemoteResourceManagement": true,
+        "policyEnforcementMode": "ENFORCING",
+        "resources": [
+          {
+            "name": "token-exchange",
+            "type": "urn:keycloak:token-exchange",
+            "ownerManagedAccess": false,
+            "displayName": "Token Exchange",
+            "attributes": {},
+            "uris": [],
+            "scopes": [
+              {
+                "name": "token-exchange"
+              }
+            ]
+          }
+        ],
+        "policies": [
+          {
+            "name": "allow-nextcloud-mcp-server-to-exchange",
+            "description": "",
+            "type": "client",
+            "logic": "POSITIVE",
+            "decisionStrategy": "UNANIMOUS",
+            "config": {
+              "clients": "[\"nextcloud-mcp-server\",\"nextcloud\"]"
+            }
+          },
+          {
+            "name": "token-exchange-permission",
+            "description": "",
+            "type": "scope",
+            "logic": "POSITIVE",
+            "decisionStrategy": "AFFIRMATIVE",
+            "config": {
+              "resources": "[\"token-exchange\"]",
+              "scopes": "[\"token-exchange\"]",
+              "applyPolicies": "[\"allow-nextcloud-mcp-server-to-exchange\"]"
+            }
+          }
+        ],
+        "scopes": [
+          {
+            "name": "token-exchange",
+            "displayName": "Token Exchange"
+          }
+        ],
+        "decisionStrategy": "UNANIMOUS"
       },
       "fullScopeAllowed": true,
       "nodeReRegistrationTimeout": -1
@@ -220,20 +274,34 @@
         "client_credentials.use_refresh_token": "false",
         "display.on.consent.screen": "false",
         "token.exchange.grant.enabled": "true",
-        "client.token.exchange.standard.enabled": "true"
+        "client.token.exchange.standard.enabled": "true",
+        "standard.token.exchange.enabled": "true"
       },
       "fullScopeAllowed": true,
       "nodeReRegistrationTimeout": -1,
       "protocolMappers": [
         {
-          "name": "audience-nextcloud",
+          "name": "mcp-server-audience",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
           "consentRequired": false,
           "config": {
-            "included.custom.audience": "nextcloud",
+            "included.client.audience": "nextcloud-mcp-server",
             "access.token.claim": "true",
-            "id.token.claim": "false"
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "nextcloud-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "nextcloud",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
           }
         },
         {
@@ -683,39 +751,6 @@
         "display.on.consent.screen": "true",
         "consent.screen.text": "Create, update, and delete tasks"
       }
-    },
-    {
-      "name": "audience",
-      "description": "Audience scope for token validation",
-      "protocol": "openid-connect",
-      "attributes": {
-        "include.in.token.scope": "true",
-        "display.on.consent.screen": "false"
-      },
-      "protocolMappers": [
-        {
-          "name": "mcp-server-audience",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "consentRequired": false,
-          "config": {
-            "included.client.audience": "nextcloud-mcp-server",
-            "id.token.claim": "false",
-            "access.token.claim": "true"
-          }
-        },
-        {
-          "name": "nextcloud-audience",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "consentRequired": false,
-          "config": {
-            "included.client.audience": "nextcloud",
-            "id.token.claim": "false",
-            "access.token.claim": "true"
-          }
-        }
-      ]
     }
   ],
   "components": {
@@ -756,8 +791,7 @@
     "profile",
     "email",
     "roles",
-    "web-origins",
-    "audience"
+    "web-origins"
   ],
   "defaultOptionalClientScopes": [
     "offline_access",

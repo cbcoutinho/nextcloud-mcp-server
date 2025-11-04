@@ -1,6 +1,7 @@
 import logging.config
 import os
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Optional
 
 LOGGING_CONFIG = {
     "version": 1,
@@ -118,3 +119,54 @@ def get_document_processor_config() -> dict[str, Any]:
             }
 
     return config
+
+
+@dataclass
+class Settings:
+    """Application settings from environment variables."""
+
+    # OAuth/OIDC settings
+    oidc_discovery_url: Optional[str] = None
+    oidc_client_id: Optional[str] = None
+    oidc_client_secret: Optional[str] = None
+
+    # Nextcloud settings
+    nextcloud_host: Optional[str] = None
+    nextcloud_username: Optional[str] = None
+    nextcloud_password: Optional[str] = None
+
+    # Progressive Consent settings (always enabled - no flag needed)
+    enable_token_exchange: bool = False
+    enable_offline_access: bool = False
+
+    # Token settings
+    token_encryption_key: Optional[str] = None
+    token_storage_db: Optional[str] = None
+
+
+def get_settings() -> Settings:
+    """Get application settings from environment variables.
+
+    Returns:
+        Settings object with configuration values
+    """
+    return Settings(
+        # OAuth/OIDC settings
+        oidc_discovery_url=os.getenv("OIDC_DISCOVERY_URL"),
+        oidc_client_id=os.getenv("OIDC_CLIENT_ID"),
+        oidc_client_secret=os.getenv("OIDC_CLIENT_SECRET"),
+        # Nextcloud settings
+        nextcloud_host=os.getenv("NEXTCLOUD_HOST"),
+        nextcloud_username=os.getenv("NEXTCLOUD_USERNAME"),
+        nextcloud_password=os.getenv("NEXTCLOUD_PASSWORD"),
+        # Progressive Consent settings (always enabled)
+        enable_token_exchange=(
+            os.getenv("ENABLE_TOKEN_EXCHANGE", "false").lower() == "true"
+        ),
+        enable_offline_access=(
+            os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() == "true"
+        ),
+        # Token settings
+        token_encryption_key=os.getenv("TOKEN_ENCRYPTION_KEY"),
+        token_storage_db=os.getenv("TOKEN_STORAGE_DB", "/tmp/tokens.db"),
+    )

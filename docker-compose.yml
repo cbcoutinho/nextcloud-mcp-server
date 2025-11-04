@@ -43,11 +43,11 @@ services:
       - MYSQL_USER=nextcloud
       - MYSQL_HOST=db
       - REDIS_HOST=redis
-    #healthcheck:
-      #test: ["CMD-SHELL", "curl -Ss http://localhost/status.php | grep '\"installed\":true' || exit 1"]
-      #interval: 10s
-      #timeout: 30s
-      #retries: 30
+    healthcheck:
+      test: ["CMD-SHELL", "curl -Ss http://localhost/status.php | grep '\"installed\":true' || exit 1"]
+      interval: 10s
+      timeout: 30s
+      retries: 30
 
   recipes:
     image: docker.io/library/nginx:alpine@sha256:b3c656d55d7ad751196f21b7fd2e8d4da9cb430e32f646adcf92441b72f82b14
@@ -71,7 +71,8 @@ services:
     command: ["--transport", "streamable-http"]
     restart: always
     depends_on:
-      - app
+      app:
+        condition: service_healthy
     ports:
       - 127.0.0.1:8000:8000
     environment:
@@ -84,7 +85,8 @@ services:
     command: ["--transport", "streamable-http", "--oauth", "--port", "8001", "--oauth-token-type", "jwt"]
     restart: always
     depends_on:
-      - app
+      app:
+        condition: service_healthy
     ports:
       - 127.0.0.1:8001:8001
     environment:
@@ -100,6 +102,9 @@ services:
       - ENABLE_OFFLINE_ACCESS=true
       - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
       - TOKEN_STORAGE_DB=/app/data/tokens.db
+
+      # ADR-004: Use Hybrid Flow (server intercepts OAuth callback)
+      # Set to false to enable Hybrid Flow tests - server stores refresh token and issues MCP codes
 
       # NO admin credentials - using OAuth with Dynamic Client Registration (DCR)
       # Client credentials registered via RFC 7591 and stored in volume
@@ -159,6 +164,9 @@ services:
       - ENABLE_OFFLINE_ACCESS=true
       - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
       - TOKEN_STORAGE_DB=/app/data/tokens.db
+
+      # Token exchange (RFC 8693) - convert aud:nextcloud-mcp-server → aud:nextcloud
+      - ENABLE_TOKEN_EXCHANGE=true
 
       # OAuth scopes (optional - uses defaults if not specified)
       - NEXTCLOUD_OIDC_SCOPES=openid profile email offline_access notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write

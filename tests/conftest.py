@@ -1120,6 +1120,37 @@ async def shared_jwt_oauth_client_credentials(anyio_backend, oauth_callback_serv
             )
 
 
+async def get_mcp_server_resource_metadata(mcp_base_url: str) -> dict:
+    """
+    Fetch MCP server's Protected Resource Metadata (RFC 9470).
+
+    This retrieves the MCP server's resource information including:
+    - resource: The MCP server's client ID (used as audience for tokens)
+    - authorization_servers: List of trusted OAuth servers
+    - scopes_supported: Available scopes
+
+    Args:
+        mcp_base_url: Base URL of the MCP server (e.g., "http://localhost:8001")
+                      WITHOUT the /mcp path component
+
+    Returns:
+        Dict with resource metadata
+
+    Raises:
+        HTTPStatusError: If metadata endpoint is not available
+    """
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        prm_url = f"{mcp_base_url}/.well-known/oauth-protected-resource"
+        logger.debug(f"Fetching resource metadata from: {prm_url}")
+
+        response = await http_client.get(prm_url)
+        response.raise_for_status()
+        metadata = response.json()
+
+        logger.debug(f"Resource metadata: {metadata}")
+        return metadata
+
+
 async def _create_oauth_client_with_scopes(
     callback_url: str,
     client_name: str,
@@ -1514,11 +1545,24 @@ async def playwright_oauth_token(
     logger.info(f"Using shared OAuth client: {client_id[:16]}...")
     logger.info(f"Using real callback server at: {callback_url}")
 
+    # Fetch MCP server's resource metadata to get correct audience
+    mcp_server_base_url = "http://localhost:8001"
+    try:
+        resource_metadata = await get_mcp_server_resource_metadata(mcp_server_base_url)
+        resource_id = resource_metadata.get("resource")
+        if resource_id:
+            logger.info(f"MCP server resource ID (for audience): {resource_id[:16]}...")
+        else:
+            logger.warning("No resource ID in metadata - token may have wrong audience")
+    except Exception as e:
+        logger.warning(f"Failed to fetch resource metadata: {e}")
+        resource_id = None
+
     # Generate unique state parameter for this OAuth flow
     state = secrets.token_urlsafe(32)
     logger.debug(f"Generated state: {state[:16]}...")
 
-    # Construct authorization URL with state parameter
+    # Construct authorization URL with state and resource parameters
     auth_url = (
         f"{authorization_endpoint}?"
         f"response_type=code&"
@@ -1527,6 +1571,11 @@ async def playwright_oauth_token(
         f"state={state}&"
         f"scope=openid%20profile%20email%20notes:read%20notes:write%20calendar:read%20calendar:write%20contacts:read%20contacts:write%20cookbook:read%20cookbook:write%20deck:read%20deck:write%20tables:read%20tables:write%20files:read%20files:write%20sharing:read%20sharing:write"
     )
+
+    # Add resource parameter (RFC 8707) if available
+    if resource_id:
+        auth_url += f"&resource={quote(resource_id, safe='')}"
+        logger.debug(f"Added resource parameter to auth URL: {resource_id[:16]}...")
 
     # Async browser automation using pytest-playwright's browser fixture
     context = await browser.new_context(ignore_https_errors=True)
@@ -1745,6 +1794,7 @@ async def _get_oauth_token_with_scopes(
     shared_oauth_client_credentials,
     oauth_callback_server,
     scopes: str,
+    resource: str | None = None,
 ) -> str:
     """
     Helper function to obtain OAuth token with specific scopes.
@@ -1754,6 +1804,7 @@ async def _get_oauth_token_with_scopes(
         shared_oauth_client_credentials: Tuple of OAuth client credentials
         oauth_callback_server: OAuth callback server fixture
         scopes: Space-separated list of scopes (e.g., "openid profile email notes:read")
+        resource: Optional resource parameter (RFC 8707) for token audience
 
     Returns:
         OAuth access token string with requested scopes
@@ -1783,6 +1834,25 @@ async def _get_oauth_token_with_scopes(
     logger.info(f"Using shared OAuth client: {client_id[:16]}...")
     logger.info(f"Using real callback server at: {callback_url}")
 
+    # If no resource provided, fetch from MCP server metadata
+    if resource is None:
+        mcp_server_base_url = "http://localhost:8001"
+        try:
+            resource_metadata = await get_mcp_server_resource_metadata(
+                mcp_server_base_url
+            )
+            resource = resource_metadata.get("resource")
+            if resource:
+                logger.info(
+                    f"MCP server resource ID (for audience): {resource[:16]}..."
+                )
+            else:
+                logger.warning(
+                    "No resource ID in metadata - token may have wrong audience"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch resource metadata: {e}")
+
     # Generate unique state parameter for this OAuth flow
     state = secrets.token_urlsafe(32)
     logger.debug(f"Generated state: {state[:16]}...")
@@ -1799,6 +1869,11 @@ async def _get_oauth_token_with_scopes(
         f"state={state}&"
         f"scope={scopes_encoded}"
     )
+
+    # Add resource parameter (RFC 8707) if available
+    if resource:
+        auth_url += f"&resource={quote(resource, safe='')}"
+        logger.debug(f"Added resource parameter to auth URL: {resource[:16]}...")
 
     # Async browser automation using pytest-playwright's browser fixture
     context = await browser.new_context(ignore_https_errors=True)

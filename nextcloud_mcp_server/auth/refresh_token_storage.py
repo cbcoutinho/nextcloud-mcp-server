@@ -1,7 +1,22 @@
 """
 Refresh Token Storage for ADR-002 Tier 1: Offline Access
 
-Securely stores and manages user refresh tokens for background operations.
+Manages two separate concerns for OAuth authentication:
+
+1. **Refresh Tokens** (for background jobs ONLY)
+   - Securely stores encrypted refresh tokens for offline access
+   - Used ONLY by background jobs to obtain access tokens
+   - NEVER used within MCP client sessions or browser sessions
+
+2. **User Profile Cache** (for browser UI display ONLY)
+   - Caches IdP user profile data for browser-based admin UI
+   - Queried ONCE at login, displayed from cache thereafter
+   - NOT used for authorization decisions or background jobs
+
+IMPORTANT: These are separate concerns. Browser sessions read profile cache for
+display purposes. Background jobs use refresh tokens for API access. Never mix
+the two.
+
 Tokens are encrypted at rest using Fernet symmetric encryption.
 """
 
@@ -19,7 +34,14 @@ logger = logging.getLogger(__name__)
 
 
 class RefreshTokenStorage:
-    """Securely store and manage user refresh tokens"""
+    """Securely store and manage user refresh tokens and profile cache.
+
+    This class manages two separate concerns:
+    - Refresh tokens: Encrypted storage for background job access (write-only by OAuth, read-only by background jobs)
+    - User profiles: Plain JSON cache for browser UI display (written at login, read by UI)
+
+    These concerns are architecturally separate and should never be mixed.
+    """
 
     def __init__(self, db_path: str, encryption_key: bytes):
         """
@@ -98,7 +120,16 @@ class RefreshTokenStorage:
                     encrypted_token BLOB NOT NULL,
                     expires_at INTEGER,
                     created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
+                    updated_at INTEGER NOT NULL,
+                    -- ADR-004 Progressive Consent fields
+                    flow_type TEXT DEFAULT 'hybrid',  -- 'hybrid', 'flow1', 'flow2'
+                    token_audience TEXT DEFAULT 'nextcloud',  -- 'mcp-server' or 'nextcloud'
+                    provisioned_at INTEGER,  -- When Flow 2 was completed
+                    provisioning_client_id TEXT,  -- Which MCP client initiated Flow 1
+                    scopes TEXT,  -- JSON array of granted scopes
+                    -- Browser session profile cache
+                    user_profile TEXT,  -- JSON cache of IdP user profile (for browser UI only)
+                    profile_cached_at INTEGER  -- When profile was last cached
                 )
                 """
             )
@@ -142,6 +173,37 @@ class RefreshTokenStorage:
                 """
             )
 
+            # OAuth flow sessions (ADR-004 Progressive Consent)
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS oauth_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    client_id TEXT,
+                    client_redirect_uri TEXT NOT NULL,
+                    state TEXT,
+                    code_challenge TEXT,
+                    code_challenge_method TEXT,
+                    mcp_authorization_code TEXT UNIQUE,
+                    idp_access_token TEXT,
+                    idp_refresh_token TEXT,
+                    user_id TEXT,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    -- ADR-004 Progressive Consent fields
+                    flow_type TEXT DEFAULT 'hybrid',  -- 'hybrid', 'flow1', 'flow2'
+                    requested_scopes TEXT,  -- JSON array of requested scopes
+                    granted_scopes TEXT,  -- JSON array of granted scopes
+                    is_provisioning BOOLEAN DEFAULT FALSE  -- True if this is a Flow 2 provisioning session
+                )
+                """
+            )
+
+            # Create index for MCP authorization code lookups
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_oauth_sessions_mcp_code "
+                "ON oauth_sessions(mcp_authorization_code)"
+            )
+
             await db.commit()
 
         # Set restrictive permissions after creation
@@ -155,6 +217,10 @@ class RefreshTokenStorage:
         user_id: str,
         refresh_token: str,
         expires_at: Optional[int] = None,
+        flow_type: str = "hybrid",
+        token_audience: str = "nextcloud",
+        provisioning_client_id: Optional[str] = None,
+        scopes: Optional[list[str]] = None,
     ) -> None:
         """
         Store encrypted refresh token for user.
@@ -163,6 +229,10 @@ class RefreshTokenStorage:
             user_id: User identifier (from OIDC 'sub' claim)
             refresh_token: Refresh token to store
             expires_at: Token expiration timestamp (Unix epoch), if known
+            flow_type: Type of flow ('hybrid', 'flow1', 'flow2')
+            token_audience: Token audience ('mcp-server' or 'nextcloud')
+            provisioning_client_id: Client ID that initiated Flow 1
+            scopes: List of granted scopes
 
         """
         if not self._initialized:
@@ -170,15 +240,33 @@ class RefreshTokenStorage:
 
         encrypted_token = self.cipher.encrypt(refresh_token.encode())
         now = int(time.time())
+        scopes_json = json.dumps(scopes) if scopes else None
+
+        # For Flow 2, set provisioned_at timestamp
+        provisioned_at = now if flow_type == "flow2" else None
 
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO refresh_tokens
-                (user_id, encrypted_token, expires_at, created_at, updated_at)
-                VALUES (?, ?, ?, COALESCE((SELECT created_at FROM refresh_tokens WHERE user_id = ?), ?), ?)
+                (user_id, encrypted_token, expires_at, created_at, updated_at,
+                 flow_type, token_audience, provisioned_at, provisioning_client_id, scopes)
+                VALUES (?, ?, ?, COALESCE((SELECT created_at FROM refresh_tokens WHERE user_id = ?), ?), ?,
+                        ?, ?, ?, ?, ?)
                 """,
-                (user_id, encrypted_token, expires_at, user_id, now, now),
+                (
+                    user_id,
+                    encrypted_token,
+                    expires_at,
+                    user_id,
+                    now,
+                    now,
+                    flow_type,
+                    token_audience,
+                    provisioned_at,
+                    provisioning_client_id,
+                    scopes_json,
+                ),
             )
             await db.commit()
 
@@ -194,7 +282,77 @@ class RefreshTokenStorage:
             auth_method="offline_access",
         )
 
-    async def get_refresh_token(self, user_id: str) -> Optional[str]:
+    async def store_user_profile(
+        self, user_id: str, profile_data: dict[str, any]
+    ) -> None:
+        """
+        Store user profile data (cached from IdP userinfo endpoint).
+
+        This profile is cached ONLY for browser UI display purposes, not for
+        authorization decisions. Background jobs should NOT rely on this data.
+
+        Args:
+            user_id: User identifier (must match refresh_tokens.user_id)
+            profile_data: User profile dict from IdP userinfo endpoint
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        profile_json = json.dumps(profile_data)
+        now = int(time.time())
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE refresh_tokens
+                SET user_profile = ?, profile_cached_at = ?
+                WHERE user_id = ?
+                """,
+                (profile_json, now, user_id),
+            )
+            await db.commit()
+
+        logger.debug(f"Cached user profile for {user_id}")
+
+    async def get_user_profile(self, user_id: str) -> Optional[dict[str, any]]:
+        """
+        Retrieve cached user profile data.
+
+        This returns cached profile data from the initial OAuth login,
+        NOT fresh data from the IdP. Use this for browser UI display only.
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            User profile dict or None if not cached
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                """
+                SELECT user_profile, profile_cached_at
+                FROM refresh_tokens
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        if not row or not row[0]:
+            return None
+
+        profile_json, cached_at = row
+        profile_data = json.loads(profile_json)
+
+        # Optionally add cache metadata
+        profile_data["_cached_at"] = cached_at
+
+        return profile_data
+
+    async def get_refresh_token(self, user_id: str) -> Optional[dict]:
         """
         Retrieve and decrypt refresh token for user.
 
@@ -202,14 +360,28 @@ class RefreshTokenStorage:
             user_id: User identifier
 
         Returns:
-            Decrypted refresh token, or None if not found or expired
+            Dictionary with token data including ADR-004 fields:
+            {
+                "refresh_token": str,
+                "expires_at": int | None,
+                "flow_type": str,
+                "token_audience": str,
+                "provisioned_at": int | None,
+                "provisioning_client_id": str | None,
+                "scopes": list[str] | None
+            }
+            or None if not found or expired
         """
         if not self._initialized:
             await self.initialize()
 
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
-                "SELECT encrypted_token, expires_at FROM refresh_tokens WHERE user_id = ?",
+                """
+                SELECT encrypted_token, expires_at, flow_type, token_audience,
+                       provisioned_at, provisioning_client_id, scopes
+                FROM refresh_tokens WHERE user_id = ?
+                """,
                 (user_id,),
             ) as cursor:
                 row = await cursor.fetchone()
@@ -218,7 +390,15 @@ class RefreshTokenStorage:
             logger.debug(f"No refresh token found for user {user_id}")
             return None
 
-        encrypted_token, expires_at = row
+        (
+            encrypted_token,
+            expires_at,
+            flow_type,
+            token_audience,
+            provisioned_at,
+            provisioning_client_id,
+            scopes_json,
+        ) = row
 
         # Check expiration
         if expires_at is not None and expires_at < time.time():
@@ -230,8 +410,22 @@ class RefreshTokenStorage:
 
         try:
             decrypted_token = self.cipher.decrypt(encrypted_token).decode()
-            logger.debug(f"Retrieved refresh token for user {user_id}")
-            return decrypted_token
+            scopes = json.loads(scopes_json) if scopes_json else None
+
+            logger.debug(
+                f"Retrieved refresh token for user {user_id} (flow_type: {flow_type})"
+            )
+
+            return {
+                "refresh_token": decrypted_token,
+                "expires_at": expires_at,
+                "flow_type": flow_type or "hybrid",  # Default for existing tokens
+                "token_audience": token_audience
+                or "nextcloud",  # Default for existing tokens
+                "provisioned_at": provisioned_at,
+                "provisioning_client_id": provisioning_client_id,
+                "scopes": scopes,
+            }
         except Exception as e:
             logger.error(f"Failed to decrypt refresh token for user {user_id}: {e}")
             return None
@@ -603,6 +797,234 @@ class RefreshTokenStorage:
                 rows = await cursor.fetchall()
 
         return [dict(row) for row in rows]
+
+    async def store_oauth_session(
+        self,
+        session_id: str,
+        client_redirect_uri: str,
+        state: Optional[str] = None,
+        code_challenge: Optional[str] = None,
+        code_challenge_method: Optional[str] = None,
+        mcp_authorization_code: Optional[str] = None,
+        client_id: Optional[str] = None,
+        flow_type: str = "hybrid",
+        is_provisioning: bool = False,
+        requested_scopes: Optional[str] = None,
+        ttl_seconds: int = 600,  # 10 minutes
+    ) -> None:
+        """
+        Store OAuth session for ADR-004 Progressive Consent.
+
+        Args:
+            session_id: Unique session identifier
+            client_redirect_uri: Client's localhost redirect URI
+            state: CSRF protection state parameter
+            code_challenge: PKCE code challenge
+            code_challenge_method: PKCE method (S256)
+            mcp_authorization_code: Pre-generated MCP authorization code
+            client_id: Client identifier (for Flow 1)
+            flow_type: Type of flow ('hybrid', 'flow1', 'flow2')
+            is_provisioning: Whether this is a Flow 2 provisioning session
+            requested_scopes: Requested OAuth scopes
+            ttl_seconds: Session TTL in seconds
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        now = int(time.time())
+        expires_at = now + ttl_seconds
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO oauth_sessions
+                (session_id, client_id, client_redirect_uri, state, code_challenge,
+                 code_challenge_method, mcp_authorization_code, flow_type,
+                 is_provisioning, requested_scopes, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    client_id,
+                    client_redirect_uri,
+                    state,
+                    code_challenge,
+                    code_challenge_method,
+                    mcp_authorization_code,
+                    flow_type,
+                    is_provisioning,
+                    requested_scopes,
+                    now,
+                    expires_at,
+                ),
+            )
+            await db.commit()
+
+        logger.debug(f"Stored OAuth session {session_id} (expires in {ttl_seconds}s)")
+
+    async def get_oauth_session(self, session_id: str) -> Optional[dict]:
+        """
+        Retrieve OAuth session by session ID.
+
+        Returns:
+            Session dictionary or None if not found/expired
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM oauth_sessions WHERE session_id = ?", (session_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        if not row:
+            return None
+
+        session = dict(row)
+
+        # Check expiration
+        if session["expires_at"] < time.time():
+            logger.debug(f"OAuth session {session_id} has expired")
+            await self.delete_oauth_session(session_id)
+            return None
+
+        return session
+
+    async def get_oauth_session_by_mcp_code(
+        self, mcp_authorization_code: str
+    ) -> Optional[dict]:
+        """
+        Retrieve OAuth session by MCP authorization code.
+
+        Returns:
+            Session dictionary or None if not found/expired
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM oauth_sessions WHERE mcp_authorization_code = ?",
+                (mcp_authorization_code,),
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        if not row:
+            return None
+
+        session = dict(row)
+
+        # Check expiration
+        if session["expires_at"] < time.time():
+            logger.debug(
+                f"OAuth session with MCP code {mcp_authorization_code[:16]}... has expired"
+            )
+            await self.delete_oauth_session(session["session_id"])
+            return None
+
+        return session
+
+    async def update_oauth_session(
+        self,
+        session_id: str,
+        user_id: Optional[str] = None,
+        idp_access_token: Optional[str] = None,
+        idp_refresh_token: Optional[str] = None,
+    ) -> bool:
+        """
+        Update OAuth session with IdP token data.
+
+        Returns:
+            True if session was updated, False if not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        update_fields = []
+        params = []
+
+        if user_id is not None:
+            update_fields.append("user_id = ?")
+            params.append(user_id)
+
+        if idp_access_token is not None:
+            update_fields.append("idp_access_token = ?")
+            params.append(idp_access_token)
+
+        if idp_refresh_token is not None:
+            update_fields.append("idp_refresh_token = ?")
+            params.append(idp_refresh_token)
+
+        if not update_fields:
+            return False
+
+        params.append(session_id)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                f"""
+                UPDATE oauth_sessions
+                SET {", ".join(update_fields)}
+                WHERE session_id = ?
+                """,
+                params,
+            )
+            await db.commit()
+            updated = cursor.rowcount > 0
+
+        if updated:
+            logger.debug(f"Updated OAuth session {session_id}")
+
+        return updated
+
+    async def delete_oauth_session(self, session_id: str) -> bool:
+        """
+        Delete OAuth session.
+
+        Returns:
+            True if session was deleted, False if not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM oauth_sessions WHERE session_id = ?", (session_id,)
+            )
+            await db.commit()
+            deleted = cursor.rowcount > 0
+
+        if deleted:
+            logger.debug(f"Deleted OAuth session {session_id}")
+
+        return deleted
+
+    async def cleanup_expired_sessions(self) -> int:
+        """
+        Remove expired OAuth sessions from storage.
+
+        Returns:
+            Number of sessions deleted
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        now = int(time.time())
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM oauth_sessions WHERE expires_at < ?", (now,)
+            )
+            await db.commit()
+            deleted = cursor.rowcount
+
+        if deleted > 0:
+            logger.info(f"Cleaned up {deleted} expired OAuth session(s)")
+
+        return deleted
 
 
 async def generate_encryption_key() -> str:
