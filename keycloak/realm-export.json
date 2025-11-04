@@ -230,6 +230,18 @@
       "nodeReRegistrationTimeout": -1,
       "protocolMappers": [
         {
+          "name": "nextcloud-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "nextcloud",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
           "name": "sub",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-usermodel-property-mapper",
@@ -308,7 +320,6 @@
         "phone",
         "offline_access",
         "microprofile-jwt",
-        "token-exchange-nextcloud",
         "notes:read",
         "notes:write",
         "calendar:read",
