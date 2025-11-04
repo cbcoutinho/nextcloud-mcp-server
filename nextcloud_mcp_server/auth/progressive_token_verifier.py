@@ -2,7 +2,7 @@
 Token Verifier for ADR-004 Progressive Consent Architecture.
 
 This module implements token verification with strict audience separation:
-- Flow 1 tokens have aud: "mcp-server" for MCP authentication
+- Flow 1 tokens have aud: <mcp-client-id> for MCP authentication
 - Flow 2 tokens have aud: "nextcloud" for resource access
 - Token Broker manages the exchange between audiences
 """
@@ -26,7 +26,7 @@ class ProgressiveConsentTokenVerifier:
     Token verifier for Progressive Consent dual OAuth flows.
 
     This verifier:
-    1. Validates Flow 1 tokens (aud: "mcp-server") for MCP authentication
+    1. Validates Flow 1 tokens (aud: <mcp-client-id>) for MCP authentication
     2. Checks if user has provisioned Nextcloud access (Flow 2)
     3. Uses Token Broker to obtain aud: "nextcloud" tokens when needed
     """
@@ -38,6 +38,7 @@ class ProgressiveConsentTokenVerifier:
         oidc_discovery_url: Optional[str] = None,
         nextcloud_host: Optional[str] = None,
         encryption_key: Optional[str] = None,
+        mcp_client_id: Optional[str] = None,
     ):
         """
         Initialize the Progressive Consent token verifier.
@@ -48,6 +49,7 @@ class ProgressiveConsentTokenVerifier:
             oidc_discovery_url: OIDC provider discovery URL
             nextcloud_host: Nextcloud server URL
             encryption_key: Fernet key for token encryption
+            mcp_client_id: MCP server OAuth client ID for audience validation
         """
         self.storage = token_storage
         self.oidc_discovery_url = oidc_discovery_url or os.getenv(
@@ -56,6 +58,7 @@ class ProgressiveConsentTokenVerifier:
         )
         self.nextcloud_host = nextcloud_host or os.getenv("NEXTCLOUD_HOST")
         self.encryption_key = encryption_key or os.getenv("TOKEN_ENCRYPTION_KEY")
+        self.mcp_client_id = mcp_client_id or os.getenv("OIDC_CLIENT_ID")
 
         # Create token broker if not provided
         if token_broker:
@@ -73,10 +76,10 @@ class ProgressiveConsentTokenVerifier:
 
     async def verify_token(self, token: str) -> Optional[AccessToken]:
         """
-        Verify a Flow 1 token (aud: "mcp-server").
+        Verify a Flow 1 token (aud: <mcp-client-id>).
 
         This validates that:
-        1. Token has correct audience for MCP server
+        1. Token has correct audience for MCP server (matches client ID)
         2. Token is not expired
         3. Token has valid signature (if verification enabled)
 
@@ -96,9 +99,11 @@ class ProgressiveConsentTokenVerifier:
             if isinstance(audiences, str):
                 audiences = [audiences]
 
-            # Check for correct audience
-            if "mcp-server" not in audiences:
-                logger.warning(f"Token rejected: wrong audience {audiences}")
+            # Check for correct audience (must match MCP server client ID)
+            if self.mcp_client_id not in audiences:
+                logger.warning(
+                    f"Token rejected: wrong audience {audiences}, expected {self.mcp_client_id}"
+                )
                 # Check if this is a Nextcloud token (wrong flow)
                 if "nextcloud" in audiences:
                     logger.error(
@@ -125,7 +130,7 @@ class ProgressiveConsentTokenVerifier:
                 client_id=client_id,
                 scopes=scopes,
                 expires_at=exp,
-                resource=f"user:{user_id}",  # Store user_id in resource field
+                resource=user_id,  # Store user_id in resource field (RFC 8707)
             )
 
         except jwt.InvalidTokenError as e:

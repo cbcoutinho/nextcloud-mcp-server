@@ -6,7 +6,6 @@ from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData
 
 from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.auth.provisioning_decorator import require_provisioning
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.notes import (
     AppendContentResponse,
@@ -87,7 +86,6 @@ def configure_notes_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("notes:write")
-    @require_provisioning
     async def nc_notes_create_note(
         title: str, content: str, category: str, ctx: Context
     ) -> CreateNoteResponse:
@@ -249,7 +247,6 @@ def configure_notes_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("notes:read")
-    @require_provisioning
     async def nc_notes_search_notes(query: str, ctx: Context) -> SearchNotesResponse:
         """Search notes by title or content, returning only id, title, and category (requires notes:read scope)."""
         client = await get_client(ctx)

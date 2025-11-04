@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 class TokenExchangeService:
     """Implements RFC 8693 OAuth 2.0 Token Exchange."""
 
+    # RFC 8693 Grant Type
+    TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange"
+
     # RFC 8693 Token Type Identifiers
     TOKEN_TYPE_ACCESS_TOKEN = "urn:ietf:params:oauth:token-type:access_token"
     TOKEN_TYPE_JWT = "urn:ietf:params:oauth:token-type:jwt"
@@ -60,8 +63,9 @@ class TokenExchangeService:
         self._discovery_cache_time: float = 0
         self._discovery_cache_ttl: float = 3600  # 1 hour
 
-        # Initialize storage for checking provisioning
-        self.storage = RefreshTokenStorage()
+        # Storage for Progressive Consent (refresh tokens) - only needed for delegation
+        # NOT needed for pure RFC 8693 exchange (MCP tools)
+        self.storage: Optional[RefreshTokenStorage] = None
 
         # Create HTTP client
         self.http_client = httpx.AsyncClient(
@@ -71,7 +75,8 @@ class TokenExchangeService:
 
     async def __aenter__(self):
         """Async context manager entry."""
-        await self.storage.initialize()
+        if self.storage:
+            await self.storage.initialize()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -82,6 +87,16 @@ class TokenExchangeService:
         """Close HTTP client and storage."""
         await self.http_client.aclose()
         # RefreshTokenStorage doesn't have a close method
+
+    async def _ensure_storage(self):
+        """Lazily initialize storage for Progressive Consent operations.
+
+        Only needed for delegation operations that use refresh tokens.
+        NOT needed for pure RFC 8693 exchange (MCP tools).
+        """
+        if self.storage is None:
+            self.storage = RefreshTokenStorage.from_env()
+            await self.storage.initialize()
 
     async def _discover_endpoints(self) -> Dict[str, Any]:
         """Discover OIDC endpoints from discovery URL.
@@ -178,8 +193,103 @@ class TokenExchangeService:
 
         return delegated_token, expires_in
 
+    async def exchange_token_for_audience(
+        self,
+        subject_token: str,
+        requested_audience: str = "nextcloud",
+        requested_scopes: list[str] | None = None,
+    ) -> Tuple[str, int]:
+        """
+        Pure RFC 8693 token exchange (no refresh tokens required).
+
+        This implements stateless per-request token exchange where:
+        1. Client token has aud: <client-id> (e.g., "nextcloud-mcp-server")
+        2. Exchange for token with aud: "nextcloud" (for API access)
+        3. NO refresh tokens or provisioning required
+
+        Use case: All MCP tool calls (request-time operations).
+        NOT for background jobs (which use refresh tokens separately).
+
+        Args:
+            subject_token: Token being exchanged (from MCP client)
+            requested_audience: Target audience (usually "nextcloud")
+            requested_scopes: Optional scopes (may not be supported by all IdPs)
+
+        Returns:
+            Tuple of (access_token, expires_in)
+
+        Raises:
+            ValueError: If token validation fails
+            RuntimeError: If exchange fails
+        """
+        # 1. Validate subject token (accepts both "mcp-server" and client_id)
+        await self._validate_flow1_token(subject_token)
+
+        # 2. Extract user ID for logging
+        user_id = self._extract_user_id(subject_token)
+
+        # 3. Discover token endpoint
+        discovery = await self._discover_endpoints()
+        token_endpoint = discovery.get("token_endpoint")
+
+        if not token_endpoint:
+            raise RuntimeError("No token endpoint found in discovery")
+
+        # 4. Build pure RFC 8693 exchange request (subject_token ONLY)
+        data = {
+            "grant_type": self.TOKEN_EXCHANGE_GRANT,
+            "subject_token": subject_token,
+            "subject_token_type": self.TOKEN_TYPE_ACCESS_TOKEN,
+            "requested_token_type": self.TOKEN_TYPE_ACCESS_TOKEN,
+            "audience": requested_audience,
+        }
+
+        # Add scopes if provided (may not be supported by all providers)
+        if requested_scopes:
+            data["scope"] = " ".join(requested_scopes)
+
+        # Add client credentials
+        if self.client_id and self.client_secret:
+            data["client_id"] = self.client_id
+            data["client_secret"] = self.client_secret
+
+        try:
+            # Perform exchange
+            logger.debug(f"Exchanging token for audience={requested_audience}")
+            response = await self.http_client.post(
+                token_endpoint,
+                data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            access_token = result.get("access_token")
+            expires_in = result.get("expires_in", 300)
+
+            if not access_token:
+                raise RuntimeError("No access token in exchange response")
+
+            logger.info(
+                f"Pure RFC 8693 token exchange successful for user {user_id}: "
+                f"audience={requested_audience}, expires_in={expires_in}s"
+            )
+
+            return access_token, expires_in
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Token exchange failed: {e.response.text}")
+            raise RuntimeError(f"Token exchange failed: {e}")
+        except Exception as e:
+            logger.error(f"Token exchange error: {e}")
+            raise
+
     async def _validate_flow1_token(self, token: str):
         """Validate that token has correct audience for MCP server.
+
+        Accepts either:
+        - "mcp-server" (Progressive Consent legacy)
+        - self.client_id (external IdP, e.g., "nextcloud-mcp-server")
 
         Args:
             token: JWT token to validate
@@ -197,9 +307,14 @@ class TokenExchangeService:
             if isinstance(audience, str):
                 audience = [audience]
 
-            if "mcp-server" not in audience:
+            # Accept either "mcp-server" (Progressive Consent) or client_id (external IdP)
+            valid_audiences = ["mcp-server"]
+            if self.client_id:
+                valid_audiences.append(self.client_id)
+
+            if not any(aud in audience for aud in valid_audiences):
                 raise ValueError(
-                    f"Invalid token audience. Expected 'mcp-server', got {audience}"
+                    f"Invalid token audience. Expected one of {valid_audiences}, got {audience}"
                 )
 
             # Check expiration
@@ -247,6 +362,7 @@ class TokenExchangeService:
         Returns:
             True if provisioned, False otherwise
         """
+        await self._ensure_storage()
         token_data = await self.storage.get_refresh_token(user_id)
         return token_data is not None
 
@@ -259,6 +375,7 @@ class TokenExchangeService:
         Returns:
             Refresh token if found, None otherwise
         """
+        await self._ensure_storage()
         token_data = await self.storage.get_refresh_token(user_id)
         if token_data:
             return token_data.get("refresh_token")
@@ -412,6 +529,9 @@ _token_exchange_service: Optional[TokenExchangeService] = None
 async def get_token_exchange_service() -> TokenExchangeService:
     """Get or create the singleton token exchange service.
 
+    Note: Storage is initialized lazily only when needed for delegation operations.
+    Pure RFC 8693 exchange (MCP tools) doesn't require storage.
+
     Returns:
         TokenExchangeService instance
     """
@@ -419,7 +539,7 @@ async def get_token_exchange_service() -> TokenExchangeService:
 
     if _token_exchange_service is None:
         _token_exchange_service = TokenExchangeService()
-        await _token_exchange_service.storage.initialize()
+        # Storage is initialized lazily via _ensure_storage() when needed
 
     return _token_exchange_service
 
@@ -427,7 +547,9 @@ async def get_token_exchange_service() -> TokenExchangeService:
 async def exchange_token_for_delegation(
     flow1_token: str, requested_scopes: list[str], requested_audience: str = "nextcloud"
 ) -> Tuple[str, int]:
-    """Convenience function to exchange tokens.
+    """Convenience function to exchange tokens (Progressive Consent with refresh tokens).
+
+    NOTE: This is for background jobs only. For MCP tool calls, use exchange_token_for_audience().
 
     Args:
         flow1_token: The MCP session token (aud: "mcp-server")
@@ -442,4 +564,29 @@ async def exchange_token_for_delegation(
         flow1_token=flow1_token,
         requested_scopes=requested_scopes,
         requested_audience=requested_audience,
+    )
+
+
+async def exchange_token_for_audience(
+    subject_token: str,
+    requested_audience: str = "nextcloud",
+    requested_scopes: list[str] | None = None,
+) -> Tuple[str, int]:
+    """Convenience function for pure RFC 8693 token exchange (no refresh tokens).
+
+    Use this for ALL MCP tool calls (request-time operations).
+
+    Args:
+        subject_token: Token being exchanged (from MCP client)
+        requested_audience: Target audience (usually "nextcloud")
+        requested_scopes: Optional scopes (may not be supported by all IdPs)
+
+    Returns:
+        Tuple of (access_token, expires_in)
+    """
+    service = await get_token_exchange_service()
+    return await service.exchange_token_for_audience(
+        subject_token=subject_token,
+        requested_audience=requested_audience,
+        requested_scopes=requested_scopes,
     )

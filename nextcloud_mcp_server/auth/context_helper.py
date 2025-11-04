@@ -7,7 +7,7 @@ from mcp.server.fastmcp import Context
 
 from ..client import NextcloudClient
 from ..config import get_settings
-from .token_exchange import exchange_token_for_delegation
+from .token_exchange import exchange_token_for_audience
 
 logger = logging.getLogger(__name__)
 
@@ -118,25 +118,23 @@ async def get_session_client_from_context(
             logger.error("No username found in access token resource field")
             raise ValueError("Username not available in OAuth token context")
 
-        logger.info("Exchanging Flow 1 token for ephemeral Nextcloud token")
+        logger.info("Exchanging client token for Nextcloud API token (pure RFC 8693)")
 
-        # Perform RFC 8693 token exchange
+        # Perform pure RFC 8693 token exchange (no refresh tokens)
         # Note: We don't pass scopes since Nextcloud doesn't enforce them.
         # The MCP server's @require_scopes decorator handles authorization.
-        delegated_token, expires_in = await exchange_token_for_delegation(
-            flow1_token=flow1_token,
-            requested_scopes=None,  # Nextcloud doesn't support scopes
+        exchanged_token, expires_in = await exchange_token_for_audience(
+            subject_token=flow1_token,
             requested_audience="nextcloud",
+            requested_scopes=None,  # Nextcloud doesn't support scopes
         )
 
-        logger.info(
-            f"Token exchange successful. Ephemeral token expires in {expires_in}s"
-        )
+        logger.info(f"Pure token exchange successful. Token expires in {expires_in}s")
 
-        # Create client with ephemeral delegated token
-        # This token is NOT stored and will be discarded after use
+        # Create client with exchanged token
+        # This token is ephemeral (per-request) and NOT stored
         return NextcloudClient.from_token(
-            base_url=base_url, token=delegated_token, username=username
+            base_url=base_url, token=exchanged_token, username=username
         )
 
     except AttributeError as e:
@@ -144,6 +142,4 @@ async def get_session_client_from_context(
         raise
     except Exception as e:
         logger.error(f"Token exchange failed: {e}")
-        # Fall back to standard OAuth flow if token exchange fails
-        logger.info("Falling back to standard OAuth flow")
-        return get_client_from_context(ctx, base_url)
+        raise RuntimeError(f"Token exchange required but failed: {e}") from e

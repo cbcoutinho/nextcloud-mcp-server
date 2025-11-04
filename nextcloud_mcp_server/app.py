@@ -580,6 +580,7 @@ async def setup_oauth_config():
         oidc_discovery_url=discovery_url,
         nextcloud_host=nextcloud_host,
         encryption_key=encryption_key,
+        mcp_client_id=client_id,
     )
 
     logger.info(
@@ -753,10 +754,16 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 f"Unknown app: {app_name}. Available apps: {list(available_apps.keys())}"
             )
 
-    # Register OAuth provisioning tools (Progressive Consent always enabled in OAuth mode)
-    if oauth_enabled:
+    # Register OAuth provisioning tools (only when offline access/Progressive Consent is used)
+    # With token exchange enabled (external IdP), provisioning is not needed for MCP operations
+    enable_token_exchange = (
+        os.getenv("ENABLE_TOKEN_EXCHANGE", "false").lower() == "true"
+    )
+    if oauth_enabled and not enable_token_exchange:
         logger.info("Registering OAuth provisioning tools for Progressive Consent")
         register_oauth_tools(mcp)
+    elif oauth_enabled and enable_token_exchange:
+        logger.info("Skipping provisioning tools registration (token exchange enabled)")
 
     # Override list_tools to filter based on user's token scopes (OAuth mode only)
     if oauth_enabled:

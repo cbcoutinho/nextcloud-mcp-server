@@ -63,7 +63,17 @@ def require_provisioning(func: Callable) -> Callable:
             logger.debug("BasicAuth mode detected - skipping provisioning check")
             return await func(*args, **kwargs)
 
-        # Progressive Consent mode - check if user has completed Flow 2 provisioning
+        # Check if we're in token exchange mode - if so, skip provisioning check
+        # In token exchange mode, tokens are exchanged per-request (no stored refresh tokens)
+        from nextcloud_mcp_server.config import get_settings
+
+        settings = get_settings()
+        if hasattr(lifespan_ctx, "nextcloud_host") and settings.enable_token_exchange:
+            # Token exchange mode - per-request exchange, no provisioning needed
+            logger.debug("Token exchange mode detected - skipping provisioning check")
+            return await func(*args, **kwargs)
+
+        # Progressive Consent mode (offline access) - check if user has completed Flow 2 provisioning
         # Get user_id from authorization token
         user_id = None
         if hasattr(ctx, "authorization") and ctx.authorization:
