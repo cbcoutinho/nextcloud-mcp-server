@@ -688,28 +688,6 @@
         "display.on.consent.screen": "true",
         "consent.screen.text": "Create, update, and delete tasks"
       }
-    },
-    {
-      "name": "token-exchange-nextcloud",
-      "description": "Allows token exchange for nextcloud client",
-      "protocol": "openid-connect",
-      "attributes": {
-        "include.in.token.scope": "false",
-        "display.on.consent.screen": "false"
-      },
-      "protocolMappers": [
-        {
-          "name": "nextcloud-audience-for-exchange",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "consentRequired": false,
-          "config": {
-            "included.client.audience": "nextcloud",
-            "id.token.claim": "false",
-            "access.token.claim": "true"
-          }
-        }
-      ]
     }
   ],
   "components": {
