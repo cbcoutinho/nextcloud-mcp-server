@@ -300,14 +300,14 @@ async def load_oauth_client_credentials(
             f"{mcp_server_url}/oauth/login-callback",  # Browser OAuth flow for /user/page
         ]
 
-        # MCP server DCR: Only request basic OIDC scopes for the server's own authentication
-        # Note: Nextcloud app scopes (notes:read, calendar:write, etc.) are for MCP *clients*
-        # that request access tokens. The MCP server itself only needs to authenticate
-        # as a client application, not request any Nextcloud resource access.
+        # MCP server DCR: Register with ALL supported scopes
+        # When we register as a resource server (with resource_url), the allowed_scopes
+        # represent what scopes are AVAILABLE for this resource, not what the server needs.
+        # External clients will request tokens with resource=http://localhost:8001/mcp
+        # and the authorization server will limit them to these allowed scopes.
         #
-        # The PRM endpoint will advertise the full list of supported scopes dynamically
-        # by discovering all @require_scopes decorators on registered tools.
-        dcr_scopes = "openid profile email"
+        # The PRM endpoint advertises the same scopes dynamically via @require_scopes decorators.
+        dcr_scopes = "openid profile email notes:read notes:write calendar:read calendar:write todo:read todo:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write"
 
         # Add offline_access scope if refresh tokens are enabled
         enable_offline_access = os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() in (
@@ -319,7 +319,7 @@ async def load_oauth_client_credentials(
             dcr_scopes = f"{dcr_scopes} offline_access"
             logger.info("✓ offline_access scope enabled for refresh tokens")
 
-        logger.info(f"MCP server DCR scopes: {dcr_scopes}")
+        logger.info(f"MCP server DCR scopes (resource server): {dcr_scopes}")
 
         # Get token type from environment (Bearer or jwt)
         # Note: Must be lowercase "jwt" to match OIDC app's check
@@ -336,6 +336,10 @@ async def load_oauth_client_credentials(
         storage = RefreshTokenStorage.from_env()
         await storage.initialize()
 
+        # RFC 9728: resource_url must be a URL for the protected resource
+        # This URL is used by token introspection to match tokens to this client
+        resource_url = f"{mcp_server_url}/mcp"
+
         client_info = await ensure_oauth_client(
             nextcloud_url=nextcloud_host,
             registration_endpoint=registration_endpoint,
@@ -344,6 +348,7 @@ async def load_oauth_client_credentials(
             redirect_uris=redirect_uris,
             scopes=dcr_scopes,  # Use DCR-specific scopes (basic OIDC only)
             token_type=token_type,
+            resource_url=resource_url,  # RFC 9728 Protected Resource URL
         )
 
         logger.info(f"OAuth client ready: {client_info.client_id[:16]}...")
@@ -581,11 +586,15 @@ async def setup_oauth_config():
         nextcloud_host=nextcloud_host,
         encryption_key=encryption_key,
         mcp_client_id=client_id,
+        introspection_uri=introspection_uri,
+        client_secret=client_secret,
     )
 
     logger.info(
         "✓ Progressive Consent verifier configured - enforcing audience separation"
     )
+    if introspection_uri:
+        logger.info("✓ Opaque token introspection enabled (RFC 7662)")
 
     # Create OAuth client for server-initiated flows (e.g., token exchange, background workers)
     oauth_client = None
@@ -931,9 +940,9 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             Dynamically discovers supported scopes from registered MCP tools.
             This ensures the advertised scopes always match the actual tool requirements.
 
-            The 'resource' field is set to the MCP server's OAuth client ID, which is
-            used as the audience claim in access tokens. This ensures tokens obtained
-            with the resource parameter match the audience validation in progressive_token_verifier.
+            The 'resource' field is set to the MCP server's public URL (RFC 9728 requires a URL).
+            This is used as the audience in access tokens via the resource parameter (RFC 8707).
+            The introspection controller matches this URL to the MCP server's client via resource_url field.
             """
             # Use PUBLIC_ISSUER_URL for authorization server since external clients
             # (like Claude) need the publicly accessible URL, not internal Docker URLs
@@ -942,13 +951,20 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 # Fallback to NEXTCLOUD_HOST if PUBLIC_ISSUER_URL not set
                 public_issuer_url = os.getenv("NEXTCLOUD_HOST", "")
 
+            # RFC 9728 requires resource to be a URL (not a client ID)
+            # Use the MCP server's public URL
+            mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL")
+            if not mcp_server_url:
+                # Fallback to constructing from host and port
+                mcp_server_url = f"http://localhost:{os.getenv('PORT', '8000')}"
+
             # Dynamically discover all scopes from registered tools
             # This provides a single source of truth based on @require_scopes decorators
             supported_scopes = discover_all_scopes(mcp)
 
             return JSONResponse(
                 {
-                    "resource": client_id,  # MCP server's OAuth client ID (for audience validation)
+                    "resource": f"{mcp_server_url}/mcp",  # RFC 9728: must be a URL
                     "scopes_supported": supported_scopes,
                     "authorization_servers": [public_issuer_url],
                     "bearer_methods_supported": ["header"],
@@ -1039,6 +1055,24 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     logger.info(
         "Routes: /user/* with SessionAuth, /mcp with FastMCP OAuth Bearer tokens"
     )
+
+    # Add debugging middleware to log Authorization headers
+    @app.middleware("http")
+    async def log_auth_headers(request, call_next):
+        auth_header = request.headers.get("authorization")
+        if request.url.path.startswith("/mcp"):
+            if auth_header:
+                # Log first 50 chars of token for debugging
+                token_preview = (
+                    auth_header[:50] + "..." if len(auth_header) > 50 else auth_header
+                )
+                logger.info(f"🔑 /mcp request with Authorization: {token_preview}")
+            else:
+                logger.warning(
+                    f"⚠️  /mcp request WITHOUT Authorization header from {request.client}"
+                )
+        response = await call_next(request)
+        return response
 
     # Add CORS middleware to allow browser-based clients like MCP Inspector
     app.add_middleware(

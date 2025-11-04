@@ -277,6 +277,27 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
                 response.raise_for_status()
                 token_data = response.json()
 
+    except httpx.HTTPStatusError as e:
+        error_body = (
+            e.response.text if hasattr(e.response, "text") else str(e.response.content)
+        )
+        logger.error(
+            f"Token exchange failed: HTTP {e.response.status_code} - {error_body}"
+        )
+        return HTMLResponse(
+            f"""
+            <!DOCTYPE html>
+            <html>
+            <head><title>Login Failed</title></head>
+            <body>
+                <h1>Login Failed</h1>
+                <p>Failed to exchange authorization code for tokens</p>
+                <p>HTTP {e.response.status_code}: {error_body}</p>
+            </body>
+            </html>
+            """,
+            status_code=500,
+        )
     except Exception as e:
         logger.error(f"Token exchange failed: {e}")
         return HTMLResponse(

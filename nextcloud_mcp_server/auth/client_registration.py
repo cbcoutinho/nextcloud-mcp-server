@@ -80,6 +80,7 @@ async def register_client(
     redirect_uris: list[str] | None = None,
     scopes: str = "openid profile email",
     token_type: str = "Bearer",
+    resource_url: str | None = None,
 ) -> ClientInfo:
     """
     Register a new OAuth client with Nextcloud OIDC using dynamic client registration.
@@ -91,6 +92,7 @@ async def register_client(
         redirect_uris: List of redirect URIs (default: http://localhost:8000/oauth/callback)
         scopes: Space-separated list of scopes to request
         token_type: Type of access tokens to issue (default: "Bearer", also supports "JWT")
+        resource_url: OAuth 2.0 Protected Resource URL (RFC 9728) - used for token introspection authorization
 
     Returns:
         ClientInfo with registration details
@@ -111,6 +113,10 @@ async def register_client(
         "scope": scopes,
         "token_type": token_type,
     }
+
+    # Add resource_url if provided (RFC 9728)
+    if resource_url:
+        client_metadata["resource_url"] = resource_url
 
     logger.info(f"Registering OAuth client with Nextcloud: {client_name}")
     logger.debug(f"Registration endpoint: {registration_endpoint}")
@@ -303,6 +309,7 @@ async def ensure_oauth_client(
     redirect_uris: list[str] | None = None,
     scopes: str = "openid profile email",
     token_type: str = "Bearer",
+    resource_url: str | None = None,
 ) -> ClientInfo:
     """
     Ensure OAuth client exists in SQLite storage.
@@ -321,6 +328,7 @@ async def ensure_oauth_client(
         redirect_uris: List of redirect URIs
         scopes: Space-separated list of scopes to request (default: "openid profile email")
         token_type: Type of access tokens to issue (default: "Bearer", also supports "JWT")
+        resource_url: OAuth 2.0 Protected Resource URL (RFC 9728) - used for token introspection authorization
 
     Returns:
         ClientInfo with valid credentials
@@ -339,6 +347,8 @@ async def ensure_oauth_client(
 
     # Register new client
     logger.info("Registering new OAuth client...")
+    if resource_url:
+        logger.info(f"  with resource_url: {resource_url}")
     client_info = await register_client(
         nextcloud_url=nextcloud_url,
         registration_endpoint=registration_endpoint,
@@ -346,6 +356,7 @@ async def ensure_oauth_client(
         redirect_uris=redirect_uris,
         scopes=scopes,
         token_type=token_type,
+        resource_url=resource_url,
     )
 
     # Save to SQLite storage

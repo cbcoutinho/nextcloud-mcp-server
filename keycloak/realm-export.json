@@ -230,17 +230,6 @@
       "nodeReRegistrationTimeout": -1,
       "protocolMappers": [
         {
-          "name": "audience-mcp-server",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "consentRequired": false,
-          "config": {
-            "included.custom.audience": "nextcloud-mcp-server",
-            "access.token.claim": "true",
-            "id.token.claim": "false"
-          }
-        },
-        {
           "name": "sub",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-usermodel-property-mapper",
