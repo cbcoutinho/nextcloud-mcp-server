@@ -31,8 +31,9 @@ else
 fi
 
 # Configure OIDC Identity Provider with dynamic client registration enabled
-php /var/www/html/occ config:app:set oidc dynamic_client_registration --value='true'
-php /var/www/html/occ config:app:set oidc proof_key_for_code_exchange --value=true --type=boolean
+php /var/www/html/occ config:app:set oidc dynamic_client_registration --value='true' --type=boolean
+php /var/www/html/occ config:app:set oidc proof_key_for_code_exchange --value='true' --type=boolean
+php /var/www/html/occ config:app:set oidc allow_user_settings --value='true' --type=boolean
 php /var/www/html/occ config:app:set oidc default_token_type --value='jwt'
 
 echo "OIDC app installed and configured successfully"
