@@ -65,14 +65,15 @@ Based on analysis of the existing code and python-sdk constraints, we will:
 
 ### Mode 1: Multi-Audience Token Validation (Default)
 
-Accept tokens that include **both** the MCP server and Nextcloud resource URIs in their audience claims. This is the default mode when `ENABLE_TOKEN_EXCHANGE` is false or not set.
+Use multi-audience tokens directly. Per RFC 7519 Section 4.1.3, the MCP server validates only its own presence in the audience claim. Nextcloud independently validates its own audience when receiving API calls. This is the default mode when `ENABLE_TOKEN_EXCHANGE` is false or not set.
 
 **Requirements**:
-- Token must have `aud` claim containing valid audiences for:
+- Token must have `aud` claim containing:
   - **MCP server**: Client ID OR MCP server URL (e.g., `http://localhost:8000`)
+- For Nextcloud API access to work, token should also include:
   - **Nextcloud**: Nextcloud resource URI (e.g., `http://localhost:8080`)
 - Single token works for both MCP authentication and Nextcloud API access
-- IdP must support multi-audience tokens
+- IdP must support multi-audience tokens for full functionality
 
 **Resource URI Configuration**:
 - Nextcloud OIDC app: Set via `default_resource_identifier` (default: `http://localhost:8080`)
@@ -94,33 +95,39 @@ NEXTCLOUD_RESOURCE_URI=http://localhost:8080     # Nextcloud resource identifier
 OIDC_CLIENT_ID=nextcloud-mcp-server
 ```
 
-**Token validation logic**:
+**Token validation logic (RFC 7519 compliant)**:
 ```python
 async def validate_token_audiences(token: dict, settings: Settings) -> bool:
-    """Validate token has required audiences for both MCP and Nextcloud."""
+    """
+    Validate token has MCP audience per RFC 7519.
+
+    Resource servers validate only their own presence in the audience claim.
+    Nextcloud will independently validate its own audience when receiving API calls.
+    This is NOT token passthrough (we validate the token). This IS token reuse
+    which is allowed by RFC 8707 for multi-audience tokens between trusted services.
+    """
     audiences = token.get("aud", [])
     if isinstance(audiences, str):
         audiences = [audiences]
 
     audiences_set = set(audiences)
 
-    # MCP must have at least one: client_id OR server_url
+    # MCP validates ONLY its own audience (client_id OR server_url OR server_url/mcp)
     mcp_valid = (
         settings.oidc_client_id in audiences_set or
-        settings.nextcloud_mcp_server_url in audiences_set
+        settings.nextcloud_mcp_server_url in audiences_set or
+        f"{settings.nextcloud_mcp_server_url}/mcp" in audiences_set
     )
 
-    # Nextcloud must have its resource URI
-    nextcloud_valid = settings.nextcloud_resource_uri in audiences_set
-
-    if not (mcp_valid and nextcloud_valid):
+    if not mcp_valid:
         logger.error(
-            f"Token rejected: Invalid audiences. "
+            f"Token rejected: Missing MCP audience. "
             f"Got {audiences}, need MCP ({settings.oidc_client_id} or "
-            f"{settings.nextcloud_mcp_server_url}) AND Nextcloud ({settings.nextcloud_resource_uri})"
+            f"{settings.nextcloud_mcp_server_url})"
         )
         return False
 
+    # Note: We do NOT validate Nextcloud's audience - that's Nextcloud's responsibility
     return True
 ```
 
@@ -894,10 +901,12 @@ verifier = UnifiedTokenVerifier(settings)
 ### Positive
 
 1. **Security Compliance**: Eliminates token passthrough vulnerability
-2. **Clear Architecture**: Explicit validation modes with resource URI semantics
-3. **Performance**: Negligible impact in LLM context (1-2% of request time)
-4. **Flexibility**: Supports both simple (multi-audience) and strict (exchange) modes
-5. **Audit Trail**: Proper audience separation enables accurate logging
+2. **OAuth Spec Compliance**: Follows RFC 7519 Section 4.1.3 - resource servers validate only their own audience
+3. **Clear Architecture**: Explicit validation modes with resource URI semantics
+4. **Performance**: Negligible impact in LLM context (1-2% of request time)
+5. **Flexibility**: Supports both simple (multi-audience) and strict (exchange) modes
+6. **Audit Trail**: Proper audience separation enables accurate logging
+7. **Simpler Logic**: Each resource server independently validates its own audience, reducing complexity
 
 ### Negative
 

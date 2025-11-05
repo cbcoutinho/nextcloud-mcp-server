@@ -24,9 +24,9 @@ def get_client_from_context(ctx: Context, base_url: str) -> NextcloudClient:
     """
     Create NextcloudClient for multi-audience mode (no exchange needed).
 
-    ADR-005 Mode 1: Token already contains both MCP and Nextcloud audiences.
-    The UnifiedTokenVerifier validated both audiences are present, so we can
-    use the token directly without exchange.
+    ADR-005 Mode 1: Use multi-audience tokens directly.
+    The UnifiedTokenVerifier validated MCP audience per RFC 7519.
+    Nextcloud will independently validate its own audience.
 
     Args:
         ctx: MCP request context containing session info
@@ -65,8 +65,8 @@ def get_client_from_context(ctx: Context, base_url: str) -> NextcloudClient:
             f"(no exchange needed)"
         )
 
-        # Token was already validated to have both audiences
-        # Can use directly without exchange
+        # Token was validated to have MCP audience
+        # Nextcloud will validate its own audience independently
         return NextcloudClient.from_token(
             base_url=base_url, token=access_token.token, username=username
         )

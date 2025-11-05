@@ -94,7 +94,7 @@ class TestAudienceValidation:
         assert verifier._validate_multi_audience(payload) is False
 
     def test_validate_multi_audience_missing_nextcloud(self, base_settings):
-        """Test multi-audience validation fails without Nextcloud audience."""
+        """Test multi-audience validation succeeds with only MCP audience (RFC 7519 compliant)."""
         verifier = UnifiedTokenVerifier(base_settings)
         payload = {
             "aud": ["test-client-id"],  # Only MCP
@@ -102,10 +102,11 @@ class TestAudienceValidation:
             "exp": int(time.time() + 3600),
         }
 
-        assert verifier._validate_multi_audience(payload) is False
+        # Per RFC 7519, we only validate MCP audience. Nextcloud validates its own.
+        assert verifier._validate_multi_audience(payload) is True
 
     def test_validate_multi_audience_string_audience(self, base_settings):
-        """Test multi-audience validation with string audience (should still work)."""
+        """Test multi-audience validation with string audience works (RFC 7519 compliant)."""
         verifier = UnifiedTokenVerifier(base_settings)
         payload = {
             "aud": "test-client-id",  # Single audience as string
@@ -113,8 +114,8 @@ class TestAudienceValidation:
             "exp": int(time.time() + 3600),
         }
 
-        # Should fail - needs both audiences
-        assert verifier._validate_multi_audience(payload) is False
+        # Should pass - we only validate MCP audience per RFC 7519
+        assert verifier._validate_multi_audience(payload) is True
 
     def test_has_mcp_audience_with_client_id(self, exchange_settings):
         """Test MCP audience validation with client ID."""
@@ -266,14 +267,16 @@ class TestMultiAudienceVerification:
     async def test_verify_multi_audience_fails_without_both_audiences(
         self, base_settings
     ):
-        """Test multi-audience verification fails without both audiences."""
+        """Test multi-audience verification succeeds with only MCP audience (RFC 7519 compliant)."""
         verifier = UnifiedTokenVerifier(base_settings)
 
-        # Mock introspection response with only one audience
+        # Mock introspection response with only MCP audience
         introspection_response = {
             "active": True,
             "sub": "testuser",
-            "aud": ["test-client-id"],  # Missing Nextcloud audience
+            "aud": [
+                "test-client-id"
+            ],  # Only MCP audience (Nextcloud validates its own)
             "scope": "openid profile",
             "exp": int(time.time() + 3600),
         }
@@ -284,7 +287,9 @@ class TestMultiAudienceVerification:
             opaque_token = "opaque-token-12345"
             result = await verifier._verify_multi_audience_token(opaque_token)
 
-            assert result is None
+            # Should succeed with only MCP audience per RFC 7519
+            assert result is not None
+            assert result.resource == "testuser"
 
 
 class TestExchangeModeVerification:

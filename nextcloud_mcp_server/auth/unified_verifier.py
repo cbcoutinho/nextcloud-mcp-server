@@ -4,13 +4,15 @@ Unified Token Verifier for ADR-005 Token Audience Validation.
 This module replaces both NextcloudTokenVerifier and ProgressiveConsentTokenVerifier
 with a single implementation that supports two compliant OAuth modes:
 
-1. Multi-audience mode (default): Tokens must contain BOTH MCP and Nextcloud audiences
+1. Multi-audience mode (default): Validates MCP audience per RFC 7519 (resource servers
+   validate only their own audience). Nextcloud independently validates its own audience.
 2. Token exchange mode (opt-in): Tokens have MCP audience only, exchanged for Nextcloud tokens
 
 Key Design Principles:
-- Token verification happens HERE (validates audiences)
+- Token verification happens HERE (validates MCP audience per OAuth spec)
 - Token exchange happens in context_helper.py (when creating NextcloudClient)
 - No token passthrough allowed (complies with MCP Security Specification)
+- Token reuse IS allowed for multi-audience tokens (RFC 8707)
 """
 
 import hashlib
@@ -39,8 +41,9 @@ class UnifiedTokenVerifier(TokenVerifier):
     3. Caches successful validations to avoid repeated API calls
 
     Mode Selection (via ENABLE_TOKEN_EXCHANGE setting):
-    - False/omit (default): Multi-audience mode - requires BOTH MCP and Nextcloud audiences
-    - True: Exchange mode - requires MCP audience only (exchange happens later)
+    - False/omit (default): Multi-audience mode - validates MCP audience only (per RFC 7519).
+      Nextcloud independently validates its own audience when receiving API calls.
+    - True: Exchange mode - requires MCP audience only, then exchanges for Nextcloud token
     """
 
     def __init__(self, settings: Settings):
@@ -90,7 +93,7 @@ class UnifiedTokenVerifier(TokenVerifier):
         CRITICAL: This method only validates tokens - it does NOT perform exchange.
         Token exchange happens later in context_helper.py when creating NextcloudClient.
 
-        Multi-audience mode: Validates token has BOTH MCP and Nextcloud audiences
+        Multi-audience mode: Validates token has MCP audience (per RFC 7519)
         Exchange mode: Validates token has MCP audience ONLY (exchange happens later)
 
         Args:
@@ -115,14 +118,17 @@ class UnifiedTokenVerifier(TokenVerifier):
 
     async def _verify_multi_audience_token(self, token: str) -> AccessToken | None:
         """
-        Validate token has both MCP and Nextcloud audiences (Mode 1).
+        Validate token has MCP audience (Mode 1).
         Token can be used directly without exchange.
+
+        Per RFC 7519, we only validate our own (MCP) audience. Nextcloud will
+        independently validate its own audience when it receives the token.
 
         Args:
             token: Bearer token to verify
 
         Returns:
-            AccessToken if valid with both audiences, None otherwise
+            AccessToken if valid with MCP audience, None otherwise
         """
         try:
             # Attempt JWT verification first
@@ -138,19 +144,18 @@ class UnifiedTokenVerifier(TokenVerifier):
             if not payload:
                 return None
 
-            # Validate both audiences are present
+            # Validate MCP audience is present
             if not self._validate_multi_audience(payload):
                 audiences = payload.get("aud", [])
                 logger.error(
-                    f"Token rejected: Missing required audiences. "
-                    f"Got {audiences}, need both MCP ({self.settings.oidc_client_id} or "
-                    f"{self.settings.nextcloud_mcp_server_url}) AND Nextcloud "
-                    f"({self.settings.nextcloud_resource_uri})"
+                    f"Token rejected: Missing MCP audience. "
+                    f"Got {audiences}, need MCP ({self.settings.oidc_client_id} or "
+                    f"{self.settings.nextcloud_mcp_server_url})"
                 )
                 return None
 
             logger.info(
-                "Multi-audience validation passed - token has both MCP and Nextcloud audiences"
+                "MCP audience validation passed - token authorized for MCP server"
             )
             return self._create_access_token(token, payload)
 
@@ -204,13 +209,20 @@ class UnifiedTokenVerifier(TokenVerifier):
 
     def _validate_multi_audience(self, payload: dict[str, Any]) -> bool:
         """
-        Check if token has both MCP and Nextcloud audiences.
+        Check if token has MCP audience.
+
+        Per RFC 7519 Section 4.1.3, resource servers should only validate their own
+        presence in the audience claim. We don't validate Nextcloud's audience - that's
+        Nextcloud's responsibility when it receives the token.
+
+        This is NOT token passthrough (we validate the token). This IS token reuse
+        which is allowed by RFC 8707 for multi-audience tokens between trusted services.
 
         Args:
             payload: Decoded token payload
 
         Returns:
-            True if both audiences present, False otherwise
+            True if MCP audience present, False otherwise
         """
         audiences = payload.get("aud", [])
         if isinstance(audiences, str):
@@ -227,13 +239,7 @@ class UnifiedTokenVerifier(TokenVerifier):
             )
         )
 
-        # Nextcloud must have its resource URI
-        nextcloud_valid = bool(
-            self.settings.nextcloud_resource_uri
-            and self.settings.nextcloud_resource_uri in audiences_set
-        )
-
-        return bool(mcp_valid and nextcloud_valid)
+        return bool(mcp_valid)
 
     def _has_mcp_audience(self, payload: dict[str, Any]) -> bool:
         """

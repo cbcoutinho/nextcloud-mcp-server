@@ -66,7 +66,8 @@ async def get_client(ctx: Context) -> NextcloudClient:
             )
         else:
             # Mode 1: Multi-audience token - use directly
-            # Token was validated to have BOTH audiences in UnifiedTokenVerifier
+            # Token was validated to have MCP audience in UnifiedTokenVerifier
+            # Nextcloud will independently validate its own audience when receiving API calls
             return get_client_from_context(ctx, lifespan_ctx.nextcloud_host)
 
     # Unknown context type
