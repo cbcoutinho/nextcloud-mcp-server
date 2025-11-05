@@ -218,10 +218,13 @@ class UnifiedTokenVerifier(TokenVerifier):
 
         audiences_set = set(audiences)
 
-        # MCP must have at least one: client_id OR server_url
+        # MCP must have at least one: client_id OR server_url OR server_url/mcp
         mcp_valid = self.settings.oidc_client_id in audiences_set or (
             self.settings.nextcloud_mcp_server_url
-            and self.settings.nextcloud_mcp_server_url in audiences_set
+            and (
+                self.settings.nextcloud_mcp_server_url in audiences_set
+                or f"{self.settings.nextcloud_mcp_server_url}/mcp" in audiences_set
+            )
         )
 
         # Nextcloud must have its resource URI
@@ -251,7 +254,10 @@ class UnifiedTokenVerifier(TokenVerifier):
             self.settings.oidc_client_id in audiences_set
             or (
                 self.settings.nextcloud_mcp_server_url
-                and self.settings.nextcloud_mcp_server_url in audiences_set
+                and (
+                    self.settings.nextcloud_mcp_server_url in audiences_set
+                    or f"{self.settings.nextcloud_mcp_server_url}/mcp" in audiences_set
+                )
             )
         )
 

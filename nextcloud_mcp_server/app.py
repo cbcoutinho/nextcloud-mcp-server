@@ -573,6 +573,10 @@ async def setup_oauth_config():
 
     settings = get_settings()
     # Override with discovered values if not set in environment
+    if not settings.oidc_client_id:
+        settings.oidc_client_id = client_id
+    if not settings.oidc_client_secret:
+        settings.oidc_client_secret = client_secret
     if not settings.jwks_uri:
         settings.jwks_uri = jwks_uri
     if not settings.introspection_uri:
@@ -580,7 +584,8 @@ async def setup_oauth_config():
     if not settings.userinfo_uri:
         settings.userinfo_uri = userinfo_uri
     if not settings.oidc_issuer:
-        settings.oidc_issuer = issuer
+        # Use client_issuer which handles public URL override
+        settings.oidc_issuer = client_issuer
     if not settings.nextcloud_mcp_server_url:
         settings.nextcloud_mcp_server_url = mcp_server_url
     if not settings.nextcloud_resource_uri:
