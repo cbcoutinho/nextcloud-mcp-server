@@ -315,7 +315,7 @@ class CalendarClient:
         await event.load(only_if_unloaded=True)
 
         # Merge updates into existing iCal data
-        updated_ical = self._merge_ical_properties  # type: ignore[arg-type](event.data, event_data, event_uid)
+        updated_ical = self._merge_ical_properties(event.data, event_data, event_uid)  # type: ignore[arg-type]
         event.data = updated_ical  # type: ignore[misc]
 
         await event.save()
