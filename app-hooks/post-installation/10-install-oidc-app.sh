@@ -35,5 +35,6 @@ php /var/www/html/occ config:app:set oidc dynamic_client_registration --value='t
 php /var/www/html/occ config:app:set oidc proof_key_for_code_exchange --value=true --type=boolean
 php /var/www/html/occ config:app:set oidc allow_user_settings --value='enabled'
 php /var/www/html/occ config:app:set oidc default_token_type --value='jwt'
+php /var/www/html/occ config:app:set oidc default_resource_identifier --value='http://localhost:8080'
 
 echo "OIDC app installed and configured successfully"

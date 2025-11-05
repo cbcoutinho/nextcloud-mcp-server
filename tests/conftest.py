@@ -2193,17 +2193,35 @@ async def _get_oauth_token_for_user(
     logger.info(f"Getting OAuth token for user: {username}...")
     logger.info(f"Using shared OAuth client: {client_id[:16]}...")
 
+    # Fetch resource identifier from PRM endpoint (RFC 9728)
+    mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8001")
+    prm_url = f"{mcp_server_url}/.well-known/oauth-protected-resource"
+
+    logger.debug(f"Fetching PRM metadata from: {prm_url}")
+    async with httpx.AsyncClient() as client:
+        prm_response = await client.get(prm_url, timeout=10)
+        if prm_response.status_code != 200:
+            logger.warning(f"Failed to fetch PRM metadata: {prm_response.status_code}")
+            # Fallback to default if PRM fetch fails
+            mcp_server_resource = f"{mcp_server_url}/mcp"
+        else:
+            prm_data = prm_response.json()
+            mcp_server_resource = prm_data.get("resource", f"{mcp_server_url}/mcp")
+            logger.info(f"Using resource from PRM: {mcp_server_resource}")
+
     # Generate unique state parameter for this OAuth flow
     state = secrets.token_urlsafe(32)
     logger.debug(f"Generated state for {username}: {state[:16]}...")
 
     # Construct authorization URL with state parameter
+    # Include resource parameter discovered from PRM endpoint
     auth_url = (
         f"{authorization_endpoint}?"
         f"response_type=code&"
         f"client_id={client_id}&"
         f"redirect_uri={quote(callback_url, safe='')}&"
         f"state={state}&"
+        f"resource={quote(mcp_server_resource, safe='')}&"  # Resource URI from PRM
         f"scope=openid%20profile%20email%20notes:read%20notes:write%20calendar:read%20calendar:write%20contacts:read%20contacts:write%20cookbook:read%20cookbook:write%20deck:read%20deck:write%20tables:read%20tables:write%20files:read%20files:write%20sharing:read%20sharing:write"
     )
 

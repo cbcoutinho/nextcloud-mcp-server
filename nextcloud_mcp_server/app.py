@@ -27,9 +27,7 @@ from nextcloud_mcp_server.auth import (
     has_required_scopes,
     is_jwt_token,
 )
-from nextcloud_mcp_server.auth.progressive_token_verifier import (
-    ProgressiveConsentTokenVerifier,
-)
+from nextcloud_mcp_server.auth.unified_verifier import UnifiedTokenVerifier
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import (
     LOGGING_CONFIG,
@@ -215,9 +213,7 @@ class OAuthAppContext:
     """Application context for OAuth mode."""
 
     nextcloud_host: str
-    token_verifier: (
-        object  # Can be NextcloudTokenVerifier or ProgressiveConsentTokenVerifier
-    )
+    token_verifier: object  # UnifiedTokenVerifier (ADR-005 compliant)
     refresh_token_storage: Optional["RefreshTokenStorage"] = None
     oauth_client: Optional[object] = None  # NextcloudOAuthClient or KeycloakOAuthClient
     oauth_provider: str = "nextcloud"  # "nextcloud" or "keycloak"
@@ -555,46 +551,80 @@ async def setup_oauth_config():
     else:
         client_issuer = issuer
 
-    # Progressive Consent mode (always enabled) - dual OAuth flows with audience separation
-    logger.info("✓ Progressive Consent mode enabled - dual OAuth flows active")
+    # ADR-005: Unified Token Verifier with proper audience validation
+    # Get MCP server URL for audience validation
+    mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+    nextcloud_resource_uri = os.getenv("NEXTCLOUD_RESOURCE_URI", nextcloud_host)
 
-    # Get encryption key for token broker
-    encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
-    if not encryption_key:
+    # Warn if resource URIs are not configured (required for ADR-005 compliance)
+    if not os.getenv("NEXTCLOUD_MCP_SERVER_URL"):
         logger.warning(
-            "TOKEN_ENCRYPTION_KEY not set - token broker will not be available"
+            f"NEXTCLOUD_MCP_SERVER_URL not set, defaulting to: {mcp_server_url}. "
+            "This should be set explicitly for proper audience validation."
+        )
+    if not os.getenv("NEXTCLOUD_RESOURCE_URI"):
+        logger.warning(
+            f"NEXTCLOUD_RESOURCE_URI not set, defaulting to: {nextcloud_resource_uri}. "
+            "This should be set explicitly for proper audience validation."
         )
 
-    # Create token broker service
-    from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
+    # Create settings for UnifiedTokenVerifier
+    from nextcloud_mcp_server.config import get_settings
 
-    token_broker = None
-    if encryption_key and refresh_token_storage:
-        token_broker = TokenBrokerService(
-            storage=refresh_token_storage,
-            oidc_discovery_url=discovery_url,
-            nextcloud_host=nextcloud_host,
-            encryption_key=encryption_key,
+    settings = get_settings()
+    # Override with discovered values if not set in environment
+    if not settings.oidc_client_id:
+        settings.oidc_client_id = client_id
+    if not settings.oidc_client_secret:
+        settings.oidc_client_secret = client_secret
+    if not settings.jwks_uri:
+        settings.jwks_uri = jwks_uri
+    if not settings.introspection_uri:
+        settings.introspection_uri = introspection_uri
+    if not settings.userinfo_uri:
+        settings.userinfo_uri = userinfo_uri
+    if not settings.oidc_issuer:
+        # Use client_issuer which handles public URL override
+        settings.oidc_issuer = client_issuer
+    if not settings.nextcloud_mcp_server_url:
+        settings.nextcloud_mcp_server_url = mcp_server_url
+    if not settings.nextcloud_resource_uri:
+        settings.nextcloud_resource_uri = nextcloud_resource_uri
+
+    # Create Unified Token Verifier (ADR-005 compliant)
+    token_verifier = UnifiedTokenVerifier(settings)
+
+    # Log the mode
+    enable_token_exchange = (
+        os.getenv("ENABLE_TOKEN_EXCHANGE", "false").lower() == "true"
+    )
+    if enable_token_exchange:
+        logger.info(
+            "✓ Token Exchange mode enabled (ADR-005) - exchanging MCP tokens for Nextcloud tokens via RFC 8693"
         )
-        logger.info("✓ Token Broker service initialized for audience-specific tokens")
+        logger.info(f"  MCP audience: {client_id} or {mcp_server_url}")
+        logger.info(f"  Nextcloud audience: {nextcloud_resource_uri}")
+    else:
+        logger.info(
+            "✓ Multi-audience mode enabled (ADR-005) - tokens must contain both MCP and Nextcloud audiences"
+        )
+        logger.info(f"  Required MCP audience: {client_id} or {mcp_server_url}")
+        logger.info(f"  Required Nextcloud audience: {nextcloud_resource_uri}")
 
-    # Create Progressive Consent token verifier
-    token_verifier = ProgressiveConsentTokenVerifier(
-        token_storage=refresh_token_storage,
-        token_broker=token_broker,
-        oidc_discovery_url=discovery_url,
-        nextcloud_host=nextcloud_host,
-        encryption_key=encryption_key,
-        mcp_client_id=client_id,
-        introspection_uri=introspection_uri,
-        client_secret=client_secret,
-    )
-
-    logger.info(
-        "✓ Progressive Consent verifier configured - enforcing audience separation"
-    )
     if introspection_uri:
         logger.info("✓ Opaque token introspection enabled (RFC 7662)")
+    if jwks_uri:
+        logger.info("✓ JWT signature verification enabled (JWKS)")
+
+    # Progressive Consent mode (for offline access / background jobs)
+    encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
+    if enable_offline_access and encryption_key and refresh_token_storage:
+        logger.info("✓ Progressive Consent mode enabled - offline access available")
+
+        # Note: Token Broker service would be initialized here for background job support
+        # Currently not used in ADR-005 implementation as it's specific to offline access patterns
+        # that are separate from the real-time token exchange flow
+        logger.debug("Token broker available for future offline access features")
 
     # Create OAuth client for server-initiated flows (e.g., token exchange, background workers)
     oauth_client = None
@@ -837,6 +867,9 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 mcp_server_url = os.getenv(
                     "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
                 )
+                nextcloud_resource_uri = os.getenv(
+                    "NEXTCLOUD_RESOURCE_URI", nextcloud_host
+                )
                 discovery_url = os.getenv(
                     "OIDC_DISCOVERY_URL",
                     f"{nextcloud_host}/.well-known/openid-configuration",
@@ -854,6 +887,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                         "client_secret": client_secret,  # From setup_oauth_config (DCR or static)
                         "scopes": scopes,
                         "nextcloud_host": nextcloud_host,
+                        "nextcloud_resource_uri": nextcloud_resource_uri,
                         "oauth_provider": oauth_provider,
                     },
                 }

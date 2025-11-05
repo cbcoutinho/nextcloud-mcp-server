@@ -10,12 +10,15 @@ async def get_client(ctx: Context) -> NextcloudClient:
     """
     Get the appropriate Nextcloud client based on authentication mode.
 
-    This function handles three modes:
+    ADR-005 compliant implementation supporting two modes:
     1. BasicAuth mode: Returns shared client from lifespan context
-    2. OAuth pass-through mode (ENABLE_TOKEN_EXCHANGE=false, default):
-       Verifies Flow 1 token and passes it to Nextcloud
-    3. OAuth token exchange mode (ENABLE_TOKEN_EXCHANGE=true):
-       Exchanges Flow 1 token for ephemeral Nextcloud token via RFC 8693
+    2. Multi-audience mode (ENABLE_TOKEN_EXCHANGE=false, default):
+       Token already contains both MCP and Nextcloud audiences - use directly
+    3. Token exchange mode (ENABLE_TOKEN_EXCHANGE=true):
+       Exchange MCP token for Nextcloud token via RFC 8693
+
+    SECURITY: Token passthrough has been REMOVED. All OAuth modes validate
+    proper token audiences per MCP Security Best Practices specification.
 
     Note: Nextcloud doesn't support OAuth scopes natively. Scopes are enforced
     by the MCP server via @require_scopes decorator, not by the IdP.
@@ -49,20 +52,22 @@ async def get_client(ctx: Context) -> NextcloudClient:
 
     # OAuth mode (has 'nextcloud_host' attribute)
     if hasattr(lifespan_ctx, "nextcloud_host"):
-        # Check if token exchange is enabled
-        if settings.enable_token_exchange:
-            from nextcloud_mcp_server.auth.context_helper import (
-                get_session_client_from_context,
-            )
+        from nextcloud_mcp_server.auth.context_helper import (
+            get_client_from_context,
+            get_session_client_from_context,
+        )
 
-            # Token exchange mode: Exchange Flow 1 token for ephemeral Nextcloud token
+        if settings.enable_token_exchange:
+            # Mode 2: Exchange MCP token for Nextcloud token
+            # Token was validated to have MCP audience in UnifiedTokenVerifier
+            # Now exchange it for Nextcloud audience
             return await get_session_client_from_context(
                 ctx, lifespan_ctx.nextcloud_host
             )
         else:
-            # Pass-through mode (default): Verify and pass Flow 1 token to Nextcloud
-            from nextcloud_mcp_server.auth import get_client_from_context
-
+            # Mode 1: Multi-audience token - use directly
+            # Token was validated to have MCP audience in UnifiedTokenVerifier
+            # Nextcloud will independently validate its own audience when receiving API calls
             return get_client_from_context(ctx, lifespan_ctx.nextcloud_host)
 
     # Unknown context type
