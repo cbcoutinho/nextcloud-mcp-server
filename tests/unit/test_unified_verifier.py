@@ -61,7 +61,7 @@ class TestAudienceValidation:
     """Test audience validation logic."""
 
     def test_validate_multi_audience_both_present(self, base_settings):
-        """Test multi-audience validation with both audiences present."""
+        """Test MCP audience validation with both audiences present."""
         verifier = UnifiedTokenVerifier(base_settings)
         payload = {
             "aud": ["test-client-id", "http://localhost:8080"],
@@ -69,10 +69,10 @@ class TestAudienceValidation:
             "exp": int(time.time() + 3600),
         }
 
-        assert verifier._validate_multi_audience(payload) is True
+        assert verifier._has_mcp_audience(payload) is True
 
     def test_validate_multi_audience_server_url_and_resource(self, base_settings):
-        """Test multi-audience validation with server URL instead of client ID."""
+        """Test MCP audience validation with server URL instead of client ID."""
         verifier = UnifiedTokenVerifier(base_settings)
         payload = {
             "aud": ["http://localhost:8000", "http://localhost:8080"],
@@ -80,10 +80,10 @@ class TestAudienceValidation:
             "exp": int(time.time() + 3600),
         }
 
-        assert verifier._validate_multi_audience(payload) is True
+        assert verifier._has_mcp_audience(payload) is True
 
     def test_validate_multi_audience_missing_mcp(self, base_settings):
-        """Test multi-audience validation fails without MCP audience."""
+        """Test MCP audience validation fails without MCP audience."""
         verifier = UnifiedTokenVerifier(base_settings)
         payload = {
             "aud": ["http://localhost:8080"],  # Only Nextcloud
@@ -91,10 +91,10 @@ class TestAudienceValidation:
             "exp": int(time.time() + 3600),
         }
 
-        assert verifier._validate_multi_audience(payload) is False
+        assert verifier._has_mcp_audience(payload) is False
 
     def test_validate_multi_audience_missing_nextcloud(self, base_settings):
-        """Test multi-audience validation succeeds with only MCP audience (RFC 7519 compliant)."""
+        """Test MCP audience validation succeeds with only MCP audience (RFC 7519 compliant)."""
         verifier = UnifiedTokenVerifier(base_settings)
         payload = {
             "aud": ["test-client-id"],  # Only MCP
@@ -103,10 +103,10 @@ class TestAudienceValidation:
         }
 
         # Per RFC 7519, we only validate MCP audience. Nextcloud validates its own.
-        assert verifier._validate_multi_audience(payload) is True
+        assert verifier._has_mcp_audience(payload) is True
 
     def test_validate_multi_audience_string_audience(self, base_settings):
-        """Test multi-audience validation with string audience works (RFC 7519 compliant)."""
+        """Test MCP audience validation with string audience works (RFC 7519 compliant)."""
         verifier = UnifiedTokenVerifier(base_settings)
         payload = {
             "aud": "test-client-id",  # Single audience as string
@@ -115,7 +115,7 @@ class TestAudienceValidation:
         }
 
         # Should pass - we only validate MCP audience per RFC 7519
-        assert verifier._validate_multi_audience(payload) is True
+        assert verifier._has_mcp_audience(payload) is True
 
     def test_has_mcp_audience_with_client_id(self, exchange_settings):
         """Test MCP audience validation with client ID."""
@@ -258,7 +258,7 @@ class TestMultiAudienceVerification:
             verifier, "_introspect_token", return_value=introspection_response
         ):
             opaque_token = "opaque-token-12345"
-            result = await verifier._verify_multi_audience_token(opaque_token)
+            result = await verifier._verify_mcp_audience(opaque_token)
 
             assert result is not None
             assert result.resource == "testuser"
@@ -267,7 +267,7 @@ class TestMultiAudienceVerification:
     async def test_verify_multi_audience_fails_without_both_audiences(
         self, base_settings
     ):
-        """Test multi-audience verification succeeds with only MCP audience (RFC 7519 compliant)."""
+        """Test MCP audience verification succeeds with only MCP audience (RFC 7519 compliant)."""
         verifier = UnifiedTokenVerifier(base_settings)
 
         # Mock introspection response with only MCP audience
@@ -285,7 +285,7 @@ class TestMultiAudienceVerification:
             verifier, "_introspect_token", return_value=introspection_response
         ):
             opaque_token = "opaque-token-12345"
-            result = await verifier._verify_multi_audience_token(opaque_token)
+            result = await verifier._verify_mcp_audience(opaque_token)
 
             # Should succeed with only MCP audience per RFC 7519
             assert result is not None
@@ -313,13 +313,13 @@ class TestExchangeModeVerification:
             verifier, "_introspect_token", return_value=introspection_response
         ):
             opaque_token = "opaque-token-12345"
-            result = await verifier._verify_mcp_audience_only(opaque_token)
+            result = await verifier._verify_mcp_audience(opaque_token)
 
             assert result is not None
             assert result.resource == "testuser"
 
     async def test_verify_mcp_audience_only_fails_without_mcp(self, exchange_settings):
-        """Test MCP-only audience verification fails without MCP audience."""
+        """Test MCP audience verification fails without MCP audience."""
         verifier = UnifiedTokenVerifier(exchange_settings)
 
         # Mock introspection response without MCP audience
@@ -335,7 +335,7 @@ class TestExchangeModeVerification:
             verifier, "_introspect_token", return_value=introspection_response
         ):
             opaque_token = "opaque-token-12345"
-            result = await verifier._verify_mcp_audience_only(opaque_token)
+            result = await verifier._verify_mcp_audience(opaque_token)
 
             assert result is None
 
@@ -476,8 +476,8 @@ class TestVerifyTokenFlow:
         result1 = verifier._create_access_token(token, payload)
         assert result1 is not None
 
-        # Mock _verify_multi_audience_token to ensure it's not called
-        with patch.object(verifier, "_verify_multi_audience_token") as mock_verify:
+        # Mock _verify_mcp_audience to ensure it's not called
+        with patch.object(verifier, "_verify_mcp_audience") as mock_verify:
             result2 = await verifier.verify_token(token)
             assert result2 is not None
             assert result2.resource == "testuser"
