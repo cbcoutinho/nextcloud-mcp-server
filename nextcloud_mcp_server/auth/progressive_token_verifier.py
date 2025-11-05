@@ -34,7 +34,7 @@ class ProgressiveConsentTokenVerifier:
 
     def __init__(
         self,
-        token_storage: RefreshTokenStorage,
+        token_storage: RefreshTokenStorage | None,
         token_broker: Optional[TokenBrokerService] = None,
         oidc_discovery_url: Optional[str] = None,
         nextcloud_host: Optional[str] = None,
@@ -80,7 +80,7 @@ class ProgressiveConsentTokenVerifier:
         # Create token broker if not provided
         if token_broker:
             self.token_broker = token_broker
-        elif self.encryption_key:
+        elif self.encryption_key and token_storage and self.nextcloud_host:
             self.token_broker = TokenBrokerService(
                 storage=token_storage,
                 oidc_discovery_url=self.oidc_discovery_url,
@@ -89,7 +89,12 @@ class ProgressiveConsentTokenVerifier:
             )
         else:
             self.token_broker = None
-            logger.warning("Token broker not available - encryption key missing")
+            if not self.encryption_key:
+                logger.warning("Token broker not available - encryption key missing")
+            elif not token_storage:
+                logger.warning("Token broker not available - token storage missing")
+            elif not self.nextcloud_host:
+                logger.warning("Token broker not available - nextcloud host missing")
 
     async def verify_token(self, token: str) -> Optional[AccessToken]:
         """

@@ -191,7 +191,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         recipe_yield: int | None = None,
         category: str | None = None,
         keywords: str | None = None,
-        ctx: Context = None,
+        ctx: Context = None,  # type: ignore
     ) -> CreateRecipeResponse:
         """Create a new recipe.
 
@@ -271,7 +271,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         recipe_yield: int | None = None,
         category: str | None = None,
         keywords: str | None = None,
-        ctx: Context = None,
+        ctx: Context = None,  # type: ignore
     ) -> UpdateRecipeResponse:
         """Update an existing recipe.
 
@@ -544,7 +544,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         folder: str | None = None,
         update_interval: int | None = None,
         print_image: bool | None = None,
-        ctx: Context = None,
+        ctx: Context = None,  # type: ignore
     ) -> ReindexResponse:
         """Set Cookbook app configuration.
 

@@ -68,7 +68,7 @@ class TokenCache:
             logger.debug(f"Using cached token for user {user_id}")
             return token
 
-    async def set(self, user_id: str, token: str, expires_in: int = None):
+    async def set(self, user_id: str, token: str, expires_in: int | None = None):
         """Store token in cache."""
         async with self._lock:
             # Use provided expiry or default TTL

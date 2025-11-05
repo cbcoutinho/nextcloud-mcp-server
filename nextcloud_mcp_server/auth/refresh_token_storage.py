@@ -25,7 +25,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import aiosqlite
 from cryptography.fernet import Fernet
@@ -283,7 +283,7 @@ class RefreshTokenStorage:
         )
 
     async def store_user_profile(
-        self, user_id: str, profile_data: dict[str, any]
+        self, user_id: str, profile_data: dict[str, Any]
     ) -> None:
         """
         Store user profile data (cached from IdP userinfo endpoint).
@@ -314,7 +314,7 @@ class RefreshTokenStorage:
 
         logger.debug(f"Cached user profile for {user_id}")
 
-    async def get_user_profile(self, user_id: str) -> Optional[dict[str, any]]:
+    async def get_user_profile(self, user_id: str) -> Optional[dict[str, Any]]:
         """
         Retrieve cached user profile data.
 

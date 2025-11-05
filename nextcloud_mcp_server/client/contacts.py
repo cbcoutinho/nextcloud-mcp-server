@@ -124,7 +124,7 @@ class ContactsClient(BaseNextcloudClient):
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{uid}.vcf"
 
-        contact = Contact(fn=contact_data.get("fn"), uid=uid)
+        contact = Contact(fn=contact_data.get("fn"), uid=uid)  # type: ignore
         if "email" in contact_data:
             contact.email = [{"value": contact_data["email"], "type": ["HOME"]}]
         if "tel" in contact_data:
@@ -174,7 +174,7 @@ class ContactsClient(BaseNextcloudClient):
             )
         else:
             # Fallback to creating new vCard if we couldn't get existing
-            contact = Contact(fn=contact_data.get("fn"), uid=uid)
+            contact = Contact(fn=contact_data.get("fn"), uid=uid)  # type: ignore
             if "email" in contact_data:
                 contact.email = [{"value": contact_data["email"], "type": ["HOME"]}]
             if "tel" in contact_data:

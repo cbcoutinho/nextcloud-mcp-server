@@ -100,7 +100,7 @@ class CalendarClient:
         # Use custom PROPFIND with CalendarServer namespace (cs:) for calendar-color.
         # caldav library's nsmap lacks "CS" namespace, and its CalendarColor uses
         # Apple iCal namespace which Nextcloud doesn't recognize.
-        from lxml import etree
+        from lxml import etree  # type: ignore[import-untyped]
 
         propfind_body = """<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/" xmlns:c="urn:ietf:params:xml:ns:caldav">
@@ -261,11 +261,12 @@ class CalendarClient:
         result = []
         for event in events:
             await event.load(only_if_unloaded=True)
-            event_dict = self._parse_ical_event(event.data)
-            if event_dict:
-                event_dict["href"] = str(event.url)
-                event_dict["etag"] = ""
-                result.append(event_dict)
+            if event.data:
+                event_dict = self._parse_ical_event(event.data)
+                if event_dict:
+                    event_dict["href"] = str(event.url)
+                    event_dict["etag"] = ""
+                    result.append(event_dict)
 
             if len(result) >= limit:
                 break
@@ -314,8 +315,8 @@ class CalendarClient:
         await event.load(only_if_unloaded=True)
 
         # Merge updates into existing iCal data
-        updated_ical = self._merge_ical_properties(event.data, event_data, event_uid)
-        event.data = updated_ical
+        updated_ical = self._merge_ical_properties  # type: ignore[arg-type](event.data, event_data, event_uid)
+        event.data = updated_ical  # type: ignore[misc]
 
         await event.save()
 
@@ -349,7 +350,7 @@ class CalendarClient:
         event = await calendar.event_by_uid(event_uid)
         await event.load(only_if_unloaded=True)
 
-        event_data = self._parse_ical_event(event.data)
+        event_data = self._parse_ical_event(event.data) if event.data else None  # type: ignore[arg-type]
         if not event_data:
             raise ValueError(f"Failed to parse event data for {event_uid}")
 
@@ -416,7 +417,10 @@ class CalendarClient:
             # Only load if data not already present from REPORT response
             # This avoids 404 errors for virtual calendars (e.g., Deck boards)
             await todo.load(only_if_unloaded=True)
-            todo_dict = self._parse_ical_todo(todo.data)
+            if todo.data:
+                todo_dict = self._parse_ical_todo(todo.data)  # type: ignore[arg-type]
+            else:
+                continue
             if todo_dict:
                 todo_dict["href"] = str(todo.url)
                 todo_dict["etag"] = ""
@@ -470,12 +474,14 @@ class CalendarClient:
             await todo.load(only_if_unloaded=True)
 
             logger.debug(
-                f"Loaded todo {todo_uid}, current data length: {len(todo.data)}"
+                f"Loaded todo {todo_uid}, current data length: {len(todo.data)}"  # type: ignore
             )
 
             # Merge updates into existing iCal data
             updated_ical = self._merge_ical_todo_properties(
-                todo.data, todo_data, todo_uid
+                todo.data,  # type: ignore[arg-type]
+                todo_data,
+                todo_uid,
             )
             logger.debug(f"Merged iCal data length: {len(updated_ical)}")
             logger.debug(f"Updated iCal content:\n{updated_ical}")

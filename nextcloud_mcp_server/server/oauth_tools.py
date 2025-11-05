@@ -163,7 +163,7 @@ async def provision_nextcloud_access(
         if not user_id:
             # Get the authorization token from context
             if hasattr(ctx, "authorization") and ctx.authorization:
-                token = ctx.authorization.token
+                token = ctx.authorization.token  # type: ignore
                 # Decode token to get user info
                 try:
                     import jwt
@@ -304,7 +304,7 @@ async def revoke_nextcloud_access(
         # Get user ID from context if not provided
         if not user_id:
             user_id = (
-                ctx.context.get("user_id", "default_user")
+                ctx.context.get("user_id", "default_user")  # type: ignore
                 if hasattr(ctx, "context")
                 else "default_user"
             )
@@ -334,7 +334,7 @@ async def revoke_nextcloud_access(
                 "OIDC_DISCOVERY_URL",
                 f"{os.getenv('NEXTCLOUD_HOST')}/.well-known/openid-configuration",
             ),
-            nextcloud_host=os.getenv("NEXTCLOUD_HOST"),
+            nextcloud_host=os.getenv("NEXTCLOUD_HOST"),  # type: ignore
             encryption_key=encryption_key,
         )
 
@@ -382,7 +382,7 @@ async def check_provisioning_status(
     # Get user ID from context if not provided
     if not user_id:
         user_id = (
-            ctx.context.get("user_id", "default_user")
+            ctx.context.get("user_id", "default_user")  # type: ignore
             if hasattr(ctx, "context")
             else "default_user"
         )

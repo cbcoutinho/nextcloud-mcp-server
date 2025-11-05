@@ -818,7 +818,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             return allowed_tools
 
         # Replace the tool manager's list_tools method
-        mcp._tool_manager.list_tools = list_tools_filtered
+        mcp._tool_manager.list_tools = list_tools_filtered  # type: ignore[method-assign]
         logger.info(
             "Dynamic tool filtering enabled for OAuth mode (JWT and Bearer tokens)"
         )
