@@ -1,3 +1,26 @@
+## v0.25.0 (2025-11-05)
+
+### BREAKING CHANGE
+
+- All OAuth deployments must be reconfigured to specify
+resource URIs (NEXTCLOUD_MCP_SERVER_URL and NEXTCLOUD_RESOURCE_URI) and
+choose between multi-audience or token exchange mode.
+
+### Feat
+
+- Implement ADR-005 unified token verifier to eliminate token passthrough vulnerability
+
+### Fix
+
+- Implement proper OAuth resource parameters and PRM-based discovery
+- Simplify token verifier to be RFC 7519 compliant
+- Use Keycloak client ID for NEXTCLOUD_RESOURCE_URI in token exchange
+- Correct OAuth token audience validation for multi-audience mode
+
+### Refactor
+
+- Eliminate duplicate validation logic in UnifiedTokenVerifier
+
 ## v0.24.1 (2025-11-04)
 
 ### Fix
