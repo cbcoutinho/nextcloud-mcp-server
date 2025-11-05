@@ -867,6 +867,9 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 mcp_server_url = os.getenv(
                     "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
                 )
+                nextcloud_resource_uri = os.getenv(
+                    "NEXTCLOUD_RESOURCE_URI", nextcloud_host
+                )
                 discovery_url = os.getenv(
                     "OIDC_DISCOVERY_URL",
                     f"{nextcloud_host}/.well-known/openid-configuration",
@@ -884,6 +887,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                         "client_secret": client_secret,  # From setup_oauth_config (DCR or static)
                         "scopes": scopes,
                         "nextcloud_host": nextcloud_host,
+                        "nextcloud_resource_uri": nextcloud_resource_uri,
                         "oauth_provider": oauth_provider,
                     },
                 }

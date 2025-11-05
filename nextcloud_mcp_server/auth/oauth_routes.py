@@ -252,6 +252,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
             "scope": scopes,
             "state": idp_state,
             "prompt": "consent",  # Ensure refresh token
+            "resource": f"{oauth_config['mcp_server_url']}/mcp",  # MCP server audience
         }
 
         auth_url = f"{authorization_endpoint}?{urlencode(idp_params)}"
@@ -359,6 +360,7 @@ async def oauth_authorize_nextcloud(
         "state": state,
         "prompt": "consent",  # Force consent to show resource access
         "access_type": "offline",  # Request refresh token
+        "resource": oauth_config["nextcloud_resource_uri"],  # Nextcloud audience
     }
 
     auth_url = f"{authorization_endpoint}?{urlencode(idp_params)}"

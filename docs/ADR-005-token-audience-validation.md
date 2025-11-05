@@ -1,9 +1,18 @@
 # ADR-005: Token Audience Validation and Security Compliance
 
-**Status**: Accepted
+**Status**: Implemented
 **Date**: 2025-01-05
-**Related**: Issue #261, ADR-004, upstream-oauth.md
+**Updated**: 2025-11-05
+**Related**: Issue #261, ADR-004, upstream-oauth.md, RFC 7519, RFC 8707, RFC 9728
 **Supersedes**: Token passthrough mode in ADR-004
+
+## Implementation Note
+
+This ADR has been fully implemented with key simplifications based on RFC 7519 Section 4.1.3:
+- MCP server validates only its own audience (not Nextcloud's)
+- OAuth requests include `resource` parameter (RFC 8707)
+- Clients discover resource via PRM endpoint (RFC 9728)
+- Nextcloud OIDC app uses client-specific resource URLs
 
 ## Executive Summary
 
@@ -65,13 +74,14 @@ Based on analysis of the existing code and python-sdk constraints, we will:
 
 ### Mode 1: Multi-Audience Token Validation (Default)
 
-Use multi-audience tokens directly. Per RFC 7519 Section 4.1.3, the MCP server validates only its own presence in the audience claim. Nextcloud independently validates its own audience when receiving API calls. This is the default mode when `ENABLE_TOKEN_EXCHANGE` is false or not set.
+Use multi-audience tokens directly. Per RFC 7519 Section 4.1.3, resource servers validate only their own presence in the audience claim. The MCP server validates its own audience; Nextcloud independently validates its own audience when receiving API calls. This is the default mode when `ENABLE_TOKEN_EXCHANGE` is false or not set.
 
 **Requirements**:
-- Token must have `aud` claim containing:
-  - **MCP server**: Client ID OR MCP server URL (e.g., `http://localhost:8000`)
-- For Nextcloud API access to work, token should also include:
-  - **Nextcloud**: Nextcloud resource URI (e.g., `http://localhost:8080`)
+- Token must have `aud` claim containing MCP server audience:
+  - Client ID OR
+  - MCP server URL (e.g., `http://localhost:8001`) OR
+  - MCP server URL with /mcp suffix (e.g., `http://localhost:8001/mcp`)
+- For Nextcloud API access to work, token should also include Nextcloud audience (validated by Nextcloud, not MCP)
 - Single token works for both MCP authentication and Nextcloud API access
 - IdP must support multi-audience tokens for full functionality
 
@@ -95,40 +105,33 @@ NEXTCLOUD_RESOURCE_URI=http://localhost:8080     # Nextcloud resource identifier
 OIDC_CLIENT_ID=nextcloud-mcp-server
 ```
 
-**Token validation logic (RFC 7519 compliant)**:
+**Token validation logic (RFC 7519 compliant) - Actual Implementation**:
 ```python
-async def validate_token_audiences(token: dict, settings: Settings) -> bool:
+def _has_mcp_audience(self, payload: dict[str, Any]) -> bool:
     """
-    Validate token has MCP audience per RFC 7519.
+    Check if token has MCP audience.
 
-    Resource servers validate only their own presence in the audience claim.
-    Nextcloud will independently validate its own audience when receiving API calls.
-    This is NOT token passthrough (we validate the token). This IS token reuse
-    which is allowed by RFC 8707 for multi-audience tokens between trusted services.
+    Per RFC 7519 Section 4.1.3, resource servers should only validate their own
+    presence in the audience claim. We don't validate Nextcloud's audience - that's
+    Nextcloud's responsibility when it receives the token.
     """
-    audiences = token.get("aud", [])
+    audiences = payload.get("aud", [])
     if isinstance(audiences, str):
         audiences = [audiences]
 
     audiences_set = set(audiences)
 
-    # MCP validates ONLY its own audience (client_id OR server_url OR server_url/mcp)
-    mcp_valid = (
-        settings.oidc_client_id in audiences_set or
-        settings.nextcloud_mcp_server_url in audiences_set or
-        f"{settings.nextcloud_mcp_server_url}/mcp" in audiences_set
-    )
-
-    if not mcp_valid:
-        logger.error(
-            f"Token rejected: Missing MCP audience. "
-            f"Got {audiences}, need MCP ({settings.oidc_client_id} or "
-            f"{settings.nextcloud_mcp_server_url})"
+    # MCP must have at least one: client_id OR server_url OR server_url/mcp
+    return bool(
+        self.settings.oidc_client_id in audiences_set
+        or (
+            self.settings.nextcloud_mcp_server_url
+            and (
+                self.settings.nextcloud_mcp_server_url in audiences_set
+                or f"{self.settings.nextcloud_mcp_server_url}/mcp" in audiences_set
+            )
         )
-        return False
-
-    # Note: We do NOT validate Nextcloud's audience - that's Nextcloud's responsibility
-    return True
+    )
 ```
 
 ### Mode 2: RFC 8693 Token Exchange (Opt-in)
@@ -272,52 +275,39 @@ class UnifiedTokenVerifier(TokenVerifier):
         """
         Verify token according to MCP TokenVerifier protocol.
 
-        CRITICAL: This method only validates tokens - it does NOT perform exchange.
-        Token exchange happens later in context_helper.py when creating NextcloudClient.
+        Per RFC 7519, we validate only MCP audience. The mode determines what
+        happens AFTER verification in context_helper.py:
+        - Multi-audience mode: Use token directly (Nextcloud validates its own audience)
+        - Exchange mode: Exchange for Nextcloud-audience token via RFC 8693
 
-        Multi-audience mode: Validates token has BOTH MCP and Nextcloud audiences
-        Exchange mode: Validates token has MCP audience ONLY (exchange happens later)
+        Args:
+            token: Bearer token to verify
+
+        Returns:
+            AccessToken if valid with MCP audience, None otherwise
         """
-        if self.mode == "multi-audience":
-            return await self._verify_multi_audience_token(token)
-        else:
-            # Exchange mode: Only validate MCP audience here
-            # Actual exchange happens in context_helper.py
-            return await self._verify_mcp_audience_only(token)
+        # Check cache first
+        cached = self._get_cached_token(token)
+        if cached:
+            logger.debug("Token found in cache")
+            return cached
 
-    async def _verify_multi_audience_token(self, token: str) -> AccessToken | None:
+        # Both modes do the same validation (MCP audience only)
+        return await self._verify_mcp_audience(token)
+
+    async def _verify_mcp_audience(self, token: str) -> AccessToken | None:
         """
-        Validate token has both MCP and Nextcloud audiences (Mode 1).
-        Token can be used directly without exchange.
-        """
-        try:
-            # Attempt JWT verification first
-            if self._is_jwt_format(token) and self.jwks_client:
-                payload = await self._verify_jwt_signature(token)
-            else:
-                # Fall back to introspection for opaque tokens
-                payload = await self._introspect_token(token)
-                if not payload:
-                    return None
+        Validate token has MCP audience.
 
-            # Validate both audiences are present
-            if not self._validate_multi_audience(payload):
-                logger.error(
-                    f"Token rejected: Missing required audiences. "
-                    f"Got {payload.get('aud')}, need both MCP and Nextcloud"
-                )
-                return None
+        Per RFC 7519 Section 4.1.3, resource servers validate only their own
+        presence in the audience claim. We don't validate Nextcloud's audience -
+        that's Nextcloud's responsibility when it receives the token.
 
-            return self._create_access_token(token, payload)
+        Args:
+            token: Bearer token to verify
 
-        except Exception as e:
-            logger.error(f"Multi-audience validation failed: {e}")
-            return None
-
-    async def _verify_mcp_audience_only(self, token: str) -> AccessToken | None:
-        """
-        Validate token has MCP audience only (Mode 2).
-        Token will be exchanged later in context_helper.py.
+        Returns:
+            AccessToken if valid with MCP audience, None otherwise
         """
         try:
             # Attempt JWT verification first
@@ -329,51 +319,28 @@ class UnifiedTokenVerifier(TokenVerifier):
                 if not payload:
                     return None
 
-            # Only validate MCP audience (exchange will handle Nextcloud)
+            # Validate MCP audience is present
             if not self._has_mcp_audience(payload):
+                audiences = payload.get("aud", [])
                 logger.error(
                     f"Token rejected: Missing MCP audience. "
-                    f"Got {payload.get('aud')}, need {self.settings.oidc_client_id} "
-                    f"or {self.settings.nextcloud_mcp_server_url}"
+                    f"Got {audiences}, need MCP ({self.settings.oidc_client_id} or "
+                    f"{self.settings.nextcloud_mcp_server_url})"
                 )
                 return None
 
+            # Log based on mode for clarity
+            if self.mode == "multi-audience":
+                logger.info(
+                    "MCP audience validated - token can be used directly "
+                    "(Nextcloud will validate its own audience)"
+                )
+            else:
+                logger.info(
+                    "MCP audience validated - token will be exchanged for Nextcloud access"
+                )
+
             return self._create_access_token(token, payload)
-
-        except Exception as e:
-            logger.error(f"MCP audience validation failed: {e}")
-            return None
-
-    def _validate_multi_audience(self, payload: dict) -> bool:
-        """Check if token has both MCP and Nextcloud audiences."""
-        audiences = payload.get("aud", [])
-        if isinstance(audiences, str):
-            audiences = [audiences]
-
-        audiences_set = set(audiences)
-
-        # MCP must have at least one: client_id OR server_url
-        mcp_valid = (
-            self.settings.oidc_client_id in audiences_set or
-            self.settings.nextcloud_mcp_server_url in audiences_set
-        )
-
-        # Nextcloud must have its resource URI
-        nextcloud_valid = self.settings.nextcloud_resource_uri in audiences_set
-
-        return mcp_valid and nextcloud_valid
-
-    def _has_mcp_audience(self, payload: dict) -> bool:
-        """Check if token has MCP audience (for exchange mode)."""
-        audiences = payload.get("aud", [])
-        if isinstance(audiences, str):
-            audiences = [audiences]
-
-        audiences_set = set(audiences)
-        return (
-            self.settings.oidc_client_id in audiences_set or
-            self.settings.nextcloud_mcp_server_url in audiences_set
-        )
 ```
 
 **Key Design Decisions**:
@@ -455,7 +422,57 @@ def validate_oauth_configuration(settings: Settings):
         logger.info("Multi-audience mode enabled - tokens must contain both MCP and Nextcloud audiences")
 ```
 
-### 5. Context Helper Updates
+### 5. OAuth Resource Parameters and PRM Discovery
+
+To ensure tokens have the correct audience, OAuth authorization requests must include the `resource` parameter (RFC 8707):
+
+**OAuth Authorization Requests**:
+```python
+# Flow 1 (MCP Client Authentication)
+idp_params = {
+    "client_id": idp_client_id,
+    "redirect_uri": callback_uri,
+    "response_type": "code",
+    "scope": scopes,
+    "state": idp_state,
+    "prompt": "consent",
+    "resource": f"{oauth_config['mcp_server_url']}/mcp",  # MCP server audience
+}
+
+# Flow 2 (Nextcloud Resource Access)
+idp_params = {
+    ...
+    "resource": oauth_config["nextcloud_resource_uri"],  # Nextcloud audience
+}
+```
+
+**Protected Resource Metadata (PRM) Endpoint**:
+
+The MCP server exposes PRM metadata at `/.well-known/oauth-protected-resource` (RFC 9728):
+```json
+{
+    "resource": "http://localhost:8001/mcp",
+    "scopes_supported": ["notes:read", "notes:write", ...],
+    "authorization_servers": ["http://localhost:8080"],
+    "bearer_methods_supported": ["header"],
+    "resource_signing_alg_values_supported": ["RS256"]
+}
+```
+
+**Client Discovery Pattern**:
+```python
+# Clients should discover resource identifier from PRM
+prm_url = f"{mcp_server_url}/.well-known/oauth-protected-resource"
+async with httpx.AsyncClient() as client:
+    prm_response = await client.get(prm_url, timeout=10)
+    prm_data = prm_response.json()
+    resource_identifier = prm_data.get("resource")
+
+# Use discovered resource in OAuth request
+auth_url = f"{authorization_endpoint}?resource={quote(resource_identifier, safe='')}&..."
+```
+
+### 6. Context Helper Updates
 
 Update `context.py` to handle token exchange at the NextcloudClient creation point:
 
@@ -969,22 +986,25 @@ This separation ensures:
 
 ## Implementation Checklist
 
-- [ ] Create `UnifiedTokenVerifier` class replacing both existing verifiers
-- [ ] Remove pass-through mode from `context.py` entirely
-- [ ] Update `context_helper.py` to implement token exchange with caching
-- [ ] Implement multi-audience validation in unified verifier
-- [ ] Implement MCP-only validation for exchange mode in unified verifier
-- [ ] Add token exchange caching mechanism in context helper layer
-- [ ] Update docker-compose.yml with resource URI configuration:
+- [x] Create `UnifiedTokenVerifier` class replacing both existing verifiers
+- [x] Remove pass-through mode from `context.py` entirely
+- [x] Update `context_helper.py` to implement token exchange with caching
+- [x] Implement RFC 7519 compliant validation in unified verifier (MCP audience only)
+- [x] Add token exchange caching mechanism in context helper layer
+- [x] Add OAuth resource parameters to authorization requests (RFC 8707)
+- [x] Implement PRM endpoint for resource discovery (RFC 9728)
+- [x] Update tests to discover resource from PRM endpoint
+- [x] Fix Nextcloud OIDC app to use client-specific resource_url
+- [x] Update docker-compose.yml with resource URI configuration:
   - `NEXTCLOUD_MCP_SERVER_URL` (required)
   - `NEXTCLOUD_RESOURCE_URI` (required)
   - `TOKEN_EXCHANGE_CACHE_TTL` (optional, default: 300)
-- [ ] Configure Nextcloud OIDC `default_resource_identifier`
+- [x] Configure Nextcloud OIDC `default_resource_identifier`
 - [ ] Configure Keycloak resource servers with proper audiences
-- [ ] Remove `NextcloudTokenVerifier` class
-- [ ] Remove `ProgressiveConsentTokenVerifier` class
-- [ ] Write unit tests for unified verifier (both modes)
-- [ ] Write integration tests for token exchange flow
-- [ ] Update documentation with IdP configuration guides
+- [x] Remove `NextcloudTokenVerifier` class
+- [x] Remove `ProgressiveConsentTokenVerifier` class
+- [x] Write unit tests for unified verifier
+- [x] Write integration tests for OAuth flows
+- [x] Update documentation with IdP configuration guides
 - [ ] Add performance benchmarks to CI pipeline
 - [ ] Update CHANGELOG.md with breaking changes notice
