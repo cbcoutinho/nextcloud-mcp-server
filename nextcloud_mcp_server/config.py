@@ -129,15 +129,28 @@ class Settings:
     oidc_discovery_url: Optional[str] = None
     oidc_client_id: Optional[str] = None
     oidc_client_secret: Optional[str] = None
+    oidc_issuer: Optional[str] = None
 
     # Nextcloud settings
     nextcloud_host: Optional[str] = None
     nextcloud_username: Optional[str] = None
     nextcloud_password: Optional[str] = None
 
+    # ADR-005: Token Audience Validation (required for OAuth mode)
+    nextcloud_mcp_server_url: Optional[str] = None  # MCP server URL (used as audience)
+    nextcloud_resource_uri: Optional[str] = None  # Nextcloud resource identifier
+
+    # Token verification endpoints
+    jwks_uri: Optional[str] = None
+    introspection_uri: Optional[str] = None
+    userinfo_uri: Optional[str] = None
+
     # Progressive Consent settings (always enabled - no flag needed)
     enable_token_exchange: bool = False
     enable_offline_access: bool = False
+
+    # Token exchange cache settings
+    token_exchange_cache_ttl: int = 300  # seconds (5 minutes default)
 
     # Token settings
     token_encryption_key: Optional[str] = None
@@ -155,10 +168,18 @@ def get_settings() -> Settings:
         oidc_discovery_url=os.getenv("OIDC_DISCOVERY_URL"),
         oidc_client_id=os.getenv("OIDC_CLIENT_ID"),
         oidc_client_secret=os.getenv("OIDC_CLIENT_SECRET"),
+        oidc_issuer=os.getenv("OIDC_ISSUER"),
         # Nextcloud settings
         nextcloud_host=os.getenv("NEXTCLOUD_HOST"),
         nextcloud_username=os.getenv("NEXTCLOUD_USERNAME"),
         nextcloud_password=os.getenv("NEXTCLOUD_PASSWORD"),
+        # ADR-005: Token Audience Validation
+        nextcloud_mcp_server_url=os.getenv("NEXTCLOUD_MCP_SERVER_URL"),
+        nextcloud_resource_uri=os.getenv("NEXTCLOUD_RESOURCE_URI"),
+        # Token verification endpoints
+        jwks_uri=os.getenv("JWKS_URI"),
+        introspection_uri=os.getenv("INTROSPECTION_URI"),
+        userinfo_uri=os.getenv("USERINFO_URI"),
         # Progressive Consent settings (always enabled)
         enable_token_exchange=(
             os.getenv("ENABLE_TOKEN_EXCHANGE", "false").lower() == "true"
@@ -166,6 +187,8 @@ def get_settings() -> Settings:
         enable_offline_access=(
             os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() == "true"
         ),
+        # Token exchange cache settings
+        token_exchange_cache_ttl=int(os.getenv("TOKEN_EXCHANGE_CACHE_TTL", "300")),
         # Token settings
         token_encryption_key=os.getenv("TOKEN_ENCRYPTION_KEY"),
         token_storage_db=os.getenv("TOKEN_STORAGE_DB", "/tmp/tokens.db"),

@@ -14,11 +14,11 @@ from .scope_authorization import (
     is_jwt_token,
     require_scopes,
 )
-from .token_verifier import NextcloudTokenVerifier
+from .unified_verifier import UnifiedTokenVerifier
 
 __all__ = [
     "BearerAuth",
-    "NextcloudTokenVerifier",
+    "UnifiedTokenVerifier",
     "register_client",
     "ensure_oauth_client",
     "get_client_from_context",

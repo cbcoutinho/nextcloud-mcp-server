@@ -1,6 +1,11 @@
-"""Helper functions for extracting OAuth context from MCP requests."""
+"""Helper functions for extracting OAuth context from MCP requests.
 
+ADR-005 compliant implementation with token exchange caching.
+"""
+
+import hashlib
 import logging
+import time
 
 from mcp.server.auth.provider import AccessToken
 from mcp.server.fastmcp import Context
@@ -11,35 +16,36 @@ from .token_exchange import exchange_token_for_audience
 
 logger = logging.getLogger(__name__)
 
+# Token exchange cache: token_hash -> (exchanged_token, expiry_timestamp)
+_exchange_cache: dict[str, tuple[str, float]] = {}
+
 
 def get_client_from_context(ctx: Context, base_url: str) -> NextcloudClient:
     """
-    Extract authenticated user context from MCP request and create NextcloudClient.
+    Create NextcloudClient for multi-audience mode (no exchange needed).
 
-    This function retrieves the OAuth access token from the MCP context,
-    extracts the username from the token's resource field (where we stored it
-    during token verification), and creates a NextcloudClient with bearer auth.
+    ADR-005 Mode 1: Token already contains both MCP and Nextcloud audiences.
+    The UnifiedTokenVerifier validated both audiences are present, so we can
+    use the token directly without exchange.
 
     Args:
         ctx: MCP request context containing session info
         base_url: Nextcloud base URL
 
     Returns:
-        NextcloudClient configured with bearer token auth
+        NextcloudClient configured with multi-audience token
 
     Raises:
         AttributeError: If context doesn't contain expected OAuth session data
         ValueError: If username cannot be extracted from token
     """
     try:
-        # In Starlette with FastMCP OAuth, the authenticated user info is stored in request.user
-        # The FastMCP auth middleware sets request.user to an AuthenticatedUser object
-        # which contains the access_token
+        # Extract validated access token from MCP context
         if hasattr(ctx.request_context.request, "user") and hasattr(
             ctx.request_context.request.user, "access_token"
         ):
             access_token: AccessToken = ctx.request_context.request.user.access_token
-            logger.debug("Retrieved access token from request.user for OAuth request")
+            logger.debug("Retrieved multi-audience token from request.user")
         else:
             logger.error(
                 "OAuth authentication failed: No access token found in request"
@@ -47,16 +53,20 @@ def get_client_from_context(ctx: Context, base_url: str) -> NextcloudClient:
             raise AttributeError("No access token found in OAuth request context")
 
         # Extract username from resource field (RFC 8707)
-        # We stored the username here during token verification
+        # UnifiedTokenVerifier stored the username here during validation
         username = access_token.resource
 
         if not username:
             logger.error("No username found in access token resource field")
             raise ValueError("Username not available in OAuth token context")
 
-        logger.debug(f"Creating OAuth NextcloudClient for user: {username}")
+        logger.debug(
+            f"Creating NextcloudClient for user {username} with multi-audience token "
+            f"(no exchange needed)"
+        )
 
-        # Create client with bearer token
+        # Token was already validated to have both audiences
+        # Can use directly without exchange
         return NextcloudClient.from_token(
             base_url=base_url, token=access_token.token, username=username
         )
@@ -71,12 +81,19 @@ async def get_session_client_from_context(
     ctx: Context, base_url: str
 ) -> NextcloudClient:
     """
-    Create NextcloudClient using RFC 8693 token exchange for session operations.
+    Create NextcloudClient using RFC 8693 token exchange with caching.
+
+    ADR-005 Mode 2: Exchange MCP token for Nextcloud token via RFC 8693.
 
     This implements the token exchange pattern where:
-    1. Extract Flow 1 token from context (aud: "mcp-server")
-    2. Exchange it for ephemeral Nextcloud token via RFC 8693
-    3. Create client with delegated token (NOT stored)
+    1. Extract MCP token from context (validated by UnifiedTokenVerifier)
+    2. Check cache for existing exchanged token
+    3. If not cached or expired, exchange via RFC 8693
+    4. Cache the exchanged token to minimize exchange frequency
+    5. Create client with exchanged token
+
+    CRITICAL: This is where token exchange happens, NOT in the verifier.
+    The verifier already validated the MCP audience; now we exchange for Nextcloud.
 
     Note: Nextcloud doesn't support OAuth scopes natively. Scopes are enforced
     by the MCP server via @require_scopes decorator, not by the IdP. Therefore,
@@ -88,7 +105,7 @@ async def get_session_client_from_context(
         base_url: Nextcloud base URL
 
     Returns:
-        NextcloudClient configured with ephemeral delegated token
+        NextcloudClient configured with ephemeral exchanged token
 
     Raises:
         AttributeError: If context doesn't contain expected OAuth session data
@@ -96,43 +113,60 @@ async def get_session_client_from_context(
     """
     settings = get_settings()
 
-    # Check if token exchange is enabled
-    if not settings.enable_token_exchange:
-        logger.info("Token exchange disabled, falling back to standard OAuth flow")
-        return get_client_from_context(ctx, base_url)
-
     try:
-        # Extract Flow 1 token from context
+        # Extract MCP token from context
         if hasattr(ctx.request_context.request, "user") and hasattr(
             ctx.request_context.request.user, "access_token"
         ):
             access_token: AccessToken = ctx.request_context.request.user.access_token
-            flow1_token = access_token.token
-            username = access_token.resource  # Username stored during verification
-            logger.debug(f"Retrieved Flow 1 token for user: {username}")
+            mcp_token = access_token.token
+            username = access_token.resource  # Username from UnifiedTokenVerifier
+            logger.debug(f"Retrieved MCP token for user: {username}")
         else:
-            logger.error("No Flow 1 token found in request context")
+            logger.error("No MCP token found in request context")
             raise AttributeError("No access token found in OAuth request context")
 
         if not username:
             logger.error("No username found in access token resource field")
             raise ValueError("Username not available in OAuth token context")
 
-        logger.info("Exchanging client token for Nextcloud API token (pure RFC 8693)")
+        # Check cache for existing exchanged token
+        cache_key = hashlib.sha256(mcp_token.encode()).hexdigest()
+        if cache_key in _exchange_cache:
+            cached_token, expiry = _exchange_cache[cache_key]
+            if time.time() < expiry:
+                logger.debug(
+                    f"Using cached exchanged token (expires in {expiry - time.time():.1f}s)"
+                )
+                return NextcloudClient.from_token(
+                    base_url=base_url, token=cached_token, username=username
+                )
+            else:
+                logger.debug("Cached token expired, removing from cache")
+                del _exchange_cache[cache_key]
 
-        # Perform pure RFC 8693 token exchange (no refresh tokens)
-        # Note: We don't pass scopes since Nextcloud doesn't enforce them.
-        # The MCP server's @require_scopes decorator handles authorization.
+        # Perform RFC 8693 token exchange
+        logger.info(f"Exchanging MCP token for Nextcloud API token (user: {username})")
+
+        # Exchange for Nextcloud resource URI audience
         exchanged_token, expires_in = await exchange_token_for_audience(
-            subject_token=flow1_token,
-            requested_audience="nextcloud",
+            subject_token=mcp_token,
+            requested_audience=settings.nextcloud_resource_uri or "nextcloud",
             requested_scopes=None,  # Nextcloud doesn't support scopes
         )
 
-        logger.info(f"Pure token exchange successful. Token expires in {expires_in}s")
+        logger.info(f"Token exchange successful. Token expires in {expires_in}s")
+
+        # Cache the exchanged token
+        # Use the minimum of exchange TTL and configured cache TTL
+        cache_ttl = min(expires_in, settings.token_exchange_cache_ttl)
+        _exchange_cache[cache_key] = (exchanged_token, time.time() + cache_ttl)
+        logger.debug(f"Cached exchanged token for {cache_ttl}s")
+
+        # Clean up expired cache entries
+        _cleanup_exchange_cache()
 
         # Create client with exchanged token
-        # This token is ephemeral (per-request) and NOT stored
         return NextcloudClient.from_token(
             base_url=base_url, token=exchanged_token, username=username
         )
@@ -143,3 +177,21 @@ async def get_session_client_from_context(
     except Exception as e:
         logger.error(f"Token exchange failed: {e}")
         raise RuntimeError(f"Token exchange required but failed: {e}") from e
+
+
+def _cleanup_exchange_cache():
+    """Remove expired entries from the token exchange cache."""
+    global _exchange_cache
+    now = time.time()
+    expired_keys = [k for k, (_, expiry) in _exchange_cache.items() if expiry <= now]
+    for key in expired_keys:
+        del _exchange_cache[key]
+    if expired_keys:
+        logger.debug(f"Cleaned up {len(expired_keys)} expired cache entries")
+
+
+def clear_exchange_cache():
+    """Clear the entire token exchange cache. Useful for testing."""
+    global _exchange_cache
+    _exchange_cache.clear()
+    logger.debug("Token exchange cache cleared")
