@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 try:
     import io
 
-    import pytesseract
+    import pytesseract  # type: ignore
     from PIL import Image
 
     TESSERACT_AVAILABLE = True

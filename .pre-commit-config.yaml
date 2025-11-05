@@ -18,3 +18,9 @@ repos:
       entry: uv run ruff format
       language: system
       types: [python]
+    - id: ty-check
+      name: ty-check
+      language: system
+      types: [python]
+      exclude: tests/.*
+      entry: uv run ty check

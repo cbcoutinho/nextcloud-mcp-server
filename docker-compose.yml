@@ -28,6 +28,7 @@ services:
     depends_on:
       - redis
       - db
+      - keycloak
     volumes:
       - nextcloud:/var/www/html
       - ./app-hooks:/docker-entrypoint-hooks.d:ro

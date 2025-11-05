@@ -165,6 +165,7 @@ class NextcloudTokenVerifier(TokenVerifier):
         """
         try:
             # Get signing key from JWKS
+            assert self._jwks_client is not None  # Caller should check before calling
             signing_key = self._jwks_client.get_signing_key_from_jwt(token)
 
             # Verify and decode JWT
@@ -257,7 +258,7 @@ class NextcloudTokenVerifier(TokenVerifier):
         try:
             # Introspection requires client authentication
             response = await self._client.post(
-                self.introspection_uri,
+                self.introspection_uri,  # type: ignore
                 data={"token": token},
                 auth=(self.client_id, self.client_secret),
             )

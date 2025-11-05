@@ -331,7 +331,7 @@ def configure_notes_tools(mcp: FastMCP):
             content, mime_type = await client.webdav.get_note_attachment(
                 note_id=note_id, filename=attachment_filename
             )
-            return {
+            return {  # type: ignore
                 "uri": f"nc://Notes/{note_id}/attachments/{attachment_filename}",
                 "mimeType": mime_type,
                 "data": content,

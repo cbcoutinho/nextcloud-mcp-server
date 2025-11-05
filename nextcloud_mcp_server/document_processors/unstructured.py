@@ -112,10 +112,10 @@ class UnstructuredProcessor(DocumentProcessor):
                         f"Processing document with unstructured... ({elapsed}s elapsed)"
                     )
                     try:
-                        await progress_callback(
-                            progress=float(elapsed),
-                            total=None,  # Unknown total duration
-                            message=message,
+                        await progress_callback(  # type: ignore
+                            progress=float(elapsed),  # type: ignore
+                            total=None,  # Unknown total duration  # type: ignore
+                            message=message,  # type: ignore
                         )
                         logger.debug(f"Progress update sent: {elapsed}s elapsed")
                     except Exception as e:
@@ -293,7 +293,7 @@ class UnstructuredProcessor(DocumentProcessor):
                 self._run_progress_poller, stop_event, progress_callback, start_time
             )
 
-        return result
+        return result  # type: ignore
 
     async def health_check(self) -> bool:
         """Check if Unstructured API is available.

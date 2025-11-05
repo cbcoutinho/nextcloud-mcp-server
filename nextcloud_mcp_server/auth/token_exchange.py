@@ -114,7 +114,8 @@ class TokenExchangeService:
         if not self.oidc_discovery_url:
             # Fallback to Nextcloud OIDC if no discovery URL
             self.oidc_discovery_url = urljoin(
-                self.nextcloud_host, "/.well-known/openid-configuration"
+                self.nextcloud_host,  # type: ignore[arg-type]
+                "/.well-known/openid-configuration",
             )
 
         try:
@@ -363,6 +364,7 @@ class TokenExchangeService:
             True if provisioned, False otherwise
         """
         await self._ensure_storage()
+        assert self.storage is not None  # _ensure_storage() ensures this
         token_data = await self.storage.get_refresh_token(user_id)
         return token_data is not None
 
@@ -376,6 +378,7 @@ class TokenExchangeService:
             Refresh token if found, None otherwise
         """
         await self._ensure_storage()
+        assert self.storage is not None  # _ensure_storage() ensures this
         token_data = await self.storage.get_refresh_token(user_id)
         if token_data:
             return token_data.get("refresh_token")

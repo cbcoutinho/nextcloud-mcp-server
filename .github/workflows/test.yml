@@ -18,6 +18,9 @@ jobs:
       - name: Linting
         run: |
           uv run --frozen ruff check
+      - name: Linting
+        run: |
+          uv run --frozen ty check -- nextcloud_mcp_server
 
 
   integration-test:

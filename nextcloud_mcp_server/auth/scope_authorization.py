@@ -3,7 +3,7 @@
 import logging
 import os
 from functools import wraps
-from typing import Callable
+from typing import Any, Callable
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
@@ -88,15 +88,18 @@ def require_scopes(*required_scopes: str):
         ScopeAuthorizationError: If required scopes are not present in the access token
     """
 
-    def decorator(func: Callable):
+    def decorator(func: Callable) -> Callable:
         # Store scope requirements as function metadata for dynamic filtering
-        func._required_scopes = list(required_scopes)  # type: ignore
+        func._required_scopes = list(required_scopes)  # type: ignore[attr-defined]
+
+        # Get function name for logging (works for any callable)
+        func_name = getattr(func, "__name__", repr(func))
 
         # Find which parameter receives the Context (FastMCP injects it by name)
         context_param_name = find_context_parameter(func)
 
         @wraps(func)
-        async def wrapper(*args, **kwargs):
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
             # Extract context from kwargs (where FastMCP injected it)
             ctx: Context | None = (
                 kwargs.get(context_param_name) if context_param_name else None
@@ -106,7 +109,7 @@ def require_scopes(*required_scopes: str):
                 # No context parameter found - likely BasicAuth mode
                 # In BasicAuth mode, all operations are allowed
                 logger.debug(
-                    f"No context parameter for {func.__name__} - allowing (BasicAuth mode)"
+                    f"No context parameter for {func_name} - allowing (BasicAuth mode)"
                 )
                 return await func(*args, **kwargs)
 
@@ -119,7 +122,7 @@ def require_scopes(*required_scopes: str):
                 # Not in OAuth mode (BasicAuth or no auth)
                 # In BasicAuth mode, all operations are allowed
                 logger.debug(
-                    f"No access token present for {func.__name__} - allowing (BasicAuth mode)"
+                    f"No access token present for {func_name} - allowing (BasicAuth mode)"
                 )
                 return await func(*args, **kwargs)
 
@@ -172,7 +175,7 @@ def require_scopes(*required_scopes: str):
 
                     if not has_nextcloud_scopes:
                         error_msg = (
-                            f"Access denied to {func.__name__}: "
+                            f"Access denied to {func_name}: "
                             f"Nextcloud resource access not provisioned. "
                             f"Please run the 'provision_nextcloud_access' tool first."
                         )
@@ -183,7 +186,7 @@ def require_scopes(*required_scopes: str):
             missing_scopes = required_scopes_set - token_scopes
             if missing_scopes:
                 error_msg = (
-                    f"Access denied to {func.__name__}: "
+                    f"Access denied to {func_name}: "
                     f"Missing required scopes: {', '.join(sorted(missing_scopes))}. "
                     f"Token has scopes: {', '.join(sorted(token_scopes)) if token_scopes else 'none'}"
                 )
@@ -192,7 +195,7 @@ def require_scopes(*required_scopes: str):
 
             # All required scopes present - allow execution
             logger.debug(
-                f"Scope authorization passed for {func.__name__}: {required_scopes}"
+                f"Scope authorization passed for {func_name}: {required_scopes}"
             )
             return await func(*args, **kwargs)
 
