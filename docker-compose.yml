@@ -161,7 +161,7 @@ services:
       # Nextcloud API endpoint (for accessing APIs with validated token)
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8002
-      - NEXTCLOUD_RESOURCE_URI=http://localhost:8080  # ADR-005: Nextcloud resource identifier for audience validation
+      - NEXTCLOUD_RESOURCE_URI=nextcloud  # ADR-005: Keycloak uses client IDs as audiences, not URLs
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8888/realms/nextcloud-mcp
 
       # Refresh token storage (ADR-002 Tier 1 & 2)
