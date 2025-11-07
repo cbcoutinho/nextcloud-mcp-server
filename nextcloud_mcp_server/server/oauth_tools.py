@@ -11,14 +11,86 @@ import secrets
 from typing import Optional
 from urllib.parse import urlencode
 
+import httpx
+from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.provider import AccessToken
 from mcp.server.fastmcp import Context
 from pydantic import BaseModel, Field
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
 from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
+from nextcloud_mcp_server.auth.userinfo_routes import _query_idp_userinfo
 
 logger = logging.getLogger(__name__)
+
+
+async def extract_user_id_from_token(ctx: Context) -> str:
+    """Extract user_id from the MCP access token (Flow 1).
+
+    Handles both JWT and opaque tokens:
+    - JWT: Decode and extract 'sub' claim
+    - Opaque: Call userinfo endpoint to get 'sub'
+
+    Args:
+        ctx: MCP context with access token
+
+    Returns:
+        user_id extracted from token, or "default_user" as fallback
+    """
+    # Use MCP SDK's get_access_token() which uses contextvars
+    access_token: AccessToken | None = get_access_token()
+
+    if not access_token or not access_token.token:
+        logger.warning("  ✗ No access token found via get_access_token()")
+        return "default_user"
+
+    token = access_token.token
+    is_jwt = "." in token and token.count(".") >= 2
+    logger.info(f"  Token type: {'JWT' if is_jwt else 'Opaque'}")
+
+    # Try JWT decode first
+    if is_jwt:
+        try:
+            import jwt
+
+            payload = jwt.decode(token, options={"verify_signature": False})
+            user_id = payload.get("sub", "unknown")
+            logger.info(f"  ✓ JWT decode successful: user_id={user_id}")
+            return user_id
+        except Exception as e:
+            logger.error(f"  ✗ JWT decode failed: {type(e).__name__}: {e}")
+
+    # Opaque token - call userinfo endpoint
+    logger.info("  Opaque token detected, calling userinfo endpoint...")
+    try:
+        # Get userinfo endpoint from OIDC discovery
+        oidc_discovery_uri = os.getenv(
+            "OIDC_DISCOVERY_URI",
+            "http://localhost:8080/.well-known/openid-configuration",
+        )
+        async with httpx.AsyncClient() as http_client:
+            discovery_response = await http_client.get(oidc_discovery_uri)
+            discovery_response.raise_for_status()
+            discovery = discovery_response.json()
+            userinfo_endpoint = discovery.get("userinfo_endpoint")
+
+        if userinfo_endpoint:
+            userinfo = await _query_idp_userinfo(token, userinfo_endpoint)
+            if userinfo:
+                user_id = userinfo.get("sub", "unknown")
+                logger.info(f"  ✓ Userinfo query successful: user_id={user_id}")
+                return user_id
+            else:
+                logger.error("  ✗ Userinfo query failed")
+        else:
+            logger.error("  ✗ No userinfo_endpoint available")
+    except Exception as e:
+        logger.error(f"  ✗ Userinfo query failed: {type(e).__name__}: {e}")
+
+    # Fallback
+    logger.warning("  Using fallback user_id: default_user")
+    return "default_user"
 
 
 class ProvisioningStatus(BaseModel):
@@ -80,13 +152,27 @@ async def get_provisioning_status(ctx: Context, user_id: str) -> ProvisioningSta
     Returns:
         ProvisioningStatus with current provisioning state
     """
+    logger.info(
+        f"  get_provisioning_status: Looking up refresh token for user_id={user_id}"
+    )
     storage = RefreshTokenStorage.from_env()
     await storage.initialize()
 
     token_data = await storage.get_refresh_token(user_id)
 
     if not token_data:
+        logger.info(
+            f"  get_provisioning_status: ✗ No refresh token found for user_id={user_id}"
+        )
         return ProvisioningStatus(is_provisioned=False)
+
+    logger.info(
+        f"  get_provisioning_status: ✓ Refresh token FOUND for user_id={user_id}"
+    )
+    logger.info(f"    flow_type: {token_data.get('flow_type')}")
+    logger.info(
+        f"    provisioning_client_id: {token_data.get('provisioning_client_id', 'N/A')}"
+    )
 
     # Convert timestamp to ISO format if present
     provisioned_at_str = None
@@ -313,13 +399,11 @@ async def revoke_nextcloud_access(
         RevocationResult with status
     """
     try:
-        # Get user ID from context if not provided
+        # Get user ID from token if not provided
         if not user_id:
-            user_id = (
-                ctx.context.get("user_id", "default_user")  # type: ignore
-                if hasattr(ctx, "context")
-                else "default_user"
-            )
+            logger.info("Extracting user_id from access token for revoke...")
+            user_id = await extract_user_id_from_token(ctx)
+            logger.info(f"  Revoke using user_id: {user_id}")
 
         # Check current status
         status = await get_provisioning_status(ctx, user_id)
@@ -419,27 +503,28 @@ async def check_logged_in(ctx: Context, user_id: Optional[str] = None) -> str:
     """
     try:
         # Extract user ID from the MCP access token (Flow 1 token)
-        if not user_id:
-            # Get the authorization token from context
-            if hasattr(ctx, "authorization") and ctx.authorization:
-                token = ctx.authorization.token  # type: ignore
-                # Decode token to get user info
-                try:
-                    import jwt
+        logger.info("=" * 60)
+        logger.info("check_logged_in: Starting user_id extraction")
+        logger.info("=" * 60)
 
-                    payload = jwt.decode(token, options={"verify_signature": False})
-                    user_id = payload.get("sub", "unknown")
-                    logger.info(f"Extracted user_id from Flow 1 token: {user_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to decode token: {e}")
-                    user_id = "default_user"
-            else:
-                user_id = "default_user"
+        if not user_id:
+            user_id = await extract_user_id_from_token(ctx)
+            logger.info(f"  Final user_id for check_logged_in: {user_id}")
+        else:
+            logger.info(f"  user_id provided as argument: {user_id}")
 
         # Check if already logged in
+        logger.info(f"Checking provisioning status for user_id: {user_id}")
         status = await get_provisioning_status(ctx, user_id)
+        logger.info(f"  Provisioning status: is_provisioned={status.is_provisioned}")
+
         if status.is_provisioned:
+            logger.info(f"✓ User {user_id} is already logged in - returning 'yes'")
+            logger.info("=" * 60)
             return "yes"
+
+        logger.info(f"✗ User {user_id} is NOT logged in - triggering elicitation")
+        logger.info("=" * 60)
 
         # Not logged in - generate OAuth URL for Flow 2
         enable_offline_access = (

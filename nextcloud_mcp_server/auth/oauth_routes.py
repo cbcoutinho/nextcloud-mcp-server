@@ -493,14 +493,22 @@ async def oauth_callback_nextcloud(request: Request):
     id_token = token_data.get("id_token")
 
     # Decode ID token to get user info
+    logger.info("=" * 60)
+    logger.info("oauth_callback_nextcloud: Extracting user_id from ID token")
+    logger.info("=" * 60)
     try:
         userinfo = jwt.decode(id_token, options={"verify_signature": False})
         user_id = userinfo.get("sub")
         username = userinfo.get("preferred_username") or userinfo.get("email")
+        logger.info("  ✓ ID token decode SUCCESSFUL")
+        logger.info(f"  Extracted user_id: {user_id}")
+        logger.info(f"  Username: {username}")
+        logger.info(f"  ID token payload keys: {list(userinfo.keys())}")
         logger.info(f"Flow 2: User {username} provisioned resource access")
     except Exception as e:
-        logger.warning(f"Failed to decode ID token: {e}")
+        logger.error(f"  ✗ ID token decode FAILED: {type(e).__name__}: {e}")
         user_id = "unknown"
+        logger.error(f"  Using fallback user_id: {user_id}")
 
     # Store master refresh token for Flow 2
     if refresh_token:
@@ -508,6 +516,13 @@ async def oauth_callback_nextcloud(request: Request):
         granted_scopes = (
             token_data.get("scope", "").split() if token_data.get("scope") else None
         )
+
+        logger.info("Storing refresh token:")
+        logger.info(f"  user_id: {user_id}")
+        logger.info("  flow_type: flow2")
+        logger.info("  token_audience: nextcloud")
+        logger.info(f"  provisioning_client_id: {state[:16]}...")
+        logger.info(f"  scopes: {granted_scopes}")
 
         await storage.store_refresh_token(
             user_id=user_id,
@@ -518,7 +533,8 @@ async def oauth_callback_nextcloud(request: Request):
             scopes=granted_scopes,
             expires_at=None,  # Refresh tokens typically don't expire
         )
-        logger.info(f"Stored Flow 2 master refresh token for user {user_id}")
+        logger.info(f"✓ Stored Flow 2 master refresh token for user {user_id}")
+        logger.info("=" * 60)
 
     # Return success HTML page
     success_html = """

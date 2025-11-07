@@ -8,7 +8,9 @@ import httpx
 import pytest
 from httpx import HTTPStatusError
 from mcp import ClientSession
+from mcp.client.session import RequestContext
 from mcp.client.streamable_http import streamablehttp_client
+from mcp.types import ElicitRequestParams, ElicitResult, ErrorData
 
 from nextcloud_mcp_server.client import NextcloudClient
 
@@ -110,6 +112,7 @@ async def create_mcp_client_session(
     url: str,
     token: str | None = None,
     client_name: str = "MCP",
+    elicitation_callback: Any = None,
 ) -> AsyncGenerator[ClientSession, Any]:
     """
     Factory function to create an MCP client session with proper lifecycle management.
@@ -127,6 +130,8 @@ async def create_mcp_client_session(
         url: MCP server URL (e.g., "http://localhost:8000/mcp")
         token: Optional OAuth access token for Bearer authentication
         client_name: Client name for logging (e.g., "OAuth MCP (Playwright)")
+        elicitation_callback: Optional callback for handling elicitation requests.
+            Should match signature: async def callback(context: RequestContext, params: ElicitRequestParams) -> ElicitResult | ErrorData
 
     Yields:
         Initialized MCP ClientSession
@@ -149,7 +154,9 @@ async def create_mcp_client_session(
         write_stream,
         _,
     ):
-        async with ClientSession(read_stream, write_stream) as session:
+        async with ClientSession(
+            read_stream, write_stream, elicitation_callback=elicitation_callback
+        ) as session:
             await session.initialize()
             logger.info(f"{client_name} client session initialized successfully")
             yield session
@@ -248,6 +255,132 @@ async def nc_mcp_oauth_jwt_client(
         token=playwright_oauth_token_jwt,
         client_name="OAuth JWT MCP (Playwright)",
     ):
+        yield session
+
+
+@pytest.fixture
+async def nc_mcp_oauth_client_with_elicitation(
+    anyio_backend,
+    playwright_oauth_token: str,
+    browser,
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    Fixture to create an MCP client session with elicitation callback support.
+
+    This fixture enables REAL elicitation testing by providing a callback that:
+    1. Extracts OAuth URL from elicitation message
+    2. Uses Playwright to complete OAuth flow automatically
+    3. Returns acceptance to confirm completion
+
+    This allows testing the complete login elicitation flow (ADR-006) end-to-end,
+    verifying that:
+    - The check_logged_in tool triggers elicitation for unauthenticated users
+    - The OAuth flow completes successfully via automated browser
+    - Refresh token is stored after OAuth completion
+    - The tool returns "yes" after successful login
+
+    Uses function scope to allow each test to have independent elicitation state.
+    """
+    # Get credentials from environment
+    username = os.getenv("NEXTCLOUD_USERNAME")
+    password = os.getenv("NEXTCLOUD_PASSWORD")
+
+    if not all([username, password]):
+        pytest.skip(
+            "Elicitation test requires NEXTCLOUD_USERNAME and NEXTCLOUD_PASSWORD"
+        )
+
+    # Track whether elicitation was triggered (for test validation)
+    elicitation_triggered = {"count": 0}
+
+    async def elicitation_callback(
+        context: RequestContext[ClientSession, Any],
+        params: ElicitRequestParams,
+    ) -> ElicitResult | ErrorData:
+        """Handle elicitation by completing OAuth flow with Playwright."""
+        elicitation_triggered["count"] += 1
+
+        logger.info("🎯 Elicitation callback invoked!")
+        logger.info(f"  Message: {params.message[:100]}...")
+        logger.info(f"  Schema: {params.schema}")
+
+        # Extract OAuth URL from elicitation message
+        import re
+
+        url_pattern = r"https?://[^\s]+"
+        urls = re.findall(url_pattern, params.message)
+
+        if not urls:
+            error_msg = "No URL found in elicitation message"
+            logger.error(f"❌ {error_msg}")
+            return ErrorData(code=-32602, message=error_msg)
+
+        oauth_url = urls[0]
+        logger.info(f"  Extracted URL: {oauth_url}")
+
+        # Complete OAuth flow with Playwright
+        page = await browser.new_page()
+        try:
+            logger.info("🌐 Navigating to OAuth URL...")
+            await page.goto(oauth_url, timeout=60000)
+
+            current_url = page.url
+            logger.info(f"  Current URL after navigation: {current_url}")
+
+            # Handle login form if present
+            if "/login" in current_url or "/index.php/login" in current_url:
+                logger.info("🔐 Login page detected, filling credentials...")
+                await page.wait_for_selector('input[name="user"]', timeout=10000)
+                await page.fill('input[name="user"]', username)
+                await page.fill('input[name="password"]', password)
+                await page.click('button[type="submit"]')
+                await page.wait_for_load_state("networkidle", timeout=60000)
+                logger.info("  ✓ Login completed")
+
+            # Handle consent screen if present
+            try:
+                consent_handled = await _handle_oauth_consent_screen(page, username)
+                if consent_handled:
+                    logger.info("  ✓ Consent granted")
+            except Exception as e:
+                logger.debug(f"  No consent screen: {e}")
+
+            # Wait for OAuth callback completion (redirect to success page or callback URL)
+            # The MCP server's callback endpoint will handle token exchange
+            await page.wait_for_load_state("networkidle", timeout=30000)
+            final_url = page.url
+            logger.info(f"  Final URL: {final_url}")
+
+            # Return success - user "accepted" the elicitation
+            logger.info("✅ OAuth flow completed, returning accept")
+            return ElicitResult(action="accept", content={"acknowledged": True})
+
+        except Exception as e:
+            logger.error(f"❌ Elicitation OAuth flow failed: {e}")
+            # Take screenshot for debugging
+            try:
+                screenshot_path = f"/tmp/elicitation_oauth_failure_{uuid.uuid4()}.png"
+                await page.screenshot(path=screenshot_path)
+                logger.error(f"  Screenshot saved: {screenshot_path}")
+            except Exception:
+                pass
+
+            return ErrorData(
+                code=-32603, message=f"Failed to complete OAuth flow: {str(e)}"
+            )
+
+        finally:
+            await page.close()
+
+    # Create client session with elicitation callback
+    async for session in create_mcp_client_session(
+        url="http://localhost:8001/mcp",
+        token=playwright_oauth_token,
+        client_name="OAuth MCP with Elicitation",
+        elicitation_callback=elicitation_callback,
+    ):
+        # Attach elicitation metadata for test validation
+        session.elicitation_triggered = elicitation_triggered
         yield session
 
 
