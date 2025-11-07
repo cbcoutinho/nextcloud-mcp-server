@@ -339,15 +339,46 @@ async def nc_mcp_oauth_client_with_elicitation(
 
             # Handle consent screen if present
             try:
+                logger.info(f"  Current URL before consent: {page.url}")
                 consent_handled = await _handle_oauth_consent_screen(page, username)
                 if consent_handled:
                     logger.info("  ✓ Consent granted")
+                else:
+                    logger.warning("  ⚠ No consent screen detected")
+                    # Take screenshot for debugging
+                    screenshot_path = f"/tmp/elicitation_no_consent_{uuid.uuid4()}.png"
+                    await page.screenshot(path=screenshot_path)
+                    logger.info(f"  Screenshot saved: {screenshot_path}")
+                    # Log page title for debugging
+                    page_title = await page.title()
+                    logger.info(f"  Page title: {page_title}")
             except Exception as e:
-                logger.debug(f"  No consent screen: {e}")
+                logger.warning(f"  ⚠ Consent screen handling failed: {e}")
+                # Take screenshot for debugging
+                screenshot_path = f"/tmp/elicitation_consent_error_{uuid.uuid4()}.png"
+                await page.screenshot(path=screenshot_path)
+                logger.info(f"  Screenshot saved: {screenshot_path}")
 
-            # Wait for OAuth callback completion (redirect to success page or callback URL)
+            # Wait for OAuth callback URL to be reached
             # The MCP server's callback endpoint will handle token exchange
-            await page.wait_for_load_state("networkidle", timeout=30000)
+            logger.info("⏳ Waiting for OAuth callback to complete...")
+
+            # Wait for URL to contain /oauth/callback or a success page
+            # Give it up to 30 seconds for the redirect and token exchange
+            for _ in range(60):  # 60 * 0.5s = 30s max wait
+                await anyio.sleep(0.5)
+                current_url = page.url
+                if "/oauth/callback" in current_url or "/user" in current_url:
+                    logger.info(f"  ✓ Callback URL reached: {current_url}")
+                    break
+            else:
+                logger.warning(
+                    f"  ⚠ Timeout waiting for callback, final URL: {page.url}"
+                )
+
+            # Wait a bit more to ensure the server processed the callback
+            await anyio.sleep(2)
+
             final_url = page.url
             logger.info(f"  Final URL: {final_url}")
 
