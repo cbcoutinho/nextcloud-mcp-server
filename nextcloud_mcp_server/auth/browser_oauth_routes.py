@@ -341,13 +341,18 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     # Store refresh token (for background jobs ONLY)
     if refresh_token:
         logger.info(f"Storing refresh token for user_id: {user_id}")
+        logger.info(f"  State parameter (provisioning_client_id): {state[:16]}...")
         await storage.store_refresh_token(
             user_id=user_id,
             refresh_token=refresh_token,
             expires_at=None,
             flow_type="browser",  # Browser-based login flow
+            provisioning_client_id=state,  # Store state for unified session lookup
         )
         logger.info(f"✓ Refresh token stored successfully for user_id: {user_id}")
+        logger.info(
+            f"  Token can now be found via provisioning_client_id={state[:16]}..."
+        )
     else:
         logger.warning("No refresh token in token response - cannot store session")
 

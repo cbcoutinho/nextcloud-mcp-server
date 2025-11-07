@@ -1123,6 +1123,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     # These require session authentication, so we wrap them in a separate app
     from nextcloud_mcp_server.auth.session_backend import SessionAuthBackend
     from nextcloud_mcp_server.auth.userinfo_routes import (
+        revoke_session,
         user_info_html,
         user_info_json,
     )
@@ -1132,6 +1133,9 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     browser_routes = [
         Route("/", user_info_json, methods=["GET"]),  # /user/ → user_info_json
         Route("/page", user_info_html, methods=["GET"]),  # /user/page → user_info_html
+        Route(
+            "/revoke", revoke_session, methods=["POST"], name="revoke_session_endpoint"
+        ),  # /user/revoke → revoke_session
     ]
 
     browser_app = Starlette(routes=browser_routes)

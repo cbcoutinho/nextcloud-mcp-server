@@ -526,20 +526,63 @@ async def check_logged_in(ctx: Context, user_id: Optional[str] = None) -> str:
         )
 
         if result.action == "accept":
-            # Check if login was successful by looking for refresh token with our state
-            # The callback stores refresh_token with provisioning_client_id=state
-            # This works regardless of the user_id we started with
+            # Check if login was successful by looking for refresh token
+            # Strategy: Try multiple lookup methods to handle both flows
+            logger.info("User accepted login prompt, checking for refresh token")
+            logger.info(f"  State parameter: {state[:16]}...")
+            logger.info(f"  User ID: {user_id}")
+
+            # First, try to find token by provisioning_client_id (Flow 2 from elicitation)
             refresh_token_data = (
                 await storage.get_refresh_token_by_provisioning_client_id(state)
             )
+
             if refresh_token_data:
-                logger.info(f"Login successful for state={state[:16]}...")
-                return "yes"
-            else:
-                return (
-                    "Login not detected. Please ensure you completed the login "
-                    "at the provided URL before clicking OK."
+                logger.info("✓ Refresh token found via provisioning_client_id lookup")
+                logger.info(
+                    f"  Flow type: {refresh_token_data.get('flow_type', 'unknown')}"
                 )
+                logger.info(
+                    f"  Provisioned at: {refresh_token_data.get('provisioned_at', 'unknown')}"
+                )
+                return "yes"
+
+            # Fallback: Try to find token by user_id (browser login or any other flow)
+            logger.info(f"✗ No token found with provisioning_client_id={state[:16]}...")
+            logger.info(f"  Trying fallback lookup by user_id: {user_id}")
+
+            refresh_token_data = await storage.get_refresh_token(user_id)
+
+            if refresh_token_data:
+                logger.info("✓ Refresh token found via user_id lookup")
+                logger.info(
+                    f"  Flow type: {refresh_token_data.get('flow_type', 'unknown')}"
+                )
+                logger.info(
+                    f"  Provisioned at: {refresh_token_data.get('provisioned_at', 'unknown')}"
+                )
+                logger.info(
+                    f"  Provisioning client ID: {refresh_token_data.get('provisioning_client_id', 'NULL')}"
+                )
+                logger.info(
+                    "  Note: This token was created via browser login or different flow"
+                )
+                return "yes"
+
+            # No token found by either method
+            logger.warning(f"✗ No refresh token found for user {user_id}")
+            logger.warning(
+                f"  Checked provisioning_client_id={state[:16]}... - NOT FOUND"
+            )
+            logger.warning(f"  Checked user_id={user_id} - NOT FOUND")
+            logger.warning(
+                "  This may indicate the user completed login but token wasn't stored"
+            )
+
+            return (
+                "Login not detected. Please ensure you completed the login "
+                "at the provided URL before clicking OK."
+            )
         elif result.action == "decline":
             return "Login declined by user."
         else:
