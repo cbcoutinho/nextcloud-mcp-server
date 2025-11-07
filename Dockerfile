@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:0.9.7-python3.11-alpine@sha256:0006b77df7ebf46e68959fdc8d3af9d19f1adfae8c2e7e77907ad257e5d05be4
+FROM ghcr.io/astral-sh/uv:0.9.8-python3.11-alpine@sha256:6c842c49ad032f46b62f32a7e7779f45f12671a8e0d82ea24c766ab62d58b396
 
 # Install dependencies
 # 1. git (required for caldav dependency from git)
