@@ -57,6 +57,15 @@ class RevocationResult(BaseModel):
     message: str = Field(description="Status message for the user")
 
 
+class LoginConfirmation(BaseModel):
+    """Schema for login confirmation elicitation."""
+
+    acknowledged: bool = Field(
+        default=False,
+        description="Check this box after completing login at the provided URL",
+    )
+
+
 async def get_provisioning_status(ctx: Context, user_id: str) -> ProvisioningStatus:
     """
     Check the provisioning status for Nextcloud access.
@@ -106,36 +115,33 @@ def generate_oauth_url_for_flow2(
     """
     Generate OAuth authorization URL for Flow 2 (Resource Provisioning).
 
-    This creates the URL that the MCP server uses to get delegated
-    access to Nextcloud on behalf of the user.
+    This returns the MCP server's Flow 2 authorization endpoint, which will:
+    1. Generate PKCE parameters (required by Nextcloud OIDC)
+    2. Store code_verifier in session
+    3. Redirect to Nextcloud IdP with PKCE
+    4. Handle the callback with code_verifier for token exchange
 
     Args:
-        oidc_discovery_url: OIDC provider discovery URL
-        server_client_id: MCP server's OAuth client ID
-        redirect_uri: Callback URL for the MCP server
+        oidc_discovery_url: OIDC provider discovery URL (unused, kept for compatibility)
+        server_client_id: MCP server's OAuth client ID (unused, kept for compatibility)
+        redirect_uri: Callback URL for the MCP server (unused, kept for compatibility)
         state: CSRF protection state
-        scopes: List of scopes to request
+        scopes: List of scopes to request (unused, kept for compatibility)
 
     Returns:
-        Complete authorization URL for Flow 2
+        MCP server's Flow 2 authorization URL with state parameter
     """
-    # Extract base URL from discovery URL
-    # Format: https://example.com/.well-known/openid-configuration
-    # We need: https://example.com/apps/oidc/authorize
-    base_url = oidc_discovery_url.replace("/.well-known/openid-configuration", "")
-    auth_endpoint = f"{base_url}/apps/oidc/authorize"
+    # Use the MCP server's Flow 2 endpoint which handles PKCE internally
+    # This endpoint will:
+    # - Generate code_verifier and code_challenge (PKCE)
+    # - Store code_verifier in session storage
+    # - Redirect to Nextcloud with PKCE parameters
+    # - Handle the callback with proper code_verifier
+    mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+    auth_endpoint = f"{mcp_server_url}/oauth/authorize-nextcloud"
 
-    # Build OAuth parameters
-    params = {
-        "response_type": "code",
-        "client_id": server_client_id,
-        "redirect_uri": redirect_uri,
-        "scope": " ".join(scopes),
-        "state": state,
-        # Request offline access for background operations
-        "access_type": "offline",
-        "prompt": "consent",  # Force consent screen to show scopes
-    }
+    # Only pass state parameter - the endpoint handles everything else
+    params = {"state": state}
 
     return f"{auth_endpoint}?{urlencode(params)}"
 
@@ -190,27 +196,33 @@ async def provision_nextcloud_access(
             )
 
         # Get configuration
-        enable_progressive = (
-            os.getenv("ENABLE_PROGRESSIVE_CONSENT", "false").lower() == "true"
+        enable_offline_access = (
+            os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() == "true"
         )
-        if not enable_progressive:
+        if not enable_offline_access:
             return ProvisioningResult(
                 success=False,
                 message=(
-                    "Progressive Consent is not enabled. "
-                    "Set ENABLE_PROGRESSIVE_CONSENT=true to use this feature."
+                    "Offline access is not enabled. "
+                    "Set ENABLE_OFFLINE_ACCESS=true to use this feature."
                 ),
             )
 
         # Get MCP server's OAuth client credentials
+        # Try environment variable first, then fall back to DCR client_id
         server_client_id = os.getenv("MCP_SERVER_CLIENT_ID")
         if not server_client_id:
-            # In production, would use Dynamic Client Registration here
+            # Try to get from lifespan context (DCR)
+            lifespan_ctx = ctx.request_context.lifespan_context
+            if hasattr(lifespan_ctx, "server_client_id"):
+                server_client_id = lifespan_ctx.server_client_id
+
+        if not server_client_id:
             return ProvisioningResult(
                 success=False,
                 message=(
                     "MCP server OAuth client not configured. "
-                    "Administrator must set MCP_SERVER_CLIENT_ID."
+                    "Set MCP_SERVER_CLIENT_ID environment variable or use Dynamic Client Registration."
                 ),
             )
 
@@ -229,7 +241,7 @@ async def provision_nextcloud_access(
 
         # Create OAuth session for Flow 2
         session_id = f"flow2_{user_id}_{secrets.token_hex(8)}"
-        redirect_uri = f"{os.getenv('NEXTCLOUD_MCP_SERVER_URL', 'http://localhost:8000')}/oauth/callback-nextcloud"
+        redirect_uri = f"{os.getenv('NEXTCLOUD_MCP_SERVER_URL', 'http://localhost:8000')}/oauth/callback"
 
         await storage.store_oauth_session(
             session_id=session_id,
@@ -390,6 +402,154 @@ async def check_provisioning_status(
     return await get_provisioning_status(ctx, user_id)
 
 
+async def check_logged_in(ctx: Context, user_id: Optional[str] = None) -> str:
+    """
+    MCP Tool: Check if user is logged in and elicit login if needed.
+
+    This tool checks whether the user has completed Flow 2 (resource provisioning)
+    to grant offline access to Nextcloud. If not logged in, it uses MCP elicitation
+    to prompt the user to complete the login flow.
+
+    Args:
+        ctx: MCP context with user's Flow 1 token
+        user_id: Optional user identifier (extracted from token if not provided)
+
+    Returns:
+        "yes" if logged in, or elicitation prompting for login
+    """
+    try:
+        # Extract user ID from the MCP access token (Flow 1 token)
+        if not user_id:
+            # Get the authorization token from context
+            if hasattr(ctx, "authorization") and ctx.authorization:
+                token = ctx.authorization.token  # type: ignore
+                # Decode token to get user info
+                try:
+                    import jwt
+
+                    payload = jwt.decode(token, options={"verify_signature": False})
+                    user_id = payload.get("sub", "unknown")
+                    logger.info(f"Extracted user_id from Flow 1 token: {user_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to decode token: {e}")
+                    user_id = "default_user"
+            else:
+                user_id = "default_user"
+
+        # Check if already logged in
+        status = await get_provisioning_status(ctx, user_id)
+        if status.is_provisioned:
+            return "yes"
+
+        # Not logged in - generate OAuth URL for Flow 2
+        enable_offline_access = (
+            os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() == "true"
+        )
+        if not enable_offline_access:
+            return (
+                "Not logged in. Offline access is not enabled. "
+                "Set ENABLE_OFFLINE_ACCESS=true to use this feature."
+            )
+
+        # Get MCP server's OAuth client credentials
+        # Try environment variable first, then fall back to DCR client_id
+        server_client_id = os.getenv("MCP_SERVER_CLIENT_ID")
+        if not server_client_id:
+            # Try to get from lifespan context (DCR)
+            lifespan_ctx = ctx.request_context.lifespan_context
+            if hasattr(lifespan_ctx, "server_client_id"):
+                server_client_id = lifespan_ctx.server_client_id
+
+        if not server_client_id:
+            return (
+                "Not logged in. MCP server OAuth client not configured. "
+                "Set MCP_SERVER_CLIENT_ID environment variable or use Dynamic Client Registration."
+            )
+
+        # Generate OAuth URL for Flow 2
+        oidc_discovery_url = os.getenv(
+            "OIDC_DISCOVERY_URL",
+            f"{os.getenv('NEXTCLOUD_HOST')}/.well-known/openid-configuration",
+        )
+
+        # Generate secure state for CSRF protection
+        state = secrets.token_urlsafe(32)
+
+        # Store state in session for validation on callback
+        storage = RefreshTokenStorage.from_env()
+        await storage.initialize()
+
+        # Create OAuth session for Flow 2
+        session_id = f"flow2_{user_id}_{secrets.token_hex(8)}"
+        redirect_uri = f"{os.getenv('NEXTCLOUD_MCP_SERVER_URL', 'http://localhost:8000')}/oauth/callback"
+
+        await storage.store_oauth_session(
+            session_id=session_id,
+            client_redirect_uri="",  # No client redirect for Flow 2
+            state=state,
+            flow_type="flow2",
+            is_provisioning=True,
+            ttl_seconds=600,  # 10 minute TTL
+        )
+
+        # Define scopes for Nextcloud access
+        scopes = [
+            "openid",
+            "profile",
+            "email",
+            "offline_access",  # Critical for background operations
+            "notes:read",
+            "notes:write",
+            "calendar:read",
+            "calendar:write",
+            "contacts:read",
+            "contacts:write",
+            "files:read",
+            "files:write",
+        ]
+
+        # Generate authorization URL
+        auth_url = generate_oauth_url_for_flow2(
+            oidc_discovery_url=oidc_discovery_url,
+            server_client_id=server_client_id,
+            redirect_uri=redirect_uri,
+            state=state,
+            scopes=scopes,
+        )
+
+        # Use elicitation to prompt user to login
+        logger.info(f"Eliciting login for user {user_id} with URL: {auth_url}")
+
+        result = await ctx.elicit(
+            message=f"Please log in to Nextcloud at the following URL:\n\n{auth_url}\n\nAfter completing the login, check the box below and click OK.",
+            schema=LoginConfirmation,
+        )
+
+        if result.action == "accept":
+            # Check if login was successful by looking for refresh token with our state
+            # The callback stores refresh_token with provisioning_client_id=state
+            # This works regardless of the user_id we started with
+            refresh_token_data = (
+                await storage.get_refresh_token_by_provisioning_client_id(state)
+            )
+            if refresh_token_data:
+                logger.info(f"Login successful for state={state[:16]}...")
+                return "yes"
+            else:
+                return (
+                    "Login not detected. Please ensure you completed the login "
+                    "at the provided URL before clicking OK."
+                )
+        elif result.action == "decline":
+            return "Login declined by user."
+        else:
+            return "Login cancelled by user."
+
+    except Exception as e:
+        logger.error(f"Failed to check login status: {e}")
+        return f"Error checking login status: {str(e)}"
+
+
 # Register MCP tools
 def register_oauth_tools(mcp):
     """Register OAuth and provisioning tools with the MCP server."""
@@ -428,3 +588,14 @@ def register_oauth_tools(mcp):
         ctx: Context, user_id: Optional[str] = None
     ) -> ProvisioningStatus:
         return await check_provisioning_status(ctx, user_id)
+
+    @mcp.tool(
+        name="check_logged_in",
+        description=(
+            "Check if you are logged in to Nextcloud. "
+            "If not logged in, this tool will prompt you to complete the login flow."
+        ),
+    )
+    @require_scopes("openid")
+    async def tool_check_logged_in(ctx: Context, user_id: Optional[str] = None) -> str:
+        return await check_logged_in(ctx, user_id)

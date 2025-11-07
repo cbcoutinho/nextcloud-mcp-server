@@ -1,8 +1,8 @@
 """
-Provisioning decorator for ADR-004 Progressive Consent Architecture.
+Provisioning decorator for ADR-004 (Offline Access Architecture).
 
 This decorator ensures users have completed Flow 2 (Resource Provisioning)
-before accessing Nextcloud resources.
+before accessing Nextcloud resources when offline access is enabled.
 """
 
 import functools
@@ -73,7 +73,7 @@ def require_provisioning(func: Callable) -> Callable:
             logger.debug("Token exchange mode detected - skipping provisioning check")
             return await func(*args, **kwargs)
 
-        # Progressive Consent mode (offline access) - check if user has completed Flow 2 provisioning
+        # Offline access mode - check if user has completed Flow 2 provisioning
         # Get user_id from authorization token
         user_id = None
         if hasattr(ctx, "authorization") and ctx.authorization:

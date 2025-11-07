@@ -751,6 +751,40 @@
         "display.on.consent.screen": "true",
         "consent.screen.text": "Create, update, and delete tasks"
       }
+    },
+    {
+      "name": "default-audience",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false",
+        "gui.order": "",
+        "consent.screen.text": ""
+      },
+      "protocolMappers": [
+        {
+          "name": "mcp-server-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "nextcloud-mcp-server",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "mcp-url-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "http://localhost:8002",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
     }
   ],
   "components": {
@@ -791,7 +825,8 @@
     "profile",
     "email",
     "roles",
-    "web-origins"
+    "web-origins",
+    "default-audience"
   ],
   "defaultOptionalClientScopes": [
     "offline_access",

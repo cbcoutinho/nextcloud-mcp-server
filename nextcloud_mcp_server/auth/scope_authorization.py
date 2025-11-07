@@ -130,13 +130,13 @@ def require_scopes(*required_scopes: str):
             token_scopes = set(access_token.scopes or [])
             required_scopes_set = set(required_scopes)
 
-            # Check if Progressive Consent is enabled
-            enable_progressive = (
-                os.getenv("ENABLE_PROGRESSIVE_CONSENT", "false").lower() == "true"
+            # Check if offline access is enabled
+            enable_offline_access = (
+                os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() == "true"
             )
 
-            # In Progressive Consent mode, check if Nextcloud scopes require provisioning
-            if enable_progressive:
+            # In offline access mode, check if Nextcloud scopes require provisioning
+            if enable_offline_access:
                 # Check if any required scopes are Nextcloud-specific
                 nextcloud_scopes = [
                     s

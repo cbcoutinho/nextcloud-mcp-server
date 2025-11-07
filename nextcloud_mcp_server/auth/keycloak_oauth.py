@@ -90,6 +90,8 @@ class KeycloakOAuthClient:
             )
 
         # Parse server URL to construct redirect URI
+        # Note: This is for OAuth client initialization, not used for actual redirects
+        # since this client is used for backend token operations (exchange, refresh)
         parsed_url = urlparse(server_url)
         redirect_uri = f"{parsed_url.scheme}://{parsed_url.netloc}/oauth/callback"
 

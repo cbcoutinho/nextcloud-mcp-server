@@ -1,13 +1,33 @@
 # ADR-006: Progressive Consent via URL Elicitation (SEP-1036)
 
-**Status**: Proposed
-**Date**: 2025-01-05
+**Status**: Partially Implemented (Interim Workaround)
+**Date**: 2025-01-05 (Updated: 2025-01-07)
 **Related**: [SEP-1036](https://github.com/modelcontextprotocol/specification/pull/887), ADR-004
 **Depends On**: ADR-005 (token validation)
 
 ## Context
 
-The current progressive consent implementation (ADR-004) requires users to manually visit OAuth URLs returned by MCP tools. This creates a poor user experience:
+### What is Progressive Consent?
+
+**Progressive consent is a mechanism, not a feature**. It describes HOW users grant the MCP server access to Nextcloud resources through OAuth elicitation. The server can operate in two modes:
+
+1. **Pass-through mode (ENABLE_OFFLINE_ACCESS=false)**:
+   - No refresh tokens requested or stored
+   - Server passes through client's access token to Nextcloud
+   - No provisioning tools available
+   - Suitable for stateless, client-driven operations
+
+2. **Offline access mode (ENABLE_OFFLINE_ACCESS=true)**:
+   - Server requests `offline_access` scope and stores refresh tokens
+   - Enables background operations and server-initiated API calls
+   - Provisioning tools available (`provision_nextcloud_access`, `check_logged_in`)
+   - Requires explicit user consent via OAuth Flow 2
+
+**Single-user mode (BasicAuth)** doesn't use progressive consent at all - credentials are directly available.
+
+### Current User Experience Issues
+
+The current offline access provisioning flow (ADR-004) requires users to manually visit OAuth URLs returned by MCP tools. This creates a poor user experience:
 
 1. User calls `provision_nextcloud_access` tool
 2. Tool returns a URL as text in the response
@@ -346,7 +366,15 @@ capabilities = {
 
 ### 6. Environment Variables
 
-**New variables**:
+**Primary control**:
+```bash
+# ENABLE_OFFLINE_ACCESS: Controls whether server requests refresh tokens and enables provisioning tools
+# Default: false (pass-through mode)
+# Set to true to enable offline access mode with Flow 2 provisioning
+ENABLE_OFFLINE_ACCESS=true
+```
+
+**Future variables** (when URL elicitation is implemented):
 ```bash
 # ELICITATION_CALLBACK_URL: Base URL for OAuth callbacks with elicitation tracking
 # Default: NEXTCLOUD_MCP_SERVER_URL + /oauth/callback
@@ -357,9 +385,10 @@ ELICITATION_CALLBACK_URL=http://localhost:8000/oauth/callback
 ELICITATION_TIMEOUT_SECONDS=300
 ```
 
-**Removed variables** (no longer needed):
+**Removed variables**:
 ```bash
-# ENABLE_PROGRESSIVE_CONSENT - removed, now always enabled in OAuth mode
+# ENABLE_PROGRESSIVE_CONSENT - Removed. Progressive consent is a mechanism, not a feature toggle.
+#                               Use ENABLE_OFFLINE_ACCESS to control whether provisioning tools are available.
 # MCP_SERVER_CLIENT_ID - merged into OIDC_CLIENT_ID
 ```
 
@@ -626,6 +655,180 @@ async def validate_elicitation_id(elicitation_id: str, user_id: str) -> bool:
 
 **Rejection reason**: Follow spec pattern (polling via elicitation/track)
 
+## Interim Implementation: Inline Form Elicitation (Pre-SEP-1036)
+
+**Note**: SEP-1036 (URL mode elicitation) is not yet available in the stable MCP Python SDK. As a temporary workaround, we've implemented a simplified version using the current **inline form elicitation** API.
+
+### What Changed
+
+Instead of waiting for URL mode elicitation, we implemented a `check_logged_in` tool that:
+
+1. Checks if the user has completed Flow 2 (resource provisioning)
+2. If logged in, returns `"yes"`
+3. If not logged in, uses **inline form elicitation** to prompt the user
+
+### Implementation Details
+
+**New Tool**: `check_logged_in`
+
+```python
+# nextcloud_mcp_server/server/oauth_tools.py
+
+class LoginConfirmation(BaseModel):
+    """Schema for login confirmation elicitation."""
+    acknowledged: bool = Field(
+        default=False,
+        description="Check this box after completing login at the provided URL",
+    )
+
+@mcp.tool(name="check_logged_in")
+@require_scopes("openid")
+async def tool_check_logged_in(ctx: Context, user_id: Optional[str] = None) -> str:
+    """Check if user is logged in and elicit login if needed."""
+    # Check if already logged in
+    status = await get_provisioning_status(ctx, user_id)
+    if status.is_provisioned:
+        return "yes"
+
+    # Generate OAuth URL for Flow 2
+    auth_url = generate_oauth_url_for_flow2(...)
+
+    # Use inline form elicitation (current MCP API)
+    result = await ctx.elicit(
+        message=f"Please log in to Nextcloud at the following URL:\n\n{auth_url}\n\nAfter completing the login, check the box below and click OK.",
+        schema=LoginConfirmation,
+    )
+
+    if result.action == "accept":
+        # Verify login succeeded
+        status = await get_provisioning_status(ctx, user_id)
+        return "yes" if status.is_provisioned else "Login not detected"
+    elif result.action == "decline":
+        return "Login declined by user."
+    else:
+        return "Login cancelled by user."
+```
+
+**OAuth Routes** (added to `app.py`):
+
+```python
+# Flow 2 routes for resource provisioning
+routes.append(
+    Route("/oauth/authorize-nextcloud", oauth_authorize_nextcloud, methods=["GET"])
+)
+routes.append(
+    Route("/oauth/callback-nextcloud", oauth_callback_nextcloud, methods=["GET"])
+)
+```
+
+### User Experience
+
+```
+User: *calls check_logged_in tool*
+
+MCP Client: Displays form elicitation
+┌─────────────────────────────────────────────────────────┐
+│ Please log in to Nextcloud at the following URL:      │
+│                                                         │
+│ http://localhost:8000/oauth/authorize-nextcloud?...    │
+│                                                         │
+│ After completing the login, check the box below and    │
+│ click OK.                                               │
+│                                                         │
+│ ☐ Check this box after completing login                │
+│                                                         │
+│ [Accept] [Decline] [Cancel]                            │
+└─────────────────────────────────────────────────────────┘
+
+User: *copies URL, opens in browser, completes OAuth*
+User: *checks box and clicks Accept*
+
+MCP Server: Verifies login and returns "yes"
+```
+
+### Limitations of Interim Approach
+
+1. **Manual URL Handling**: User must manually copy and paste the URL (not clickable)
+2. **No Automatic Browser Opening**: Client doesn't automatically open the URL
+3. **No Progress Tracking**: Can't track OAuth completion status in real-time
+4. **URL in Message Text**: Login URL embedded in plain text message (not as structured field)
+5. **Client-Side Confirmation**: Relies on user clicking "OK" after OAuth (honor system)
+
+### Why Not Use URL Mode Now?
+
+The current stable MCP Python SDK (`main` branch) only supports **inline form elicitation**:
+
+```python
+# Current API (no 'mode' parameter)
+class ElicitRequestParams(RequestParams):
+    message: str
+    requestedSchema: ElicitRequestedSchema
+    # No 'mode', 'url', or 'elicitationId' fields
+```
+
+URL mode elicitation (`mode: "url"`) is only available in the SEP-1036 branch, which has not been merged to `main` yet.
+
+### Migration to URL Mode (When SEP-1036 Lands)
+
+Once SEP-1036 is merged and available in the stable SDK, we will migrate to URL mode elicitation:
+
+**Before (Current Workaround)**:
+```python
+result = await ctx.elicit(
+    message=f"Please log in at: {auth_url}\n\nClick OK after login.",
+    schema=LoginConfirmation,
+)
+```
+
+**After (URL Mode)**:
+```python
+result = await ctx.session.elicit_url(
+    message="Please log in to Nextcloud to authorize this MCP server.",
+    url=auth_url,
+    elicitation_id=elicitation_id,
+)
+```
+
+**Benefits of migration**:
+- Automatic URL opening (with user consent)
+- Clickable URLs in client UI
+- Progress tracking via `elicitation/track`
+- Better security (URL not in message text)
+- Auto-retry support
+
+### Testing
+
+Integration tests validate the current inline form elicitation:
+
+```python
+# tests/server/oauth/test_login_elicitation.py
+
+async def test_check_logged_in_already_authenticated(nc_mcp_oauth_client):
+    """Test immediate 'yes' for authenticated users."""
+    result = await nc_mcp_oauth_client.call_tool("check_logged_in", arguments={})
+    assert "yes" in result.content[0].text.lower()
+
+async def test_check_logged_in_url_format(nc_mcp_oauth_client):
+    """Test that login URL (when needed) contains correct OAuth parameters."""
+    result = await nc_mcp_oauth_client.call_tool("check_logged_in", arguments={})
+    response_text = result.content[0].text
+
+    # If URL present, validate OAuth parameters
+    if "http" in response_text:
+        assert "response_type=code" in response_text
+        assert "client_id=" in response_text
+        assert "redirect_uri=" in response_text
+        assert "openid" in response_text
+```
+
+### Future Work
+
+- **Monitor SEP-1036**: Watch for merge to MCP Python SDK `main` branch
+- **Implement URL Mode**: Once available, migrate `check_logged_in` to use `ctx.session.elicit_url()`
+- **Add Progress Tracking**: Implement `elicitation/track` endpoint for OAuth completion status
+- **Implement Error-Triggered Elicitation**: Use `@require_provisioning` decorator to return `ElicitationRequired` errors
+- **Remove Manual Workaround**: Deprecate inline form approach once URL mode is stable
+
 ## References
 
 - [SEP-1036: URL Mode Elicitation](https://github.com/modelcontextprotocol/specification/pull/887)
@@ -636,16 +839,27 @@ async def validate_elicitation_id(elicitation_id: str, user_id: str) -> bool:
 
 ## Implementation Checklist
 
+### Interim Implementation (Inline Form Elicitation)
+
+- [x] Create `check_logged_in` tool with inline form elicitation
+- [x] Register Flow 2 OAuth routes (`/oauth/authorize-nextcloud`, `/oauth/callback-nextcloud`)
+- [x] Write integration tests for login elicitation flow
+- [x] Update ADR-006 with interim implementation documentation
+- [x] Add `LoginConfirmation` schema for elicitation
+- [ ] Run tests to validate implementation
+
+### Future Work (URL Mode Elicitation - Post SEP-1036)
+
 - [ ] Implement `@require_provisioning` decorator with ElicitationRequired error
 - [ ] Add `elicitation/track` request handler
 - [ ] Update OAuth callback to mark elicitations complete
 - [ ] Add elicitation storage (ID, user, status, timestamps)
 - [ ] Update all Nextcloud tools with `@require_provisioning`
 - [ ] Add URL elicitation capability declaration
-- [ ] Write integration tests for elicitation flow
 - [ ] Write tests for progress tracking
-- [ ] Update documentation with elicitation examples
+- [ ] Update documentation with URL mode examples
 - [ ] Add migration guide for manual tools → elicitation
+- [ ] Migrate `check_logged_in` from inline form to URL mode
 - [ ] Keep manual tools with deprecation warnings (v0.26-0.27)
 - [ ] Remove manual tools (v0.28.0)
 - [ ] Update CHANGELOG.md with migration timeline
