@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -8,6 +9,7 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
 
+import anyio
 import click
 import httpx
 import uvicorn
@@ -32,6 +34,7 @@ from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import (
     LOGGING_CONFIG,
     get_document_processor_config,
+    get_settings,
     setup_logging,
 )
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
@@ -47,6 +50,7 @@ from nextcloud_mcp_server.server import (
     configure_webdav_tools,
 )
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
+from nextcloud_mcp_server.vector import processor_task, scanner_task
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +210,9 @@ class AppContext:
     """Application context for BasicAuth mode."""
 
     client: NextcloudClient
+    document_queue: Optional[asyncio.Queue] = None
+    shutdown_event: Optional[anyio.Event] = None
+    scanner_wake_event: Optional[anyio.Event] = None
 
 
 @dataclass
@@ -369,6 +376,9 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
 
     Creates a single Nextcloud client with basic authentication
     that is shared across all requests.
+
+    If vector sync is enabled (VECTOR_SYNC_ENABLED=true), also starts
+    background tasks for automatic document indexing (ADR-007).
     """
     logger.info("Starting MCP server in BasicAuth mode")
     logger.info("Creating Nextcloud client with BasicAuth")
@@ -379,11 +389,74 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
     # Initialize document processors
     initialize_document_processors()
 
-    try:
-        yield AppContext(client=client)
-    finally:
-        logger.info("Shutting down BasicAuth mode")
-        await client.close()
+    settings = get_settings()
+
+    # Check if vector sync is enabled
+    if settings.vector_sync_enabled:
+        logger.info("Vector sync enabled - starting background tasks")
+
+        # Get username from environment for BasicAuth mode
+        username = os.getenv("NEXTCLOUD_USERNAME")
+        if not username:
+            raise ValueError(
+                "NEXTCLOUD_USERNAME is required for vector sync in BasicAuth mode"
+            )
+
+        # Initialize shared state
+        document_queue = asyncio.Queue(maxsize=settings.vector_sync_queue_max_size)
+        shutdown_event = anyio.Event()
+        scanner_wake_event = anyio.Event()
+
+        # Start background tasks using anyio TaskGroup
+        async with anyio.create_task_group() as tg:
+            # Start scanner task
+            tg.start_soon(
+                scanner_task,
+                document_queue,
+                shutdown_event,
+                scanner_wake_event,
+                client,
+                username,
+            )
+
+            # Start processor pool
+            for i in range(settings.vector_sync_processor_workers):
+                tg.start_soon(
+                    processor_task,
+                    i,
+                    document_queue,
+                    shutdown_event,
+                    client,
+                    username,
+                )
+
+            logger.info(
+                f"Background sync tasks started: 1 scanner + {settings.vector_sync_processor_workers} processors"
+            )
+
+            # Yield with background tasks running
+            try:
+                yield AppContext(
+                    client=client,
+                    document_queue=document_queue,
+                    shutdown_event=shutdown_event,
+                    scanner_wake_event=scanner_wake_event,
+                )
+            finally:
+                # Shutdown signal
+                logger.info("Shutting down background sync tasks")
+                shutdown_event.set()
+
+                # TaskGroup automatically cancels all tasks on exit
+                logger.info("Background sync tasks stopped")
+                await client.close()
+    else:
+        # No vector sync - simple lifecycle
+        try:
+            yield AppContext(client=client)
+        finally:
+            logger.info("Shutting down BasicAuth mode")
+            await client.close()
 
 
 async def setup_oauth_config():
@@ -946,7 +1019,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         """Readiness probe endpoint.
 
         Returns 200 OK if the application is ready to serve traffic.
-        Checks that required configuration is present.
+        Checks that required configuration is present and Qdrant if vector sync enabled.
         """
         checks = {}
         is_ready = True
@@ -974,6 +1047,24 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             else:
                 checks["auth_mode"] = "basic"
                 checks["auth_configured"] = "error: credentials not set"
+                is_ready = False
+
+        # Check Qdrant status if vector sync is enabled
+        vector_sync_enabled = (
+            os.getenv("VECTOR_SYNC_ENABLED", "false").lower() == "true"
+        )
+        if vector_sync_enabled:
+            try:
+                qdrant_url = os.getenv("QDRANT_URL", "http://qdrant:6333")
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    response = await client.get(f"{qdrant_url}/readyz")
+                    if response.status_code == 200:
+                        checks["qdrant"] = "ok"
+                    else:
+                        checks["qdrant"] = f"error: status {response.status_code}"
+                        is_ready = False
+            except Exception as e:
+                checks["qdrant"] = f"error: {str(e)}"
                 is_ready = False
 
         status_code = 200 if is_ready else 503

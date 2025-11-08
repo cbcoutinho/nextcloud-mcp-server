@@ -156,6 +156,22 @@ class Settings:
     token_encryption_key: Optional[str] = None
     token_storage_db: Optional[str] = None
 
+    # Vector sync settings (ADR-007)
+    vector_sync_enabled: bool = False
+    vector_sync_scan_interval: int = 3600  # seconds
+    vector_sync_processor_workers: int = 3
+    vector_sync_queue_max_size: int = 10000
+
+    # Qdrant settings
+    qdrant_url: str = "http://qdrant:6333"
+    qdrant_api_key: Optional[str] = None
+    qdrant_collection: str = "nextcloud_content"
+
+    # Ollama settings (for embeddings)
+    ollama_base_url: Optional[str] = None
+    ollama_embedding_model: str = "nomic-embed-text"
+    ollama_verify_ssl: bool = True
+
 
 def get_settings() -> Settings:
     """Get application settings from environment variables.
@@ -192,4 +208,23 @@ def get_settings() -> Settings:
         # Token settings
         token_encryption_key=os.getenv("TOKEN_ENCRYPTION_KEY"),
         token_storage_db=os.getenv("TOKEN_STORAGE_DB", "/tmp/tokens.db"),
+        # Vector sync settings (ADR-007)
+        vector_sync_enabled=(
+            os.getenv("VECTOR_SYNC_ENABLED", "false").lower() == "true"
+        ),
+        vector_sync_scan_interval=int(os.getenv("VECTOR_SYNC_SCAN_INTERVAL", "3600")),
+        vector_sync_processor_workers=int(
+            os.getenv("VECTOR_SYNC_PROCESSOR_WORKERS", "3")
+        ),
+        vector_sync_queue_max_size=int(
+            os.getenv("VECTOR_SYNC_QUEUE_MAX_SIZE", "10000")
+        ),
+        # Qdrant settings
+        qdrant_url=os.getenv("QDRANT_URL", "http://qdrant:6333"),
+        qdrant_api_key=os.getenv("QDRANT_API_KEY"),
+        qdrant_collection=os.getenv("QDRANT_COLLECTION", "nextcloud_content"),
+        # Ollama settings
+        ollama_base_url=os.getenv("OLLAMA_BASE_URL"),
+        ollama_embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
+        ollama_verify_ssl=os.getenv("OLLAMA_VERIFY_SSL", "true").lower() == "true",
     )

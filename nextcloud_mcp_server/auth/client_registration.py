@@ -79,19 +79,22 @@ async def register_client(
     client_name: str = "Nextcloud MCP Server",
     redirect_uris: list[str] | None = None,
     scopes: str = "openid profile email",
-    token_type: str = "Bearer",
+    token_type: str | None = "Bearer",
     resource_url: str | None = None,
 ) -> ClientInfo:
     """
-    Register a new OAuth client with Nextcloud OIDC using dynamic client registration.
+    Register a new OAuth client using RFC 7591 Dynamic Client Registration.
+
+    This function supports both Nextcloud OIDC and standard OIDC providers like Keycloak.
 
     Args:
-        nextcloud_url: Base URL of the Nextcloud instance
+        nextcloud_url: Base URL of the OIDC provider
         registration_endpoint: Full URL to the registration endpoint
         client_name: Name of the client application
         redirect_uris: List of redirect URIs (default: http://localhost:8000/oauth/callback)
         scopes: Space-separated list of scopes to request
-        token_type: Type of access tokens to issue (default: "Bearer", also supports "JWT")
+        token_type: Type of access tokens (default: "Bearer", supports "JWT" for Nextcloud).
+                    Set to None to omit this field (required for Keycloak and other standard providers).
         resource_url: OAuth 2.0 Protected Resource URL (RFC 9728) - used for token introspection authorization
 
     Returns:
@@ -100,6 +103,11 @@ async def register_client(
     Raises:
         httpx.HTTPStatusError: If registration fails
         ValueError: If response is invalid
+
+    Note:
+        The token_type parameter is a Nextcloud-specific extension and is not part of RFC 7591.
+        Standard OIDC providers like Keycloak do not accept this field and will return a 400 error
+        if it's included. Set token_type=None when registering with Keycloak or other standard providers.
     """
     if redirect_uris is None:
         redirect_uris = ["http://localhost:8000/oauth/callback"]
@@ -111,8 +119,11 @@ async def register_client(
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "scope": scopes,
-        "token_type": token_type,
     }
+
+    # Add token_type if provided (Nextcloud-specific, not RFC 7591 standard)
+    if token_type is not None:
+        client_metadata["token_type"] = token_type
 
     # Add resource_url if provided (RFC 9728)
     if resource_url:

@@ -74,12 +74,29 @@ services:
     depends_on:
       app:
         condition: service_healthy
+      qdrant:
+        condition: service_healthy
     ports:
       - 127.0.0.1:8000:8000
     environment:
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_USERNAME=admin
       - NEXTCLOUD_PASSWORD=admin
+
+      # Vector sync configuration (ADR-007)
+      - VECTOR_SYNC_ENABLED=true
+      - VECTOR_SYNC_SCAN_INTERVAL=3600
+      - VECTOR_SYNC_PROCESSOR_WORKERS=3
+
+      # Qdrant configuration
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-my_secret_api_key}
+      - QDRANT_COLLECTION=nextcloud_content
+
+      # Ollama configuration
+      - OLLAMA_BASE_URL=https://ollama.internal.coutinho.io:443
+      - OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+      - OLLAMA_VERIFY_SSL=true
 
   mcp-oauth:
     build: .
@@ -183,6 +200,22 @@ services:
       - keycloak-tokens:/app/data
       - keycloak-oauth-storage:/app/.oauth
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: always
+    ports:
+      - 127.0.0.1:6333:6333  # REST API
+      - 127.0.0.1:6334:6334  # gRPC (optional)
+    volumes:
+      - qdrant-data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-my_secret_api_key}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:6333/readyz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
 volumes:
   nextcloud:
   db:
@@ -190,3 +223,4 @@ volumes:
   oauth-tokens:
   keycloak-tokens:
   keycloak-oauth-storage:
+  qdrant-data:
