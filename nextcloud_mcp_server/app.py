@@ -1026,6 +1026,22 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 shutdown_event = anyio_module.Event()
                 scanner_wake_event = anyio_module.Event()
 
+                # Store in app state for access from routes (ADR-007)
+                app.state.document_queue = document_queue
+                app.state.shutdown_event = shutdown_event
+                app.state.scanner_wake_event = scanner_wake_event
+
+                # Also share with browser_app for /user/page route
+                for route in app.routes:
+                    if isinstance(route, Mount) and route.path == "/user":
+                        route.app.state.document_queue = document_queue
+                        route.app.state.shutdown_event = shutdown_event
+                        route.app.state.scanner_wake_event = scanner_wake_event
+                        logger.info(
+                            "Vector sync state shared with browser_app for /user/page"
+                        )
+                        break
+
                 # Start background tasks using anyio TaskGroup
                 async with anyio_module.create_task_group() as tg:
                     # Start scanner task
