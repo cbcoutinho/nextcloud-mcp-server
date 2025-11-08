@@ -69,6 +69,33 @@ Your Nextcloud MCP Server has been deployed in {{ .Values.auth.mode }} authentic
    {{- end }}
 {{- end }}
 
+{{- if .Values.vectorSync.enabled }}
+
+5. Vector Search & Semantic Capabilities:
+   - Vector Sync: Enabled
+   - Scan Interval: {{ .Values.vectorSync.scanInterval }}s
+   - Processor Workers: {{ .Values.vectorSync.processorWorkers }}
+   {{- if .Values.qdrant.enabled }}
+   - Qdrant: Deployed as subchart ({{ .Release.Name }}-qdrant:6333)
+   {{- else }}
+   - Qdrant: Not deployed (configure external instance)
+   {{- end }}
+   {{- if .Values.ollama.enabled }}
+   - Ollama: Deployed as subchart ({{ .Release.Name }}-ollama:11434)
+   - Embedding Model: {{ .Values.ollama.embeddingModel }}
+   {{- else if .Values.ollama.url }}
+   - Ollama: Using external instance at {{ .Values.ollama.url }}
+   - Embedding Model: {{ .Values.ollama.embeddingModel }}
+   {{- else if .Values.openai.enabled }}
+   - OpenAI: Enabled for embeddings
+   {{- else }}
+   - WARNING: No embedding provider configured (Ollama or OpenAI required)
+   {{- end }}
+
+   Check vector sync status:
+   kubectl --namespace {{ .Release.Namespace }} exec -it deploy/{{ include "nextcloud-mcp-server.fullname" . }} -- curl -s http://localhost:{{ include "nextcloud-mcp-server.port" . }}/user/page | grep "Vector Sync"
+{{- end }}
+
 For more information and documentation:
 - GitHub: https://github.com/cbcoutinho/nextcloud-mcp-server
 - Documentation: https://github.com/cbcoutinho/nextcloud-mcp-server#readme

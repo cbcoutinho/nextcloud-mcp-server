@@ -202,6 +202,67 @@ The application exposes HTTP health check endpoints:
 | `documentProcessing.unstructured.apiUrl` | Unstructured API URL | `http://unstructured:8000` |
 | `documentProcessing.tesseract.enabled` | Enable Tesseract OCR | `false` |
 
+#### Vector Search & Semantic Capabilities (Optional)
+
+Enable semantic search capabilities by deploying a vector database (Qdrant) and embedding service (Ollama or OpenAI).
+
+**Vector Sync Configuration:**
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `vectorSync.enabled` | Enable background vector synchronization | `false` |
+| `vectorSync.scanInterval` | Scan interval in seconds | `3600` |
+| `vectorSync.processorWorkers` | Number of concurrent processor workers | `3` |
+| `vectorSync.queueMaxSize` | Maximum queue size for pending documents | `10000` |
+
+**Qdrant Vector Database:**
+
+Qdrant is deployed as a subchart when `qdrant.enabled` is `true`. All configuration values are passed through to the [qdrant/qdrant](https://github.com/qdrant/qdrant-helm) chart.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `qdrant.enabled` | Deploy Qdrant as a subchart | `false` |
+| `qdrant.replicaCount` | Number of Qdrant replicas | `1` |
+| `qdrant.image.tag` | Qdrant version | `v1.12.5` |
+| `qdrant.apiKey` | Optional API key for authentication | `""` |
+| `qdrant.persistence.size` | Storage size for vector data | `10Gi` |
+| `qdrant.persistence.storageClass` | Storage class | `""` |
+| `qdrant.resources.requests.cpu` | CPU request | `200m` |
+| `qdrant.resources.requests.memory` | Memory request | `512Mi` |
+| `qdrant.resources.limits.cpu` | CPU limit | `1000m` |
+| `qdrant.resources.limits.memory` | Memory limit | `2Gi` |
+
+**Ollama Embedding Service:**
+
+Ollama is deployed as a subchart when `ollama.enabled` is `true`. All configuration values are passed through to the [ollama/ollama](https://github.com/otwld/ollama-helm) chart. Alternatively, set `ollama.url` to use an external Ollama instance.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `ollama.enabled` | Deploy Ollama as a subchart | `false` |
+| `ollama.url` | External Ollama URL (use with `enabled: false`) | `""` |
+| `ollama.embeddingModel` | Embedding model to use | `nomic-embed-text` |
+| `ollama.verifySsl` | Verify SSL certificates | `true` |
+| `ollama.replicaCount` | Number of Ollama replicas | `1` |
+| `ollama.ollama.models.pull` | Models to pull on startup | `["nomic-embed-text"]` |
+| `ollama.persistentVolume.enabled` | Enable persistent storage | `true` |
+| `ollama.persistentVolume.size` | Storage size for models | `20Gi` |
+| `ollama.resources.requests.cpu` | CPU request | `500m` |
+| `ollama.resources.requests.memory` | Memory request | `1Gi` |
+| `ollama.resources.limits.cpu` | CPU limit | `2000m` |
+| `ollama.resources.limits.memory` | Memory limit | `4Gi` |
+
+**OpenAI Embedding Provider (Alternative):**
+
+Use OpenAI or any OpenAI-compatible API instead of Ollama.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `openai.enabled` | Enable OpenAI embedding provider | `false` |
+| `openai.apiKey` | OpenAI API key | `""` |
+| `openai.existingSecret` | Use existing secret for API key | `""` |
+| `openai.secretKey` | Key in secret containing API key | `api-key` |
+| `openai.baseUrl` | Custom API endpoint (optional) | `""` |
+
 ## Examples
 
 ### Example 1: Basic Auth with Ingress
@@ -377,6 +438,90 @@ affinity:
                 values:
                   - nextcloud-mcp-server
           topologyKey: kubernetes.io/hostname
+```
+
+### Example 5: Semantic Search with Qdrant and Ollama
+
+Deploy with vector search capabilities using embedded Qdrant and Ollama:
+
+```yaml
+nextcloud:
+  host: https://cloud.example.com
+
+auth:
+  mode: basic
+  basic:
+    username: admin
+    password: secure-password
+
+# Enable vector sync
+vectorSync:
+  enabled: true
+  scanInterval: 1800  # Scan every 30 minutes
+  processorWorkers: 5
+
+# Deploy Qdrant as a subchart
+qdrant:
+  enabled: true
+  persistence:
+    size: 20Gi
+    storageClass: fast-ssd
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+# Deploy Ollama as a subchart
+ollama:
+  enabled: true
+  embeddingModel: nomic-embed-text
+  persistentVolume:
+    size: 30Gi
+    storageClass: standard
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+    limits:
+      cpu: 4000m
+      memory: 8Gi
+```
+
+Or use an external Ollama instance:
+
+```yaml
+vectorSync:
+  enabled: true
+
+qdrant:
+  enabled: true
+
+# Use external Ollama instead of deploying subchart
+ollama:
+  enabled: false
+  url: "http://ollama.ai-services.svc.cluster.local:11434"
+  embeddingModel: nomic-embed-text
+```
+
+Or use OpenAI for embeddings:
+
+```yaml
+vectorSync:
+  enabled: true
+
+qdrant:
+  enabled: true
+
+# Use OpenAI instead of Ollama
+openai:
+  enabled: true
+  apiKey: "sk-..."
+  # Or use existing secret:
+  # existingSecret: openai-api-key
+  # secretKey: api-key
 ```
 
 ## Upgrading

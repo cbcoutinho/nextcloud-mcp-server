@@ -140,6 +140,52 @@ spec:
               value: {{ .Values.documentProcessing.custom.types | quote }}
             {{- end }}
             {{- end }}
+            # Vector Sync
+            - name: VECTOR_SYNC_ENABLED
+              value: {{ .Values.vectorSync.enabled | quote }}
+            {{- if .Values.vectorSync.enabled }}
+            - name: VECTOR_SYNC_SCAN_INTERVAL
+              value: {{ .Values.vectorSync.scanInterval | quote }}
+            - name: VECTOR_SYNC_PROCESSOR_WORKERS
+              value: {{ .Values.vectorSync.processorWorkers | quote }}
+            - name: VECTOR_SYNC_QUEUE_MAX_SIZE
+              value: {{ .Values.vectorSync.queueMaxSize | quote }}
+            {{- end }}
+            # Qdrant Vector Database
+            {{- if .Values.qdrant.enabled }}
+            - name: QDRANT_URL
+              value: "http://{{ .Release.Name }}-qdrant:6333"
+            - name: QDRANT_COLLECTION
+              value: "nextcloud_content"
+            {{- if .Values.qdrant.apiKey }}
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-qdrant
+                  key: api-key
+            {{- end }}
+            {{- end }}
+            # Ollama Embedding Service
+            {{- if or .Values.ollama.enabled .Values.ollama.url }}
+            - name: OLLAMA_BASE_URL
+              value: {{ .Values.ollama.url | default (printf "http://%s-ollama:11434" .Release.Name) | quote }}
+            - name: OLLAMA_EMBEDDING_MODEL
+              value: {{ .Values.ollama.embeddingModel | quote }}
+            - name: OLLAMA_VERIFY_SSL
+              value: {{ .Values.ollama.verifySsl | quote }}
+            {{- end }}
+            # OpenAI Embedding Provider (alternative to Ollama)
+            {{- if .Values.openai.enabled }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.openai.existingSecret | default (printf "%s-openai" (include "nextcloud-mcp-server.fullname" .)) }}
+                  key: {{ .Values.openai.secretKey }}
+            {{- if .Values.openai.baseUrl }}
+            - name: OPENAI_BASE_URL
+              value: {{ .Values.openai.baseUrl | quote }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

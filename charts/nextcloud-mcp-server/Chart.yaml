@@ -21,3 +21,12 @@ home: https://github.com/cbcoutinho/nextcloud-mcp-server
 sources:
   - https://github.com/cbcoutinho/nextcloud-mcp-server
 icon: https://raw.githubusercontent.com/nextcloud/server/master/core/img/logo/logo.svg
+dependencies:
+  - name: qdrant
+    version: "0.9.0"
+    repository: https://qdrant.github.io/qdrant-helm
+    condition: qdrant.enabled
+  - name: ollama
+    version: "1.33.0"
+    repository: https://otwld.github.io/ollama-helm
+    condition: ollama.enabled

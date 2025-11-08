@@ -264,3 +264,98 @@ extraEnvFrom: []
 #     name: my-configmap
 # - secretRef:
 #     name: my-secret
+
+# Vector Sync Configuration
+# Background synchronization of Nextcloud content into vector database for semantic search
+vectorSync:
+  # Enable background vector synchronization
+  enabled: false
+  # Scan interval in seconds (how often to check for changes)
+  scanInterval: 3600
+  # Number of concurrent processor workers
+  processorWorkers: 3
+  # Maximum queue size for documents pending indexing
+  queueMaxSize: 10000
+
+# Qdrant Vector Database
+# Deployed as a subchart when enabled. All values are passed through to the qdrant/qdrant chart.
+# See https://github.com/qdrant/qdrant-helm for full configuration options.
+qdrant:
+  # Enable Qdrant subchart deployment
+  enabled: false
+  # Number of Qdrant replicas
+  replicaCount: 1
+  image:
+    # Qdrant version
+    tag: v1.12.5
+  # Optional API key for Qdrant authentication
+  apiKey: ""
+  config:
+    cluster:
+      # Enable distributed cluster mode
+      enabled: false
+  # Persistent storage for vector data
+  persistence:
+    size: 10Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+  # Resource limits and requests
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+# Ollama Embedding Service
+# Deployed as a subchart when enabled. All values are passed through to the ollama/ollama chart.
+# See https://github.com/otwld/ollama-helm for full configuration options.
+ollama:
+  # Enable Ollama subchart deployment
+  # Set to true to deploy Ollama as a subchart, or false to use an external Ollama instance
+  enabled: false
+  # External Ollama URL (use this if you have Ollama deployed elsewhere)
+  # When set, use enabled: false to prevent deploying the subchart
+  # Example: "http://ollama.default.svc.cluster.local:11434"
+  url: ""
+  # Embedding model to use
+  embeddingModel: "nomic-embed-text"
+  # Verify SSL certificates when connecting to Ollama
+  verifySsl: true
+  # Number of Ollama replicas (only used when subchart is deployed)
+  replicaCount: 1
+  # Ollama configuration (only used when subchart is deployed)
+  ollama:
+    # Models to automatically pull on startup
+    models:
+      pull:
+        - nomic-embed-text
+  # Persistent storage for models (only used when subchart is deployed)
+  persistentVolume:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+  # Resource limits and requests (only used when subchart is deployed)
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+# OpenAI-compatible Embedding Provider
+# Alternative to Ollama for embedding generation. Can be used with OpenAI or any compatible API.
+openai:
+  # Enable OpenAI embedding provider
+  enabled: false
+  # OpenAI API key (only used if existingSecret is not set)
+  apiKey: ""
+  # Name of existing secret containing the API key
+  existingSecret: ""
+  # Key in the secret that contains the API key
+  secretKey: "api-key"
+  # Optional custom API endpoint (e.g., for Azure OpenAI or local compatible services)
+  baseUrl: ""
