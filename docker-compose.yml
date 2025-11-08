@@ -85,18 +85,18 @@ services:
 
       # Vector sync configuration (ADR-007)
       - VECTOR_SYNC_ENABLED=true
-      - VECTOR_SYNC_SCAN_INTERVAL=3600
-      - VECTOR_SYNC_PROCESSOR_WORKERS=3
+      - VECTOR_SYNC_SCAN_INTERVAL=10
+      - VECTOR_SYNC_PROCESSOR_WORKERS=1
 
       # Qdrant configuration
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_API_KEY=${QDRANT_API_KEY:-my_secret_api_key}
       - QDRANT_COLLECTION=nextcloud_content
 
-      # Ollama configuration
-      - OLLAMA_BASE_URL=https://ollama.internal.coutinho.io:443
-      - OLLAMA_EMBEDDING_MODEL=nomic-embed-text
-      - OLLAMA_VERIFY_SSL=true
+      # Ollama configuration (optional - uses SimpleEmbeddingProvider if not set)
+      # - OLLAMA_BASE_URL=http://your-ollama-endpoint:port
+      # - OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+      # - OLLAMA_VERIFY_SSL=false
 
   mcp-oauth:
     build: .
@@ -211,7 +211,7 @@ services:
     environment:
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-my_secret_api_key}
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:6333/readyz || exit 1"]
+      test: ["CMD-SHELL", "test -f /qdrant/.qdrant-initialized"]
       interval: 10s
       timeout: 5s
       retries: 10

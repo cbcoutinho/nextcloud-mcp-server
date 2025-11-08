@@ -21,7 +21,8 @@ dependencies = [
     "pyjwt[crypto]>=2.8.0",
     "aiosqlite>=0.20.0", # Async SQLite for refresh token storage
     "authlib>=1.6.5",
-    "qdrant-client>=1.7.0",  # Vector database for semantic search
+    "qdrant-client>=1.7.0", # Vector database for semantic search
+    "urllib3<2.0",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
