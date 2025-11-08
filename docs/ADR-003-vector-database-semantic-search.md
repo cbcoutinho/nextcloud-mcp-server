@@ -1,7 +1,9 @@
 # ADR-003: Vector Database and Semantic Search Architecture
 
 ## Status
-Proposed
+Superseded by ADR-007
+
+**Note**: This ADR was never implemented. The core technical decisions (Qdrant, embeddings, hybrid search) remain valid and are incorporated into ADR-007, which adds user-controlled background job management, task queuing, multi-user scheduling, and web UI integration. See [ADR-007: Background Vector Sync with User-Controlled Job Management](./ADR-007-background-vector-sync-job-management.md) for the implemented architecture.
 
 ## Context
 
