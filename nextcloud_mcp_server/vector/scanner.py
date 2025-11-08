@@ -92,7 +92,7 @@ async def scan_user_documents(
     logger.info(f"Scanning documents for user: {user_id}")
 
     # Fetch all notes from Nextcloud
-    notes = await nc_client.notes.list_notes()
+    notes = [note async for note in nc_client.notes.get_all_notes()]
     logger.debug(f"Found {len(notes)} notes for {user_id}")
 
     if initial_sync:

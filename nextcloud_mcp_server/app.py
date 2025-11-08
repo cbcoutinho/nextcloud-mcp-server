@@ -997,9 +997,79 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                     f"OAuth context initialized for login routes (client_id={client_id[:16]}...)"
                 )
 
-            async with AsyncExitStack() as stack:
-                await stack.enter_async_context(mcp.session_manager.run())
-                yield
+            # Start background vector sync tasks for BasicAuth mode (ADR-007)
+            # For streamable-http transport, FastMCP lifespan isn't automatically triggered
+            # so we manually start background tasks here if vector sync is enabled
+            import asyncio as asyncio_module
+
+            import anyio as anyio_module
+
+            settings = get_settings()
+            if not oauth_enabled and settings.vector_sync_enabled:
+                logger.info("Starting background vector sync tasks for BasicAuth mode")
+
+                # Get username from environment
+                username = os.getenv("NEXTCLOUD_USERNAME")
+                if not username:
+                    raise ValueError(
+                        "NEXTCLOUD_USERNAME required for vector sync in BasicAuth mode"
+                    )
+
+                # Get Nextcloud client from MCP app context
+                # Create client since we're outside FastMCP lifespan
+                client = NextcloudClient.from_env()
+
+                # Initialize shared state
+                document_queue = asyncio_module.Queue(
+                    maxsize=settings.vector_sync_queue_max_size
+                )
+                shutdown_event = anyio_module.Event()
+                scanner_wake_event = anyio_module.Event()
+
+                # Start background tasks using anyio TaskGroup
+                async with anyio_module.create_task_group() as tg:
+                    # Start scanner task
+                    tg.start_soon(
+                        scanner_task,
+                        document_queue,
+                        shutdown_event,
+                        scanner_wake_event,
+                        client,
+                        username,
+                    )
+
+                    # Start processor pool
+                    for i in range(settings.vector_sync_processor_workers):
+                        tg.start_soon(
+                            processor_task,
+                            i,
+                            document_queue,
+                            shutdown_event,
+                            client,
+                            username,
+                        )
+
+                    logger.info(
+                        f"Background sync tasks started: 1 scanner + "
+                        f"{settings.vector_sync_processor_workers} processors"
+                    )
+
+                    # Run MCP session manager and yield
+                    async with AsyncExitStack() as stack:
+                        await stack.enter_async_context(mcp.session_manager.run())
+                        try:
+                            yield
+                        finally:
+                            # Shutdown signal
+                            logger.info("Shutting down background sync tasks")
+                            shutdown_event.set()
+                            await client.close()
+                            # TaskGroup automatically cancels all tasks on exit
+            else:
+                # No vector sync - just run MCP session manager
+                async with AsyncExitStack() as stack:
+                    await stack.enter_async_context(mcp.session_manager.run())
+                    yield
 
     # Health check endpoints for Kubernetes probes
     def health_live(request):
