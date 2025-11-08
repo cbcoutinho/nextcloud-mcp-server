@@ -37,6 +37,18 @@ class NoteSearchResult(BaseModel):
     score: Optional[float] = Field(None, description="Search relevance score")
 
 
+class SemanticSearchResult(BaseModel):
+    """Model for semantic search results with additional metadata."""
+
+    id: int = Field(description="Note ID")
+    title: str = Field(description="Note title")
+    category: str = Field(default="", description="Note category")
+    excerpt: str = Field(description="Excerpt from matching chunk")
+    score: float = Field(description="Semantic similarity score (0-1)")
+    chunk_index: int = Field(description="Index of matching chunk in document")
+    total_chunks: int = Field(description="Total number of chunks in document")
+
+
 class NotesSettings(BaseModel):
     """Model for Notes app settings."""
 
@@ -83,3 +95,16 @@ class SearchNotesResponse(BaseResponse):
     results: List[NoteSearchResult] = Field(description="Search results")
     query: str = Field(description="The search query used")
     total_found: int = Field(description="Total number of notes found")
+
+
+class SemanticSearchNotesResponse(BaseResponse):
+    """Response model for semantic search."""
+
+    results: List[SemanticSearchResult] = Field(
+        description="Semantic search results with similarity scores"
+    )
+    query: str = Field(description="The search query used")
+    total_found: int = Field(description="Total number of notes found")
+    search_method: str = Field(
+        default="semantic", description="Search method used (semantic or hybrid)"
+    )

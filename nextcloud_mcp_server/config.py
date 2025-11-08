@@ -158,7 +158,7 @@ class Settings:
 
     # Vector sync settings (ADR-007)
     vector_sync_enabled: bool = False
-    vector_sync_scan_interval: int = 3600  # seconds
+    vector_sync_scan_interval: int = 300  # seconds (5 minutes)
     vector_sync_processor_workers: int = 3
     vector_sync_queue_max_size: int = 10000
 
@@ -212,7 +212,7 @@ def get_settings() -> Settings:
         vector_sync_enabled=(
             os.getenv("VECTOR_SYNC_ENABLED", "false").lower() == "true"
         ),
-        vector_sync_scan_interval=int(os.getenv("VECTOR_SYNC_SCAN_INTERVAL", "3600")),
+        vector_sync_scan_interval=int(os.getenv("VECTOR_SYNC_SCAN_INTERVAL", "300")),
         vector_sync_processor_workers=int(
             os.getenv("VECTOR_SYNC_PROCESSOR_WORKERS", "3")
         ),

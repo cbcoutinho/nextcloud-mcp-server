@@ -15,6 +15,8 @@ from nextcloud_mcp_server.models.notes import (
     NoteSearchResult,
     NotesSettings,
     SearchNotesResponse,
+    SemanticSearchNotesResponse,
+    SemanticSearchResult,
     UpdateNoteResponse,
 )
 
@@ -365,6 +367,145 @@ def configure_notes_tools(mcp: FastMCP):
                         message=f"Failed to retrieve attachment: {e.response.reason_phrase}",
                     )
                 )
+
+    @mcp.tool()
+    @require_scopes("notes:read")
+    async def nc_notes_semantic_search(
+        query: str, ctx: Context, limit: int = 10, score_threshold: float = 0.7
+    ) -> SemanticSearchNotesResponse:
+        """
+        Semantic search for notes using vector embeddings.
+
+        Searches notes by meaning rather than exact keywords. Requires vector
+        database synchronization to be enabled (VECTOR_SYNC_ENABLED=true).
+
+        Args:
+            query: Natural language search query
+            limit: Maximum number of results to return (default: 10)
+            score_threshold: Minimum similarity score (0-1, default: 0.7)
+
+        Returns:
+            SemanticSearchNotesResponse with matching notes and similarity scores
+        """
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        from nextcloud_mcp_server.config import get_settings
+        from nextcloud_mcp_server.embedding import get_embedding_service
+        from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+        settings = get_settings()
+
+        # Check if vector sync is enabled
+        if not settings.vector_sync_enabled:
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message="Semantic search is not enabled. Set VECTOR_SYNC_ENABLED=true and ensure vector database is configured.",
+                )
+            )
+
+        client = await get_client(ctx)
+        username = client.username
+
+        try:
+            # Generate embedding for query
+            embedding_service = get_embedding_service()
+            query_embedding = await embedding_service.embed(query)
+
+            # Search Qdrant with user filtering
+            qdrant_client = await get_qdrant_client()
+            search_results = await qdrant_client.search(
+                collection_name=settings.qdrant_collection,
+                query_vector=query_embedding,
+                query_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="user_id",
+                            match=MatchValue(value=username),
+                        ),
+                        FieldCondition(
+                            key="doc_type",
+                            match=MatchValue(value="note"),
+                        ),
+                    ]
+                ),
+                limit=limit * 2,  # Get extra for filtering
+                score_threshold=score_threshold,
+                with_payload=True,
+                with_vectors=False,  # Don't return vectors to save bandwidth
+            )
+
+            # Deduplicate by note ID (multiple chunks per note)
+            seen_note_ids = set()
+            results = []
+
+            for result in search_results:
+                note_id = int(result.payload["doc_id"])
+
+                # Skip if we've already seen this note
+                if note_id in seen_note_ids:
+                    continue
+
+                seen_note_ids.add(note_id)
+
+                # Verify access via Nextcloud API (dual-phase authorization)
+                try:
+                    note = await client.notes.get_note(note_id)
+
+                    results.append(
+                        SemanticSearchResult(
+                            id=note_id,
+                            title=result.payload["title"],
+                            category=note.get("category", ""),
+                            excerpt=result.payload["excerpt"],
+                            score=result.score,
+                            chunk_index=result.payload["chunk_index"],
+                            total_chunks=result.payload["total_chunks"],
+                        )
+                    )
+
+                    if len(results) >= limit:
+                        break
+
+                except HTTPStatusError as e:
+                    if e.response.status_code == 403:
+                        # User lost access, skip this note
+                        continue
+                    elif e.response.status_code == 404:
+                        # Note was deleted but not yet removed from vector DB
+                        continue
+                    else:
+                        # Log other errors but continue processing
+                        logger.warning(
+                            f"Error verifying access to note {note_id}: {e.response.status_code}"
+                        )
+                        continue
+
+            return SemanticSearchNotesResponse(
+                results=results,
+                query=query,
+                total_found=len(results),
+                search_method="semantic",
+            )
+
+        except ValueError as e:
+            if "No embedding provider configured" in str(e):
+                raise McpError(
+                    ErrorData(
+                        code=-1,
+                        message="Embedding service not configured. Set OLLAMA_BASE_URL environment variable.",
+                    )
+                )
+            raise McpError(ErrorData(code=-1, message=f"Configuration error: {str(e)}"))
+        except RequestError as e:
+            raise McpError(
+                ErrorData(code=-1, message=f"Network error during search: {str(e)}")
+            )
+        except Exception as e:
+            logger.error(f"Semantic search error: {e}", exc_info=True)
+            raise McpError(
+                ErrorData(code=-1, message=f"Semantic search failed: {str(e)}")
+            )
 
     @mcp.tool()
     @require_scopes("notes:write")

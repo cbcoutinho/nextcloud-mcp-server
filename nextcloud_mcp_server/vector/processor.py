@@ -6,6 +6,7 @@ Processes documents from queue: fetches content, generates embeddings, stores in
 import asyncio
 import logging
 import time
+import uuid
 
 import anyio
 from httpx import HTTPStatusError
@@ -187,9 +188,14 @@ async def _index_document(
     points = []
 
     for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+        # Generate deterministic UUID for point ID
+        # Using uuid5 with DNS namespace and combining doc info
+        point_name = f"{doc_task.doc_type}:{doc_task.doc_id}:chunk:{i}"
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, point_name))
+
         points.append(
             PointStruct(
-                id=f"{doc_task.doc_type}_{doc_task.doc_id}_{i}",
+                id=point_id,
                 vector=embedding,
                 payload={
                     "user_id": doc_task.user_id,
