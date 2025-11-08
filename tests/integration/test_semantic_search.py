@@ -207,32 +207,32 @@ async def test_semantic_search_with_qdrant(
     query = "async programming patterns in Python"
     query_embedding = await simple_embedding_provider.embed(query)
 
-    results = await qdrant_test_client.search(
+    response = await qdrant_test_client.query_points(
         collection_name=test_collection,
-        query_vector=query_embedding,
+        query=query_embedding,
         limit=3,
         score_threshold=0.0,
     )
 
     # Should find Python note as top result
-    assert len(results) > 0
-    assert results[0].payload["note_id"] == 1
-    assert "Python" in results[0].payload["title"]
+    assert len(response.points) > 0
+    assert response.points[0].payload["note_id"] == 1
+    assert "Python" in response.points[0].payload["title"]
 
     # Test Query 2: Search for books
     query = "good books to read recommendations"
     query_embedding = await simple_embedding_provider.embed(query)
 
-    results = await qdrant_test_client.search(
+    response = await qdrant_test_client.query_points(
         collection_name=test_collection,
-        query_vector=query_embedding,
+        query=query_embedding,
         limit=3,
         score_threshold=0.0,
     )
 
     # Should find book recommendations note
-    assert len(results) > 0
-    top_result = results[0]
+    assert len(response.points) > 0
+    top_result = response.points[0]
     assert top_result.payload["note_id"] == 2
     assert "Book" in top_result.payload["title"]
 
@@ -240,17 +240,17 @@ async def test_semantic_search_with_qdrant(
     query = "how to bake cookies dessert"
     query_embedding = await simple_embedding_provider.embed(query)
 
-    results = await qdrant_test_client.search(
+    response = await qdrant_test_client.query_points(
         collection_name=test_collection,
-        query_vector=query_embedding,
+        query=query_embedding,
         limit=3,
         score_threshold=0.0,
     )
 
     # Should find recipe note
-    assert len(results) > 0
+    assert len(response.points) > 0
     # Recipe should be in top 2 results
-    top_note_ids = [r.payload["note_id"] for r in results[:2]]
+    top_note_ids = [r.payload["note_id"] for r in response.points[:2]]
     assert 3 in top_note_ids
 
 
@@ -289,9 +289,9 @@ async def test_semantic_search_with_filters(
     query = "books reading"
     query_embedding = await simple_embedding_provider.embed(query)
 
-    results = await qdrant_test_client.search(
+    response = await qdrant_test_client.query_points(
         collection_name=test_collection,
-        query_vector=query_embedding,
+        query=query_embedding,
         query_filter=Filter(
             must=[FieldCondition(key="category", match=MatchValue(value="Personal"))]
         ),
@@ -299,8 +299,8 @@ async def test_semantic_search_with_filters(
     )
 
     # Should only return Personal category notes
-    assert len(results) > 0
-    for result in results:
+    assert len(response.points) > 0
+    for result in response.points:
         assert result.payload["category"] == "Personal"
 
 
@@ -314,13 +314,13 @@ async def test_semantic_search_empty_results(
     query = "test query"
     query_embedding = await simple_embedding_provider.embed(query)
 
-    results = await qdrant_test_client.search(
+    response = await qdrant_test_client.query_points(
         collection_name=test_collection,
-        query_vector=query_embedding,
+        query=query_embedding,
         limit=10,
     )
 
-    assert len(results) == 0
+    assert len(response.points) == 0
 
 
 async def test_batch_embedding(simple_embedding_provider: SimpleEmbeddingProvider):

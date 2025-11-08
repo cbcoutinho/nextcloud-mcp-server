@@ -46,9 +46,10 @@ async def handle_keycloak_login(page, username: str, password: str):
     Keycloak uses:
     - input#username for username field
     - input#password for password field
-    - input[type="submit"] for submit button
+    - Form submission via JavaScript (more reliable than clicking button)
     """
     logger.info(f"Handling Keycloak login for user: {username}")
+    logger.info(f"Current URL before login: {page.url}")
 
     # Wait for username field and fill it
     await page.wait_for_selector("input#username", timeout=10000)
@@ -58,11 +59,12 @@ async def handle_keycloak_login(page, username: str, password: str):
     await page.wait_for_selector("input#password", timeout=10000)
     await page.fill("input#password", password)
 
-    # Click submit button
-    await page.click('input[type="submit"]')
-    await page.wait_for_load_state("networkidle", timeout=60000)
+    # Submit form using JavaScript (more reliable than clicking button)
+    logger.info("Submitting Keycloak login form...")
+    async with page.expect_navigation(timeout=60000):
+        await page.evaluate("document.querySelector('form').submit()")
 
-    logger.info("✓ Keycloak login completed")
+    logger.info(f"✓ Keycloak login completed, redirected to: {page.url}")
 
 
 async def handle_keycloak_consent(page, client_name: str):
@@ -80,9 +82,9 @@ async def handle_keycloak_consent(page, client_name: str):
         # Wait for consent screen (button with name="accept")
         await page.wait_for_selector('button[name="accept"]', timeout=5000)
 
-        # Click accept button
-        await page.click('button[name="accept"]')
-        await page.wait_for_load_state("networkidle", timeout=60000)
+        # Click accept button and wait for navigation
+        async with page.expect_navigation(timeout=60000):
+            await page.click('button[name="accept"]')
 
         logger.info("✓ Keycloak consent granted")
     except Exception as e:

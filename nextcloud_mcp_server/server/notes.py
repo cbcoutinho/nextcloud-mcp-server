@@ -414,9 +414,9 @@ def configure_notes_tools(mcp: FastMCP):
 
             # Search Qdrant with user filtering
             qdrant_client = await get_qdrant_client()
-            search_results = await qdrant_client.search(
+            search_response = await qdrant_client.query_points(
                 collection_name=settings.qdrant_collection,
-                query_vector=query_embedding,
+                query=query_embedding,
                 query_filter=Filter(
                     must=[
                         FieldCondition(
@@ -439,7 +439,7 @@ def configure_notes_tools(mcp: FastMCP):
             seen_note_ids = set()
             results = []
 
-            for result in search_results:
+            for result in search_response.points:
                 note_id = int(result.payload["doc_id"])
 
                 # Skip if we've already seen this note
