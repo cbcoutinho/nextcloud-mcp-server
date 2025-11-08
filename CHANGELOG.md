@@ -1,3 +1,14 @@
+## v0.26.0 (2025-11-08)
+
+### Feat
+
+- add real elicitation integration test with python-sdk MCP client
+- unify session architecture and enhance login status visibility
+
+### Fix
+
+- Consolidate OAuth callbacks and implement PKCE for all flows
+
 ## v0.25.0 (2025-11-05)
 
 ### BREAKING CHANGE
