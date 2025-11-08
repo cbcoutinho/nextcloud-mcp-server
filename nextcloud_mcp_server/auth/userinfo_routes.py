@@ -141,8 +141,22 @@ async def _get_user_info(request: Request) -> dict[str, Any]:
 
     try:
         # Check if background access was granted (refresh token exists)
+        # This works for both Flow 2 (elicitation) and browser login
         token_data = await storage.get_refresh_token(session_id)
         background_access_granted = token_data is not None
+
+        # Build background access details
+        background_access_details = None
+        if token_data:
+            background_access_details = {
+                "flow_type": token_data.get("flow_type", "unknown"),
+                "provisioned_at": token_data.get("provisioned_at", "unknown"),
+                "provisioning_client_id": token_data.get(
+                    "provisioning_client_id", "N/A"
+                ),
+                "scopes": token_data.get("scopes", "N/A"),
+                "token_audience": token_data.get("token_audience", "unknown"),
+            }
 
         # Retrieve cached user profile (no token operations!)
         profile_data = await storage.get_user_profile(session_id)
@@ -153,6 +167,7 @@ async def _get_user_info(request: Request) -> dict[str, Any]:
             "auth_mode": "oauth",
             "session_id": session_id[:16] + "...",  # Truncated for security
             "background_access_granted": background_access_granted,
+            "background_access_details": background_access_details,
         }
 
         # Include cached profile if available
@@ -291,6 +306,47 @@ async def user_info_html(request: Request) -> HTMLResponse:
     session_info_html = ""
     if auth_mode == "oauth" and "session_id" in user_context:
         session_id = user_context.get("session_id", "unknown")
+        background_access_granted = user_context.get("background_access_granted", False)
+        background_details = user_context.get("background_access_details")
+
+        # Build background access section
+        background_html = ""
+        if background_access_granted and background_details:
+            flow_type = background_details.get("flow_type", "unknown")
+            provisioned_at = background_details.get("provisioned_at", "unknown")
+            scopes = background_details.get("scopes", "N/A")
+            token_audience = background_details.get("token_audience", "unknown")
+
+            background_html = f"""
+            <tr>
+                <td><strong>Background Access</strong></td>
+                <td><span style="color: #4caf50; font-weight: bold;">✓ Granted</span></td>
+            </tr>
+            <tr>
+                <td><strong>Flow Type</strong></td>
+                <td>{flow_type}</td>
+            </tr>
+            <tr>
+                <td><strong>Provisioned At</strong></td>
+                <td>{provisioned_at}</td>
+            </tr>
+            <tr>
+                <td><strong>Token Audience</strong></td>
+                <td>{token_audience}</td>
+            </tr>
+            <tr>
+                <td><strong>Scopes</strong></td>
+                <td><code style="font-size: 11px;">{scopes}</code></td>
+            </tr>
+            """
+        else:
+            background_html = """
+            <tr>
+                <td><strong>Background Access</strong></td>
+                <td><span style="color: #999;">Not Granted</span></td>
+            </tr>
+            """
+
         session_info_html = f"""
         <h2>Session Information</h2>
         <table>
@@ -298,8 +354,22 @@ async def user_info_html(request: Request) -> HTMLResponse:
                 <td><strong>Session ID</strong></td>
                 <td><code>{session_id}</code></td>
             </tr>
+            {background_html}
         </table>
         """
+
+        # Add revoke button if background access is granted
+        if background_access_granted:
+            revoke_url = str(request.url_for("revoke_session_endpoint"))
+            session_info_html += f"""
+            <div style="margin-top: 15px;">
+                <form method="post" action="{revoke_url}" onsubmit="return confirm('Are you sure you want to revoke background access? This will delete the refresh token.');">
+                    <button type="submit" style="padding: 8px 16px; background-color: #ff9800; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">
+                        Revoke Background Access
+                    </button>
+                </form>
+            </div>
+            """
 
     # Build IdP profile HTML
     idp_profile_html = ""
@@ -446,3 +516,117 @@ async def user_info_html(request: Request) -> HTMLResponse:
     """
 
     return HTMLResponse(content=html_content)
+
+
+@requires("authenticated", redirect="oauth_login")
+async def revoke_session(request: Request) -> HTMLResponse:
+    """Revoke background access (delete refresh token).
+
+    This endpoint allows users to revoke the refresh token that grants
+    background access to Nextcloud resources. The session cookie remains
+    valid for browser UI access, but background jobs will no longer work.
+
+    Args:
+        request: Starlette request object
+
+    Returns:
+        HTML response confirming revocation or showing error
+    """
+    oauth_ctx = getattr(request.app.state, "oauth_context", None)
+
+    if not oauth_ctx:
+        return HTMLResponse(
+            """
+            <!DOCTYPE html>
+            <html>
+            <head><title>Error</title></head>
+            <body>
+                <h1>Error</h1>
+                <p>OAuth mode not enabled</p>
+            </body>
+            </html>
+            """,
+            status_code=400,
+        )
+
+    storage = oauth_ctx.get("storage")
+    session_id = request.cookies.get("mcp_session")
+
+    if not storage or not session_id:
+        return HTMLResponse(
+            """
+            <!DOCTYPE html>
+            <html>
+            <head><title>Error</title></head>
+            <body>
+                <h1>Error</h1>
+                <p>Session not found</p>
+            </body>
+            </html>
+            """,
+            status_code=400,
+        )
+
+    try:
+        # Delete the refresh token
+        logger.info(f"Revoking background access for session {session_id[:16]}...")
+        await storage.delete_refresh_token(session_id)
+        logger.info(f"✓ Background access revoked for session {session_id[:16]}...")
+
+        # Redirect back to user page
+        user_page_url = str(request.url_for("user_info_html"))
+
+        return HTMLResponse(
+            f"""
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta http-equiv="refresh" content="2;url={user_page_url}">
+                <title>Background Access Revoked</title>
+                <style>
+                    body {{
+                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                        max-width: 600px;
+                        margin: 50px auto;
+                        padding: 20px;
+                        text-align: center;
+                    }}
+                    .success {{
+                        background-color: #e8f5e9;
+                        border: 2px solid #4caf50;
+                        padding: 30px;
+                        border-radius: 8px;
+                    }}
+                    h1 {{
+                        color: #4caf50;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="success">
+                    <h1>✓ Background Access Revoked</h1>
+                    <p>Your refresh token has been deleted successfully.</p>
+                    <p>Browser session remains active.</p>
+                    <p>Redirecting back to user page...</p>
+                </div>
+            </body>
+            </html>
+            """
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to revoke background access: {e}")
+        return HTMLResponse(
+            f"""
+            <!DOCTYPE html>
+            <html>
+            <head><title>Error</title></head>
+            <body>
+                <h1>Error</h1>
+                <p>Failed to revoke background access: {e}</p>
+            </body>
+            </html>
+            """,
+            status_code=500,
+        )

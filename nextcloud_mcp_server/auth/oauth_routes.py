@@ -1,7 +1,7 @@
 """
-OAuth 2.0 Login Routes for ADR-004 Progressive Consent Architecture
+OAuth 2.0 Login Routes for ADR-004 (Offline Access Architecture)
 
-Implements dual OAuth flows with explicit provisioning:
+Implements dual OAuth flows with optional offline access provisioning:
 
 Flow 1: Client Authentication - MCP client authenticates directly to IdP
 - Client requests: Nextcloud MCP resource scopes (notes:*, calendar:*, etc.)
@@ -19,8 +19,11 @@ Flow 2: Resource Provisioning - MCP server gets delegated Nextcloud access
 
 """
 
+import hashlib
 import logging
 import os
+import secrets
+from base64 import urlsafe_b64encode
 from urllib.parse import urlencode
 
 import httpx
@@ -118,7 +121,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
             status_code=400,
         )
 
-    # Validate client_id (required for Progressive Consent Flow 1)
+    # Validate client_id (required for Flow 1)
     if not client_id:
         return JSONResponse(
             {
@@ -168,7 +171,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     # The MCP server does NOT see the IdP authorization code!
 
     logger.info(
-        f"Starting Progressive Consent Flow 1 - no server session needed, "
+        f"Starting Flow 1 - no server session needed, "
         f"client will handle IdP response directly at {redirect_uri}"
     )
 
@@ -188,7 +191,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     # Use client's own client_id (client must be pre-registered at IdP)
     idp_client_id = client_id
 
-    logger.info("Flow 1 (Progressive Consent): Direct client auth to IdP")
+    logger.info("Flow 1: Direct client auth to IdP")
     logger.info(f"  Client ID: {client_id}")
     logger.info(f"  Client will receive IdP code directly at: {callback_uri}")
     logger.info(f"  Scopes: {scopes} (resource access for MCP tools)")
@@ -314,11 +317,30 @@ async def oauth_authorize_nextcloud(
         )
 
     mcp_server_url = oauth_config["mcp_server_url"]
-    callback_uri = f"{mcp_server_url}/oauth/callback-nextcloud"
+    callback_uri = f"{mcp_server_url}/oauth/callback"
 
     # Flow 2: Server only needs identity + offline access (no resource scopes)
     # Resource scopes are requested by client in Flow 1
     scopes = "openid profile email offline_access"
+
+    # Generate PKCE values (required by Nextcloud OIDC)
+    code_verifier = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(code_verifier.encode()).digest()
+    code_challenge = urlsafe_b64encode(digest).decode().rstrip("=")
+
+    # Store code_verifier in session for retrieval during callback
+    storage = oauth_ctx["storage"]
+    await storage.store_oauth_session(
+        session_id=state,
+        client_id=mcp_server_client_id,
+        client_redirect_uri=callback_uri,
+        state=state,
+        code_challenge=code_challenge,
+        code_challenge_method="S256",
+        mcp_authorization_code=code_verifier,  # Store code_verifier here temporarily
+        flow_type="flow2",
+        ttl_seconds=600,  # 10 minutes
+    )
 
     # Get authorization endpoint
     discovery_url = oauth_config.get("discovery_url")
@@ -358,6 +380,8 @@ async def oauth_authorize_nextcloud(
         "response_type": "code",
         "scope": scopes,
         "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
         "prompt": "consent",  # Force consent to show resource access
         "access_type": "offline",  # Request refresh token
         "resource": oauth_config["nextcloud_resource_uri"],  # Nextcloud audience
@@ -416,6 +440,16 @@ async def oauth_callback_nextcloud(request: Request):
     storage: RefreshTokenStorage = oauth_ctx["storage"]
     oauth_config = oauth_ctx["config"]
 
+    # Retrieve code_verifier from session storage (PKCE required by Nextcloud OIDC)
+    code_verifier = ""
+    oauth_session = await storage.get_oauth_session(state)
+    if oauth_session:
+        # code_verifier was stored in mcp_authorization_code field
+        code_verifier = oauth_session.get("mcp_authorization_code", "")
+        logger.info(
+            f"Retrieved code_verifier for Flow 2 callback (state={state[:16]}...)"
+        )
+
     # Exchange code for tokens
     mcp_server_client_id = os.getenv(
         "MCP_SERVER_CLIENT_ID", oauth_config.get("client_id")
@@ -424,7 +458,7 @@ async def oauth_callback_nextcloud(request: Request):
         "MCP_SERVER_CLIENT_SECRET", oauth_config.get("client_secret")
     )
     mcp_server_url = oauth_config["mcp_server_url"]
-    callback_uri = f"{mcp_server_url}/oauth/callback-nextcloud"
+    callback_uri = f"{mcp_server_url}/oauth/callback"
 
     discovery_url = oauth_config.get("discovery_url")
     async with httpx.AsyncClient() as http_client:
@@ -433,17 +467,24 @@ async def oauth_callback_nextcloud(request: Request):
         discovery = response.json()
         token_endpoint = discovery["token_endpoint"]
 
+    # Build token exchange params
+    token_params = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": callback_uri,
+        "client_id": mcp_server_client_id,
+        "client_secret": mcp_server_client_secret,
+    }
+
+    # Add code_verifier for PKCE (required by Nextcloud OIDC)
+    if code_verifier:
+        token_params["code_verifier"] = code_verifier
+
     # Exchange code for tokens
     async with httpx.AsyncClient() as http_client:
         response = await http_client.post(
             token_endpoint,
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": callback_uri,
-                "client_id": mcp_server_client_id,
-                "client_secret": mcp_server_client_secret,
-            },
+            data=token_params,
         )
         response.raise_for_status()
         token_data = response.json()
@@ -452,14 +493,22 @@ async def oauth_callback_nextcloud(request: Request):
     id_token = token_data.get("id_token")
 
     # Decode ID token to get user info
+    logger.info("=" * 60)
+    logger.info("oauth_callback_nextcloud: Extracting user_id from ID token")
+    logger.info("=" * 60)
     try:
         userinfo = jwt.decode(id_token, options={"verify_signature": False})
         user_id = userinfo.get("sub")
         username = userinfo.get("preferred_username") or userinfo.get("email")
+        logger.info("  ✓ ID token decode SUCCESSFUL")
+        logger.info(f"  Extracted user_id: {user_id}")
+        logger.info(f"  Username: {username}")
+        logger.info(f"  ID token payload keys: {list(userinfo.keys())}")
         logger.info(f"Flow 2: User {username} provisioned resource access")
     except Exception as e:
-        logger.warning(f"Failed to decode ID token: {e}")
+        logger.error(f"  ✗ ID token decode FAILED: {type(e).__name__}: {e}")
         user_id = "unknown"
+        logger.error(f"  Using fallback user_id: {user_id}")
 
     # Store master refresh token for Flow 2
     if refresh_token:
@@ -467,6 +516,13 @@ async def oauth_callback_nextcloud(request: Request):
         granted_scopes = (
             token_data.get("scope", "").split() if token_data.get("scope") else None
         )
+
+        logger.info("Storing refresh token:")
+        logger.info(f"  user_id: {user_id}")
+        logger.info("  flow_type: flow2")
+        logger.info("  token_audience: nextcloud")
+        logger.info(f"  provisioning_client_id: {state[:16]}...")
+        logger.info(f"  scopes: {granted_scopes}")
 
         await storage.store_refresh_token(
             user_id=user_id,
@@ -477,7 +533,8 @@ async def oauth_callback_nextcloud(request: Request):
             scopes=granted_scopes,
             expires_at=None,  # Refresh tokens typically don't expire
         )
-        logger.info(f"Stored Flow 2 master refresh token for user {user_id}")
+        logger.info(f"✓ Stored Flow 2 master refresh token for user {user_id}")
+        logger.info("=" * 60)
 
     # Return success HTML page
     success_html = """
@@ -502,3 +559,82 @@ async def oauth_callback_nextcloud(request: Request):
     from starlette.responses import HTMLResponse
 
     return HTMLResponse(content=success_html, status_code=200)
+
+
+async def oauth_callback(request: Request):
+    """
+    Unified OAuth callback endpoint supporting multiple flows.
+
+    This endpoint consolidates all OAuth callback handling into a single URL.
+    The flow type is determined by looking up the OAuth session using the
+    state parameter.
+
+    This simplifies IdP configuration by requiring only one callback URL
+    to be registered: /oauth/callback
+
+    Query parameters:
+        code: Authorization code from IdP
+        state: CSRF protection state (also used to lookup flow type)
+        error: Error code (if authorization failed)
+
+    Returns:
+        Response from the appropriate flow handler
+    """
+    # Get state parameter to lookup OAuth session
+    state = request.query_params.get("state")
+    if not state:
+        logger.warning("Unified callback called without state parameter")
+        return JSONResponse(
+            {
+                "error": "invalid_request",
+                "error_description": "state parameter is required",
+            },
+            status_code=400,
+        )
+
+    # Lookup OAuth session to determine flow type
+    oauth_ctx = request.app.state.oauth_context
+    if not oauth_ctx:
+        logger.error("OAuth context not available")
+        return JSONResponse(
+            {
+                "error": "server_error",
+                "error_description": "OAuth not configured on server",
+            },
+            status_code=500,
+        )
+
+    storage = oauth_ctx["storage"]
+    oauth_session = await storage.get_oauth_session(state)
+
+    # Determine flow type from session, default to "browser" for backwards compatibility
+    flow_type = (
+        oauth_session.get("flow_type", "browser") if oauth_session else "browser"
+    )
+
+    logger.info(f"Unified callback: flow_type={flow_type} (from session lookup)")
+
+    if flow_type == "flow2":
+        # Flow 2: Resource Provisioning - MCP server gets delegated Nextcloud access
+        logger.info("Routing to Flow 2 (resource provisioning)")
+        return await oauth_callback_nextcloud(request)
+
+    elif flow_type == "browser":
+        # Browser UI Login - establish browser session for /user/page access
+        logger.info("Routing to browser login flow")
+        from nextcloud_mcp_server.auth.browser_oauth_routes import (
+            oauth_login_callback,
+        )
+
+        return await oauth_login_callback(request)
+
+    else:
+        # Unknown flow type
+        logger.warning(f"Unknown flow_type in OAuth session: {flow_type}")
+        return JSONResponse(
+            {
+                "error": "invalid_request",
+                "error_description": f"Unknown flow type: {flow_type}",
+            },
+            status_code=400,
+        )

@@ -412,7 +412,7 @@ async def test_jwt_with_no_custom_scopes_returns_zero_tools(
 
     tool_names = [tool.name for tool in result.tools]
     logger.info(
-        f"JWT token with no custom scopes sees {len(tool_names)} tools (should be 3 OAuth tools)"
+        f"JWT token with no custom scopes sees {len(tool_names)} tools (should be 4 OAuth tools)"
     )
 
     # Only OAuth provisioning tools should be visible (they require 'openid' scope)
@@ -420,6 +420,7 @@ async def test_jwt_with_no_custom_scopes_returns_zero_tools(
         "provision_nextcloud_access",
         "revoke_nextcloud_access",
         "check_provisioning_status",
+        "check_logged_in",  # Login elicitation tool (ADR-006)
     ]
 
     assert set(tool_names) == set(expected_oauth_tools), (

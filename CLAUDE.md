@@ -167,23 +167,35 @@ docker compose exec db mariadb -u root -ppassword nextcloud -e \
 
 ### Progressive Consent Architecture (ADR-004)
 
-**Status**: Always enabled in OAuth mode (default)
+**Important**: Progressive consent is a *mechanism* for granting access, not a feature flag. The architecture is always present in OAuth mode. Whether provisioning tools are available is controlled by `ENABLE_OFFLINE_ACCESS`.
 
 **What is Progressive Consent?**
 - Dual OAuth flow architecture that separates client authentication (Flow 1) from resource provisioning (Flow 2)
 - Flow 1: MCP client authenticates directly to IdP with resource scopes (notes:*, calendar:*, etc.)
   - Token audience: "mcp-server"
   - Client receives resource-scoped token for MCP session
-- Flow 2: Server explicitly provisions Nextcloud access via separate login
+- Flow 2: Server explicitly provisions Nextcloud access via separate login (only when `ENABLE_OFFLINE_ACCESS=true`)
   - Server requests: openid, profile, email, offline_access
   - Token audience: "nextcloud"
   - Server receives refresh token for offline access
   - Client never sees this token
 - Provides clear separation between session tokens and offline access tokens
 
+**Modes:**
+- **Pass-through mode** (`ENABLE_OFFLINE_ACCESS=false`, default):
+  - No Flow 2 provisioning
+  - Server uses client's token to access Nextcloud (pass-through)
+  - No provisioning tools available
+  - Suitable for stateless, client-driven operations
+- **Offline access mode** (`ENABLE_OFFLINE_ACCESS=true`):
+  - Flow 2 provisioning available
+  - Server stores refresh tokens for background operations
+  - Provisioning tools available: `provision_nextcloud_access`, `check_logged_in`
+  - Suitable for background jobs and server-initiated operations
+
 **When to use OAuth mode:**
 - Multi-user deployments
-- Background jobs requiring offline access
+- Background jobs requiring offline access (with `ENABLE_OFFLINE_ACCESS=true`)
 - Enhanced security with separate authorization contexts
 - Explicit user control over resource access
 

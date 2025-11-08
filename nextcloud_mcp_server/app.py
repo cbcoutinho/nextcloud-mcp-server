@@ -217,6 +217,9 @@ class OAuthAppContext:
     refresh_token_storage: Optional["RefreshTokenStorage"] = None
     oauth_client: Optional[object] = None  # NextcloudOAuthClient or KeycloakOAuthClient
     oauth_provider: str = "nextcloud"  # "nextcloud" or "keycloak"
+    server_client_id: Optional[str] = (
+        None  # MCP server's OAuth client ID (static or DCR)
+    )
 
 
 def is_oauth_mode() -> bool:
@@ -292,8 +295,7 @@ async def load_oauth_client_credentials(
         logger.info("Dynamic client registration available")
         mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
         redirect_uris = [
-            f"{mcp_server_url}/oauth/callback",  # MCP OAuth flow
-            f"{mcp_server_url}/oauth/login-callback",  # Browser OAuth flow for /user/page
+            f"{mcp_server_url}/oauth/callback",  # Unified callback (flow determined by query param)
         ]
 
         # MCP server DCR: Register with ALL supported scopes
@@ -633,6 +635,8 @@ async def setup_oauth_config():
         from nextcloud_mcp_server.auth.keycloak_oauth import KeycloakOAuthClient
 
         mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+        # Note: This redirect_uri is for OAuth client initialization, not used for actual redirects
+        # since this client is used for backend token operations (exchange, refresh)
         redirect_uri = f"{mcp_server_url}/oauth/callback"
 
         # Extract base URL and realm from discovery URL
@@ -738,6 +742,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                     refresh_token_storage=refresh_token_storage,
                     oauth_client=oauth_client,
                     oauth_provider=oauth_provider,
+                    server_client_id=client_id,
                 )
             finally:
                 logger.info("Shutting down MCP server")
@@ -793,16 +798,27 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 f"Unknown app: {app_name}. Available apps: {list(available_apps.keys())}"
             )
 
-    # Register OAuth provisioning tools (only when offline access/Progressive Consent is used)
+    # Register OAuth provisioning tools (only when offline access is enabled)
     # With token exchange enabled (external IdP), provisioning is not needed for MCP operations
     enable_token_exchange = (
         os.getenv("ENABLE_TOKEN_EXCHANGE", "false").lower() == "true"
     )
-    if oauth_enabled and not enable_token_exchange:
-        logger.info("Registering OAuth provisioning tools for Progressive Consent")
+    enable_offline_access_for_tools = os.getenv(
+        "ENABLE_OFFLINE_ACCESS", "false"
+    ).lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+    if oauth_enabled and enable_offline_access_for_tools and not enable_token_exchange:
+        logger.info("Registering OAuth provisioning tools for offline access")
         register_oauth_tools(mcp)
     elif oauth_enabled and enable_token_exchange:
         logger.info("Skipping provisioning tools registration (token exchange enabled)")
+    elif oauth_enabled and not enable_offline_access_for_tools:
+        logger.info(
+            "Skipping provisioning tools registration (offline access not enabled)"
+        )
 
     # Override list_tools to filter based on user's token scopes (OAuth mode only)
     if oauth_enabled:
@@ -876,7 +892,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 )
                 scopes = os.getenv("NEXTCLOUD_OIDC_SCOPES", "")
 
-                app.state.oauth_context = {
+                oauth_context_dict = {
                     "storage": refresh_token_storage,
                     "oauth_client": oauth_client,
                     "token_verifier": token_verifier,  # For querying IdP userinfo endpoint
@@ -891,6 +907,19 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                         "oauth_provider": oauth_provider,
                     },
                 }
+                app.state.oauth_context = oauth_context_dict
+
+                # Also set oauth_context on browser_app for session authentication
+                # browser_app is in the same function scope (defined later in create_app)
+                # We need to find it in the mounted routes
+                for route in app.routes:
+                    if isinstance(route, Mount) and route.path == "/user":
+                        route.app.state.oauth_context = oauth_context_dict
+                        logger.info(
+                            "OAuth context shared with browser_app for session auth"
+                        )
+                        break
+
                 logger.info(
                     f"OAuth context initialized for login routes (client_id={client_id[:16]}...)"
                 )
@@ -1031,6 +1060,38 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         routes.append(Route("/oauth/authorize", oauth_authorize, methods=["GET"]))
         logger.info("OAuth login routes enabled: /oauth/authorize (Flow 1)")
 
+        # Add unified OAuth callback endpoint supporting both flows
+        from nextcloud_mcp_server.auth.oauth_routes import (
+            oauth_authorize_nextcloud,
+            oauth_callback,
+            oauth_callback_nextcloud,
+        )
+
+        routes.append(Route("/oauth/callback", oauth_callback, methods=["GET"]))
+        logger.info(
+            "OAuth unified callback enabled: /oauth/callback?flow={browser|provisioning}"
+        )
+
+        # Add OAuth resource provisioning routes (ADR-004 Progressive Consent Flow 2)
+        routes.append(
+            Route(
+                "/oauth/authorize-nextcloud",
+                oauth_authorize_nextcloud,
+                methods=["GET"],
+            )
+        )
+        # Keep old callback endpoint as backwards-compatible alias
+        routes.append(
+            Route(
+                "/oauth/callback-nextcloud",
+                oauth_callback_nextcloud,
+                methods=["GET"],
+            )
+        )
+        logger.info(
+            "OAuth resource provisioning routes enabled: /oauth/authorize-nextcloud, /oauth/callback-nextcloud (Flow 2, legacy)"
+        )
+
     # Add browser OAuth login routes (OAuth mode only)
     if oauth_enabled:
         from nextcloud_mcp_server.auth.browser_oauth_routes import (
@@ -1042,6 +1103,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         routes.append(
             Route("/oauth/login", oauth_login, methods=["GET"], name="oauth_login")
         )
+        # Keep old callback endpoint as backwards-compatible alias
         routes.append(
             Route(
                 "/oauth/login-callback",
@@ -1054,13 +1116,14 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             Route("/oauth/logout", oauth_logout, methods=["GET"], name="oauth_logout")
         )
         logger.info(
-            "Browser OAuth routes enabled: /oauth/login, /oauth/login-callback, /oauth/logout"
+            "Browser OAuth routes enabled: /oauth/login, /oauth/login-callback (legacy), /oauth/logout"
         )
 
     # Add user info routes (available in both BasicAuth and OAuth modes)
     # These require session authentication, so we wrap them in a separate app
     from nextcloud_mcp_server.auth.session_backend import SessionAuthBackend
     from nextcloud_mcp_server.auth.userinfo_routes import (
+        revoke_session,
         user_info_html,
         user_info_json,
     )
@@ -1070,6 +1133,9 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     browser_routes = [
         Route("/", user_info_json, methods=["GET"]),  # /user/ → user_info_json
         Route("/page", user_info_html, methods=["GET"]),  # /user/page → user_info_html
+        Route(
+            "/revoke", revoke_session, methods=["POST"], name="revoke_session_endpoint"
+        ),  # /user/revoke → revoke_session
     ]
 
     browser_app = Starlette(routes=browser_routes)

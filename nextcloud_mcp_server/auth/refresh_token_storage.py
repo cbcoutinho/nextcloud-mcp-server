@@ -430,6 +430,84 @@ class RefreshTokenStorage:
             logger.error(f"Failed to decrypt refresh token for user {user_id}: {e}")
             return None
 
+    async def get_refresh_token_by_provisioning_client_id(
+        self, provisioning_client_id: str
+    ) -> Optional[dict]:
+        """
+        Retrieve and decrypt refresh token by provisioning_client_id (state parameter).
+
+        This is used to check if an OAuth Flow 2 login completed successfully
+        by looking up the refresh token using the state parameter that was generated
+        during the authorization request.
+
+        Args:
+            provisioning_client_id: OAuth state parameter from the authorization request
+
+        Returns:
+            Dictionary with token data or None if not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                """
+                SELECT user_id, encrypted_token, expires_at, flow_type, token_audience,
+                       provisioned_at, provisioning_client_id, scopes
+                FROM refresh_tokens WHERE provisioning_client_id = ?
+                """,
+                (provisioning_client_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        if not row:
+            logger.debug(
+                f"No refresh token found for provisioning_client_id {provisioning_client_id[:16]}..."
+            )
+            return None
+
+        (
+            user_id,
+            encrypted_token,
+            expires_at,
+            flow_type,
+            token_audience,
+            provisioned_at,
+            prov_client_id,
+            scopes_json,
+        ) = row
+
+        # Check expiration
+        if expires_at is not None and expires_at < time.time():
+            logger.warning(
+                f"Refresh token for provisioning_client_id {provisioning_client_id[:16]}... has expired"
+            )
+            return None
+
+        try:
+            decrypted_token = self.cipher.decrypt(encrypted_token).decode()
+            scopes = json.loads(scopes_json) if scopes_json else None
+
+            logger.debug(
+                f"Retrieved refresh token for provisioning_client_id {provisioning_client_id[:16]}... (user_id: {user_id})"
+            )
+
+            return {
+                "user_id": user_id,
+                "refresh_token": decrypted_token,
+                "expires_at": expires_at,
+                "flow_type": flow_type or "hybrid",
+                "token_audience": token_audience or "nextcloud",
+                "provisioned_at": provisioned_at,
+                "provisioning_client_id": prov_client_id,
+                "scopes": scopes,
+            }
+        except Exception as e:
+            logger.error(
+                f"Failed to decrypt refresh token for provisioning_client_id {provisioning_client_id[:16]}...: {e}"
+            )
+            return None
+
     async def delete_refresh_token(self, user_id: str) -> bool:
         """
         Delete refresh token for user.

@@ -4,9 +4,11 @@ Separate from MCP OAuth flow - these routes establish browser sessions
 for accessing admin UI endpoints like /user/page.
 """
 
+import hashlib
 import logging
 import os
 import secrets
+from base64 import urlsafe_b64encode
 from urllib.parse import urlencode
 
 import httpx
@@ -53,38 +55,35 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
 
     # Build OAuth authorization URL
     mcp_server_url = oauth_config["mcp_server_url"]
-    callback_uri = f"{mcp_server_url}/oauth/login-callback"
+    callback_uri = f"{mcp_server_url}/oauth/callback"
 
     # Request only basic OIDC scopes for browser session
     # Note: Nextcloud app scopes (notes:read, etc.) are for MCP client access tokens,
     # not for the MCP server's own browser authentication
     scopes = "openid profile email offline_access"
 
-    code_challenge = ""
-    code_verifier = ""
+    # Generate PKCE values for ALL modes (both external and integrated IdP require PKCE)
+    code_verifier = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(code_verifier.encode()).digest()
+    code_challenge = urlsafe_b64encode(digest).decode().rstrip("=")
+
+    # Store code_verifier in session for retrieval during callback (using state as key)
+    await storage.store_oauth_session(
+        session_id=state,  # Use state as session ID
+        client_id="browser-ui",
+        client_redirect_uri="/user/page",
+        state=state,
+        code_challenge=code_challenge,
+        code_challenge_method="S256",
+        mcp_authorization_code=code_verifier,  # Store code_verifier here temporarily
+        flow_type="browser",
+        ttl_seconds=600,  # 10 minutes
+    )
 
     if oauth_client:
         # External IdP mode (Keycloak)
-        # Keycloak requires PKCE, so generate code_verifier and code_challenge
         if not oauth_client.authorization_endpoint:
             await oauth_client.discover()
-
-        # Generate PKCE values
-        code_verifier, code_challenge = oauth_client.generate_pkce_challenge()
-
-        # Store code_verifier temporarily (using state as key)
-        # We'll retrieve it in the callback using the state parameter
-        await storage.store_oauth_session(
-            session_id=state,  # Use state as session ID
-            client_id="browser-ui",
-            client_redirect_uri="/user/page",
-            state=state,
-            code_challenge=code_challenge,
-            code_challenge_method="S256",
-            mcp_authorization_code=code_verifier,  # Store code_verifier here temporarily
-            flow_type="browser",
-            ttl_seconds=600,  # 10 minutes
-        )
 
         idp_params = {
             "client_id": oauth_client.client_id,
@@ -138,6 +137,8 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
             "response_type": "code",
             "scope": scopes,
             "state": state,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
             "prompt": "consent",  # Ensure refresh token
         }
 
@@ -213,20 +214,18 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     oauth_client = oauth_ctx["oauth_client"]
     oauth_config = oauth_ctx["config"]
 
-    # Retrieve code_verifier from session storage (if using PKCE)
+    # Retrieve code_verifier from session storage (PKCE required for all modes)
     code_verifier = ""
-    if oauth_client:
-        # For Keycloak (external IdP), we stored the code_verifier in the session
-        oauth_session = await storage.get_oauth_session(state)
-        if oauth_session:
-            # code_verifier was stored in mcp_authorization_code field
-            code_verifier = oauth_session.get("mcp_authorization_code", "")
-            # Clean up the temporary session
-            # Note: We don't have delete_oauth_session method, but it will expire after TTL
+    oauth_session = await storage.get_oauth_session(state)
+    if oauth_session:
+        # code_verifier was stored in mcp_authorization_code field
+        code_verifier = oauth_session.get("mcp_authorization_code", "")
+        # Clean up the temporary session
+        # Note: We don't have delete_oauth_session method, but it will expire after TTL
 
     # Exchange authorization code for tokens
     mcp_server_url = oauth_config["mcp_server_url"]
-    callback_uri = f"{mcp_server_url}/oauth/login-callback"
+    callback_uri = f"{mcp_server_url}/oauth/callback"
 
     try:
         if oauth_client:
@@ -263,16 +262,22 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
                 discovery = response.json()
                 token_endpoint = discovery["token_endpoint"]
 
+            token_params = {
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": callback_uri,
+                "client_id": oauth_config["client_id"],
+                "client_secret": oauth_config["client_secret"],
+            }
+
+            # Add code_verifier for PKCE (required by Nextcloud OIDC)
+            if code_verifier:
+                token_params["code_verifier"] = code_verifier
+
             async with httpx.AsyncClient() as http_client:
                 response = await http_client.post(
                     token_endpoint,
-                    data={
-                        "grant_type": "authorization_code",
-                        "code": code,
-                        "redirect_uri": callback_uri,
-                        "client_id": oauth_config["client_id"],
-                        "client_secret": oauth_config["client_secret"],
-                    },
+                    data=token_params,
                 )
                 response.raise_for_status()
                 token_data = response.json()
@@ -336,13 +341,18 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     # Store refresh token (for background jobs ONLY)
     if refresh_token:
         logger.info(f"Storing refresh token for user_id: {user_id}")
+        logger.info(f"  State parameter (provisioning_client_id): {state[:16]}...")
         await storage.store_refresh_token(
             user_id=user_id,
             refresh_token=refresh_token,
             expires_at=None,
             flow_type="browser",  # Browser-based login flow
+            provisioning_client_id=state,  # Store state for unified session lookup
         )
         logger.info(f"✓ Refresh token stored successfully for user_id: {user_id}")
+        logger.info(
+            f"  Token can now be found via provisioning_client_id={state[:16]}..."
+        )
     else:
         logger.warning("No refresh token in token response - cannot store session")
 
