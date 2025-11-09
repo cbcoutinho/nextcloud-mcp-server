@@ -17,15 +17,11 @@ and resource usage. Metrics are organized by category:
 import logging
 
 from prometheus_client import (
-    CONTENT_TYPE_LATEST,
-    REGISTRY,
     Counter,
     Gauge,
     Histogram,
-    generate_latest,
+    start_http_server,
 )
-from starlette.requests import Request
-from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
 
@@ -220,29 +216,32 @@ dependency_check_duration_seconds = Histogram(
 # =============================================================================
 
 
-def setup_metrics() -> None:
+def setup_metrics(port: int = 9090) -> None:
     """
-    Initialize Prometheus metrics collection.
+    Initialize Prometheus metrics collection and start HTTP server.
 
-    This function should be called once during application startup.
-    It currently doesn't require any initialization beyond module-level
-    metric definitions, but is provided for consistency and future extensibility.
-    """
-    logger.info("Prometheus metrics initialized")
-
-
-async def get_metrics_handler(request: Request) -> Response:
-    """
-    HTTP handler for the /metrics endpoint.
+    Starts a dedicated HTTP server on the specified port to serve metrics.
+    This server runs in a separate thread and is isolated from the main application.
 
     Args:
-        request: Starlette request object (unused, but required by signature)
+        port: Port to serve metrics on (default: 9090)
 
-    Returns:
-        Response containing Prometheus metrics in text format
+    Note:
+        Metrics endpoint (/metrics) is ONLY accessible on this dedicated port,
+        not on the main application HTTP port. This is a security best practice
+        to prevent external exposure of metrics.
     """
-    metrics_data = generate_latest(REGISTRY)
-    return Response(content=metrics_data, media_type=CONTENT_TYPE_LATEST)
+    try:
+        start_http_server(port)
+        logger.info(f"Prometheus metrics server started on port {port}")
+    except OSError as e:
+        if "Address already in use" in str(e):
+            logger.warning(
+                f"Metrics port {port} already in use (metrics server likely already running)"
+            )
+        else:
+            logger.error(f"Failed to start metrics server on port {port}: {e}")
+            raise
 
 
 # =============================================================================
