@@ -105,13 +105,20 @@ async def scan_user_documents(
     if initial_sync:
         # Send everything on first sync
         for note in notes:
+            # Handle missing 'modified' field (use 0 as fallback)
+            modified_at = note.get("modified", 0)
+            if modified_at == 0:
+                logger.warning(
+                    f"Note {note['id']} missing 'modified' field, using 0 as fallback"
+                )
+
             await send_stream.send(
                 DocumentTask(
                     user_id=user_id,
                     doc_id=str(note["id"]),
                     doc_type="note",
                     operation="index",
-                    modified_at=note["modified"],
+                    modified_at=modified_at,
                 )
             )
         logger.info(f"Sent {len(notes)} documents for initial sync: {user_id}")
@@ -147,6 +154,13 @@ async def scan_user_documents(
         doc_id = str(note["id"])
         indexed_at = indexed_docs.get(doc_id)
 
+        # Handle missing 'modified' field (use 0 as fallback)
+        modified_at = note.get("modified", 0)
+        if modified_at == 0:
+            logger.warning(
+                f"Note {doc_id} missing 'modified' field, using 0 as fallback"
+            )
+
         # If document reappeared, remove from potentially_deleted
         doc_key = (user_id, doc_id)
         if doc_key in _potentially_deleted:
@@ -156,14 +170,14 @@ async def scan_user_documents(
             del _potentially_deleted[doc_key]
 
         # Send if never indexed or modified since last index
-        if indexed_at is None or note["modified"] > indexed_at:
+        if indexed_at is None or modified_at > indexed_at:
             await send_stream.send(
                 DocumentTask(
                     user_id=user_id,
                     doc_id=doc_id,
                     doc_type="note",
                     operation="index",
-                    modified_at=note["modified"],
+                    modified_at=modified_at,
                 )
             )
             queued += 1
