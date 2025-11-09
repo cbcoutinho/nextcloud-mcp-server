@@ -5,6 +5,7 @@ Periodically scans enabled users' content and queues changed documents for proce
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
 import anyio
@@ -26,6 +27,11 @@ class DocumentTask:
     doc_type: str  # "note", "file", "calendar"
     operation: str  # "index" or "delete"
     modified_at: int
+
+
+# Track documents potentially deleted (grace period before actual deletion)
+# Format: {(user_id, doc_id): first_missing_timestamp}
+_potentially_deleted: dict[tuple[str, str], float] = {}
 
 
 async def scanner_task(
@@ -134,9 +140,19 @@ async def scan_user_documents(
 
     # Compare and queue changes
     queued = 0
+    nextcloud_doc_ids = {str(note["id"]) for note in notes}
+
     for note in notes:
         doc_id = str(note["id"])
         indexed_at = indexed_docs.get(doc_id)
+
+        # If document reappeared, remove from potentially_deleted
+        doc_key = (user_id, doc_id)
+        if doc_key in _potentially_deleted:
+            logger.debug(
+                f"Document {doc_id} reappeared, removing from deletion grace period"
+            )
+            del _potentially_deleted[doc_key]
 
         # Queue if never indexed or modified since last index
         if indexed_at is None or note["modified"] > indexed_at:
@@ -152,19 +168,49 @@ async def scan_user_documents(
             queued += 1
 
     # Check for deleted documents (in Qdrant but not in Nextcloud)
-    nextcloud_doc_ids = {str(note["id"]) for note in notes}
+    # Use grace period: only delete after 2 consecutive scans confirm absence
+    settings = get_settings()
+    grace_period = settings.vector_sync_scan_interval * 1.5  # Allow 1.5 scan intervals
+    current_time = time.time()
+
     for doc_id in indexed_docs:
         if doc_id not in nextcloud_doc_ids:
-            await document_queue.put(
-                DocumentTask(
-                    user_id=user_id,
-                    doc_id=doc_id,
-                    doc_type="note",
-                    operation="delete",
-                    modified_at=0,
+            doc_key = (user_id, doc_id)
+
+            if doc_key in _potentially_deleted:
+                # Already marked as potentially deleted, check if grace period elapsed
+                first_missing_time = _potentially_deleted[doc_key]
+                time_missing = current_time - first_missing_time
+
+                if time_missing >= grace_period:
+                    # Grace period elapsed, queue for deletion
+                    logger.info(
+                        f"Document {doc_id} missing for {time_missing:.1f}s "
+                        f"(>{grace_period:.1f}s grace period), queueing deletion"
+                    )
+                    await document_queue.put(
+                        DocumentTask(
+                            user_id=user_id,
+                            doc_id=doc_id,
+                            doc_type="note",
+                            operation="delete",
+                            modified_at=0,
+                        )
+                    )
+                    queued += 1
+                    # Remove from tracking after queueing deletion
+                    del _potentially_deleted[doc_key]
+                else:
+                    logger.debug(
+                        f"Document {doc_id} still missing "
+                        f"({time_missing:.1f}s/{grace_period:.1f}s grace period)"
+                    )
+            else:
+                # First time missing, add to grace period tracking
+                logger.debug(
+                    f"Document {doc_id} missing for first time, starting grace period"
                 )
-            )
-            queued += 1
+                _potentially_deleted[doc_key] = current_time
 
     if queued > 0:
         logger.info(f"Queued {queued} documents for incremental sync: {user_id}")

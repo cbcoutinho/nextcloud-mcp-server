@@ -146,3 +146,29 @@ class SamplingSearchResponse(BaseResponse):
     stop_reason: Optional[str] = Field(
         default=None, description="Reason generation stopped"
     )
+
+
+class VectorSyncStatusResponse(BaseResponse):
+    """Response for vector sync status.
+
+    Provides information about the current state of vector sync,
+    including how many documents are indexed and how many are pending.
+
+    Attributes:
+        indexed_count: Number of documents in Qdrant vector database
+        pending_count: Number of documents in processing queue
+        status: Current sync status ("idle" or "syncing")
+        enabled: Whether vector sync is enabled
+    """
+
+    indexed_count: int = Field(
+        default=0, description="Number of documents indexed in vector database"
+    )
+    pending_count: int = Field(
+        default=0, description="Number of documents pending processing"
+    )
+    status: str = Field(
+        default="disabled",
+        description='Sync status: "idle", "syncing", or "disabled"',
+    )
+    enabled: bool = Field(default=False, description="Whether vector sync is enabled")

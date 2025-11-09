@@ -25,6 +25,7 @@ from nextcloud_mcp_server.models.notes import (
     SemanticSearchNotesResponse,
     SemanticSearchResult,
     UpdateNoteResponse,
+    VectorSyncStatusResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -726,3 +727,85 @@ def configure_notes_tools(mcp: FastMCP):
                         message=f"Failed to delete note {note_id}: server error ({e.response.status_code})",
                     )
                 )
+
+    @mcp.tool()
+    async def nc_notes_get_vector_sync_status(ctx: Context) -> VectorSyncStatusResponse:
+        """Get the current vector sync status.
+
+        Returns information about the vector sync process, including:
+        - Number of documents indexed in the vector database
+        - Number of documents pending processing
+        - Current sync status (idle, syncing, or disabled)
+
+        This is useful for determining when vector indexing is complete
+        after creating or updating notes.
+        """
+        import os
+
+        # Check if vector sync is enabled
+        vector_sync_enabled = (
+            os.getenv("VECTOR_SYNC_ENABLED", "false").lower() == "true"
+        )
+
+        if not vector_sync_enabled:
+            return VectorSyncStatusResponse(
+                indexed_count=0,
+                pending_count=0,
+                status="disabled",
+                enabled=False,
+            )
+
+        try:
+            # Get document queue from lifespan context
+            lifespan_ctx = ctx.request_context.lifespan_context
+            document_queue = getattr(lifespan_ctx, "document_queue", None)
+
+            if document_queue is None:
+                logger.debug("document_queue not available in lifespan context")
+                return VectorSyncStatusResponse(
+                    indexed_count=0,
+                    pending_count=0,
+                    status="unknown",
+                    enabled=True,
+                )
+
+            # Get pending count from queue
+            pending_count = document_queue.qsize()
+
+            # Get Qdrant client and query indexed count
+            indexed_count = 0
+            try:
+                from nextcloud_mcp_server.config import get_settings
+                from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+                settings = get_settings()
+                qdrant_client = await get_qdrant_client()
+
+                # Count documents in collection
+                count_result = await qdrant_client.count(
+                    collection_name=settings.qdrant_collection
+                )
+                indexed_count = count_result.count
+
+            except Exception as e:
+                logger.warning(f"Failed to query Qdrant for indexed count: {e}")
+                # Continue with indexed_count = 0
+
+            # Determine status
+            status = "syncing" if pending_count > 0 else "idle"
+
+            return VectorSyncStatusResponse(
+                indexed_count=indexed_count,
+                pending_count=pending_count,
+                status=status,
+                enabled=True,
+            )
+
+        except Exception as e:
+            logger.error(f"Error getting vector sync status: {e}")
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message=f"Failed to retrieve vector sync status: {str(e)}",
+                )
+            )

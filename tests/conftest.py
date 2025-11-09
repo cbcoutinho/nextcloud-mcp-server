@@ -551,6 +551,43 @@ async def temporary_note(nc_client: NextcloudClient):
 
 
 @pytest.fixture
+async def temporary_note_factory(nc_client: NextcloudClient):
+    """
+    Factory fixture to create multiple temporary notes with custom parameters.
+    Returns a callable that creates notes and tracks them for automatic cleanup.
+    """
+    created_notes = []
+
+    async def _create_note(title: str, content: str, category: str = ""):
+        """Create a temporary note with custom title, content, and category."""
+        logger.info(f"Creating temporary note via factory: {title}")
+        note_data = await nc_client.notes.create_note(
+            title=title, content=content, category=category
+        )
+        note_id = note_data.get("id")
+        if note_id:
+            created_notes.append(note_id)
+            logger.info(f"Factory created note ID: {note_id}")
+        return note_data
+
+    yield _create_note
+
+    # Cleanup all created notes
+    for note_id in created_notes:
+        logger.info(f"Cleaning up factory-created note ID: {note_id}")
+        try:
+            await nc_client.notes.delete_note(note_id=note_id)
+            logger.info(f"Successfully deleted factory note ID: {note_id}")
+        except HTTPStatusError as e:
+            if e.response.status_code != 404:
+                logger.error(f"HTTP error deleting factory note {note_id}: {e}")
+            else:
+                logger.warning(f"Factory note {note_id} already deleted (404).")
+        except Exception as e:
+            logger.error(f"Unexpected error deleting factory note {note_id}: {e}")
+
+
+@pytest.fixture
 async def temporary_note_with_attachment(
     nc_client: NextcloudClient, temporary_note: dict
 ):
