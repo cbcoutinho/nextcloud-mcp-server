@@ -729,6 +729,7 @@ def configure_notes_tools(mcp: FastMCP):
                 )
 
     @mcp.tool()
+    @require_scopes("openid")
     async def nc_notes_get_vector_sync_status(ctx: Context) -> VectorSyncStatusResponse:
         """Get the current vector sync status.
 
