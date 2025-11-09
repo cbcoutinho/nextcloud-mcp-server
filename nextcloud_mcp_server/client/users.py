@@ -7,6 +7,8 @@ from nextcloud_mcp_server.models.users import UserDetails
 class UsersClient(BaseNextcloudClient):
     """Client for Nextcloud User API operations."""
 
+    app_name = "users"
+
     def _get_user_headers(
         self, additional_headers: Optional[Dict[str, str]] = None
     ) -> Dict[str, str]:

@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 class NotesClient(BaseNextcloudClient):
     """Client for Nextcloud Notes app operations."""
 
+    app_name = "notes"
+
     async def get_settings(self) -> Dict[str, Any]:
         """Get Notes app settings."""
         response = await self._make_request("GET", "/apps/notes/api/v1/settings")

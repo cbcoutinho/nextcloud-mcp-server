@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 class CookbookClient(BaseNextcloudClient):
     """Client for Nextcloud Cookbook app operations."""
 
+    app_name = "cookbook"
+
     async def get_version(self) -> Dict[str, Any]:
         """Get Cookbook app and API version."""
         response = await self._make_request("GET", "/apps/cookbook/api/version")

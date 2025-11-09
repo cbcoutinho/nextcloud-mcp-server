@@ -22,6 +22,15 @@ dependencies = [
     "aiosqlite>=0.20.0", # Async SQLite for refresh token storage
     "authlib>=1.6.5",
     "qdrant-client>=1.7.0",
+    # Observability dependencies
+    "prometheus-client>=0.21.0",  # Prometheus metrics
+    "opentelemetry-api>=1.28.2",  # OpenTelemetry API
+    "opentelemetry-sdk>=1.28.2",  # OpenTelemetry SDK
+    "opentelemetry-instrumentation-asgi>=0.49b2",  # Auto-instrument ASGI/Starlette
+    "opentelemetry-instrumentation-httpx>=0.49b2",  # Auto-instrument httpx client
+    "opentelemetry-instrumentation-logging>=0.49b2",  # Logging integration
+    "opentelemetry-exporter-otlp-proto-grpc>=1.28.2",  # OTLP gRPC exporter
+    "python-json-logger>=3.2.0",  # Structured JSON logging
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

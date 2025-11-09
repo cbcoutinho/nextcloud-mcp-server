@@ -32,13 +32,18 @@ from nextcloud_mcp_server.auth import (
 from nextcloud_mcp_server.auth.unified_verifier import UnifiedTokenVerifier
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import (
-    LOGGING_CONFIG,
     get_document_processor_config,
     get_settings,
-    setup_logging,
 )
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.document_processors import get_registry
+from nextcloud_mcp_server.observability import (
+    ObservabilityMiddleware,
+    get_metrics_handler,
+    get_uvicorn_logging_config,
+    setup_metrics,
+    setup_tracing,
+)
 from nextcloud_mcp_server.server import (
     configure_calendar_tools,
     configure_contacts_tools,
@@ -776,7 +781,26 @@ async def setup_oauth_config():
 
 
 def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
-    setup_logging()
+    # Initialize observability (logging will be configured by uvicorn)
+    settings = get_settings()
+
+    # Setup Prometheus metrics (always enabled by default)
+    if settings.metrics_enabled:
+        setup_metrics()
+        logger.info("Prometheus metrics enabled")
+
+    # Setup OpenTelemetry tracing (optional)
+    if settings.tracing_enabled:
+        setup_tracing(
+            service_name=settings.otel_service_name,
+            otlp_endpoint=settings.otel_exporter_otlp_endpoint,
+            sampling_rate=settings.otel_traces_sampler_arg,
+        )
+        logger.info(
+            f"OpenTelemetry tracing enabled (endpoint: {settings.otel_exporter_otlp_endpoint})"
+        )
+    else:
+        logger.info("OpenTelemetry tracing disabled (set OTEL_ENABLED=true to enable)")
 
     # Determine authentication mode
     oauth_enabled = is_oauth_mode()
@@ -1183,6 +1207,13 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     routes.append(Route("/health/ready", health_ready, methods=["GET"]))
     logger.info("Health check endpoints enabled: /health/live, /health/ready")
 
+    # Add metrics endpoint (if metrics are enabled)
+    if settings.metrics_enabled:
+        routes.append(Route("/metrics", get_metrics_handler, methods=["GET"]))
+        logger.info(
+            f"Prometheus metrics endpoint enabled: /metrics (port: {settings.metrics_port if hasattr(settings, 'metrics_port') else 'default'})"
+        )
+
     if oauth_enabled:
         # Import OAuth routes (ADR-004 Progressive Consent)
         from nextcloud_mcp_server.auth.oauth_routes import oauth_authorize
@@ -1373,6 +1404,11 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         allow_headers=["*"],
         expose_headers=["*"],
     )
+
+    # Add observability middleware (metrics + tracing)
+    if settings.metrics_enabled or settings.tracing_enabled:
+        app.add_middleware(ObservabilityMiddleware)
+        logger.info("Observability middleware enabled (metrics and/or tracing)")
 
     # Add exception handler for scope challenges (OAuth mode only)
     if oauth_enabled:
@@ -1630,8 +1666,20 @@ def run(
 
     app = get_app(transport=transport, enabled_apps=enabled_apps)
 
+    # Get observability settings and create uvicorn logging config
+    settings = get_settings()
+    uvicorn_log_config = get_uvicorn_logging_config(
+        log_format=settings.log_format,
+        log_level=settings.log_level,
+        include_trace_context=settings.log_include_trace_context,
+    )
+
     uvicorn.run(
-        app=app, host=host, port=port, log_level=log_level, log_config=LOGGING_CONFIG
+        app=app,
+        host=host,
+        port=port,
+        log_level=log_level,
+        log_config=uvicorn_log_config,
     )
 
 

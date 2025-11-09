@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 class TablesClient(BaseNextcloudClient):
     """Client for Nextcloud Tables app operations."""
 
+    app_name = "tables"
+
     async def list_tables(self) -> List[Dict[str, Any]]:
         """List all tables available to the user."""
         response = await self._make_request(
