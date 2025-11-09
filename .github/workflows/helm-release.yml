@@ -34,7 +34,7 @@ jobs:
           helm repo add qdrant https://qdrant.github.io/qdrant-helm
           helm repo add ollama https://otwld.github.io/ollama-helm
           helm repo update
-          helm dependency update charts/nextcloud-mcp-server
+          helm dependency build charts/nextcloud-mcp-server
 
       - name: Run chart-releaser
         uses: helm/chart-releaser-action@cae68fefc6b5f367a0275617c9f83181ba54714f # v1.7.0
