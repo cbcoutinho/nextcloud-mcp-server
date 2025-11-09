@@ -1,3 +1,9 @@
+## v0.27.3 (2025-11-09)
+
+### Fix
+
+- **ci**: Use helm dependency build instead of update to use Chart.lock
+
 ## v0.27.2 (2025-11-09)
 
 ### Fix
