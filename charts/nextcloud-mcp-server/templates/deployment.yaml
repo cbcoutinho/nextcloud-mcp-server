@@ -152,19 +152,33 @@ spec:
               value: {{ .Values.vectorSync.queueMaxSize | quote }}
             {{- end }}
             # Qdrant Vector Database
-            {{- if .Values.qdrant.enabled }}
+            {{- if eq .Values.qdrant.mode "network" }}
+            # Network mode: Use dedicated Qdrant service
+            {{- if .Values.qdrant.networkMode.deploySubchart }}
             - name: QDRANT_URL
               value: "http://{{ .Release.Name }}-qdrant:6333"
-            - name: QDRANT_COLLECTION
-              value: "nextcloud_content"
-            {{- if .Values.qdrant.apiKey }}
+            {{- else if .Values.qdrant.networkMode.externalUrl }}
+            - name: QDRANT_URL
+              value: {{ .Values.qdrant.networkMode.externalUrl | quote }}
+            {{- end }}
+            {{- if or .Values.qdrant.networkMode.apiKey .Values.qdrant.networkMode.existingSecret }}
             - name: QDRANT_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Release.Name }}-qdrant
-                  key: api-key
+                  name: {{ .Values.qdrant.networkMode.existingSecret | default (printf "%s-qdrant" .Release.Name) }}
+                  key: {{ .Values.qdrant.networkMode.secretKey }}
             {{- end }}
+            {{- else if eq .Values.qdrant.mode "persistent" }}
+            # Persistent local mode: File-based storage
+            - name: QDRANT_LOCATION
+              value: {{ .Values.qdrant.localPersistence.dataPath | quote }}
+            {{- else }}
+            # In-memory mode (default): Ephemeral storage
+            - name: QDRANT_LOCATION
+              value: ":memory:"
             {{- end }}
+            - name: QDRANT_COLLECTION
+              value: {{ .Values.qdrant.collection | quote }}
             # Ollama Embedding Service
             {{- if or .Values.ollama.enabled .Values.ollama.url }}
             - name: OLLAMA_BASE_URL
@@ -206,6 +220,10 @@ spec:
             - name: oauth-storage
               mountPath: /app/.oauth
             {{- end }}
+            {{- if and (eq .Values.qdrant.mode "persistent") .Values.qdrant.localPersistence.enabled }}
+            - name: qdrant-data
+              mountPath: /app/data
+            {{- end }}
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -216,6 +234,11 @@ spec:
         - name: oauth-storage
           persistentVolumeClaim:
             claimName: {{ include "nextcloud-mcp-server.oauthPvcName" . }}
+        {{- end }}
+        {{- if and (eq .Values.qdrant.mode "persistent") .Values.qdrant.localPersistence.enabled }}
+        - name: qdrant-data
+          persistentVolumeClaim:
+            claimName: {{ include "nextcloud-mcp-server.qdrantPvcName" . }}
         {{- end }}
         {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}

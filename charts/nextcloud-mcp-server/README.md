@@ -14,8 +14,12 @@ This Helm chart deploys the Nextcloud MCP (Model Context Protocol) Server on a K
 ### Quick Start with Basic Authentication
 
 ```bash
+# Add the Helm repository
+helm repo add nextcloud-mcp https://cbcoutinho.github.io/nextcloud-mcp-server
+helm repo update
+
 # Install with basic auth (recommended for most users)
-helm install nextcloud-mcp ./helm/nextcloud-mcp-server \
+helm install nextcloud-mcp nextcloud-mcp/nextcloud-mcp-server \
   --set nextcloud.host=https://cloud.example.com \
   --set auth.basic.username=myuser \
   --set auth.basic.password=mypassword
@@ -47,7 +51,7 @@ resources:
 Install with your custom values:
 
 ```bash
-helm install nextcloud-mcp ./helm/nextcloud-mcp-server -f custom-values.yaml
+helm install nextcloud-mcp nextcloud-mcp/nextcloud-mcp-server -f custom-values.yaml
 ```
 
 ### OAuth Authentication Mode (Experimental)
@@ -529,13 +533,17 @@ openai:
 ### To upgrade an existing deployment:
 
 ```bash
-helm upgrade nextcloud-mcp ./helm/nextcloud-mcp-server -f custom-values.yaml
+# Update the repository
+helm repo update
+
+# Upgrade with your custom values
+helm upgrade nextcloud-mcp nextcloud-mcp/nextcloud-mcp-server -f custom-values.yaml
 ```
 
 ### To upgrade with new values:
 
 ```bash
-helm upgrade nextcloud-mcp ./helm/nextcloud-mcp-server \
+helm upgrade nextcloud-mcp nextcloud-mcp/nextcloud-mcp-server \
   --set resources.limits.memory=1Gi
 ```
 

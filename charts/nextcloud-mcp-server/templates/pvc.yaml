@@ -15,3 +15,21 @@ spec:
     requests:
       storage: {{ .Values.auth.oauth.persistence.size }}
 {{- end }}
+---
+{{- if and (eq .Values.qdrant.mode "persistent") .Values.qdrant.localPersistence.enabled (not .Values.qdrant.localPersistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "nextcloud-mcp-server.fullname" . }}-qdrant-data
+  labels:
+    {{- include "nextcloud-mcp-server.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.qdrant.localPersistence.accessMode }}
+  {{- if .Values.qdrant.localPersistence.storageClass }}
+  storageClassName: {{ .Values.qdrant.localPersistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.qdrant.localPersistence.size }}
+{{- end }}
