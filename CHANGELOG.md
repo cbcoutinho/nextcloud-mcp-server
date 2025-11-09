@@ -1,3 +1,9 @@
+## v0.29.1 (2025-11-09)
+
+### Fix
+
+- **observability**: isolate metrics endpoint to dedicated port
+
 ## v0.29.0 (2025-11-09)
 
 ### Feat
