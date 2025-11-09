@@ -23,7 +23,7 @@ sources:
 icon: https://raw.githubusercontent.com/nextcloud/server/master/core/img/logo/logo.svg
 dependencies:
   - name: qdrant
-    version: "0.9.0"
+    version: "0.10.1"
     repository: https://qdrant.github.io/qdrant-helm
     condition: qdrant.networkMode.deploySubchart
   - name: ollama
