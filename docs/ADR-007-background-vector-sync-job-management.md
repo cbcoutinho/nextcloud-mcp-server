@@ -136,7 +136,7 @@ Concrete implementations for each app are registered in central registries (`SCA
 - `file`: WebDAV files with text extraction (leverages ADR-006 document processing)
 - `contact`: CardDAV contacts (VCARD)
 
-New apps can be added by implementing the three interfaces and registering the implementations—no changes to core sync logic are required. The `VECTOR_SYNC_ENABLED_APPS` environment variable controls which apps are actually indexed.
+New apps can be added by implementing the three interfaces and registering the implementations—no changes to core sync logic are required. Per-user settings stored in the backend database control which apps are actually indexed for each user (e.g., a user might enable notes and calendar but not deck or files).
 
 ### Change Detection: ETag and Modification Timestamps
 
@@ -562,8 +562,9 @@ async def scan_user_documents(
         username=user_id
     )
 
-    # Get list of enabled document types from configuration
-    enabled_apps = settings.vector_sync_enabled_apps  # ["note", "calendar_event", "deck_card", ...]
+    # Get list of enabled apps for this user from database
+    # Users configure this via nc_enable_vector_sync tool
+    enabled_apps = await get_enabled_apps_for_user(user_id)  # ["note", "calendar_event", "deck_card", ...]
 
     queued = 0
 
@@ -572,7 +573,7 @@ async def scan_user_documents(
         doc_type = scanner.get_doc_type()
 
         if doc_type not in enabled_apps:
-            continue  # Skip disabled apps
+            continue  # Skip apps this user hasn't enabled
 
         # Fetch all documents for this app
         documents = await scanner.get_all_documents(client)
@@ -865,7 +866,6 @@ async def _index_document(doc_task: DocumentTask, qdrant_client):
 ```bash
 # Vector Sync Configuration
 VECTOR_SYNC_ENABLED=true
-VECTOR_SYNC_ENABLED_APPS=note,calendar_event,calendar_todo,deck_card,file,contact  # Apps to index
 VECTOR_SYNC_SCAN_INTERVAL=3600  # Scanner runs every 3600 seconds (1 hour)
 VECTOR_SYNC_PROCESSOR_WORKERS=3  # Number of concurrent processor tasks
 VECTOR_SYNC_QUEUE_MAX_SIZE=10000  # Maximum documents in queue
@@ -879,6 +879,8 @@ QDRANT_COLLECTION=nextcloud_content
 OPENAI_API_KEY=<api-key>
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 ```
+
+**Per-User App Enablement**: Which apps to index (notes, calendar, deck, files, contacts) is stored in the backend database on a per-user basis. Users control this via the `nc_enable_vector_sync` MCP tool, which can optionally specify which apps to enable. This allows different users to have different indexing preferences without requiring server-wide configuration.
 
 ### Docker Compose
 
