@@ -1,3 +1,9 @@
+## v0.29.2 (2025-11-09)
+
+### Fix
+
+- **helm**: Set default strategy to Recreate
+
 ## v0.29.1 (2025-11-09)
 
 ### Fix
