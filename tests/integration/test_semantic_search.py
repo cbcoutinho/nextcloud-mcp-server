@@ -10,6 +10,9 @@ Uses SimpleEmbeddingProvider for deterministic, in-process embeddings
 without requiring external services like Ollama.
 """
 
+import tempfile
+from pathlib import Path
+
 import pytest
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
@@ -342,3 +345,88 @@ async def test_batch_embedding(simple_embedding_provider: SimpleEmbeddingProvide
     for emb in embeddings:
         norm = math.sqrt(sum(x * x for x in emb))
         assert abs(norm - 1.0) < 1e-6
+
+
+async def test_qdrant_persistent_mode(
+    simple_embedding_provider: SimpleEmbeddingProvider,
+    sample_notes: list[dict],
+):
+    """Test Qdrant in persistent local mode with file storage."""
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        storage_path = Path(tmpdir) / "qdrant_data"
+
+        # Create first client with persistent storage using path parameter
+        client1 = AsyncQdrantClient(path=str(storage_path))
+
+        try:
+            collection_name = "test_persistent"
+
+            # Create collection and index notes
+            await client1.create_collection(
+                collection_name=collection_name,
+                vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+            )
+
+            # Index sample notes
+            points = []
+            for note in sample_notes:
+                content = f"{note['title']}\n\n{note['content']}"
+                embedding = await simple_embedding_provider.embed(content)
+
+                points.append(
+                    PointStruct(
+                        id=note["id"],
+                        vector=embedding,
+                        payload={
+                            "note_id": note["id"],
+                            "title": note["title"],
+                            "category": note["category"],
+                        },
+                    )
+                )
+
+            await client1.upsert(
+                collection_name=collection_name, points=points, wait=True
+            )
+
+            # Verify data was written
+            count_result = await client1.count(collection_name=collection_name)
+            assert count_result.count == len(sample_notes)
+
+            # Close first client
+            await client1.close()
+
+            # Create new client with same storage path
+            client2 = AsyncQdrantClient(path=str(storage_path))
+
+            try:
+                # Data should persist - verify collection exists
+                collections = await client2.get_collections()
+                collection_names = [c.name for c in collections.collections]
+                assert collection_name in collection_names
+
+                # Verify indexed data persisted
+                count_result = await client2.count(collection_name=collection_name)
+                assert count_result.count == len(sample_notes)
+
+                # Verify search still works
+                query = "Python programming"
+                query_embedding = await simple_embedding_provider.embed(query)
+
+                response = await client2.query_points(
+                    collection_name=collection_name,
+                    query=query_embedding,
+                    limit=3,
+                )
+
+                # Should find Python note as top result
+                assert len(response.points) > 0
+                assert response.points[0].payload["note_id"] == 1
+
+            finally:
+                await client2.close()
+
+        finally:
+            # Cleanup
+            await client1.close()

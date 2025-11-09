@@ -1,3 +1,4 @@
+import logging
 import logging.config
 import os
 from dataclasses import dataclass
@@ -162,8 +163,9 @@ class Settings:
     vector_sync_processor_workers: int = 3
     vector_sync_queue_max_size: int = 10000
 
-    # Qdrant settings
-    qdrant_url: str = "http://qdrant:6333"
+    # Qdrant settings (mutually exclusive modes)
+    qdrant_url: Optional[str] = None  # Network mode: http://qdrant:6333
+    qdrant_location: Optional[str] = None  # Local mode: :memory: or /path/to/data
     qdrant_api_key: Optional[str] = None
     qdrant_collection: str = "nextcloud_content"
 
@@ -171,6 +173,29 @@ class Settings:
     ollama_base_url: Optional[str] = None
     ollama_embedding_model: str = "nomic-embed-text"
     ollama_verify_ssl: bool = True
+
+    def __post_init__(self):
+        """Validate Qdrant configuration and set defaults."""
+        logger = logging.getLogger(__name__)
+
+        # Ensure mutual exclusivity
+        if self.qdrant_url and self.qdrant_location:
+            raise ValueError(
+                "Cannot set both QDRANT_URL and QDRANT_LOCATION. "
+                "Use QDRANT_URL for network mode or QDRANT_LOCATION for local mode."
+            )
+
+        # Default to :memory: if neither set
+        if not self.qdrant_url and not self.qdrant_location:
+            self.qdrant_location = ":memory:"
+            logger.info("Using default Qdrant mode: in-memory (:memory:)")
+
+        # Warn if API key set in local mode
+        if self.qdrant_location and self.qdrant_api_key:
+            logger.warning(
+                "QDRANT_API_KEY is set but QDRANT_LOCATION is used (local mode). "
+                "API key is only relevant for network mode and will be ignored."
+            )
 
 
 def get_settings() -> Settings:
@@ -220,7 +245,8 @@ def get_settings() -> Settings:
             os.getenv("VECTOR_SYNC_QUEUE_MAX_SIZE", "10000")
         ),
         # Qdrant settings
-        qdrant_url=os.getenv("QDRANT_URL", "http://qdrant:6333"),
+        qdrant_url=os.getenv("QDRANT_URL"),
+        qdrant_location=os.getenv("QDRANT_LOCATION"),
         qdrant_api_key=os.getenv("QDRANT_API_KEY"),
         qdrant_collection=os.getenv("QDRANT_COLLECTION", "nextcloud_content"),
         # Ollama settings

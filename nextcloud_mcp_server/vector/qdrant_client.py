@@ -1,10 +1,11 @@
 """Qdrant client wrapper."""
 
 import logging
-import os
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, VectorParams
+
+from nextcloud_mcp_server.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,11 @@ async def get_qdrant_client() -> AsyncQdrantClient:
 
     Automatically creates collection on first use if it doesn't exist.
 
+    Supports three Qdrant modes:
+    - Network mode: QDRANT_URL set (e.g., http://qdrant:6333)
+    - In-memory mode: QDRANT_LOCATION=:memory: (default if nothing configured)
+    - Persistent local mode: QDRANT_LOCATION=/path/to/data
+
     Returns:
         Configured AsyncQdrantClient instance
 
@@ -28,17 +34,33 @@ async def get_qdrant_client() -> AsyncQdrantClient:
     global _qdrant_client
 
     if _qdrant_client is None:
-        url = os.getenv("QDRANT_URL", "http://qdrant:6333")
-        api_key = os.getenv("QDRANT_API_KEY")
+        settings = get_settings()
 
-        _qdrant_client = AsyncQdrantClient(
-            url=url,
-            api_key=api_key,
-            timeout=30,
-        )
+        # Detect mode and initialize client accordingly
+        if settings.qdrant_url:
+            # Network mode
+            logger.info(f"Using Qdrant network mode: {settings.qdrant_url}")
+            _qdrant_client = AsyncQdrantClient(
+                url=settings.qdrant_url,
+                api_key=settings.qdrant_api_key,
+                timeout=30,
+            )
+        elif settings.qdrant_location:
+            # Local mode (either :memory: or persistent path)
+            if settings.qdrant_location == ":memory:":
+                logger.info("Using Qdrant in-memory mode: :memory:")
+                _qdrant_client = AsyncQdrantClient(":memory:")
+            else:
+                # Persistent local mode - use path parameter
+                logger.info(f"Using Qdrant persistent mode: {settings.qdrant_location}")
+                _qdrant_client = AsyncQdrantClient(path=settings.qdrant_location)
+        else:
+            # Should not happen due to __post_init__ validation, but handle gracefully
+            logger.warning("No Qdrant mode configured, defaulting to :memory:")
+            _qdrant_client = AsyncQdrantClient(":memory:")
 
         # Ensure collection exists
-        collection_name = os.getenv("QDRANT_COLLECTION", "nextcloud_content")
+        collection_name = settings.qdrant_collection
 
         # Import here to avoid circular dependency
         from nextcloud_mcp_server.embedding import get_embedding_service
