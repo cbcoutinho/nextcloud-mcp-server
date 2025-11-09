@@ -8,7 +8,9 @@
 | `nc_notes_update_note` | Update an existing note by ID |
 | `nc_notes_append_content` | Append content to an existing note with a clear separator |
 | `nc_notes_delete_note` | Delete a note by ID |
-| `nc_notes_search_notes` | Search notes by title or content |
+| `nc_notes_search_notes` | Search notes by title or content (keyword search) |
+| `nc_notes_semantic_search` | Search notes by meaning using vector embeddings (requires vector sync) |
+| `nc_notes_semantic_search_answer` | Search notes semantically and generate a natural language answer via MCP sampling (requires vector sync and sampling-capable MCP client) |
 
 ### Note Attachments
 

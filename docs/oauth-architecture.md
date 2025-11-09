@@ -634,6 +634,12 @@ The server supports the following OAuth scopes, organized by Nextcloud app:
 - `sharing:read` - List shares and read share information
 - `sharing:write` - Create, update, and delete shares
 
+#### Semantic Search (Multi-App Vector Database)
+- `semantic:read` - Query vector database, perform semantic search across all indexed Nextcloud apps (notes, calendar, deck, files, contacts)
+- `semantic:write` - Enable/disable background vector synchronization, manage indexing settings
+
+> **Note**: Semantic search scopes provide access to the vector database that indexes content across **all** Nextcloud apps. Unlike app-specific scopes (e.g., `notes:read`), semantic scopes grant cross-app search capabilities powered by background vector synchronization (ADR-007).
+
 ### Scope Discovery
 
 The MCP server provides scope discovery through two mechanisms:

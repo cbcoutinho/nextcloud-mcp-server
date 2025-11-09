@@ -76,10 +76,31 @@ services:
         condition: service_healthy
     ports:
       - 127.0.0.1:8000:8000
+    volumes:
+      - mcp-data:/app/data
     environment:
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_USERNAME=admin
       - NEXTCLOUD_PASSWORD=admin
+
+      # Vector sync configuration (ADR-007)
+      - VECTOR_SYNC_ENABLED=true
+      - VECTOR_SYNC_SCAN_INTERVAL=10
+      - VECTOR_SYNC_PROCESSOR_WORKERS=1
+
+      # Qdrant configuration (three modes):
+      # 1. Network mode: Set QDRANT_URL=http://qdrant:6333 (requires qdrant service)
+      # 2. In-memory mode: Set QDRANT_LOCATION=:memory: (default if nothing set)
+      # 3. Persistent local: Set QDRANT_LOCATION=/app/data/qdrant (stored in mcp-data volume)
+      - QDRANT_LOCATION=:memory:
+      # - QDRANT_URL=http://qdrant:6333  # Uncomment for network mode
+      # - QDRANT_API_KEY=${QDRANT_API_KEY:-my_secret_api_key}  # Only for network mode
+      - QDRANT_COLLECTION=nextcloud_content
+
+      # Ollama configuration (optional - uses SimpleEmbeddingProvider if not set)
+      # - OLLAMA_BASE_URL=http://your-ollama-endpoint:port
+      # - OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+      # - OLLAMA_VERIFY_SSL=false
 
   mcp-oauth:
     build: .
@@ -183,6 +204,24 @@ services:
       - keycloak-tokens:/app/data
       - keycloak-oauth-storage:/app/.oauth
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: always
+    ports:
+      - 127.0.0.1:6333:6333  # REST API
+      - 127.0.0.1:6334:6334  # gRPC (optional)
+    volumes:
+      - qdrant-data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-my_secret_api_key}
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /qdrant/.qdrant-initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    profiles:
+      - qdrant
+
 volumes:
   nextcloud:
   db:
@@ -190,3 +229,5 @@ volumes:
   oauth-tokens:
   keycloak-tokens:
   keycloak-oauth-storage:
+  qdrant-data:
+  mcp-data:

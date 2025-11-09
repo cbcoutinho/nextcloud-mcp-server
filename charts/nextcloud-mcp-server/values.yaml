@@ -264,3 +264,137 @@ extraEnvFrom: []
 #     name: my-configmap
 # - secretRef:
 #     name: my-secret
+
+# Vector Sync Configuration
+# Background synchronization of Nextcloud content into vector database for semantic search
+vectorSync:
+  # Enable background vector synchronization
+  enabled: false
+  # Scan interval in seconds (how often to check for changes)
+  scanInterval: 3600
+  # Number of concurrent processor workers
+  processorWorkers: 3
+  # Maximum queue size for documents pending indexing
+  queueMaxSize: 10000
+
+# Qdrant Vector Database Configuration
+# Three deployment modes available:
+# 1. Local In-Memory: Fast, ephemeral, zero-config (mode: "memory")
+# 2. Local Persistent: File-based, survives restarts (mode: "persistent")
+# 3. Network: Dedicated Qdrant service, production-ready (mode: "network")
+qdrant:
+  # Qdrant mode: "memory", "persistent", or "network"
+  # - memory: In-memory storage (:memory:) - default, zero config, data lost on restart
+  # - persistent: Local file storage - data persists across restarts, suitable for small/medium deployments
+  # - network: Dedicated Qdrant service (see networkMode below)
+  mode: "memory"
+
+  # Collection name for vector data
+  collection: "nextcloud_content"
+
+  # Local persistent mode configuration (only used when mode: "persistent")
+  localPersistence:
+    # Enable persistent volume for local Qdrant data
+    enabled: true
+    # Storage class (leave empty for default)
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    # Size for local Qdrant storage
+    size: 1Gi
+    # Path where Qdrant data is stored (relative to /app/data)
+    # Default: /app/data/qdrant
+    dataPath: "/app/data/qdrant"
+    # Use existing PVC
+    existingClaim: ""
+
+  # Network mode configuration (only used when mode: "network")
+  networkMode:
+    # Deploy Qdrant as a subchart (if true) or use external Qdrant (if false)
+    deploySubchart: false
+    # External Qdrant URL (used when deploySubchart: false)
+    # Example: "http://qdrant.default.svc.cluster.local:6333"
+    externalUrl: ""
+    # Optional API key for Qdrant authentication
+    apiKey: ""
+    # Use existing secret for API key
+    existingSecret: ""
+    secretKey: "api-key"
+
+  # Qdrant subchart configuration (only used when mode: "network" and networkMode.deploySubchart: true)
+  # All values are passed through to the qdrant/qdrant chart.
+  # See https://github.com/qdrant/qdrant-helm for full configuration options.
+  subchart:
+    # Number of Qdrant replicas
+    replicaCount: 1
+    image:
+      # Qdrant version
+      tag: v1.12.5
+    config:
+      cluster:
+        # Enable distributed cluster mode
+        enabled: false
+    # Persistent storage for vector data
+    persistence:
+      size: 10Gi
+      storageClass: ""
+      accessModes:
+        - ReadWriteOnce
+    # Resource limits and requests
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+
+# Ollama Embedding Service
+# Deployed as a subchart when enabled. All values are passed through to the ollama/ollama chart.
+# See https://github.com/otwld/ollama-helm for full configuration options.
+ollama:
+  # Enable Ollama subchart deployment
+  # Set to true to deploy Ollama as a subchart, or false to use an external Ollama instance
+  enabled: false
+  # External Ollama URL (use this if you have Ollama deployed elsewhere)
+  # When set, use enabled: false to prevent deploying the subchart
+  # Example: "http://ollama.default.svc.cluster.local:11434"
+  url: ""
+  # Embedding model to use
+  embeddingModel: "nomic-embed-text"
+  # Verify SSL certificates when connecting to Ollama
+  verifySsl: true
+  # Number of Ollama replicas (only used when subchart is deployed)
+  replicaCount: 1
+  # Ollama configuration (only used when subchart is deployed)
+  ollama:
+    # Models to automatically pull on startup
+    models:
+      pull:
+        - nomic-embed-text
+  # Persistent storage for models (only used when subchart is deployed)
+  persistentVolume:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+  # Resource limits and requests (only used when subchart is deployed)
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+# OpenAI-compatible Embedding Provider
+# Alternative to Ollama for embedding generation. Can be used with OpenAI or any compatible API.
+openai:
+  # Enable OpenAI embedding provider
+  enabled: false
+  # OpenAI API key (only used if existingSecret is not set)
+  apiKey: ""
+  # Name of existing secret containing the API key
+  existingSecret: ""
+  # Key in the secret that contains the API key
+  secretKey: "api-key"
+  # Optional custom API endpoint (e.g., for Azure OpenAI or local compatible services)
+  baseUrl: ""

@@ -19,6 +19,72 @@ from starlette.responses import HTMLResponse, JSONResponse
 logger = logging.getLogger(__name__)
 
 
+async def _get_processing_status(request: Request) -> dict[str, Any] | None:
+    """Get vector sync processing status.
+
+    Returns processing status information including indexed count, pending count,
+    and sync status. Only available when VECTOR_SYNC_ENABLED=true.
+
+    Args:
+        request: Starlette request object
+
+    Returns:
+        Dictionary with processing status, or None if vector sync is disabled
+        or components are unavailable:
+        {
+            "indexed_count": int,  # Number of documents in Qdrant
+            "pending_count": int,  # Number of documents in queue
+            "status": str,  # "syncing" or "idle"
+        }
+    """
+    # Check if vector sync is enabled
+    vector_sync_enabled = os.getenv("VECTOR_SYNC_ENABLED", "false").lower() == "true"
+    if not vector_sync_enabled:
+        return None
+
+    try:
+        # Get document queue from app state
+        document_queue = getattr(request.app.state, "document_queue", None)
+        if document_queue is None:
+            logger.debug("document_queue not available in app state")
+            return None
+
+        # Get pending count from queue
+        pending_count = document_queue.qsize()
+
+        # Get Qdrant client and query indexed count
+        indexed_count = 0
+        try:
+            from nextcloud_mcp_server.config import get_settings
+            from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+            settings = get_settings()
+            qdrant_client = await get_qdrant_client()
+
+            # Count documents in collection
+            count_result = await qdrant_client.count(
+                collection_name=settings.qdrant_collection
+            )
+            indexed_count = count_result.count
+
+        except Exception as e:
+            logger.warning(f"Failed to query Qdrant for indexed count: {e}")
+            # Continue with indexed_count = 0
+
+        # Determine status
+        status = "syncing" if pending_count > 0 else "idle"
+
+        return {
+            "indexed_count": indexed_count,
+            "pending_count": pending_count,
+            "status": status,
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting processing status: {e}")
+        return None
+
+
 async def _get_userinfo_endpoint(oauth_ctx: dict[str, Any]) -> str | None:
     """Get the correct userinfo endpoint based on OAuth mode.
 
@@ -224,6 +290,9 @@ async def user_info_html(request: Request) -> HTMLResponse:
     """
     user_context = await _get_user_info(request)
 
+    # Get vector sync processing status
+    processing_status = await _get_processing_status(request)
+
     # Check for error
     if "error" in user_context and user_context["error"] != "":
         # Get login URL dynamically
@@ -371,6 +440,45 @@ async def user_info_html(request: Request) -> HTMLResponse:
             </div>
             """
 
+    # Build vector sync status HTML
+    vector_status_html = ""
+    if processing_status:
+        indexed_count = processing_status["indexed_count"]
+        pending_count = processing_status["pending_count"]
+        status = processing_status["status"]
+
+        # Format numbers with commas for readability
+        indexed_count_str = f"{indexed_count:,}"
+        pending_count_str = f"{pending_count:,}"
+
+        # Status badge color and text
+        if status == "syncing":
+            status_badge = (
+                '<span style="color: #ff9800; font-weight: bold;">⟳ Syncing</span>'
+            )
+        else:
+            status_badge = (
+                '<span style="color: #4caf50; font-weight: bold;">✓ Idle</span>'
+            )
+
+        vector_status_html = f"""
+        <h2>Vector Sync Status</h2>
+        <table>
+            <tr>
+                <td><strong>Indexed Documents</strong></td>
+                <td>{indexed_count_str}</td>
+            </tr>
+            <tr>
+                <td><strong>Pending Documents</strong></td>
+                <td>{pending_count_str}</td>
+            </tr>
+            <tr>
+                <td><strong>Status</strong></td>
+                <td>{status_badge}</td>
+            </tr>
+        </table>
+        """
+
     # Build IdP profile HTML
     idp_profile_html = ""
     if "idp_profile" in user_context:
@@ -507,6 +615,7 @@ async def user_info_html(request: Request) -> HTMLResponse:
 
             {host_info_html}
             {session_info_html}
+            {vector_status_html}
             {idp_profile_html}
 
             {f'<div class="logout"><a href="{logout_url}" class="button">Logout</a></div>' if auth_mode == "oauth" else ""}

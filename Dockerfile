@@ -12,5 +12,6 @@ COPY . .
 RUN uv sync --locked --no-dev
 
 ENV PYTHONUNBUFFERED=1
+ENV VIRTUAL_ENV=/app/.venv
 
 ENTRYPOINT ["/app/.venv/bin/nextcloud-mcp-server", "--host", "0.0.0.0"]

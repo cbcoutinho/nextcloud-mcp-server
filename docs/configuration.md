@@ -108,6 +108,158 @@ NEXTCLOUD_PASSWORD=your_app_password_or_password
 
 ---
 
+## Semantic Search Configuration (Optional)
+
+The MCP server includes semantic search capabilities powered by vector embeddings. This feature requires a vector database (Qdrant) and an embedding service.
+
+### Qdrant Vector Database Modes
+
+The server supports three Qdrant deployment modes:
+
+1. **In-Memory Mode** (Default) - Simplest for development and testing
+2. **Persistent Local Mode** - For single-instance deployments with persistence
+3. **Network Mode** - For production with dedicated Qdrant service
+
+#### 1. In-Memory Mode (Default)
+
+No configuration needed! If neither `QDRANT_URL` nor `QDRANT_LOCATION` is set, the server defaults to in-memory mode:
+
+```dotenv
+# No Qdrant configuration needed - defaults to :memory:
+VECTOR_SYNC_ENABLED=true
+```
+
+**Pros:**
+- Zero configuration
+- Fast startup
+- Perfect for testing
+
+**Cons:**
+- Data lost on restart
+- Limited to available RAM
+
+#### 2. Persistent Local Mode
+
+For single-instance deployments that need persistence without a separate Qdrant service:
+
+```dotenv
+# Local persistent storage
+QDRANT_LOCATION=/app/data/qdrant  # Or any writable path
+VECTOR_SYNC_ENABLED=true
+```
+
+**Pros:**
+- Data persists across restarts
+- No separate service needed
+- Suitable for small/medium deployments
+
+**Cons:**
+- Limited to single instance
+- Shares resources with MCP server
+
+#### 3. Network Mode
+
+For production deployments with a dedicated Qdrant service:
+
+```dotenv
+# Network mode configuration
+QDRANT_URL=http://qdrant:6333
+QDRANT_API_KEY=your-secret-api-key  # Optional
+QDRANT_COLLECTION=nextcloud_content  # Optional
+VECTOR_SYNC_ENABLED=true
+```
+
+**Pros:**
+- Scalable and performant
+- Can be shared across multiple MCP instances
+- Supports clustering and replication
+
+**Cons:**
+- Requires separate Qdrant service
+- More complex deployment
+
+### Vector Sync Configuration
+
+Control background indexing behavior:
+
+```dotenv
+# Vector sync settings (ADR-007)
+VECTOR_SYNC_ENABLED=true              # Enable background indexing
+VECTOR_SYNC_SCAN_INTERVAL=300         # Scan interval in seconds (default: 5 minutes)
+VECTOR_SYNC_PROCESSOR_WORKERS=3       # Concurrent indexing workers (default: 3)
+VECTOR_SYNC_QUEUE_MAX_SIZE=10000      # Max queued documents (default: 10000)
+```
+
+### Embedding Service Configuration
+
+The server uses an embedding service to generate vector representations. Two options are available:
+
+#### Ollama (Recommended)
+
+Use a local Ollama instance for embeddings:
+
+```dotenv
+OLLAMA_BASE_URL=http://ollama:11434
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text  # Default model
+OLLAMA_VERIFY_SSL=true                   # Verify SSL certificates
+```
+
+#### Simple Embedding Provider (Fallback)
+
+If `OLLAMA_BASE_URL` is not set, the server uses a simple random embedding provider for testing. This is **not suitable for production** as it generates random embeddings with no semantic meaning.
+
+### Environment Variables Reference
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `QDRANT_URL` | ⚠️ Optional | - | Qdrant service URL (network mode) - mutually exclusive with `QDRANT_LOCATION` |
+| `QDRANT_LOCATION` | ⚠️ Optional | `:memory:` | Local Qdrant path (`:memory:` or `/path/to/data`) - mutually exclusive with `QDRANT_URL` |
+| `QDRANT_API_KEY` | ⚠️ Optional | - | Qdrant API key (network mode only) |
+| `QDRANT_COLLECTION` | ⚠️ Optional | `nextcloud_content` | Qdrant collection name |
+| `VECTOR_SYNC_ENABLED` | ⚠️ Optional | `false` | Enable background vector indexing |
+| `VECTOR_SYNC_SCAN_INTERVAL` | ⚠️ Optional | `300` | Document scan interval (seconds) |
+| `VECTOR_SYNC_PROCESSOR_WORKERS` | ⚠️ Optional | `3` | Concurrent indexing workers |
+| `VECTOR_SYNC_QUEUE_MAX_SIZE` | ⚠️ Optional | `10000` | Max queued documents |
+| `OLLAMA_BASE_URL` | ⚠️ Optional | - | Ollama API endpoint for embeddings |
+| `OLLAMA_EMBEDDING_MODEL` | ⚠️ Optional | `nomic-embed-text` | Embedding model to use |
+| `OLLAMA_VERIFY_SSL` | ⚠️ Optional | `true` | Verify SSL certificates |
+
+### Docker Compose Example
+
+Enable network mode Qdrant with docker-compose:
+
+```yaml
+services:
+  mcp:
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - VECTOR_SYNC_ENABLED=true
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - 127.0.0.1:6333:6333
+    volumes:
+      - qdrant-data:/qdrant/storage
+    profiles:
+      - qdrant  # Optional service
+
+volumes:
+  qdrant-data:
+```
+
+Start with Qdrant service:
+```bash
+docker-compose --profile qdrant up
+```
+
+Or use default in-memory mode (no `--profile` needed):
+```bash
+docker-compose up
+```
+
+---
+
 ## Loading Environment Variables
 
 After creating your `.env` file, load the environment variables:
