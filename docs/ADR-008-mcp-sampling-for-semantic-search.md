@@ -1,4 +1,4 @@
-# ADR-008: MCP Sampling for Semantic Search Enhancement
+# ADR-008: MCP Sampling for Multi-App Semantic Search with RAG
 
 **Status**: Proposed
 **Date**: 2025-01-11
@@ -6,9 +6,9 @@
 
 ## Context
 
-ADR-007 established a background synchronization architecture that maintains a vector database of Nextcloud content, enabling semantic search via the `nc_notes_semantic_search` tool. This tool returns a list of relevant documents with excerpts, similarity scores, and metadata—providing the raw materials for answering user questions.
+ADR-007 established a background synchronization architecture that maintains a vector database of Nextcloud content across multiple apps (notes, calendar, deck, files, contacts), enabling semantic search via the `nc_semantic_search` tool. This tool returns a list of relevant documents with excerpts, similarity scores, and metadata—providing the raw materials for answering user questions.
 
-However, users typically don't want a list of documents—they want answers to their questions. When a user asks "What are my project goals?" or "What did I learn about Python last month?", they expect a natural language response that synthesizes information from multiple sources, not a ranked list of note excerpts. This is the pattern of Retrieval-Augmented Generation (RAG): retrieve relevant context, then generate a cohesive answer.
+However, users typically don't want a list of documents—they want answers to their questions. When a user asks "What are my project goals?" or "When is my next dentist appointment?", they expect a natural language response that synthesizes information from multiple sources and document types, not a ranked list of excerpts. This is the pattern of Retrieval-Augmented Generation (RAG): retrieve relevant context from all Nextcloud apps, then generate a cohesive answer.
 
 The challenge is: who should generate the answer, and how?
 
@@ -54,21 +54,21 @@ However, sampling introduces new considerations:
 
 Despite these considerations, MCP sampling provides the most principled solution for RAG-enhanced semantic search. It respects the client-server boundary, avoids duplicate infrastructure, and delivers the user experience users expect from semantic search tools.
 
-This ADR proposes adding a new tool, `nc_notes_semantic_search_answer`, that uses MCP sampling to generate natural language answers from retrieved Nextcloud content.
+This ADR proposes adding a new tool, `nc_semantic_search_answer`, that uses MCP sampling to generate natural language answers from retrieved Nextcloud content across all indexed apps (notes, calendar, deck, files, contacts).
 
 ## Decision
 
-We will implement a new MCP tool `nc_notes_semantic_search_answer` that retrieves relevant documents via vector similarity search and uses MCP sampling to generate natural language answers. The tool will construct a prompt that includes the user's original query and excerpts from retrieved documents, request an LLM completion via `ctx.session.create_message()`, and return the generated answer along with source citations.
+We will implement a new MCP tool `nc_semantic_search_answer` that retrieves relevant documents via vector similarity search across all indexed Nextcloud apps and uses MCP sampling to generate natural language answers. The tool will construct a prompt that includes the user's original query and excerpts from retrieved documents (notes, calendar events, deck cards, files, contacts), request an LLM completion via `ctx.session.create_message()`, and return the generated answer along with source citations.
 
-The existing `nc_notes_semantic_search` tool will remain unchanged, providing users with a choice: call the original tool for raw document results, or call the new sampling-enhanced tool for generated answers. This dual-tool approach respects different use cases—some users want to browse documents, others want direct answers.
+The existing `nc_semantic_search` tool will remain unchanged, providing users with a choice: call the original tool for raw document results, or call the new sampling-enhanced tool for generated answers. This dual-tool approach respects different use cases—some users want to browse documents, others want direct answers.
 
 ### API Design
 
 **Tool Signature**:
 ```python
 @mcp.tool()
-@require_scopes("notes:read")
-async def nc_notes_semantic_search_answer(
+@require_scopes("semantic:read")
+async def nc_semantic_search_answer(
     query: str,
     ctx: Context,
     limit: int = 5,
@@ -108,7 +108,7 @@ from mcp.types import SamplingMessage, TextContent, ModelPreferences, ModelHint
 # Construct prompt with retrieved context
 prompt = (
     f"{query}\n\n"
-    f"Here are relevant documents from Nextcloud Notes:\n\n"
+    f"Here are relevant documents from Nextcloud (notes, calendar events, deck cards, files, contacts):\n\n"
     f"{context}\n\n"
     f"Based on the documents above, please provide a comprehensive answer. "
     f"Cite the document numbers when referencing specific information."
@@ -153,19 +153,28 @@ The prompt construction follows a structured template:
 ```
 [User's original query]
 
-Here are relevant documents from Nextcloud Notes:
+Here are relevant documents from Nextcloud (notes, calendar events, deck cards, files, contacts):
 
 [Document 1]
+Type: note
 Title: Project Kickoff Notes
 Category: Work
 Excerpt: The primary goal for Q1 2025 is to improve semantic search...
 Relevance Score: 0.92
 
 [Document 2]
-Title: Meeting Notes - Jan 5
-Category: Work
-Excerpt: Team agreed on three key objectives...
+Type: calendar_event
+Title: Team Planning Meeting
+Location: Conference Room A
+Excerpt: Scheduled for Jan 15 at 2pm. Agenda: Discuss Q1 objectives and timeline...
 Relevance Score: 0.88
+
+[Document 3]
+Type: deck_card
+Title: Implement semantic search
+Labels: feature, high-priority
+Excerpt: This card tracks the semantic search implementation. Due: Jan 30...
+Relevance Score: 0.85
 
 Based on the documents above, please provide a comprehensive answer.
 Cite the document numbers when referencing specific information.
@@ -211,7 +220,7 @@ When semantic search finds no relevant documents (all below `score_threshold`), 
 if not search_response.results:
     return SamplingSearchResponse(
         query=query,
-        generated_answer="No relevant documents found in your Nextcloud Notes for this query.",
+        generated_answer="No relevant documents found in your Nextcloud content for this query.",
         sources=[],
         total_found=0,
         search_method="semantic_sampling",
@@ -224,17 +233,17 @@ This avoids wasting a sampling call (and user approval) when there's no content 
 ### User Experience Flow
 
 **Typical successful flow**:
-1. User calls `nc_notes_semantic_search_answer` with query "What are my project goals?"
-2. Server retrieves 5 relevant notes via vector search
-3. Server constructs prompt with document excerpts
+1. User calls `nc_semantic_search_answer` with query "What are my Q1 2025 objectives?"
+2. Server retrieves 5 relevant documents via vector search (2 notes, 2 calendar events, 1 deck card)
+3. Server constructs prompt with document excerpts showing mixed content types
 4. Server sends `sampling/createMessage` request to client
 5. Client prompts user: "MCP server wants to generate an answer using these documents. Allow?"
 6. User approves (or client auto-approves based on configuration)
 7. Client sends prompt to LLM (Claude, GPT-4, etc.)
-8. LLM generates answer with citations: "Based on Document 1 and Document 3..."
+8. LLM generates answer with citations: "Based on Document 1 (note: Project Kickoff), Document 2 (calendar: Team Planning Meeting), and Document 3 (deck card: Implement semantic search)..."
 9. Client returns answer to server
 10. Server returns `SamplingSearchResponse` with answer and sources
-11. User sees complete answer with citations
+11. User sees complete answer with citations across multiple Nextcloud apps
 
 **Fallback flow** (sampling unavailable):
 1-3. Same as above
@@ -256,7 +265,7 @@ This three-tier approach (answer → documents → error message) ensures users 
 
 ### Response Model
 
-Add to `nextcloud_mcp_server/models/notes.py`:
+Add to `nextcloud_mcp_server/models/semantic.py` (new file for semantic search models):
 
 ```python
 from pydantic import Field
@@ -305,7 +314,7 @@ class SamplingSearchResponse(BaseResponse):
 
 ### Tool Implementation
 
-Add to `nextcloud_mcp_server/server/notes.py`:
+Add to `nextcloud_mcp_server/server/semantic.py` (new file for semantic search tools):
 
 ```python
 import logging
@@ -315,8 +324,8 @@ logger = logging.getLogger(__name__)
 
 
 @mcp.tool()
-@require_scopes("notes:read")
-async def nc_notes_semantic_search_answer(
+@require_scopes("semantic:read")
+async def nc_semantic_search_answer(
     query: str,
     ctx: Context,
     limit: int = 5,
@@ -326,14 +335,16 @@ async def nc_notes_semantic_search_answer(
     """
     Semantic search with LLM-generated answer using MCP sampling.
 
-    Retrieves relevant documents from Nextcloud Notes using vector similarity
-    search, then uses MCP sampling to request the client's LLM to generate
-    a natural language answer based on the retrieved context.
+    Retrieves relevant documents from Nextcloud across all indexed apps (notes,
+    calendar, deck, files, contacts) using vector similarity search, then uses
+    MCP sampling to request the client's LLM to generate a natural language
+    answer based on the retrieved context.
 
-    This tool combines the power of semantic search (finding relevant content)
-    with LLM generation (synthesizing that content into coherent answers). The
-    generated answer includes citations to specific documents, allowing users
-    to verify claims and explore sources.
+    This tool combines the power of semantic search (finding relevant content
+    across all your Nextcloud apps) with LLM generation (synthesizing that
+    content into coherent answers). The generated answer includes citations
+    to specific documents with their types, allowing users to verify claims
+    and explore sources.
 
     The LLM generation happens client-side via MCP sampling. The MCP client
     controls which model is used, who pays for it, and whether to prompt the
@@ -341,7 +352,7 @@ async def nc_notes_semantic_search_answer(
     while giving users full control over their LLM interactions.
 
     Args:
-        query: Natural language question to answer (e.g., "What are my project goals?")
+        query: Natural language question to answer (e.g., "What are my Q1 objectives?" or "When is my next dentist appointment?")
         ctx: MCP context for session access
         limit: Maximum number of documents to retrieve (default: 5)
         score_threshold: Minimum similarity score 0-1 (default: 0.7)
@@ -359,27 +370,28 @@ async def nc_notes_semantic_search_answer(
     The client may prompt the user to approve the sampling request.
 
     Examples:
-        >>> # Query about project goals
-        >>> result = await nc_notes_semantic_search_answer(
+        >>> # Query about objectives across multiple apps
+        >>> result = await nc_semantic_search_answer(
         ...     query="What are my Q1 2025 project goals?",
         ...     ctx=ctx
         ... )
         >>> print(result.generated_answer)
-        "Based on Document 1 (Project Kickoff) and Document 3 (Q1 Planning),
+        "Based on Document 1 (note: Project Kickoff), Document 2 (calendar event:
+        Q1 Planning Meeting), and Document 3 (deck card: Implement semantic search),
         your main goals are: 1) Improve semantic search accuracy by 20%,
         2) Deploy new embedding model, 3) Reduce indexing latency..."
 
-        >>> # Query about learning
-        >>> result = await nc_notes_semantic_search_answer(
-        ...     query="What did I learn about Python async/await last month?",
+        >>> # Query about appointments
+        >>> result = await nc_semantic_search_answer(
+        ...     query="When is my next dentist appointment?",
         ...     ctx=ctx,
         ...     limit=10
         ... )
-        >>> len(result.sources)  # Up to 10 documents
-        7
+        >>> len(result.sources)  # Calendar events and related notes
+        3
     """
     # 1. Retrieve relevant documents via existing semantic search
-    search_response = await nc_notes_semantic_search(
+    search_response = await nc_semantic_search(
         query=query,
         ctx=ctx,
         limit=limit,
@@ -391,7 +403,7 @@ async def nc_notes_semantic_search_answer(
         logger.debug(f"No documents found for query: {query}")
         return SamplingSearchResponse(
             query=query,
-            generated_answer="No relevant documents found in your Nextcloud Notes for this query.",
+            generated_answer="No relevant documents found in your Nextcloud content for this query.",
             sources=[],
             total_found=0,
             search_method="semantic_sampling",
@@ -414,7 +426,7 @@ async def nc_notes_semantic_search_answer(
     # 4. Construct prompt - reuse user's query, add context and instructions
     prompt = (
         f"{query}\n\n"
-        f"Here are relevant documents from Nextcloud Notes:\n\n"
+        f"Here are relevant documents from Nextcloud (notes, calendar events, deck cards, files, contacts):\n\n"
         f"{context}\n\n"
         f"Based on the documents above, please provide a comprehensive answer. "
         f"Cite the document numbers when referencing specific information."
@@ -495,17 +507,18 @@ async def nc_notes_semantic_search_answer(
 
 ### Import Updates
 
-Add to top of `nextcloud_mcp_server/server/notes.py`:
+Add to top of `nextcloud_mcp_server/server/semantic.py`:
 
 ```python
 from mcp.types import ModelHint, ModelPreferences, SamplingMessage, TextContent
 ```
 
-Add to `nextcloud_mcp_server/models/notes.py` exports:
+Add to `nextcloud_mcp_server/models/semantic.py` exports:
 
 ```python
 __all__ = [
-    # ... existing exports
+    "SemanticSearchResult",
+    "SemanticSearchResponse",
     "SamplingSearchResponse",
 ]
 ```
@@ -619,12 +632,16 @@ __all__ = [
 ## Implementation Checklist
 
 - [ ] Create ADR-008 document (this file)
-- [ ] Add `SamplingSearchResponse` model to `nextcloud_mcp_server/models/notes.py`
-- [ ] Implement `nc_notes_semantic_search_answer` tool in `nextcloud_mcp_server/server/notes.py`
+- [ ] Create `nextcloud_mcp_server/models/semantic.py` for semantic search models
+- [ ] Add `SamplingSearchResponse` model to `nextcloud_mcp_server/models/semantic.py`
+- [ ] Create `nextcloud_mcp_server/server/semantic.py` for semantic search tools
+- [ ] Implement `nc_semantic_search_answer` tool in `nextcloud_mcp_server/server/semantic.py`
 - [ ] Add MCP sampling type imports (`SamplingMessage`, `TextContent`, etc.)
-- [ ] Write unit tests with mocked sampling (`tests/unit/server/test_notes.py`)
+- [ ] Write unit tests with mocked sampling (`tests/unit/server/test_semantic.py`)
 - [ ] Create integration tests (`tests/integration/test_sampling.py`)
-- [ ] Update `README.md` with new tool documentation
+- [ ] Update `README.md` with new tool documentation in dedicated Semantic Search section
 - [ ] Update `CLAUDE.md` with sampling pattern guidance
 - [ ] Test with MCP client supporting sampling (Claude Desktop, MCP Inspector with callbacks)
 - [ ] Document client requirements and fallback behavior
+- [ ] Update oauth-architecture.md to add semantic:read scope
+- [ ] Create ADR-009 to document semantic:read scope decision

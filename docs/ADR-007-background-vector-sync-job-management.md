@@ -9,7 +9,7 @@
 
 ADR-003 proposed a vector database architecture for semantic search over Nextcloud content, introducing Qdrant as the vector store, configurable embedding strategies, and hybrid search combining semantic and keyword matching. While these technical decisions remain sound, ADR-003 was never implemented because it lacked a critical component: a practical system for keeping the vector database synchronized with changing Nextcloud content.
 
-The challenge is not simply indexing content once, but maintaining an up-to-date vector database as users create, modify, and delete notes, files, and other documents. This synchronization must happen in the background, outside of active MCP sessions, and must operate efficiently across multiple users without manual intervention. Users should not need to understand the mechanics of vector indexing—they simply enable semantic search and the system handles the rest.
+The challenge is not simply indexing content once, but maintaining an up-to-date vector database as users create, modify, and delete documents across multiple Nextcloud apps (notes, calendar events, deck cards, files, contacts). This synchronization must happen in the background, outside of active MCP sessions, and must operate efficiently across multiple users and content types without manual intervention. Users should not need to understand the mechanics of vector indexing—they simply enable semantic search and the system handles the rest.
 
 ADR-003's conceptual description of a "background sync worker" left several fundamental questions unanswered:
 
@@ -57,6 +57,87 @@ The in-process model also simplifies state access. Background tasks and MCP tool
 
 This architecture is not suitable for CPU-bound workloads (video transcoding, image processing, ML training) where separate worker processes or machines would be necessary. But for embedding-based semantic search, where the bottleneck is I/O latency to external APIs, in-process async concurrency provides an excellent balance of simplicity and performance.
 
+### Multi-App Plugin Architecture
+
+The vector sync system supports multiple Nextcloud apps through a plugin-based design. Each app that provides searchable content implements three interfaces:
+
+**DocumentScanner Interface**: Responsible for discovering documents in the app and extracting basic metadata for change detection.
+
+```python
+class DocumentScanner(ABC):
+    @abstractmethod
+    async def get_all_documents(self, nc_client: NextcloudClient) -> list[dict]:
+        """Fetch all documents for this app."""
+        pass
+
+    @abstractmethod
+    def get_doc_type(self) -> str:
+        """Return doc_type identifier (e.g., 'note', 'calendar_event')."""
+        pass
+
+    @abstractmethod
+    def extract_doc_id(self, doc: dict) -> str:
+        """Extract document ID from document dict."""
+        pass
+
+    @abstractmethod
+    def extract_modified_at(self, doc: dict) -> int:
+        """Extract modification timestamp."""
+        pass
+```
+
+**DocumentProcessor Interface**: Responsible for fetching full document content and extracting searchable text.
+
+```python
+class DocumentProcessor(ABC):
+    @abstractmethod
+    def get_doc_type(self) -> str:
+        """Return doc_type this processor handles."""
+        pass
+
+    @abstractmethod
+    async def fetch_document(self, doc_task: DocumentTask, nc_client: NextcloudClient) -> dict:
+        """Fetch full document from Nextcloud."""
+        pass
+
+    @abstractmethod
+    def extract_content(self, document: dict) -> str:
+        """Extract searchable text content."""
+        pass
+
+    @abstractmethod
+    def extract_title(self, document: dict) -> str:
+        """Extract document title."""
+        pass
+
+    @abstractmethod
+    def extract_metadata(self, document: dict) -> dict:
+        """Extract app-specific metadata for Qdrant payload."""
+        pass
+```
+
+**DocumentVerifier Interface**: Responsible for verifying user access during semantic search (dual-phase authorization).
+
+```python
+class DocumentVerifier(ABC):
+    @abstractmethod
+    async def verify_access(self, doc_id: str, nc_client: NextcloudClient) -> bool:
+        """Verify user has access to document. Return True if accessible."""
+        pass
+```
+
+Concrete implementations for each app are registered in central registries (`SCANNERS`, `PROCESSORS`, `VERIFIERS`). The scanner task iterates through registered scanners for enabled apps, the processor tasks dispatch to registered processors based on `doc_type`, and semantic search tools use registered verifiers to check access.
+
+**Supported Document Types**:
+- `note`: Notes app documents (implemented)
+- `calendar_event`: Calendar events (VEVENT)
+- `calendar_todo`: Calendar tasks (VTODO)
+- `deck_card`: Deck cards
+- `file`: WebDAV files with text extraction (leverages ADR-006 document processing)
+- `contact`: CardDAV contacts (VCARD)
+
+New apps can be added by implementing the three interfaces and registering the implementations—no changes to core sync logic are required. The `VECTOR_SYNC_ENABLED_APPS` environment variable controls which apps are actually indexed.
+
 ### Change Detection: ETag and Modification Timestamps
 
 Rather than polling every document's content on every sync or attempting to configure complex webhooks, we use a timestamp comparison approach. Each vector stored in Qdrant includes an `indexed_at` field in its metadata payload, recording when the document was last processed. When the scanner runs, it fetches the list of documents from Nextcloud (which includes each document's `modified_at` timestamp and `etag`) and compares these values against the stored `indexed_at` timestamps from Qdrant.
@@ -74,7 +155,7 @@ The task queue is implemented using Python's built-in `asyncio.Queue`, which pro
 class DocumentTask:
     user_id: str
     doc_id: str
-    doc_type: str  # "note", "file", "calendar"
+    doc_type: str  # "note", "calendar_event", "calendar_todo", "deck_card", "file", "contact"
     operation: str  # "index" or "delete"
     modified_at: int
 ```
@@ -159,14 +240,15 @@ The MCP tool interface reflects the simplicity of the user model:
 
 ```python
 @mcp.tool()
-@require_scopes("sync:write")
+@require_scopes("semantic:write")
 async def enable_vector_sync(ctx: Context) -> dict:
     """
     Enable automatic background vector synchronization for semantic search.
 
     Once enabled, the system will automatically maintain a vector database
-    of your Nextcloud content, enabling semantic search capabilities. No
-    further action is required - synchronization happens in the background.
+    of your Nextcloud content across all enabled apps (notes, calendar, deck,
+    files, contacts), enabling semantic search capabilities. No further action
+    is required - synchronization happens in the background.
 
     Returns:
         Status message and current indexed document count
@@ -201,7 +283,7 @@ async def enable_vector_sync(ctx: Context) -> dict:
 
 
 @mcp.tool()
-@require_scopes("sync:write")
+@require_scopes("semantic:write")
 async def disable_vector_sync(ctx: Context) -> dict:
     """
     Disable vector synchronization and remove all indexed vectors.
@@ -240,7 +322,7 @@ async def disable_vector_sync(ctx: Context) -> dict:
 
 
 @mcp.tool()
-@require_scopes("sync:read")
+@require_scopes("semantic:read")
 async def get_vector_sync_status(ctx: Context) -> dict:
     """
     Get current vector synchronization status.
@@ -480,79 +562,93 @@ async def scan_user_documents(
         username=user_id
     )
 
-    # Fetch all notes
-    notes = await client.notes.list_notes()
+    # Get list of enabled document types from configuration
+    enabled_apps = settings.vector_sync_enabled_apps  # ["note", "calendar_event", "deck_card", ...]
+
+    queued = 0
+
+    # Scan each enabled app using registered scanners
+    for scanner in get_registered_scanners():
+        doc_type = scanner.get_doc_type()
+
+        if doc_type not in enabled_apps:
+            continue  # Skip disabled apps
+
+        # Fetch all documents for this app
+        documents = await scanner.get_all_documents(client)
+
+        if initial_sync:
+            # Queue everything on first sync
+            for doc in documents:
+                await document_queue.put(
+                    DocumentTask(
+                        user_id=user_id,
+                        doc_id=scanner.extract_doc_id(doc),
+                        doc_type=doc_type,
+                        operation="index",
+                        modified_at=scanner.extract_modified_at(doc)
+                    )
+                )
+                queued += 1
+            continue  # Move to next scanner
+
+        # Get indexed state from Qdrant for this doc_type
+        qdrant_client = get_qdrant_client()
+        scroll_result = await qdrant_client.scroll(
+            collection_name="nextcloud_content",
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    FieldCondition(key="doc_type", match=MatchValue(value=doc_type))
+                ]
+            ),
+            with_payload=["doc_id", "indexed_at"],
+            with_vectors=False,
+            limit=10000
+        )
+
+        indexed_docs = {
+            point.payload["doc_id"]: point.payload["indexed_at"]
+            for point, _ in scroll_result[0]
+        }
+
+        # Compare and queue changes
+        for doc in documents:
+            doc_id = scanner.extract_doc_id(doc)
+            indexed_at = indexed_docs.get(doc_id)
+
+            # Queue if never indexed or modified since last index
+            if indexed_at is None or scanner.extract_modified_at(doc) > indexed_at:
+                await document_queue.put(
+                    DocumentTask(
+                        user_id=user_id,
+                        doc_id=doc_id,
+                        doc_type=doc_type,
+                        operation="index",
+                        modified_at=scanner.extract_modified_at(doc)
+                    )
+                )
+                queued += 1
+
+        # Check for deleted documents (in Qdrant but not in Nextcloud)
+        nextcloud_doc_ids = {scanner.extract_doc_id(doc) for doc in documents}
+        for doc_id in indexed_docs:
+            if doc_id not in nextcloud_doc_ids:
+                await document_queue.put(
+                    DocumentTask(
+                        user_id=user_id,
+                        doc_id=doc_id,
+                        doc_type=doc_type,
+                        operation="delete",
+                        modified_at=0
+                    )
+                )
+                queued += 1
 
     if initial_sync:
-        # Queue everything on first sync
-        for note in notes:
-            await document_queue.put(
-                DocumentTask(
-                    user_id=user_id,
-                    doc_id=str(note.id),
-                    doc_type="note",
-                    operation="index",
-                    modified_at=note.modified
-                )
-            )
-        logger.info(f"Queued {len(notes)} documents for initial sync: {user_id}")
-        return
-
-    # Get indexed state from Qdrant
-    qdrant_client = get_qdrant_client()
-    scroll_result = await qdrant_client.scroll(
-        collection_name="nextcloud_content",
-        scroll_filter=Filter(
-            must=[
-                FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-                FieldCondition(key="doc_type", match=MatchValue(value="note"))
-            ]
-        ),
-        with_payload=["doc_id", "indexed_at"],
-        with_vectors=False,
-        limit=10000
-    )
-
-    indexed_docs = {
-        point.payload["doc_id"]: point.payload["indexed_at"]
-        for point, _ in scroll_result[0]
-    }
-
-    # Compare and queue changes
-    queued = 0
-    for note in notes:
-        doc_id = str(note.id)
-        indexed_at = indexed_docs.get(doc_id)
-
-        # Queue if never indexed or modified since last index
-        if indexed_at is None or note.modified > indexed_at:
-            await document_queue.put(
-                DocumentTask(
-                    user_id=user_id,
-                    doc_id=doc_id,
-                    doc_type="note",
-                    operation="index",
-                    modified_at=note.modified
-                )
-            )
-            queued += 1
-
-    # Check for deleted documents (in Qdrant but not in Nextcloud)
-    nextcloud_doc_ids = {str(note.id) for note in notes}
-    for doc_id in indexed_docs:
-        if doc_id not in nextcloud_doc_ids:
-            await document_queue.put(
-                DocumentTask(
-                    user_id=user_id,
-                    doc_id=doc_id,
-                    doc_type="note",
-                    operation="delete",
-                    modified_at=0
-                )
-            )
-            queued += 1
-
-    logger.info(f"Queued {queued} documents for incremental sync: {user_id}")
+        logger.info(f"Queued {queued} documents for initial sync: {user_id}")
+    else:
+        logger.info(f"Queued {queued} documents for incremental sync: {user_id}")
 
     # Update settings
     settings_repo = VectorSyncSettingsRepository()
@@ -707,14 +803,16 @@ async def _index_document(doc_task: DocumentTask, qdrant_client):
         username=doc_task.user_id
     )
 
-    # Fetch document content
-    if doc_task.doc_type == "note":
-        document = await client.notes.get_note(int(doc_task.doc_id))
-        content = f"{document['title']}\n\n{document['content']}"
-        title = document['title']
-        etag = document.get('etag', '')
-    else:
-        raise ValueError(f"Unsupported doc_type: {doc_task.doc_type}")
+    # Get processor for this document type
+    processor = get_registered_processor(doc_task.doc_type)
+    if not processor:
+        raise ValueError(f"No processor registered for doc_type: {doc_task.doc_type}")
+
+    # Fetch document content using processor
+    document = await processor.fetch_document(doc_task, client)
+    content = processor.extract_content(document)
+    title = processor.extract_title(document)
+    metadata = processor.extract_metadata(document)  # App-specific fields
 
     # Tokenize and chunk
     chunker = DocumentChunker(chunk_size=512, overlap=50)
@@ -741,9 +839,10 @@ async def _index_document(doc_task: DocumentTask, qdrant_client):
                     "excerpt": chunk[:200],
                     "indexed_at": indexed_at,
                     "modified_at": doc_task.modified_at,
-                    "etag": etag,
                     "chunk_index": i,
-                    "total_chunks": len(chunks)
+                    "total_chunks": len(chunks),
+                    # App-specific metadata (e.g., category for notes, location for calendar)
+                    "metadata": metadata
                 }
             )
         )
@@ -766,6 +865,7 @@ async def _index_document(doc_task: DocumentTask, qdrant_client):
 ```bash
 # Vector Sync Configuration
 VECTOR_SYNC_ENABLED=true
+VECTOR_SYNC_ENABLED_APPS=note,calendar_event,calendar_todo,deck_card,file,contact  # Apps to index
 VECTOR_SYNC_SCAN_INTERVAL=3600  # Scanner runs every 3600 seconds (1 hour)
 VECTOR_SYNC_PROCESSOR_WORKERS=3  # Number of concurrent processor tasks
 VECTOR_SYNC_QUEUE_MAX_SIZE=10000  # Maximum documents in queue
@@ -865,9 +965,11 @@ The authentication dependency on Flow 2 refresh tokens means users must complete
 
 ### Performance Characteristics
 
-With three concurrent processor tasks and OpenAI's embedding API (100ms average latency), the system can process approximately 30 documents per second under ideal conditions. This translates to 1,800 documents per minute or 108,000 documents per hour. For a deployment with 100 users averaging 1,000 notes each, full initial indexing would complete within one hour of enabling semantic search.
+With three concurrent processor tasks and OpenAI's embedding API (100ms average latency), the system can process approximately 30 documents per second under ideal conditions. This translates to 1,800 documents per minute or 108,000 documents per hour. For a deployment with 100 users averaging 1,000 documents each across all enabled apps (notes, calendar events, deck cards, etc.), full initial indexing would complete within one hour of enabling semantic search.
 
-Incremental syncs are much faster because most documents haven't changed between scanner runs. If the typical change rate is 1% of documents per hour (10 notes per user), the system processes 1,000 documents per scan cycle with the same 100 users, completing within 30 seconds. This keeps the vector database current with minimal lag.
+Incremental syncs are much faster because most documents haven't changed between scanner runs. If the typical change rate is 1% of documents per hour (10 documents per user across all apps), the system processes 1,000 documents per scan cycle with the same 100 users, completing within 30 seconds. This keeps the vector database current with minimal lag.
+
+Performance scales linearly with the number of enabled apps. Enabling calendar and deck in addition to notes will approximately triple the initial indexing time, but incremental syncs remain fast because each app's change rate is independent.
 
 The scanner itself is lightweight, making only API calls to list documents and scroll Qdrant metadata. With efficient API design (batch fetching, minimal payloads), a single scanner invocation for 100 users completes within minutes. The hourly scan interval provides ample time for completion even with occasional slowdowns.
 
@@ -875,7 +977,7 @@ The in-memory queue has negligible memory overhead. Each `DocumentTask` is appro
 
 ### Cost Estimates
 
-For a deployment using OpenAI embeddings with 100 users averaging 500 notes each (50,000 total documents):
+For a deployment using OpenAI embeddings with 100 users, with notes only enabled (500 notes/user = 50,000 total documents):
 
 Initial indexing cost: 50,000 documents × 250 words/document × $0.00002/1000 tokens ≈ $2.50
 
@@ -883,7 +985,9 @@ Monthly incremental sync cost (assuming 1% daily change rate): 50,000 × 0.01 ×
 
 Total first month: $4.38, subsequent months: $1.88
 
-Infrastructure costs (self-hosted): Qdrant requires approximately 200MB RAM for 50,000 vectors (4KB per document), the MCP server with background tasks uses approximately 512MB RAM (same as without background sync because tasks are I/O-bound), total infrastructure cost is dominated by Qdrant storage.
+**With multiple apps enabled** (notes + calendar + deck), costs scale proportionally. If each user has 500 notes, 200 calendar events, and 100 deck cards, the total document count becomes 80,000, and costs increase by 60% (first month: $7.00, subsequent months: $3.00).
+
+Infrastructure costs (self-hosted): Qdrant requires approximately 200MB RAM for 50,000 vectors (4KB per document), scaling to 320MB RAM for 80,000 vectors. The MCP server with background tasks uses approximately 512MB RAM (same as without background sync because tasks are I/O-bound), total infrastructure cost is dominated by Qdrant storage.
 
 Alternative with self-hosted embeddings: Zero per-document costs, requires GPU instance ($0.50/hour = $360/month for 24/7 operation) or CPU-only processing (negligible cost, ~10x slower embedding generation, can be run via `anyio.to_thread.run_sync()` in processor tasks).
 
