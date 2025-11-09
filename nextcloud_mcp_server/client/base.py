@@ -7,6 +7,12 @@ from functools import wraps
 
 from httpx import AsyncClient, HTTPStatusError, RequestError, codes
 
+from nextcloud_mcp_server.observability.metrics import (
+    record_nextcloud_api_call,
+    record_nextcloud_api_retry,
+)
+from nextcloud_mcp_server.observability.tracing import trace_nextcloud_api_call
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +44,9 @@ def retry_on_429(func):
                     logger.warning(
                         f"429 Client Error: Too Many Requests, Number of attempts: {retries}"
                     )
+                    # Record retry metric (extract app name from args if available)
+                    if len(args) > 0 and hasattr(args[0], "app_name"):
+                        record_nextcloud_api_retry(app=args[0].app_name, reason="429")
                     time.sleep(5)
                 elif e.response.status_code == 404:
                     # 404 errors are often expected (e.g., checking if attachments exist)
@@ -72,6 +81,9 @@ def retry_on_429(func):
 class BaseNextcloudClient(ABC):
     """Base class for all Nextcloud app clients."""
 
+    # Subclasses should set this to identify the app for metrics/tracing
+    app_name: str = "unknown"
+
     def __init__(self, http_client: AsyncClient, username: str):
         """Initialize with shared HTTP client and username.
 
@@ -88,7 +100,7 @@ class BaseNextcloudClient(ABC):
 
     @retry_on_429
     async def _make_request(self, method: str, url: str, **kwargs):
-        """Common request wrapper with logging and error handling.
+        """Common request wrapper with logging, tracing, and error handling.
 
         Args:
             method: HTTP method
@@ -99,6 +111,47 @@ class BaseNextcloudClient(ABC):
             Response object
         """
         logger.debug(f"Making {method} request to {url}")
-        response = await self._client.request(method, url, **kwargs)
-        response.raise_for_status()
-        return response
+
+        # Start timer for metrics
+        start_time = time.time()
+        status_code = 0
+
+        try:
+            # Wrap request in trace span
+            with trace_nextcloud_api_call(
+                app=self.app_name,
+                method=method,
+                path=url,
+            ):
+                response = await self._client.request(method, url, **kwargs)
+                status_code = response.status_code
+                response.raise_for_status()
+
+                # Record successful API call metrics
+                duration = time.time() - start_time
+                record_nextcloud_api_call(
+                    app=self.app_name,
+                    method=method,
+                    status_code=status_code,
+                    duration=duration,
+                )
+
+                return response
+
+        except (HTTPStatusError, RequestError) as e:
+            # Record error metrics
+            if isinstance(e, HTTPStatusError):
+                status_code = e.response.status_code
+            else:
+                status_code = 0  # Connection error, no status code
+
+            duration = time.time() - start_time
+            record_nextcloud_api_call(
+                app=self.app_name,
+                method=method,
+                status_code=status_code,
+                duration=duration,
+            )
+
+            # Re-raise the exception
+            raise

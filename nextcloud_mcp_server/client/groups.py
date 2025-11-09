@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 class GroupsClient(BaseNextcloudClient):
     """Client for Nextcloud Groups API operations."""
 
+    app_name = "groups"
+
     @retry_on_429
     async def search_groups(
         self,

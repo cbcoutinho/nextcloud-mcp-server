@@ -174,6 +174,18 @@ class Settings:
     ollama_embedding_model: str = "nomic-embed-text"
     ollama_verify_ssl: bool = True
 
+    # Observability settings
+    metrics_enabled: bool = True
+    metrics_port: int = 9090
+    tracing_enabled: bool = False
+    otel_exporter_otlp_endpoint: Optional[str] = None
+    otel_service_name: str = "nextcloud-mcp-server"
+    otel_traces_sampler: str = "always_on"
+    otel_traces_sampler_arg: float = 1.0
+    log_format: str = "json"  # "json" or "text"
+    log_level: str = "INFO"
+    log_include_trace_context: bool = True
+
     def __post_init__(self):
         """Validate Qdrant configuration and set defaults."""
         logger = logging.getLogger(__name__)
@@ -253,4 +265,16 @@ def get_settings() -> Settings:
         ollama_base_url=os.getenv("OLLAMA_BASE_URL"),
         ollama_embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
         ollama_verify_ssl=os.getenv("OLLAMA_VERIFY_SSL", "true").lower() == "true",
+        # Observability settings
+        metrics_enabled=os.getenv("METRICS_ENABLED", "true").lower() == "true",
+        metrics_port=int(os.getenv("METRICS_PORT", "9090")),
+        tracing_enabled=os.getenv("OTEL_ENABLED", "false").lower() == "true",
+        otel_exporter_otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+        otel_service_name=os.getenv("OTEL_SERVICE_NAME", "nextcloud-mcp-server"),
+        otel_traces_sampler=os.getenv("OTEL_TRACES_SAMPLER", "always_on"),
+        otel_traces_sampler_arg=float(os.getenv("OTEL_TRACES_SAMPLER_ARG", "1.0")),
+        log_format=os.getenv("LOG_FORMAT", "json"),
+        log_level=os.getenv("LOG_LEVEL", "INFO"),
+        log_include_trace_context=os.getenv("LOG_INCLUDE_TRACE_CONTEXT", "true").lower()
+        == "true",
     )

@@ -17,6 +17,8 @@ from nextcloud_mcp_server.models.deck import (
 class DeckClient(BaseNextcloudClient):
     """Client for Nextcloud Deck app operations."""
 
+    app_name = "deck"
+
     def _get_deck_headers(
         self, additional_headers: Optional[Dict[str, str]] = None
     ) -> Dict[str, str]:

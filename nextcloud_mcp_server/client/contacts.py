@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 class ContactsClient(BaseNextcloudClient):
     """Client for NextCloud CardDAV contact operations."""
 
+    app_name = "contacts"
+
     def _get_carddav_base_path(self) -> str:
         """Helper to get the base CardDAV path for contacts."""
         return f"/remote.php/dav/addressbooks/users/{self.username}"

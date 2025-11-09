@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 class SharingClient(BaseNextcloudClient):
     """Client for Nextcloud OCS Sharing API operations."""
 
+    app_name = "sharing"
+
     @retry_on_429
     async def create_share(
         self,

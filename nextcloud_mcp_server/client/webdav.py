@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 class WebDAVClient(BaseNextcloudClient):
     """Client for Nextcloud WebDAV operations."""
 
+    app_name = "webdav"
+
     async def delete_resource(self, path: str) -> Dict[str, Any]:
         """Delete a resource (file or directory) via WebDAV DELETE."""
         # Ensure path ends with a slash if it's a directory
