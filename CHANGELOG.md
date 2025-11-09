@@ -1,3 +1,13 @@
+## v0.29.0 (2025-11-09)
+
+### Feat
+
+- **helm**: Add observability support with ServiceMonitor and Grafana dashboard
+
+### Fix
+
+- **readiness**: Only check external Qdrant in network mode
+
 ## v0.28.0 (2025-11-09)
 
 ### Feat
