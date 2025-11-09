@@ -39,7 +39,6 @@ from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.document_processors import get_registry
 from nextcloud_mcp_server.observability import (
     ObservabilityMiddleware,
-    get_metrics_handler,
     get_uvicorn_logging_config,
     setup_metrics,
     setup_tracing,
@@ -786,8 +785,10 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 
     # Setup Prometheus metrics (always enabled by default)
     if settings.metrics_enabled:
-        setup_metrics()
-        logger.info("Prometheus metrics enabled")
+        setup_metrics(port=settings.metrics_port)
+        logger.info(
+            f"Prometheus metrics enabled on dedicated port {settings.metrics_port}"
+        )
 
     # Setup OpenTelemetry tracing (optional)
     if settings.tracing_enabled:
@@ -1212,12 +1213,8 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     routes.append(Route("/health/ready", health_ready, methods=["GET"]))
     logger.info("Health check endpoints enabled: /health/live, /health/ready")
 
-    # Add metrics endpoint (if metrics are enabled)
-    if settings.metrics_enabled:
-        routes.append(Route("/metrics", get_metrics_handler, methods=["GET"]))
-        logger.info(
-            f"Prometheus metrics endpoint enabled: /metrics (port: {settings.metrics_port if hasattr(settings, 'metrics_port') else 'default'})"
-        )
+    # Note: Metrics endpoint is NOT exposed on main HTTP port for security reasons.
+    # Metrics are served on dedicated port via setup_metrics() (default: 9090)
 
     if oauth_enabled:
         # Import OAuth routes (ADR-004 Progressive Consent)
