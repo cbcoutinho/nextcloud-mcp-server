@@ -19,7 +19,7 @@ The Nextcloud MCP (Model Context Protocol) server allows Large Language Models l
 | **Deployment** | Standalone (Docker, VM, K8s) | Inside Nextcloud (ExApp via AppAPI) |
 | **Primary Users** | Claude Code, IDEs, external developers | Nextcloud end users via Assistant app |
 | **Authentication** | OAuth2/OIDC or Basic Auth | Session-based (integrated) |
-| **Notes Support** | ✅ Full CRUD + search (7 tools) | ❌ Not implemented |
+| **Notes Support** | ✅ Full CRUD + search + semantic search (9 tools) | ❌ Not implemented |
 | **Calendar** | ✅ Full CalDAV + tasks (20+ tools) | ✅ Events, free/busy, tasks (4 tools) |
 | **Contacts** | ✅ Full CardDAV (8 tools) | ✅ Find person, current user (2 tools) |
 | **Files (WebDAV)** | ✅ Full filesystem access (12 tools) | ✅ Read, folder tree, sharing (3 tools) |
@@ -200,7 +200,7 @@ For a complete list of all supported OAuth scopes and their descriptions, see [O
 
 | App | Tools | Read Scope | Write Scope | Operations |
 |-----|-------|-----------|-------------|------------|
-| **Notes** | 7 | `notes:read` | `notes:write` | Create, read, update, delete, search notes |
+| **Notes** | 9 | `notes:read` | `notes:write` | Create, read, update, delete, search notes (keyword + semantic) |
 | **Calendar** | 20+ | `calendar:read` `todo:read`  | `calendar:write` `todo:write`   | Events, todos (tasks), calendars, recurring events, attendees |
 | **Contacts** | 8 | `contacts:read` | `contacts:write` | Create, read, update, delete contacts and address books |
 | **Files (WebDAV)** | 12 | `files:read` | `files:write` | List, read, upload, delete, move files; **OCR/document processing** |

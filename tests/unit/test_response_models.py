@@ -6,7 +6,9 @@ from nextcloud_mcp_server.models.notes import (
     CreateNoteResponse,
     Note,
     NoteSearchResult,
+    SamplingSearchResponse,
     SearchNotesResponse,
+    SemanticSearchResult,
 )
 
 
@@ -121,3 +123,142 @@ def test_note_search_result_without_score():
 
     assert result.id == 99
     assert result.score is None
+
+
+@pytest.mark.unit
+def test_sampling_search_response_with_answer():
+    """Test SamplingSearchResponse with LLM-generated answer."""
+    sources = [
+        SemanticSearchResult(
+            id=1,
+            title="Python Guide",
+            category="Development",
+            excerpt="Use async/await for asynchronous programming",
+            score=0.92,
+            chunk_index=0,
+            total_chunks=3,
+        ),
+        SemanticSearchResult(
+            id=2,
+            title="Best Practices",
+            category="Development",
+            excerpt="Always use context managers with async operations",
+            score=0.85,
+            chunk_index=1,
+            total_chunks=2,
+        ),
+    ]
+
+    response = SamplingSearchResponse(
+        query="How do I use async in Python?",
+        generated_answer="Based on Document 1 and Document 2, use async/await for asynchronous programming and always use context managers.",
+        sources=sources,
+        total_found=2,
+        search_method="semantic_sampling",
+        model_used="claude-3-5-sonnet",
+        stop_reason="endTurn",
+        success=True,
+    )
+
+    # Verify the response structure
+    assert response.query == "How do I use async in Python?"
+    assert "async/await" in response.generated_answer
+    assert len(response.sources) == 2
+    assert response.sources[0].id == 1
+    assert response.sources[0].score == 0.92
+    assert response.total_found == 2
+    assert response.search_method == "semantic_sampling"
+    assert response.model_used == "claude-3-5-sonnet"
+    assert response.stop_reason == "endTurn"
+    assert response.success is True
+
+    # Verify it serializes correctly
+    data = response.model_dump()
+    assert "query" in data
+    assert "generated_answer" in data
+    assert "sources" in data
+    assert isinstance(data["sources"], list)
+    assert len(data["sources"]) == 2
+    assert data["sources"][0]["id"] == 1
+    assert data["model_used"] == "claude-3-5-sonnet"
+
+
+@pytest.mark.unit
+def test_sampling_search_response_fallback():
+    """Test SamplingSearchResponse when sampling fails (fallback mode)."""
+    sources = [
+        SemanticSearchResult(
+            id=1,
+            title="Note 1",
+            category="Work",
+            excerpt="Some content",
+            score=0.75,
+            chunk_index=0,
+            total_chunks=1,
+        )
+    ]
+
+    response = SamplingSearchResponse(
+        query="test query",
+        generated_answer="[Sampling unavailable: Client does not support sampling]\n\nFound 1 relevant documents. Please review the sources below.",
+        sources=sources,
+        total_found=1,
+        search_method="semantic_sampling_fallback",
+        model_used=None,
+        stop_reason=None,
+        success=True,
+    )
+
+    # Verify fallback behavior
+    assert "[Sampling unavailable" in response.generated_answer
+    assert response.search_method == "semantic_sampling_fallback"
+    assert response.model_used is None
+    assert response.stop_reason is None
+    assert len(response.sources) == 1
+
+
+@pytest.mark.unit
+def test_sampling_search_response_no_results():
+    """Test SamplingSearchResponse when no documents found."""
+    response = SamplingSearchResponse(
+        query="nonexistent topic",
+        generated_answer="No relevant documents found in your Nextcloud Notes for this query.",
+        sources=[],
+        total_found=0,
+        search_method="semantic_sampling",
+        success=True,
+    )
+
+    # Verify no results case
+    assert response.total_found == 0
+    assert len(response.sources) == 0
+    assert "No relevant documents" in response.generated_answer
+    assert response.model_used is None
+    assert response.stop_reason is None
+
+
+@pytest.mark.unit
+def test_sampling_search_response_serialization():
+    """Test SamplingSearchResponse serializes to JSON correctly."""
+    response = SamplingSearchResponse(
+        query="test",
+        generated_answer="Test answer",
+        sources=[],
+        total_found=0,
+        search_method="semantic_sampling",
+        model_used="claude-3-5-sonnet",
+        stop_reason="maxTokens",
+        success=True,
+    )
+
+    data = response.model_dump()
+
+    # Check all fields are present
+    assert data["query"] == "test"
+    assert data["generated_answer"] == "Test answer"
+    assert data["sources"] == []
+    assert data["total_found"] == 0
+    assert data["search_method"] == "semantic_sampling"
+    assert data["model_used"] == "claude-3-5-sonnet"
+    assert data["stop_reason"] == "maxTokens"
+    assert data["success"] is True

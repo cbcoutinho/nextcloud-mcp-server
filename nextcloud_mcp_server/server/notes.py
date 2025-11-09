@@ -3,7 +3,13 @@ import logging
 from httpx import HTTPStatusError, RequestError
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData
+from mcp.types import (
+    ErrorData,
+    ModelHint,
+    ModelPreferences,
+    SamplingMessage,
+    TextContent,
+)
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
@@ -14,6 +20,7 @@ from nextcloud_mcp_server.models.notes import (
     Note,
     NoteSearchResult,
     NotesSettings,
+    SamplingSearchResponse,
     SearchNotesResponse,
     SemanticSearchNotesResponse,
     SemanticSearchResult,
@@ -505,6 +512,182 @@ def configure_notes_tools(mcp: FastMCP):
             logger.error(f"Semantic search error: {e}", exc_info=True)
             raise McpError(
                 ErrorData(code=-1, message=f"Semantic search failed: {str(e)}")
+            )
+
+    @mcp.tool()
+    @require_scopes("notes:read")
+    async def nc_notes_semantic_search_answer(
+        query: str,
+        ctx: Context,
+        limit: int = 5,
+        score_threshold: float = 0.7,
+        max_answer_tokens: int = 500,
+    ) -> SamplingSearchResponse:
+        """
+        Semantic search with LLM-generated answer using MCP sampling.
+
+        Retrieves relevant documents from Nextcloud Notes using vector similarity
+        search, then uses MCP sampling to request the client's LLM to generate
+        a natural language answer based on the retrieved context.
+
+        This tool combines the power of semantic search (finding relevant content)
+        with LLM generation (synthesizing that content into coherent answers). The
+        generated answer includes citations to specific documents, allowing users
+        to verify claims and explore sources.
+
+        The LLM generation happens client-side via MCP sampling. The MCP client
+        controls which model is used, who pays for it, and whether to prompt the
+        user for approval. This keeps the server simple (no LLM API keys needed)
+        while giving users full control over their LLM interactions.
+
+        Args:
+            query: Natural language question to answer (e.g., "What are my project goals?")
+            ctx: MCP context for session access
+            limit: Maximum number of documents to retrieve (default: 5)
+            score_threshold: Minimum similarity score 0-1 (default: 0.7)
+            max_answer_tokens: Maximum tokens for generated answer (default: 500)
+
+        Returns:
+            SamplingSearchResponse containing:
+            - generated_answer: Natural language answer with citations
+            - sources: List of documents with excerpts and relevance scores
+            - model_used: Which model generated the answer
+            - stop_reason: Why generation stopped
+
+        Note: Requires MCP client to support sampling. If sampling is unavailable,
+        the tool gracefully degrades to returning documents with an explanation.
+        The client may prompt the user to approve the sampling request.
+
+        Examples:
+            >>> # Query about project goals
+            >>> result = await nc_notes_semantic_search_answer(
+            ...     query="What are my Q1 2025 project goals?",
+            ...     ctx=ctx
+            ... )
+            >>> print(result.generated_answer)
+            "Based on Document 1 (Project Kickoff) and Document 3 (Q1 Planning),
+            your main goals are: 1) Improve semantic search accuracy by 20%,
+            2) Deploy new embedding model, 3) Reduce indexing latency..."
+
+            >>> # Query about learning
+            >>> result = await nc_notes_semantic_search_answer(
+            ...     query="What did I learn about Python async/await last month?",
+            ...     ctx=ctx,
+            ...     limit=10
+            ... )
+            >>> len(result.sources)  # Up to 10 documents
+            7
+        """
+        # 1. Retrieve relevant documents via existing semantic search
+        search_response = await nc_notes_semantic_search(
+            query=query,
+            ctx=ctx,
+            limit=limit,
+            score_threshold=score_threshold,
+        )
+
+        # 2. Handle no results case - don't waste a sampling call
+        if not search_response.results:
+            logger.debug(f"No documents found for query: {query}")
+            return SamplingSearchResponse(
+                query=query,
+                generated_answer="No relevant documents found in your Nextcloud Notes for this query.",
+                sources=[],
+                total_found=0,
+                search_method="semantic_sampling",
+                success=True,
+            )
+
+        # 3. Construct context from retrieved documents
+        context_parts = []
+        for idx, result in enumerate(search_response.results, 1):
+            context_parts.append(
+                f"[Document {idx}]\n"
+                f"Title: {result.title}\n"
+                f"Category: {result.category}\n"
+                f"Excerpt: {result.excerpt}\n"
+                f"Relevance Score: {result.score:.2f}\n"
+            )
+
+        context = "\n".join(context_parts)
+
+        # 4. Construct prompt - reuse user's query, add context and instructions
+        prompt = (
+            f"{query}\n\n"
+            f"Here are relevant documents from Nextcloud Notes:\n\n"
+            f"{context}\n\n"
+            f"Based on the documents above, please provide a comprehensive answer. "
+            f"Cite the document numbers when referencing specific information."
+        )
+
+        logger.debug(
+            f"Requesting sampling for query: {query} "
+            f"({len(search_response.results)} documents retrieved)"
+        )
+
+        # 5. Request LLM completion via MCP sampling
+        try:
+            sampling_result = await ctx.session.create_message(
+                messages=[
+                    SamplingMessage(
+                        role="user",
+                        content=TextContent(type="text", text=prompt),
+                    )
+                ],
+                max_tokens=max_answer_tokens,
+                temperature=0.7,
+                model_preferences=ModelPreferences(
+                    hints=[ModelHint(name="claude-3-5-sonnet")],
+                    intelligencePriority=0.8,
+                    speedPriority=0.5,
+                ),
+                include_context="thisServer",
+            )
+
+            # 6. Extract answer from sampling response
+            if sampling_result.content.type == "text":
+                generated_answer = sampling_result.content.text
+            else:
+                # Handle non-text responses (shouldn't happen for text prompts)
+                generated_answer = f"Received non-text response of type: {sampling_result.content.type}"
+                logger.warning(
+                    f"Unexpected content type from sampling: {sampling_result.content.type}"
+                )
+
+            logger.info(
+                f"Sampling successful: model={sampling_result.model}, "
+                f"stop_reason={sampling_result.stopReason}"
+            )
+
+            return SamplingSearchResponse(
+                query=query,
+                generated_answer=generated_answer,
+                sources=search_response.results,
+                total_found=search_response.total_found,
+                search_method="semantic_sampling",
+                model_used=sampling_result.model,
+                stop_reason=sampling_result.stopReason,
+                success=True,
+            )
+
+        except Exception as e:
+            # Fallback: Return documents without generated answer
+            logger.warning(
+                f"Sampling failed ({type(e).__name__}: {e}), "
+                f"returning search results only"
+            )
+
+            return SamplingSearchResponse(
+                query=query,
+                generated_answer=(
+                    f"[Sampling unavailable: {str(e)}]\n\n"
+                    f"Found {search_response.total_found} relevant documents. "
+                    f"Please review the sources below."
+                ),
+                sources=search_response.results,
+                total_found=search_response.total_found,
+                search_method="semantic_sampling_fallback",
+                success=True,
             )
 
     @mcp.tool()
