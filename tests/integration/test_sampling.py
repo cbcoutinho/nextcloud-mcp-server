@@ -1,6 +1,6 @@
 """Integration tests for MCP sampling with semantic search.
 
-These tests validate the nc_notes_semantic_search_answer tool which combines:
+These tests validate the nc_semantic_search_answer tool which combines:
 1. Semantic search to retrieve relevant documents
 2. MCP sampling to generate natural language answers
 
@@ -50,8 +50,8 @@ async def test_semantic_search_answer_successful_sampling(
 
     Flow:
     1. Create test note with searchable content
-    2. Wait for vector sync to complete using nc_notes_get_vector_sync_status
-    3. Call nc_notes_semantic_search_answer
+    2. Wait for vector sync to complete using nc_get_vector_sync_status
+    3. Call nc_semantic_search_answer
     4. Mock ctx.session.create_message to return answer
     5. Verify response contains generated answer and sources
     """
@@ -59,7 +59,7 @@ async def test_semantic_search_answer_successful_sampling(
     import asyncio
 
     initial_sync = await nc_mcp_client.call_tool(
-        "nc_notes_get_vector_sync_status", arguments={}
+        "nc_get_vector_sync_status", arguments={}
     )
     initial_indexed_count = initial_sync.structuredContent["indexed_count"]
     print(f"Initial indexed count: {initial_indexed_count}")
@@ -88,7 +88,7 @@ Avoid blocking operations in async code.""",
 
     while waited < max_wait:
         sync_status = await nc_mcp_client.call_tool(
-            "nc_notes_get_vector_sync_status", arguments={}
+            "nc_get_vector_sync_status", arguments={}
         )
         status_data = sync_status.structuredContent
 
@@ -123,7 +123,7 @@ Avoid blocking operations in async code.""",
     # In a real integration test with MCP Inspector, this would be actual sampling
 
     call_result = await nc_mcp_client.call_tool(
-        "nc_notes_semantic_search_answer",
+        "nc_semantic_search_answer",
         arguments={
             "query": "How do I use async in Python?",
             "limit": 5,
@@ -169,7 +169,7 @@ async def test_semantic_search_answer_no_results(nc_mcp_client):
     3. Verify no sampling call was made (no sources to base answer on)
     """
     call_result = await nc_mcp_client.call_tool(
-        "nc_notes_semantic_search_answer",
+        "nc_semantic_search_answer",
         arguments={
             "query": "quantum chromodynamics lattice QCD gluon propagator",
             "limit": 5,
@@ -229,7 +229,7 @@ async def test_semantic_search_answer_with_limit(nc_mcp_client, temporary_note_f
 
     while waited < max_wait:
         sync_status = await nc_mcp_client.call_tool(
-            "nc_notes_get_vector_sync_status", arguments={}
+            "nc_get_vector_sync_status", arguments={}
         )
         status_data = sync_status.structuredContent
 
@@ -242,7 +242,7 @@ async def test_semantic_search_answer_with_limit(nc_mcp_client, temporary_note_f
     assert waited < max_wait, f"Vector sync did not complete within {max_wait} seconds"
 
     call_result = await nc_mcp_client.call_tool(
-        "nc_notes_semantic_search_answer",
+        "nc_semantic_search_answer",
         arguments={
             "query": "async programming in Python",
             "limit": 2,
@@ -286,7 +286,7 @@ async def test_semantic_search_answer_score_threshold(
 
     while waited < max_wait:
         sync_status = await nc_mcp_client.call_tool(
-            "nc_notes_get_vector_sync_status", arguments={}
+            "nc_get_vector_sync_status", arguments={}
         )
         status_data = sync_status.structuredContent
 
@@ -300,7 +300,7 @@ async def test_semantic_search_answer_score_threshold(
 
     # Query with exact match
     call_result = await nc_mcp_client.call_tool(
-        "nc_notes_semantic_search_answer",
+        "nc_semantic_search_answer",
         arguments={
             "query": "widget manufacturing",
             "limit": 5,
@@ -349,7 +349,7 @@ async def test_semantic_search_answer_max_tokens(nc_mcp_client, temporary_note_f
 
     while waited < max_wait:
         sync_status = await nc_mcp_client.call_tool(
-            "nc_notes_get_vector_sync_status", arguments={}
+            "nc_get_vector_sync_status", arguments={}
         )
         status_data = sync_status.structuredContent
 
@@ -362,7 +362,7 @@ async def test_semantic_search_answer_max_tokens(nc_mcp_client, temporary_note_f
     assert waited < max_wait, f"Vector sync did not complete within {max_wait} seconds"
 
     call_result = await nc_mcp_client.call_tool(
-        "nc_notes_semantic_search_answer",
+        "nc_semantic_search_answer",
         arguments={
             "query": "document content",
             "limit": 5,

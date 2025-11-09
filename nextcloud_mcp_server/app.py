@@ -45,6 +45,7 @@ from nextcloud_mcp_server.server import (
     configure_cookbook_tools,
     configure_deck_tools,
     configure_notes_tools,
+    configure_semantic_tools,
     configure_sharing_tools,
     configure_tables_tools,
     configure_webdav_tools,
@@ -870,6 +871,14 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             logger.warning(
                 f"Unknown app: {app_name}. Available apps: {list(available_apps.keys())}"
             )
+
+    # Register semantic search tools (cross-app feature)
+    settings = get_settings()
+    if settings.vector_sync_enabled:
+        logger.info("Configuring semantic search tools (vector sync enabled)")
+        configure_semantic_tools(mcp)
+    else:
+        logger.info("Skipping semantic search tools (VECTOR_SYNC_ENABLED not set)")
 
     # Register OAuth provisioning tools (only when offline access is enabled)
     # With token exchange enabled (external IdP), provisioning is not needed for MCP operations

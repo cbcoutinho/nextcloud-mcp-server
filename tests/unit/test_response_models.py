@@ -6,8 +6,10 @@ from nextcloud_mcp_server.models.notes import (
     CreateNoteResponse,
     Note,
     NoteSearchResult,
-    SamplingSearchResponse,
     SearchNotesResponse,
+)
+from nextcloud_mcp_server.models.semantic import (
+    SamplingSearchResponse,
     SemanticSearchResult,
 )
 
@@ -131,6 +133,7 @@ def test_sampling_search_response_with_answer():
     sources = [
         SemanticSearchResult(
             id=1,
+            doc_type="note",
             title="Python Guide",
             category="Development",
             excerpt="Use async/await for asynchronous programming",
@@ -140,6 +143,7 @@ def test_sampling_search_response_with_answer():
         ),
         SemanticSearchResult(
             id=2,
+            doc_type="note",
             title="Best Practices",
             category="Development",
             excerpt="Always use context managers with async operations",
@@ -189,6 +193,7 @@ def test_sampling_search_response_fallback():
     sources = [
         SemanticSearchResult(
             id=1,
+            doc_type="note",
             title="Note 1",
             category="Work",
             excerpt="Some content",
