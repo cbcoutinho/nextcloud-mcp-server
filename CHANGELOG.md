@@ -1,3 +1,13 @@
+## v0.28.0 (2025-11-09)
+
+### Feat
+
+- **observability**: Add comprehensive monitoring with Prometheus and OpenTelemetry
+
+### Fix
+
+- **vector**: Handle missing 'modified' field in notes gracefully
+
 ## v0.27.3 (2025-11-09)
 
 ### Fix
