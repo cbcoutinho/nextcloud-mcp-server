@@ -1172,13 +1172,15 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 checks["auth_configured"] = "error: credentials not set"
                 is_ready = False
 
-        # Check Qdrant status if vector sync is enabled
+        # Check Qdrant status if using network mode (external Qdrant service)
+        # In-memory and persistent modes use embedded Qdrant, no external service to check
         vector_sync_enabled = (
             os.getenv("VECTOR_SYNC_ENABLED", "false").lower() == "true"
         )
-        if vector_sync_enabled:
+        qdrant_url = os.getenv("QDRANT_URL")  # Only set in network mode
+
+        if vector_sync_enabled and qdrant_url:
             try:
-                qdrant_url = os.getenv("QDRANT_URL", "http://qdrant:6333")
                 async with httpx.AsyncClient(timeout=2.0) as client:
                     response = await client.get(f"{qdrant_url}/readyz")
                     if response.status_code == 200:
@@ -1189,6 +1191,9 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             except Exception as e:
                 checks["qdrant"] = f"error: {str(e)}"
                 is_ready = False
+        elif vector_sync_enabled:
+            # Using embedded Qdrant (memory or persistent mode)
+            checks["qdrant"] = "embedded"
 
         status_code = 200 if is_ready else 503
         return JSONResponse(
