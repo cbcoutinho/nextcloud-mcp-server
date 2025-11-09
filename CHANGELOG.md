@@ -1,3 +1,9 @@
+## v0.27.2 (2025-11-09)
+
+### Fix
+
+- **helm**: update Qdrant dependency condition to match new mode structure
+
 ## v0.27.1 (2025-11-09)
 
 ### Fix
