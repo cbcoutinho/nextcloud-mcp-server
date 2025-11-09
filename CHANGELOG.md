@@ -1,3 +1,9 @@
+## v0.27.1 (2025-11-09)
+
+### Fix
+
+- **ci**: add Helm repository setup to chart release workflow
+
 ## v0.27.0 (2025-11-09)
 
 ### Feat
