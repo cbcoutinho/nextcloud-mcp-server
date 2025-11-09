@@ -1,3 +1,27 @@
+## v0.27.0 (2025-11-09)
+
+### Feat
+
+- **helm**: add Qdrant local mode support with three deployment options [skip ci]
+- add Qdrant local mode support with in-memory and persistent storage
+- implement ADR-009 - refactor semantic search to use generic semantic:read scope
+- implement MCP sampling for semantic search RAG (ADR-008)
+- add optional vector database and semantic search to helm chart
+- add vector sync processing status to /user/page endpoint
+- implement semantic search tool and fix vector sync issues (ADR-007 Phase 3)
+- implement vector sync scanner and processor (ADR-007 Phase 2)
+
+### Fix
+
+- implement deletion grace period and vector sync status tool
+- remove unnecessary urllib3<2.0 constraint
+- integrate vector sync tasks with Starlette lifespan for streamable-http
+
+### Refactor
+
+- migrate vector sync from asyncio.Queue to anyio memory object streams
+- update to Qdrant query_points API and fix Playwright Keycloak login
+
 ## v0.26.1 (2025-11-08)
 
 ### Fix
