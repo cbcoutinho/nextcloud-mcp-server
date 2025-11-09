@@ -381,12 +381,16 @@ def configure_semantic_tools(mcp: FastMCP):
             )
 
         try:
-            # Get document queue from lifespan context
+            # Get document receive stream from lifespan context
             lifespan_ctx = ctx.request_context.lifespan_context
-            document_queue = getattr(lifespan_ctx, "document_queue", None)
+            document_receive_stream = getattr(
+                lifespan_ctx, "document_receive_stream", None
+            )
 
-            if document_queue is None:
-                logger.debug("document_queue not available in lifespan context")
+            if document_receive_stream is None:
+                logger.debug(
+                    "document_receive_stream not available in lifespan context"
+                )
                 return VectorSyncStatusResponse(
                     indexed_count=0,
                     pending_count=0,
@@ -394,8 +398,9 @@ def configure_semantic_tools(mcp: FastMCP):
                     enabled=True,
                 )
 
-            # Get pending count from queue
-            pending_count = document_queue.qsize()
+            # Get pending count from stream statistics
+            stream_stats = document_receive_stream.statistics()
+            pending_count = stream_stats.current_buffer_used
 
             # Get Qdrant client and query indexed count
             indexed_count = 0

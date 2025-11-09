@@ -3,12 +3,12 @@
 Periodically scans enabled users' content and queues changed documents for processing.
 """
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass
 
 import anyio
+from anyio.streams.memory import MemoryObjectSendStream
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.client import NextcloudClient
@@ -35,7 +35,7 @@ _potentially_deleted: dict[tuple[str, str], float] = {}
 
 
 async def scanner_task(
-    document_queue: asyncio.Queue,
+    send_stream: MemoryObjectSendStream[DocumentTask],
     shutdown_event: anyio.Event,
     wake_event: anyio.Event,
     nc_client: NextcloudClient,
@@ -47,7 +47,7 @@ async def scanner_task(
     For BasicAuth mode, scans a single user with credentials available at runtime.
 
     Args:
-        document_queue: Queue to enqueue changed documents
+        send_stream: Stream to send changed documents to processors
         shutdown_event: Event signaling shutdown
         wake_event: Event to trigger immediate scan
         nc_client: Authenticated Nextcloud client
@@ -56,44 +56,45 @@ async def scanner_task(
     logger.info(f"Scanner task started for user: {user_id}")
     settings = get_settings()
 
-    while not shutdown_event.is_set():
-        try:
-            # Scan user documents
-            await scan_user_documents(
-                user_id=user_id,
-                document_queue=document_queue,
-                nc_client=nc_client,
-            )
+    async with send_stream:
+        while not shutdown_event.is_set():
+            try:
+                # Scan user documents
+                await scan_user_documents(
+                    user_id=user_id,
+                    send_stream=send_stream,
+                    nc_client=nc_client,
+                )
 
-        except Exception as e:
-            logger.error(f"Scanner error: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"Scanner error: {e}", exc_info=True)
 
-        # Sleep until next interval or wake event
-        try:
-            with anyio.move_on_after(settings.vector_sync_scan_interval):
-                # Wait for wake event or shutdown (whichever comes first)
-                await wake_event.wait()
-        except anyio.get_cancelled_exc_class():
-            # Shutdown, exit loop
-            break
+            # Sleep until next interval or wake event
+            try:
+                with anyio.move_on_after(settings.vector_sync_scan_interval):
+                    # Wait for wake event or shutdown (whichever comes first)
+                    await wake_event.wait()
+            except anyio.get_cancelled_exc_class():
+                # Shutdown, exit loop
+                break
 
-    logger.info("Scanner task stopped")
+    logger.info("Scanner task stopped - stream closed")
 
 
 async def scan_user_documents(
     user_id: str,
-    document_queue: asyncio.Queue,
+    send_stream: MemoryObjectSendStream[DocumentTask],
     nc_client: NextcloudClient,
     initial_sync: bool = False,
 ):
     """
-    Scan a single user's documents and queue changes.
+    Scan a single user's documents and send changes to processor stream.
 
     Args:
         user_id: User to scan
-        document_queue: Queue to enqueue changed documents
+        send_stream: Stream to send changed documents to processors
         nc_client: Authenticated Nextcloud client
-        initial_sync: If True, queue all documents (first-time sync)
+        initial_sync: If True, send all documents (first-time sync)
     """
     logger.info(f"Scanning documents for user: {user_id}")
 
@@ -102,9 +103,9 @@ async def scan_user_documents(
     logger.debug(f"Found {len(notes)} notes for {user_id}")
 
     if initial_sync:
-        # Queue everything on first sync
+        # Send everything on first sync
         for note in notes:
-            await document_queue.put(
+            await send_stream.send(
                 DocumentTask(
                     user_id=user_id,
                     doc_id=str(note["id"]),
@@ -113,7 +114,7 @@ async def scan_user_documents(
                     modified_at=note["modified"],
                 )
             )
-        logger.info(f"Queued {len(notes)} documents for initial sync: {user_id}")
+        logger.info(f"Sent {len(notes)} documents for initial sync: {user_id}")
         return
 
     # Get indexed state from Qdrant
@@ -154,9 +155,9 @@ async def scan_user_documents(
             )
             del _potentially_deleted[doc_key]
 
-        # Queue if never indexed or modified since last index
+        # Send if never indexed or modified since last index
         if indexed_at is None or note["modified"] > indexed_at:
-            await document_queue.put(
+            await send_stream.send(
                 DocumentTask(
                     user_id=user_id,
                     doc_id=doc_id,
@@ -183,12 +184,12 @@ async def scan_user_documents(
                 time_missing = current_time - first_missing_time
 
                 if time_missing >= grace_period:
-                    # Grace period elapsed, queue for deletion
+                    # Grace period elapsed, send for deletion
                     logger.info(
                         f"Document {doc_id} missing for {time_missing:.1f}s "
-                        f"(>{grace_period:.1f}s grace period), queueing deletion"
+                        f"(>{grace_period:.1f}s grace period), sending deletion"
                     )
-                    await document_queue.put(
+                    await send_stream.send(
                         DocumentTask(
                             user_id=user_id,
                             doc_id=doc_id,
@@ -198,7 +199,7 @@ async def scan_user_documents(
                         )
                     )
                     queued += 1
-                    # Remove from tracking after queueing deletion
+                    # Remove from tracking after sending deletion
                     del _potentially_deleted[doc_key]
                 else:
                     logger.debug(
@@ -213,6 +214,6 @@ async def scan_user_documents(
                 _potentially_deleted[doc_key] = current_time
 
     if queued > 0:
-        logger.info(f"Queued {queued} documents for incremental sync: {user_id}")
+        logger.info(f"Sent {queued} documents for incremental sync: {user_id}")
     else:
         logger.debug(f"No changes detected for {user_id}")

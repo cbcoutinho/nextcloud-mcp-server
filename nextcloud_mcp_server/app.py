@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -13,6 +12,7 @@ import anyio
 import click
 import httpx
 import uvicorn
+from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import AnyHttpUrl
@@ -211,7 +211,8 @@ class AppContext:
     """Application context for BasicAuth mode."""
 
     client: NextcloudClient
-    document_queue: Optional[asyncio.Queue] = None
+    document_send_stream: Optional[MemoryObjectSendStream] = None
+    document_receive_stream: Optional[MemoryObjectReceiveStream] = None
     shutdown_event: Optional[anyio.Event] = None
     scanner_wake_event: Optional[anyio.Event] = None
 
@@ -404,7 +405,9 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
             )
 
         # Initialize shared state
-        document_queue = asyncio.Queue(maxsize=settings.vector_sync_queue_max_size)
+        send_stream, receive_stream = anyio.create_memory_object_stream(
+            max_buffer_size=settings.vector_sync_queue_max_size
+        )
         shutdown_event = anyio.Event()
         scanner_wake_event = anyio.Event()
 
@@ -413,19 +416,19 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
             # Start scanner task
             tg.start_soon(
                 scanner_task,
-                document_queue,
+                send_stream,
                 shutdown_event,
                 scanner_wake_event,
                 client,
                 username,
             )
 
-            # Start processor pool
+            # Start processor pool (each gets a cloned receive stream)
             for i in range(settings.vector_sync_processor_workers):
                 tg.start_soon(
                     processor_task,
                     i,
-                    document_queue,
+                    receive_stream.clone(),
                     shutdown_event,
                     client,
                     username,
@@ -439,7 +442,8 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
             try:
                 yield AppContext(
                     client=client,
-                    document_queue=document_queue,
+                    document_send_stream=send_stream,
+                    document_receive_stream=receive_stream,
                     shutdown_event=shutdown_event,
                     scanner_wake_event=scanner_wake_event,
                 )
@@ -1009,8 +1013,6 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             # Start background vector sync tasks for BasicAuth mode (ADR-007)
             # For streamable-http transport, FastMCP lifespan isn't automatically triggered
             # so we manually start background tasks here if vector sync is enabled
-            import asyncio as asyncio_module
-
             import anyio as anyio_module
 
             settings = get_settings()
@@ -1029,21 +1031,23 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 client = NextcloudClient.from_env()
 
                 # Initialize shared state
-                document_queue = asyncio_module.Queue(
-                    maxsize=settings.vector_sync_queue_max_size
+                send_stream, receive_stream = anyio_module.create_memory_object_stream(
+                    max_buffer_size=settings.vector_sync_queue_max_size
                 )
                 shutdown_event = anyio_module.Event()
                 scanner_wake_event = anyio_module.Event()
 
                 # Store in app state for access from routes (ADR-007)
-                app.state.document_queue = document_queue
+                app.state.document_send_stream = send_stream
+                app.state.document_receive_stream = receive_stream
                 app.state.shutdown_event = shutdown_event
                 app.state.scanner_wake_event = scanner_wake_event
 
                 # Also share with browser_app for /user/page route
                 for route in app.routes:
                     if isinstance(route, Mount) and route.path == "/user":
-                        route.app.state.document_queue = document_queue
+                        route.app.state.document_send_stream = send_stream
+                        route.app.state.document_receive_stream = receive_stream
                         route.app.state.shutdown_event = shutdown_event
                         route.app.state.scanner_wake_event = scanner_wake_event
                         logger.info(
@@ -1056,19 +1060,19 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                     # Start scanner task
                     tg.start_soon(
                         scanner_task,
-                        document_queue,
+                        send_stream,
                         shutdown_event,
                         scanner_wake_event,
                         client,
                         username,
                     )
 
-                    # Start processor pool
+                    # Start processor pool (each gets a cloned receive stream)
                     for i in range(settings.vector_sync_processor_workers):
                         tg.start_soon(
                             processor_task,
                             i,
-                            document_queue,
+                            receive_stream.clone(),
                             shutdown_event,
                             client,
                             username,

@@ -1,14 +1,14 @@
 """Processor task for vector database synchronization.
 
-Processes documents from queue: fetches content, generates embeddings, stores in Qdrant.
+Processes documents from stream: fetches content, generates embeddings, stores in Qdrant.
 """
 
-import asyncio
 import logging
 import time
 import uuid
 
 import anyio
+from anyio.streams.memory import MemoryObjectReceiveStream
 from httpx import HTTPStatusError
 from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
@@ -24,27 +24,26 @@ logger = logging.getLogger(__name__)
 
 async def processor_task(
     worker_id: int,
-    document_queue: asyncio.Queue,
+    receive_stream: MemoryObjectReceiveStream[DocumentTask],
     shutdown_event: anyio.Event,
     nc_client: NextcloudClient,
     user_id: str,
 ):
     """
-    Process documents from queue concurrently.
+    Process documents from stream concurrently.
 
     Each processor task runs in a loop:
-    1. Pull document from queue (with timeout)
+    1. Receive document from stream (with timeout)
     2. Fetch content from Nextcloud
     3. Tokenize and chunk text
     4. Generate embeddings (I/O bound - external API)
     5. Upload vectors to Qdrant
-    6. Mark task complete
 
     Multiple processors run concurrently for I/O parallelism.
 
     Args:
         worker_id: Worker identifier for logging
-        document_queue: Queue to pull documents from
+        receive_stream: Stream to receive documents from
         shutdown_event: Event signaling shutdown
         nc_client: Authenticated Nextcloud client
         user_id: User being processed
@@ -54,20 +53,20 @@ async def processor_task(
     while not shutdown_event.is_set():
         try:
             # Get document with timeout (allows checking shutdown)
-            doc_task = await asyncio.wait_for(
-                document_queue.get(),
-                timeout=1.0,
-            )
+            with anyio.fail_after(1.0):
+                doc_task = await receive_stream.receive()
 
             # Process document
             await process_document(doc_task, nc_client)
 
-            # Mark complete
-            document_queue.task_done()
-
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # No documents available, continue
             continue
+
+        except anyio.EndOfStream:
+            # Scanner finished and closed stream, exit gracefully
+            logger.info(f"Processor {worker_id}: Scanner finished, exiting")
+            break
 
         except Exception as e:
             logger.error(
@@ -75,11 +74,7 @@ async def processor_task(
                 f"{doc_task.doc_type}_{doc_task.doc_id}: {e}",
                 exc_info=True,
             )
-            # Mark task done even on error to prevent queue blocking
-            try:
-                document_queue.task_done()
-            except ValueError:
-                pass
+            # Continue to next document (no task_done() needed with streams)
 
     logger.info(f"Processor {worker_id} stopped")
 
