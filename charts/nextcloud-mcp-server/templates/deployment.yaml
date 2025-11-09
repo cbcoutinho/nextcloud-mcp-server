@@ -56,6 +56,11 @@ spec:
             - name: http
               containerPort: {{ include "nextcloud-mcp-server.port" . }}
               protocol: TCP
+            {{- if .Values.observability.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.observability.metrics.port }}
+              protocol: TCP
+            {{- end }}
           env:
             # Nextcloud connection
             - name: NEXTCLOUD_HOST
@@ -200,6 +205,27 @@ spec:
               value: {{ .Values.openai.baseUrl | quote }}
             {{- end }}
             {{- end }}
+            # Observability
+            - name: METRICS_ENABLED
+              value: {{ .Values.observability.metrics.enabled | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.observability.metrics.port | quote }}
+            {{- if .Values.observability.tracing.enabled }}
+            - name: OTEL_ENABLED
+              value: "true"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.observability.tracing.endpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.observability.tracing.serviceName | quote }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ .Values.observability.tracing.samplingRate | quote }}
+            {{- end }}
+            - name: LOG_FORMAT
+              value: {{ .Values.observability.logging.format | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.observability.logging.level | quote }}
+            - name: LOG_INCLUDE_TRACE_CONTEXT
+              value: {{ .Values.observability.logging.includeTraceContext | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

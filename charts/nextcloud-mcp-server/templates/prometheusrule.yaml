@@ -1,0 +1,92 @@
+{{- if and .Values.observability.metrics.enabled .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "nextcloud-mcp-server.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nextcloud-mcp-server.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: nextcloud-mcp-server.critical
+      interval: 30s
+      rules:
+        - alert: NextcloudMCPServerDown
+          expr: up{job="{{ include "nextcloud-mcp-server.fullname" . }}"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Nextcloud MCP Server is down"
+            description: "{{ `{{` }} $labels.pod {{ `}}` }} has been down for more than 5 minutes."
+
+        - alert: NextcloudMCPHighErrorRate
+          expr: |
+            sum(rate(mcp_http_requests_total{status_code=~"5..", job="{{ include "nextcloud-mcp-server.fullname" . }}"}[5m]))
+            / sum(rate(mcp_http_requests_total{job="{{ include "nextcloud-mcp-server.fullname" . }}"}[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "High error rate on Nextcloud MCP Server"
+            description: "Error rate is {{ `{{` }} printf \"%.2f%%\" (mul $value 100) {{ `}}` }} (threshold: 5%)"
+
+        - alert: NextcloudMCPHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(mcp_http_request_duration_seconds_bucket{job="{{ include "nextcloud-mcp-server.fullname" . }}"}[5m])) by (le, endpoint)
+            ) > 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "High latency on Nextcloud MCP Server"
+            description: "P95 latency is {{ `{{` }} printf \"%.2fs\" $value {{ `}}` }} on {{ `{{` }} $labels.endpoint {{ `}}` }} (threshold: 1s)"
+
+        - alert: NextcloudMCPDependencyDown
+          expr: mcp_dependency_health{job="{{ include "nextcloud-mcp-server.fullname" . }}"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Nextcloud MCP dependency is down"
+            description: "Dependency {{ `{{` }} $labels.dependency {{ `}}` }} has been down for more than 2 minutes."
+
+    - name: nextcloud-mcp-server.warning
+      interval: 30s
+      rules:
+        - alert: NextcloudMCPTokenValidationErrors
+          expr: |
+            sum(rate(mcp_oauth_token_validations_total{result="error", job="{{ include "nextcloud-mcp-server.fullname" . }}"}[10m]))
+            / sum(rate(mcp_oauth_token_validations_total{job="{{ include "nextcloud-mcp-server.fullname" . }}"}[10m])) > 0.01
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High token validation error rate"
+            description: "Token validation error rate is {{ `{{` }} printf \"%.2f%%\" (mul $value 100) {{ `}}` }} (threshold: 1%)"
+
+        - alert: NextcloudMCPVectorSyncQueueHigh
+          expr: mcp_vector_sync_queue_size{job="{{ include "nextcloud-mcp-server.fullname" . }}"} > 100
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Vector sync queue is high"
+            description: "Vector sync queue size is {{ `{{` }} $value {{ `}}` }} (threshold: 100)"
+
+        - alert: NextcloudMCPQdrantSlowQueries
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(mcp_db_operation_duration_seconds_bucket{db="qdrant", job="{{ include "nextcloud-mcp-server.fullname" . }}"}[10m])) by (le)
+            ) > 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Qdrant queries are slow"
+            description: "P95 Qdrant query latency is {{ `{{` }} printf \"%.2fs\" $value {{ `}}` }} (threshold: 0.5s)"
+{{- end }}

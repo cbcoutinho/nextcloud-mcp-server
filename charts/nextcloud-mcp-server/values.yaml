@@ -168,6 +168,43 @@ securityContext:
   runAsNonRoot: true
   runAsUser: 1000
 
+# Observability Configuration
+observability:
+  # Prometheus metrics
+  metrics:
+    enabled: true
+    port: 9090
+    path: /metrics
+
+  # OpenTelemetry tracing
+  tracing:
+    enabled: false
+    endpoint: ""  # e.g., "http://opentelemetry-collector:4317"
+    serviceName: "nextcloud-mcp-server"
+    samplingRate: 1.0
+
+  # Logging configuration
+  logging:
+    format: json  # "json" or "text"
+    level: INFO
+    includeTraceContext: true
+
+# Prometheus ServiceMonitor (requires Prometheus Operator)
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+  # Additional labels for ServiceMonitor (e.g., for Prometheus selector)
+  # Example: { prometheus: kube-prometheus }
+
+# Prometheus alert rules (requires Prometheus Operator)
+prometheusRule:
+  enabled: false
+  labels: {}
+  # Additional labels for PrometheusRule (e.g., for Prometheus selector)
+  # Example: { prometheus: kube-prometheus }
+
 service:
   type: ClusterIP
   port: 8000

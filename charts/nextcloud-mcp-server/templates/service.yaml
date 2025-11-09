@@ -15,5 +15,11 @@ spec:
       targetPort: http
       protocol: TCP
       name: http
+    {{- if .Values.observability.metrics.enabled }}
+    - port: {{ .Values.observability.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+    {{- end }}
   selector:
     {{- include "nextcloud-mcp-server.selectorLabels" . | nindent 4 }}
