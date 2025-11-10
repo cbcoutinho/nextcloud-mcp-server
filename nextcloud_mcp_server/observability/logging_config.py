@@ -17,6 +17,32 @@ from pythonjsonlogger import jsonlogger
 from nextcloud_mcp_server.observability.tracing import get_trace_context
 
 
+class HealthCheckFilter(logging.Filter):
+    """
+    Logging filter that excludes health check endpoint requests.
+
+    This prevents health check polls from cluttering logs while keeping
+    access logs for all other endpoints.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """
+        Filter out health check requests from uvicorn access logs.
+
+        Args:
+            record: LogRecord instance
+
+        Returns:
+            False if this is a health check request, True otherwise
+        """
+        # Check if the log message contains health check endpoints
+        message = record.getMessage()
+        return not any(
+            endpoint in message
+            for endpoint in ["/health/live", "/health/ready", "/metrics"]
+        )
+
+
 class TraceContextFormatter(jsonlogger.JsonFormatter):
     """
     JSON formatter that injects OpenTelemetry trace context into log records.
@@ -244,11 +270,22 @@ def get_uvicorn_logging_config(
                 "datefmt": "%Y-%m-%d %H:%M:%S",
             },
         },
+        "filters": {
+            "health_check_filter": {
+                "()": "nextcloud_mcp_server.observability.logging_config.HealthCheckFilter",
+            },
+        },
         "handlers": {
             "default": {
                 "formatter": "default",
                 "class": "logging.StreamHandler",
                 "stream": "ext://sys.stdout",
+            },
+            "access": {
+                "formatter": "default",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stdout",
+                "filters": ["health_check_filter"],
             },
         },
         "loggers": {
@@ -262,7 +299,7 @@ def get_uvicorn_logging_config(
                 "propagate": False,
             },
             "uvicorn.access": {
-                "handlers": ["default"],
+                "handlers": ["access"],
                 "level": "INFO",
                 "propagate": False,
             },

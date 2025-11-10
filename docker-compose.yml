@@ -107,9 +107,10 @@ services:
       - QDRANT_COLLECTION=nextcloud_content
 
       # Ollama configuration (optional - uses SimpleEmbeddingProvider if not set)
-      - OLLAMA_BASE_URL=https://ollama.internal.coutinho.io:443
-      - OLLAMA_EMBEDDING_MODEL=nomic-embed-text  # Changing this creates new collection
-      # - OLLAMA_VERIFY_SSL=false
+      #- OLLAMA_BASE_URL=https://ollama.internal.coutinho.io:443
+      #- OLLAMA_EMBEDDING_MODEL=nomic-embed-text  # Changing this creates new collection
+      #- OLLAMA_EMBEDDING_MODEL=embeddinggemma:300m
+      #- OLLAMA_VERIFY_SSL=false
 
   mcp-oauth:
     build: .

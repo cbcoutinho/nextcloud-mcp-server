@@ -1379,7 +1379,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         "Routes: /user/* with SessionAuth, /mcp with FastMCP OAuth Bearer tokens"
     )
 
-    # Add debugging middleware to log Authorization headers
+    # Add debugging middleware to log Authorization headers and client capabilities
     @app.middleware("http")
     async def log_auth_headers(request, call_next):
         auth_header = request.headers.get("authorization")
@@ -1394,6 +1394,52 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 logger.warning(
                     f"⚠️  /mcp request WITHOUT Authorization header from {request.client}"
                 )
+
+            # Log client capabilities on initialize request
+            if request.method == "POST":
+                # Read body to check for initialize request
+                # Starlette caches the body internally, so it's safe to read here
+                body = await request.body()
+                try:
+                    import json
+
+                    data = json.loads(body)
+                    # Check if this is an initialize request
+                    if data.get("method") == "initialize":
+                        params = data.get("params", {})
+                        capabilities = params.get("capabilities", {})
+                        client_info = params.get("clientInfo", {})
+
+                        logger.info(
+                            f"🔌 MCP client connected: {client_info.get('name', 'unknown')} "
+                            f"v{client_info.get('version', 'unknown')}"
+                        )
+
+                        # Log capabilities in a structured way
+                        cap_summary = []
+                        # Check for presence using 'in' not truthiness (empty dict {} counts as having capability)
+                        if "roots" in capabilities:
+                            cap_summary.append("roots")
+                        if "sampling" in capabilities:
+                            cap_summary.append("sampling")
+                        if "experimental" in capabilities:
+                            cap_summary.append(
+                                f"experimental({len(capabilities['experimental'])} features)"
+                            )
+
+                        logger.info(
+                            f"📋 Client capabilities: {', '.join(cap_summary) if cap_summary else 'none'}"
+                        )
+                        # Log full capabilities at INFO level to diagnose capability issues
+                        logger.info(
+                            f"Full capabilities JSON: {json.dumps(capabilities)}"
+                        )
+                except Exception as e:
+                    # Don't fail the request if logging fails
+                    logger.debug(
+                        f"Failed to parse MCP request for capability logging: {e}"
+                    )
+
         response = await call_next(request)
         return response
 
