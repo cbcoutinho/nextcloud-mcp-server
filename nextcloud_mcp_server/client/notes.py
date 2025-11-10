@@ -18,18 +18,57 @@ class NotesClient(BaseNextcloudClient):
         response = await self._make_request("GET", "/apps/notes/api/v1/settings")
         return response.json()
 
-    async def get_all_notes(self) -> AsyncIterator[Dict[str, Any]]:
-        """Get all notes, yielding them one at a time."""
+    async def get_all_notes(
+        self, prune_before: Optional[int] = None
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Get all notes, yielding them one at a time.
+
+        The Notes API returns changed notes with full data in chunks, and ALL note IDs
+        (with only 'id' field) in the last chunk for deletion detection. This causes
+        duplicates which we handle by tracking seen IDs (first occurrence with full
+        data is kept, later pruned duplicates are skipped).
+
+        Args:
+            prune_before: Optional Unix timestamp. Notes unchanged since this time
+                         are pruned (only 'id' field returned in last chunk).
+                         Reduces data transfer for large note collections.
+
+        Yields:
+            Note dictionaries with full data (deduplicated).
+        """
         cursor = ""
+        seen_ids: set[int] = set()
 
         while True:
+            params: Dict[str, Any] = {"chunkSize": 10}
+            if cursor:
+                params["chunkCursor"] = cursor
+            if prune_before is not None:
+                params["pruneBefore"] = prune_before
+
             response = await self._make_request(
                 "GET",
                 "/apps/notes/api/v1/notes",
-                params={"chunkSize": 10, "chunkCursor": cursor},
+                params=params,
             )
-            for note in response.json():
+            response_data = response.json()
+
+            for note in response_data:
+                note_id = note.get("id")
+                if note_id is None:
+                    logger.warning(f"Skipping note without ID: {note}")
+                    continue
+
+                # Skip duplicates (API returns all IDs in last chunk for deletion detection)
+                if note_id in seen_ids:
+                    logger.debug(
+                        f"Skipping duplicate note {note_id} (pruned version in last chunk)"
+                    )
+                    continue
+
+                seen_ids.add(note_id)
                 yield note
+
             if "X-Notes-Chunk-Cursor" not in response.headers:
                 break
             cursor = response.headers["X-Notes-Chunk-Cursor"]
