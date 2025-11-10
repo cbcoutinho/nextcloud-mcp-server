@@ -219,6 +219,19 @@ Enable semantic search capabilities by deploying a vector database (Qdrant) and 
 | `vectorSync.processorWorkers` | Number of concurrent processor workers | `3` |
 | `vectorSync.queueMaxSize` | Maximum queue size for pending documents | `10000` |
 
+**Document Chunking Configuration:**
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `documentChunking.chunkSize` | Number of words per chunk for embedding | `512` |
+| `documentChunking.chunkOverlap` | Number of overlapping words between chunks | `50` |
+
+**Chunking Strategy:**
+- **Small chunks (256-384)**: Better precision for searches, more storage overhead
+- **Medium chunks (512-768)**: Balanced approach (recommended for most use cases)
+- **Large chunks (1024+)**: Better context preservation, less precise matching
+- **Overlap**: Should be 10-20% of chunk size to preserve context across boundaries
+
 **Qdrant Vector Database:**
 
 Qdrant is deployed as a subchart when `qdrant.enabled` is `true`. All configuration values are passed through to the [qdrant/qdrant](https://github.com/qdrant/qdrant-helm) chart.
