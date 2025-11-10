@@ -1,3 +1,14 @@
+## v0.31.0 (2025-11-10)
+
+### Feat
+
+- skip tracing for health and metrics endpoints
+
+### Fix
+
+- add retry logic for ETag conflicts in category change test
+- optimize Notes API pagination with pruneBefore parameter
+
 ## v0.30.0 (2025-11-10)
 
 ### Feat
