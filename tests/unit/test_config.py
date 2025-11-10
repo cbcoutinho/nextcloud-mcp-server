@@ -151,3 +151,111 @@ class TestGetSettings:
         assert settings.vector_sync_scan_interval == 600
         assert settings.vector_sync_processor_workers == 5
         assert settings.vector_sync_queue_max_size == 5000
+
+
+class TestChunkConfigValidation:
+    """Test document chunking configuration validation."""
+
+    def test_default_chunk_settings(self):
+        """Test default chunk size and overlap values."""
+        settings = Settings()
+        assert settings.document_chunk_size == 512
+        assert settings.document_chunk_overlap == 50
+
+    def test_valid_chunk_settings(self):
+        """Test valid chunk size and overlap configuration."""
+        settings = Settings(
+            document_chunk_size=1024,
+            document_chunk_overlap=100,
+        )
+        assert settings.document_chunk_size == 1024
+        assert settings.document_chunk_overlap == 100
+
+    def test_overlap_greater_than_or_equal_to_chunk_size_raises_error(self):
+        """Test that overlap >= chunk size raises ValueError."""
+        with pytest.raises(
+            ValueError,
+            match="DOCUMENT_CHUNK_OVERLAP .* must be less than DOCUMENT_CHUNK_SIZE",
+        ):
+            Settings(
+                document_chunk_size=512,
+                document_chunk_overlap=512,
+            )
+
+    def test_overlap_larger_than_chunk_size_raises_error(self):
+        """Test that overlap > chunk size raises ValueError."""
+        with pytest.raises(
+            ValueError,
+            match="DOCUMENT_CHUNK_OVERLAP .* must be less than DOCUMENT_CHUNK_SIZE",
+        ):
+            Settings(
+                document_chunk_size=256,
+                document_chunk_overlap=300,
+            )
+
+    def test_negative_overlap_raises_error(self):
+        """Test that negative overlap raises ValueError."""
+        with pytest.raises(
+            ValueError,
+            match="DOCUMENT_CHUNK_OVERLAP .* cannot be negative",
+        ):
+            Settings(
+                document_chunk_size=512,
+                document_chunk_overlap=-10,
+            )
+
+    def test_small_chunk_size_warning(self, caplog):
+        """Test that chunk size < 100 triggers warning."""
+        import logging
+
+        caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
+        Settings(
+            document_chunk_size=64,
+            document_chunk_overlap=10,
+        )
+        assert (
+            "DOCUMENT_CHUNK_SIZE is set to 64 words, which is quite small"
+            in caplog.text
+        )
+        assert "Consider using at least 256 words" in caplog.text
+
+    def test_reasonable_chunk_size_no_warning(self, caplog):
+        """Test that chunk size >= 100 doesn't trigger warning."""
+        import logging
+
+        caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
+        Settings(
+            document_chunk_size=256,
+            document_chunk_overlap=25,
+        )
+        assert "DOCUMENT_CHUNK_SIZE" not in caplog.text
+
+    @patch.dict(
+        os.environ,
+        {
+            "DOCUMENT_CHUNK_SIZE": "1024",
+            "DOCUMENT_CHUNK_OVERLAP": "102",
+        },
+        clear=True,
+    )
+    def test_get_settings_chunk_config(self):
+        """Test get_settings() with chunk configuration."""
+        settings = get_settings()
+        assert settings.document_chunk_size == 1024
+        assert settings.document_chunk_overlap == 102
+
+    @patch.dict(
+        os.environ,
+        {
+            "DOCUMENT_CHUNK_SIZE": "256",
+            "DOCUMENT_CHUNK_OVERLAP": "256",
+        },
+        clear=True,
+    )
+    def test_get_settings_invalid_chunk_config_raises_error(self):
+        """Test get_settings() raises error for invalid chunk config."""
+        with pytest.raises(
+            ValueError,
+            match="DOCUMENT_CHUNK_OVERLAP .* must be less than DOCUMENT_CHUNK_SIZE",
+        ):
+            get_settings()

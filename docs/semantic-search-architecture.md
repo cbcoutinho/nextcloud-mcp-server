@@ -177,6 +177,53 @@ Currently only `NotesScanner` is implemented. Future: `CalendarScanner`, `DeckSc
 - `user_id`: Multi-tenancy filtering (each user's vectors isolated)
 - `doc_type`: App identifier ("note", "event", "card", etc.)
 - `etag`: Change detection for incremental updates
+- `chunk_index`: Position of this chunk within the document (0-indexed)
+- `total_chunks`: Total number of chunks for this document
+- `excerpt`: First 200 characters of chunk (for display)
+
+### Document Chunking Strategy
+
+Documents are chunked before embedding to handle content larger than the embedding model's context window and to improve search precision.
+
+**Configuration:**
+```dotenv
+DOCUMENT_CHUNK_SIZE=512       # Words per chunk (default)
+DOCUMENT_CHUNK_OVERLAP=50     # Overlapping words between chunks (default)
+```
+
+**Chunking Process:**
+1. **Text combination**: Document title + content (e.g., `"Note Title\n\nNote content..."`)
+2. **Word-based splitting**: Simple whitespace tokenization
+3. **Sliding window**: Create overlapping chunks
+4. **Individual embedding**: Each chunk gets its own vector
+5. **Separate storage**: Each chunk stored as distinct point in Qdrant
+
+**Example:**
+```
+Document (1000 words):
+→ Chunk 0: words 0-511
+→ Chunk 1: words 462-973 (overlaps by 50 words)
+→ Chunk 2: words 924-999 (last chunk, partial)
+
+Each chunk stored as separate vector with metadata:
+- chunk_index: 0, 1, 2
+- total_chunks: 3
+- excerpt: First 200 chars of each chunk
+```
+
+**Search Behavior:**
+- **Vector search** operates on chunks (not whole documents)
+- **Deduplication** collapses multiple matching chunks from same document
+- **Best match** returns highest-scoring chunk's excerpt
+- **Access verification** still performed at document level
+
+**Tuning Recommendations:**
+- **Small chunks (256-384 words)**: More precise, less context, more storage
+- **Large chunks (768-1024 words)**: More context, less precise, less storage
+- **Overlap (10-20% of chunk size)**: Preserves context across boundaries
+- **Match to embedding model**: Consider model's context window when sizing
+
+**Important**: Changing chunk size requires re-embedding all documents. Use the collection naming strategy to manage different chunking configurations.
 
 ### Collection Naming and Model Switching
 

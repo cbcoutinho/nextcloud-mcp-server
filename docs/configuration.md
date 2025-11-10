@@ -293,6 +293,10 @@ VECTOR_SYNC_ENABLED=true              # Enable background indexing
 VECTOR_SYNC_SCAN_INTERVAL=300         # Scan interval in seconds (default: 5 minutes)
 VECTOR_SYNC_PROCESSOR_WORKERS=3       # Concurrent indexing workers (default: 3)
 VECTOR_SYNC_QUEUE_MAX_SIZE=10000      # Max queued documents (default: 10000)
+
+# Document chunking settings (for vector embeddings)
+DOCUMENT_CHUNK_SIZE=512               # Words per chunk (default: 512)
+DOCUMENT_CHUNK_OVERLAP=50             # Overlapping words between chunks (default: 50)
 ```
 
 ### Embedding Service Configuration
@@ -313,6 +317,54 @@ OLLAMA_VERIFY_SSL=true                   # Verify SSL certificates
 
 If `OLLAMA_BASE_URL` is not set, the server uses a simple random embedding provider for testing. This is **not suitable for production** as it generates random embeddings with no semantic meaning.
 
+### Document Chunking Configuration
+
+The server chunks documents before embedding to handle documents larger than the embedding model's context window. Chunk size and overlap can be tuned based on your embedding model and content type.
+
+#### Choosing Chunk Size
+
+**Smaller chunks (256-384 words)**:
+- More precise matching
+- Less context per chunk
+- Better for finding specific information
+- Higher storage requirements (more vectors)
+
+**Larger chunks (768-1024 words)**:
+- More context per chunk
+- Less precise matching
+- Better for understanding broader topics
+- Lower storage requirements (fewer vectors)
+
+**Default (512 words)**:
+- Balanced approach suitable for most use cases
+- Works well with typical note lengths
+- Good compromise between precision and context
+
+#### Choosing Overlap
+
+Overlap preserves context across chunk boundaries. Recommended settings:
+
+- **10-20% of chunk size** (e.g., 50-100 words for 512-word chunks)
+- **Too small** (<10%): May lose context at boundaries
+- **Too large** (>20%): Redundant storage, diminishing returns
+
+**Examples**:
+```dotenv
+# Precise matching for short notes
+DOCUMENT_CHUNK_SIZE=256
+DOCUMENT_CHUNK_OVERLAP=25
+
+# Default balanced configuration
+DOCUMENT_CHUNK_SIZE=512
+DOCUMENT_CHUNK_OVERLAP=50
+
+# More context for long documents
+DOCUMENT_CHUNK_SIZE=1024
+DOCUMENT_CHUNK_OVERLAP=100
+```
+
+**Important**: Changing chunk size requires re-embedding all documents. The collection naming strategy (see "Qdrant Collection Naming" above) helps manage this by creating separate collections for different configurations.
+
 ### Environment Variables Reference
 
 | Variable | Required | Default | Description |
@@ -328,6 +380,8 @@ If `OLLAMA_BASE_URL` is not set, the server uses a simple random embedding provi
 | `OLLAMA_BASE_URL` | ⚠️ Optional | - | Ollama API endpoint for embeddings |
 | `OLLAMA_EMBEDDING_MODEL` | ⚠️ Optional | `nomic-embed-text` | Embedding model to use |
 | `OLLAMA_VERIFY_SSL` | ⚠️ Optional | `true` | Verify SSL certificates |
+| `DOCUMENT_CHUNK_SIZE` | ⚠️ Optional | `512` | Words per chunk for document embedding |
+| `DOCUMENT_CHUNK_OVERLAP` | ⚠️ Optional | `50` | Overlapping words between chunks (must be < chunk size) |
 
 ### Docker Compose Example
 

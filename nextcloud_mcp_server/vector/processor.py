@@ -170,8 +170,11 @@ async def _index_document(
     else:
         raise ValueError(f"Unsupported doc_type: {doc_task.doc_type}")
 
-    # Tokenize and chunk
-    chunker = DocumentChunker(chunk_size=512, overlap=50)
+    # Tokenize and chunk (using configured chunk size and overlap)
+    chunker = DocumentChunker(
+        chunk_size=settings.document_chunk_size,
+        overlap=settings.document_chunk_overlap,
+    )
     chunks = chunker.chunk_text(content)
 
     # Generate embeddings (I/O bound - external API call)

@@ -107,10 +107,14 @@ services:
       - QDRANT_COLLECTION=nextcloud_content
 
       # Ollama configuration (optional - uses SimpleEmbeddingProvider if not set)
-      #- OLLAMA_BASE_URL=https://ollama.internal.coutinho.io:443
-      #- OLLAMA_EMBEDDING_MODEL=nomic-embed-text  # Changing this creates new collection
-      #- OLLAMA_EMBEDDING_MODEL=embeddinggemma:300m
-      #- OLLAMA_VERIFY_SSL=false
+      # - OLLAMA_BASE_URL=https://ollama.internal.coutinho.io:443
+      # - OLLAMA_EMBEDDING_MODEL=nomic-embed-text  # Changing this creates new collection
+      # - OLLAMA_VERIFY_SSL=false
+
+      # Document chunking configuration (for vector embeddings)
+      # Tune these based on your embedding model and content type
+      # - DOCUMENT_CHUNK_SIZE=512      # Words per chunk (default: 512)
+      # - DOCUMENT_CHUNK_OVERLAP=50    # Overlapping words (default: 50, recommended: 10-20% of chunk size)
 
   mcp-oauth:
     build: .

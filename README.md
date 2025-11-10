@@ -28,7 +28,7 @@ docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
 
 # 3. Test the connection
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/health/ready
 ```
 
 **Next Steps:**
