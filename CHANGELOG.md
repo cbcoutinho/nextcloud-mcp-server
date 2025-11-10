@@ -1,3 +1,9 @@
+## v0.31.1 (2025-11-10)
+
+### Refactor
+
+- simplify OpenTelemetry tracing configuration
+
 ## v0.31.0 (2025-11-10)
 
 ### Feat
