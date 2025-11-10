@@ -239,23 +239,46 @@ async def test_attachments_category_change_handling(nc_client: NextcloudClient):
         assert retrieved_content1 == attachment_content
         logger.info("Attachment retrieved successfully from initial category.")
 
-        # 4. Update note category
+        # 4. Update note category (with retry for ETag conflicts from background scanner)
         logger.info(
             f"Updating note {note_id} category from '{initial_category}' to '{new_category}'"
         )
-        # Need to fetch the latest etag after attachment add (WebDAV ops don't update note etag)
-        current_note_data = await nc_client.notes.get_note(note_id=note_id)
-        current_etag = current_note_data["etag"]
-        updated_note = await nc_client.notes.update(
-            note_id=note_id,
-            etag=current_etag,
-            category=new_category,
-            title=note_title,
-            content="Updated content",  # Pass required fields
-        )
-        etag3 = updated_note["etag"]
-        assert updated_note["category"] == new_category
-        logger.info(f"Note category updated successfully. New Etag: {etag3}")
+        # Retry logic for 412 Precondition Failed (ETag conflict)
+        # This can happen if the background vector scanner touches the note
+        max_update_attempts = 3
+        for attempt in range(max_update_attempts):
+            try:
+                # Fetch the latest etag
+                current_note_data = await nc_client.notes.get_note(note_id=note_id)
+                current_etag = current_note_data["etag"]
+                logger.info(
+                    f"Update attempt {attempt + 1}/{max_update_attempts}, current etag: {current_etag}"
+                )
+
+                updated_note = await nc_client.notes.update(
+                    note_id=note_id,
+                    etag=current_etag,
+                    category=new_category,
+                    title=note_title,
+                    content="Updated content",  # Pass required fields
+                )
+                etag3 = updated_note["etag"]
+                assert updated_note["category"] == new_category
+                logger.info(f"Note category updated successfully. New Etag: {etag3}")
+                break  # Success, exit retry loop
+
+            except HTTPStatusError as e:
+                if e.response.status_code == 412 and attempt < max_update_attempts - 1:
+                    # ETag conflict (likely from background scanner), retry
+                    logger.warning(
+                        f"ETag conflict (412) on attempt {attempt + 1}, retrying..."
+                    )
+                    time.sleep(1)  # Brief delay before retry
+                    continue
+                else:
+                    # Not a 412 or out of retries, re-raise
+                    raise
+
         time.sleep(1)
 
         # 5. Verify attachment retrieval from *new* category (passing new category)
