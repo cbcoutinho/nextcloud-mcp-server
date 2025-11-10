@@ -1,3 +1,15 @@
+## v0.30.0 (2025-11-10)
+
+### Feat
+
+- **helm**: Add document chunking configuration
+- **vector**: Add configurable chunk size and overlap for document embedding
+- **vector**: Support multiple embedding models with auto-generated collection names
+
+### Fix
+
+- Support in-memory Qdrant for CI testing
+
 ## v0.29.2 (2025-11-09)
 
 ### Fix
