@@ -9,7 +9,7 @@ WORKDIR /app
 
 COPY . .
 
-RUN uv sync --locked --no-dev
+RUN uv sync --locked --no-dev --no-editable
 
 ENV PYTHONUNBUFFERED=1
 ENV VIRTUAL_ENV=/app/.venv

@@ -16,8 +16,7 @@ The Nextcloud MCP Server includes comprehensive observability features for produ
 export METRICS_ENABLED=true
 export METRICS_PORT=9090
 
-# Enable tracing (optional)
-export OTEL_ENABLED=true
+# Enable tracing (optional - tracing is enabled when OTEL_EXPORTER_OTLP_ENDPOINT is set)
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 
 # Start the server
@@ -46,8 +45,7 @@ helm install nextcloud-mcp charts/nextcloud-mcp-server \
 |----------|---------|-------------|
 | `METRICS_ENABLED` | `true` | Enable Prometheus metrics |
 | `METRICS_PORT` | `9090` | Port for metrics endpoint |
-| `OTEL_ENABLED` | `false` | Enable OpenTelemetry tracing |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | - | OTLP gRPC endpoint (e.g., `http://otel-collector:4317`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | - | OTLP gRPC endpoint (e.g., `http://otel-collector:4317`). Tracing is enabled when this is set. |
 | `OTEL_SERVICE_NAME` | `nextcloud-mcp-server` | Service name in traces |
 | `OTEL_TRACES_SAMPLER` | `always_on` | Trace sampling strategy |
 | `OTEL_TRACES_SAMPLER_ARG` | `1.0` | Sampling rate (0.0-1.0) |

@@ -13,9 +13,9 @@ import logging
 from contextlib import contextmanager
 from typing import Any
 
+from importlib_metadata import version
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
@@ -27,10 +27,13 @@ logger = logging.getLogger(__name__)
 # Global tracer instance (initialized in setup_tracing)
 _tracer: Tracer | None = None
 
+# Auto-instrument httpx for Nextcloud API calls
+
 
 def setup_tracing(
     service_name: str = "nextcloud-mcp-server",
     otlp_endpoint: str | None = None,
+    otlp_verify_ssl: bool = False,
     sampling_rate: float = 1.0,
 ) -> Tracer:
     """
@@ -40,6 +43,8 @@ def setup_tracing(
         service_name: Service name for traces (default: "nextcloud-mcp-server")
         otlp_endpoint: OTLP gRPC endpoint (e.g., "http://otel-collector:4317")
                       If None, tracing is initialized but no exporter is configured
+        otlp_verify_ssl: Enable TLS verification for otlp_endpoint. If True,
+                      `insecure` will eval to False
         sampling_rate: Sampling rate (0.0-1.0). Default 1.0 (100% sampling)
 
     Returns:
@@ -51,7 +56,7 @@ def setup_tracing(
     resource = Resource.create(
         {
             "service.name": service_name,
-            "service.version": "0.27.2",  # TODO: Extract from pyproject.toml
+            "service.version": version(__package__.split(".")[0]),
         }
     )
 
@@ -61,7 +66,9 @@ def setup_tracing(
     # Configure OTLP exporter if endpoint is provided
     if otlp_endpoint:
         try:
-            otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
+            otlp_exporter = OTLPSpanExporter(
+                endpoint=otlp_endpoint, insecure=not otlp_verify_ssl
+            )
             span_processor = BatchSpanProcessor(otlp_exporter)
             provider.add_span_processor(span_processor)
             logger.info(
@@ -78,9 +85,6 @@ def setup_tracing(
 
     # Set global tracer provider
     trace.set_tracer_provider(provider)
-
-    # Auto-instrument httpx for Nextcloud API calls
-    HTTPXClientInstrumentor().instrument()
 
     # Auto-instrument logging to inject trace context
     LoggingInstrumentor().instrument(set_logging_format=True)

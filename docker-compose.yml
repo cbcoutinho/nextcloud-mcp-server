@@ -98,16 +98,20 @@ services:
       #- QDRANT_URL=http://qdrant:6333  # Uncomment for network mode
       #- QDRANT_API_KEY=${QDRANT_API_KEY:-my_secret_api_key}  # Only for network mode
 
+      # Observability
+      #- OTEL_SERVICE_NAME=nextcloud-mcp-docker-compose
+      #- OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+
       # Collection naming: Auto-generated as {deployment-id}-{model-name}
       # - Deployment ID: OTEL_SERVICE_NAME (if set) or hostname (fallback)
       # - Model name: OLLAMA_EMBEDDING_MODEL
       # - Example: "nextcloud-mcp-server-nomic-embed-text"
       # - Changing models creates new collection (requires re-embedding)
       # - Set QDRANT_COLLECTION to override auto-generation:
-      - QDRANT_COLLECTION=nextcloud_content
+      #- QDRANT_COLLECTION=nextcloud_content
 
       # Ollama configuration (optional - uses SimpleEmbeddingProvider if not set)
-      # - OLLAMA_BASE_URL=https://ollama.internal.coutinho.io:443
+      # - OLLAMA_BASE_URL=http://ollama:11434
       # - OLLAMA_EMBEDDING_MODEL=nomic-embed-text  # Changing this creates new collection
       # - OLLAMA_VERIFY_SSL=false
 

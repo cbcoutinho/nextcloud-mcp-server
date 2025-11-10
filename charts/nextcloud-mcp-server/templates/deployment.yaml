@@ -218,8 +218,6 @@ spec:
             - name: METRICS_PORT
               value: {{ .Values.observability.metrics.port | quote }}
             {{- if .Values.observability.tracing.enabled }}
-            - name: OTEL_ENABLED
-              value: "true"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.observability.tracing.endpoint | quote }}
             - name: OTEL_SERVICE_NAME

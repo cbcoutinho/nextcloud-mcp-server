@@ -5,8 +5,11 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
 if TYPE_CHECKING:
     from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
+
 
 import anyio
 import click
@@ -58,6 +61,7 @@ from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
 from nextcloud_mcp_server.vector import processor_task, scanner_task
 
 logger = logging.getLogger(__name__)
+HTTPXClientInstrumentor().instrument()
 
 
 def initialize_document_processors():
@@ -791,17 +795,20 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         )
 
     # Setup OpenTelemetry tracing (optional)
-    if settings.tracing_enabled:
+    if settings.otel_exporter_otlp_endpoint:
         setup_tracing(
             service_name=settings.otel_service_name,
             otlp_endpoint=settings.otel_exporter_otlp_endpoint,
+            otlp_verify_ssl=settings.otel_exporter_verify_ssl,
             sampling_rate=settings.otel_traces_sampler_arg,
         )
         logger.info(
             f"OpenTelemetry tracing enabled (endpoint: {settings.otel_exporter_otlp_endpoint})"
         )
     else:
-        logger.info("OpenTelemetry tracing disabled (set OTEL_ENABLED=true to enable)")
+        logger.info(
+            "OpenTelemetry tracing disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)"
+        )
 
     # Determine authentication mode
     oauth_enabled = is_oauth_mode()
@@ -1391,9 +1398,12 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 )
                 logger.info(f"🔑 /mcp request with Authorization: {token_preview}")
             else:
-                logger.warning(
-                    f"⚠️  /mcp request WITHOUT Authorization header from {request.client}"
-                )
+                # Only warn about missing Authorization in OAuth mode
+                # In BasicAuth mode, /mcp requests without Authorization are expected
+                if oauth_enabled:
+                    logger.warning(
+                        f"⚠️  /mcp request WITHOUT Authorization header from {request.client}"
+                    )
 
             # Log client capabilities on initialize request
             if request.method == "POST":
@@ -1454,7 +1464,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     )
 
     # Add observability middleware (metrics + tracing)
-    if settings.metrics_enabled or settings.tracing_enabled:
+    if settings.metrics_enabled or settings.otel_exporter_otlp_endpoint:
         app.add_middleware(ObservabilityMiddleware)
         logger.info("Observability middleware enabled (metrics and/or tracing)")
 
