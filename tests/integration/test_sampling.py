@@ -146,12 +146,23 @@ Avoid blocking operations in async code.""",
     assert "search_method" in result
 
     # For this test, sampling might fail (no real LLM client)
-    # So we check for either success or fallback
-    if "[Sampling unavailable" in result["generated_answer"]:
-        # Fallback mode - should still have sources
-        assert result["search_method"] == "semantic_sampling_fallback"
+    # So we check for either success or various fallback states
+    unsupported_methods = {
+        "semantic_sampling_unsupported",
+        "semantic_sampling_user_declined",
+        "semantic_sampling_timeout",
+        "semantic_sampling_mcp_error",
+        "semantic_sampling_fallback",
+    }
+
+    if result["search_method"] in unsupported_methods:
+        # Fallback/unsupported mode - should still have sources
         assert len(result["sources"]) > 0
-        pytest.skip("Sampling not supported by test client (expected fallback)")
+        assert result["total_found"] > 0
+        pytest.skip(
+            f"Sampling not available (method: {result['search_method']}), "
+            f"but search results returned successfully"
+        )
     else:
         # Successful sampling
         assert result["search_method"] == "semantic_sampling"

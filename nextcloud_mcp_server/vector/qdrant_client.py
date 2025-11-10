@@ -93,10 +93,10 @@ async def get_qdrant_client() -> AsyncQdrantClient:
 
         except Exception as e:
             # Check if it's a dimension mismatch error (re-raise it)
-            if isinstance(e, ValueError):
+            if isinstance(e, ValueError) and "Dimension mismatch" in str(e):
                 raise
 
-            # Collection doesn't exist, create it
+            # Collection doesn't exist or other error, create it
             await _qdrant_client.create_collection(
                 collection_name=collection_name,
                 vectors_config=VectorParams(
