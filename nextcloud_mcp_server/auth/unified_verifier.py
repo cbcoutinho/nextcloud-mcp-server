@@ -231,17 +231,21 @@ class UnifiedTokenVerifier(TokenVerifier):
                 token,
                 signing_key.key,
                 algorithms=["RS256"],
-                issuer=self.settings.oidc_issuer
-                if hasattr(self.settings, "oidc_issuer")
-                else None,
+                issuer=(
+                    self.settings.oidc_issuer
+                    if hasattr(self.settings, "oidc_issuer")
+                    else None
+                ),
                 options={
                     "verify_signature": True,
                     "verify_exp": True,
                     "verify_iat": True,
-                    "verify_iss": True
-                    if hasattr(self.settings, "oidc_issuer")
-                    and self.settings.oidc_issuer
-                    else False,
+                    "verify_iss": (
+                        True
+                        if hasattr(self.settings, "oidc_issuer")
+                        and self.settings.oidc_issuer
+                        else False
+                    ),
                     "verify_aud": False,  # We handle audience validation separately
                 },
             )

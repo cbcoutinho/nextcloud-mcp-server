@@ -15,6 +15,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_embedding_service
+from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.vector.document_chunker import DocumentChunker
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 from nextcloud_mcp_server.vector.scanner import DocumentTask
@@ -94,58 +95,68 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
         f"for {doc_task.user_id} ({doc_task.operation})"
     )
 
-    qdrant_client = await get_qdrant_client()
-    settings = get_settings()
+    with trace_operation(
+        "vector_sync.process_document",
+        attributes={
+            "vector_sync.operation": "process",
+            "vector_sync.user_id": doc_task.user_id,
+            "vector_sync.doc_id": doc_task.doc_id,
+            "vector_sync.doc_type": doc_task.doc_type,
+            "vector_sync.doc_operation": doc_task.operation,
+        },
+    ):
+        qdrant_client = await get_qdrant_client()
+        settings = get_settings()
 
-    # Handle deletion
-    if doc_task.operation == "delete":
-        await qdrant_client.delete(
-            collection_name=settings.get_collection_name(),
-            points_selector=Filter(
-                must=[
-                    FieldCondition(
-                        key="user_id",
-                        match=MatchValue(value=doc_task.user_id),
-                    ),
-                    FieldCondition(
-                        key="doc_id",
-                        match=MatchValue(value=doc_task.doc_id),
-                    ),
-                    FieldCondition(
-                        key="doc_type",
-                        match=MatchValue(value=doc_task.doc_type),
-                    ),
-                ]
-            ),
-        )
-        logger.info(
-            f"Deleted {doc_task.doc_type}_{doc_task.doc_id} for {doc_task.user_id}"
-        )
-        return
+        # Handle deletion
+        if doc_task.operation == "delete":
+            await qdrant_client.delete(
+                collection_name=settings.get_collection_name(),
+                points_selector=Filter(
+                    must=[
+                        FieldCondition(
+                            key="user_id",
+                            match=MatchValue(value=doc_task.user_id),
+                        ),
+                        FieldCondition(
+                            key="doc_id",
+                            match=MatchValue(value=doc_task.doc_id),
+                        ),
+                        FieldCondition(
+                            key="doc_type",
+                            match=MatchValue(value=doc_task.doc_type),
+                        ),
+                    ]
+                ),
+            )
+            logger.info(
+                f"Deleted {doc_task.doc_type}_{doc_task.doc_id} for {doc_task.user_id}"
+            )
+            return
 
-    # Handle indexing with retry
-    max_retries = 3
-    retry_delay = 1.0
+        # Handle indexing with retry
+        max_retries = 3
+        retry_delay = 1.0
 
-    for attempt in range(max_retries):
-        try:
-            await _index_document(doc_task, nc_client, qdrant_client)
-            return  # Success
+        for attempt in range(max_retries):
+            try:
+                await _index_document(doc_task, nc_client, qdrant_client)
+                return  # Success
 
-        except (HTTPStatusError, Exception) as e:
-            if attempt < max_retries - 1:
-                logger.warning(
-                    f"Retry {attempt + 1}/{max_retries} for "
-                    f"{doc_task.doc_type}_{doc_task.doc_id}: {e}"
-                )
-                await anyio.sleep(retry_delay)
-                retry_delay *= 2  # Exponential backoff
-            else:
-                logger.error(
-                    f"Failed to index {doc_task.doc_type}_{doc_task.doc_id} "
-                    f"after {max_retries} retries: {e}"
-                )
-                raise
+            except (HTTPStatusError, Exception) as e:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Retry {attempt + 1}/{max_retries} for "
+                        f"{doc_task.doc_type}_{doc_task.doc_id}: {e}"
+                    )
+                    await anyio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error(
+                        f"Failed to index {doc_task.doc_type}_{doc_task.doc_id} "
+                        f"after {max_retries} retries: {e}"
+                    )
+                    raise
 
 
 async def _index_document(

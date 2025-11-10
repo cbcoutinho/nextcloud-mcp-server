@@ -181,8 +181,8 @@ class Settings:
     # Observability settings
     metrics_enabled: bool = True
     metrics_port: int = 9090
-    tracing_enabled: bool = False
     otel_exporter_otlp_endpoint: Optional[str] = None
+    otel_exporter_verify_ssl: bool = False
     otel_service_name: str = "nextcloud-mcp-server"
     otel_traces_sampler: str = "always_on"
     otel_traces_sampler_arg: float = 1.0
@@ -334,8 +334,9 @@ def get_settings() -> Settings:
         # Observability settings
         metrics_enabled=os.getenv("METRICS_ENABLED", "true").lower() == "true",
         metrics_port=int(os.getenv("METRICS_PORT", "9090")),
-        tracing_enabled=os.getenv("OTEL_ENABLED", "false").lower() == "true",
         otel_exporter_otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+        otel_exporter_verify_ssl=os.getenv("OTEL_EXPORTER_VERIFY_SSL", "false").lower()
+        == "true",
         otel_service_name=os.getenv("OTEL_SERVICE_NAME", "nextcloud-mcp-server"),
         otel_traces_sampler=os.getenv("OTEL_TRACES_SAMPLER", "always_on"),
         otel_traces_sampler_arg=float(os.getenv("OTEL_TRACES_SAMPLER_ARG", "1.0")),

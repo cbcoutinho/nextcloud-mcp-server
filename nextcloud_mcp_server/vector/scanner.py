@@ -13,6 +13,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -154,134 +155,148 @@ async def scan_user_documents(
         f"[SCAN-{scan_id}] Starting scan for user: {user_id}, initial_sync={initial_sync}"
     )
 
-    # Calculate prune timestamp for optimized data transfer
-    # Only notes modified after this will be sent with full data
-    prune_before = None if initial_sync else await get_last_indexed_timestamp(user_id)
-    if prune_before:
-        logger.info(
-            f"[SCAN-{scan_id}] Using pruneBefore={prune_before} to optimize data transfer"
+    with trace_operation(
+        "vector_sync.scan_user_documents",
+        attributes={
+            "vector_sync.operation": "scan",
+            "vector_sync.user_id": user_id,
+            "vector_sync.initial_sync": initial_sync,
+            "vector_sync.scan_id": scan_id,
+        },
+    ):
+        # Calculate prune timestamp for optimized data transfer
+        # Only notes modified after this will be sent with full data
+        prune_before = (
+            None if initial_sync else await get_last_indexed_timestamp(user_id)
+        )
+        if prune_before:
+            logger.info(
+                f"[SCAN-{scan_id}] Using pruneBefore={prune_before} to optimize data transfer"
+            )
+
+        # Fetch all notes from Nextcloud
+        notes = [
+            note
+            async for note in nc_client.notes.get_all_notes(prune_before=prune_before)
+        ]
+        logger.info(f"[SCAN-{scan_id}] Found {len(notes)} notes for {user_id}")
+
+        if initial_sync:
+            # Send everything on first sync
+            for note in notes:
+                modified_at = note.get("modified", 0)
+                await send_stream.send(
+                    DocumentTask(
+                        user_id=user_id,
+                        doc_id=str(note["id"]),
+                        doc_type="note",
+                        operation="index",
+                        modified_at=modified_at,
+                    )
+                )
+            logger.info(f"Sent {len(notes)} documents for initial sync: {user_id}")
+            return
+
+        # Get indexed state from Qdrant
+        qdrant_client = await get_qdrant_client()
+        scroll_result = await qdrant_client.scroll(
+            collection_name=get_settings().get_collection_name(),
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    FieldCondition(key="doc_type", match=MatchValue(value="note")),
+                ]
+            ),
+            with_payload=["doc_id", "indexed_at"],
+            with_vectors=False,
+            limit=10000,
         )
 
-    # Fetch all notes from Nextcloud
-    notes = [
-        note async for note in nc_client.notes.get_all_notes(prune_before=prune_before)
-    ]
-    logger.info(f"[SCAN-{scan_id}] Found {len(notes)} notes for {user_id}")
+        indexed_docs = {
+            point.payload["doc_id"]: point.payload["indexed_at"]
+            for point in scroll_result[0]
+        }
 
-    if initial_sync:
-        # Send everything on first sync
+        logger.debug(f"Found {len(indexed_docs)} indexed documents in Qdrant")
+
+        # Compare and queue changes
+        queued = 0
+        nextcloud_doc_ids = {str(note["id"]) for note in notes}
+
         for note in notes:
+            doc_id = str(note["id"])
+            indexed_at = indexed_docs.get(doc_id)
             modified_at = note.get("modified", 0)
-            await send_stream.send(
-                DocumentTask(
-                    user_id=user_id,
-                    doc_id=str(note["id"]),
-                    doc_type="note",
-                    operation="index",
-                    modified_at=modified_at,
-                )
-            )
-        logger.info(f"Sent {len(notes)} documents for initial sync: {user_id}")
-        return
 
-    # Get indexed state from Qdrant
-    qdrant_client = await get_qdrant_client()
-    scroll_result = await qdrant_client.scroll(
-        collection_name=get_settings().get_collection_name(),
-        scroll_filter=Filter(
-            must=[
-                FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-                FieldCondition(key="doc_type", match=MatchValue(value="note")),
-            ]
-        ),
-        with_payload=["doc_id", "indexed_at"],
-        with_vectors=False,
-        limit=10000,
-    )
-
-    indexed_docs = {
-        point.payload["doc_id"]: point.payload["indexed_at"]
-        for point in scroll_result[0]
-    }
-
-    logger.debug(f"Found {len(indexed_docs)} indexed documents in Qdrant")
-
-    # Compare and queue changes
-    queued = 0
-    nextcloud_doc_ids = {str(note["id"]) for note in notes}
-
-    for note in notes:
-        doc_id = str(note["id"])
-        indexed_at = indexed_docs.get(doc_id)
-        modified_at = note.get("modified", 0)
-
-        # If document reappeared, remove from potentially_deleted
-        doc_key = (user_id, doc_id)
-        if doc_key in _potentially_deleted:
-            logger.debug(
-                f"Document {doc_id} reappeared, removing from deletion grace period"
-            )
-            del _potentially_deleted[doc_key]
-
-        # Send if never indexed or modified since last index
-        if indexed_at is None or modified_at > indexed_at:
-            await send_stream.send(
-                DocumentTask(
-                    user_id=user_id,
-                    doc_id=doc_id,
-                    doc_type="note",
-                    operation="index",
-                    modified_at=modified_at,
-                )
-            )
-            queued += 1
-
-    # Check for deleted documents (in Qdrant but not in Nextcloud)
-    # Use grace period: only delete after 2 consecutive scans confirm absence
-    settings = get_settings()
-    grace_period = settings.vector_sync_scan_interval * 1.5  # Allow 1.5 scan intervals
-    current_time = time.time()
-
-    for doc_id in indexed_docs:
-        if doc_id not in nextcloud_doc_ids:
+            # If document reappeared, remove from potentially_deleted
             doc_key = (user_id, doc_id)
-
             if doc_key in _potentially_deleted:
-                # Already marked as potentially deleted, check if grace period elapsed
-                first_missing_time = _potentially_deleted[doc_key]
-                time_missing = current_time - first_missing_time
-
-                if time_missing >= grace_period:
-                    # Grace period elapsed, send for deletion
-                    logger.info(
-                        f"Document {doc_id} missing for {time_missing:.1f}s "
-                        f"(>{grace_period:.1f}s grace period), sending deletion"
-                    )
-                    await send_stream.send(
-                        DocumentTask(
-                            user_id=user_id,
-                            doc_id=doc_id,
-                            doc_type="note",
-                            operation="delete",
-                            modified_at=0,
-                        )
-                    )
-                    queued += 1
-                    # Remove from tracking after sending deletion
-                    del _potentially_deleted[doc_key]
-                else:
-                    logger.debug(
-                        f"Document {doc_id} still missing "
-                        f"({time_missing:.1f}s/{grace_period:.1f}s grace period)"
-                    )
-            else:
-                # First time missing, add to grace period tracking
                 logger.debug(
-                    f"Document {doc_id} missing for first time, starting grace period"
+                    f"Document {doc_id} reappeared, removing from deletion grace period"
                 )
-                _potentially_deleted[doc_key] = current_time
+                del _potentially_deleted[doc_key]
 
-    if queued > 0:
-        logger.info(f"Sent {queued} documents for incremental sync: {user_id}")
-    else:
-        logger.debug(f"No changes detected for {user_id}")
+            # Send if never indexed or modified since last index
+            if indexed_at is None or modified_at > indexed_at:
+                await send_stream.send(
+                    DocumentTask(
+                        user_id=user_id,
+                        doc_id=doc_id,
+                        doc_type="note",
+                        operation="index",
+                        modified_at=modified_at,
+                    )
+                )
+                queued += 1
+
+        # Check for deleted documents (in Qdrant but not in Nextcloud)
+        # Use grace period: only delete after 2 consecutive scans confirm absence
+        settings = get_settings()
+        grace_period = (
+            settings.vector_sync_scan_interval * 1.5
+        )  # Allow 1.5 scan intervals
+        current_time = time.time()
+
+        for doc_id in indexed_docs:
+            if doc_id not in nextcloud_doc_ids:
+                doc_key = (user_id, doc_id)
+
+                if doc_key in _potentially_deleted:
+                    # Already marked as potentially deleted, check if grace period elapsed
+                    first_missing_time = _potentially_deleted[doc_key]
+                    time_missing = current_time - first_missing_time
+
+                    if time_missing >= grace_period:
+                        # Grace period elapsed, send for deletion
+                        logger.info(
+                            f"Document {doc_id} missing for {time_missing:.1f}s "
+                            f"(>{grace_period:.1f}s grace period), sending deletion"
+                        )
+                        await send_stream.send(
+                            DocumentTask(
+                                user_id=user_id,
+                                doc_id=doc_id,
+                                doc_type="note",
+                                operation="delete",
+                                modified_at=0,
+                            )
+                        )
+                        queued += 1
+                        # Remove from tracking after sending deletion
+                        del _potentially_deleted[doc_key]
+                    else:
+                        logger.debug(
+                            f"Document {doc_id} still missing "
+                            f"({time_missing:.1f}s/{grace_period:.1f}s grace period)"
+                        )
+                else:
+                    # First time missing, add to grace period tracking
+                    logger.debug(
+                        f"Document {doc_id} missing for first time, starting grace period"
+                    )
+                    _potentially_deleted[doc_key] = current_time
+
+        if queued > 0:
+            logger.info(f"Sent {queued} documents for incremental sync: {user_id}")
+        else:
+            logger.debug(f"No changes detected for {user_id}")
