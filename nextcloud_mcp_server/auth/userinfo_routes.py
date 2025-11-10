@@ -43,14 +43,17 @@ async def _get_processing_status(request: Request) -> dict[str, Any] | None:
         return None
 
     try:
-        # Get document queue from app state
-        document_queue = getattr(request.app.state, "document_queue", None)
-        if document_queue is None:
-            logger.debug("document_queue not available in app state")
+        # Get document receive stream from app state
+        document_receive_stream = getattr(
+            request.app.state, "document_receive_stream", None
+        )
+        if document_receive_stream is None:
+            logger.debug("document_receive_stream not available in app state")
             return None
 
-        # Get pending count from queue
-        pending_count = document_queue.qsize()
+        # Get pending count from stream statistics
+        stats = document_receive_stream.statistics()
+        pending_count = stats.current_buffer_used
 
         # Get Qdrant client and query indexed count
         indexed_count = 0
@@ -63,7 +66,7 @@ async def _get_processing_status(request: Request) -> dict[str, Any] | None:
 
             # Count documents in collection
             count_result = await qdrant_client.count(
-                collection_name=settings.qdrant_collection
+                collection_name=settings.get_collection_name()
             )
             indexed_count = count_result.count
 

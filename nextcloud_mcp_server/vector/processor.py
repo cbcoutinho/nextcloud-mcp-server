@@ -100,7 +100,7 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
     # Handle deletion
     if doc_task.operation == "delete":
         await qdrant_client.delete(
-            collection_name=settings.qdrant_collection,
+            collection_name=settings.get_collection_name(),
             points_selector=Filter(
                 must=[
                     FieldCondition(
@@ -209,7 +209,7 @@ async def _index_document(
 
     # Upsert to Qdrant
     await qdrant_client.upsert(
-        collection_name=settings.qdrant_collection,
+        collection_name=settings.get_collection_name(),
         points=points,
         wait=True,
     )

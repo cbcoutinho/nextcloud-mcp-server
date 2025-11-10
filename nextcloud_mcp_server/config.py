@@ -209,6 +209,46 @@ class Settings:
                 "API key is only relevant for network mode and will be ignored."
             )
 
+    def get_collection_name(self) -> str:
+        """
+        Get Qdrant collection name.
+
+        Auto-generates from deployment ID + model name unless explicitly set.
+        Deployment ID uses OTEL_SERVICE_NAME if configured, otherwise hostname.
+
+        This enables:
+        - Safe embedding model switching (new model → new collection)
+        - Multi-server deployments (unique deployment IDs)
+        - Clear collection naming (shows deployment and model)
+
+        Format: {deployment-id}-{model-name}
+
+        Examples:
+            - "my-deployment-nomic-embed-text" (OTEL_SERVICE_NAME set)
+            - "mcp-container-all-minilm" (hostname fallback)
+
+        Returns:
+            Collection name string
+        """
+        import socket
+
+        # Use explicit override if user configured non-default value
+        if self.qdrant_collection != "nextcloud_content":
+            return self.qdrant_collection
+
+        # Determine deployment ID (OTEL service name or hostname fallback)
+        if self.otel_service_name != "nextcloud-mcp-server":  # Non-default
+            deployment_id = self.otel_service_name
+        else:
+            # Fallback to hostname for simple Docker deployments without OTEL config
+            deployment_id = socket.gethostname()
+
+        # Sanitize deployment ID and model name
+        deployment_id = deployment_id.lower().replace(" ", "-").replace("_", "-")
+        model_name = self.ollama_embedding_model.replace("/", "-").replace(":", "-")
+
+        return f"{deployment_id}-{model_name}"
+
 
 def get_settings() -> Settings:
     """Get application settings from environment variables.

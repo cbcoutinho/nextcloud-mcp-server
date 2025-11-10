@@ -178,6 +178,111 @@ VECTOR_SYNC_ENABLED=true
 - Requires separate Qdrant service
 - More complex deployment
 
+### Qdrant Collection Naming
+
+Collection names are automatically generated to include the embedding model, ensuring safe model switching and preventing dimension mismatches.
+
+#### Auto-Generated Naming (Default)
+
+**Format:** `{deployment-id}-{model-name}`
+
+**Components:**
+- **Deployment ID:** `OTEL_SERVICE_NAME` (if configured) or `hostname` (fallback)
+- **Model name:** `OLLAMA_EMBEDDING_MODEL`
+
+**Examples:**
+
+```bash
+# With OTEL service name configured
+OTEL_SERVICE_NAME=my-mcp-server
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+# → Collection: "my-mcp-server-nomic-embed-text"
+
+# Simple Docker deployment (OTEL not configured)
+# hostname=mcp-container
+OLLAMA_EMBEDDING_MODEL=all-minilm
+# → Collection: "mcp-container-all-minilm"
+```
+
+#### Switching Embedding Models
+
+When you change `OLLAMA_EMBEDDING_MODEL`, a new collection is automatically created:
+
+```bash
+# Initial setup
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+# Collection: "my-server-nomic-embed-text" (768 dimensions)
+
+# Change model
+OLLAMA_EMBEDDING_MODEL=all-minilm
+# Collection: "my-server-all-minilm" (384 dimensions)
+# → New collection created, full re-embedding occurs
+```
+
+**Important:**
+- **Collections are mutually exclusive** - vectors cannot be shared between different embedding models
+- **Switching models requires re-embedding** all documents (may take time for large note collections)
+- **Old collection remains** in Qdrant and can be deleted manually if no longer needed
+
+#### Explicit Override
+
+Set `QDRANT_COLLECTION` to use a specific collection name:
+
+```bash
+QDRANT_COLLECTION=my-custom-collection  # Bypasses auto-generation
+```
+
+**Use cases:**
+- Backward compatibility with existing deployments
+- Custom naming schemes
+- Sharing a collection across deployments (advanced)
+
+#### Multi-Server Deployments
+
+Each server should have a unique deployment ID to avoid collection collisions:
+
+```bash
+# Server 1 (Production)
+OTEL_SERVICE_NAME=mcp-prod
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+# → Collection: "mcp-prod-nomic-embed-text"
+
+# Server 2 (Staging)
+OTEL_SERVICE_NAME=mcp-staging
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+# → Collection: "mcp-staging-nomic-embed-text"
+
+# Server 3 (Different model)
+OTEL_SERVICE_NAME=mcp-experimental
+OLLAMA_EMBEDDING_MODEL=bge-large
+# → Collection: "mcp-experimental-bge-large"
+```
+
+**Benefits:**
+- Multiple MCP servers can share one Qdrant instance safely
+- No naming collisions between deployments
+- Clear collection ownership (can see which deployment and model)
+
+#### Dimension Validation
+
+The server validates collection dimensions on startup:
+
+```
+Dimension mismatch for collection 'my-server-nomic-embed-text':
+  Expected: 384 (from embedding model 'all-minilm')
+  Found: 768
+This usually means you changed the embedding model.
+Solutions:
+  1. Delete the old collection: Collection will be recreated with new dimensions
+  2. Set QDRANT_COLLECTION to use a different collection name
+  3. Revert OLLAMA_EMBEDDING_MODEL to the original model
+```
+
+**What this prevents:**
+- Runtime errors from dimension mismatches
+- Data corruption in Qdrant
+- Confusing error messages during indexing
+
 ### Vector Sync Configuration
 
 Control background indexing behavior:
