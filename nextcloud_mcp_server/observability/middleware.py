@@ -66,22 +66,40 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         # Record start time
         start_time = time.time()
 
-        try:
-            # Create span for request (OpenTelemetry auto-instrumentation will create parent span)
-            with trace_operation(
-                f"HTTP {method} {endpoint}",
-                attributes={
-                    "http.method": method,
-                    "http.path": path,
-                    "http.scheme": request.url.scheme,
-                    "http.host": request.url.hostname,
-                },
-            ):
-                # Process request
-                response = await call_next(request)
+        # Skip tracing for health/metrics endpoints to reduce noise
+        should_trace = not (path.startswith("/health/") or path == "/metrics")
 
-                # Add response status to span
-                add_span_attribute("http.status_code", response.status_code)
+        try:
+            if should_trace:
+                # Create span for request (OpenTelemetry auto-instrumentation will create parent span)
+                with trace_operation(
+                    f"HTTP {method} {endpoint}",
+                    attributes={
+                        "http.method": method,
+                        "http.path": path,
+                        "http.scheme": request.url.scheme,
+                        "http.host": request.url.hostname,
+                    },
+                ):
+                    # Process request
+                    response = await call_next(request)
+
+                    # Add response status to span
+                    add_span_attribute("http.status_code", response.status_code)
+
+                    # Record metrics
+                    duration = time.time() - start_time
+                    self._record_request_metrics(
+                        method=method,
+                        endpoint=endpoint,
+                        status_code=response.status_code,
+                        duration=duration,
+                    )
+
+                    return response
+            else:
+                # No tracing for health/metrics endpoints, but still record metrics
+                response = await call_next(request)
 
                 # Record metrics
                 duration = time.time() - start_time
