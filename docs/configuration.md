@@ -178,6 +178,111 @@ VECTOR_SYNC_ENABLED=true
 - Requires separate Qdrant service
 - More complex deployment
 
+### Qdrant Collection Naming
+
+Collection names are automatically generated to include the embedding model, ensuring safe model switching and preventing dimension mismatches.
+
+#### Auto-Generated Naming (Default)
+
+**Format:** `{deployment-id}-{model-name}`
+
+**Components:**
+- **Deployment ID:** `OTEL_SERVICE_NAME` (if configured) or `hostname` (fallback)
+- **Model name:** `OLLAMA_EMBEDDING_MODEL`
+
+**Examples:**
+
+```bash
+# With OTEL service name configured
+OTEL_SERVICE_NAME=my-mcp-server
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+# → Collection: "my-mcp-server-nomic-embed-text"
+
+# Simple Docker deployment (OTEL not configured)
+# hostname=mcp-container
+OLLAMA_EMBEDDING_MODEL=all-minilm
+# → Collection: "mcp-container-all-minilm"
+```
+
+#### Switching Embedding Models
+
+When you change `OLLAMA_EMBEDDING_MODEL`, a new collection is automatically created:
+
+```bash
+# Initial setup
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+# Collection: "my-server-nomic-embed-text" (768 dimensions)
+
+# Change model
+OLLAMA_EMBEDDING_MODEL=all-minilm
+# Collection: "my-server-all-minilm" (384 dimensions)
+# → New collection created, full re-embedding occurs
+```
+
+**Important:**
+- **Collections are mutually exclusive** - vectors cannot be shared between different embedding models
+- **Switching models requires re-embedding** all documents (may take time for large note collections)
+- **Old collection remains** in Qdrant and can be deleted manually if no longer needed
+
+#### Explicit Override
+
+Set `QDRANT_COLLECTION` to use a specific collection name:
+
+```bash
+QDRANT_COLLECTION=my-custom-collection  # Bypasses auto-generation
+```
+
+**Use cases:**
+- Backward compatibility with existing deployments
+- Custom naming schemes
+- Sharing a collection across deployments (advanced)
+
+#### Multi-Server Deployments
+
+Each server should have a unique deployment ID to avoid collection collisions:
+
+```bash
+# Server 1 (Production)
+OTEL_SERVICE_NAME=mcp-prod
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+# → Collection: "mcp-prod-nomic-embed-text"
+
+# Server 2 (Staging)
+OTEL_SERVICE_NAME=mcp-staging
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+# → Collection: "mcp-staging-nomic-embed-text"
+
+# Server 3 (Different model)
+OTEL_SERVICE_NAME=mcp-experimental
+OLLAMA_EMBEDDING_MODEL=bge-large
+# → Collection: "mcp-experimental-bge-large"
+```
+
+**Benefits:**
+- Multiple MCP servers can share one Qdrant instance safely
+- No naming collisions between deployments
+- Clear collection ownership (can see which deployment and model)
+
+#### Dimension Validation
+
+The server validates collection dimensions on startup:
+
+```
+Dimension mismatch for collection 'my-server-nomic-embed-text':
+  Expected: 384 (from embedding model 'all-minilm')
+  Found: 768
+This usually means you changed the embedding model.
+Solutions:
+  1. Delete the old collection: Collection will be recreated with new dimensions
+  2. Set QDRANT_COLLECTION to use a different collection name
+  3. Revert OLLAMA_EMBEDDING_MODEL to the original model
+```
+
+**What this prevents:**
+- Runtime errors from dimension mismatches
+- Data corruption in Qdrant
+- Confusing error messages during indexing
+
 ### Vector Sync Configuration
 
 Control background indexing behavior:
@@ -188,6 +293,10 @@ VECTOR_SYNC_ENABLED=true              # Enable background indexing
 VECTOR_SYNC_SCAN_INTERVAL=300         # Scan interval in seconds (default: 5 minutes)
 VECTOR_SYNC_PROCESSOR_WORKERS=3       # Concurrent indexing workers (default: 3)
 VECTOR_SYNC_QUEUE_MAX_SIZE=10000      # Max queued documents (default: 10000)
+
+# Document chunking settings (for vector embeddings)
+DOCUMENT_CHUNK_SIZE=512               # Words per chunk (default: 512)
+DOCUMENT_CHUNK_OVERLAP=50             # Overlapping words between chunks (default: 50)
 ```
 
 ### Embedding Service Configuration
@@ -208,6 +317,54 @@ OLLAMA_VERIFY_SSL=true                   # Verify SSL certificates
 
 If `OLLAMA_BASE_URL` is not set, the server uses a simple random embedding provider for testing. This is **not suitable for production** as it generates random embeddings with no semantic meaning.
 
+### Document Chunking Configuration
+
+The server chunks documents before embedding to handle documents larger than the embedding model's context window. Chunk size and overlap can be tuned based on your embedding model and content type.
+
+#### Choosing Chunk Size
+
+**Smaller chunks (256-384 words)**:
+- More precise matching
+- Less context per chunk
+- Better for finding specific information
+- Higher storage requirements (more vectors)
+
+**Larger chunks (768-1024 words)**:
+- More context per chunk
+- Less precise matching
+- Better for understanding broader topics
+- Lower storage requirements (fewer vectors)
+
+**Default (512 words)**:
+- Balanced approach suitable for most use cases
+- Works well with typical note lengths
+- Good compromise between precision and context
+
+#### Choosing Overlap
+
+Overlap preserves context across chunk boundaries. Recommended settings:
+
+- **10-20% of chunk size** (e.g., 50-100 words for 512-word chunks)
+- **Too small** (<10%): May lose context at boundaries
+- **Too large** (>20%): Redundant storage, diminishing returns
+
+**Examples**:
+```dotenv
+# Precise matching for short notes
+DOCUMENT_CHUNK_SIZE=256
+DOCUMENT_CHUNK_OVERLAP=25
+
+# Default balanced configuration
+DOCUMENT_CHUNK_SIZE=512
+DOCUMENT_CHUNK_OVERLAP=50
+
+# More context for long documents
+DOCUMENT_CHUNK_SIZE=1024
+DOCUMENT_CHUNK_OVERLAP=100
+```
+
+**Important**: Changing chunk size requires re-embedding all documents. The collection naming strategy (see "Qdrant Collection Naming" above) helps manage this by creating separate collections for different configurations.
+
 ### Environment Variables Reference
 
 | Variable | Required | Default | Description |
@@ -223,6 +380,8 @@ If `OLLAMA_BASE_URL` is not set, the server uses a simple random embedding provi
 | `OLLAMA_BASE_URL` | ⚠️ Optional | - | Ollama API endpoint for embeddings |
 | `OLLAMA_EMBEDDING_MODEL` | ⚠️ Optional | `nomic-embed-text` | Embedding model to use |
 | `OLLAMA_VERIFY_SSL` | ⚠️ Optional | `true` | Verify SSL certificates |
+| `DOCUMENT_CHUNK_SIZE` | ⚠️ Optional | `512` | Words per chunk for document embedding |
+| `DOCUMENT_CHUNK_OVERLAP` | ⚠️ Optional | `50` | Overlapping words between chunks (must be < chunk size) |
 
 ### Docker Compose Example
 

@@ -59,30 +59,57 @@ async def get_qdrant_client() -> AsyncQdrantClient:
             logger.warning("No Qdrant mode configured, defaulting to :memory:")
             _qdrant_client = AsyncQdrantClient(":memory:")
 
-        # Ensure collection exists
-        collection_name = settings.qdrant_collection
+        # Get collection name (auto-generated from deployment ID + model)
+        collection_name = settings.get_collection_name()
 
         # Import here to avoid circular dependency
         from nextcloud_mcp_server.embedding import get_embedding_service
 
         embedding_service = get_embedding_service()
-        dimension = embedding_service.get_dimension()
+        expected_dimension = embedding_service.get_dimension()
 
         try:
-            await _qdrant_client.get_collection(collection_name)
-            logger.info(f"Using existing Qdrant collection: {collection_name}")
-        except Exception:
-            # Collection doesn't exist, create it
+            # Get existing collection
+            collection_info = await _qdrant_client.get_collection(collection_name)
+            actual_dimension = collection_info.config.params.vectors.size
+
+            # Validate dimension matches
+            if actual_dimension != expected_dimension:
+                raise ValueError(
+                    f"Dimension mismatch for collection '{collection_name}':\n"
+                    f"  Expected: {expected_dimension} (from embedding model '{settings.ollama_embedding_model}')\n"
+                    f"  Found: {actual_dimension}\n"
+                    f"This usually means you changed the embedding model.\n"
+                    f"Solutions:\n"
+                    f"  1. Delete the old collection: Collection will be recreated with new dimensions\n"
+                    f"  2. Set QDRANT_COLLECTION to use a different collection name\n"
+                    f"  3. Revert OLLAMA_EMBEDDING_MODEL to the original model"
+                )
+
+            logger.info(
+                f"Using existing Qdrant collection: {collection_name} "
+                f"(dimension={actual_dimension}, model={settings.ollama_embedding_model})"
+            )
+
+        except Exception as e:
+            # Check if it's a dimension mismatch error (re-raise it)
+            if isinstance(e, ValueError) and "Dimension mismatch" in str(e):
+                raise
+
+            # Collection doesn't exist or other error, create it
             await _qdrant_client.create_collection(
                 collection_name=collection_name,
                 vectors_config=VectorParams(
-                    size=dimension,
+                    size=expected_dimension,
                     distance=Distance.COSINE,
                 ),
             )
             logger.info(
-                f"Created Qdrant collection: {collection_name} "
-                f"(dimension={dimension}, distance=COSINE)"
+                f"Created Qdrant collection: {collection_name}\n"
+                f"  Dimension: {expected_dimension}\n"
+                f"  Model: {settings.ollama_embedding_model}\n"
+                f"  Distance: COSINE\n"
+                f"Background sync will index all documents with this embedding model."
             )
 
     return _qdrant_client

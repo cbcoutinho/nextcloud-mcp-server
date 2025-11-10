@@ -158,6 +158,11 @@ spec:
             - name: VECTOR_SYNC_QUEUE_MAX_SIZE
               value: {{ .Values.vectorSync.queueMaxSize | quote }}
             {{- end }}
+            # Document Chunking (always set, used by vector sync processor)
+            - name: DOCUMENT_CHUNK_SIZE
+              value: {{ .Values.documentChunking.chunkSize | quote }}
+            - name: DOCUMENT_CHUNK_OVERLAP
+              value: {{ .Values.documentChunking.chunkOverlap | quote }}
             # Qdrant Vector Database
             {{- if eq .Values.qdrant.mode "network" }}
             # Network mode: Use dedicated Qdrant service

@@ -174,6 +174,10 @@ class Settings:
     ollama_embedding_model: str = "nomic-embed-text"
     ollama_verify_ssl: bool = True
 
+    # Document chunking settings (for vector embeddings)
+    document_chunk_size: int = 512  # Words per chunk
+    document_chunk_overlap: int = 50  # Overlapping words between chunks
+
     # Observability settings
     metrics_enabled: bool = True
     metrics_port: int = 9090
@@ -208,6 +212,65 @@ class Settings:
                 "QDRANT_API_KEY is set but QDRANT_LOCATION is used (local mode). "
                 "API key is only relevant for network mode and will be ignored."
             )
+
+        # Validate chunking configuration
+        if self.document_chunk_overlap >= self.document_chunk_size:
+            raise ValueError(
+                f"DOCUMENT_CHUNK_OVERLAP ({self.document_chunk_overlap}) must be less than "
+                f"DOCUMENT_CHUNK_SIZE ({self.document_chunk_size}). "
+                f"Overlap should be 10-20% of chunk size for optimal results."
+            )
+
+        if self.document_chunk_size < 100:
+            logger.warning(
+                f"DOCUMENT_CHUNK_SIZE is set to {self.document_chunk_size} words, which is quite small. "
+                f"Smaller chunks may lose context. Consider using at least 256 words."
+            )
+
+        if self.document_chunk_overlap < 0:
+            raise ValueError(
+                f"DOCUMENT_CHUNK_OVERLAP ({self.document_chunk_overlap}) cannot be negative."
+            )
+
+    def get_collection_name(self) -> str:
+        """
+        Get Qdrant collection name.
+
+        Auto-generates from deployment ID + model name unless explicitly set.
+        Deployment ID uses OTEL_SERVICE_NAME if configured, otherwise hostname.
+
+        This enables:
+        - Safe embedding model switching (new model → new collection)
+        - Multi-server deployments (unique deployment IDs)
+        - Clear collection naming (shows deployment and model)
+
+        Format: {deployment-id}-{model-name}
+
+        Examples:
+            - "my-deployment-nomic-embed-text" (OTEL_SERVICE_NAME set)
+            - "mcp-container-all-minilm" (hostname fallback)
+
+        Returns:
+            Collection name string
+        """
+        import socket
+
+        # Use explicit override if user configured non-default value
+        if self.qdrant_collection != "nextcloud_content":
+            return self.qdrant_collection
+
+        # Determine deployment ID (OTEL service name or hostname fallback)
+        if self.otel_service_name != "nextcloud-mcp-server":  # Non-default
+            deployment_id = self.otel_service_name
+        else:
+            # Fallback to hostname for simple Docker deployments without OTEL config
+            deployment_id = socket.gethostname()
+
+        # Sanitize deployment ID and model name
+        deployment_id = deployment_id.lower().replace(" ", "-").replace("_", "-")
+        model_name = self.ollama_embedding_model.replace("/", "-").replace(":", "-")
+
+        return f"{deployment_id}-{model_name}"
 
 
 def get_settings() -> Settings:
@@ -265,6 +328,9 @@ def get_settings() -> Settings:
         ollama_base_url=os.getenv("OLLAMA_BASE_URL"),
         ollama_embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
         ollama_verify_ssl=os.getenv("OLLAMA_VERIFY_SSL", "true").lower() == "true",
+        # Document chunking settings
+        document_chunk_size=int(os.getenv("DOCUMENT_CHUNK_SIZE", "512")),
+        document_chunk_overlap=int(os.getenv("DOCUMENT_CHUNK_OVERLAP", "50")),
         # Observability settings
         metrics_enabled=os.getenv("METRICS_ENABLED", "true").lower() == "true",
         metrics_port=int(os.getenv("METRICS_PORT", "9090")),

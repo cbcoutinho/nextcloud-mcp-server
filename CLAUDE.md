@@ -391,3 +391,7 @@ docker compose exec app php occ user_oidc:provider keycloak
 - `docs/configuration.md` - Configuration options
 - `docs/authentication.md` - Authentication modes
 - `docs/running.md` - Running the server
+
+**For additional information regarding MCP during development, see**:
+- `../../Software/modelcontextprotocol/` - MCP spec
+- `../../Software/python-sdk/` - Python MCP SDK

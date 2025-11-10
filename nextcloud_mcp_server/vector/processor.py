@@ -100,7 +100,7 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
     # Handle deletion
     if doc_task.operation == "delete":
         await qdrant_client.delete(
-            collection_name=settings.qdrant_collection,
+            collection_name=settings.get_collection_name(),
             points_selector=Filter(
                 must=[
                     FieldCondition(
@@ -170,8 +170,11 @@ async def _index_document(
     else:
         raise ValueError(f"Unsupported doc_type: {doc_task.doc_type}")
 
-    # Tokenize and chunk
-    chunker = DocumentChunker(chunk_size=512, overlap=50)
+    # Tokenize and chunk (using configured chunk size and overlap)
+    chunker = DocumentChunker(
+        chunk_size=settings.document_chunk_size,
+        overlap=settings.document_chunk_overlap,
+    )
     chunks = chunker.chunk_text(content)
 
     # Generate embeddings (I/O bound - external API call)
@@ -209,7 +212,7 @@ async def _index_document(
 
     # Upsert to Qdrant
     await qdrant_client.upsert(
-        collection_name=settings.qdrant_collection,
+        collection_name=settings.get_collection_name(),
         points=points,
         wait=True,
     )

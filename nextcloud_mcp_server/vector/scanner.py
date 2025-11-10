@@ -96,7 +96,7 @@ async def scan_user_documents(
         nc_client: Authenticated Nextcloud client
         initial_sync: If True, send all documents (first-time sync)
     """
-    logger.info(f"Scanning documents for user: {user_id}")
+    logger.debug(f"Scanning documents for user: {user_id}")
 
     # Fetch all notes from Nextcloud
     notes = [note async for note in nc_client.notes.get_all_notes()]
@@ -127,7 +127,7 @@ async def scan_user_documents(
     # Get indexed state from Qdrant
     qdrant_client = await get_qdrant_client()
     scroll_result = await qdrant_client.scroll(
-        collection_name=get_settings().qdrant_collection,
+        collection_name=get_settings().get_collection_name(),
         scroll_filter=Filter(
             must=[
                 FieldCondition(key="user_id", match=MatchValue(value=user_id)),

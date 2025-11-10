@@ -68,17 +68,25 @@ def configure_semantic_tools(mcp: FastMCP):
         client = await get_client(ctx)
         username = client.username
 
+        logger.info(
+            f"Semantic search: query='{query}', user={username}, "
+            f"limit={limit}, score_threshold={score_threshold}"
+        )
+
         try:
             # Generate embedding for query
             embedding_service = get_embedding_service()
             query_embedding = await embedding_service.embed(query)
+            logger.debug(
+                f"Generated embedding for query (dimension={len(query_embedding)})"
+            )
 
             # Search Qdrant with user filtering
             # Note: Currently only searching notes (doc_type="note")
             # Future: Remove doc_type filter to search all apps
             qdrant_client = await get_qdrant_client()
             search_response = await qdrant_client.query_points(
-                collection_name=settings.qdrant_collection,
+                collection_name=settings.get_collection_name(),
                 query=query_embedding,
                 query_filter=Filter(
                     must=[
@@ -97,6 +105,15 @@ def configure_semantic_tools(mcp: FastMCP):
                 with_payload=True,
                 with_vectors=False,  # Don't return vectors to save bandwidth
             )
+
+            logger.info(
+                f"Qdrant returned {len(search_response.points)} results "
+                f"(before deduplication and access verification)"
+            )
+            if search_response.points:
+                # Log top 3 scores to help with threshold tuning
+                top_scores = [p.score for p in search_response.points[:3]]
+                logger.debug(f"Top 3 similarity scores: {top_scores}")
 
             # Deduplicate by document ID (multiple chunks per document)
             seen_doc_ids = set()
@@ -137,9 +154,14 @@ def configure_semantic_tools(mcp: FastMCP):
                     except HTTPStatusError as e:
                         if e.response.status_code == 403:
                             # User lost access, skip this document
+                            logger.debug(f"Skipping note {doc_id}: access denied (403)")
                             continue
                         elif e.response.status_code == 404:
                             # Document was deleted but not yet removed from vector DB
+                            logger.debug(
+                                f"Skipping note {doc_id}: not found (404), "
+                                f"likely deleted after indexing"
+                            )
                             continue
                         else:
                             # Log other errors but continue processing
@@ -147,6 +169,16 @@ def configure_semantic_tools(mcp: FastMCP):
                                 f"Error verifying access to note {doc_id}: {e.response.status_code}"
                             )
                             continue
+
+            logger.info(
+                f"Returning {len(results)} results after deduplication and access verification"
+            )
+            if results:
+                result_details = [
+                    f"note_{r.id} (score={r.score:.3f}, title='{r.title}')"
+                    for r in results[:5]  # Show top 5
+                ]
+                logger.debug(f"Top results: {', '.join(result_details)}")
 
             return SemanticSearchResponse(
                 results=results,
@@ -259,7 +291,47 @@ def configure_semantic_tools(mcp: FastMCP):
                 success=True,
             )
 
-        # 3. Construct context from retrieved documents
+        # 3. Check if client supports sampling
+        from mcp.types import ClientCapabilities, SamplingCapability
+
+        client_has_sampling = ctx.session.check_client_capability(
+            ClientCapabilities(sampling=SamplingCapability())
+        )
+
+        # Log capability check result for debugging
+        logger.info(
+            f"Sampling capability check: client_has_sampling={client_has_sampling}, "
+            f"query='{query}'"
+        )
+        if hasattr(ctx.session, "_client_params") and ctx.session._client_params:
+            client_caps = ctx.session._client_params.capabilities
+            logger.debug(
+                f"Client advertised capabilities: "
+                f"roots={client_caps.roots is not None}, "
+                f"sampling={client_caps.sampling is not None}, "
+                f"experimental={client_caps.experimental is not None}"
+            )
+
+        if not client_has_sampling:
+            logger.info(
+                f"Client does not support sampling (query: '{query}'), "
+                f"returning {len(search_response.results)} documents"
+            )
+            return SamplingSearchResponse(
+                query=query,
+                generated_answer=(
+                    f"[Sampling not supported by client]\n\n"
+                    f"Your MCP client doesn't support answer generation. "
+                    f"Found {search_response.total_found} relevant documents. "
+                    f"Please review the sources below."
+                ),
+                sources=search_response.results,
+                total_found=search_response.total_found,
+                search_method="semantic_sampling_unsupported",
+                success=True,
+            )
+
+        # 4. Construct context from retrieved documents
         context_parts = []
         for idx, result in enumerate(search_response.results, 1):
             context_parts.append(
@@ -273,7 +345,7 @@ def configure_semantic_tools(mcp: FastMCP):
 
         context = "\n".join(context_parts)
 
-        # 4. Construct prompt - reuse user's query, add context and instructions
+        # 5. Construct prompt - reuse user's query, add context and instructions
         prompt = (
             f"{query}\n\n"
             f"Here are relevant documents from Nextcloud (notes, calendar events, deck cards, files, contacts):\n\n"
@@ -282,31 +354,35 @@ def configure_semantic_tools(mcp: FastMCP):
             f"Cite the document numbers when referencing specific information."
         )
 
-        logger.debug(
-            f"Requesting sampling for query: {query} "
-            f"({len(search_response.results)} documents retrieved)"
+        logger.info(
+            f"Initiating sampling request: query_length={len(query)}, "
+            f"documents={len(search_response.results)}, "
+            f"prompt_length={len(prompt)}, max_tokens={max_answer_tokens}"
         )
 
-        # 5. Request LLM completion via MCP sampling
-        try:
-            sampling_result = await ctx.session.create_message(
-                messages=[
-                    SamplingMessage(
-                        role="user",
-                        content=TextContent(type="text", text=prompt),
-                    )
-                ],
-                max_tokens=max_answer_tokens,
-                temperature=0.7,
-                model_preferences=ModelPreferences(
-                    hints=[ModelHint(name="claude-3-5-sonnet")],
-                    intelligencePriority=0.8,
-                    speedPriority=0.5,
-                ),
-                include_context="thisServer",
-            )
+        # 6. Request LLM completion via MCP sampling with timeout
+        import anyio
 
-            # 6. Extract answer from sampling response
+        try:
+            with anyio.fail_after(30):
+                sampling_result = await ctx.session.create_message(
+                    messages=[
+                        SamplingMessage(
+                            role="user",
+                            content=TextContent(type="text", text=prompt),
+                        )
+                    ],
+                    max_tokens=max_answer_tokens,
+                    temperature=0.7,
+                    model_preferences=ModelPreferences(
+                        hints=[ModelHint(name="claude-3-5-sonnet")],
+                        intelligencePriority=0.8,
+                        speedPriority=0.5,
+                    ),
+                    include_context="thisServer",
+                )
+
+            # 7. Extract answer from sampling response
             if sampling_result.content.type == "text":
                 generated_answer = sampling_result.content.text
             else:
@@ -318,7 +394,8 @@ def configure_semantic_tools(mcp: FastMCP):
 
             logger.info(
                 f"Sampling successful: model={sampling_result.model}, "
-                f"stop_reason={sampling_result.stopReason}"
+                f"stop_reason={sampling_result.stopReason}, "
+                f"answer_length={len(generated_answer)}"
             )
 
             return SamplingSearchResponse(
@@ -332,23 +409,78 @@ def configure_semantic_tools(mcp: FastMCP):
                 success=True,
             )
 
-        except Exception as e:
-            # Fallback: Return documents without generated answer
+        except TimeoutError:
             logger.warning(
-                f"Sampling failed ({type(e).__name__}: {e}), "
+                f"Sampling request timed out after 30 seconds for query: '{query}', "
                 f"returning search results only"
             )
+            return SamplingSearchResponse(
+                query=query,
+                generated_answer=(
+                    f"[Sampling request timed out]\n\n"
+                    f"The answer generation took too long (>30s). "
+                    f"Found {search_response.total_found} relevant documents. "
+                    f"Please review the sources below or try a simpler query."
+                ),
+                sources=search_response.results,
+                total_found=search_response.total_found,
+                search_method="semantic_sampling_timeout",
+                success=True,
+            )
+
+        except McpError as e:
+            # Expected MCP protocol errors (user rejection, unsupported, etc.)
+            error_msg = str(e)
+
+            if "rejected" in error_msg.lower() or "denied" in error_msg.lower():
+                # User explicitly declined - this is normal, not an error
+                logger.info(f"User declined sampling request for query: '{query}'")
+                search_method = "semantic_sampling_user_declined"
+                user_message = "User declined to generate an answer"
+            elif "not supported" in error_msg.lower():
+                # Client doesn't support sampling - also normal
+                logger.info(f"Sampling not supported by client for query: '{query}'")
+                search_method = "semantic_sampling_unsupported"
+                user_message = "Sampling not supported by this client"
+            else:
+                # Other MCP protocol errors
+                logger.warning(
+                    f"MCP error during sampling for query '{query}': {error_msg}"
+                )
+                search_method = "semantic_sampling_mcp_error"
+                user_message = f"Sampling unavailable: {error_msg}"
 
             return SamplingSearchResponse(
                 query=query,
                 generated_answer=(
-                    f"[Sampling unavailable: {str(e)}]\n\n"
+                    f"[{user_message}]\n\n"
                     f"Found {search_response.total_found} relevant documents. "
                     f"Please review the sources below."
                 ),
                 sources=search_response.results,
                 total_found=search_response.total_found,
-                search_method="semantic_sampling_fallback",
+                search_method=search_method,
+                success=True,
+            )
+
+        except Exception as e:
+            # Truly unexpected errors - these SHOULD have tracebacks
+            logger.error(
+                f"Unexpected error during sampling for query '{query}': "
+                f"{type(e).__name__}: {e}",
+                exc_info=True,
+            )
+
+            return SamplingSearchResponse(
+                query=query,
+                generated_answer=(
+                    f"[Unexpected error during sampling]\n\n"
+                    f"Found {search_response.total_found} relevant documents. "
+                    f"Please review the sources below."
+                ),
+                sources=search_response.results,
+                total_found=search_response.total_found,
+                search_method="semantic_sampling_error",
                 success=True,
             )
 
@@ -413,7 +545,7 @@ def configure_semantic_tools(mcp: FastMCP):
 
                 # Count documents in collection
                 count_result = await qdrant_client.count(
-                    collection_name=settings.qdrant_collection
+                    collection_name=settings.get_collection_name()
                 )
                 indexed_count = count_result.count
 

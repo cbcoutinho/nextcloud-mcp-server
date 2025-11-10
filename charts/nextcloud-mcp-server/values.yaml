@@ -314,6 +314,20 @@ vectorSync:
   # Maximum queue size for documents pending indexing
   queueMaxSize: 10000
 
+# Document Chunking Configuration
+# Controls how documents are split into chunks before embedding
+# Only relevant when vectorSync.enabled is true
+documentChunking:
+  # Number of words per chunk (default: 512)
+  # Smaller chunks (256-384): Better for precise searches, more chunks to store
+  # Medium chunks (512-768): Balanced approach (recommended for most use cases)
+  # Larger chunks (1024+): Better for context, less precise matching
+  chunkSize: 512
+  # Number of overlapping words between chunks (default: 50)
+  # Recommended: 10-20% of chunkSize for context preservation across boundaries
+  # Must be less than chunkSize
+  chunkOverlap: 50
+
 # Qdrant Vector Database Configuration
 # Three deployment modes available:
 # 1. Local In-Memory: Fast, ephemeral, zero-config (mode: "memory")

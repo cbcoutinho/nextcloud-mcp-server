@@ -88,21 +88,33 @@ services:
       - VECTOR_SYNC_SCAN_INTERVAL=10
       - VECTOR_SYNC_PROCESSOR_WORKERS=1
 
-      - LOG_FORMAT=json
+      - LOG_FORMAT=text
 
       # Qdrant configuration (three modes):
       # 1. Network mode: Set QDRANT_URL=http://qdrant:6333 (requires qdrant service)
       # 2. In-memory mode: Set QDRANT_LOCATION=:memory: (default if nothing set)
       # 3. Persistent local: Set QDRANT_LOCATION=/app/data/qdrant (stored in mcp-data volume)
-      - QDRANT_LOCATION=/app/data/qdrant
-      # - QDRANT_URL=http://qdrant:6333  # Uncomment for network mode
-      # - QDRANT_API_KEY=${QDRANT_API_KEY:-my_secret_api_key}  # Only for network mode
+      - QDRANT_LOCATION=":memory:"  # In-memory mode for CI/testing (no external service required)
+      #- QDRANT_URL=http://qdrant:6333  # Uncomment for network mode
+      #- QDRANT_API_KEY=${QDRANT_API_KEY:-my_secret_api_key}  # Only for network mode
+
+      # Collection naming: Auto-generated as {deployment-id}-{model-name}
+      # - Deployment ID: OTEL_SERVICE_NAME (if set) or hostname (fallback)
+      # - Model name: OLLAMA_EMBEDDING_MODEL
+      # - Example: "nextcloud-mcp-server-nomic-embed-text"
+      # - Changing models creates new collection (requires re-embedding)
+      # - Set QDRANT_COLLECTION to override auto-generation:
       - QDRANT_COLLECTION=nextcloud_content
 
       # Ollama configuration (optional - uses SimpleEmbeddingProvider if not set)
-      # - OLLAMA_BASE_URL=http://your-ollama-endpoint:port
-      # - OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+      # - OLLAMA_BASE_URL=https://ollama.internal.coutinho.io:443
+      # - OLLAMA_EMBEDDING_MODEL=nomic-embed-text  # Changing this creates new collection
       # - OLLAMA_VERIFY_SSL=false
+
+      # Document chunking configuration (for vector embeddings)
+      # Tune these based on your embedding model and content type
+      # - DOCUMENT_CHUNK_SIZE=512      # Words per chunk (default: 512)
+      # - DOCUMENT_CHUNK_OVERLAP=50    # Overlapping words (default: 50, recommended: 10-20% of chunk size)
 
   mcp-oauth:
     build: .
@@ -207,7 +219,7 @@ services:
       - keycloak-oauth-storage:/app/.oauth
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.15.5
     restart: always
     ports:
       - 127.0.0.1:6333:6333  # REST API
