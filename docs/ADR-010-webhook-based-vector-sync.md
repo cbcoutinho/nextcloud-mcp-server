@@ -412,9 +412,241 @@ async def test_webhook_integration_mocked_delivery():
 
 **Deduplication Window**: Track recently processed documents (last 5 minutes) to avoid redundant work when webhooks and scanner both detect the same change. The processor can check a simple in-memory cache before fetching document content.
 
+## Appendix A: Manual Webhook Testing Results (2025-01-11)
+
+### Testing Summary
+
+Manual validation of Nextcloud webhook schemas and behavior confirmed that webhooks work as documented with several important findings for implementation. **5 out of 6** webhook types were successfully captured and validated.
+
+**Test Environment:**
+- Nextcloud 30+ (Docker compose)
+- webhook_listeners app enabled
+- Test endpoint: `http://mcp:8000/webhooks/nextcloud`
+- Background webhook worker running (60s timeout)
+
+**Results:**
+- ✅ NodeCreatedEvent (file creation)
+- ✅ NodeWrittenEvent (file update)
+- ✅ NodeDeletedEvent (file deletion)
+- ✅ CalendarObjectCreatedEvent
+- ✅ CalendarObjectUpdatedEvent
+- ❌ CalendarObjectDeletedEvent (webhook did not fire - potential Nextcloud bug)
+
+### Critical Implementation Findings
+
+#### 1. Deletion Events Lack `node.id` Field
+
+**Finding:** `NodeDeletedEvent` payloads do NOT include `event.node.id`, only `event.node.path`.
+
+**Example:**
+```json
+{
+  "user": {"uid": "admin", "displayName": "admin"},
+  "time": 1762851093,
+  "event": {
+    "class": "OCP\\Files\\Events\\Node\\NodeDeletedEvent",
+    "node": {
+      "path": "/admin/files/Notes/Webhooks/Webhook Test Note.md"
+      // NOTE: No "id" field present
+    }
+  }
+}
+```
+
+**Impact:** The event parser in this ADR's example code assumes `event_data["node"]["id"]` exists for all file events. This will fail for deletions.
+
+**Required Fix:** Check for `id` existence and fall back to path-based identification:
+
+```python
+def extract_document_task(event_class: str, payload: dict) -> DocumentTask | None:
+    user_id = payload["user"]["uid"]
+    event_data = payload["event"]
+
+    # File deletion events - NO node.id field
+    if "NodeDeletedEvent" in event_class:
+        path = event_data["node"]["path"]
+        if not path.endswith(".md"):
+            return None
+        # Use path-based ID since node.id is unavailable
+        return DocumentTask(
+            user_id=user_id,
+            doc_id=f"path:{path}",  # Prefix to distinguish from numeric IDs
+            doc_type="note",
+            operation="delete",
+            modified_at=payload["time"],
+        )
+
+    # File creation/update events - node.id exists
+    elif "NodeCreatedEvent" in event_class or "NodeWrittenEvent" in event_class:
+        path = event_data["node"]["path"]
+        if not path.endswith(".md"):
+            return None
+
+        # Check if 'id' exists (should, but be defensive)
+        node_id = event_data["node"].get("id")
+        if not node_id:
+            # Fallback for missing ID
+            node_id = f"path:{path}"
+
+        return DocumentTask(
+            user_id=user_id,
+            doc_id=str(node_id),
+            doc_type="note",
+            operation="index",
+            modified_at=payload["time"],
+        )
+```
+
+**Qdrant Deletion Strategy:** When deleting by path-based ID, search Qdrant for documents with matching path metadata:
+
+```python
+async def delete_document_by_path(user_id: str, path: str):
+    """Delete document from Qdrant using path (when ID unavailable)."""
+    points = await qdrant.scroll(
+        collection_name=collection,
+        scroll_filter=Filter(must=[
+            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+            FieldCondition(key="metadata.path", match=MatchValue(value=path)),
+        ]),
+    )
+    # Delete found points...
+```
+
+#### 2. Multiple Webhooks Per Operation
+
+**Finding:** Creating a single note triggers 3-5 separate webhook events in rapid succession:
+
+1. `NodeCreatedEvent` for parent folder (if new)
+2. `NodeWrittenEvent` for parent folder
+3. `NodeCreatedEvent` for the note file
+4. `NodeWrittenEvent` for the note file (sometimes fires twice)
+
+**Impact:** Without deduplication, the processor will fetch and index the same note multiple times within seconds, wasting compute and API quota.
+
+**Solution:** The processor queue should be idempotent. If the same document is queued multiple times, only the latest version needs processing. Implementation options:
+
+1. **Queue-level deduplication:** Before adding to queue, check if a task for the same `(user_id, doc_id)` is already pending. Replace the existing task instead of adding duplicate.
+
+2. **Processor-level deduplication:** Track recently processed documents in a short-lived cache (5 minutes). If a document was just processed, skip redundant fetch unless the `modified_at` timestamp is newer.
+
+3. **Accept duplicates:** Let the processor handle duplicates naturally. Qdrant upserts are idempotent—reindexing with identical content is harmless but wasteful.
+
+**Recommendation:** Implement queue-level deduplication by maintaining a map of pending tasks and replacing duplicates with newer timestamps.
+
+#### 3. Type Discrepancy in `node.id`
+
+**Finding:** Nextcloud documentation specifies `node.id` as type `string`, but actual payloads return `int`:
+
+```json
+"node": {
+  "id": 437,  // integer, not "437"
+  "path": "/admin/files/Notes/Webhooks/Webhook Test Note.md"
+}
+```
+
+**Impact:** Code that assumes `node.id` is always a string will work but may cause type confusion in strongly-typed languages.
+
+**Solution:** Explicitly convert to string when extracting: `doc_id=str(event_data["node"]["id"])`
+
+#### 4. Calendar Events Have Different ID Field Path
+
+**Finding:** Calendar events store the document ID in a different location than file events:
+
+- **File events:** `event.node.id`
+- **Calendar events:** `event.objectData.id`
+
+**Impact:** Event parser must handle different field paths for different event types. The example code in this ADR correctly shows this difference.
+
+**Calendar Event Deletion:** Calendar deletion webhooks did NOT fire during testing. This may be a Nextcloud bug or require specific configuration (e.g., trash bin enabled). Until resolved, calendar deletions will only be detected via periodic scanner runs.
+
+#### 5. Rich Metadata in Calendar Webhooks
+
+**Finding:** Calendar webhook payloads include extensive metadata not present in file webhooks:
+
+```json
+{
+  "event": {
+    "calendarId": 1,
+    "calendarData": {
+      "id": 1,
+      "uri": "personal",
+      "{http://calendarserver.org/ns/}getctag": "...",
+      "{http://sabredav.org/ns}sync-token": 21,
+      // ... many calendar-level properties
+    },
+    "objectData": {
+      "id": 3,
+      "uri": "webhook-test-event-001.ics",
+      "lastmodified": 1762851169,
+      "etag": "\"2b937b7d77dc83c77329dfdb210ba9d0\"",
+      "calendarid": 1,
+      "size": 297,
+      "component": "vevent",
+      "classification": 0,
+      "uid": "webhook-test-event-001@nextcloud",
+      "calendardata": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n...",  // Full iCal
+      "{http://nextcloud.com/ns}deleted-at": null
+    },
+    "shares": []  // Array of sharing info
+  }
+}
+```
+
+**Opportunity:** The full iCal content is available in `objectData.calendardata`. The processor could extract metadata directly from the webhook payload instead of making an additional CalDAV request, reducing API load.
+
+### Updated Event Mapping
+
+Based on testing, the actual webhook behavior:
+
+| Nextcloud Event | Fires? | `node.id`/`objectData.id` Present? | Notes |
+|----------------|--------|-------------------------------------|-------|
+| `NodeCreatedEvent` | ✅ Yes | ✅ Yes (`int`) | Fires for folders too |
+| `NodeWrittenEvent` | ✅ Yes | ✅ Yes (`int`) | Fires 1-2x per operation |
+| `NodeDeletedEvent` | ✅ Yes | ❌ **NO** (only `path`) | Critical difference |
+| `CalendarObjectCreatedEvent` | ✅ Yes | ✅ Yes (`objectData.id`) | Full iCal included |
+| `CalendarObjectUpdatedEvent` | ✅ Yes | ✅ Yes (`objectData.id`) | Full iCal included |
+| `CalendarObjectDeletedEvent` | ❌ **DID NOT FIRE** | ❓ Unknown | Possible Nextcloud bug |
+
+### Recommended Implementation Changes
+
+The webhook handler code in this ADR requires these modifications:
+
+1. **Handle missing `node.id` in deletions** (see code example in Finding #1)
+2. **Add deduplication logic** to prevent redundant processing from multiple webhooks per operation
+3. **Validate field existence** before accessing nested properties (`get()` with defaults)
+4. **Log unsupported events** at DEBUG level (not WARNING) to avoid log noise
+5. **Add calendar deletion fallback:** Since webhook unreliable, calendar deletions rely on scanner reconciliation
+6. **Consider payload optimization:** Extract calendar metadata from webhook payload to reduce CalDAV API calls
+
+### Testing Implications
+
+**Integration Test Strategy:**
+
+The asynchronous nature of Nextcloud webhooks makes real webhook delivery unreliable for automated tests:
+
+- ✅ **DO:** POST webhook payloads directly to `/webhooks/nextcloud` endpoint in tests
+- ❌ **DON'T:** Trigger Nextcloud events and wait for webhook delivery
+- ✅ **DO:** Test authentication, payload parsing, and queue integration with mocked payloads
+- ❌ **DON'T:** Assume webhooks fire immediately or reliably
+
+**Manual Testing Required:**
+- Real webhook delivery latency (depends on background job workers)
+- Calendar deletion webhook behavior (confirm bug or configuration issue)
+- Behavior under high-frequency updates (bulk operations)
+- Network failure handling (Nextcloud can't reach MCP server)
+
+### Complete Tested Payload Examples
+
+See `webhook-testing-findings.md` in the repository root for:
+- Complete JSON payloads for all tested events
+- Detailed schema validation results
+- Additional edge cases and observations
+- Screenshots of webhook logs
+
 ## References
 
 - ADR-007: Background Vector Database Synchronization (polling architecture)
 - Nextcloud Documentation: `~/Software/documentation/admin_manual/webhook_listeners/index.rst`
 - Nextcloud OCS API: Webhook registration endpoint
 - Current scanner implementation: `nextcloud_mcp_server/vector/scanner.py:37`
+- Webhook Testing Report: `webhook-testing-findings.md` (2025-01-11)

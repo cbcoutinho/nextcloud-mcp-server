@@ -1212,6 +1212,31 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             status_code=status_code,
         )
 
+    async def handle_nextcloud_webhook(request):
+        """Test webhook endpoint to capture and log Nextcloud webhook payloads.
+
+        This is a temporary endpoint for testing webhook schemas and payloads.
+        It logs the full payload and returns 200 OK immediately.
+        """
+        import json
+
+        try:
+            payload = await request.json()
+            logger.info("=" * 80)
+            logger.info("🔔 Webhook received from Nextcloud:")
+            logger.info(json.dumps(payload, indent=2, sort_keys=True))
+            logger.info("=" * 80)
+
+            return JSONResponse(
+                {"status": "received", "timestamp": payload.get("time")},
+                status_code=200,
+            )
+        except Exception as e:
+            logger.error(f"❌ Failed to parse webhook payload: {e}")
+            return JSONResponse(
+                {"error": "invalid_payload", "message": str(e)}, status_code=400
+            )
+
     # Add Protected Resource Metadata (PRM) endpoint for OAuth mode
     routes = []
 
@@ -1219,6 +1244,12 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     routes.append(Route("/health/live", health_live, methods=["GET"]))
     routes.append(Route("/health/ready", health_ready, methods=["GET"]))
     logger.info("Health check endpoints enabled: /health/live, /health/ready")
+
+    # Add test webhook endpoint (for development/testing)
+    routes.append(
+        Route("/webhooks/nextcloud", handle_nextcloud_webhook, methods=["POST"])
+    )
+    logger.info("Test webhook endpoint enabled: /webhooks/nextcloud")
 
     # Note: Metrics endpoint is NOT exposed on main HTTP port for security reasons.
     # Metrics are served on dedicated port via setup_metrics() (default: 9090)
