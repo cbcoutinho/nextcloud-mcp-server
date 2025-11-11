@@ -35,6 +35,8 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
             f"Initialized Ollama provider: {base_url} (model={model}, verify_ssl={verify_ssl})"
         )
 
+        self._check_model_is_loaded(autoload=True)
+
     async def embed(self, text: str) -> list[float]:
         """
         Generate embedding vector for text.
@@ -79,6 +81,23 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
             Vector dimension (768 for nomic-embed-text)
         """
         return self._dimension
+
+    def _check_model_is_loaded(self, autoload: bool = True):
+        response = httpx.get(f"{self.base_url}/api/tags")
+        response.raise_for_status()
+
+        models = [model["name"] for model in response.json().get("models", [])]
+        logger.info("Ollama has following models pre-loaded: %s", models)
+
+        if (self.model not in models) and autoload:
+            logger.warning(
+                "Embedding model '%s' not yet available in ollama, attempting to pull now...",
+                self.model,
+            )
+            response = httpx.post(
+                f"{self.base_url}/api/pull", json={"model": self.model}
+            )
+            response.raise_for_status()
 
     async def close(self):
         """Close HTTP client."""
