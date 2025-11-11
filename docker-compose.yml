@@ -88,7 +88,7 @@ services:
       - VECTOR_SYNC_SCAN_INTERVAL=10
       - VECTOR_SYNC_PROCESSOR_WORKERS=1
 
-      - LOG_FORMAT=text
+      #- LOG_FORMAT=json
 
       # Qdrant configuration (three modes):
       # 1. Network mode: Set QDRANT_URL=http://qdrant:6333 (requires qdrant service)

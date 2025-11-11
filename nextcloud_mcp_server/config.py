@@ -192,7 +192,7 @@ class Settings:
     otel_service_name: str = "nextcloud-mcp-server"
     otel_traces_sampler: str = "always_on"
     otel_traces_sampler_arg: float = 1.0
-    log_format: str = "json"  # "json" or "text"
+    log_format: str = "text"  # "json" or "text"
     log_level: str = "INFO"
     log_include_trace_context: bool = True
 
@@ -346,7 +346,7 @@ def get_settings() -> Settings:
         otel_service_name=os.getenv("OTEL_SERVICE_NAME", "nextcloud-mcp-server"),
         otel_traces_sampler=os.getenv("OTEL_TRACES_SAMPLER", "always_on"),
         otel_traces_sampler_arg=float(os.getenv("OTEL_TRACES_SAMPLER_ARG", "1.0")),
-        log_format=os.getenv("LOG_FORMAT", "json"),
+        log_format=os.getenv("LOG_FORMAT", "text"),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
         log_include_trace_context=os.getenv("LOG_INCLUDE_TRACE_CONTEXT", "true").lower()
         == "true",
