@@ -160,7 +160,7 @@ async def vector_sync_status_fragment(request: Request) -> HTMLResponse:
     if not processing_status:
         return HTMLResponse(
             """
-            <div id="vector-sync-status" hx-get="/app/vector-sync/status" hx-trigger="every 3s" hx-swap="outerHTML">
+            <div id="vector-sync-status" hx-get="/app/vector-sync/status" hx-trigger="every 10s" hx-swap="innerHTML">
                 <p style="color: #999;">Vector sync not available</p>
             </div>
             """
@@ -182,24 +182,23 @@ async def vector_sync_status_fragment(request: Request) -> HTMLResponse:
     else:
         status_badge = '<span style="color: #4caf50; font-weight: bold;">✓ Idle</span>'
 
+    # Return inner content only (container div is in initial page render)
     html = f"""
-    <div id="vector-sync-status" hx-get="/app/vector-sync/status" hx-trigger="every 3s" hx-swap="outerHTML">
-        <h2>Vector Sync Status</h2>
-        <table>
-            <tr>
-                <td><strong>Indexed Documents</strong></td>
-                <td>{indexed_count_str}</td>
-            </tr>
-            <tr>
-                <td><strong>Pending Documents</strong></td>
-                <td>{pending_count_str}</td>
-            </tr>
-            <tr>
-                <td><strong>Status</strong></td>
-                <td>{status_badge}</td>
-            </tr>
-        </table>
-    </div>
+    <h2>Vector Sync Status</h2>
+    <table>
+        <tr>
+            <td><strong>Indexed Documents</strong></td>
+            <td>{indexed_count_str}</td>
+        </tr>
+        <tr>
+            <td><strong>Pending Documents</strong></td>
+            <td>{pending_count_str}</td>
+        </tr>
+        <tr>
+            <td><strong>Status</strong></td>
+            <td>{status_badge}</td>
+        </tr>
+    </table>
     """
 
     return HTMLResponse(html)
@@ -577,8 +576,9 @@ async def user_info_html(request: Request) -> HTMLResponse:
     vector_status_html = ""
     if processing_status:
         # Use htmx to load and auto-refresh the status fragment
+        # Container div stays stable, only inner content updates every 10s
         vector_status_html = """
-            <div hx-get="/app/vector-sync/status" hx-trigger="load" hx-swap="outerHTML">
+            <div id="vector-sync-status" hx-get="/app/vector-sync/status" hx-trigger="load, every 10s" hx-swap="innerHTML">
                 <p style="color: #999;">Loading vector sync status...</p>
             </div>
         """
@@ -671,6 +671,7 @@ async def user_info_html(request: Request) -> HTMLResponse:
                 border-radius: 8px;
                 padding: 30px;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                min-height: calc(100vh - 200px);
             }}
             h1 {{
                 color: #0082c9;
@@ -713,10 +714,15 @@ async def user_info_html(request: Request) -> HTMLResponse:
                 border-bottom-color: #0082c9;
             }}
 
-            /* Tab content */
+            /* Tab content - use grid to overlay panes */
             .tab-content {{
                 padding: 20px 0;
-                min-height: 300px;
+                display: grid;
+            }}
+
+            /* Tab panes - all occupy the same grid cell to overlay */
+            .tab-pane {{
+                grid-area: 1 / 1;
             }}
 
             /* Tables */
@@ -803,6 +809,18 @@ async def user_info_html(request: Request) -> HTMLResponse:
                 padding-top: 20px;
                 border-top: 1px solid #e0e0e0;
             }}
+
+            /* Smooth htmx content swaps */
+            .htmx-swapping {{
+                opacity: 0;
+                transition: opacity 200ms ease-out;
+            }}
+
+            /* Smooth htmx content settling */
+            .htmx-settling {{
+                opacity: 1;
+                transition: opacity 200ms ease-in;
+            }}
         </style>
     </head>
     <body>
@@ -846,7 +864,7 @@ async def user_info_html(request: Request) -> HTMLResponse:
             <!-- Tab Content -->
             <div class="tab-content">
                 <!-- User Info Tab -->
-                <div x-show="activeTab === 'user-info'" x-transition>
+                <div class="tab-pane" x-show="activeTab === 'user-info'" x-transition.opacity.duration.150ms>
                     {user_info_tab_html}
                 </div>
 
@@ -855,7 +873,7 @@ async def user_info_html(request: Request) -> HTMLResponse:
         if not show_vector_sync_tab
         else f'''
                 <!-- Vector Sync Tab -->
-                <div x-show="activeTab === 'vector-sync'" x-transition>
+                <div class="tab-pane" x-show="activeTab === 'vector-sync'" x-transition.opacity.duration.150ms>
                     {vector_sync_tab_html}
                 </div>
                 '''
@@ -866,7 +884,7 @@ async def user_info_html(request: Request) -> HTMLResponse:
         if not show_webhooks_tab
         else f'''
                 <!-- Webhooks Tab (admin-only, loaded dynamically) -->
-                <div x-show="activeTab === 'webhooks'" x-transition>
+                <div class="tab-pane" x-show="activeTab === 'webhooks'" x-transition.opacity.duration.150ms>
                     {webhooks_tab_html}
                 </div>
                 '''
