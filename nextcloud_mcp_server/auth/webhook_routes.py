@@ -32,7 +32,7 @@ def _get_storage(request: Request):
     Returns:
         RefreshTokenStorage instance or None
     """
-    # Try browser_app state first (for /user routes)
+    # Try browser_app state first (for /app routes)
     storage = getattr(request.app.state, "storage", None)
 
     # Try oauth_context if in OAuth mode
@@ -289,7 +289,7 @@ async def webhook_management_pane(request: Request) -> HTMLResponse:
                 status_badge = f'<span style="color: #4caf50; font-weight: bold;">✓ Enabled ({num_webhooks} webhooks)</span>'
                 action_button = f"""
                 <button
-                    hx-delete="/user/webhooks/disable/{preset_id}"
+                    hx-delete="/app/webhooks/disable/{preset_id}"
                     hx-target="#preset-{preset_id}"
                     hx-swap="outerHTML"
                     class="button"
@@ -301,7 +301,7 @@ async def webhook_management_pane(request: Request) -> HTMLResponse:
                 status_badge = '<span style="color: #999;">Not Enabled</span>'
                 action_button = f"""
                 <button
-                    hx-post="/user/webhooks/enable/{preset_id}"
+                    hx-post="/app/webhooks/enable/{preset_id}"
                     hx-target="#preset-{preset_id}"
                     hx-swap="outerHTML"
                     class="button button-primary">
@@ -429,7 +429,7 @@ async def enable_webhook_preset(request: Request) -> HTMLResponse:
                     <div><span style="color: #4caf50; font-weight: bold;">✓ Enabled ({num_webhooks} webhooks)</span></div>
                     <div>
                         <button
-                            hx-delete="/user/webhooks/disable/{preset_id}"
+                            hx-delete="/app/webhooks/disable/{preset_id}"
                             hx-target="#preset-{preset_id}"
                             hx-swap="outerHTML"
                             class="button"
@@ -520,7 +520,7 @@ async def disable_webhook_preset(request: Request) -> HTMLResponse:
                     <div><span style="color: #999;">Not Enabled</span></div>
                     <div>
                         <button
-                            hx-post="/user/webhooks/enable/{preset_id}"
+                            hx-post="/app/webhooks/enable/{preset_id}"
                             hx-target="#preset-{preset_id}"
                             hx-swap="outerHTML"
                             class="button button-primary">

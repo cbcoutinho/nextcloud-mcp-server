@@ -602,7 +602,7 @@ async def user_info_html(request: Request) -> HTMLResponse:
     webhooks_tab_html = ""
     if show_webhooks_tab:
         webhooks_tab_html = """
-            <div hx-get="/user/webhooks" hx-trigger="load" hx-swap="outerHTML">
+            <div hx-get="/app/webhooks" hx-trigger="load" hx-swap="outerHTML">
                 <p style="color: #999;">Loading webhook management...</p>
             </div>
         """

@@ -377,7 +377,7 @@ async def get_vector_sync_status(ctx: Context) -> dict:
     }
 ```
 
-The web UI (`/user/page` route) mirrors these controls with a simple toggle switch for enabling/disabling sync and a status display showing indexed counts and sync state. There is no job history, no detailed progress bars, no per-document status—just the essential information users need.
+The web UI (`/app` route) mirrors these controls with a simple toggle switch for enabling/disabling sync and a status display showing indexed counts and sync state. There is no job history, no detailed progress bars, no per-document status—just the essential information users need.
 
 ### Authentication and Offline Access
 

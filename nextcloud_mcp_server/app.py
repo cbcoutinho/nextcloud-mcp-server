@@ -21,7 +21,7 @@ from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
 
 from nextcloud_mcp_server.auth import (
@@ -1038,7 +1038,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 # browser_app is in the same function scope (defined later in create_app)
                 # We need to find it in the mounted routes
                 for route in app.routes:
-                    if isinstance(route, Mount) and route.path == "/user":
+                    if isinstance(route, Mount) and route.path == "/app":
                         route.app.state.oauth_context = oauth_context_dict
                         logger.info(
                             "OAuth context shared with browser_app for session auth"
@@ -1059,7 +1059,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 
                 # Also share with browser_app for webhook routes
                 for route in app.routes:
-                    if isinstance(route, Mount) and route.path == "/user":
+                    if isinstance(route, Mount) and route.path == "/app":
                         route.app.state.storage = storage
                         logger.info(
                             "Storage shared with browser_app for webhook management"
@@ -1099,15 +1099,15 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 app.state.shutdown_event = shutdown_event
                 app.state.scanner_wake_event = scanner_wake_event
 
-                # Also share with browser_app for /user/page route
+                # Also share with browser_app for /app route
                 for route in app.routes:
-                    if isinstance(route, Mount) and route.path == "/user":
+                    if isinstance(route, Mount) and route.path == "/app":
                         route.app.state.document_send_stream = send_stream
                         route.app.state.document_receive_stream = receive_stream
                         route.app.state.shutdown_event = shutdown_event
                         route.app.state.scanner_wake_event = scanner_wake_event
                         logger.info(
-                            "Vector sync state shared with browser_app for /user/page"
+                            "Vector sync state shared with browser_app for /app"
                         )
                         break
 
@@ -1410,7 +1410,6 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     from nextcloud_mcp_server.auth.userinfo_routes import (
         revoke_session,
         user_info_html,
-        user_info_json,
     )
     from nextcloud_mcp_server.auth.webhook_routes import (
         disable_webhook_preset,
@@ -1421,13 +1420,12 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     # Create a separate Starlette app for browser routes that need session auth
     # This prevents SessionAuthBackend from interfering with FastMCP's OAuth
     browser_routes = [
-        Route("/", user_info_json, methods=["GET"]),  # /user/ → user_info_json
-        Route("/page", user_info_html, methods=["GET"]),  # /user/page → user_info_html
+        Route("/", user_info_html, methods=["GET"]),  # /app → webapp (HTML UI)
         Route(
             "/revoke", revoke_session, methods=["POST"], name="revoke_session_endpoint"
-        ),  # /user/revoke → revoke_session
+        ),  # /app/revoke → revoke_session
         # Webhook management routes (admin-only)
-        Route("/webhooks", webhook_management_pane, methods=["GET"]),  # /user/webhooks
+        Route("/webhooks", webhook_management_pane, methods=["GET"]),  # /app/webhooks
         Route(
             "/webhooks/enable/{preset_id:str}", enable_webhook_preset, methods=["POST"]
         ),
@@ -1444,9 +1442,14 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         backend=SessionAuthBackend(oauth_enabled=oauth_enabled),
     )
 
-    # Mount browser app at /user (so /user and /user/page work)
-    routes.append(Mount("/user", app=browser_app))
-    logger.info("User info routes with session auth: /user, /user/page")
+    # Add redirect from /app to /app/ (Starlette requires trailing slash for mounted apps)
+    routes.append(
+        Route("/app", lambda request: RedirectResponse("/app/", status_code=307))
+    )
+
+    # Mount browser app at /app (webapp and admin routes)
+    routes.append(Mount("/app", app=browser_app))
+    logger.info("App routes with session auth: /app, /app/webhooks, /app/revoke")
 
     # Mount FastMCP at root last (catch-all, handles OAuth via token_verifier)
     routes.append(Mount("/", app=mcp_app))

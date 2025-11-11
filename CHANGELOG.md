@@ -86,7 +86,7 @@
 - implement ADR-009 - refactor semantic search to use generic semantic:read scope
 - implement MCP sampling for semantic search RAG (ADR-008)
 - add optional vector database and semantic search to helm chart
-- add vector sync processing status to /user/page endpoint
+- add vector sync processing status to /app endpoint
 - implement semantic search tool and fix vector sync issues (ADR-007 Phase 3)
 - implement vector sync scanner and processor (ADR-007 Phase 2)
 

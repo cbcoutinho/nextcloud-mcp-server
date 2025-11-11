@@ -1,7 +1,7 @@
 """Browser-based OAuth login routes for admin UI.
 
 Separate from MCP OAuth flow - these routes establish browser sessions
-for accessing admin UI endpoints like /user/page.
+for accessing admin UI endpoints like /app.
 """
 
 import hashlib
@@ -38,8 +38,8 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
     """
     oauth_ctx = request.app.state.oauth_context
     if not oauth_ctx:
-        # BasicAuth mode - no login needed, redirect to user page
-        return RedirectResponse("/user/page", status_code=302)
+        # BasicAuth mode - no login needed, redirect to app
+        return RedirectResponse("/app", status_code=302)
 
     storage = oauth_ctx["storage"]
     oauth_client = oauth_ctx["oauth_client"]
@@ -71,7 +71,7 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
     await storage.store_oauth_session(
         session_id=state,  # Use state as session ID
         client_id="browser-ui",
-        client_redirect_uri="/user/page",
+        client_redirect_uri="/app",
         state=state,
         code_challenge=code_challenge,
         code_challenge_method="S256",
@@ -383,7 +383,7 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
             # Continue anyway - profile cache is optional for browser UI
 
     # Create response and set session cookie
-    response = RedirectResponse("/user/page", status_code=302)
+    response = RedirectResponse("/app", status_code=302)
     response.set_cookie(
         key="mcp_session",
         value=user_id,
