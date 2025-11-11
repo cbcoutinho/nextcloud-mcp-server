@@ -1410,6 +1410,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     from nextcloud_mcp_server.auth.userinfo_routes import (
         revoke_session,
         user_info_html,
+        vector_sync_status_fragment,
     )
     from nextcloud_mcp_server.auth.webhook_routes import (
         disable_webhook_preset,
@@ -1424,6 +1425,12 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         Route(
             "/revoke", revoke_session, methods=["POST"], name="revoke_session_endpoint"
         ),  # /app/revoke → revoke_session
+        # Vector sync status fragment (htmx polling)
+        Route(
+            "/vector-sync/status",
+            vector_sync_status_fragment,
+            methods=["GET"],
+        ),  # /app/vector-sync/status
         # Webhook management routes (admin-only)
         Route("/webhooks", webhook_management_pane, methods=["GET"]),  # /app/webhooks
         Route(

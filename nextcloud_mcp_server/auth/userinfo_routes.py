@@ -139,6 +139,72 @@ async def _get_processing_status(request: Request) -> dict[str, Any] | None:
         return None
 
 
+@requires("authenticated", redirect="oauth_login")
+async def vector_sync_status_fragment(request: Request) -> HTMLResponse:
+    """Vector sync status fragment endpoint - returns HTML fragment with current status.
+
+    This endpoint is polled by htmx to provide real-time updates of vector sync processing
+    status without requiring a full page refresh.
+
+    Requires authentication via session cookie (redirects to oauth_login route if not authenticated).
+
+    Args:
+        request: Starlette request object
+
+    Returns:
+        HTML response with vector sync status table fragment
+    """
+    processing_status = await _get_processing_status(request)
+
+    # If vector sync is disabled or unavailable, return empty fragment
+    if not processing_status:
+        return HTMLResponse(
+            """
+            <div id="vector-sync-status" hx-get="/app/vector-sync/status" hx-trigger="every 3s" hx-swap="outerHTML">
+                <p style="color: #999;">Vector sync not available</p>
+            </div>
+            """
+        )
+
+    indexed_count = processing_status["indexed_count"]
+    pending_count = processing_status["pending_count"]
+    status = processing_status["status"]
+
+    # Format numbers with commas for readability
+    indexed_count_str = f"{indexed_count:,}"
+    pending_count_str = f"{pending_count:,}"
+
+    # Status badge color and text
+    if status == "syncing":
+        status_badge = (
+            '<span style="color: #ff9800; font-weight: bold;">⟳ Syncing</span>'
+        )
+    else:
+        status_badge = '<span style="color: #4caf50; font-weight: bold;">✓ Idle</span>'
+
+    html = f"""
+    <div id="vector-sync-status" hx-get="/app/vector-sync/status" hx-trigger="every 3s" hx-swap="outerHTML">
+        <h2>Vector Sync Status</h2>
+        <table>
+            <tr>
+                <td><strong>Indexed Documents</strong></td>
+                <td>{indexed_count_str}</td>
+            </tr>
+            <tr>
+                <td><strong>Pending Documents</strong></td>
+                <td>{pending_count_str}</td>
+            </tr>
+            <tr>
+                <td><strong>Status</strong></td>
+                <td>{status_badge}</td>
+            </tr>
+        </table>
+    </div>
+    """
+
+    return HTMLResponse(html)
+
+
 async def _get_userinfo_endpoint(oauth_ctx: dict[str, Any]) -> str | None:
     """Get the correct userinfo endpoint based on OAuth mode.
 
@@ -507,43 +573,14 @@ async def user_info_html(request: Request) -> HTMLResponse:
             </div>
             """
 
-    # Build vector sync status HTML
+    # Build vector sync status HTML (with htmx auto-refresh)
     vector_status_html = ""
     if processing_status:
-        indexed_count = processing_status["indexed_count"]
-        pending_count = processing_status["pending_count"]
-        status = processing_status["status"]
-
-        # Format numbers with commas for readability
-        indexed_count_str = f"{indexed_count:,}"
-        pending_count_str = f"{pending_count:,}"
-
-        # Status badge color and text
-        if status == "syncing":
-            status_badge = (
-                '<span style="color: #ff9800; font-weight: bold;">⟳ Syncing</span>'
-            )
-        else:
-            status_badge = (
-                '<span style="color: #4caf50; font-weight: bold;">✓ Idle</span>'
-            )
-
-        vector_status_html = f"""
-        <h2>Vector Sync Status</h2>
-        <table>
-            <tr>
-                <td><strong>Indexed Documents</strong></td>
-                <td>{indexed_count_str}</td>
-            </tr>
-            <tr>
-                <td><strong>Pending Documents</strong></td>
-                <td>{pending_count_str}</td>
-            </tr>
-            <tr>
-                <td><strong>Status</strong></td>
-                <td>{status_badge}</td>
-            </tr>
-        </table>
+        # Use htmx to load and auto-refresh the status fragment
+        vector_status_html = """
+            <div hx-get="/app/vector-sync/status" hx-trigger="load" hx-swap="outerHTML">
+                <p style="color: #999;">Loading vector sync status...</p>
+            </div>
         """
 
     # Build IdP profile HTML
