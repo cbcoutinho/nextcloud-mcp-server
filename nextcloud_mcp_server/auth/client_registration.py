@@ -8,7 +8,7 @@ from typing import Any
 import anyio
 import httpx
 
-from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
 logger = logging.getLogger(__name__)
 

@@ -32,7 +32,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
 
 from nextcloud_mcp_server.auth.client_registry import get_client_registry
-from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
 logger = logging.getLogger(__name__)
 

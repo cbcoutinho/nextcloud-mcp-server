@@ -18,7 +18,7 @@ from mcp.server.fastmcp import Context
 from pydantic import BaseModel, Field
 
 from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
 from nextcloud_mcp_server.auth.userinfo_routes import _query_idp_userinfo
 

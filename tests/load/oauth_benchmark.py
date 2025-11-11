@@ -28,7 +28,7 @@ import httpx
 from playwright.async_api import async_playwright
 
 from nextcloud_mcp_server.auth.client_registration import ensure_oauth_client
-from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.client import NextcloudClient
 from tests.load.oauth_metrics import OAuthBenchmarkMetrics
 from tests.load.oauth_pool import (

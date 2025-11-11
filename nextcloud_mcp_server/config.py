@@ -153,7 +153,13 @@ class Settings:
     # Token exchange cache settings
     token_exchange_cache_ttl: int = 300  # seconds (5 minutes default)
 
-    # Token settings
+    # Token and webhook storage settings
+    # TOKEN_ENCRYPTION_KEY: Optional - Only required for OAuth token storage operations.
+    #                       Webhook tracking works without encryption key.
+    #                       If set, must be a valid base64-encoded Fernet key (32 bytes).
+    # TOKEN_STORAGE_DB: Path to SQLite database for persistent storage.
+    #                   Used for webhook tracking (all modes) and OAuth token storage.
+    #                   Defaults to /tmp/tokens.db
     token_encryption_key: Optional[str] = None
     token_storage_db: Optional[str] = None
 
@@ -204,7 +210,7 @@ class Settings:
         # Default to :memory: if neither set
         if not self.qdrant_url and not self.qdrant_location:
             self.qdrant_location = ":memory:"
-            logger.info("Using default Qdrant mode: in-memory (:memory:)")
+            logger.debug("Using default Qdrant mode: in-memory (:memory:)")
 
         # Warn if API key set in local mode
         if self.qdrant_location and self.qdrant_api_key:
@@ -305,7 +311,7 @@ def get_settings() -> Settings:
         ),
         # Token exchange cache settings
         token_exchange_cache_ttl=int(os.getenv("TOKEN_EXCHANGE_CACHE_TTL", "300")),
-        # Token settings
+        # Token and webhook storage settings (encryption key optional for webhook-only usage)
         token_encryption_key=os.getenv("TOKEN_ENCRYPTION_KEY"),
         token_storage_db=os.getenv("TOKEN_STORAGE_DB", "/tmp/tokens.db"),
         # Vector sync settings (ADR-007)
