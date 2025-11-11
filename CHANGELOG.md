@@ -1,3 +1,21 @@
+## v0.32.0 (2025-11-11)
+
+### Feat
+
+- **ollama**: Pull model on startup if not available in ollama
+- add dynamic vector sync status updates with htmx polling
+- add webhook management UI and BeforeNodeDeletedEvent support
+- validate Nextcloud webhook schemas and document findings
+
+### Fix
+
+- improve webapp tab UI with CSS Grid and viewport-filling container
+
+### Refactor
+
+- move webapp from /user/page to /app
+- consolidate database storage for webhooks and OAuth tokens
+
 ## v0.31.1 (2025-11-10)
 
 ### Refactor
