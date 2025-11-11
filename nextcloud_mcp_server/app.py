@@ -8,13 +8,12 @@ from typing import TYPE_CHECKING, Optional
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 if TYPE_CHECKING:
-    from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
+    from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
 
 import anyio
 import click
 import httpx
-import uvicorn
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
@@ -22,7 +21,7 @@ from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
 
 from nextcloud_mcp_server.auth import (
@@ -42,7 +41,6 @@ from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.document_processors import get_registry
 from nextcloud_mcp_server.observability import (
     ObservabilityMiddleware,
-    get_uvicorn_logging_config,
     setup_metrics,
     setup_tracing,
 )
@@ -219,6 +217,7 @@ class AppContext:
     """Application context for BasicAuth mode."""
 
     client: NextcloudClient
+    storage: Optional["RefreshTokenStorage"] = None
     document_send_stream: Optional[MemoryObjectSendStream] = None
     document_receive_stream: Optional[MemoryObjectReceiveStream] = None
     shutdown_event: Optional[anyio.Event] = None
@@ -292,7 +291,7 @@ async def load_oauth_client_credentials(
 
     # Try loading from SQLite storage
     try:
-        from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
+        from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
         storage = RefreshTokenStorage.from_env()
         await storage.initialize()
@@ -346,7 +345,7 @@ async def load_oauth_client_credentials(
 
         # Ensure OAuth client in SQLite storage
         from nextcloud_mcp_server.auth.client_registration import ensure_oauth_client
-        from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
+        from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
         storage = RefreshTokenStorage.from_env()
         await storage.initialize()
@@ -395,6 +394,13 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
 
     client = NextcloudClient.from_env()
     logger.info("Client initialization complete")
+
+    # Initialize persistent storage (for webhook tracking and future features)
+    from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+
+    storage = RefreshTokenStorage.from_env()
+    await storage.initialize()
+    logger.info("Persistent storage initialized (webhook tracking enabled)")
 
     # Initialize document processors
     initialize_document_processors()
@@ -450,6 +456,7 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
             try:
                 yield AppContext(
                     client=client,
+                    storage=storage,
                     document_send_stream=send_stream,
                     document_receive_stream=receive_stream,
                     shutdown_event=shutdown_event,
@@ -466,7 +473,7 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
     else:
         # No vector sync - simple lifecycle
         try:
-            yield AppContext(client=client)
+            yield AppContext(client=client, storage=storage)
         finally:
             logger.info("Shutting down BasicAuth mode")
             await client.close()
@@ -583,7 +590,7 @@ async def setup_oauth_config():
     refresh_token_storage = None
     if enable_offline_access:
         try:
-            from nextcloud_mcp_server.auth.refresh_token_storage import (
+            from nextcloud_mcp_server.auth.storage import (
                 RefreshTokenStorage,
             )
 
@@ -1031,7 +1038,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 # browser_app is in the same function scope (defined later in create_app)
                 # We need to find it in the mounted routes
                 for route in app.routes:
-                    if isinstance(route, Mount) and route.path == "/user":
+                    if isinstance(route, Mount) and route.path == "/app":
                         route.app.state.oauth_context = oauth_context_dict
                         logger.info(
                             "OAuth context shared with browser_app for session auth"
@@ -1041,6 +1048,23 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 logger.info(
                     f"OAuth context initialized for login routes (client_id={client_id[:16]}...)"
                 )
+            else:
+                # BasicAuth mode - share storage with browser_app for webhook management
+                from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+
+                storage = RefreshTokenStorage.from_env()
+                await storage.initialize()
+
+                app.state.storage = storage
+
+                # Also share with browser_app for webhook routes
+                for route in app.routes:
+                    if isinstance(route, Mount) and route.path == "/app":
+                        route.app.state.storage = storage
+                        logger.info(
+                            "Storage shared with browser_app for webhook management"
+                        )
+                        break
 
             # Start background vector sync tasks for BasicAuth mode (ADR-007)
             # For streamable-http transport, FastMCP lifespan isn't automatically triggered
@@ -1075,15 +1099,15 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 app.state.shutdown_event = shutdown_event
                 app.state.scanner_wake_event = scanner_wake_event
 
-                # Also share with browser_app for /user/page route
+                # Also share with browser_app for /app route
                 for route in app.routes:
-                    if isinstance(route, Mount) and route.path == "/user":
+                    if isinstance(route, Mount) and route.path == "/app":
                         route.app.state.document_send_stream = send_stream
                         route.app.state.document_receive_stream = receive_stream
                         route.app.state.shutdown_event = shutdown_event
                         route.app.state.scanner_wake_event = scanner_wake_event
                         logger.info(
-                            "Vector sync state shared with browser_app for /user/page"
+                            "Vector sync state shared with browser_app for /app"
                         )
                         break
 
@@ -1212,6 +1236,31 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             status_code=status_code,
         )
 
+    async def handle_nextcloud_webhook(request):
+        """Test webhook endpoint to capture and log Nextcloud webhook payloads.
+
+        This is a temporary endpoint for testing webhook schemas and payloads.
+        It logs the full payload and returns 200 OK immediately.
+        """
+        import json
+
+        try:
+            payload = await request.json()
+            logger.info("=" * 80)
+            logger.info("🔔 Webhook received from Nextcloud:")
+            logger.info(json.dumps(payload, indent=2, sort_keys=True))
+            logger.info("=" * 80)
+
+            return JSONResponse(
+                {"status": "received", "timestamp": payload.get("time")},
+                status_code=200,
+            )
+        except Exception as e:
+            logger.error(f"❌ Failed to parse webhook payload: {e}")
+            return JSONResponse(
+                {"error": "invalid_payload", "message": str(e)}, status_code=400
+            )
+
     # Add Protected Resource Metadata (PRM) endpoint for OAuth mode
     routes = []
 
@@ -1219,6 +1268,12 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     routes.append(Route("/health/live", health_live, methods=["GET"]))
     routes.append(Route("/health/ready", health_ready, methods=["GET"]))
     logger.info("Health check endpoints enabled: /health/live, /health/ready")
+
+    # Add test webhook endpoint (for development/testing)
+    routes.append(
+        Route("/webhooks/nextcloud", handle_nextcloud_webhook, methods=["POST"])
+    )
+    logger.info("Test webhook endpoint enabled: /webhooks/nextcloud")
 
     # Note: Metrics endpoint is NOT exposed on main HTTP port for security reasons.
     # Metrics are served on dedicated port via setup_metrics() (default: 9090)
@@ -1355,17 +1410,37 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     from nextcloud_mcp_server.auth.userinfo_routes import (
         revoke_session,
         user_info_html,
-        user_info_json,
+        vector_sync_status_fragment,
+    )
+    from nextcloud_mcp_server.auth.webhook_routes import (
+        disable_webhook_preset,
+        enable_webhook_preset,
+        webhook_management_pane,
     )
 
     # Create a separate Starlette app for browser routes that need session auth
     # This prevents SessionAuthBackend from interfering with FastMCP's OAuth
     browser_routes = [
-        Route("/", user_info_json, methods=["GET"]),  # /user/ → user_info_json
-        Route("/page", user_info_html, methods=["GET"]),  # /user/page → user_info_html
+        Route("/", user_info_html, methods=["GET"]),  # /app → webapp (HTML UI)
         Route(
             "/revoke", revoke_session, methods=["POST"], name="revoke_session_endpoint"
-        ),  # /user/revoke → revoke_session
+        ),  # /app/revoke → revoke_session
+        # Vector sync status fragment (htmx polling)
+        Route(
+            "/vector-sync/status",
+            vector_sync_status_fragment,
+            methods=["GET"],
+        ),  # /app/vector-sync/status
+        # Webhook management routes (admin-only)
+        Route("/webhooks", webhook_management_pane, methods=["GET"]),  # /app/webhooks
+        Route(
+            "/webhooks/enable/{preset_id:str}", enable_webhook_preset, methods=["POST"]
+        ),
+        Route(
+            "/webhooks/disable/{preset_id:str}",
+            disable_webhook_preset,
+            methods=["DELETE"],
+        ),
     ]
 
     browser_app = Starlette(routes=browser_routes)
@@ -1374,9 +1449,14 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         backend=SessionAuthBackend(oauth_enabled=oauth_enabled),
     )
 
-    # Mount browser app at /user (so /user and /user/page work)
-    routes.append(Mount("/user", app=browser_app))
-    logger.info("User info routes with session auth: /user, /user/page")
+    # Add redirect from /app to /app/ (Starlette requires trailing slash for mounted apps)
+    routes.append(
+        Route("/app", lambda request: RedirectResponse("/app/", status_code=307))
+    )
+
+    # Mount browser app at /app (webapp and admin routes)
+    routes.append(Mount("/app", app=browser_app))
+    logger.info("App routes with session auth: /app, /app/webhooks, /app/revoke")
 
     # Mount FastMCP at root last (catch-all, handles OAuth via token_verifier)
     routes.append(Mount("/", app=mcp_app))
@@ -1497,249 +1577,3 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         logger.info("WWW-Authenticate scope challenge handler enabled")
 
     return app
-
-
-@click.command()
-@click.option(
-    "--host", "-h", default="127.0.0.1", show_default=True, help="Server host"
-)
-@click.option(
-    "--port", "-p", type=int, default=8000, show_default=True, help="Server port"
-)
-@click.option(
-    "--log-level",
-    "-l",
-    default="info",
-    show_default=True,
-    type=click.Choice(["critical", "error", "warning", "info", "debug", "trace"]),
-    help="Logging level",
-)
-@click.option(
-    "--transport",
-    "-t",
-    default="sse",
-    show_default=True,
-    type=click.Choice(["sse", "streamable-http", "http"]),
-    help="MCP transport protocol",
-)
-@click.option(
-    "--enable-app",
-    "-e",
-    multiple=True,
-    type=click.Choice(
-        ["notes", "tables", "webdav", "calendar", "contacts", "cookbook", "deck"]
-    ),
-    help="Enable specific Nextcloud app APIs. Can be specified multiple times. If not specified, all apps are enabled.",
-)
-@click.option(
-    "--oauth/--no-oauth",
-    default=None,
-    help="Force OAuth mode (if enabled) or BasicAuth mode (if disabled). By default, auto-detected based on environment variables.",
-)
-@click.option(
-    "--oauth-client-id",
-    envvar="NEXTCLOUD_OIDC_CLIENT_ID",
-    help="OAuth client ID (can also use NEXTCLOUD_OIDC_CLIENT_ID env var)",
-)
-@click.option(
-    "--oauth-client-secret",
-    envvar="NEXTCLOUD_OIDC_CLIENT_SECRET",
-    help="OAuth client secret (can also use NEXTCLOUD_OIDC_CLIENT_SECRET env var)",
-)
-@click.option(
-    "--mcp-server-url",
-    envvar="NEXTCLOUD_MCP_SERVER_URL",
-    default="http://localhost:8000",
-    show_default=True,
-    help="MCP server URL for OAuth callbacks (can also use NEXTCLOUD_MCP_SERVER_URL env var)",
-)
-@click.option(
-    "--nextcloud-host",
-    envvar="NEXTCLOUD_HOST",
-    help="Nextcloud instance URL (can also use NEXTCLOUD_HOST env var)",
-)
-@click.option(
-    "--nextcloud-username",
-    envvar="NEXTCLOUD_USERNAME",
-    help="Nextcloud username for BasicAuth (can also use NEXTCLOUD_USERNAME env var)",
-)
-@click.option(
-    "--nextcloud-password",
-    envvar="NEXTCLOUD_PASSWORD",
-    help="Nextcloud password for BasicAuth (can also use NEXTCLOUD_PASSWORD env var)",
-)
-@click.option(
-    "--oauth-scopes",
-    envvar="NEXTCLOUD_OIDC_SCOPES",
-    default="openid profile email notes:read notes:write calendar:read calendar:write todo:read todo:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write",
-    show_default=True,
-    help="OAuth scopes to request during client registration. These define the maximum allowed scopes for the client. Note: Actual supported scopes are discovered dynamically from MCP tools at runtime. (can also use NEXTCLOUD_OIDC_SCOPES env var)",
-)
-@click.option(
-    "--oauth-token-type",
-    envvar="NEXTCLOUD_OIDC_TOKEN_TYPE",
-    default="bearer",
-    show_default=True,
-    type=click.Choice(["bearer", "jwt"], case_sensitive=False),
-    help="OAuth token type (can also use NEXTCLOUD_OIDC_TOKEN_TYPE env var)",
-)
-@click.option(
-    "--public-issuer-url",
-    envvar="NEXTCLOUD_PUBLIC_ISSUER_URL",
-    help="Public issuer URL for OAuth (can also use NEXTCLOUD_PUBLIC_ISSUER_URL env var)",
-)
-def run(
-    host: str,
-    port: int,
-    log_level: str,
-    transport: str,
-    enable_app: tuple[str, ...],
-    oauth: bool | None,
-    oauth_client_id: str | None,
-    oauth_client_secret: str | None,
-    mcp_server_url: str,
-    nextcloud_host: str | None,
-    nextcloud_username: str | None,
-    nextcloud_password: str | None,
-    oauth_scopes: str,
-    oauth_token_type: str,
-    public_issuer_url: str | None,
-):
-    """
-    Run the Nextcloud MCP server.
-
-    \b
-    Authentication Modes:
-      - BasicAuth: Set NEXTCLOUD_USERNAME and NEXTCLOUD_PASSWORD
-      - OAuth: Leave USERNAME/PASSWORD unset (requires OIDC app enabled)
-
-    \b
-    Examples:
-      # BasicAuth mode with CLI options
-      $ nextcloud-mcp-server --nextcloud-host=https://cloud.example.com \\
-          --nextcloud-username=admin --nextcloud-password=secret
-
-      # BasicAuth mode with env vars (recommended for credentials)
-      $ export NEXTCLOUD_HOST=https://cloud.example.com
-      $ export NEXTCLOUD_USERNAME=admin
-      $ export NEXTCLOUD_PASSWORD=secret
-      $ nextcloud-mcp-server --host 0.0.0.0 --port 8000
-
-      # OAuth mode with auto-registration
-      $ nextcloud-mcp-server --nextcloud-host=https://cloud.example.com --oauth
-
-      # OAuth mode with pre-configured client
-      $ nextcloud-mcp-server --nextcloud-host=https://cloud.example.com --oauth \\
-          --oauth-client-id=xxx --oauth-client-secret=yyy
-
-      # OAuth mode with custom scopes and JWT tokens
-      $ nextcloud-mcp-server --nextcloud-host=https://cloud.example.com --oauth \\
-          --oauth-scopes="openid notes:read notes:write" --oauth-token-type=jwt
-
-      # OAuth with public issuer URL (for Docker/proxy setups)
-      $ nextcloud-mcp-server --nextcloud-host=http://app --oauth \\
-          --public-issuer-url=http://localhost:8080
-    """
-    # Set env vars from CLI options if provided
-    if nextcloud_host:
-        os.environ["NEXTCLOUD_HOST"] = nextcloud_host
-    if nextcloud_username:
-        os.environ["NEXTCLOUD_USERNAME"] = nextcloud_username
-    if nextcloud_password:
-        os.environ["NEXTCLOUD_PASSWORD"] = nextcloud_password
-    if oauth_client_id:
-        os.environ["NEXTCLOUD_OIDC_CLIENT_ID"] = oauth_client_id
-    if oauth_client_secret:
-        os.environ["NEXTCLOUD_OIDC_CLIENT_SECRET"] = oauth_client_secret
-    if oauth_scopes:
-        os.environ["NEXTCLOUD_OIDC_SCOPES"] = oauth_scopes
-    if oauth_token_type:
-        os.environ["NEXTCLOUD_OIDC_TOKEN_TYPE"] = oauth_token_type
-    if mcp_server_url:
-        os.environ["NEXTCLOUD_MCP_SERVER_URL"] = mcp_server_url
-    if public_issuer_url:
-        os.environ["NEXTCLOUD_PUBLIC_ISSUER_URL"] = public_issuer_url
-
-    # Force OAuth mode if explicitly requested
-    if oauth is True:
-        # Clear username/password to force OAuth mode
-        if "NEXTCLOUD_USERNAME" in os.environ:
-            click.echo(
-                "Warning: --oauth flag set, ignoring NEXTCLOUD_USERNAME", err=True
-            )
-            del os.environ["NEXTCLOUD_USERNAME"]
-        if "NEXTCLOUD_PASSWORD" in os.environ:
-            click.echo(
-                "Warning: --oauth flag set, ignoring NEXTCLOUD_PASSWORD", err=True
-            )
-            del os.environ["NEXTCLOUD_PASSWORD"]
-
-        # Validate OAuth configuration
-        nextcloud_host = os.getenv("NEXTCLOUD_HOST")
-        if not nextcloud_host:
-            raise click.ClickException(
-                "OAuth mode requires NEXTCLOUD_HOST environment variable to be set"
-            )
-
-        # Check if we have client credentials OR if dynamic registration is possible
-        has_client_creds = os.getenv("NEXTCLOUD_OIDC_CLIENT_ID") and os.getenv(
-            "NEXTCLOUD_OIDC_CLIENT_SECRET"
-        )
-
-        if not has_client_creds:
-            # No client credentials - will attempt dynamic registration
-            # Show helpful message before server starts
-            click.echo("", err=True)
-            click.echo("OAuth Configuration:", err=True)
-            click.echo("  Mode: Dynamic Client Registration", err=True)
-            click.echo("  Host: " + nextcloud_host, err=True)
-            click.echo("  Storage: SQLite (TOKEN_STORAGE_DB)", err=True)
-            click.echo("", err=True)
-            click.echo(
-                "Note: Make sure 'Dynamic Client Registration' is enabled", err=True
-            )
-            click.echo("      in your Nextcloud OIDC app settings.", err=True)
-            click.echo("", err=True)
-        else:
-            click.echo("", err=True)
-            click.echo("OAuth Configuration:", err=True)
-            click.echo("  Mode: Pre-configured Client", err=True)
-            click.echo("  Host: " + nextcloud_host, err=True)
-            click.echo(
-                "  Client ID: "
-                + os.getenv("NEXTCLOUD_OIDC_CLIENT_ID", "")[:16]
-                + "...",
-                err=True,
-            )
-            click.echo("", err=True)
-
-    elif oauth is False:
-        # Force BasicAuth mode - verify credentials exist
-        if not os.getenv("NEXTCLOUD_USERNAME") or not os.getenv("NEXTCLOUD_PASSWORD"):
-            raise click.ClickException(
-                "--no-oauth flag set but NEXTCLOUD_USERNAME or NEXTCLOUD_PASSWORD not set"
-            )
-
-    enabled_apps = list(enable_app) if enable_app else None
-
-    app = get_app(transport=transport, enabled_apps=enabled_apps)
-
-    # Get observability settings and create uvicorn logging config
-    settings = get_settings()
-    uvicorn_log_config = get_uvicorn_logging_config(
-        log_format=settings.log_format,
-        log_level=settings.log_level,
-        include_trace_context=settings.log_include_trace_context,
-    )
-
-    uvicorn.run(
-        app=app,
-        host=host,
-        port=port,
-        log_level=log_level,
-        log_config=uvicorn_log_config,
-    )
-
-
-if __name__ == "__main__":
-    run()

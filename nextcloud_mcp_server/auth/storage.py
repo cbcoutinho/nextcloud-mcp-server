@@ -1,23 +1,28 @@
 """
-Refresh Token Storage for ADR-002 Tier 1: Offline Access
+Persistent Storage for MCP Server State
 
-Manages two separate concerns for OAuth authentication:
+This module provides SQLite-based storage for multiple concerns across both
+BasicAuth and OAuth authentication modes:
 
-1. **Refresh Tokens** (for background jobs ONLY)
+1. **Refresh Tokens** (OAuth mode only, for background jobs)
    - Securely stores encrypted refresh tokens for offline access
    - Used ONLY by background jobs to obtain access tokens
    - NEVER used within MCP client sessions or browser sessions
 
-2. **User Profile Cache** (for browser UI display ONLY)
+2. **User Profile Cache** (OAuth mode only, for browser UI display)
    - Caches IdP user profile data for browser-based admin UI
    - Queried ONCE at login, displayed from cache thereafter
    - NOT used for authorization decisions or background jobs
 
-IMPORTANT: These are separate concerns. Browser sessions read profile cache for
-display purposes. Background jobs use refresh tokens for API access. Never mix
-the two.
+3. **Webhook Registration Tracking** (both modes, for webhook management)
+   - Tracks registered webhook IDs mapped to presets
+   - Enables persistent webhook state across restarts
+   - Avoids redundant Nextcloud API calls for webhook status
 
-Tokens are encrypted at rest using Fernet symmetric encryption.
+IMPORTANT: The database is initialized in both BasicAuth and OAuth modes.
+Token storage requires TOKEN_ENCRYPTION_KEY, but webhook tracking does not.
+
+Sensitive data (tokens, secrets) is encrypted at rest using Fernet symmetric encryption.
 """
 
 import json
@@ -34,25 +39,34 @@ logger = logging.getLogger(__name__)
 
 
 class RefreshTokenStorage:
-    """Securely store and manage user refresh tokens and profile cache.
+    """Persistent storage for MCP server state (tokens, webhooks, and future features).
 
-    This class manages two separate concerns:
-    - Refresh tokens: Encrypted storage for background job access (write-only by OAuth, read-only by background jobs)
-    - User profiles: Plain JSON cache for browser UI display (written at login, read by UI)
+    This class manages multiple concerns across both BasicAuth and OAuth modes:
 
-    These concerns are architecturally separate and should never be mixed.
+    **OAuth-specific concerns**:
+    - Refresh tokens: Encrypted storage for background job access (requires encryption key)
+    - User profiles: Plain JSON cache for browser UI display
+    - OAuth client credentials: Encrypted client secrets from DCR
+    - OAuth sessions: Temporary session state for progressive consent flow
+
+    **Both modes**:
+    - Webhook registration: Track registered webhooks mapped to presets
+    - Schema versioning: Handle database migrations automatically
+
+    Token-related operations require TOKEN_ENCRYPTION_KEY, but webhook operations do not.
     """
 
-    def __init__(self, db_path: str, encryption_key: bytes):
+    def __init__(self, db_path: str, encryption_key: bytes | None = None):
         """
-        Initialize refresh token storage.
+        Initialize persistent storage.
 
         Args:
             db_path: Path to SQLite database file
-            encryption_key: Fernet encryption key (32 bytes, base64-encoded)
+            encryption_key: Optional Fernet encryption key (32 bytes, base64-encoded).
+                          Required for token storage operations, not required for webhook tracking.
         """
         self.db_path = db_path
-        self.cipher = Fernet(encryption_key)
+        self.cipher = Fernet(encryption_key) if encryption_key else None
         self._initialized = False
 
     @classmethod
@@ -62,40 +76,41 @@ class RefreshTokenStorage:
 
         Environment variables:
             TOKEN_STORAGE_DB: Path to database file (default: /app/data/tokens.db)
-            TOKEN_ENCRYPTION_KEY: Base64-encoded Fernet key
+            TOKEN_ENCRYPTION_KEY: Optional base64-encoded Fernet key (required for token storage)
 
         Returns:
             RefreshTokenStorage instance
 
-        Raises:
-            ValueError: If TOKEN_ENCRYPTION_KEY is not set
+        Note:
+            If TOKEN_ENCRYPTION_KEY is not set, token storage operations will fail,
+            but webhook tracking will still work.
         """
         db_path = os.getenv("TOKEN_STORAGE_DB", "/app/data/tokens.db")
         encryption_key_b64 = os.getenv("TOKEN_ENCRYPTION_KEY")
 
-        if not encryption_key_b64:
-            raise ValueError(
-                "TOKEN_ENCRYPTION_KEY environment variable is required. "
-                "Generate one with: python -c 'from cryptography.fernet import Fernet; "
-                "print(Fernet.generate_key().decode())'"
+        encryption_key = None
+        if encryption_key_b64:
+            # Fernet expects a base64url-encoded key as bytes, not decoded bytes
+            # The key from Fernet.generate_key() is already base64url-encoded
+            try:
+                # Convert string to bytes if needed
+                if isinstance(encryption_key_b64, str):
+                    encryption_key = encryption_key_b64.encode()
+                else:
+                    encryption_key = encryption_key_b64
+
+                # Validate the key by trying to create a Fernet instance
+                Fernet(encryption_key)
+            except Exception as e:
+                raise ValueError(
+                    f"Invalid TOKEN_ENCRYPTION_KEY: {e}. "
+                    "Must be a valid Fernet key (base64url-encoded 32 bytes)."
+                ) from e
+        else:
+            logger.info(
+                "TOKEN_ENCRYPTION_KEY not set - token storage operations will be unavailable, "
+                "but webhook tracking will still work"
             )
-
-        # Fernet expects a base64url-encoded key as bytes, not decoded bytes
-        # The key from Fernet.generate_key() is already base64url-encoded
-        try:
-            # Convert string to bytes if needed
-            if isinstance(encryption_key_b64, str):
-                encryption_key = encryption_key_b64.encode()
-            else:
-                encryption_key = encryption_key_b64
-
-            # Validate the key by trying to create a Fernet instance
-            Fernet(encryption_key)
-        except Exception as e:
-            raise ValueError(
-                f"Invalid TOKEN_ENCRYPTION_KEY: {e}. "
-                "Must be a valid Fernet key (base64url-encoded 32 bytes)."
-            ) from e
 
         return cls(db_path=db_path, encryption_key=encryption_key)
 
@@ -202,6 +217,38 @@ class RefreshTokenStorage:
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_oauth_sessions_mcp_code "
                 "ON oauth_sessions(mcp_authorization_code)"
+            )
+
+            # Schema version tracking
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at REAL NOT NULL
+                )
+                """
+            )
+
+            # Registered webhooks tracking (both BasicAuth and OAuth modes)
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS registered_webhooks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    webhook_id INTEGER NOT NULL UNIQUE,
+                    preset_id TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+
+            # Create indexes for efficient webhook queries
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_webhooks_preset "
+                "ON registered_webhooks(preset_id)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_webhooks_created "
+                "ON registered_webhooks(created_at)"
             )
 
             await db.commit()
@@ -1101,6 +1148,123 @@ class RefreshTokenStorage:
 
         if deleted > 0:
             logger.info(f"Cleaned up {deleted} expired OAuth session(s)")
+
+        return deleted
+
+    # ============================================================================
+    # Webhook Registration Tracking (both BasicAuth and OAuth modes)
+    # ============================================================================
+
+    async def store_webhook(self, webhook_id: int, preset_id: str) -> None:
+        """
+        Store registered webhook ID for tracking.
+
+        Args:
+            webhook_id: Nextcloud webhook ID
+            preset_id: Preset identifier (e.g., "notes_sync", "calendar_sync")
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO registered_webhooks (webhook_id, preset_id, created_at) VALUES (?, ?, ?)",
+                (webhook_id, preset_id, time.time()),
+            )
+            await db.commit()
+
+        logger.debug(f"Stored webhook {webhook_id} for preset '{preset_id}'")
+
+    async def get_webhooks_by_preset(self, preset_id: str) -> list[int]:
+        """
+        Get all webhook IDs registered for a preset.
+
+        Args:
+            preset_id: Preset identifier
+
+        Returns:
+            List of webhook IDs
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT webhook_id FROM registered_webhooks WHERE preset_id = ?",
+                (preset_id,),
+            )
+            rows = await cursor.fetchall()
+
+        return [row[0] for row in rows]
+
+    async def delete_webhook(self, webhook_id: int) -> bool:
+        """
+        Remove webhook from tracking.
+
+        Args:
+            webhook_id: Nextcloud webhook ID to remove
+
+        Returns:
+            True if webhook was deleted, False if not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM registered_webhooks WHERE webhook_id = ?", (webhook_id,)
+            )
+            await db.commit()
+            deleted = cursor.rowcount > 0
+
+        if deleted:
+            logger.debug(f"Deleted webhook {webhook_id} from tracking")
+
+        return deleted
+
+    async def list_all_webhooks(self) -> list[dict]:
+        """
+        List all tracked webhooks with metadata.
+
+        Returns:
+            List of webhook dictionaries with keys: webhook_id, preset_id, created_at
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT webhook_id, preset_id, created_at FROM registered_webhooks ORDER BY created_at DESC"
+            )
+            rows = await cursor.fetchall()
+
+        return [
+            {"webhook_id": row[0], "preset_id": row[1], "created_at": row[2]}
+            for row in rows
+        ]
+
+    async def clear_preset_webhooks(self, preset_id: str) -> int:
+        """
+        Delete all webhooks for a preset (bulk operation).
+
+        Args:
+            preset_id: Preset identifier
+
+        Returns:
+            Number of webhooks deleted
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM registered_webhooks WHERE preset_id = ?", (preset_id,)
+            )
+            await db.commit()
+            deleted = cursor.rowcount
+
+        if deleted > 0:
+            logger.debug(f"Cleared {deleted} webhook(s) for preset '{preset_id}'")
 
         return deleted
 

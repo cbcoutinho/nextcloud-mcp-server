@@ -20,7 +20,7 @@ import httpx
 import jwt
 
 from ..config import get_settings
-from .refresh_token_storage import RefreshTokenStorage
+from .storage import RefreshTokenStorage
 
 logger = logging.getLogger(__name__)
 

@@ -23,7 +23,7 @@ import httpx
 import jwt
 from cryptography.fernet import Fernet
 
-from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.auth.token_exchange import exchange_token_for_delegation
 
 logger = logging.getLogger(__name__)

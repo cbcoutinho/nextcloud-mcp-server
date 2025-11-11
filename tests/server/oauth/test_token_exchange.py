@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import jwt
 import pytest
 
-from nextcloud_mcp_server.auth.refresh_token_storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
 from nextcloud_mcp_server.auth.token_exchange import TokenExchangeService
 

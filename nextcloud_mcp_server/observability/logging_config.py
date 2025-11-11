@@ -12,7 +12,7 @@ import logging
 import sys
 from typing import Any
 
-from pythonjsonlogger import jsonlogger
+from pythonjsonlogger.json import JsonFormatter
 
 from nextcloud_mcp_server.observability.tracing import get_trace_context
 
@@ -43,7 +43,7 @@ class HealthCheckFilter(logging.Filter):
         )
 
 
-class TraceContextFormatter(jsonlogger.JsonFormatter):
+class TraceContextFormatter(JsonFormatter):
     """
     JSON formatter that injects OpenTelemetry trace context into log records.
 
@@ -147,7 +147,7 @@ def setup_logging(
                 datefmt="%Y-%m-%dT%H:%M:%S",
             )
         else:
-            formatter = jsonlogger.JsonFormatter(
+            formatter = JsonFormatter(
                 "%(timestamp)s %(level)s %(name)s %(message)s",
                 datefmt="%Y-%m-%dT%H:%M:%S",
             )
@@ -251,7 +251,7 @@ def get_uvicorn_logging_config(
         if include_trace_context:
             formatter_class = "nextcloud_mcp_server.observability.logging_config.TraceContextFormatter"
         else:
-            formatter_class = "pythonjsonlogger.jsonlogger.JsonFormatter"
+            formatter_class = "pythonjsonlogger.json.JsonFormatter"
         format_string = "%(timestamp)s %(level)s %(name)s %(message)s"
     else:
         if include_trace_context:
