@@ -103,7 +103,7 @@ def test_cli_options_set_environment_variables(runner, clean_env, monkeypatch):
         raise SystemExit(0)
 
     # Patch get_app to capture env vars
-    monkeypatch.setattr("nextcloud_mcp_server.app.get_app", mock_get_app)
+    monkeypatch.setattr("nextcloud_mcp_server.cli.get_app", mock_get_app)
 
     _ = runner.invoke(
         run,
@@ -158,7 +158,7 @@ def test_cli_options_override_environment_variables(runner, monkeypatch):
         )
         raise SystemExit(0)
 
-    monkeypatch.setattr("nextcloud_mcp_server.app.get_app", mock_get_app)
+    monkeypatch.setattr("nextcloud_mcp_server.cli.get_app", mock_get_app)
 
     # Provide CLI options that should override env vars
     _ = runner.invoke(
@@ -211,7 +211,7 @@ def test_environment_variables_used_when_cli_not_provided(runner, monkeypatch):
         )
         raise SystemExit(0)
 
-    monkeypatch.setattr("nextcloud_mcp_server.app.get_app", mock_get_app)
+    monkeypatch.setattr("nextcloud_mcp_server.cli.get_app", mock_get_app)
 
     # Don't provide any CLI options - should use env vars
     _ = runner.invoke(run, [])
@@ -243,7 +243,7 @@ def test_default_values(runner, clean_env, monkeypatch):
         )
         raise SystemExit(0)
 
-    monkeypatch.setattr("nextcloud_mcp_server.app.get_app", mock_get_app)
+    monkeypatch.setattr("nextcloud_mcp_server.cli.get_app", mock_get_app)
 
     # Don't provide CLI options or env vars - should use defaults
     _ = runner.invoke(run, [])
@@ -275,7 +275,7 @@ def test_oauth_token_type_case_normalization(runner, clean_env, monkeypatch):
         )
         raise SystemExit(0)
 
-    monkeypatch.setattr("nextcloud_mcp_server.app.get_app", mock_get_app)
+    monkeypatch.setattr("nextcloud_mcp_server.cli.get_app", mock_get_app)
 
     # Test uppercase JWT
     runner.invoke(run, ["--oauth-token-type", "JWT"])
