@@ -23,6 +23,7 @@ from .sharing import SharingClient
 from .tables import TablesClient
 from .users import UsersClient
 from .webdav import WebDAVClient
+from .webhooks import WebhooksClient
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,7 @@ class NextcloudClient:
         self.users = UsersClient(self._client, username)
         self.groups = GroupsClient(self._client, username)
         self.sharing = SharingClient(self._client, username)
+        self.webhooks = WebhooksClient(self._client, username)
 
         # Initialize controllers
         self._notes_search = NotesSearchController()

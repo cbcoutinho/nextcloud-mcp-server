@@ -5,7 +5,7 @@ import os
 import pytest
 from click.testing import CliRunner
 
-from nextcloud_mcp_server.app import run
+from nextcloud_mcp_server.cli import run
 
 
 @pytest.fixture

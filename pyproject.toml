@@ -116,7 +116,7 @@ dev = [
 ]
 
 [project.scripts]
-nextcloud-mcp-server = "nextcloud_mcp_server.app:run"
+nextcloud-mcp-server = "nextcloud_mcp_server.cli:run"
 
 [[tool.uv.index]]
 name = "testpypi"

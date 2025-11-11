@@ -19,6 +19,57 @@ from starlette.responses import HTMLResponse, JSONResponse
 logger = logging.getLogger(__name__)
 
 
+async def _get_authenticated_client_for_userinfo(request: Request) -> httpx.AsyncClient:
+    """Get an authenticated HTTP client for user info page operations.
+
+    Args:
+        request: Starlette request object
+
+    Returns:
+        Authenticated httpx.AsyncClient
+    """
+    oauth_ctx = getattr(request.app.state, "oauth_context", None)
+
+    # BasicAuth mode - use credentials from environment
+    if not oauth_ctx:
+        nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+        username = os.getenv("NEXTCLOUD_USERNAME")
+        password = os.getenv("NEXTCLOUD_PASSWORD")
+
+        if not all([nextcloud_host, username, password]):
+            raise RuntimeError("BasicAuth credentials not configured")
+
+        assert nextcloud_host is not None  # Type narrowing for type checker
+        return httpx.AsyncClient(
+            base_url=nextcloud_host,
+            auth=(username, password),
+            timeout=30.0,
+        )
+
+    # OAuth mode - get token from session
+    storage = oauth_ctx.get("storage")
+    session_id = request.cookies.get("mcp_session")
+
+    if not storage or not session_id:
+        raise RuntimeError("Session not found")
+
+    token_data = await storage.get_refresh_token(session_id)
+    if not token_data or "access_token" not in token_data:
+        raise RuntimeError("No access token found in session")
+
+    access_token = token_data["access_token"]
+    nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
+
+    if not nextcloud_host:
+        raise RuntimeError("Nextcloud host not configured")
+
+    return httpx.AsyncClient(
+        base_url=nextcloud_host,
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=30.0,
+    )
+
+
 async def _get_processing_status(request: Request) -> dict[str, Any] | None:
     """Get vector sync processing status.
 
@@ -296,6 +347,19 @@ async def user_info_html(request: Request) -> HTMLResponse:
     # Get vector sync processing status
     processing_status = await _get_processing_status(request)
 
+    # Check if user is admin (for Webhooks tab)
+    is_admin = False
+    try:
+        from nextcloud_mcp_server.auth.permissions import is_nextcloud_admin
+
+        # Get authenticated HTTP client
+        http_client = await _get_authenticated_client_for_userinfo(request)
+        is_admin = await is_nextcloud_admin(request, http_client)
+        await http_client.aclose()
+    except Exception as e:
+        logger.warning(f"Failed to check admin status: {e}")
+        # Default to not admin if check fails
+
     # Check for error
     if "error" in user_context and user_context["error"] != "":
         # Get login URL dynamically
@@ -506,17 +570,61 @@ async def user_info_html(request: Request) -> HTMLResponse:
         <div class="warning">{user_context["idp_profile_error"]}</div>
         """
 
+    # Build user info tab content
+    user_info_tab_html = f"""
+        <h2>Authentication</h2>
+        <table>
+            <tr>
+                <td><strong>Username</strong></td>
+                <td>{username}</td>
+            </tr>
+            <tr>
+                <td><strong>Authentication Mode</strong></td>
+                <td><span class="badge badge-{auth_mode}">{auth_mode}</span></td>
+            </tr>
+        </table>
+
+        {host_info_html}
+        {session_info_html}
+        {idp_profile_html}
+    """
+
+    # Determine which tabs to show
+    show_vector_sync_tab = processing_status is not None
+    show_webhooks_tab = is_admin
+
+    # Build vector sync tab content (only if enabled)
+    vector_sync_tab_html = ""
+    if show_vector_sync_tab:
+        vector_sync_tab_html = vector_status_html
+
+    # Build webhooks tab content (only if admin)
+    webhooks_tab_html = ""
+    if show_webhooks_tab:
+        webhooks_tab_html = """
+            <div hx-get="/user/webhooks" hx-trigger="load" hx-swap="outerHTML">
+                <p style="color: #999;">Loading webhook management...</p>
+            </div>
+        """
+
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>User Info - Nextcloud MCP Server</title>
+        <title>Nextcloud MCP Server</title>
+
+        <!-- htmx for dynamic loading -->
+        <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+
+        <!-- Alpine.js for tab state management -->
+        <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
         <style>
             body {{
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                max-width: 800px;
+                max-width: 900px;
                 margin: 50px auto;
                 padding: 20px;
                 background-color: #f5f5f5;
@@ -535,10 +643,46 @@ async def user_info_html(request: Request) -> HTMLResponse:
             }}
             h2 {{
                 color: #333;
-                margin-top: 30px;
+                margin-top: 20px;
                 border-bottom: 1px solid #e0e0e0;
                 padding-bottom: 5px;
             }}
+
+            /* Tab navigation */
+            .tabs {{
+                display: flex;
+                gap: 0;
+                margin: 20px 0 0 0;
+                border-bottom: 2px solid #e0e0e0;
+            }}
+            .tab {{
+                padding: 12px 24px;
+                cursor: pointer;
+                background: transparent;
+                border: none;
+                font-size: 14px;
+                font-weight: 500;
+                color: #666;
+                border-bottom: 2px solid transparent;
+                margin-bottom: -2px;
+                transition: all 0.2s;
+            }}
+            .tab:hover {{
+                color: #0082c9;
+                background-color: #f5f5f5;
+            }}
+            .tab.active {{
+                color: #0082c9;
+                border-bottom-color: #0082c9;
+            }}
+
+            /* Tab content */
+            .tab-content {{
+                padding: 20px 0;
+                min-height: 300px;
+            }}
+
+            /* Tables */
             table {{
                 width: 100%;
                 border-collapse: collapse;
@@ -558,6 +702,8 @@ async def user_info_html(request: Request) -> HTMLResponse:
                 border-radius: 3px;
                 font-family: 'Courier New', monospace;
             }}
+
+            /* Badges */
             .badge {{
                 display: inline-block;
                 padding: 3px 8px;
@@ -574,6 +720,8 @@ async def user_info_html(request: Request) -> HTMLResponse:
                 background-color: #2196f3;
                 color: white;
             }}
+
+            /* Messages */
             .warning {{
                 background-color: #fff3cd;
                 border-left: 4px solid #ffc107;
@@ -581,11 +729,15 @@ async def user_info_html(request: Request) -> HTMLResponse:
                 margin: 15px 0;
                 color: #856404;
             }}
-            .logout {{
-                margin-top: 30px;
-                padding-top: 20px;
-                border-top: 1px solid #e0e0e0;
+            .info-message {{
+                background-color: #e3f2fd;
+                border-left: 4px solid #2196f3;
+                padding: 15px;
+                margin: 15px 0;
+                color: #1565c0;
             }}
+
+            /* Buttons */
             .button {{
                 display: inline-block;
                 padding: 10px 20px;
@@ -594,34 +746,101 @@ async def user_info_html(request: Request) -> HTMLResponse:
                 text-decoration: none;
                 border-radius: 4px;
                 transition: background-color 0.3s;
+                border: none;
+                cursor: pointer;
+                font-size: 14px;
             }}
             .button:hover {{
                 background-color: #b71c1c;
             }}
+            .button-primary {{
+                background-color: #0082c9;
+            }}
+            .button-primary:hover {{
+                background-color: #006ba3;
+            }}
+
+            /* Logout section */
+            .logout {{
+                margin-top: 30px;
+                padding-top: 20px;
+                border-top: 1px solid #e0e0e0;
+            }}
         </style>
     </head>
     <body>
-        <div class="container">
-            <h1>Nextcloud MCP Server - User Info</h1>
+        <div class="container" x-data="{{ activeTab: 'user-info' }}">
+            <h1>Nextcloud MCP Server</h1>
 
-            <h2>Authentication</h2>
-            <table>
-                <tr>
-                    <td><strong>Username</strong></td>
-                    <td>{username}</td>
-                </tr>
-                <tr>
-                    <td><strong>Authentication Mode</strong></td>
-                    <td><span class="badge badge-{auth_mode}">{auth_mode}</span></td>
-                </tr>
-            </table>
+            <!-- Tab Navigation -->
+            <div class="tabs">
+                <button
+                    class="tab"
+                    :class="activeTab === 'user-info' ? 'active' : ''"
+                    @click="activeTab = 'user-info'">
+                    User Info
+                </button>
+                {
+        ""
+        if not show_vector_sync_tab
+        else '''
+                <button
+                    class="tab"
+                    :class="activeTab === 'vector-sync' ? 'active' : ''"
+                    @click="activeTab = 'vector-sync'">
+                    Vector Sync
+                </button>
+                '''
+    }
+                {
+        ""
+        if not show_webhooks_tab
+        else '''
+                <button
+                    class="tab"
+                    :class="activeTab === 'webhooks' ? 'active' : ''"
+                    @click="activeTab = 'webhooks'">
+                    Webhooks
+                </button>
+                '''
+    }
+            </div>
 
-            {host_info_html}
-            {session_info_html}
-            {vector_status_html}
-            {idp_profile_html}
+            <!-- Tab Content -->
+            <div class="tab-content">
+                <!-- User Info Tab -->
+                <div x-show="activeTab === 'user-info'" x-transition>
+                    {user_info_tab_html}
+                </div>
 
-            {f'<div class="logout"><a href="{logout_url}" class="button">Logout</a></div>' if auth_mode == "oauth" else ""}
+                {
+        ""
+        if not show_vector_sync_tab
+        else f'''
+                <!-- Vector Sync Tab -->
+                <div x-show="activeTab === 'vector-sync'" x-transition>
+                    {vector_sync_tab_html}
+                </div>
+                '''
+    }
+
+                {
+        ""
+        if not show_webhooks_tab
+        else f'''
+                <!-- Webhooks Tab (admin-only, loaded dynamically) -->
+                <div x-show="activeTab === 'webhooks'" x-transition>
+                    {webhooks_tab_html}
+                </div>
+                '''
+    }
+            </div>
+
+            {
+        f'<div class="logout"><a href="{logout_url}" class="button">Logout</a></div>'
+        if auth_mode == "oauth"
+        else ""
+    }
         </div>
     </body>
     </html>

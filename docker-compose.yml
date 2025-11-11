@@ -94,7 +94,7 @@ services:
       # 1. Network mode: Set QDRANT_URL=http://qdrant:6333 (requires qdrant service)
       # 2. In-memory mode: Set QDRANT_LOCATION=:memory: (default if nothing set)
       # 3. Persistent local: Set QDRANT_LOCATION=/app/data/qdrant (stored in mcp-data volume)
-      - QDRANT_LOCATION=":memory:"  # In-memory mode for CI/testing (no external service required)
+      #- QDRANT_LOCATION=/app/data/qdrant  # In-memory mode used if not set
       #- QDRANT_URL=http://qdrant:6333  # Uncomment for network mode
       #- QDRANT_API_KEY=${QDRANT_API_KEY:-my_secret_api_key}  # Only for network mode
 

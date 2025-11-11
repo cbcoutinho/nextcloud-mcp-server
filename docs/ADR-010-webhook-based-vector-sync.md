@@ -43,7 +43,8 @@ The webhook_listeners app supports events for all Nextcloud apps relevant to thi
 **Files/Notes Events** (notes are stored as files):
 - `OCP\Files\Events\Node\NodeCreatedEvent`
 - `OCP\Files\Events\Node\NodeWrittenEvent`
-- `OCP\Files\Events\Node\NodeDeletedEvent`
+- `OCP\Files\Events\Node\BeforeNodeDeletedEvent` ⭐ **Use this for deletion (includes node.id)**
+- `OCP\Files\Events\Node\NodeDeletedEvent` (missing node.id - file already deleted)
 - `OCP\Files\Events\Node\NodeRenamedEvent`
 - `OCP\Files\Events\Node\NodeCopiedEvent`
 
@@ -228,8 +229,9 @@ def extract_document_task(event_class: str, payload: dict) -> DocumentTask | Non
             modified_at=event_data["objectData"]["lastmodified"],
         )
 
-    # Deletion events
-    elif "NodeDeletedEvent" in event_class or \
+    # Deletion events (use BeforeNodeDeletedEvent for files to get node.id)
+    elif "BeforeNodeDeletedEvent" in event_class or \
+         "NodeDeletedEvent" in event_class or \
          "CalendarObjectDeletedEvent" in event_class:
         # Similar logic for delete operations
         ...
@@ -455,7 +457,14 @@ Manual validation of Nextcloud webhook schemas and behavior confirmed that webho
 
 **Impact:** The event parser in this ADR's example code assumes `event_data["node"]["id"]` exists for all file events. This will fail for deletions.
 
-**Required Fix:** Check for `id` existence and fall back to path-based identification:
+**Update (2025-11-11):** Nextcloud maintainer clarified that `BeforeNodeDeletedEvent` should be used instead of `NodeDeletedEvent` to access `node.id` before the file is deleted. See [issue #56371](https://github.com/nextcloud/server/issues/56371#issuecomment-2470896634).
+
+> "Try using the `BeforeNodeDeletedEvent`. The `id` should still be available at that time. The reason `id` is not in `NodeDeletedEvent` is because the file is effectively guaranteed to be gone and, in turn, so is the FileInfo."
+> — Josh Richards, Nextcloud maintainer
+
+**Recommended Solution:** Use `OCP\Files\Events\Node\BeforeNodeDeletedEvent` for file deletion webhooks instead of `NodeDeletedEvent`.
+
+**Alternative Fix (if using NodeDeletedEvent):** Check for `id` existence and fall back to path-based identification:
 
 ```python
 def extract_document_task(event_class: str, payload: dict) -> DocumentTask | None:
