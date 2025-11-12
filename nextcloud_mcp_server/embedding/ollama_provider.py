@@ -17,6 +17,7 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         base_url: str,
         model: str = "nomic-embed-text",
         verify_ssl: bool = True,
+        timeout=httpx.Timeout(timeout=120, connect=5),
     ):
         """
         Initialize Ollama embedding provider.
@@ -29,8 +30,8 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.verify_ssl = verify_ssl
-        self.client = httpx.AsyncClient(verify=verify_ssl, timeout=30.0)
-        self._dimension = 768  # nomic-embed-text default
+        self.client = httpx.AsyncClient(verify=verify_ssl, timeout=timeout)
+        self._dimension: int | None = None  # Will be detected dynamically
         logger.info(
             f"Initialized Ollama provider: {base_url} (model={model}, verify_ssl={verify_ssl})"
         )
@@ -73,13 +74,36 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
             embeddings.append(embedding)
         return embeddings
 
+    async def _detect_dimension(self):
+        """
+        Detect embedding dimension by generating a test embedding.
+
+        This method queries the model to determine the actual dimension
+        instead of relying on hardcoded values.
+        """
+        if self._dimension is None:
+            logger.debug(f"Detecting embedding dimension for model {self.model}...")
+            test_embedding = await self.embed("test")
+            self._dimension = len(test_embedding)
+            logger.info(
+                f"Detected embedding dimension: {self._dimension} for model {self.model}"
+            )
+
     def get_dimension(self) -> int:
         """
         Get embedding dimension.
 
         Returns:
-            Vector dimension (768 for nomic-embed-text)
+            Vector dimension for the configured model
+
+        Raises:
+            RuntimeError: If dimension not detected yet (call _detect_dimension first)
         """
+        if self._dimension is None:
+            raise RuntimeError(
+                f"Embedding dimension not detected yet for model {self.model}. "
+                "Call _detect_dimension() first or generate an embedding."
+            )
         return self._dimension
 
     def _check_model_is_loaded(self, autoload: bool = True):

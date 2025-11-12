@@ -418,6 +418,19 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
                 "NEXTCLOUD_USERNAME is required for vector sync in BasicAuth mode"
             )
 
+        # Initialize Qdrant collection before starting background tasks
+        logger.info("Initializing Qdrant collection...")
+        from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+        try:
+            await get_qdrant_client()  # Triggers collection creation if needed
+            logger.info("Qdrant collection ready")
+        except Exception as e:
+            logger.error(f"Failed to initialize Qdrant collection: {e}")
+            raise RuntimeError(
+                f"Cannot start vector sync - Qdrant initialization failed: {e}"
+            ) from e
+
         # Initialize shared state
         send_stream, receive_stream = anyio.create_memory_object_stream(
             max_buffer_size=settings.vector_sync_queue_max_size
@@ -1085,6 +1098,19 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 # Get Nextcloud client from MCP app context
                 # Create client since we're outside FastMCP lifespan
                 client = NextcloudClient.from_env()
+
+                # Initialize Qdrant collection before starting background tasks
+                logger.info("Initializing Qdrant collection...")
+                from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+                try:
+                    await get_qdrant_client()  # Triggers collection creation if needed
+                    logger.info("Qdrant collection ready")
+                except Exception as e:
+                    logger.error(f"Failed to initialize Qdrant collection: {e}")
+                    raise RuntimeError(
+                        f"Cannot start vector sync - Qdrant initialization failed: {e}"
+                    ) from e
 
                 # Initialize shared state
                 send_stream, receive_stream = anyio_module.create_memory_object_stream(
