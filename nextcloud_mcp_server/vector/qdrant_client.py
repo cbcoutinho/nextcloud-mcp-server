@@ -66,10 +66,23 @@ async def get_qdrant_client() -> AsyncQdrantClient:
         from nextcloud_mcp_server.embedding import get_embedding_service
 
         embedding_service = get_embedding_service()
+
+        # Detect dimension dynamically (for OllamaEmbeddingProvider)
+        if hasattr(embedding_service.provider, "_detect_dimension"):
+            await embedding_service.provider._detect_dimension()  # type: ignore[call-non-callable]
+
         expected_dimension = embedding_service.get_dimension()
 
-        try:
-            # Get existing collection
+        # Explicitly check if collection exists
+        logger.debug(f"Checking if collection '{collection_name}' exists...")
+        collections = await _qdrant_client.get_collections()
+        collection_names = [c.name for c in collections.collections]
+
+        if collection_name in collection_names:
+            # Collection exists - validate dimensions
+            logger.debug(
+                f"Collection '{collection_name}' found, validating dimensions..."
+            )
             collection_info = await _qdrant_client.get_collection(collection_name)
             actual_dimension = collection_info.config.params.vectors.size
 
@@ -91,12 +104,12 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 f"(dimension={actual_dimension}, model={settings.ollama_embedding_model})"
             )
 
-        except Exception as e:
-            # Check if it's a dimension mismatch error (re-raise it)
-            if isinstance(e, ValueError) and "Dimension mismatch" in str(e):
-                raise
-
-            # Collection doesn't exist or other error, create it
+        else:
+            # Collection doesn't exist - create it
+            logger.info(
+                f"Collection '{collection_name}' not found, creating with "
+                f"dimension={expected_dimension}, model={settings.ollama_embedding_model}..."
+            )
             await _qdrant_client.create_collection(
                 collection_name=collection_name,
                 vectors_config=VectorParams(
