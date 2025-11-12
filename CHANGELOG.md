@@ -1,3 +1,9 @@
+## v0.32.1 (2025-11-12)
+
+### Fix
+
+- add dynamic dimension detection for Ollama embedding models
+
 ## v0.32.0 (2025-11-11)
 
 ### Feat
