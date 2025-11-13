@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
@@ -43,6 +44,10 @@ from nextcloud_mcp_server.observability import (
     ObservabilityMiddleware,
     setup_metrics,
     setup_tracing,
+)
+from nextcloud_mcp_server.observability.metrics import (
+    record_dependency_check,
+    set_dependency_health,
 )
 from nextcloud_mcp_server.server import (
     configure_calendar_tools,
@@ -1205,12 +1210,35 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         checks = {}
         is_ready = True
 
-        # Check Nextcloud host configuration
+        # Check Nextcloud host configuration and connectivity
         nextcloud_host = os.getenv("NEXTCLOUD_HOST")
         if nextcloud_host:
             checks["nextcloud_configured"] = "ok"
+            # Try to connect to Nextcloud
+            start_time = time.time()
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    response = await client.get(f"{nextcloud_host}/status.php")
+                    duration = time.time() - start_time
+                    if response.status_code == 200:
+                        checks["nextcloud_reachable"] = "ok"
+                        set_dependency_health("nextcloud", True)
+                    else:
+                        checks["nextcloud_reachable"] = (
+                            f"error: status {response.status_code}"
+                        )
+                        set_dependency_health("nextcloud", False)
+                        is_ready = False
+                    record_dependency_check("nextcloud", duration)
+            except Exception as e:
+                duration = time.time() - start_time
+                checks["nextcloud_reachable"] = f"error: {str(e)}"
+                set_dependency_health("nextcloud", False)
+                record_dependency_check("nextcloud", duration)
+                is_ready = False
         else:
             checks["nextcloud_configured"] = "error: NEXTCLOUD_HOST not set"
+            set_dependency_health("nextcloud", False)
             is_ready = False
 
         # Check authentication configuration
@@ -1238,20 +1266,29 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         qdrant_url = os.getenv("QDRANT_URL")  # Only set in network mode
 
         if vector_sync_enabled and qdrant_url:
+            start_time = time.time()
             try:
                 async with httpx.AsyncClient(timeout=2.0) as client:
                     response = await client.get(f"{qdrant_url}/readyz")
+                    duration = time.time() - start_time
                     if response.status_code == 200:
                         checks["qdrant"] = "ok"
+                        set_dependency_health("qdrant", True)
                     else:
                         checks["qdrant"] = f"error: status {response.status_code}"
+                        set_dependency_health("qdrant", False)
                         is_ready = False
+                    record_dependency_check("qdrant", duration)
             except Exception as e:
+                duration = time.time() - start_time
                 checks["qdrant"] = f"error: {str(e)}"
+                set_dependency_health("qdrant", False)
+                record_dependency_check("qdrant", duration)
                 is_ready = False
         elif vector_sync_enabled:
             # Using embedded Qdrant (memory or persistent mode)
             checks["qdrant"] = "embedded"
+            set_dependency_health("qdrant", True)
 
         status_code = 200 if is_ready else 503
         return JSONResponse(

@@ -35,6 +35,8 @@ from typing import Any, Optional
 import aiosqlite
 from cryptography.fernet import Fernet
 
+from nextcloud_mcp_server.observability.metrics import record_db_operation
+
 logger = logging.getLogger(__name__)
 
 
@@ -292,35 +294,43 @@ class RefreshTokenStorage:
         # For Flow 2, set provisioned_at timestamp
         provisioned_at = now if flow_type == "flow2" else None
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                INSERT OR REPLACE INTO refresh_tokens
-                (user_id, encrypted_token, expires_at, created_at, updated_at,
-                 flow_type, token_audience, provisioned_at, provisioning_client_id, scopes)
-                VALUES (?, ?, ?, COALESCE((SELECT created_at FROM refresh_tokens WHERE user_id = ?), ?), ?,
-                        ?, ?, ?, ?, ?)
-                """,
-                (
-                    user_id,
-                    encrypted_token,
-                    expires_at,
-                    user_id,
-                    now,
-                    now,
-                    flow_type,
-                    token_audience,
-                    provisioned_at,
-                    provisioning_client_id,
-                    scopes_json,
-                ),
-            )
-            await db.commit()
+        start_time = time.time()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    """
+                    INSERT OR REPLACE INTO refresh_tokens
+                    (user_id, encrypted_token, expires_at, created_at, updated_at,
+                     flow_type, token_audience, provisioned_at, provisioning_client_id, scopes)
+                    VALUES (?, ?, ?, COALESCE((SELECT created_at FROM refresh_tokens WHERE user_id = ?), ?), ?,
+                            ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        encrypted_token,
+                        expires_at,
+                        user_id,
+                        now,
+                        now,
+                        flow_type,
+                        token_audience,
+                        provisioned_at,
+                        provisioning_client_id,
+                        scopes_json,
+                    ),
+                )
+                await db.commit()
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "insert", duration, "success")
 
-        logger.info(
-            f"Stored refresh token for user {user_id}"
-            + (f" (expires at {expires_at})" if expires_at else "")
-        )
+            logger.info(
+                f"Stored refresh token for user {user_id}"
+                + (f" (expires at {expires_at})" if expires_at else "")
+            )
+        except Exception:
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "insert", duration, "error")
+            raise
 
         # Audit log
         await self._audit_log(
