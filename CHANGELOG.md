@@ -1,3 +1,9 @@
+## v0.34.2 (2025-11-13)
+
+### Fix
+
+- Use NEXTCLOUD_OIDC_CLIENT_ID/SECRET env vars consistently
+
 ## v0.34.1 (2025-11-13)
 
 ### Fix
