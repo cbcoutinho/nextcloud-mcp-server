@@ -35,6 +35,8 @@ from typing import Any, Optional
 import aiosqlite
 from cryptography.fernet import Fernet
 
+from nextcloud_mcp_server.observability.metrics import record_db_operation
+
 logger = logging.getLogger(__name__)
 
 
@@ -292,35 +294,43 @@ class RefreshTokenStorage:
         # For Flow 2, set provisioned_at timestamp
         provisioned_at = now if flow_type == "flow2" else None
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                INSERT OR REPLACE INTO refresh_tokens
-                (user_id, encrypted_token, expires_at, created_at, updated_at,
-                 flow_type, token_audience, provisioned_at, provisioning_client_id, scopes)
-                VALUES (?, ?, ?, COALESCE((SELECT created_at FROM refresh_tokens WHERE user_id = ?), ?), ?,
-                        ?, ?, ?, ?, ?)
-                """,
-                (
-                    user_id,
-                    encrypted_token,
-                    expires_at,
-                    user_id,
-                    now,
-                    now,
-                    flow_type,
-                    token_audience,
-                    provisioned_at,
-                    provisioning_client_id,
-                    scopes_json,
-                ),
-            )
-            await db.commit()
+        start_time = time.time()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    """
+                    INSERT OR REPLACE INTO refresh_tokens
+                    (user_id, encrypted_token, expires_at, created_at, updated_at,
+                     flow_type, token_audience, provisioned_at, provisioning_client_id, scopes)
+                    VALUES (?, ?, ?, COALESCE((SELECT created_at FROM refresh_tokens WHERE user_id = ?), ?), ?,
+                            ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        encrypted_token,
+                        expires_at,
+                        user_id,
+                        now,
+                        now,
+                        flow_type,
+                        token_audience,
+                        provisioned_at,
+                        provisioning_client_id,
+                        scopes_json,
+                    ),
+                )
+                await db.commit()
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "insert", duration, "success")
 
-        logger.info(
-            f"Stored refresh token for user {user_id}"
-            + (f" (expires at {expires_at})" if expires_at else "")
-        )
+            logger.info(
+                f"Stored refresh token for user {user_id}"
+                + (f" (expires at {expires_at})" if expires_at else "")
+            )
+        except Exception:
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "insert", duration, "error")
+            raise
 
         # Audit log
         await self._audit_log(
@@ -422,46 +432,54 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                """
-                SELECT encrypted_token, expires_at, flow_type, token_audience,
-                       provisioned_at, provisioning_client_id, scopes
-                FROM refresh_tokens WHERE user_id = ?
-                """,
-                (user_id,),
-            ) as cursor:
-                row = await cursor.fetchone()
-
-        if not row:
-            logger.debug(f"No refresh token found for user {user_id}")
-            return None
-
-        (
-            encrypted_token,
-            expires_at,
-            flow_type,
-            token_audience,
-            provisioned_at,
-            provisioning_client_id,
-            scopes_json,
-        ) = row
-
-        # Check expiration
-        if expires_at is not None and expires_at < time.time():
-            logger.warning(
-                f"Refresh token for user {user_id} has expired (expired at {expires_at})"
-            )
-            await self.delete_refresh_token(user_id)
-            return None
-
+        start_time = time.time()
         try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute(
+                    """
+                    SELECT encrypted_token, expires_at, flow_type, token_audience,
+                           provisioned_at, provisioning_client_id, scopes
+                    FROM refresh_tokens WHERE user_id = ?
+                    """,
+                    (user_id,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+
+            if not row:
+                logger.debug(f"No refresh token found for user {user_id}")
+                duration = time.time() - start_time
+                record_db_operation("sqlite", "select", duration, "success")
+                return None
+
+            (
+                encrypted_token,
+                expires_at,
+                flow_type,
+                token_audience,
+                provisioned_at,
+                provisioning_client_id,
+                scopes_json,
+            ) = row
+
+            # Check expiration
+            if expires_at is not None and expires_at < time.time():
+                logger.warning(
+                    f"Refresh token for user {user_id} has expired (expired at {expires_at})"
+                )
+                await self.delete_refresh_token(user_id)
+                duration = time.time() - start_time
+                record_db_operation("sqlite", "select", duration, "success")
+                return None
+
             decrypted_token = self.cipher.decrypt(encrypted_token).decode()
             scopes = json.loads(scopes_json) if scopes_json else None
 
             logger.debug(
                 f"Retrieved refresh token for user {user_id} (flow_type: {flow_type})"
             )
+
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "select", duration, "success")
 
             return {
                 "refresh_token": decrypted_token,
@@ -474,6 +492,8 @@ class RefreshTokenStorage:
                 "scopes": scopes,
             }
         except Exception as e:
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "select", duration, "error")
             logger.error(f"Failed to decrypt refresh token for user {user_id}: {e}")
             return None
 
@@ -568,25 +588,34 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                "DELETE FROM refresh_tokens WHERE user_id = ?",
-                (user_id,),
-            )
-            await db.commit()
-            deleted = cursor.rowcount > 0
+        start_time = time.time()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute(
+                    "DELETE FROM refresh_tokens WHERE user_id = ?",
+                    (user_id,),
+                )
+                await db.commit()
+                deleted = cursor.rowcount > 0
 
-        if deleted:
-            logger.info(f"Deleted refresh token for user {user_id}")
-            await self._audit_log(
-                event="delete_refresh_token",
-                user_id=user_id,
-                auth_method="offline_access",
-            )
-        else:
-            logger.debug(f"No refresh token to delete for user {user_id}")
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "delete", duration, "success")
 
-        return deleted
+            if deleted:
+                logger.info(f"Deleted refresh token for user {user_id}")
+                await self._audit_log(
+                    event="delete_refresh_token",
+                    user_id=user_id,
+                    auth_method="offline_access",
+                )
+            else:
+                logger.debug(f"No refresh token to delete for user {user_id}")
+
+            return deleted
+        except Exception:
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "delete", duration, "error")
+            raise
 
     async def get_all_user_ids(self) -> list[str]:
         """

@@ -18,6 +18,7 @@ from nextcloud_mcp_server.embedding import get_embedding_service
 from nextcloud_mcp_server.observability.metrics import (
     record_qdrant_operation,
     record_vector_sync_processing,
+    update_vector_sync_queue_size,
 )
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.vector.document_chunker import DocumentChunker
@@ -61,11 +62,21 @@ async def processor_task(
             with anyio.fail_after(1.0):
                 doc_task = await receive_stream.receive()
 
+            # Update queue size metric after receiving
+            stream_stats = receive_stream.statistics()
+            update_vector_sync_queue_size(stream_stats.current_buffer_used)
+
             # Process document
             await process_document(doc_task, nc_client)
 
+            # Update queue size metric after processing
+            stream_stats = receive_stream.statistics()
+            update_vector_sync_queue_size(stream_stats.current_buffer_used)
+
         except TimeoutError:
-            # No documents available, continue
+            # No documents available, update metric to show empty queue
+            stream_stats = receive_stream.statistics()
+            update_vector_sync_queue_size(stream_stats.current_buffer_used)
             continue
 
         except anyio.EndOfStream:

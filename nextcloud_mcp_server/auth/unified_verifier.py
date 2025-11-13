@@ -26,6 +26,10 @@ from jwt import PyJWKClient
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 
 from nextcloud_mcp_server.config import Settings
+from nextcloud_mcp_server.observability.metrics import (
+    oauth_token_cache_hits_total,
+    record_oauth_token_validation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +109,10 @@ class UnifiedTokenVerifier(TokenVerifier):
         cached = self._get_cached_token(token)
         if cached:
             logger.debug("Token found in cache")
+            oauth_token_cache_hits_total.labels(hit="true").inc()
             return cached
+
+        oauth_token_cache_hits_total.labels(hit="false").inc()
 
         # Both modes do the same validation (MCP audience only)
         return await self._verify_mcp_audience(token)
@@ -124,13 +131,24 @@ class UnifiedTokenVerifier(TokenVerifier):
         Returns:
             AccessToken if valid with MCP audience, None otherwise
         """
+        validation_method = "unknown"
         try:
             # Attempt JWT verification first
             if self._is_jwt_format(token) and self.jwks_client:
+                validation_method = "jwt"
                 payload = await self._verify_jwt_signature(token)
+                if payload:
+                    record_oauth_token_validation("jwt", "valid")
+                else:
+                    record_oauth_token_validation("jwt", "invalid")
             else:
                 # Fall back to introspection for opaque tokens
+                validation_method = "introspect"
                 payload = await self._introspect_token(token)
+                if payload:
+                    record_oauth_token_validation("introspect", "valid")
+                else:
+                    record_oauth_token_validation("introspect", "invalid")
                 if not payload:
                     return None
 
@@ -146,6 +164,8 @@ class UnifiedTokenVerifier(TokenVerifier):
                     f"Got {audiences}, need MCP ({self.settings.oidc_client_id} or "
                     f"{self.settings.nextcloud_mcp_server_url})"
                 )
+                # Record as invalid due to audience mismatch
+                record_oauth_token_validation(validation_method, "invalid")
                 return None
 
             # Log based on mode for clarity
@@ -163,6 +183,7 @@ class UnifiedTokenVerifier(TokenVerifier):
 
         except Exception as e:
             logger.error(f"Token verification failed: {e}")
+            record_oauth_token_validation(validation_method, "error")
             return None
 
     def _has_mcp_audience(self, payload: dict[str, Any]) -> bool:

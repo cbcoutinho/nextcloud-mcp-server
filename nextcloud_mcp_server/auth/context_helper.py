@@ -12,6 +12,10 @@ from mcp.server.fastmcp import Context
 
 from ..client import NextcloudClient
 from ..config import get_settings
+from ..observability.metrics import (
+    oauth_token_cache_hits_total,
+    oauth_token_exchange_total,
+)
 from .token_exchange import exchange_token_for_audience
 
 logger = logging.getLogger(__name__)
@@ -138,6 +142,7 @@ async def get_session_client_from_context(
                 logger.debug(
                     f"Using cached exchanged token (expires in {expiry - time.time():.1f}s)"
                 )
+                oauth_token_cache_hits_total.labels(hit="true").inc()
                 return NextcloudClient.from_token(
                     base_url=base_url, token=cached_token, username=username
                 )
@@ -145,17 +150,24 @@ async def get_session_client_from_context(
                 logger.debug("Cached token expired, removing from cache")
                 del _exchange_cache[cache_key]
 
+        oauth_token_cache_hits_total.labels(hit="false").inc()
+
         # Perform RFC 8693 token exchange
         logger.info(f"Exchanging MCP token for Nextcloud API token (user: {username})")
 
-        # Exchange for Nextcloud resource URI audience
-        exchanged_token, expires_in = await exchange_token_for_audience(
-            subject_token=mcp_token,
-            requested_audience=settings.nextcloud_resource_uri or "nextcloud",
-            requested_scopes=None,  # Nextcloud doesn't support scopes
-        )
+        try:
+            # Exchange for Nextcloud resource URI audience
+            exchanged_token, expires_in = await exchange_token_for_audience(
+                subject_token=mcp_token,
+                requested_audience=settings.nextcloud_resource_uri or "nextcloud",
+                requested_scopes=None,  # Nextcloud doesn't support scopes
+            )
+            oauth_token_exchange_total.labels(status="success").inc()
 
-        logger.info(f"Token exchange successful. Token expires in {expires_in}s")
+            logger.info(f"Token exchange successful. Token expires in {expires_in}s")
+        except Exception:
+            oauth_token_exchange_total.labels(status="error").inc()
+            raise
 
         # Cache the exchanged token
         # Use the minimum of exchange TTL and configured cache TTL

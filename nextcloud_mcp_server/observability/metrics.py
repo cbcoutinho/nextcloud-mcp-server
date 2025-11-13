@@ -395,3 +395,49 @@ def update_vector_sync_queue_size(size: int) -> None:
         size: Current queue size
     """
     vector_sync_queue_size.set(size)
+
+
+# =============================================================================
+# Decorator for Automatic Tool Instrumentation
+# =============================================================================
+
+
+def instrument_tool(func):
+    """
+    Decorator to automatically instrument MCP tool functions with metrics.
+
+    Wraps async tool functions to record execution time and success/error status.
+    Compatible with @mcp.tool() and @require_scopes() decorators.
+
+    Usage:
+        @mcp.tool()
+        @require_scopes("notes:write")
+        @instrument_tool
+        async def nc_notes_create_note(...):
+            ...
+
+    Args:
+        func: The async function to instrument
+
+    Returns:
+        Wrapped function with metrics instrumentation
+    """
+    import functools
+    import time
+
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        tool_name = func.__name__
+        start_time = time.time()
+        try:
+            result = await func(*args, **kwargs)
+            duration = time.time() - start_time
+            record_tool_call(tool_name, duration, "success")
+            return result
+        except Exception as e:
+            duration = time.time() - start_time
+            record_tool_call(tool_name, duration, "error")
+            record_tool_error(tool_name, type(e).__name__)
+            raise
+
+    return wrapper

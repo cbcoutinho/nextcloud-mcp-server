@@ -4,6 +4,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,7 @@ def configure_contacts_tools(mcp: FastMCP):
     # Contacts tools
     @mcp.tool()
     @require_scopes("contacts:read")
+    @instrument_tool
     async def nc_contacts_list_addressbooks(ctx: Context):
         """List all addressbooks for the user."""
         client = await get_client(ctx)
@@ -19,6 +21,7 @@ def configure_contacts_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("contacts:read")
+    @instrument_tool
     async def nc_contacts_list_contacts(ctx: Context, *, addressbook: str):
         """List all contacts in the specified addressbook."""
         client = await get_client(ctx)
@@ -26,6 +29,7 @@ def configure_contacts_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("contacts:write")
+    @instrument_tool
     async def nc_contacts_create_addressbook(
         ctx: Context, *, name: str, display_name: str
     ):
@@ -42,6 +46,7 @@ def configure_contacts_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("contacts:write")
+    @instrument_tool
     async def nc_contacts_delete_addressbook(ctx: Context, *, name: str):
         """Delete an addressbook."""
         client = await get_client(ctx)
@@ -49,6 +54,7 @@ def configure_contacts_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("contacts:write")
+    @instrument_tool
     async def nc_contacts_create_contact(
         ctx: Context, *, addressbook: str, uid: str, contact_data: dict
     ):
@@ -66,6 +72,7 @@ def configure_contacts_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("contacts:write")
+    @instrument_tool
     async def nc_contacts_delete_contact(ctx: Context, *, addressbook: str, uid: str):
         """Delete a contact."""
         client = await get_client(ctx)
@@ -73,6 +80,7 @@ def configure_contacts_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("contacts:write")
+    @instrument_tool
     async def nc_contacts_update_contact(
         ctx: Context, *, addressbook: str, uid: str, contact_data: dict, etag: str = ""
     ):

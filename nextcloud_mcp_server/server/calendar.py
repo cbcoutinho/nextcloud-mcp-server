@@ -12,6 +12,7 @@ from nextcloud_mcp_server.models.calendar import (
     ListTodosResponse,
     Todo,
 )
+from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ def configure_calendar_tools(mcp: FastMCP):
     # Calendar tools
     @mcp.tool()
     @require_scopes("calendar:read")
+    @instrument_tool
     async def nc_calendar_list_calendars(ctx: Context) -> ListCalendarsResponse:
         """List all available calendars for the user"""
         client = await get_client(ctx)
@@ -30,6 +32,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("calendar:write")
+    @instrument_tool
     async def nc_calendar_create_event(
         calendar_name: str,
         title: str,
@@ -106,6 +109,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("calendar:read")
+    @instrument_tool
     async def nc_calendar_list_events(
         calendar_name: str,
         ctx: Context,
@@ -208,6 +212,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("calendar:read")
+    @instrument_tool
     async def nc_calendar_get_event(
         calendar_name: str,
         event_uid: str,
@@ -220,6 +225,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("calendar:write")
+    @instrument_tool
     async def nc_calendar_update_event(
         calendar_name: str,
         event_uid: str,
@@ -293,6 +299,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("calendar:write")
+    @instrument_tool
     async def nc_calendar_delete_event(
         calendar_name: str,
         event_uid: str,
@@ -304,6 +311,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("calendar:write")
+    @instrument_tool
     async def nc_calendar_create_meeting(
         title: str,
         date: str,
@@ -370,6 +378,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("calendar:read")
+    @instrument_tool
     async def nc_calendar_get_upcoming_events(
         ctx: Context,
         calendar_name: str = "",  # Empty = all calendars
@@ -420,6 +429,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("calendar:read")
+    @instrument_tool
     async def nc_calendar_find_availability(
         duration_minutes: int,
         ctx: Context,
@@ -500,6 +510,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("calendar:write")
+    @instrument_tool
     async def nc_calendar_bulk_operations(
         operation: str,  # "update", "delete", "move"
         ctx: Context,
@@ -749,6 +760,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("calendar:write")
+    @instrument_tool
     async def nc_calendar_manage_calendar(
         action: str,  # "create", "delete", "update", "list"
         ctx: Context,
@@ -818,6 +830,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("todo:read", "calendar:read")
+    @instrument_tool
     async def nc_calendar_list_todos(
         calendar_name: str,
         ctx: Context,
@@ -863,6 +876,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("todo:write", "calendar:read")
+    @instrument_tool
     async def nc_calendar_create_todo(
         calendar_name: str,
         summary: str,
@@ -906,6 +920,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("todo:write", "calendar:read")
+    @instrument_tool
     async def nc_calendar_update_todo(
         calendar_name: str,
         todo_uid: str,
@@ -966,6 +981,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("todo:write", "calendar:read")
+    @instrument_tool
     async def nc_calendar_delete_todo(
         calendar_name: str,
         todo_uid: str,
@@ -986,6 +1002,7 @@ def configure_calendar_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("todo:read", "calendar:read")
+    @instrument_tool
     async def nc_calendar_search_todos(
         ctx: Context,
         status: Optional[str] = None,
