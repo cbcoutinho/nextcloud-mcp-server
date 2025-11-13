@@ -12,13 +12,24 @@ class NotesSearchController:
         """
         Search notes using token-based matching with relevance ranking.
         Returns notes sorted by relevance score.
+        If query is empty, returns all notes.
         """
         search_results = []
         query_tokens = self._process_query(query)
 
-        # If empty query after processing, return empty results
+        # If empty query after processing, return all notes
         if not query_tokens:
-            return []
+            async for note in notes:
+                search_results.append(
+                    {
+                        "id": note.get("id"),
+                        "title": note.get("title"),
+                        "category": note.get("category"),
+                        "modified": note.get("modified"),
+                        "_score": None,  # No score for unfiltered results
+                    }
+                )
+            return search_results
 
         # Process and score each note
         async for note in notes:
