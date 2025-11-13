@@ -507,9 +507,9 @@ async def setup_oauth_config():
     - External IdP mode: OIDC_DISCOVERY_URL points to external provider
       → External IdP for OAuth, Nextcloud user_oidc validates tokens and provides API access
 
-    Uses generic OIDC environment variables:
+    Uses OIDC environment variables:
     - OIDC_DISCOVERY_URL: OIDC discovery endpoint (optional, defaults to NEXTCLOUD_HOST)
-    - OIDC_CLIENT_ID / OIDC_CLIENT_SECRET: Static credentials (optional, uses DCR if not provided)
+    - NEXTCLOUD_OIDC_CLIENT_ID / NEXTCLOUD_OIDC_CLIENT_SECRET: Static credentials (optional, uses DCR if not provided)
     - NEXTCLOUD_OIDC_SCOPES: Requested OAuth scopes
 
     This is done synchronously before FastMCP initialization because FastMCP
@@ -633,19 +633,21 @@ async def setup_oauth_config():
             )
 
     # Load client credentials (static or dynamic registration)
-    client_id = os.getenv("OIDC_CLIENT_ID")
-    client_secret = os.getenv("OIDC_CLIENT_SECRET")
+    client_id = os.getenv("NEXTCLOUD_OIDC_CLIENT_ID")
+    client_secret = os.getenv("NEXTCLOUD_OIDC_CLIENT_SECRET")
 
     if client_id and client_secret:
         logger.info(f"Using static OIDC client credentials: {client_id}")
     elif registration_endpoint:
-        logger.info("OIDC_CLIENT_ID not set, attempting Dynamic Client Registration")
+        logger.info(
+            "NEXTCLOUD_OIDC_CLIENT_ID not set, attempting Dynamic Client Registration"
+        )
         client_id, client_secret = await load_oauth_client_credentials(
             nextcloud_host=nextcloud_host, registration_endpoint=registration_endpoint
         )
     else:
         raise ValueError(
-            "OIDC_CLIENT_ID and OIDC_CLIENT_SECRET environment variables are required "
+            "NEXTCLOUD_OIDC_CLIENT_ID and NEXTCLOUD_OIDC_CLIENT_SECRET environment variables are required "
             "when the OIDC provider does not support Dynamic Client Registration. "
             f"Discovery URL: {discovery_url}"
         )
