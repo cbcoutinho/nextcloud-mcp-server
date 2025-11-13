@@ -6,14 +6,57 @@ This directory contains example Grafana dashboards for monitoring the Nextcloud 
 
 ### nextcloud-mcp-server.json
 
-Comprehensive dashboard with the following panels:
+All-in-one Operations Dashboard with comprehensive monitoring across all system components.
 
-- **Request Rate**: HTTP requests per second by method and endpoint
-- **Error Rate**: Percentage of 5xx errors
-- **Request Latency**: P50 and P95 latency by endpoint
-- **Top MCP Tools**: Most frequently called tools
-- **Nextcloud API Latency**: API call latency by app (notes, calendar, etc.)
-- **Vector Sync Queue**: Queue size for background document processing
+#### Overview Row
+High-level metrics for quick health assessment:
+- **Request Rate** (stat): Total requests per second
+- **Error Rate** (stat): Percentage of 5xx errors with color thresholds
+- **P95 Latency** (stat): 95th percentile request latency
+- **Active Requests** (stat): Current in-flight requests
+
+#### HTTP Metrics (RED Pattern)
+Core request/error/duration metrics:
+- **Request Rate by Endpoint** (timeseries): RPS breakdown by endpoint
+- **Error Rate by Status Code** (timeseries): Error rates for 4xx/5xx codes
+- **Latency Percentiles** (timeseries): P50, P95, P99 latency trends
+- **Status Code Distribution** (piechart): Percentage breakdown of all status codes
+
+#### MCP Tools Row
+MCP-specific tool performance:
+- **Top Tools by Call Volume** (bargauge): Top 10 most-called tools
+- **Tool Error Rate** (timeseries): Error rates per tool
+- **Tool Execution Duration** (timeseries): P95 latency by tool
+
+#### Nextcloud API Row
+Backend API performance metrics:
+- **API Calls by App** (timeseries): Request rate per Nextcloud app (notes, calendar, contacts, etc.)
+- **API Latency by App** (timeseries): P95 latency per app
+- **API Retries by Reason** (timeseries): Retry patterns (429, timeout, connection errors)
+- **API Error Rate** (stat): Overall API error percentage
+
+#### OAuth & Authentication Row
+OAuth token operations and caching:
+- **Token Validations** (timeseries): Success/failure rates for token validation
+- **Token Exchange Operations** (timeseries): RFC 8693 token exchange operations
+- **Token Cache Hit Rate** (stat): Percentage of cache hits (color-coded: red<50%, yellow<80%, green≥80%)
+- **Refresh Token Operations** (timeseries): Refresh token storage operations by type
+
+#### Dependencies & Health Row
+External dependency status monitoring:
+- **Nextcloud Health** (stat): UP/DOWN status with color coding
+- **Qdrant Health** (stat): Vector database health status
+- **Keycloak Health** (stat): Identity provider health status
+- **Unstructured API Health** (stat): Document processing API status
+- **Health Check Duration** (timeseries): Health check latency by dependency
+- **Database Operation Latency** (timeseries): P95 latency for DB operations (SQLite, Qdrant)
+
+#### Vector Sync Row (when enabled)
+Document processing pipeline metrics:
+- **Documents Processed Rate** (timeseries): Processing throughput by status (success/failure)
+- **Processing Queue Depth** (gauge): Current queue size with thresholds (yellow>50, red>100)
+- **Qdrant Operations** (timeseries): Vector database operations by type
+- **Document Processing Duration** (timeseries): P95 processing latency
 
 ## Importing to Grafana
 
@@ -25,49 +68,73 @@ Comprehensive dashboard with the following panels:
 4. Select your Prometheus data source
 5. Click "Import"
 
-### Automated Import (Kubernetes)
+### Automated Import (Helm Chart)
 
-If using the Grafana Operator or kube-prometheus-stack, you can create a ConfigMap:
+The Helm chart now supports automatic dashboard provisioning via Grafana sidecar pattern.
+
+#### Option 1: Using Helm Chart (Recommended)
+
+Enable dashboard provisioning in your Helm values:
+
+```yaml
+# values.yaml for nextcloud-mcp-server chart
+dashboards:
+  enabled: true
+  grafanaFolder: "Nextcloud MCP"  # Folder name in Grafana
+  labels: {}  # Additional labels if needed
+```
+
+Then deploy or upgrade:
 
 ```bash
-kubectl create configmap nextcloud-mcp-dashboards \
+helm upgrade --install nextcloud-mcp nextcloud-mcp-server \
+  --set dashboards.enabled=true
+```
+
+The dashboard will be automatically imported by Grafana if the sidecar is configured
+to watch for ConfigMaps with label `grafana_dashboard: "1"`.
+
+#### Option 2: Using kube-prometheus-stack
+
+If using kube-prometheus-stack with Grafana sidecar enabled, the dashboard will be
+automatically discovered and imported. Ensure your Grafana deployment has:
+
+```yaml
+# kube-prometheus-stack values
+grafana:
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      folder: /tmp/dashboards
+      provider:
+        foldersFromFilesStructure: true
+```
+
+#### Option 3: Manual ConfigMap Creation
+
+For other Grafana setups, create a ConfigMap manually:
+
+```bash
+kubectl create configmap nextcloud-mcp-dashboard \
   --from-file=nextcloud-mcp-server.json \
   -n monitoring
 
-# Add label for Grafana sidecar to discover
-kubectl label configmap nextcloud-mcp-dashboards \
+# Add sidecar discovery label
+kubectl label configmap nextcloud-mcp-dashboard \
   grafana_dashboard=1 \
+  grafana_folder="Nextcloud MCP" \
   -n monitoring
-```
-
-Or add to your Helm values:
-
-```yaml
-# values.yaml for kube-prometheus-stack
-grafana:
-  dashboardProviders:
-    dashboardproviders.yaml:
-      apiVersion: 1
-      providers:
-        - name: 'nextcloud-mcp'
-          orgId: 1
-          folder: 'Nextcloud MCP'
-          type: file
-          disableDeletion: false
-          editable: true
-          options:
-            path: /var/lib/grafana/dashboards/nextcloud-mcp
-
-  dashboardsConfigMaps:
-    nextcloud-mcp: nextcloud-mcp-dashboards
 ```
 
 ## Dashboard Variables
 
-The dashboard includes two variables:
+The dashboard includes four template variables for dynamic filtering:
 
-- **Data Source**: Select your Prometheus data source
-- **Namespace**: Filter metrics by Kubernetes namespace
+- **datasource**: Select your Prometheus data source
+- **namespace**: Filter metrics by Kubernetes namespace (supports "All")
+- **pod**: Filter by specific pod(s) - multi-select enabled (supports "All")
+- **interval**: Query interval for rate calculations (1m, 5m, 10m, 30m, 1h - default: 5m)
 
 ## Customization
 

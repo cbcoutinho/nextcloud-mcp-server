@@ -21,6 +21,7 @@ from nextcloud_mcp_server.models.semantic import (
     SemanticSearchResult,
     VectorSyncStatusResponse,
 )
+from nextcloud_mcp_server.observability.metrics import record_qdrant_operation
 
 logger = logging.getLogger(__name__)
 
@@ -85,26 +86,33 @@ def configure_semantic_tools(mcp: FastMCP):
             # Note: Currently only searching notes (doc_type="note")
             # Future: Remove doc_type filter to search all apps
             qdrant_client = await get_qdrant_client()
-            search_response = await qdrant_client.query_points(
-                collection_name=settings.get_collection_name(),
-                query=query_embedding,
-                query_filter=Filter(
-                    must=[
-                        FieldCondition(
-                            key="user_id",
-                            match=MatchValue(value=username),
-                        ),
-                        FieldCondition(
-                            key="doc_type",
-                            match=MatchValue(value="note"),
-                        ),
-                    ]
-                ),
-                limit=limit * 2,  # Get extra for filtering
-                score_threshold=score_threshold,
-                with_payload=True,
-                with_vectors=False,  # Don't return vectors to save bandwidth
-            )
+            try:
+                search_response = await qdrant_client.query_points(
+                    collection_name=settings.get_collection_name(),
+                    query=query_embedding,
+                    query_filter=Filter(
+                        must=[
+                            FieldCondition(
+                                key="user_id",
+                                match=MatchValue(value=username),
+                            ),
+                            FieldCondition(
+                                key="doc_type",
+                                match=MatchValue(value="note"),
+                            ),
+                        ]
+                    ),
+                    limit=limit * 2,  # Get extra for filtering
+                    score_threshold=score_threshold,
+                    with_payload=True,
+                    with_vectors=False,  # Don't return vectors to save bandwidth
+                )
+                # Record successful search operation
+                record_qdrant_operation("search", "success")
+            except Exception:
+                # Record failed search operation
+                record_qdrant_operation("search", "error")
+                raise
 
             logger.info(
                 f"Qdrant returned {len(search_response.points)} results "
@@ -331,21 +339,71 @@ def configure_semantic_tools(mcp: FastMCP):
                 success=True,
             )
 
-        # 4. Construct context from retrieved documents
+        # 4. Fetch full content for notes to provide complete context to LLM
+        # Filter out inaccessible notes (deleted or permissions changed)
+        client = await get_client(ctx)
+        accessible_results = []
+        full_contents = []  # Full content for accessible notes
+
+        for result in search_response.results:
+            if result.doc_type == "note":
+                try:
+                    note = await client.notes.get_note(result.id)
+                    # Note is accessible, store full content
+                    accessible_results.append(result)
+                    full_contents.append(note.get("content", ""))
+                    logger.debug(
+                        f"Fetched full content for note {result.id} "
+                        f"(length: {len(full_contents[-1])} chars)"
+                    )
+                except Exception as e:
+                    # Note might have been deleted or permissions changed
+                    # Filter it out to avoid corrupting LLM with inaccessible data
+                    logger.warning(
+                        f"Failed to fetch full content for note {result.id}: {e}. "
+                        f"Excluding from results."
+                    )
+            else:
+                # Non-note document types (future: calendar, deck, files)
+                # For now, keep them with excerpts
+                accessible_results.append(result)
+                full_contents.append(None)
+
+        # Check if we filtered out all results
+        if not accessible_results:
+            logger.warning(f"All search results became inaccessible for query: {query}")
+            return SamplingSearchResponse(
+                query=query,
+                generated_answer="All matching documents are no longer accessible.",
+                sources=[],
+                total_found=0,
+                search_method="semantic_sampling",
+                success=True,
+            )
+
+        # 5. Construct context from accessible documents with full content
         context_parts = []
-        for idx, result in enumerate(search_response.results, 1):
+        for idx, (result, content) in enumerate(
+            zip(accessible_results, full_contents), 1
+        ):
+            # Use full content if available (notes), otherwise use excerpt
+            if content is not None:
+                content_field = f"Content: {content}"
+            else:
+                content_field = f"Excerpt: {result.excerpt}"
+
             context_parts.append(
                 f"[Document {idx}]\n"
                 f"Type: {result.doc_type}\n"
                 f"Title: {result.title}\n"
                 f"Category: {result.category}\n"
-                f"Excerpt: {result.excerpt}\n"
+                f"{content_field}\n"
                 f"Relevance Score: {result.score:.2f}\n"
             )
 
         context = "\n".join(context_parts)
 
-        # 5. Construct prompt - reuse user's query, add context and instructions
+        # 6. Construct prompt - reuse user's query, add context and instructions
         prompt = (
             f"{query}\n\n"
             f"Here are relevant documents from Nextcloud (notes, calendar events, deck cards, files, contacts):\n\n"
@@ -401,8 +459,8 @@ def configure_semantic_tools(mcp: FastMCP):
             return SamplingSearchResponse(
                 query=query,
                 generated_answer=generated_answer,
-                sources=search_response.results,
-                total_found=search_response.total_found,
+                sources=accessible_results,
+                total_found=len(accessible_results),
                 search_method="semantic_sampling",
                 model_used=sampling_result.model,
                 stop_reason=sampling_result.stopReason,
@@ -419,11 +477,11 @@ def configure_semantic_tools(mcp: FastMCP):
                 generated_answer=(
                     f"[Sampling request timed out]\n\n"
                     f"The answer generation took too long (>30s). "
-                    f"Found {search_response.total_found} relevant documents. "
+                    f"Found {len(accessible_results)} relevant documents. "
                     f"Please review the sources below or try a simpler query."
                 ),
-                sources=search_response.results,
-                total_found=search_response.total_found,
+                sources=accessible_results,
+                total_found=len(accessible_results),
                 search_method="semantic_sampling_timeout",
                 success=True,
             )
@@ -454,11 +512,11 @@ def configure_semantic_tools(mcp: FastMCP):
                 query=query,
                 generated_answer=(
                     f"[{user_message}]\n\n"
-                    f"Found {search_response.total_found} relevant documents. "
+                    f"Found {len(accessible_results)} relevant documents. "
                     f"Please review the sources below."
                 ),
-                sources=search_response.results,
-                total_found=search_response.total_found,
+                sources=accessible_results,
+                total_found=len(accessible_results),
                 search_method=search_method,
                 success=True,
             )
@@ -475,11 +533,11 @@ def configure_semantic_tools(mcp: FastMCP):
                 query=query,
                 generated_answer=(
                     f"[Unexpected error during sampling]\n\n"
-                    f"Found {search_response.total_found} relevant documents. "
+                    f"Found {len(accessible_results)} relevant documents. "
                     f"Please review the sources below."
                 ),
-                sources=search_response.results,
-                total_found=search_response.total_found,
+                sources=accessible_results,
+                total_found=len(accessible_results),
                 search_method="semantic_sampling_error",
                 success=True,
             )

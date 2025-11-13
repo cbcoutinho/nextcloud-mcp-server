@@ -15,6 +15,10 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_embedding_service
+from nextcloud_mcp_server.observability.metrics import (
+    record_qdrant_operation,
+    record_vector_sync_processing,
+)
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.vector.document_chunker import DocumentChunker
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
@@ -90,6 +94,8 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
         doc_task: Document task to process
         nc_client: Authenticated Nextcloud client
     """
+    start_time = time.time()
+
     logger.debug(
         f"Processing {doc_task.doc_type}_{doc_task.doc_id} "
         f"for {doc_task.user_id} ({doc_task.operation})"
@@ -105,58 +111,79 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
             "vector_sync.doc_operation": doc_task.operation,
         },
     ):
-        qdrant_client = await get_qdrant_client()
-        settings = get_settings()
+        try:
+            qdrant_client = await get_qdrant_client()
+            settings = get_settings()
 
-        # Handle deletion
-        if doc_task.operation == "delete":
-            await qdrant_client.delete(
-                collection_name=settings.get_collection_name(),
-                points_selector=Filter(
-                    must=[
-                        FieldCondition(
-                            key="user_id",
-                            match=MatchValue(value=doc_task.user_id),
-                        ),
-                        FieldCondition(
-                            key="doc_id",
-                            match=MatchValue(value=doc_task.doc_id),
-                        ),
-                        FieldCondition(
-                            key="doc_type",
-                            match=MatchValue(value=doc_task.doc_type),
-                        ),
-                    ]
-                ),
-            )
-            logger.info(
-                f"Deleted {doc_task.doc_type}_{doc_task.doc_id} for {doc_task.user_id}"
-            )
-            return
+            # Handle deletion
+            if doc_task.operation == "delete":
+                await qdrant_client.delete(
+                    collection_name=settings.get_collection_name(),
+                    points_selector=Filter(
+                        must=[
+                            FieldCondition(
+                                key="user_id",
+                                match=MatchValue(value=doc_task.user_id),
+                            ),
+                            FieldCondition(
+                                key="doc_id",
+                                match=MatchValue(value=doc_task.doc_id),
+                            ),
+                            FieldCondition(
+                                key="doc_type",
+                                match=MatchValue(value=doc_task.doc_type),
+                            ),
+                        ]
+                    ),
+                )
+                logger.info(
+                    f"Deleted {doc_task.doc_type}_{doc_task.doc_id} for {doc_task.user_id}"
+                )
 
-        # Handle indexing with retry
-        max_retries = 3
-        retry_delay = 1.0
+                # Record successful deletion metrics
+                duration = time.time() - start_time
+                record_qdrant_operation("delete", "success")
+                record_vector_sync_processing(duration, "success")
+                return
 
-        for attempt in range(max_retries):
-            try:
-                await _index_document(doc_task, nc_client, qdrant_client)
-                return  # Success
+            # Handle indexing with retry
+            max_retries = 3
+            retry_delay = 1.0
 
-            except (HTTPStatusError, Exception) as e:
-                if attempt < max_retries - 1:
-                    logger.warning(
-                        f"Retry {attempt + 1}/{max_retries} for "
-                        f"{doc_task.doc_type}_{doc_task.doc_id}: {e}"
-                    )
-                    await anyio.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                else:
-                    logger.error(
-                        f"Failed to index {doc_task.doc_type}_{doc_task.doc_id} "
-                        f"after {max_retries} retries: {e}"
-                    )
-                    raise
+            for attempt in range(max_retries):
+                try:
+                    await _index_document(doc_task, nc_client, qdrant_client)
+
+                    # Record successful processing metrics
+                    duration = time.time() - start_time
+                    record_qdrant_operation("upsert", "success")
+                    record_vector_sync_processing(duration, "success")
+                    return  # Success
+
+                except (HTTPStatusError, Exception) as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(
+                            f"Retry {attempt + 1}/{max_retries} for "
+                            f"{doc_task.doc_type}_{doc_task.doc_id}: {e}"
+                        )
+                        await anyio.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                    else:
+                        logger.error(
+                            f"Failed to index {doc_task.doc_type}_{doc_task.doc_id} "
+                            f"after {max_retries} retries: {e}"
+                        )
+                        # Record failed processing metrics
+                        duration = time.time() - start_time
+                        record_qdrant_operation("upsert", "error")
+                        record_vector_sync_processing(duration, "error")
+                        raise
+
+        except Exception:
+            # Catch any other unexpected errors
+            duration = time.time() - start_time
+            record_vector_sync_processing(duration, "error")
+            raise
 
 
 async def _index_document(

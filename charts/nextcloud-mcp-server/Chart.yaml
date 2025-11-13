@@ -21,6 +21,10 @@ home: https://github.com/cbcoutinho/nextcloud-mcp-server
 sources:
   - https://github.com/cbcoutinho/nextcloud-mcp-server
 icon: https://raw.githubusercontent.com/nextcloud/server/master/core/img/logo/logo.svg
+annotations:
+  # Grafana dashboard support
+  grafana_dashboard: "true"
+  grafana_dashboard_folder: "Nextcloud MCP"
 dependencies:
   - name: qdrant
     version: "1.15.5"
