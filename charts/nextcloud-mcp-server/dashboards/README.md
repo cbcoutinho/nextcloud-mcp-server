@@ -123,6 +123,10 @@ kubectl create configmap nextcloud-mcp-dashboard \
 # Add sidecar discovery label
 kubectl label configmap nextcloud-mcp-dashboard \
   grafana_dashboard=1 \
+  -n monitoring
+
+# Add folder annotation (annotations support spaces, unlike labels)
+kubectl annotate configmap nextcloud-mcp-dashboard \
   grafana_folder="Nextcloud MCP" \
   -n monitoring
 ```

@@ -210,7 +210,8 @@ dashboards:
   # Enable automatic dashboard provisioning via ConfigMap
   enabled: false
   # Grafana folder name where dashboards will be imported
-  # The grafana-sidecar looks for ConfigMaps with label "grafana_folder"
+  # The grafana-sidecar looks for ConfigMaps with label "grafana_dashboard: 1"
+  # and reads the folder name from annotation "grafana_folder" (supports spaces)
   grafanaFolder: "Nextcloud MCP"
   # Additional labels for dashboard ConfigMap
   # These will be added alongside the required "grafana_dashboard: 1" label

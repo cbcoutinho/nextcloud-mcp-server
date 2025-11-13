@@ -9,14 +9,15 @@ metadata:
     {{- with .Values.dashboards.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-    # Grafana sidecar discovery labels
+    # Grafana sidecar discovery label
     grafana_dashboard: "1"
-    {{- if .Values.dashboards.grafanaFolder }}
-    grafana_folder: {{ .Values.dashboards.grafanaFolder | quote }}
-    {{- end }}
   annotations:
     {{- with .Values.dashboards.annotations }}
     {{- toYaml . | nindent 4 }}
+    {{- end }}
+    # Grafana folder name (annotations support spaces, unlike labels)
+    {{- if .Values.dashboards.grafanaFolder }}
+    grafana_folder: {{ .Values.dashboards.grafanaFolder | quote }}
     {{- end }}
 data:
   nextcloud-mcp-server.json: |-
