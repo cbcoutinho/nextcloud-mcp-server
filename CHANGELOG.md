@@ -1,3 +1,9 @@
+## v0.34.1 (2025-11-13)
+
+### Fix
+
+- return all notes when search query is empty
+
 ## v0.34.0 (2025-11-13)
 
 ### Feat
