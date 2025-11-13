@@ -1,3 +1,12 @@
+## v0.34.0 (2025-11-13)
+
+### Feat
+
+- Complete Phase 5 - Instrument all 93 MCP tools
+- Add instrumentation decorator and apply to notes tools (Phase 5)
+- Add OAuth token and database metrics (Phases 3-4)
+- Add metrics instrumentation for queue, health, and database operations
+
 ## v0.33.1 (2025-11-13)
 
 ### Fix
