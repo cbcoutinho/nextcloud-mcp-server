@@ -21,7 +21,10 @@ from nextcloud_mcp_server.models.semantic import (
     SemanticSearchResult,
     VectorSyncStatusResponse,
 )
-from nextcloud_mcp_server.observability.metrics import record_qdrant_operation
+from nextcloud_mcp_server.observability.metrics import (
+    instrument_tool,
+    record_qdrant_operation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,7 @@ def configure_semantic_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("semantic:read")
+    @instrument_tool
     async def nc_semantic_search(
         query: str, ctx: Context, limit: int = 10, score_threshold: float = 0.7
     ) -> SemanticSearchResponse:
@@ -216,6 +220,7 @@ def configure_semantic_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("semantic:read")
+    @instrument_tool
     async def nc_semantic_search_answer(
         query: str,
         ctx: Context,
@@ -544,6 +549,7 @@ def configure_semantic_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("semantic:read")
+    @instrument_tool
     async def nc_get_vector_sync_status(ctx: Context) -> VectorSyncStatusResponse:
         """Get the current vector sync status.
 

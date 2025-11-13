@@ -4,6 +4,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,7 @@ def configure_tables_tools(mcp: FastMCP):
     # Tables tools
     @mcp.tool()
     @require_scopes("tables:read")
+    @instrument_tool
     async def nc_tables_list_tables(ctx: Context):
         """List all tables available to the user"""
         client = await get_client(ctx)
@@ -19,6 +21,7 @@ def configure_tables_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("tables:read")
+    @instrument_tool
     async def nc_tables_get_schema(table_id: int, ctx: Context):
         """Get the schema/structure of a specific table including columns and views"""
         client = await get_client(ctx)
@@ -26,6 +29,7 @@ def configure_tables_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("tables:read")
+    @instrument_tool
     async def nc_tables_read_table(
         table_id: int,
         ctx: Context,
@@ -38,6 +42,7 @@ def configure_tables_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("tables:write")
+    @instrument_tool
     async def nc_tables_insert_row(table_id: int, data: dict, ctx: Context):
         """Insert a new row into a table.
 
@@ -48,6 +53,7 @@ def configure_tables_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("tables:write")
+    @instrument_tool
     async def nc_tables_update_row(row_id: int, data: dict, ctx: Context):
         """Update an existing row in a table.
 
@@ -58,6 +64,7 @@ def configure_tables_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("tables:write")
+    @instrument_tool
     async def nc_tables_delete_row(row_id: int, ctx: Context):
         """Delete a row from a table"""
         client = await get_client(ctx)
