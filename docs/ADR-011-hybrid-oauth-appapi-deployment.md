@@ -1,8 +1,12 @@
 # ADR-011: Hybrid OAuth and AppAPI Deployment Architecture
 
-**Status**: Proposed
-**Date**: 2025-01-13
+**Status**: Not Planned
+**Date**: 2025-01-13 (Initial), 2025-01-13 (Rejected)
 **Related**: ADR-004 (Progressive Consent), ADR-005 (Token Audience Validation)
+
+## Decision Outcome
+
+After comprehensive research and analysis, **this hybrid architecture is NOT being implemented**. The investigation revealed fundamental architectural incompatibilities between MCP's protocol requirements and AppAPI's request/response proxy model that cannot be resolved without significant upstream changes to AppAPI. The limitations are too severe to provide a viable user experience for MCP's core features.
 
 ## Context
 
@@ -235,11 +239,188 @@ nc.notifications.create(
 
 **Limitation**: ExApps cannot send MCP protocol notifications back through the proxy to the original MCP client. Communication is ExApp → Nextcloud → User UI, not ExApp → MCP Client.
 
+### Validation: Nextcloud Context Agent as Real-World Example
+
+The limitations documented above are not theoretical - they are **validated by Nextcloud's own Context Agent project**, which is an AppAPI ExApp that exposes MCP functionality and faces identical constraints.
+
+#### Context Agent Architecture
+
+**Context Agent** (`~/Software/context_agent/`) is an official Nextcloud project that demonstrates the ExApp architecture in practice:
+
+**Type**: AppAPI External App (ExApp) written in Python with FastMCP
+
+**Dual MCP Role**:
+1. **MCP Server**: Exposes ~28 tools (calendar, contacts, files, talk, mail, deck) via `/mcp` endpoint
+2. **MCP Client**: Consumes external MCP servers using `langchain-mcp-adapters`
+
+**Route Configuration** (`appinfo/info.xml`):
+```xml
+<route>
+  <url>mcp</url>
+  <verb>POST,GET,DELETE</verb>
+  <access_level>USER</access_level>
+</route>
+```
+
+**Access Pattern**: External MCP clients connect via AppAPI proxy:
+```
+MCP Client → /apps/app_api/proxy/context_agent/mcp → Context Agent ExApp
+```
+
+#### Context Agent Faces Identical Limitations
+
+Despite being an official Nextcloud project with MCP integration, Context Agent has **exactly the same AppAPI proxy limitations** documented in this ADR:
+
+**✅ What Works**:
+- Basic MCP tools (request → response pattern)
+- Tool listing and discovery
+- Stateless HTTP transport
+- User authentication via AppAPI headers
+
+**❌ What Doesn't Work** (identical to our findings):
+- MCP sampling (LLM completion requests)
+- MCP elicitation (user input prompts)
+- Real-time progress updates
+- Bidirectional streaming communication
+- Server-initiated notifications via MCP protocol
+
+#### Context Agent's Workaround Strategy
+
+Context Agent successfully provides agent functionality by **working around the MCP protocol limitations** rather than relying on them:
+
+**Primary Use Case**: In-app AI agent called by **Nextcloud Assistant** (native PHP app)
+- Uses Nextcloud's **Task Processing API** for orchestration (not external MCP clients)
+- Implements custom confirmation flow via Assistant UI (not MCP elicitation)
+- Uses LangGraph state machine for agent logic
+- Leverages Nextcloud APIs for user interaction
+
+**Confirmation Flow Example** (`ex_app/lib/agent.py:105-117`):
+```python
+if state_snapshot.next == ('dangerous_tools', ):
+    if task['input']['confirmation'] == 0:
+        # User denied via Nextcloud UI - return denial message
+        return ToolMessage(
+            tool_call_id=tool_call["id"],
+            content=f"API call denied by user. Reasoning: '{task['input']['input']}'"
+        )
+    else:
+        # User approved via Nextcloud UI - execute tool
+        execute_tool()
+```
+
+**Flow**:
+1. Agent queues dangerous tool call
+2. Returns to Assistant with `actions` field (outside MCP)
+3. **Assistant UI prompts user** for confirmation in Nextcloud
+4. User approves/denies in Nextcloud interface
+5. New task submitted with `confirmation` field
+6. Agent proceeds based on confirmation
+
+**Key Insight**: Context Agent **does NOT use MCP's native elicitation** - it implements a completely custom confirmation flow through Nextcloud's Task Processing API because MCP elicitation is impossible through the AppAPI proxy.
+
+#### Architecture Comparison
+
+```
+Context Agent Primary Use (Works):
+Nextcloud Assistant UI → Task Processing API → Context Agent ExApp → Tools
+                        ✅ Custom confirmation via NC APIs (not MCP)
+
+Context Agent MCP Endpoint (Limited):
+External MCP Client → AppAPI Proxy → Context Agent /mcp → Tools
+                     ❌ Sampling blocked (same as our server)
+
+Our MCP Server Use Case (Blocked):
+External MCP Client → AppAPI Proxy → Our ExApp → Nextcloud APIs
+                     ❌ Sampling blocked (same limitation)
+```
+
+#### Why Context Agent Succeeds Despite Limitations
+
+Context Agent works because:
+1. **Different primary use case**: In-app integration via Task Processing API, not external MCP clients
+2. **Custom workarounds**: Uses Nextcloud APIs for features MCP can't provide through proxy
+3. **Accepts limitations**: MCP endpoint is secondary feature with documented constraints
+4. **Alternative protocols**: Uses Task Processing API as primary interface, MCP as optional
+
+#### Implications for Our MCP Server
+
+Context Agent validates that:
+1. **AppAPI proxy limitations are architectural**, not implementation-specific
+2. **All ExApps face identical constraints** - even official Nextcloud projects
+3. **Workarounds exist** but require using Nextcloud APIs outside MCP protocol
+4. **Different use cases require different approaches**:
+   - In-app integration: Use Task Processing API (like Context Agent)
+   - External MCP clients: Require OAuth mode (no viable AppAPI solution)
+
+**If our MCP server's primary use case is external MCP clients** (Claude Desktop, custom clients), AppAPI mode provides no viable path forward. The limitations eliminate core MCP features (sampling/RAG, real-time progress) that are essential for external client integration.
+
+**If targeting in-app integration** (like Context Agent), we would need to:
+- Register as Task Processing provider
+- Implement custom confirmation via Assistant UI
+- Use Nextcloud APIs for user interaction
+- Accept that MCP protocol features are unavailable
+
+This represents a fundamentally different product with different capabilities and user experience.
+
+#### Conclusion from Context Agent Analysis
+
+The existence of Context Agent with identical limitations **strengthens the case against AppAPI mode** for our use case:
+
+- Official Nextcloud project faces same constraints
+- Successfully works around them by changing use case and protocol
+- Confirms limitations are inherent to ExApp architecture
+- Demonstrates that MCP protocol features cannot work through AppAPI proxy
+
+**Our recommendation**: Continue with OAuth mode for external MCP clients, do not pursue AppAPI mode unless the product vision shifts to in-app integration via Task Processing API.
+
 ## Decision
 
-We will implement a **hybrid architecture** that supports both OAuth and AppAPI deployment modes within a single codebase, achieving 90%+ code sharing through a carefully designed abstraction layer.
+**We will NOT implement AppAPI mode** for external MCP client integration. The project will continue with OAuth mode exclusively.
 
-### Core Principles
+### Rationale
+
+After comprehensive research including analysis of Nextcloud's own Context Agent project, the limitations of AppAPI ExApp architecture for MCP integration are too severe to provide acceptable user experience:
+
+**Critical Missing Features in AppAPI Mode**:
+1. **No MCP sampling** - Eliminates RAG/LLM generation features (ADR-008)
+2. **No real-time progress** - Breaks user experience for long-running operations
+3. **No bidirectional streaming** - Core MCP protocol features unusable
+4. **Buffered-only streaming** - Defeats the purpose of streaming protocols
+
+**These are not implementation challenges** - they are fundamental architectural incompatibilities between:
+- **MCP's requirements**: Multi-turn nested interactions, server-initiated requests, bidirectional streaming
+- **AppAPI's architecture**: Stateless request/response proxy, no persistent connections, no message routing
+
+**Validation from Context Agent**: Nextcloud's official MCP-enabled ExApp faces identical limitations and works around them by:
+- Using Task Processing API instead of MCP protocol for user interaction
+- Targeting in-app Assistant integration, not external MCP clients
+- Accepting that MCP endpoint is secondary with documented constraints
+
+### Why OAuth Mode Remains Sole Solution
+
+OAuth mode provides all essential MCP features:
+- ✅ Full MCP protocol support (sampling, elicitation, streaming)
+- ✅ Real-time progress updates
+- ✅ Multi-tenant capability
+- ✅ External client integration (Claude Desktop, custom clients)
+- ✅ Fine-grained per-user permissions
+- ✅ Proven architecture (production-ready)
+
+### Alternative Considered: Task Processing Provider
+
+If in-app Nextcloud integration is desired in the future, the correct approach would be:
+- Register as **Task Processing provider** (like Context Agent)
+- Use **Nextcloud Assistant UI** for user interaction
+- Implement custom flows via **Task Processing API**
+- Accept that this is a **different product** with different capabilities
+
+This would be a separate feature, not a replacement for external MCP client support.
+
+### Original Hybrid Architecture (Documented for Reference)
+
+The following sections document the hybrid architecture that was researched but not implemented. They are preserved for reference and to document why this approach was rejected.
+
+#### Core Principles (Not Implemented)
 
 1. **Single Codebase**: One repository, one Docker image build process, mode selection via environment variables
 2. **Maximum Code Sharing**: 100% sharing of MCP tool implementations, client libraries, and business logic
@@ -1005,6 +1186,49 @@ These remaining questions should be resolved during implementation. Create follo
 
 ## Conclusion
 
-The hybrid OAuth + AppAPI architecture provides the best of both worlds: flexible multi-tenant OAuth deployments for standalone MCP servers, and simplified single-tenant AppAPI deployments for native Nextcloud integration. The abstraction layer achieves 90%+ code sharing, maintaining a single source of truth for business logic while supporting two distinct authentication mechanisms.
+After comprehensive research and analysis, **the hybrid OAuth + AppAPI architecture is not viable** for this project's use case. While AppAPI ExApps provide value for in-app Nextcloud integration, the architectural constraints fundamentally conflict with MCP's protocol requirements for external client integration.
 
-This approach respects existing OAuth deployments (no breaking changes), serves the community's desire for simpler Nextcloud integration, and positions the project for future growth as Nextcloud's ExApp ecosystem matures. While the hybrid architecture adds complexity, the value delivered—deployment flexibility, native integration, and broader user base—justifies the investment.
+### Key Findings
+
+1. **Architectural Incompatibility is Fundamental**
+   - MCP requires multi-turn nested interactions (sampling, elicitation)
+   - AppAPI provides stateless request/response proxy only
+   - No amount of implementation effort can bridge this gap
+   - Would require complete AppAPI proxy redesign (WebSocket support, message routing, stateful connections)
+
+2. **Validation from Nextcloud's Own Projects**
+   - Context Agent (official Nextcloud ExApp with MCP) faces identical limitations
+   - Works around them by using Task Processing API instead of MCP protocol
+   - Proves limitations are inherent to ExApp architecture, not our implementation
+   - Even official projects cannot make MCP's bidirectional features work through AppAPI proxy
+
+3. **Critical Features Lost in AppAPI Mode**
+   - ❌ Sampling/RAG (ADR-008) - Core semantic search value proposition
+   - ❌ Real-time progress updates - Essential for long-running operations
+   - ❌ Bidirectional streaming - Foundation of MCP protocol
+   - ⚠️ Buffered-only streaming - Defeats purpose of streaming
+
+4. **Different Use Cases Require Different Solutions**
+   - **External MCP clients** (our use case): Require OAuth mode
+   - **In-app integration** (Context Agent's use case): Use Task Processing API
+   - These are fundamentally different products with different capabilities
+
+### Decision
+
+**Continue with OAuth mode exclusively.** It provides all essential features:
+- ✅ Full MCP protocol support (sampling, elicitation, streaming)
+- ✅ Multi-tenant capability
+- ✅ External client integration (Claude Desktop, custom clients)
+- ✅ Fine-grained per-user permissions
+- ✅ Real-time progress updates
+- ✅ Production-ready architecture
+
+### Future Consideration
+
+If in-app Nextcloud integration is desired later, the correct approach would be:
+- Register as **Task Processing provider** (separate from MCP server)
+- Integrate with **Nextcloud Assistant UI**
+- Use **Task Processing API** for orchestration
+- Accept this is a **different product** with different capabilities (no sampling, custom confirmation flows)
+
+This ADR documents the research and analysis that led to this decision, preserving the investigation for future reference and demonstrating due diligence in exploring AppAPI integration.
