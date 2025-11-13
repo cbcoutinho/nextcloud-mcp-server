@@ -156,7 +156,7 @@ services:
       - oauth-tokens:/app/data
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.4.4@sha256:c6459d5fae1b759f5d667ebdc6237ab3121379c3494e213898569014ede1846d
+    image: quay.io/keycloak/keycloak:26.4.5@sha256:653852bfdea2be6e958b9e90a976eff1c6de34edd55f2f679bdc48ef16bc528e
     command:
       - "start-dev"
       - "--import-realm"
