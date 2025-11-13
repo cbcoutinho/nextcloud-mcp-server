@@ -17,6 +17,7 @@ from nextcloud_mcp_server.models.notes import (
     SearchNotesResponse,
     UpdateNoteResponse,
 )
+from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ def configure_notes_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("notes:write")
+    @instrument_tool
     async def nc_notes_create_note(
         title: str, content: str, category: str, ctx: Context
     ) -> CreateNoteResponse:
@@ -132,6 +134,7 @@ def configure_notes_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("notes:write")
+    @instrument_tool
     async def nc_notes_update_note(
         note_id: int,
         etag: str,
@@ -197,6 +200,7 @@ def configure_notes_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("notes:write")
+    @instrument_tool
     async def nc_notes_append_content(
         note_id: int, content: str, ctx: Context
     ) -> AppendContentResponse:
@@ -247,6 +251,7 @@ def configure_notes_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("notes:read")
+    @instrument_tool
     async def nc_notes_search_notes(query: str, ctx: Context) -> SearchNotesResponse:
         """Search notes by title or content, returning only id, title, and category (requires notes:read scope)."""
         client = await get_client(ctx)
@@ -293,6 +298,7 @@ def configure_notes_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("notes:read")
+    @instrument_tool
     async def nc_notes_get_note(note_id: int, ctx: Context) -> Note:
         """Get a specific note by its ID (requires notes:read scope)"""
         client = await get_client(ctx)
@@ -322,6 +328,7 @@ def configure_notes_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("notes:read")
+    @instrument_tool
     async def nc_notes_get_attachment(
         note_id: int, attachment_filename: str, ctx: Context
     ) -> dict[str, str]:
@@ -368,6 +375,7 @@ def configure_notes_tools(mcp: FastMCP):
 
     @mcp.tool()
     @require_scopes("notes:write")
+    @instrument_tool
     async def nc_notes_delete_note(note_id: int, ctx: Context) -> DeleteNoteResponse:
         """Delete a note permanently"""
         logger.info("Deleting note %s", note_id)
