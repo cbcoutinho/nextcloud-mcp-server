@@ -288,8 +288,8 @@ def get_settings() -> Settings:
     return Settings(
         # OAuth/OIDC settings
         oidc_discovery_url=os.getenv("OIDC_DISCOVERY_URL"),
-        oidc_client_id=os.getenv("OIDC_CLIENT_ID"),
-        oidc_client_secret=os.getenv("OIDC_CLIENT_SECRET"),
+        oidc_client_id=os.getenv("NEXTCLOUD_OIDC_CLIENT_ID"),
+        oidc_client_secret=os.getenv("NEXTCLOUD_OIDC_CLIENT_SECRET"),
         oidc_issuer=os.getenv("OIDC_ISSUER"),
         # Nextcloud settings
         nextcloud_host=os.getenv("NEXTCLOUD_HOST"),
