@@ -280,6 +280,72 @@ Use OpenAI or any OpenAI-compatible API instead of Ollama.
 | `openai.secretKey` | Key in secret containing API key | `api-key` |
 | `openai.baseUrl` | Custom API endpoint (optional) | `""` |
 
+#### Observability & Monitoring
+
+The chart includes comprehensive observability features including Prometheus metrics, OpenTelemetry tracing, and Grafana dashboards.
+
+**Metrics Configuration:**
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `observability.metrics.enabled` | Enable Prometheus metrics | `true` |
+| `observability.metrics.port` | Metrics port | `9090` |
+| `observability.metrics.path` | Metrics endpoint path | `/metrics` |
+
+**Tracing Configuration:**
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `observability.tracing.enabled` | Enable OpenTelemetry tracing | `false` |
+| `observability.tracing.endpoint` | OTLP collector endpoint | `""` |
+| `observability.tracing.serviceName` | Service name in traces | `nextcloud-mcp-server` |
+| `observability.tracing.samplingRate` | Trace sampling rate (0.0-1.0) | `1.0` |
+
+**Logging Configuration:**
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `observability.logging.format` | Log format (json or text) | `json` |
+| `observability.logging.level` | Log level | `INFO` |
+| `observability.logging.includeTraceContext` | Include trace IDs in logs | `true` |
+
+**ServiceMonitor (Prometheus Operator):**
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `serviceMonitor.enabled` | Create ServiceMonitor resource | `false` |
+| `serviceMonitor.interval` | Scrape interval | `30s` |
+| `serviceMonitor.scrapeTimeout` | Scrape timeout | `10s` |
+| `serviceMonitor.labels` | Additional labels for ServiceMonitor | `{}` |
+
+**PrometheusRule (Prometheus Operator):**
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `prometheusRule.enabled` | Create PrometheusRule with alert rules | `false` |
+| `prometheusRule.labels` | Additional labels for PrometheusRule | `{}` |
+
+**Grafana Dashboards:**
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `dashboards.enabled` | Enable automatic dashboard provisioning | `false` |
+| `dashboards.grafanaFolder` | Grafana folder name for dashboards | `Nextcloud MCP` |
+| `dashboards.labels` | Additional labels for dashboard ConfigMap | `{}` |
+| `dashboards.annotations` | Additional annotations for dashboard ConfigMap | `{}` |
+
+When `dashboards.enabled` is `true`, a ConfigMap with the Grafana dashboard is created with the `grafana_dashboard: "1"` label. This enables automatic discovery by Grafana sidecar containers (commonly used with kube-prometheus-stack).
+
+The dashboard provides comprehensive monitoring including:
+- HTTP request metrics (RED pattern: Rate, Errors, Duration)
+- MCP tool performance and errors
+- Nextcloud API performance by app (notes, calendar, contacts, etc.)
+- OAuth token operations and cache hit rates
+- External dependency health (Nextcloud, Qdrant, Keycloak, Unstructured API)
+- Vector sync processing pipeline (when enabled)
+
+For manual import or more details, see `charts/nextcloud-mcp-server/dashboards/README.md`.
+
 ## Examples
 
 ### Example 1: Basic Auth with Ingress
