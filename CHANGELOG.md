@@ -1,3 +1,9 @@
+## v0.33.0 (2025-11-13)
+
+### Feat
+
+- Add Grafana dashboard and vector sync metric instrumentation
+
 ## v0.32.1 (2025-11-12)
 
 ### Fix
