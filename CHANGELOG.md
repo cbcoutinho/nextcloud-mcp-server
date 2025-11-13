@@ -1,3 +1,9 @@
+## v0.33.1 (2025-11-13)
+
+### Fix
+
+- Move grafana_folder from labels to annotations
+
 ## v0.33.0 (2025-11-13)
 
 ### Feat
