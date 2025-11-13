@@ -1,0 +1,24 @@
+{{- if .Values.dashboards.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nextcloud-mcp-server.fullname" . }}-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nextcloud-mcp-server.labels" . | nindent 4 }}
+    {{- with .Values.dashboards.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    # Grafana sidecar discovery labels
+    grafana_dashboard: "1"
+    {{- if .Values.dashboards.grafanaFolder }}
+    grafana_folder: {{ .Values.dashboards.grafanaFolder | quote }}
+    {{- end }}
+  annotations:
+    {{- with .Values.dashboards.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  nextcloud-mcp-server.json: |-
+{{ .Files.Get "dashboards/nextcloud-mcp-server.json" | indent 4 }}
+{{- end }}

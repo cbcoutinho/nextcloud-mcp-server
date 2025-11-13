@@ -96,6 +96,30 @@ Your Nextcloud MCP Server has been deployed in {{ .Values.auth.mode }} authentic
    kubectl --namespace {{ .Release.Namespace }} exec -it deploy/{{ include "nextcloud-mcp-server.fullname" . }} -- curl -s http://localhost:{{ include "nextcloud-mcp-server.port" . }}/user/page | grep "Vector Sync"
 {{- end }}
 
+{{- if .Values.dashboards.enabled }}
+
+6. Grafana Dashboards:
+   - Dashboard provisioning: Enabled
+   - ConfigMap: {{ include "nextcloud-mcp-server.fullname" . }}-dashboard
+   - Grafana Folder: {{ .Values.dashboards.grafanaFolder }}
+
+   The dashboard will be automatically imported by Grafana if the sidecar is configured
+   to watch for ConfigMaps with label "grafana_dashboard: 1".
+
+   To manually import the dashboard:
+   kubectl --namespace {{ .Release.Namespace }} get configmap {{ include "nextcloud-mcp-server.fullname" . }}-dashboard -o jsonpath='{.data.nextcloud-mcp-server\.json}' | jq . > dashboard.json
+
+   Then import dashboard.json via Grafana UI (Dashboards → Import).
+{{- else }}
+
+6. Grafana Dashboards:
+   - Dashboard provisioning: Disabled
+   - To enable automatic dashboard provisioning, set: dashboards.enabled=true
+
+   Manual import option:
+   The dashboard JSON is available in the chart at charts/nextcloud-mcp-server/dashboards/nextcloud-mcp-server.json
+{{- end }}
+
 For more information and documentation:
 - GitHub: https://github.com/cbcoutinho/nextcloud-mcp-server
 - Documentation: https://github.com/cbcoutinho/nextcloud-mcp-server#readme

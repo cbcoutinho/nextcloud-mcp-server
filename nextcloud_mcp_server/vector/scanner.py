@@ -13,6 +13,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.observability.metrics import record_vector_sync_scan
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -180,6 +181,9 @@ async def scan_user_documents(
             async for note in nc_client.notes.get_all_notes(prune_before=prune_before)
         ]
         logger.info(f"[SCAN-{scan_id}] Found {len(notes)} notes for {user_id}")
+
+        # Record documents scanned
+        record_vector_sync_scan(len(notes))
 
         if initial_sync:
             # Send everything on first sync

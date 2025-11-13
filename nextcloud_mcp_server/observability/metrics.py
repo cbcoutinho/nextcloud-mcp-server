@@ -352,3 +352,46 @@ def record_dependency_check(dependency: str, duration: float) -> None:
         duration: Check duration in seconds
     """
     dependency_check_duration_seconds.labels(dependency=dependency).observe(duration)
+
+
+def record_vector_sync_scan(documents_found: int) -> None:
+    """
+    Record documents scanned during vector sync.
+
+    Args:
+        documents_found: Number of documents discovered in scan
+    """
+    vector_sync_documents_scanned_total.inc(documents_found)
+
+
+def record_vector_sync_processing(duration: float, status: str = "success") -> None:
+    """
+    Record document processing with duration and status.
+
+    Args:
+        duration: Processing duration in seconds
+        status: "success" or "error"
+    """
+    vector_sync_documents_processed_total.labels(status=status).inc()
+    vector_sync_processing_duration_seconds.observe(duration)
+
+
+def record_qdrant_operation(operation: str, status: str = "success") -> None:
+    """
+    Record Qdrant vector database operation.
+
+    Args:
+        operation: Operation type ("upsert", "search", "delete")
+        status: "success" or "error"
+    """
+    qdrant_operations_total.labels(operation=operation, status=status).inc()
+
+
+def update_vector_sync_queue_size(size: int) -> None:
+    """
+    Update vector sync queue size gauge.
+
+    Args:
+        size: Current queue size
+    """
+    vector_sync_queue_size.set(size)

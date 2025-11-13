@@ -205,6 +205,19 @@ prometheusRule:
   # Additional labels for PrometheusRule (e.g., for Prometheus selector)
   # Example: { prometheus: kube-prometheus }
 
+# Grafana dashboards (requires Grafana with sidecar enabled)
+dashboards:
+  # Enable automatic dashboard provisioning via ConfigMap
+  enabled: false
+  # Grafana folder name where dashboards will be imported
+  # The grafana-sidecar looks for ConfigMaps with label "grafana_folder"
+  grafanaFolder: "Nextcloud MCP"
+  # Additional labels for dashboard ConfigMap
+  # These will be added alongside the required "grafana_dashboard: 1" label
+  labels: {}
+  # Additional annotations for dashboard ConfigMap
+  annotations: {}
+
 service:
   type: ClusterIP
   port: 8000
