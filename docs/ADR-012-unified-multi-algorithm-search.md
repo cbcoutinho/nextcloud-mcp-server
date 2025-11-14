@@ -131,16 +131,33 @@ We will implement a **unified multi-algorithm search architecture** with the fol
 7. Return ranked SearchResponse to client
 ```
 
-#### Viz Pane Request
+#### Viz Pane Request (Server-Side Processing)
 ```
 1. User navigates to /app (Vector Visualization tab)
 2. Browser loads vector-viz fragment via htmx
-3. User adjusts algorithm selector and weight sliders
-4. JavaScript calls same search/algorithms.py backend
-5. PCA reduces vectors to 2D for visualization
-6. Plotly.js renders interactive scatter plot
-7. Matching results highlighted, non-matches grayed out
+3. User enters query and adjusts algorithm/weights
+4. htmx sends request to /app/vector-viz endpoint
+5. Server executes search via search/algorithms.py:
+   - Filters by user_id (multi-tenant security)
+   - Applies selected algorithm (semantic/keyword/fuzzy/hybrid)
+   - Filters by document type (notes/files/calendar/contacts)
+   - Retrieves matching results + metadata
+6. Server performs PCA reduction (768-dim → 2D):
+   - Converts matching results to 2D coordinates
+   - Only sends coordinates + metadata (not full vectors)
+   - Dramatically reduces bandwidth (e.g., 768 floats → 2 floats per doc)
+7. Server returns JSON: {results: [...], coordinates_2d: [...], stats: {...}}
+8. Browser receives lightweight response
+9. Plotly.js renders interactive scatter plot
+10. Matching results highlighted (blue), non-matches grayed (40% opacity)
 ```
+
+**Performance Benefits of Server-Side Processing**:
+- **Bandwidth reduction**: ~384x less data (2 floats vs 768 floats per document)
+- **Client efficiency**: Browser only handles visualization, not computation
+- **Scalability**: Can visualize 10,000+ documents without client-side lag
+- **Security**: Raw vectors never leave server
+- **Consistency**: Same search logic as MCP tool (no drift)
 
 ### 1. Core Search Algorithms
 
@@ -238,10 +255,19 @@ nextcloud_mcp_server/
 Update viz pane (`nextcloud_mcp_server/auth/userinfo_routes.py`) to:
 
 1. **Use shared algorithms**: Import from `search/algorithms.py`
-2. **Remove client-side filtering**: Call server-side search methods
-3. **User accessibility**: Available to all users with vector sync enabled
-4. **Security**: Filter results by `user_id` (only show user's own documents)
-5. **Interactive testing**: Allow users to:
+2. **Server-side filtering**: All search and filtering operations happen server-side
+   - Query execution via shared search backend
+   - Document type filtering (notes, files, calendar, contacts)
+   - User ID filtering for multi-tenant security
+   - Only matching results + metadata sent to client
+   - Reduces bandwidth and improves performance
+3. **PCA reduction**: Server performs dimensionality reduction (768-dim → 2D)
+   - Only 2D coordinates sent to browser for visualization
+   - Dramatically reduces data transfer vs sending full vectors
+   - Enables visualization of large document collections
+4. **User accessibility**: Available to all users with vector sync enabled
+5. **Security**: Filter results by `user_id` (only show user's own documents)
+6. **Interactive testing**: Allow users to:
    - Select algorithm type
    - Adjust weights (hybrid mode)
    - Compare results across algorithms
@@ -403,13 +429,29 @@ def reciprocal_rank_fusion(
 
 ### Phase 3: Update Viz Pane (Week 2)
 
-1. Remove client-side search filtering
-2. Call shared `search/algorithms.py` methods
-3. Add user_id filtering for multi-user security
-4. Add algorithm selector dropdown
-5. Add weight adjustment controls (sliders)
-6. Update visualization to show algorithm-specific metadata
-7. Add side-by-side comparison mode
+**Critical: All processing must happen server-side**
+
+1. **Remove client-side search filtering**
+   - Delete JavaScript-based keyword/fuzzy matching
+   - Remove client-side document type filtering
+   - No search logic in browser
+2. **Implement server-side endpoint** (`/app/vector-viz`)
+   - Accept query, algorithm, weights, doc_type filters
+   - Execute search via `search/algorithms.py`
+   - Filter results by user_id (security)
+   - Perform PCA reduction (768-dim → 2D)
+   - Return JSON with 2D coordinates + metadata only
+3. **Update frontend**
+   - htmx form submission to `/app/vector-viz`
+   - Algorithm selector dropdown
+   - Weight adjustment sliders (htmx updates on change)
+   - Document type checkboxes
+   - Plotly.js visualization of server response
+4. **Performance optimization**
+   - Limit results to user's documents only
+   - Cache PCA transformation (invalidate on new vectors)
+   - Stream large result sets if needed
+   - Add loading indicators for server processing
 
 ### Phase 4: Documentation and Testing (Week 2-3)
 
