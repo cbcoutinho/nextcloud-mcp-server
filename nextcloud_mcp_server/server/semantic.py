@@ -1,8 +1,9 @@
 """Semantic search MCP tools using vector database."""
 
 import logging
+from typing import Literal
 
-from httpx import HTTPStatusError, RequestError
+from httpx import RequestError
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.exceptions import McpError
 from mcp.types import (
@@ -23,7 +24,12 @@ from nextcloud_mcp_server.models.semantic import (
 )
 from nextcloud_mcp_server.observability.metrics import (
     instrument_tool,
-    record_qdrant_operation,
+)
+from nextcloud_mcp_server.search import (
+    FuzzySearchAlgorithm,
+    HybridSearchAlgorithm,
+    KeywordSearchAlgorithm,
+    SemanticSearchAlgorithm,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,187 +42,138 @@ def configure_semantic_tools(mcp: FastMCP):
     @require_scopes("semantic:read")
     @instrument_tool
     async def nc_semantic_search(
-        query: str, ctx: Context, limit: int = 10, score_threshold: float = 0.7
+        query: str,
+        ctx: Context,
+        limit: int = 10,
+        score_threshold: float = 0.7,
+        algorithm: Literal["semantic", "keyword", "fuzzy", "hybrid"] = "hybrid",
+        semantic_weight: float = 0.5,
+        keyword_weight: float = 0.3,
+        fuzzy_weight: float = 0.2,
     ) -> SemanticSearchResponse:
         """
-        Semantic search across all indexed Nextcloud apps using vector embeddings.
+        Search Nextcloud content using configurable algorithms.
 
-        Searches documents by meaning rather than exact keywords across notes, calendar
-        events, deck cards, files, and contacts. Requires vector database synchronization
-        to be enabled (VECTOR_SYNC_ENABLED=true).
+        Supports multiple search algorithms with client-configurable weighting:
+        - semantic: Vector similarity search (requires VECTOR_SYNC_ENABLED=true)
+        - keyword: Token-based matching (title matches weighted 3x)
+        - fuzzy: Character overlap matching (typo-tolerant)
+        - hybrid: Combines all algorithms using Reciprocal Rank Fusion (default)
 
         Args:
             query: Natural language search query
             limit: Maximum number of results to return (default: 10)
-            score_threshold: Minimum similarity score (0-1, default: 0.7)
+            score_threshold: Minimum similarity score for semantic/hybrid (0-1, default: 0.7)
+            algorithm: Search algorithm to use (default: "hybrid")
+            semantic_weight: Weight for semantic results in hybrid mode (default: 0.5)
+            keyword_weight: Weight for keyword results in hybrid mode (default: 0.3)
+            fuzzy_weight: Weight for fuzzy results in hybrid mode (default: 0.2)
 
         Returns:
-            SemanticSearchResponse with matching documents and similarity scores
+            SemanticSearchResponse with matching documents and relevance scores
         """
-        from qdrant_client.models import FieldCondition, Filter, MatchValue
-
         from nextcloud_mcp_server.config import get_settings
-        from nextcloud_mcp_server.embedding import get_embedding_service
-        from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
         settings = get_settings()
-
-        # Check if vector sync is enabled
-        if not settings.vector_sync_enabled:
-            raise McpError(
-                ErrorData(
-                    code=-1,
-                    message="Semantic search is not enabled. Set VECTOR_SYNC_ENABLED=true and ensure vector database is configured.",
-                )
-            )
-
         client = await get_client(ctx)
         username = client.username
 
         logger.info(
-            f"Semantic search: query='{query}', user={username}, "
+            f"Search: query='{query}', user={username}, algorithm={algorithm}, "
             f"limit={limit}, score_threshold={score_threshold}"
         )
 
         try:
-            # Generate embedding for query
-            embedding_service = get_embedding_service()
-            query_embedding = await embedding_service.embed(query)
-            logger.debug(
-                f"Generated embedding for query (dimension={len(query_embedding)})"
-            )
-
-            # Search Qdrant with user filtering
-            # Note: Currently only searching notes (doc_type="note")
-            # Future: Remove doc_type filter to search all apps
-            qdrant_client = await get_qdrant_client()
-            try:
-                search_response = await qdrant_client.query_points(
-                    collection_name=settings.get_collection_name(),
-                    query=query_embedding,
-                    query_filter=Filter(
-                        must=[
-                            FieldCondition(
-                                key="user_id",
-                                match=MatchValue(value=username),
-                            ),
-                            FieldCondition(
-                                key="doc_type",
-                                match=MatchValue(value="note"),
-                            ),
-                        ]
-                    ),
-                    limit=limit * 2,  # Get extra for filtering
-                    score_threshold=score_threshold,
-                    with_payload=True,
-                    with_vectors=False,  # Don't return vectors to save bandwidth
-                )
-                # Record successful search operation
-                record_qdrant_operation("search", "success")
-            except Exception:
-                # Record failed search operation
-                record_qdrant_operation("search", "error")
-                raise
-
-            logger.info(
-                f"Qdrant returned {len(search_response.points)} results "
-                f"(before deduplication and access verification)"
-            )
-            if search_response.points:
-                # Log top 3 scores to help with threshold tuning
-                top_scores = [p.score for p in search_response.points[:3]]
-                logger.debug(f"Top 3 similarity scores: {top_scores}")
-
-            # Deduplicate by document ID (multiple chunks per document)
-            seen_doc_ids = set()
-            results = []
-
-            for result in search_response.points:
-                doc_id = int(result.payload["doc_id"])
-                doc_type = result.payload.get("doc_type", "note")
-
-                # Skip if we've already seen this document
-                if doc_id in seen_doc_ids:
-                    continue
-
-                seen_doc_ids.add(doc_id)
-
-                # Verify access via Nextcloud API (dual-phase authorization)
-                # Currently only supports notes, will be extended to other apps
-                if doc_type == "note":
-                    try:
-                        note = await client.notes.get_note(doc_id)
-
-                        results.append(
-                            SemanticSearchResult(
-                                id=doc_id,
-                                doc_type="note",
-                                title=result.payload["title"],
-                                category=note.get("category", ""),
-                                excerpt=result.payload["excerpt"],
-                                score=result.score,
-                                chunk_index=result.payload["chunk_index"],
-                                total_chunks=result.payload["total_chunks"],
-                            )
+            # Create appropriate algorithm instance
+            if algorithm == "semantic":
+                if not settings.vector_sync_enabled:
+                    raise McpError(
+                        ErrorData(
+                            code=-1,
+                            message="Semantic search requires VECTOR_SYNC_ENABLED=true",
                         )
+                    )
+                search_algo = SemanticSearchAlgorithm(score_threshold=score_threshold)
+            elif algorithm == "keyword":
+                search_algo = KeywordSearchAlgorithm()
+            elif algorithm == "fuzzy":
+                search_algo = FuzzySearchAlgorithm()
+            elif algorithm == "hybrid":
+                if semantic_weight > 0 and not settings.vector_sync_enabled:
+                    raise McpError(
+                        ErrorData(
+                            code=-1,
+                            message="Hybrid search with semantic component requires VECTOR_SYNC_ENABLED=true",
+                        )
+                    )
+                search_algo = HybridSearchAlgorithm(
+                    semantic_weight=semantic_weight,
+                    keyword_weight=keyword_weight,
+                    fuzzy_weight=fuzzy_weight,
+                )
+            else:
+                raise McpError(
+                    ErrorData(code=-1, message=f"Unknown algorithm: {algorithm}")
+                )
 
-                        if len(results) >= limit:
-                            break
-
-                    except HTTPStatusError as e:
-                        if e.response.status_code == 403:
-                            # User lost access, skip this document
-                            logger.debug(f"Skipping note {doc_id}: access denied (403)")
-                            continue
-                        elif e.response.status_code == 404:
-                            # Document was deleted but not yet removed from vector DB
-                            logger.debug(
-                                f"Skipping note {doc_id}: not found (404), "
-                                f"likely deleted after indexing"
-                            )
-                            continue
-                        else:
-                            # Log other errors but continue processing
-                            logger.warning(
-                                f"Error verifying access to note {doc_id}: {e.response.status_code}"
-                            )
-                            continue
-
-            logger.info(
-                f"Returning {len(results)} results after deduplication and access verification"
+            # Execute search (currently limited to notes doc_type)
+            search_results = await search_algo.search(
+                query=query,
+                user_id=username,
+                limit=limit,
+                doc_type="note",
+                nextcloud_client=client,
+                score_threshold=score_threshold,
             )
-            if results:
-                result_details = [
-                    f"note_{r.id} (score={r.score:.3f}, title='{r.title}')"
-                    for r in results[:5]  # Show top 5
-                ]
-                logger.debug(f"Top results: {', '.join(result_details)}")
+
+            # Convert SearchResult objects to SemanticSearchResult for response
+            results = []
+            for r in search_results:
+                results.append(
+                    SemanticSearchResult(
+                        id=r.id,
+                        doc_type=r.doc_type,
+                        title=r.title,
+                        category=r.metadata.get("category", "") if r.metadata else "",
+                        excerpt=r.excerpt,
+                        score=r.score,
+                        chunk_index=r.metadata.get("chunk_index", 0)
+                        if r.metadata
+                        else 0,
+                        total_chunks=r.metadata.get("total_chunks", 1)
+                        if r.metadata
+                        else 1,
+                    )
+                )
+
+            logger.info(f"Returning {len(results)} results from {algorithm} search")
 
             return SemanticSearchResponse(
                 results=results,
                 query=query,
                 total_found=len(results),
-                search_method="semantic",
+                search_method=algorithm,
             )
 
         except ValueError as e:
-            if "No embedding provider configured" in str(e):
+            error_msg = str(e)
+            if "No embedding provider configured" in error_msg:
                 raise McpError(
                     ErrorData(
                         code=-1,
                         message="Embedding service not configured. Set OLLAMA_BASE_URL environment variable.",
                     )
                 )
-            raise McpError(ErrorData(code=-1, message=f"Configuration error: {str(e)}"))
+            raise McpError(
+                ErrorData(code=-1, message=f"Configuration error: {error_msg}")
+            )
         except RequestError as e:
             raise McpError(
                 ErrorData(code=-1, message=f"Network error during search: {str(e)}")
             )
         except Exception as e:
-            logger.error(f"Semantic search error: {e}", exc_info=True)
-            raise McpError(
-                ErrorData(code=-1, message=f"Semantic search failed: {str(e)}")
-            )
+            logger.error(f"Search error: {e}", exc_info=True)
+            raise McpError(ErrorData(code=-1, message=f"Search failed: {str(e)}"))
 
     @mcp.tool()
     @require_scopes("semantic:read")
