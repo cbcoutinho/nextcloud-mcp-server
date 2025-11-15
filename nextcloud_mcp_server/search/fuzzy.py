@@ -3,8 +3,12 @@
 import logging
 from typing import Any
 
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.search.algorithms import SearchAlgorithm, SearchResult
+from nextcloud_mcp_server.search.algorithms import (
+    NextcloudClientProtocol,
+    SearchAlgorithm,
+    SearchResult,
+    get_indexed_doc_types,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +42,7 @@ class FuzzySearchAlgorithm(SearchAlgorithm):
         user_id: str,
         limit: int = 10,
         doc_type: str | None = None,
-        nextcloud_client: NextcloudClient | None = None,
+        nextcloud_client: NextcloudClientProtocol | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """Execute fuzzy search using character overlap.
@@ -67,22 +71,39 @@ class FuzzySearchAlgorithm(SearchAlgorithm):
             f"limit={limit}, threshold={threshold}, doc_type={doc_type}"
         )
 
-        # Currently only supports notes
-        if doc_type and doc_type != "note":
-            logger.warning(f"Fuzzy search not yet implemented for doc_type={doc_type}")
-            return []
+        # Get available document types from Qdrant
+        indexed_types = await get_indexed_doc_types(user_id)
+        logger.debug(f"Indexed document types for user: {indexed_types}")
 
-        # Fetch all notes for the user
-        notes = await nextcloud_client.notes.get_notes()
-        logger.debug(f"Fetched {len(notes)} notes for fuzzy search")
+        # Determine which types to search
+        if doc_type:
+            # Search specific type if requested
+            search_types = [doc_type] if doc_type in indexed_types else []
+            if not search_types:
+                logger.info(f"Doc type '{doc_type}' not indexed for user {user_id}")
+                return []
+        else:
+            # Search all indexed types
+            search_types = list(indexed_types)
 
-        # Score and filter notes
-        scored_notes = []
+        # Fetch documents for each type and score them
+        all_documents = []
+        for dtype in search_types:
+            documents = await self._fetch_documents(nextcloud_client, dtype)
+            for doc in documents:
+                doc["_doc_type"] = dtype  # Tag with type
+            all_documents.extend(documents)
+
+        logger.debug(f"Fetched {len(all_documents)} total documents for fuzzy search")
+
+        # Score and filter documents
+        scored_results = []
         query_lower = query.lower()
 
-        for note in notes:
-            title = note.get("title", "")
-            content = note.get("content", "")
+        for doc in all_documents:
+            dtype = doc.get("_doc_type", "note")
+            title = doc.get("title", "")
+            content = doc.get("content", "")
 
             # Check title match
             title_score = self._calculate_char_overlap(query_lower, title.lower())
@@ -100,16 +121,16 @@ class FuzzySearchAlgorithm(SearchAlgorithm):
                 else:
                     excerpt = self._extract_excerpt(content, max_length=200)
 
-                scored_notes.append(
+                scored_results.append(
                     SearchResult(
-                        id=note["id"],
-                        doc_type="note",
+                        id=doc["id"],
+                        doc_type=dtype,
                         title=title or "Untitled",
                         excerpt=excerpt,
                         score=best_score,
                         metadata={
-                            "category": note.get("category", ""),
-                            "modified": note.get("modified"),
+                            "category": doc.get("category", ""),
+                            "modified": doc.get("modified"),
                             "match_location": "title"
                             if title_score >= content_score
                             else "content",
@@ -118,8 +139,8 @@ class FuzzySearchAlgorithm(SearchAlgorithm):
                 )
 
         # Sort by score (descending) and limit
-        scored_notes.sort(key=lambda x: x.score, reverse=True)
-        results = scored_notes[:limit]
+        scored_results.sort(key=lambda x: x.score, reverse=True)
+        results = scored_results[:limit]
 
         logger.info(f"Fuzzy search returned {len(results)} matching notes")
         if results:
@@ -130,6 +151,32 @@ class FuzzySearchAlgorithm(SearchAlgorithm):
             logger.debug(f"Top fuzzy results: {', '.join(result_details)}")
 
         return results
+
+    async def _fetch_documents(
+        self, nextcloud_client: NextcloudClientProtocol, doc_type: str
+    ) -> list[dict[str, Any]]:
+        """Fetch documents of a specific type from Nextcloud.
+
+        Args:
+            nextcloud_client: Client for API access
+            doc_type: Document type to fetch ("note", "file", "calendar", etc.)
+
+        Returns:
+            List of document dictionaries with at minimum: id, title, content
+        """
+        if doc_type == "note":
+            return await nextcloud_client.notes.get_notes()
+        elif doc_type == "file":
+            # Future: fetch files when indexed
+            logger.info("File documents not yet supported for fuzzy search")
+            return []
+        elif doc_type == "calendar":
+            # Future: fetch calendar events when indexed
+            logger.info("Calendar documents not yet supported for fuzzy search")
+            return []
+        else:
+            logger.warning(f"Unknown document type '{doc_type}' for fuzzy search")
+            return []
 
     def _calculate_char_overlap(self, query: str, text: str) -> float:
         """Calculate character overlap ratio between query and text.

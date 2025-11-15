@@ -6,11 +6,14 @@ from typing import Any
 from httpx import HTTPStatusError
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_embedding_service
 from nextcloud_mcp_server.observability.metrics import record_qdrant_operation
-from nextcloud_mcp_server.search.algorithms import SearchAlgorithm, SearchResult
+from nextcloud_mcp_server.search.algorithms import (
+    NextcloudClientProtocol,
+    SearchAlgorithm,
+    SearchResult,
+)
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -45,7 +48,7 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         user_id: str,
         limit: int = 10,
         doc_type: str | None = None,
-        nextcloud_client: NextcloudClient | None = None,
+        nextcloud_client: NextcloudClientProtocol | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """Execute semantic search using vector similarity.
@@ -144,9 +147,13 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         self,
         points: list[Any],
         limit: int,
-        nextcloud_client: NextcloudClient | None,
+        nextcloud_client: NextcloudClientProtocol | None,
     ) -> list[SearchResult]:
-        """Deduplicate results by doc_id and verify access.
+        """Deduplicate results by (doc_id, doc_type) and verify access.
+
+        Supports multiple document types with dispatch to appropriate client methods.
+        Deduplication is now by (doc_id, doc_type) tuple to handle cases where
+        the same ID might exist across different document types.
 
         Args:
             points: Qdrant search results
@@ -156,58 +163,32 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         Returns:
             List of SearchResult objects
         """
-        seen_doc_ids = set()
+        seen_docs = set()  # Track (doc_id, doc_type) tuples
         results = []
 
         for result in points:
             doc_id = int(result.payload["doc_id"])
             doc_type = result.payload.get("doc_type", "note")
+            doc_key = (doc_id, doc_type)
 
             # Skip if we've already seen this document
-            if doc_id in seen_doc_ids:
+            if doc_key in seen_docs:
                 continue
 
-            seen_doc_ids.add(doc_id)
+            seen_docs.add(doc_key)
 
             # Verify access via Nextcloud API if client provided
-            # Currently only supports notes
-            if nextcloud_client and doc_type == "note":
-                try:
-                    note = await nextcloud_client.notes.get_note(doc_id)
+            # Dispatch to appropriate client based on doc_type
+            verified_result = None
 
-                    results.append(
-                        SearchResult(
-                            id=doc_id,
-                            doc_type="note",
-                            title=result.payload["title"],
-                            excerpt=result.payload["excerpt"],
-                            score=result.score,
-                            metadata={
-                                "category": note.get("category", ""),
-                                "chunk_index": result.payload["chunk_index"],
-                                "total_chunks": result.payload["total_chunks"],
-                            },
-                        )
-                    )
+            if nextcloud_client:
+                verified_result = await self._verify_document_access(
+                    nextcloud_client, doc_id, doc_type, result
+                )
 
-                    if len(results) >= limit:
-                        break
-
-                except HTTPStatusError as e:
-                    if e.response.status_code in (403, 404):
-                        # User lost access or document deleted
-                        logger.debug(
-                            f"Skipping note {doc_id}: {e.response.status_code}"
-                        )
-                        continue
-                    else:
-                        # Log other errors but continue processing
-                        logger.warning(
-                            f"Error verifying access to note {doc_id}: "
-                            f"{e.response.status_code}"
-                        )
-                        continue
-            else:
+            if verified_result:
+                results.append(verified_result)
+            elif not nextcloud_client:
                 # No access verification, return result directly
                 results.append(
                     SearchResult(
@@ -223,7 +204,72 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
                     )
                 )
 
-                if len(results) >= limit:
-                    break
+            if len(results) >= limit:
+                break
 
         return results
+
+    async def _verify_document_access(
+        self,
+        nextcloud_client: NextcloudClientProtocol,
+        doc_id: int,
+        doc_type: str,
+        qdrant_result: Any,
+    ) -> SearchResult | None:
+        """Verify user has access to a document via Nextcloud API.
+
+        Dispatches to appropriate client method based on document type.
+
+        Args:
+            nextcloud_client: Client for API access
+            doc_id: Document ID
+            doc_type: Document type ("note", "file", "calendar", etc.)
+            qdrant_result: Original Qdrant search result
+
+        Returns:
+            SearchResult if access verified, None if access denied or error
+        """
+        try:
+            if doc_type == "note":
+                note = await nextcloud_client.notes.get_note(doc_id)
+                return SearchResult(
+                    id=doc_id,
+                    doc_type="note",
+                    title=qdrant_result.payload["title"],
+                    excerpt=qdrant_result.payload["excerpt"],
+                    score=qdrant_result.score,
+                    metadata={
+                        "category": note.get("category", ""),
+                        "chunk_index": qdrant_result.payload["chunk_index"],
+                        "total_chunks": qdrant_result.payload["total_chunks"],
+                    },
+                )
+            elif doc_type == "file":
+                # Future: verify file access when files are indexed
+                logger.info(
+                    f"File {doc_id} found in search but file verification not yet implemented"
+                )
+                return None
+            elif doc_type == "calendar":
+                # Future: verify calendar access when calendar events are indexed
+                logger.info(
+                    f"Calendar event {doc_id} found in search but calendar verification not yet implemented"
+                )
+                return None
+            else:
+                logger.warning(
+                    f"Unknown document type '{doc_type}' for doc_id {doc_id}"
+                )
+                return None
+
+        except HTTPStatusError as e:
+            if e.response.status_code in (403, 404):
+                # User lost access or document deleted
+                logger.debug(f"Skipping {doc_type} {doc_id}: {e.response.status_code}")
+                return None
+            else:
+                # Log other errors but continue processing
+                logger.warning(
+                    f"Error verifying access to {doc_type} {doc_id}: {e.response.status_code}"
+                )
+                return None

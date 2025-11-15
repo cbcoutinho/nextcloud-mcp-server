@@ -2,7 +2,120 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
+
+
+@runtime_checkable
+class NextcloudClientProtocol(Protocol):
+    """Protocol for Nextcloud client supporting multi-document search.
+
+    This protocol defines the interface that search algorithms need from a
+    Nextcloud client to access documents across different apps (Notes, Files,
+    Calendar, etc.). The client provides access to app-specific sub-clients
+    that handle the actual API calls.
+
+    Document types (e.g., "note", "file", "calendar") are NOT 1:1 with apps.
+    For example, the Notes app specializes in markdown files, while Files/WebDAV
+    handles multiple file types. The abstraction is at the document type level.
+
+    Search algorithms query Qdrant to determine which document types are actually
+    indexed before attempting to access them, enabling graceful cross-app search.
+    """
+
+    username: str
+
+    # App-specific clients that search algorithms dispatch to
+    @property
+    def notes(self) -> Any:
+        """Notes client for accessing note documents."""
+        ...
+
+    @property
+    def webdav(self) -> Any:
+        """WebDAV client for accessing file documents."""
+        ...
+
+    @property
+    def calendar(self) -> Any:
+        """Calendar client for accessing event/task documents."""
+        ...
+
+    @property
+    def contacts(self) -> Any:
+        """Contacts client for accessing contact card documents."""
+        ...
+
+    @property
+    def deck(self) -> Any:
+        """Deck client for accessing deck card documents."""
+        ...
+
+    @property
+    def cookbook(self) -> Any:
+        """Cookbook client for accessing recipe documents."""
+        ...
+
+    @property
+    def tables(self) -> Any:
+        """Tables client for accessing table row documents."""
+        ...
+
+
+async def get_indexed_doc_types(user_id: str) -> set[str]:
+    """Query Qdrant to get actually-indexed document types for a user.
+
+    This enables search algorithms to check which document types are available
+    before attempting to search/verify them, allowing graceful cross-app search.
+
+    Args:
+        user_id: User ID to filter by
+
+    Returns:
+        Set of document type strings (e.g., {"note", "file", "calendar"})
+
+    Example:
+        >>> types = await get_indexed_doc_types("alice")
+        >>> if "note" in types:
+        ...     # Search notes
+    """
+    import logging
+
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+    from nextcloud_mcp_server.config import get_settings
+    from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    qdrant_client = await get_qdrant_client()
+    collection = settings.qdrant_collection
+
+    # Use scroll to sample documents and extract doc_types
+    # Note: This could be optimized with a facet/aggregation query if Qdrant adds support
+    try:
+        scroll_results, _next_offset = await qdrant_client.scroll(
+            collection_name=collection,
+            scroll_filter=Filter(
+                must=[FieldCondition(key="user_id", match=MatchValue(value=user_id))]
+            ),
+            limit=1000,  # Sample size to discover types
+            with_payload=["doc_type"],
+            with_vectors=False,  # Don't need vectors for type discovery
+        )
+
+        doc_types = {
+            point.payload.get("doc_type")
+            for point in scroll_results
+            if point.payload.get("doc_type")
+        }
+
+        logger.debug(f"Found indexed document types for user {user_id}: {doc_types}")
+        return doc_types
+
+    except Exception as e:
+        logger.warning(f"Failed to query Qdrant for doc_types: {e}")
+        return set()
 
 
 @dataclass

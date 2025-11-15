@@ -5,8 +5,11 @@ import logging
 from collections import defaultdict
 from typing import Any
 
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.search.algorithms import SearchAlgorithm, SearchResult
+from nextcloud_mcp_server.search.algorithms import (
+    NextcloudClientProtocol,
+    SearchAlgorithm,
+    SearchResult,
+)
 from nextcloud_mcp_server.search.fuzzy import FuzzySearchAlgorithm
 from nextcloud_mcp_server.search.keyword import KeywordSearchAlgorithm
 from nextcloud_mcp_server.search.semantic import SemanticSearchAlgorithm
@@ -82,7 +85,7 @@ class HybridSearchAlgorithm(SearchAlgorithm):
         user_id: str,
         limit: int = 10,
         doc_type: str | None = None,
-        nextcloud_client: NextcloudClient | None = None,
+        nextcloud_client: NextcloudClientProtocol | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """Execute hybrid search using RRF to combine algorithms.

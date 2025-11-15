@@ -3,8 +3,12 @@
 import logging
 from typing import Any
 
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.search.algorithms import SearchAlgorithm, SearchResult
+from nextcloud_mcp_server.search.algorithms import (
+    NextcloudClientProtocol,
+    SearchAlgorithm,
+    SearchResult,
+    get_indexed_doc_types,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +36,7 @@ class KeywordSearchAlgorithm(SearchAlgorithm):
         user_id: str,
         limit: int = 10,
         doc_type: str | None = None,
-        nextcloud_client: NextcloudClient | None = None,
+        nextcloud_client: NextcloudClientProtocol | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """Execute keyword search using token matching.
@@ -63,52 +67,66 @@ class KeywordSearchAlgorithm(SearchAlgorithm):
         query_tokens = self._process_query(query)
         logger.debug(f"Query tokens: {query_tokens}")
 
-        # Currently only supports notes
-        # TODO: Extend to other document types (files, calendar, etc.)
-        if doc_type and doc_type != "note":
-            logger.warning(
-                f"Keyword search not yet implemented for doc_type={doc_type}"
-            )
-            return []
+        # Get available document types from Qdrant
+        indexed_types = await get_indexed_doc_types(user_id)
+        logger.debug(f"Indexed document types for user: {indexed_types}")
 
-        # Fetch all notes for the user
-        notes = await nextcloud_client.notes.get_notes()
-        logger.debug(f"Fetched {len(notes)} notes for keyword search")
+        # Determine which types to search
+        if doc_type:
+            # Search specific type if requested
+            search_types = [doc_type] if doc_type in indexed_types else []
+            if not search_types:
+                logger.info(f"Doc type '{doc_type}' not indexed for user {user_id}")
+                return []
+        else:
+            # Search all indexed types
+            search_types = list(indexed_types)
 
-        # Score and filter notes
-        scored_notes = []
-        for note in notes:
+        # Fetch documents for each type and score them
+        all_documents = []
+        for dtype in search_types:
+            documents = await self._fetch_documents(nextcloud_client, dtype)
+            for doc in documents:
+                doc["_doc_type"] = dtype  # Tag with type
+            all_documents.extend(documents)
+
+        logger.debug(f"Fetched {len(all_documents)} total documents for keyword search")
+
+        # Score and filter documents
+        scored_results = []
+        for doc in all_documents:
+            dtype = doc.get("_doc_type", "note")
             score = self._calculate_score(
                 query_tokens,
-                note.get("title", ""),
-                note.get("content", ""),
+                doc.get("title", ""),
+                doc.get("content", ""),
             )
 
             if score > 0:  # Only include matches
                 # Extract excerpt with context
                 excerpt = self._extract_excerpt(
-                    note.get("content", ""),
+                    doc.get("content", ""),
                     query_tokens,
                     max_length=200,
                 )
 
-                scored_notes.append(
+                scored_results.append(
                     SearchResult(
-                        id=note["id"],
-                        doc_type="note",
-                        title=note.get("title", "Untitled"),
+                        id=doc["id"],
+                        doc_type=dtype,
+                        title=doc.get("title", "Untitled"),
                         excerpt=excerpt,
                         score=score,
                         metadata={
-                            "category": note.get("category", ""),
-                            "modified": note.get("modified"),
+                            "category": doc.get("category", ""),
+                            "modified": doc.get("modified"),
                         },
                     )
                 )
 
         # Sort by score (descending) and limit
-        scored_notes.sort(key=lambda x: x.score, reverse=True)
-        results = scored_notes[:limit]
+        scored_results.sort(key=lambda x: x.score, reverse=True)
+        results = scored_results[:limit]
 
         logger.info(f"Keyword search returned {len(results)} matching notes")
         if results:
@@ -119,6 +137,32 @@ class KeywordSearchAlgorithm(SearchAlgorithm):
             logger.debug(f"Top keyword results: {', '.join(result_details)}")
 
         return results
+
+    async def _fetch_documents(
+        self, nextcloud_client: NextcloudClientProtocol, doc_type: str
+    ) -> list[dict[str, Any]]:
+        """Fetch documents of a specific type from Nextcloud.
+
+        Args:
+            nextcloud_client: Client for API access
+            doc_type: Document type to fetch ("note", "file", "calendar", etc.)
+
+        Returns:
+            List of document dictionaries with at minimum: id, title, content
+        """
+        if doc_type == "note":
+            return await nextcloud_client.notes.get_notes()
+        elif doc_type == "file":
+            # Future: fetch files when indexed
+            logger.info("File documents not yet supported for keyword search")
+            return []
+        elif doc_type == "calendar":
+            # Future: fetch calendar events when indexed
+            logger.info("Calendar documents not yet supported for keyword search")
+            return []
+        else:
+            logger.warning(f"Unknown document type '{doc_type}' for keyword search")
+            return []
 
     def _process_query(self, query: str) -> list[str]:
         """Tokenize and normalize query.
