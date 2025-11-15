@@ -13,13 +13,16 @@ Usage:
     uv run python tools/rag_eval_cli.py upload --nextcloud-url http://localhost:8000 --username admin --password admin
 """
 
+import io
 import json
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any
 
 import anyio
 import click
+import httpx
 from datasets import load_dataset
 from httpx import BasicAuth
 
@@ -79,7 +82,6 @@ def ensure_corpus_downloaded(force_download: bool = False) -> Path:
             "BeIR/nfcorpus",
             "corpus",
             split="corpus",
-            trust_remote_code=True,
         )
 
         # Download queries
@@ -88,16 +90,6 @@ def ensure_corpus_downloaded(force_download: bool = False) -> Path:
             "BeIR/nfcorpus",
             "queries",
             split="queries",
-            trust_remote_code=True,
-        )
-
-        # Download qrels
-        click.echo("  Downloading qrels...")
-        qrels_dataset = load_dataset(
-            "BeIR/nfcorpus",
-            "qrels",
-            split="test",
-            trust_remote_code=True,
         )
 
         # Save to local fixtures directory as JSONL
@@ -113,16 +105,22 @@ def ensure_corpus_downloaded(force_download: bool = False) -> Path:
             for query in queries_dataset:
                 f.write(json.dumps(query) + "\n")
 
-        # Save qrels
-        qrels_dir = CORPUS_DIR / "qrels"
-        qrels_dir.mkdir(exist_ok=True)
-        with open(qrels_dir / "test.tsv", "w") as f:
-            f.write("query-id\tcorpus-id\tscore\n")
-            for qrel in qrels_dataset:  # type: ignore[index]
-                qrel_dict: dict[str, Any] = qrel  # type: ignore[assignment]
-                f.write(
-                    f"{qrel_dict['query-id']}\t{qrel_dict['corpus-id']}\t{qrel_dict['score']}\n"
-                )
+        # Download qrels from BEIR directly (not available via HuggingFace)
+        click.echo("  Downloading qrels from BEIR ZIP...")
+        with httpx.Client(timeout=300.0) as client:
+            response = client.get(NFCORPUS_URL)
+            response.raise_for_status()
+
+            # Extract qrels from ZIP
+            with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+                # The qrels are in nfcorpus/qrels/test.tsv within the ZIP
+                qrels_path = "nfcorpus/qrels/test.tsv"
+                qrels_dir = CORPUS_DIR / "qrels"
+                qrels_dir.mkdir(parents=True, exist_ok=True)
+
+                qrels_content = zf.read(qrels_path).decode("utf-8")
+                with open(qrels_dir / "test.tsv", "w") as f:
+                    f.write(qrels_content)
 
         click.echo(f"Dataset downloaded to {CORPUS_DIR}")
         return CORPUS_DIR
