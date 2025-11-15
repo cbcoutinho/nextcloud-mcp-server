@@ -1,3 +1,9 @@
+## v0.35.0 (2025-11-15)
+
+### Feat
+
+- Enable SSE transport for mcp service and update test fixtures
+
 ## v0.34.2 (2025-11-13)
 
 ### Fix
