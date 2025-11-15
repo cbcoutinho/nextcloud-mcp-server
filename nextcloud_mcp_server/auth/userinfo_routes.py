@@ -489,6 +489,16 @@ async def user_info_html(request: Request) -> HTMLResponse:
             str(request.url_for("oauth_logout")) if oauth_ctx else "/oauth/logout"
         )
 
+    # Get Nextcloud host for generating links to apps (used by viz tab)
+    # Use public issuer URL if available (for browser-accessible links),
+    # otherwise fall back to NEXTCLOUD_HOST from settings
+    from nextcloud_mcp_server.config import get_settings
+
+    settings = get_settings()
+    nextcloud_host_for_links = (
+        os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL") or settings.nextcloud_host
+    )
+
     # Build host info HTML (BasicAuth only)
     host_info_html = ""
     if auth_mode == "basic":
@@ -657,6 +667,115 @@ async def user_info_html(request: Request) -> HTMLResponse:
 
         <!-- Alpine.js for tab state management -->
         <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+        <!-- Plotly.js for vector visualization -->
+        <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+
+        <!-- Vector visualization app (Alpine.js component) -->
+        <script>
+            function vizApp() {{
+                return {{
+                    query: '',
+                    algorithm: 'hybrid',
+                    showAdvanced: false,
+                    docTypes: [''],  // Default to "All Types"
+                    limit: 50,
+                    scoreThreshold: 0.7,
+                    semanticWeight: 0.5,
+                    keywordWeight: 0.3,
+                    fuzzyWeight: 0.2,
+                    loading: false,
+                    results: [],
+
+                    async executeSearch() {{
+                        this.loading = true;
+                        this.results = [];
+
+                        try {{
+                            const params = new URLSearchParams({{
+                                query: this.query,
+                                algorithm: this.algorithm,
+                                limit: this.limit,
+                                score_threshold: this.scoreThreshold,
+                                semantic_weight: this.semanticWeight,
+                                keyword_weight: this.keywordWeight,
+                                fuzzy_weight: this.fuzzyWeight,
+                            }});
+
+                            // Add doc_types parameter (filter out empty string for "All Types")
+                            const selectedTypes = this.docTypes.filter(t => t !== '');
+                            if (selectedTypes.length > 0) {{
+                                params.append('doc_types', selectedTypes.join(','));
+                            }}
+
+                            const response = await fetch(`/app/vector-viz/search?${{params}}`);
+                            const data = await response.json();
+
+                            if (data.success) {{
+                                this.results = data.results;
+                                this.renderPlot(data.coordinates_2d, data.results);
+                            }} else {{
+                                alert('Search failed: ' + data.error);
+                            }}
+                        }} catch (error) {{
+                            alert('Error: ' + error.message);
+                        }} finally {{
+                            this.loading = false;
+                        }}
+                    }},
+
+                    renderPlot(coordinates, results) {{
+                        const trace = {{
+                            x: coordinates.map(c => c[0]),
+                            y: coordinates.map(c => c[1]),
+                            mode: 'markers',
+                            type: 'scatter',
+                            text: results.map(r => `${{r.title}}<br>Score: ${{r.score.toFixed(3)}}`),
+                            marker: {{
+                                size: 8,
+                                color: results.map(r => r.score),
+                                colorscale: 'Viridis',
+                                showscale: true,
+                                colorbar: {{ title: 'Score' }},
+                                cmin: 0,
+                                cmax: 1
+                            }}
+                        }};
+
+                        const layout = {{
+                            title: `Vector Space (PCA 2D) - ${{results.length}} results`,
+                            xaxis: {{ title: 'PC1' }},
+                            yaxis: {{ title: 'PC2' }},
+                            hovermode: 'closest',
+                            height: 600
+                        }};
+
+                        Plotly.newPlot('viz-plot', [trace], layout);
+                    }},
+
+                    getNextcloudUrl(result) {{
+                        // Generate Nextcloud URL based on document type
+                        // Use the actual Nextcloud host (port 8080), not the MCP server
+                        const baseUrl = '{nextcloud_host_for_links}';
+
+                        switch (result.doc_type) {{
+                            case 'note':
+                                return `${{baseUrl}}/apps/notes/note/${{result.id}}`;
+                            case 'file':
+                                return `${{baseUrl}}/apps/files/?fileId=${{result.id}}`;
+                            case 'calendar':
+                                return `${{baseUrl}}/apps/calendar`;
+                            case 'contact':
+                                return `${{baseUrl}}/apps/contacts`;
+                            case 'deck':
+                                return `${{baseUrl}}/apps/deck`;
+                            default:
+                                return `${{baseUrl}}`;
+                        }}
+                    }}
+                }}
+            }}
+        </script>
 
         <style>
             body {{
@@ -897,7 +1016,9 @@ async def user_info_html(request: Request) -> HTMLResponse:
         else '''
                 <!-- Vector Viz Tab -->
                 <div class="tab-pane" x-show="activeTab === 'vector-viz'" x-transition.opacity.duration.150ms>
-                    <iframe src="/app/vector-viz" style="width: 100%; height: 800px; border: none;"></iframe>
+                    <div hx-get="/app/vector-viz" hx-trigger="load" hx-swap="outerHTML">
+                        <p style="color: #999;">Loading vector visualization...</p>
+                    </div>
                 </div>
                 '''
     }

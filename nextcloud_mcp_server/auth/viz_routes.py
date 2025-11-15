@@ -64,80 +64,56 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
         else "unknown"
     )
 
-    # Get Nextcloud host for generating links to apps
-    # Use public issuer URL if available (for browser-accessible links),
-    # otherwise fall back to NEXTCLOUD_HOST
-    import os
-
-    nextcloud_host = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL") or settings.nextcloud_host
-
     html_content = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Vector Visualization - Nextcloud MCP</title>
-        <script src="https://cdn.plot.ly/plotly-2.26.0.min.js"></script>
-        <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-        <script src="https://unpkg.com/alpinejs@3.13.3/dist/cdn.min.js" defer></script>
         <style>
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                margin: 0;
-                padding: 20px;
-                background: #f5f5f5;
-            }}
-            .container {{
-                max-width: 1400px;
-                margin: 0 auto;
-            }}
-            .card {{
+            .viz-card {{
                 background: white;
                 border-radius: 8px;
                 padding: 20px;
                 margin-bottom: 20px;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             }}
-            .controls {{
+            .viz-controls {{
                 margin-bottom: 20px;
             }}
-            .control-row {{
+            .viz-control-row {{
                 display: grid;
                 grid-template-columns: 2fr 1fr auto;
                 gap: 12px;
                 margin-bottom: 12px;
                 align-items: end;
             }}
-            .control-group {{
+            .viz-control-group {{
                 margin-bottom: 15px;
             }}
-            label {{
+            .viz-control-group label {{
                 display: block;
                 margin-bottom: 5px;
                 font-weight: 500;
                 color: #333;
             }}
-            input[type="text"], input[type="number"], select {{
+            .viz-control-group input[type="text"],
+            .viz-control-group input[type="number"],
+            .viz-control-group select {{
                 width: 100%;
                 padding: 8px 12px;
                 border: 1px solid #ddd;
                 border-radius: 4px;
                 font-size: 14px;
             }}
-            input[type="range"] {{
+            .viz-control-group input[type="range"] {{
                 width: 100%;
             }}
-            select[multiple] {{
+            .viz-control-group select[multiple] {{
                 min-height: 100px;
             }}
-            .weight-display {{
+            .viz-weight-display {{
                 display: inline-block;
                 min-width: 40px;
                 text-align: right;
                 color: #666;
             }}
-            .btn {{
+            .viz-btn {{
                 background: #0066cc;
                 color: white;
                 border: none;
@@ -147,10 +123,10 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                 font-size: 14px;
                 font-weight: 500;
             }}
-            .btn:hover {{
+            .viz-btn:hover {{
                 background: #0052a3;
             }}
-            .btn-secondary {{
+            .viz-btn-secondary {{
                 background: #6c757d;
                 color: white;
                 border: none;
@@ -160,31 +136,51 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                 font-size: 13px;
                 margin-bottom: 12px;
             }}
-            .btn-secondary:hover {{
+            .viz-btn-secondary:hover {{
                 background: #5a6268;
             }}
-            #plot {{
+            #viz-plot-container {{
                 width: 100%;
                 height: 600px;
+                position: relative;
             }}
-            .loading {{
+            #viz-plot {{
+                width: 100%;
+                height: 100%;
+            }}
+            .viz-loading {{
                 text-align: center;
                 padding: 40px;
                 color: #666;
             }}
-            .advanced-section {{
+            .viz-loading-overlay {{
+                position: absolute;
+                inset: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                background: white;
+                color: #666;
+            }}
+            .viz-no-results {{
+                text-align: center;
+                padding: 40px;
+                color: #666;
+                font-style: italic;
+            }}
+            .viz-advanced-section {{
                 margin-top: 16px;
                 padding: 16px;
                 background: #f8f9fa;
                 border-radius: 4px;
                 border: 1px solid #dee2e6;
             }}
-            .advanced-grid {{
+            .viz-advanced-grid {{
                 display: grid;
                 grid-template-columns: 1fr 1fr;
                 gap: 20px;
             }}
-            .info-box {{
+            .viz-info-box {{
                 background: #e3f2fd;
                 border-left: 4px solid #2196f3;
                 padding: 12px;
@@ -192,25 +188,24 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                 font-size: 14px;
             }}
         </style>
-    </head>
-    <body>
-        <div class="container" x-data="vizApp()">
-            <div class="card">
-                <h1>Vector Visualization</h1>
-                <div class="info-box">
+
+        <div x-data="vizApp()">
+            <div class="viz-card">
+                <h2>Vector Visualization</h2>
+                <div class="viz-info-box">
                     Testing search algorithms on your indexed documents. User: <strong>{username}</strong>
                 </div>
 
                 <form @submit.prevent="executeSearch">
-                    <div class="controls">
+                    <div class="viz-controls">
                         <!-- Main Controls -->
-                        <div class="control-group">
+                        <div class="viz-control-group">
                             <label>Search Query</label>
                             <input type="text" x-model="query" placeholder="Enter search query..." required />
                         </div>
 
-                        <div class="control-row">
-                            <div class="control-group" style="margin-bottom: 0;">
+                        <div class="viz-control-row">
+                            <div class="viz-control-group" style="margin-bottom: 0;">
                                 <label>Algorithm</label>
                                 <select x-model="algorithm">
                                     <option value="semantic">Semantic (Vector Similarity)</option>
@@ -221,22 +216,22 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                             </div>
 
                             <div style="display: flex; align-items: flex-end;">
-                                <button type="submit" class="btn" style="width: 100%;">Search & Visualize</button>
+                                <button type="submit" class="viz-btn" style="width: 100%;">Search & Visualize</button>
                             </div>
 
                             <div style="display: flex; align-items: flex-end;">
-                                <button type="button" class="btn-secondary" @click="showAdvanced = !showAdvanced" style="white-space: nowrap;">
+                                <button type="button" class="viz-btn-secondary" @click="showAdvanced = !showAdvanced" style="white-space: nowrap;">
                                     <span x-text="showAdvanced ? 'Hide Advanced' : 'Advanced'"></span>
                                 </button>
                             </div>
                         </div>
 
                         <!-- Advanced Options (Collapsible) -->
-                        <div class="advanced-section" x-show="showAdvanced" x-transition.opacity.duration.200ms>
+                        <div class="viz-advanced-section" x-show="showAdvanced" x-transition.opacity.duration.200ms>
                             <h3 style="margin-top: 0; margin-bottom: 16px; font-size: 16px;">Advanced Options</h3>
 
-                            <div class="advanced-grid">
-                                <div class="control-group">
+                            <div class="viz-advanced-grid">
+                                <div class="viz-control-group">
                                     <label>Document Types</label>
                                     <select x-model="docTypes" multiple>
                                         <option value="">All Types (cross-app search)</option>
@@ -252,12 +247,12 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                                 </div>
 
                                 <div>
-                                    <div class="control-group">
+                                    <div class="viz-control-group">
                                         <label>Score Threshold (Semantic/Hybrid)</label>
                                         <input type="number" x-model.number="scoreThreshold" min="0" max="1" step="0.1" />
                                     </div>
 
-                                    <div class="control-group">
+                                    <div class="viz-control-group">
                                         <label>Result Limit</label>
                                         <input type="number" x-model.number="limit" min="1" max="100" />
                                     </div>
@@ -271,17 +266,17 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                                 <div style="margin-bottom: 8px;">
                                     <label style="display: inline-block; width: 100px; font-weight: normal;">Semantic:</label>
                                     <input type="range" x-model.number="semanticWeight" min="0" max="1" step="0.1" style="width: 200px; display: inline-block;">
-                                    <span class="weight-display" x-text="semanticWeight.toFixed(1)"></span>
+                                    <span class="viz-weight-display" x-text="semanticWeight.toFixed(1)"></span>
                                 </div>
                                 <div style="margin-bottom: 8px;">
                                     <label style="display: inline-block; width: 100px; font-weight: normal;">Keyword:</label>
                                     <input type="range" x-model.number="keywordWeight" min="0" max="1" step="0.1" style="width: 200px; display: inline-block;">
-                                    <span class="weight-display" x-text="keywordWeight.toFixed(1)"></span>
+                                    <span class="viz-weight-display" x-text="keywordWeight.toFixed(1)"></span>
                                 </div>
                                 <div>
                                     <label style="display: inline-block; width: 100px; font-weight: normal;">Fuzzy:</label>
                                     <input type="range" x-model.number="fuzzyWeight" min="0" max="1" step="0.1" style="width: 200px; display: inline-block;">
-                                    <span class="weight-display" x-text="fuzzyWeight.toFixed(1)"></span>
+                                    <span class="viz-weight-display" x-text="fuzzyWeight.toFixed(1)"></span>
                                 </div>
                             </div>
                         </div>
@@ -289,134 +284,44 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                 </form>
             </div>
 
-            <div class="card">
-                <div x-show="loading" class="loading">
-                    Executing search and computing PCA projection...
+            <div class="viz-card">
+                <div id="viz-plot-container">
+                    <div x-show="loading" class="viz-loading-overlay" x-transition.opacity.duration.200ms>
+                        Executing search and computing PCA projection...
+                    </div>
+                    <div id="viz-plot" x-show="!loading" x-transition.opacity.duration.200ms></div>
                 </div>
-                <div id="plot" x-show="!loading"></div>
             </div>
 
-            <div class="card" x-show="results.length > 0">
-                <h2>Search Results (<span x-text="results.length"></span>)</h2>
-                <template x-for="result in results" :key="result.id">
-                    <div style="padding: 12px; border-bottom: 1px solid #eee;">
-                        <a :href="getNextcloudUrl(result)" target="_blank" style="font-weight: 500; color: #0066cc; text-decoration: none;">
-                            <span x-text="result.title"></span>
-                        </a>
-                        <div style="font-size: 14px; color: #666; margin-top: 4px;" x-text="result.excerpt"></div>
-                        <div style="font-size: 12px; color: #999; margin-top: 4px;">
-                            Score: <span x-text="result.score.toFixed(3)"></span> |
-                            Type: <span x-text="result.doc_type"></span>
-                        </div>
+            <div class="viz-card">
+                <h3>Search Results (<span x-text="loading ? '...' : results.length"></span>)</h3>
+
+                <div x-show="loading" class="viz-loading" x-transition.opacity.duration.200ms>
+                    Loading results...
+                </div>
+
+                <div x-show="!loading && results.length === 0" class="viz-no-results" x-transition.opacity.duration.200ms>
+                    No results found. Try a different query or adjust your search parameters.
+                </div>
+
+                <template x-if="!loading && results.length > 0">
+                    <div x-transition.opacity.duration.200ms>
+                        <template x-for="result in results" :key="result.id">
+                            <div style="padding: 12px; border-bottom: 1px solid #eee;">
+                                <a :href="getNextcloudUrl(result)" target="_blank" style="font-weight: 500; color: #0066cc; text-decoration: none;">
+                                    <span x-text="result.title"></span>
+                                </a>
+                                <div style="font-size: 14px; color: #666; margin-top: 4px;" x-text="result.excerpt"></div>
+                                <div style="font-size: 12px; color: #999; margin-top: 4px;">
+                                    Score: <span x-text="result.score.toFixed(3)"></span> |
+                                    Type: <span x-text="result.doc_type"></span>
+                                </div>
+                            </div>
+                        </template>
                     </div>
                 </template>
             </div>
         </div>
-
-        <script>
-            function vizApp() {{
-                return {{
-                    query: '',
-                    algorithm: 'hybrid',
-                    showAdvanced: false,
-                    docTypes: [''],  // Default to "All Types"
-                    limit: 50,
-                    scoreThreshold: 0.7,
-                    semanticWeight: 0.5,
-                    keywordWeight: 0.3,
-                    fuzzyWeight: 0.2,
-                    loading: false,
-                    results: [],
-
-                    async executeSearch() {{
-                        this.loading = true;
-                        this.results = [];
-
-                        try {{
-                            const params = new URLSearchParams({{
-                                query: this.query,
-                                algorithm: this.algorithm,
-                                limit: this.limit,
-                                score_threshold: this.scoreThreshold,
-                                semantic_weight: this.semanticWeight,
-                                keyword_weight: this.keywordWeight,
-                                fuzzy_weight: this.fuzzyWeight,
-                            }});
-
-                            // Add doc_types parameter (filter out empty string for "All Types")
-                            const selectedTypes = this.docTypes.filter(t => t !== '');
-                            if (selectedTypes.length > 0) {{
-                                params.append('doc_types', selectedTypes.join(','));
-                            }}
-
-                            const response = await fetch(`/app/vector-viz/search?${{params}}`);
-                            const data = await response.json();
-
-                            if (data.success) {{
-                                this.results = data.results;
-                                this.renderPlot(data.coordinates_2d, data.results);
-                            }} else {{
-                                alert('Search failed: ' + data.error);
-                            }}
-                        }} catch (error) {{
-                            alert('Error: ' + error.message);
-                        }} finally {{
-                            this.loading = false;
-                        }}
-                    }},
-
-                    renderPlot(coordinates, results) {{
-                        const trace = {{
-                            x: coordinates.map(c => c[0]),
-                            y: coordinates.map(c => c[1]),
-                            mode: 'markers',
-                            type: 'scatter',
-                            text: results.map(r => `${{r.title}}<br>Score: ${{r.score.toFixed(3)}}`),
-                            marker: {{
-                                size: 8,
-                                color: results.map(r => r.score),
-                                colorscale: 'Viridis',
-                                showscale: true,
-                                colorbar: {{ title: 'Score' }}
-                            }}
-                        }};
-
-                        const layout = {{
-                            title: `Vector Space (PCA 2D) - ${{results.length}} results`,
-                            xaxis: {{ title: 'PC1' }},
-                            yaxis: {{ title: 'PC2' }},
-                            hovermode: 'closest',
-                            height: 600
-                        }};
-
-                        Plotly.newPlot('plot', [trace], layout);
-                    }},
-
-                    getNextcloudUrl(result) {{
-                        // Generate Nextcloud URL based on document type
-                        // Use the actual Nextcloud host (port 8080), not the MCP server
-                        const baseUrl = '{nextcloud_host}';
-
-                        switch (result.doc_type) {{
-                            case 'note':
-                                return `${{baseUrl}}/apps/notes/note/${{result.id}}`;
-                            case 'file':
-                                return `${{baseUrl}}/apps/files/?fileId=${{result.id}}`;
-                            case 'calendar':
-                                return `${{baseUrl}}/apps/calendar`;
-                            case 'contact':
-                                return `${{baseUrl}}/apps/contacts`;
-                            case 'deck':
-                                return `${{baseUrl}}/apps/deck`;
-                            default:
-                                return `${{baseUrl}}`;
-                        }}
-                    }}
-                }}
-            }}
-        </script>
-    </body>
-    </html>
     """
 
     return HTMLResponse(content=html_content)

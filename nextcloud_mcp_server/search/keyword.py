@@ -156,23 +156,43 @@ class KeywordSearchAlgorithm(SearchAlgorithm):
         top_results = scored_results[: limit * 2]  # Get extra for access verification
 
         # Verify access with Nextcloud (optional, for security)
+        # Parallelize verification to avoid sequential HTTP calls
         final_results = []
         if nextcloud_client:
-            for result in top_results:
-                verified = await self._verify_access(
+            from asyncio import gather
+
+            # Create verification coroutines for all top results
+            verification_coros = [
+                self._verify_access(
                     nextcloud_client, result["doc_id"], result["doc_type"]
                 )
-                if verified:
-                    final_results.append(
-                        SearchResult(
-                            id=result["doc_id"],
-                            doc_type=result["doc_type"],
-                            title=result["title"],
-                            excerpt=result["excerpt"],
-                            score=result["score"],
-                            metadata=verified.get("metadata", {}),
-                        )
+                for result in top_results
+            ]
+
+            # Execute all verifications in parallel
+            # return_exceptions=True prevents one failure from canceling others
+            verification_results = await gather(
+                *verification_coros, return_exceptions=True
+            )
+
+            # Build final results from verified documents
+            for result, verified in zip(top_results, verification_results):
+                # Skip if verification failed or raised exception
+                if isinstance(verified, Exception) or verified is None:
+                    continue
+
+                final_results.append(
+                    SearchResult(
+                        id=result["doc_id"],
+                        doc_type=result["doc_type"],
+                        title=result["title"],
+                        excerpt=result["excerpt"],
+                        score=result["score"],
+                        metadata=verified.get("metadata", {}),
                     )
+                )
+
+                # Stop once we have enough results
                 if len(final_results) >= limit:
                     break
         else:
