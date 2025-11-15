@@ -1,3 +1,34 @@
+## v0.36.0 (2025-11-15)
+
+### BREAKING CHANGE
+
+- Search algorithms now require Qdrant to be populated.
+Vector sync must be enabled and documents indexed for search to work.
+
+### Feat
+
+- Normalize hybrid search RRF scores to 0-1 range
+- Enhance vector visualization UI and parallelize search verification
+- Add Vector Viz tab to app home page
+- Add vector visualization pane with multi-select document types
+- Implement custom PCA to remove sklearn dependency
+- Add multi-document Protocol with cross-app search support
+- Update nc_semantic_search tool with algorithm selection
+- Implement unified search algorithm module
+
+### Fix
+
+- Reorder tabs and fix viz pane session access
+
+### Refactor
+
+- Optimize Nextcloud access verification with centralized filtering
+- Make all search algorithms query Qdrant payload, not Nextcloud
+
+### Perf
+
+- Exclude vector-sync status polling from distributed tracing
+
 ## v0.35.0 (2025-11-15)
 
 ### Feat
