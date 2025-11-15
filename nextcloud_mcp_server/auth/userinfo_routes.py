@@ -849,18 +849,6 @@ async def user_info_html(request: Request) -> HTMLResponse:
     }
                 {
         ""
-        if not show_webhooks_tab
-        else '''
-                <button
-                    class="tab"
-                    :class="activeTab === 'webhooks' ? 'active' : ''"
-                    @click="activeTab = 'webhooks'">
-                    Webhooks
-                </button>
-                '''
-    }
-                {
-        ""
         if not show_vector_sync_tab
         else '''
                 <button
@@ -868,6 +856,18 @@ async def user_info_html(request: Request) -> HTMLResponse:
                     :class="activeTab === 'vector-viz' ? 'active' : ''"
                     @click="activeTab = 'vector-viz'">
                     Vector Viz
+                </button>
+                '''
+    }
+                {
+        ""
+        if not show_webhooks_tab
+        else '''
+                <button
+                    class="tab"
+                    :class="activeTab === 'webhooks' ? 'active' : ''"
+                    @click="activeTab = 'webhooks'">
+                    Webhooks
                 </button>
                 '''
     }
@@ -893,22 +893,22 @@ async def user_info_html(request: Request) -> HTMLResponse:
 
                 {
         ""
-        if not show_webhooks_tab
-        else f'''
-                <!-- Webhooks Tab (admin-only, loaded dynamically) -->
-                <div class="tab-pane" x-show="activeTab === 'webhooks'" x-transition.opacity.duration.150ms>
-                    {webhooks_tab_html}
+        if not show_vector_sync_tab
+        else '''
+                <!-- Vector Viz Tab -->
+                <div class="tab-pane" x-show="activeTab === 'vector-viz'" x-transition.opacity.duration.150ms>
+                    <iframe src="/app/vector-viz" style="width: 100%; height: 800px; border: none;"></iframe>
                 </div>
                 '''
     }
 
                 {
         ""
-        if not show_vector_sync_tab
-        else '''
-                <!-- Vector Viz Tab -->
-                <div class="tab-pane" x-show="activeTab === 'vector-viz'" x-transition.opacity.duration.150ms>
-                    <iframe src="/app/vector-viz" style="width: 100%; height: 800px; border: none;"></iframe>
+        if not show_webhooks_tab
+        else f'''
+                <!-- Webhooks Tab (admin-only, loaded dynamically) -->
+                <div class="tab-pane" x-show="activeTab === 'webhooks'" x-transition.opacity.duration.150ms>
+                    {webhooks_tab_html}
                 </div>
                 '''
     }

@@ -57,9 +57,12 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
             """
         )
 
-    # Get user info from session
-    user_info = request.session.get("user_info", {})
-    username = user_info.get("preferred_username", "unknown")
+    # Get user info from auth context
+    username = (
+        request.user.display_name
+        if hasattr(request.user, "display_name")
+        else "unknown"
+    )
 
     html_content = f"""
     <!DOCTYPE html>
@@ -374,9 +377,10 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    # Get user info
-    user_info = request.session.get("user_info", {})
-    username = user_info.get("preferred_username")
+    # Get user info from auth context
+    username = (
+        request.user.display_name if hasattr(request.user, "display_name") else None
+    )
 
     if not username:
         return JSONResponse(
