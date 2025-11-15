@@ -34,7 +34,7 @@ services:
       - ./app-hooks:/docker-entrypoint-hooks.d:ro
       # Mount OIDC development directory outside /var/www/html to avoid rsync conflicts
       # The post-installation hook will register /opt/apps as an additional app directory
-      - ./third_party:/opt/apps:ro
+      #- ./third_party:/opt/apps:ro
     environment:
       - NEXTCLOUD_TRUSTED_DOMAINS=app
       - NEXTCLOUD_ADMIN_USER=admin
@@ -81,6 +81,7 @@ services:
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_USERNAME=admin
       - NEXTCLOUD_PASSWORD=admin
+      - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
 
       # Vector sync configuration (ADR-007)
       - VECTOR_SYNC_ENABLED=true

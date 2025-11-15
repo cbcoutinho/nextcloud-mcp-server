@@ -66,8 +66,12 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         # Record start time
         start_time = time.time()
 
-        # Skip tracing for health/metrics endpoints to reduce noise
-        should_trace = not (path.startswith("/health/") or path == "/metrics")
+        # Skip tracing for health/metrics/polling endpoints to reduce noise
+        should_trace = not (
+            path.startswith("/health/")
+            or path == "/metrics"
+            or path == "/app/vector-sync/status"
+        )
 
         try:
             if should_trace:

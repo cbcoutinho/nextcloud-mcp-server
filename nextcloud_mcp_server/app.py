@@ -1477,6 +1477,10 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         user_info_html,
         vector_sync_status_fragment,
     )
+    from nextcloud_mcp_server.auth.viz_routes import (
+        vector_visualization_html,
+        vector_visualization_search,
+    )
     from nextcloud_mcp_server.auth.webhook_routes import (
         disable_webhook_preset,
         enable_webhook_preset,
@@ -1496,6 +1500,15 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             vector_sync_status_fragment,
             methods=["GET"],
         ),  # /app/vector-sync/status
+        # Vector visualization routes
+        Route(
+            "/vector-viz", vector_visualization_html, methods=["GET"]
+        ),  # /app/vector-viz
+        Route(
+            "/vector-viz/search",
+            vector_visualization_search,
+            methods=["GET"],
+        ),  # /app/vector-viz/search
         # Webhook management routes (admin-only)
         Route("/webhooks", webhook_management_pane, methods=["GET"]),  # /app/webhooks
         Route(
