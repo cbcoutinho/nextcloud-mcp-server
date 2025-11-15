@@ -60,6 +60,7 @@ class HybridSearchAlgorithm(SearchAlgorithm):
         self.keyword_weight = keyword_weight
         self.fuzzy_weight = fuzzy_weight
         self.rrf_k = rrf_k
+        self.total_weight = total_weight
 
         # Initialize sub-algorithms
         self.semantic = SemanticSearchAlgorithm()
@@ -202,16 +203,25 @@ class HybridSearchAlgorithm(SearchAlgorithm):
             reverse=True,
         )[:limit]
 
-        # Build final results with RRF scores
+        # Calculate normalization factor to scale RRF scores to 0-1 range
+        # Theoretical max RRF score = total_weight / (rrf_k + 1)
+        # Normalization factor = (rrf_k + 1) / total_weight
+        normalization_factor = (self.rrf_k + 1) / self.total_weight
+
+        # Build final results with normalized RRF scores
         final_results = []
         for doc_key, rrf_score in sorted_docs:
             result = best_results[doc_key]
 
-            # Create new result with RRF score
+            # Normalize RRF score to 0-1 range for better user comprehension
+            normalized_score = rrf_score * normalization_factor
+
+            # Create new result with normalized score
             # Keep original metadata but add RRF details
             metadata = result.metadata or {}
-            metadata["rrf_score"] = rrf_score
-            metadata["original_score"] = result.score
+            metadata["rrf_score_raw"] = rrf_score  # Original RRF score
+            metadata["original_score"] = result.score  # Original algorithm score
+            metadata["normalization_factor"] = normalization_factor
 
             final_results.append(
                 SearchResult(
@@ -219,7 +229,7 @@ class HybridSearchAlgorithm(SearchAlgorithm):
                     doc_type=result.doc_type,
                     title=result.title,
                     excerpt=result.excerpt,
-                    score=rrf_score,  # Use RRF score as the primary score
+                    score=normalized_score,  # Use normalized score (0-1 range)
                     metadata=metadata,
                 )
             )
