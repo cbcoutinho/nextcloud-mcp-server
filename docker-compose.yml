@@ -69,7 +69,6 @@ services:
 
   mcp:
     build: .
-    command: ["--transport", "streamable-http"]
     restart: always
     depends_on:
       app:
