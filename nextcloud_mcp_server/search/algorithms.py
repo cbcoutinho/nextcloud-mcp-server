@@ -89,7 +89,7 @@ async def get_indexed_doc_types(user_id: str) -> set[str]:
     settings = get_settings()
 
     qdrant_client = await get_qdrant_client()
-    collection = settings.qdrant_collection
+    collection = settings.get_collection_name()
 
     # Use scroll to sample documents and extract doc_types
     # Note: This could be optimized with a facet/aggregation query if Qdrant adds support

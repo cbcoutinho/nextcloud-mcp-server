@@ -64,6 +64,13 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
         else "unknown"
     )
 
+    # Get Nextcloud host for generating links to apps
+    # Use public issuer URL if available (for browser-accessible links),
+    # otherwise fall back to NEXTCLOUD_HOST
+    import os
+
+    nextcloud_host = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL") or settings.nextcloud_host
+
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -93,10 +100,14 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                 box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             }}
             .controls {{
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 20px;
                 margin-bottom: 20px;
+            }}
+            .control-row {{
+                display: grid;
+                grid-template-columns: 2fr 1fr auto;
+                gap: 12px;
+                margin-bottom: 12px;
+                align-items: end;
             }}
             .control-group {{
                 margin-bottom: 15px;
@@ -107,7 +118,7 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                 font-weight: 500;
                 color: #333;
             }}
-            input[type="text"], select {{
+            input[type="text"], input[type="number"], select {{
                 width: 100%;
                 padding: 8px 12px;
                 border: 1px solid #ddd;
@@ -116,6 +127,9 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
             }}
             input[type="range"] {{
                 width: 100%;
+            }}
+            select[multiple] {{
+                min-height: 100px;
             }}
             .weight-display {{
                 display: inline-block;
@@ -136,6 +150,19 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
             .btn:hover {{
                 background: #0052a3;
             }}
+            .btn-secondary {{
+                background: #6c757d;
+                color: white;
+                border: none;
+                padding: 6px 12px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 13px;
+                margin-bottom: 12px;
+            }}
+            .btn-secondary:hover {{
+                background: #5a6268;
+            }}
             #plot {{
                 width: 100%;
                 height: 600px;
@@ -145,11 +172,17 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                 padding: 40px;
                 color: #666;
             }}
-            .weight-controls {{
-                display: none;
+            .advanced-section {{
+                margin-top: 16px;
+                padding: 16px;
+                background: #f8f9fa;
+                border-radius: 4px;
+                border: 1px solid #dee2e6;
             }}
-            .weight-controls.active {{
-                display: block;
+            .advanced-grid {{
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 20px;
             }}
             .info-box {{
                 background: #e3f2fd;
@@ -170,15 +203,16 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
 
                 <form @submit.prevent="executeSearch">
                     <div class="controls">
-                        <div>
-                            <div class="control-group">
-                                <label>Search Query</label>
-                                <input type="text" x-model="query" placeholder="Enter search query..." />
-                            </div>
+                        <!-- Main Controls -->
+                        <div class="control-group">
+                            <label>Search Query</label>
+                            <input type="text" x-model="query" placeholder="Enter search query..." required />
+                        </div>
 
-                            <div class="control-group">
-                                <label>Search Algorithm</label>
-                                <select x-model="algorithm" @change="updateWeightControls">
+                        <div class="control-row">
+                            <div class="control-group" style="margin-bottom: 0;">
+                                <label>Algorithm</label>
+                                <select x-model="algorithm">
                                     <option value="semantic">Semantic (Vector Similarity)</option>
                                     <option value="keyword">Keyword (Token Matching)</option>
                                     <option value="fuzzy">Fuzzy (Character Overlap)</option>
@@ -186,54 +220,69 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                                 </select>
                             </div>
 
-                            <div class="control-group">
-                                <label>Document Types (multi-select)</label>
-                                <select x-model="docTypes" multiple size="4" style="height: auto;">
-                                    <option value="">All Types (cross-app search)</option>
-                                    <option value="note">Notes</option>
-                                    <option value="file">Files</option>
-                                    <option value="calendar">Calendar Events</option>
-                                    <option value="contact">Contacts</option>
-                                    <option value="deck">Deck Cards</option>
-                                </select>
-                                <small style="color: #666; display: block; margin-top: 4px;">
-                                    Hold Ctrl/Cmd to select multiple. Select "All Types" for cross-app search.
-                                </small>
+                            <div style="display: flex; align-items: flex-end;">
+                                <button type="submit" class="btn" style="width: 100%;">Search & Visualize</button>
                             </div>
 
-                            <div class="control-group weight-controls" :class="{{ active: algorithm === 'hybrid' }}">
-                                <label>Hybrid Weights</label>
+                            <div style="display: flex; align-items: flex-end;">
+                                <button type="button" class="btn-secondary" @click="showAdvanced = !showAdvanced" style="white-space: nowrap;">
+                                    <span x-text="showAdvanced ? 'Hide Advanced' : 'Advanced'"></span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Advanced Options (Collapsible) -->
+                        <div class="advanced-section" x-show="showAdvanced" x-transition.opacity.duration.200ms>
+                            <h3 style="margin-top: 0; margin-bottom: 16px; font-size: 16px;">Advanced Options</h3>
+
+                            <div class="advanced-grid">
+                                <div class="control-group">
+                                    <label>Document Types</label>
+                                    <select x-model="docTypes" multiple>
+                                        <option value="">All Types (cross-app search)</option>
+                                        <option value="note">Notes</option>
+                                        <option value="file">Files</option>
+                                        <option value="calendar">Calendar Events</option>
+                                        <option value="contact">Contacts</option>
+                                        <option value="deck">Deck Cards</option>
+                                    </select>
+                                    <small style="color: #666; display: block; margin-top: 4px;">
+                                        Hold Ctrl/Cmd to select multiple
+                                    </small>
+                                </div>
+
+                                <div>
+                                    <div class="control-group">
+                                        <label>Score Threshold (Semantic/Hybrid)</label>
+                                        <input type="number" x-model.number="scoreThreshold" min="0" max="1" step="0.1" />
+                                    </div>
+
+                                    <div class="control-group">
+                                        <label>Result Limit</label>
+                                        <input type="number" x-model.number="limit" min="1" max="100" />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Hybrid Weights (only when hybrid selected) -->
+                            <div x-show="algorithm === 'hybrid'" style="margin-top: 16px; padding: 12px; background: #e9ecef; border-radius: 4px;">
+                                <label style="margin-bottom: 12px; display: block;">Hybrid Algorithm Weights</label>
+
                                 <div style="margin-bottom: 8px;">
-                                    <label style="display: inline-block; width: 100px;">Semantic:</label>
+                                    <label style="display: inline-block; width: 100px; font-weight: normal;">Semantic:</label>
                                     <input type="range" x-model.number="semanticWeight" min="0" max="1" step="0.1" style="width: 200px; display: inline-block;">
                                     <span class="weight-display" x-text="semanticWeight.toFixed(1)"></span>
                                 </div>
                                 <div style="margin-bottom: 8px;">
-                                    <label style="display: inline-block; width: 100px;">Keyword:</label>
+                                    <label style="display: inline-block; width: 100px; font-weight: normal;">Keyword:</label>
                                     <input type="range" x-model.number="keywordWeight" min="0" max="1" step="0.1" style="width: 200px; display: inline-block;">
                                     <span class="weight-display" x-text="keywordWeight.toFixed(1)"></span>
                                 </div>
                                 <div>
-                                    <label style="display: inline-block; width: 100px;">Fuzzy:</label>
+                                    <label style="display: inline-block; width: 100px; font-weight: normal;">Fuzzy:</label>
                                     <input type="range" x-model.number="fuzzyWeight" min="0" max="1" step="0.1" style="width: 200px; display: inline-block;">
                                     <span class="weight-display" x-text="fuzzyWeight.toFixed(1)"></span>
                                 </div>
-                            </div>
-                        </div>
-
-                        <div>
-                            <div class="control-group">
-                                <label>Result Limit</label>
-                                <input type="number" x-model.number="limit" min="1" max="100" value="50" />
-                            </div>
-
-                            <div class="control-group">
-                                <label>Score Threshold (Semantic/Hybrid)</label>
-                                <input type="number" x-model.number="scoreThreshold" min="0" max="1" step="0.1" value="0.7" />
-                            </div>
-
-                            <div class="control-group">
-                                <button type="submit" class="btn">Search & Visualize</button>
                             </div>
                         </div>
                     </div>
@@ -251,7 +300,9 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                 <h2>Search Results (<span x-text="results.length"></span>)</h2>
                 <template x-for="result in results" :key="result.id">
                     <div style="padding: 12px; border-bottom: 1px solid #eee;">
-                        <div style="font-weight: 500; color: #0066cc;" x-text="result.title"></div>
+                        <a :href="getNextcloudUrl(result)" target="_blank" style="font-weight: 500; color: #0066cc; text-decoration: none;">
+                            <span x-text="result.title"></span>
+                        </a>
                         <div style="font-size: 14px; color: #666; margin-top: 4px;" x-text="result.excerpt"></div>
                         <div style="font-size: 12px; color: #999; margin-top: 4px;">
                             Score: <span x-text="result.score.toFixed(3)"></span> |
@@ -267,6 +318,7 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                 return {{
                     query: '',
                     algorithm: 'hybrid',
+                    showAdvanced: false,
                     docTypes: [''],  // Default to "All Types"
                     limit: 50,
                     scoreThreshold: 0.7,
@@ -275,10 +327,6 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                     fuzzyWeight: 0.2,
                     loading: false,
                     results: [],
-
-                    updateWeightControls() {{
-                        // Update weight controls visibility based on algorithm
-                    }},
 
                     async executeSearch() {{
                         this.loading = true;
@@ -342,6 +390,27 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                         }};
 
                         Plotly.newPlot('plot', [trace], layout);
+                    }},
+
+                    getNextcloudUrl(result) {{
+                        // Generate Nextcloud URL based on document type
+                        // Use the actual Nextcloud host (port 8080), not the MCP server
+                        const baseUrl = '{nextcloud_host}';
+
+                        switch (result.doc_type) {{
+                            case 'note':
+                                return `${{baseUrl}}/apps/notes/note/${{result.id}}`;
+                            case 'file':
+                                return `${{baseUrl}}/apps/files/?fileId=${{result.id}}`;
+                            case 'calendar':
+                                return `${{baseUrl}}/apps/calendar`;
+                            case 'contact':
+                                return `${{baseUrl}}/apps/contacts`;
+                            case 'deck':
+                                return `${{baseUrl}}/apps/deck`;
+                            default:
+                                return `${{baseUrl}}`;
+                        }}
                     }}
                 }}
             }}
@@ -547,7 +616,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             ),
             limit=len(doc_ids) * 2,  # Account for multiple chunks per doc
             with_vectors=True,
-            with_payload=False,
+            with_payload=["doc_id"],  # Need doc_id to map vectors to results
         )
 
         points = points_response[0]

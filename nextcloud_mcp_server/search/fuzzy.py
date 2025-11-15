@@ -85,7 +85,7 @@ class FuzzySearchAlgorithm(SearchAlgorithm):
 
         # Scroll through Qdrant to get all matching documents
         qdrant_client = await get_qdrant_client()
-        collection = settings.qdrant_collection
+        collection = settings.get_collection_name()
 
         all_points = []
         offset = None

@@ -83,7 +83,7 @@ class KeywordSearchAlgorithm(SearchAlgorithm):
         # Scroll through Qdrant to get all matching documents
         # We need title and excerpt from payload for token matching
         qdrant_client = await get_qdrant_client()
-        collection = settings.qdrant_collection
+        collection = settings.get_collection_name()
 
         all_points = []
         offset = None
