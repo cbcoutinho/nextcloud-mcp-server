@@ -116,6 +116,7 @@ uv run python tools/rag_eval_cli.py upload \
 **Optional flags:**
 - `--category CATEGORY` - Custom category for notes (default: `nfcorpus_rag_eval`)
 - `--force-download` - Re-download nfcorpus dataset
+- `--force` - Delete all existing notes in the target category before uploading (efficient corpus refresh)
 
 **Important:** This step requires:
 - A running Nextcloud instance with vector sync enabled
