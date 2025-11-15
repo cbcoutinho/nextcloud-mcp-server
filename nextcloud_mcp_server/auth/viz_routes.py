@@ -183,6 +183,21 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                                 </select>
                             </div>
 
+                            <div class="control-group">
+                                <label>Document Types (multi-select)</label>
+                                <select x-model="docTypes" multiple size="4" style="height: auto;">
+                                    <option value="">All Types (cross-app search)</option>
+                                    <option value="note">Notes</option>
+                                    <option value="file">Files</option>
+                                    <option value="calendar">Calendar Events</option>
+                                    <option value="contact">Contacts</option>
+                                    <option value="deck">Deck Cards</option>
+                                </select>
+                                <small style="color: #666; display: block; margin-top: 4px;">
+                                    Hold Ctrl/Cmd to select multiple. Select "All Types" for cross-app search.
+                                </small>
+                            </div>
+
                             <div class="control-group weight-controls" :class="{{ active: algorithm === 'hybrid' }}">
                                 <label>Hybrid Weights</label>
                                 <div style="margin-bottom: 8px;">
@@ -249,6 +264,7 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                 return {{
                     query: '',
                     algorithm: 'hybrid',
+                    docTypes: [''],  // Default to "All Types"
                     limit: 50,
                     scoreThreshold: 0.7,
                     semanticWeight: 0.5,
@@ -275,6 +291,12 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                                 keyword_weight: this.keywordWeight,
                                 fuzzy_weight: this.fuzzyWeight,
                             }});
+
+                            // Add doc_types parameter (filter out empty string for "All Types")
+                            const selectedTypes = this.docTypes.filter(t => t !== '');
+                            if (selectedTypes.length > 0) {{
+                                params.append('doc_types', selectedTypes.join(','));
+                            }}
 
                             const response = await fetch(`/app/vector-viz/search?${{params}}`);
                             const data = await response.json();
@@ -371,9 +393,13 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
     keyword_weight = float(request.query_params.get("keyword_weight", "0.3"))
     fuzzy_weight = float(request.query_params.get("fuzzy_weight", "0.2"))
 
+    # Parse doc_types (comma-separated list, None = all types)
+    doc_types_param = request.query_params.get("doc_types", "")
+    doc_types = doc_types_param.split(",") if doc_types_param else None
+
     logger.info(
         f"Viz search: user={username}, query='{query}', "
-        f"algorithm={algorithm}, limit={limit}"
+        f"algorithm={algorithm}, limit={limit}, doc_types={doc_types}"
     )
 
     try:
@@ -445,15 +471,44 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                     status_code=400,
                 )
 
-            # Execute search
-            search_results = await search_algo.search(
-                query=query,
-                user_id=username,
-                limit=limit,
-                doc_type="note",
-                nextcloud_client=nextcloud_client,
-                score_threshold=score_threshold,
-            )
+            # Execute search (supports cross-app when doc_types=None)
+            if doc_types is None or len(doc_types) == 0:
+                # Cross-app search - search all indexed types
+                search_results = await search_algo.search(
+                    query=query,
+                    user_id=username,
+                    limit=limit,
+                    doc_type=None,  # Search all types
+                    nextcloud_client=nextcloud_client,
+                    score_threshold=score_threshold,
+                )
+            elif len(doc_types) == 1:
+                # Single document type
+                search_results = await search_algo.search(
+                    query=query,
+                    user_id=username,
+                    limit=limit,
+                    doc_type=doc_types[0],
+                    nextcloud_client=nextcloud_client,
+                    score_threshold=score_threshold,
+                )
+            else:
+                # Multiple document types - search each and combine
+                all_results = []
+                for doc_type in doc_types:
+                    results = await search_algo.search(
+                        query=query,
+                        user_id=username,
+                        limit=limit * 2,  # Get extra per type
+                        doc_type=doc_type,
+                        nextcloud_client=nextcloud_client,
+                        score_threshold=score_threshold,
+                    )
+                    all_results.extend(results)
+
+                # Sort by score and limit
+                all_results.sort(key=lambda r: r.score, reverse=True)
+                search_results = all_results[:limit]
 
         if not search_results:
             return JSONResponse(
