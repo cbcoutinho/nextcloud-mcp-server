@@ -5,11 +5,7 @@ import logging
 from collections import defaultdict
 from typing import Any
 
-from nextcloud_mcp_server.search.algorithms import (
-    NextcloudClientProtocol,
-    SearchAlgorithm,
-    SearchResult,
-)
+from nextcloud_mcp_server.search.algorithms import SearchAlgorithm, SearchResult
 from nextcloud_mcp_server.search.fuzzy import FuzzySearchAlgorithm
 from nextcloud_mcp_server.search.keyword import KeywordSearchAlgorithm
 from nextcloud_mcp_server.search.semantic import SemanticSearchAlgorithm
@@ -85,24 +81,22 @@ class HybridSearchAlgorithm(SearchAlgorithm):
         user_id: str,
         limit: int = 10,
         doc_type: str | None = None,
-        nextcloud_client: NextcloudClientProtocol | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """Execute hybrid search using RRF to combine algorithms.
+
+        Returns unverified results from combined algorithms. Access verification
+        should be performed separately at the final output stage.
 
         Args:
             query: Search query
             user_id: User ID for filtering
             limit: Maximum results to return
             doc_type: Optional document type filter
-            nextcloud_client: NextcloudClient for document access
             **kwargs: Additional parameters passed to sub-algorithms
 
         Returns:
-            List of SearchResult objects ranked by RRF combined score
-
-        Raises:
-            ValueError: If nextcloud_client not provided (needed for keyword/fuzzy)
+            List of unverified SearchResult objects ranked by RRF combined score
         """
         logger.info(
             f"Hybrid search: query='{query}', user={user_id}, limit={limit}, "
@@ -116,29 +110,19 @@ class HybridSearchAlgorithm(SearchAlgorithm):
 
         if self.semantic_weight > 0:
             tasks.append(
-                self.semantic.search(
-                    query, user_id, limit * 2, doc_type, nextcloud_client, **kwargs
-                )
+                self.semantic.search(query, user_id, limit * 2, doc_type, **kwargs)
             )
             algo_names.append("semantic")
 
         if self.keyword_weight > 0:
-            if not nextcloud_client:
-                raise ValueError("Hybrid search with keyword requires nextcloud_client")
             tasks.append(
-                self.keyword.search(
-                    query, user_id, limit * 2, doc_type, nextcloud_client, **kwargs
-                )
+                self.keyword.search(query, user_id, limit * 2, doc_type, **kwargs)
             )
             algo_names.append("keyword")
 
         if self.fuzzy_weight > 0:
-            if not nextcloud_client:
-                raise ValueError("Hybrid search with fuzzy requires nextcloud_client")
             tasks.append(
-                self.fuzzy.search(
-                    query, user_id, limit * 2, doc_type, nextcloud_client, **kwargs
-                )
+                self.fuzzy.search(query, user_id, limit * 2, doc_type, **kwargs)
             )
             algo_names.append("fuzzy")
 

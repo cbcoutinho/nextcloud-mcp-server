@@ -3,15 +3,10 @@
 import logging
 from typing import Any
 
-from httpx import HTTPStatusError
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.search.algorithms import (
-    NextcloudClientProtocol,
-    SearchAlgorithm,
-    SearchResult,
-)
+from nextcloud_mcp_server.search.algorithms import SearchAlgorithm, SearchResult
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -40,25 +35,23 @@ class KeywordSearchAlgorithm(SearchAlgorithm):
         user_id: str,
         limit: int = 10,
         doc_type: str | None = None,
-        nextcloud_client: NextcloudClientProtocol | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """Execute keyword search using token matching on Qdrant payload.
 
         Queries Qdrant for all indexed documents, then scores based on token
-        matches in title and excerpt fields. Only verifies access with Nextcloud
-        at the end for security.
+        matches in title and excerpt fields. Returns unverified results - access
+        verification should be performed separately at the final output stage.
 
         Args:
             query: Search query to tokenize and match
             user_id: User ID for filtering
             limit: Maximum results to return
             doc_type: Optional document type filter (None = all types)
-            nextcloud_client: NextcloudClient for access verification (optional)
             **kwargs: Additional parameters (unused)
 
         Returns:
-            List of SearchResult objects ranked by keyword match score
+            List of unverified SearchResult objects ranked by keyword match score
         """
         settings = get_settings()
 
@@ -153,63 +146,23 @@ class KeywordSearchAlgorithm(SearchAlgorithm):
 
         # Sort by score (descending) and limit
         scored_results.sort(key=lambda x: x["score"], reverse=True)
-        top_results = scored_results[: limit * 2]  # Get extra for access verification
+        top_results = scored_results[:limit]
 
-        # Verify access with Nextcloud (optional, for security)
-        # Parallelize verification to avoid sequential HTTP calls
+        # Return unverified results (verification happens at output stage)
         final_results = []
-        if nextcloud_client:
-            from asyncio import gather
-
-            # Create verification coroutines for all top results
-            verification_coros = [
-                self._verify_access(
-                    nextcloud_client, result["doc_id"], result["doc_type"]
+        for result in top_results:
+            final_results.append(
+                SearchResult(
+                    id=result["doc_id"],
+                    doc_type=result["doc_type"],
+                    title=result["title"],
+                    excerpt=result["excerpt"],
+                    score=result["score"],
+                    metadata={},
                 )
-                for result in top_results
-            ]
-
-            # Execute all verifications in parallel
-            # return_exceptions=True prevents one failure from canceling others
-            verification_results = await gather(
-                *verification_coros, return_exceptions=True
             )
 
-            # Build final results from verified documents
-            for result, verified in zip(top_results, verification_results):
-                # Skip if verification failed or raised exception
-                if isinstance(verified, Exception) or verified is None:
-                    continue
-
-                final_results.append(
-                    SearchResult(
-                        id=result["doc_id"],
-                        doc_type=result["doc_type"],
-                        title=result["title"],
-                        excerpt=result["excerpt"],
-                        score=result["score"],
-                        metadata=verified.get("metadata", {}),
-                    )
-                )
-
-                # Stop once we have enough results
-                if len(final_results) >= limit:
-                    break
-        else:
-            # No verification, return results directly
-            for result in top_results[:limit]:
-                final_results.append(
-                    SearchResult(
-                        id=result["doc_id"],
-                        doc_type=result["doc_type"],
-                        title=result["title"],
-                        excerpt=result["excerpt"],
-                        score=result["score"],
-                        metadata={},
-                    )
-                )
-
-        logger.info(f"Keyword search returned {len(final_results)} matching documents")
+        logger.info(f"Keyword search returned {len(final_results)} unverified results")
         if final_results:
             result_details = [
                 f"{r.doc_type}_{r.id} (score={r.score:.3f}, title='{r.title}')"
@@ -218,46 +171,6 @@ class KeywordSearchAlgorithm(SearchAlgorithm):
             logger.debug(f"Top keyword results: {', '.join(result_details)}")
 
         return final_results
-
-    async def _verify_access(
-        self, nextcloud_client: NextcloudClientProtocol, doc_id: int, doc_type: str
-    ) -> dict[str, Any] | None:
-        """Verify user has access to a document via Nextcloud API.
-
-        Args:
-            nextcloud_client: Client for API access
-            doc_id: Document ID
-            doc_type: Document type
-
-        Returns:
-            Dict with metadata if access verified, None otherwise
-        """
-        try:
-            if doc_type == "note":
-                note = await nextcloud_client.notes.get_note(doc_id)
-                return {
-                    "metadata": {
-                        "category": note.get("category", ""),
-                        "modified": note.get("modified"),
-                    }
-                }
-            # Future: Add verification for other document types
-            else:
-                logger.debug(
-                    f"Skipping verification for {doc_type} {doc_id} (not implemented)"
-                )
-                return {"metadata": {}}
-        except HTTPStatusError as e:
-            if e.response.status_code in (403, 404):
-                logger.debug(
-                    f"Access denied for {doc_type} {doc_id}: {e.response.status_code}"
-                )
-                return None
-            else:
-                logger.warning(
-                    f"Error verifying {doc_type} {doc_id}: {e.response.status_code}"
-                )
-                return None
 
     def _process_query(self, query: str) -> list[str]:
         """Tokenize and normalize query.

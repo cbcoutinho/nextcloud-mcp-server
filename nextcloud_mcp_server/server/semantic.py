@@ -128,35 +128,36 @@ def configure_semantic_tools(mcp: FastMCP):
 
             if doc_types is None:
                 # Cross-app search: search all indexed types
-                # Pass None to search algorithm to let it query Qdrant for available types
-                search_results = await search_algo.search(
+                # Get unverified results from Qdrant
+                unverified_results = await search_algo.search(
                     query=query,
                     user_id=username,
-                    limit=limit,
+                    limit=limit * 2,  # Get extra for access filtering
                     doc_type=None,  # Signal to search all types
-                    nextcloud_client=client,
                     score_threshold=score_threshold,
                 )
-                all_results.extend(search_results)
+                all_results.extend(unverified_results)
             else:
                 # Search specific document types
                 # For each requested type, execute search and combine results
                 for dtype in doc_types:
-                    search_results = await search_algo.search(
+                    unverified_results = await search_algo.search(
                         query=query,
                         user_id=username,
-                        limit=limit * 2,  # Get extra for combining
+                        limit=limit * 2,  # Get extra for combining and filtering
                         doc_type=dtype,
-                        nextcloud_client=client,
                         score_threshold=score_threshold,
                     )
-                    all_results.extend(search_results)
+                    all_results.extend(unverified_results)
 
-                # Sort combined results by score and limit
+                # Sort combined results by score
                 all_results.sort(key=lambda r: r.score, reverse=True)
-                all_results = all_results[:limit]
 
-            search_results = all_results
+            # Verify access for all results (deduplicates and filters)
+            from nextcloud_mcp_server.search.verification import verify_search_results
+
+            verified_results = await verify_search_results(all_results, client)
+            search_results = verified_results[:limit]  # Final limit after verification
 
             # Convert SearchResult objects to SemanticSearchResult for response
             results = []

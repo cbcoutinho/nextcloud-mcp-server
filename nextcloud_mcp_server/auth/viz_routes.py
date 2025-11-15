@@ -450,43 +450,39 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 )
 
             # Execute search (supports cross-app when doc_types=None)
+            # Get unverified results with buffer for filtering
+            all_results = []
             if doc_types is None or len(doc_types) == 0:
                 # Cross-app search - search all indexed types
-                search_results = await search_algo.search(
+                unverified_results = await search_algo.search(
                     query=query,
                     user_id=username,
-                    limit=limit,
+                    limit=limit * 2,  # Buffer for verification filtering
                     doc_type=None,  # Search all types
-                    nextcloud_client=nextcloud_client,
                     score_threshold=score_threshold,
                 )
-            elif len(doc_types) == 1:
-                # Single document type
-                search_results = await search_algo.search(
-                    query=query,
-                    user_id=username,
-                    limit=limit,
-                    doc_type=doc_types[0],
-                    nextcloud_client=nextcloud_client,
-                    score_threshold=score_threshold,
-                )
+                all_results.extend(unverified_results)
             else:
-                # Multiple document types - search each and combine
-                all_results = []
+                # Search each document type and combine
                 for doc_type in doc_types:
-                    results = await search_algo.search(
+                    unverified_results = await search_algo.search(
                         query=query,
                         user_id=username,
-                        limit=limit * 2,  # Get extra per type
+                        limit=limit * 2,  # Buffer for verification filtering
                         doc_type=doc_type,
-                        nextcloud_client=nextcloud_client,
                         score_threshold=score_threshold,
                     )
-                    all_results.extend(results)
-
-                # Sort by score and limit
+                    all_results.extend(unverified_results)
+                # Sort by score before verification
                 all_results.sort(key=lambda r: r.score, reverse=True)
-                search_results = all_results[:limit]
+
+            # Verify access for all results (deduplicates and filters)
+            from nextcloud_mcp_server.search.verification import verify_search_results
+
+            verified_results = await verify_search_results(
+                all_results, nextcloud_client
+            )
+            search_results = verified_results[:limit]
 
         if not search_results:
             return JSONResponse(
