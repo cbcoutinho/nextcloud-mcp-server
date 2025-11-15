@@ -463,22 +463,50 @@ def upload(
                 click.echo(
                     f"\n--force specified: Deleting existing notes in category '{category}'..."
                 )
-                deleted_count = 0
+
+                # Collect notes to delete
+                notes_to_delete = []
                 async for note in nc_client.notes.get_all_notes():
                     if note.get("category") == category:
-                        try:
-                            await nc_client.notes.delete_note(note["id"])
-                            deleted_count += 1
-                            if deleted_count % 100 == 0:
-                                click.echo(f"  Deleted {deleted_count} notes...")
-                        except Exception as e:
-                            click.echo(
-                                f"  Error deleting note {note['id']}: {e}", err=True
-                            )
+                        notes_to_delete.append(note["id"])
 
-                click.echo(
-                    f"Deleted {deleted_count} existing notes in category '{category}'"
-                )
+                if not notes_to_delete:
+                    click.echo(f"No existing notes found in category '{category}'")
+                else:
+                    click.echo(f"Found {len(notes_to_delete)} notes to delete")
+
+                    deleted_count = 0
+                    delete_errors = []
+                    delete_semaphore = anyio.Semaphore(20)
+
+                    async def delete_note(note_id: int):
+                        """Delete a single note."""
+                        nonlocal deleted_count
+
+                        async with delete_semaphore:
+                            try:
+                                await nc_client.notes.delete_note(note_id)
+                                deleted_count += 1
+                                if deleted_count % 100 == 0:
+                                    click.echo(f"  Deleted {deleted_count} notes...")
+                            except Exception as e:
+                                error_msg = f"Error deleting note {note_id}: {e}"
+                                delete_errors.append(error_msg)
+                                click.echo(f"  {error_msg}", err=True)
+
+                    # Delete all notes concurrently
+                    async with anyio.create_task_group() as tg:
+                        for note_id in notes_to_delete:
+                            tg.start_soon(delete_note, note_id)
+
+                    click.echo(
+                        f"Deleted {deleted_count} existing notes in category '{category}'"
+                    )
+                    if delete_errors:
+                        click.echo(
+                            f"Encountered {len(delete_errors)} errors during deletion",
+                            err=True,
+                        )
 
             # Upload documents concurrently
             click.echo(f"\nUploading {len(corpus)} documents as notes (concurrent)...")
