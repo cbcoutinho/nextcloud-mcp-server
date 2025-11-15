@@ -26,6 +26,10 @@ class LLMProvider(Protocol):
         """
         ...
 
+    async def close(self) -> None:
+        """Close the provider and release resources."""
+        ...
+
 
 class OllamaProvider:
     """Ollama provider for local LLM inference."""
