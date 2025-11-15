@@ -45,6 +45,7 @@ def configure_semantic_tools(mcp: FastMCP):
         query: str,
         ctx: Context,
         limit: int = 10,
+        doc_types: list[str] | None = None,
         score_threshold: float = 0.7,
         algorithm: Literal["semantic", "keyword", "fuzzy", "hybrid"] = "hybrid",
         semantic_weight: float = 0.5,
@@ -52,7 +53,7 @@ def configure_semantic_tools(mcp: FastMCP):
         fuzzy_weight: float = 0.2,
     ) -> SemanticSearchResponse:
         """
-        Search Nextcloud content using configurable algorithms.
+        Search Nextcloud content using configurable algorithms with cross-app support.
 
         Supports multiple search algorithms with client-configurable weighting:
         - semantic: Vector similarity search (requires VECTOR_SYNC_ENABLED=true)
@@ -60,9 +61,13 @@ def configure_semantic_tools(mcp: FastMCP):
         - fuzzy: Character overlap matching (typo-tolerant)
         - hybrid: Combines all algorithms using Reciprocal Rank Fusion (default)
 
+        Document types are queried from the vector database to determine what's
+        actually indexed. Currently only "note" documents are fully supported.
+
         Args:
             query: Natural language search query
             limit: Maximum number of results to return (default: 10)
+            doc_types: Document types to search (e.g., ["note", "file"]). None = search all indexed types (default)
             score_threshold: Minimum similarity score for semantic/hybrid (0-1, default: 0.7)
             algorithm: Search algorithm to use (default: "hybrid")
             semantic_weight: Weight for semantic results in hybrid mode (default: 0.5)
@@ -116,15 +121,42 @@ def configure_semantic_tools(mcp: FastMCP):
                     ErrorData(code=-1, message=f"Unknown algorithm: {algorithm}")
                 )
 
-            # Execute search (currently limited to notes doc_type)
-            search_results = await search_algo.search(
-                query=query,
-                user_id=username,
-                limit=limit,
-                doc_type="note",
-                nextcloud_client=client,
-                score_threshold=score_threshold,
-            )
+            # Execute search across requested document types
+            # If doc_types is None, search all indexed types (cross-app search)
+            # If doc_types is a list, search only those types
+            all_results = []
+
+            if doc_types is None:
+                # Cross-app search: search all indexed types
+                # Pass None to search algorithm to let it query Qdrant for available types
+                search_results = await search_algo.search(
+                    query=query,
+                    user_id=username,
+                    limit=limit,
+                    doc_type=None,  # Signal to search all types
+                    nextcloud_client=client,
+                    score_threshold=score_threshold,
+                )
+                all_results.extend(search_results)
+            else:
+                # Search specific document types
+                # For each requested type, execute search and combine results
+                for dtype in doc_types:
+                    search_results = await search_algo.search(
+                        query=query,
+                        user_id=username,
+                        limit=limit * 2,  # Get extra for combining
+                        doc_type=dtype,
+                        nextcloud_client=client,
+                        score_threshold=score_threshold,
+                    )
+                    all_results.extend(search_results)
+
+                # Sort combined results by score and limit
+                all_results.sort(key=lambda r: r.score, reverse=True)
+                all_results = all_results[:limit]
+
+            search_results = all_results
 
             # Convert SearchResult objects to SemanticSearchResult for response
             results = []
