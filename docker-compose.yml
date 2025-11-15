@@ -85,7 +85,7 @@ services:
 
       # Vector sync configuration (ADR-007)
       - VECTOR_SYNC_ENABLED=true
-      - VECTOR_SYNC_SCAN_INTERVAL=10
+      - VECTOR_SYNC_SCAN_INTERVAL=300
       - VECTOR_SYNC_PROCESSOR_WORKERS=1
 
       #- LOG_FORMAT=json
