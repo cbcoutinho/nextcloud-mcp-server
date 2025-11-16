@@ -4,6 +4,7 @@ import logging
 import os
 
 from .base import EmbeddingProvider
+from .bm25_provider import BM25SparseEmbeddingProvider
 from .ollama_provider import OllamaEmbeddingProvider
 from .simple_provider import SimpleEmbeddingProvider
 
@@ -109,3 +110,20 @@ def get_embedding_service() -> EmbeddingService:
     if _embedding_service is None:
         _embedding_service = EmbeddingService()
     return _embedding_service
+
+
+# BM25 sparse embedding singleton
+_bm25_service: BM25SparseEmbeddingProvider | None = None
+
+
+def get_bm25_service() -> BM25SparseEmbeddingProvider:
+    """
+    Get singleton BM25 sparse embedding service instance.
+
+    Returns:
+        Global BM25SparseEmbeddingProvider instance
+    """
+    global _bm25_service
+    if _bm25_service is None:
+        _bm25_service = BM25SparseEmbeddingProvider()
+    return _bm25_service

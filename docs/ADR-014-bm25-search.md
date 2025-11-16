@@ -6,7 +6,7 @@ Here is a complete Architectural Decision Record (ADR) template based on your re
 
 **Date:** 2025-11-16
 
-**Status:** Proposed
+**Status:** Implemented
 
 ---
 
@@ -93,3 +93,65 @@ This decision consolidates our retrieval logic, eliminates the data consistency 
 **Negative:**
 * The data backfill process will require careful management to avoid downtime.
 * Ingestion time will slightly increase due to the extra step of sparse vector generation. This is considered a negligible trade-off for the gains in relevance.
+
+---
+
+### 6. Implementation Notes
+
+**Implementation completed on 2025-11-16**
+
+**Key Changes:**
+
+1. **Dependencies** (pyproject.toml:25):
+   - Added `fastembed>=0.4.2` for BM25 sparse vector embeddings
+   - Adjusted `pillow` version constraint to be compatible with fastembed
+
+2. **Qdrant Collection Schema** (nextcloud_mcp_server/vector/qdrant_client.py:113-128):
+   - Updated to named vectors: `{"dense": VectorParams(...), "sparse": SparseVectorParams(...)}`
+   - Added sparse vector configuration with BM25 index
+   - Maintains backward compatibility with existing collections (detects legacy schema)
+
+3. **BM25 Embedding Provider** (nextcloud_mcp_server/embedding/bm25_provider.py):
+   - Created `BM25SparseEmbeddingProvider` using FastEmbed's `Qdrant/bm25` model
+   - Implements `encode()` and `encode_batch()` methods
+   - Returns sparse vectors as `{indices: list[int], values: list[float]}` format
+
+4. **Document Indexing Pipeline** (nextcloud_mcp_server/vector/processor.py:229-255):
+   - Generates both dense (semantic) and sparse (BM25) embeddings for each document chunk
+   - Updates `PointStruct` to use named vectors: `vector={"dense": ..., "sparse": ...}`
+   - Maintains same chunking strategy (512 words, 50-word overlap)
+
+5. **BM25 Hybrid Search Algorithm** (nextcloud_mcp_server/search/bm25_hybrid.py):
+   - Implements `BM25HybridSearchAlgorithm` using Qdrant's native RRF fusion
+   - Uses `prefetch` parameter for parallel dense + sparse search
+   - Applies `fusion=models.Fusion.RRF` for automatic result merging
+   - Maintains same deduplication and filtering logic as semantic search
+
+6. **MCP Tool Updates** (nextcloud_mcp_server/server/semantic.py:39-68):
+   - Simplified `nc_semantic_search()` to use BM25 hybrid only
+   - Removed `algorithm`, `semantic_weight`, `keyword_weight`, `fuzzy_weight` parameters
+   - Updated default `score_threshold=0.0` for RRF scoring
+   - Returns `search_method="bm25_hybrid"` in responses
+
+7. **Legacy Algorithm Removal**:
+   - Deleted `nextcloud_mcp_server/search/keyword.py` (278 lines)
+   - Deleted `nextcloud_mcp_server/search/fuzzy.py` (220 lines)
+   - Deleted `nextcloud_mcp_server/search/hybrid.py` (238 lines - custom RRF)
+   - Updated `nextcloud_mcp_server/search/__init__.py` to export only BM25 hybrid
+
+**Migration Strategy:**
+- No migration required (vector sync feature is experimental)
+- New documents automatically indexed with both dense + sparse vectors
+- Collection re-creation on first startup with updated schema
+
+**Test Results:**
+- All unit tests passing (118 passed)
+- All integration tests passing (7 semantic search tests)
+- Code formatting verified with ruff
+
+**Benefits Realized:**
+- ✅ Consolidated architecture (single Qdrant database for both dense + sparse)
+- ✅ Native RRF fusion (database-level, more efficient)
+- ✅ Industry-standard BM25 (replaces custom keyword search)
+- ✅ Simplified codebase (removed 736 lines of legacy code)
+- ✅ Better relevance (handles both semantic and keyword queries)
