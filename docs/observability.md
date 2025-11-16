@@ -243,7 +243,7 @@ If you see cardinality warnings:
 The observability stack integrates at multiple layers:
 
 1. **HTTP Layer**: `ObservabilityMiddleware` tracks all HTTP requests
-2. **MCP Layer**: Tools use `@trace_mcp_tool` for span creation
+2. **MCP Layer**: Tools use `@instrument_tool` for automatic metrics and trace span creation
 3. **Client Layer**: `BaseNextcloudClient` tracks all API calls
 4. **OAuth Layer**: Token operations are traced and metered
 5. **Background Tasks**: Vector sync operations emit metrics/traces
