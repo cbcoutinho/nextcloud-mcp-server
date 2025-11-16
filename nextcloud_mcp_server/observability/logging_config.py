@@ -39,7 +39,12 @@ class HealthCheckFilter(logging.Filter):
         message = record.getMessage()
         return not any(
             endpoint in message
-            for endpoint in ["/health/live", "/health/ready", "/metrics"]
+            for endpoint in [
+                "/health/live",
+                "/health/ready",
+                "/metrics",
+                "/app/vector-sync/status",
+            ]
         )
 
 

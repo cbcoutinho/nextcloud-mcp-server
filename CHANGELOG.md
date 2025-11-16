@@ -1,3 +1,31 @@
+## v0.38.0 (2025-11-16)
+
+### Feat
+
+- add concurrent uploads and --force flag to upload command
+- implement RAG evaluation framework with CLI tooling
+
+### Fix
+
+- download qrels from BEIR ZIP instead of HuggingFace
+
+### Refactor
+
+- migrate asyncio to anyio for consistent structured concurrency
+- replace httpx client with NextcloudClient in upload command
+
+### Perf
+
+- Eliminate double-fetching in semantic search sampling
+- fix vector viz search performance and visual encoding
+- make note deletion concurrent in upload --force
+
+## v0.37.0 (2025-11-16)
+
+### Feat
+
+- Add OpenTelemetry tracing to @instrument_tool decorator
+
 ## v0.36.0 (2025-11-15)
 
 ### BREAKING CHANGE

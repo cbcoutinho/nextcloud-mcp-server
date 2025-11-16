@@ -1,6 +1,6 @@
 [project]
 name = "nextcloud-mcp-server"
-version = "0.36.0"
+version = "0.38.0"
 description = "Model Context Protocol (MCP) server for Nextcloud integration - enables AI assistants to interact with Nextcloud data"
 authors = [
     {name = "Chris Coutinho", email = "chris@coutinho.io"}
@@ -103,7 +103,9 @@ module-root = ""
 
 [dependency-groups]
 dev = [
+    "anthropic>=0.42.0",  # For RAG evaluation with Anthropic LLMs
     "commitizen>=4.8.2",
+    "datasets>=3.3.0",  # For BeIR nfcorpus dataset loading
     "ipython>=9.2.0",
     "playwright>=1.49.1",
     "pytest>=8.3.5",

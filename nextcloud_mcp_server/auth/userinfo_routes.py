@@ -719,6 +719,11 @@ async def user_info_html(request: Request) -> HTMLResponse:
                     }},
 
                     renderPlot(coordinates, results) {{
+                        // Calculate score range for auto-scaling
+                        const scores = results.map(r => r.score);
+                        const minScore = Math.min(...scores);
+                        const maxScore = Math.max(...scores);
+
                         const trace = {{
                             x: coordinates.map(c => c[0]),
                             y: coordinates.map(c => c[1]),
@@ -726,11 +731,18 @@ async def user_info_html(request: Request) -> HTMLResponse:
                             type: 'scatter',
                             text: results.map(r => `${{r.title}}<br>Score: ${{r.score.toFixed(3)}}`),
                             marker: {{
-                                size: 8,
-                                color: results.map(r => r.score),
+                                // Multi-channel encoding: size + opacity + color for visual hierarchy
+                                // Power scaling (score^2) amplifies visual differences dramatically
+                                // score=0.0 → 6px, score=0.5 → 9.5px, score=1.0 → 20px
+                                size: results.map(r => 6 + (Math.pow(r.score, 2) * 14)),
+                                // Linear opacity scaling (0.2-1.0 range keeps all points visible)
+                                opacity: results.map(r => 0.2 + (r.score * 0.8)),
+                                // Color gradient shows score
+                                color: scores,
                                 colorscale: 'Viridis',
                                 showscale: true,
-                                colorbar: {{ title: 'Score' }},
+                                colorbar: {{ title: 'Relative Score' }},
+                                // Scores are normalized 0-1 within result set
                                 cmin: 0,
                                 cmax: 1
                             }}

@@ -404,10 +404,11 @@ def update_vector_sync_queue_size(size: int) -> None:
 
 def instrument_tool(func):
     """
-    Decorator to automatically instrument MCP tool functions with metrics.
+    Decorator to automatically instrument MCP tool functions with metrics and tracing.
 
-    Wraps async tool functions to record execution time and success/error status.
-    Compatible with @mcp.tool() and @require_scopes() decorators.
+    Wraps async tool functions to record execution time, success/error status, and
+    create OpenTelemetry trace spans. Compatible with @mcp.tool() and @require_scopes()
+    decorators.
 
     Usage:
         @mcp.tool()
@@ -420,24 +421,46 @@ def instrument_tool(func):
         func: The async function to instrument
 
     Returns:
-        Wrapped function with metrics instrumentation
+        Wrapped function with metrics and tracing instrumentation
     """
     import functools
     import time
+
+    from nextcloud_mcp_server.observability.tracing import trace_operation
 
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         tool_name = func.__name__
         start_time = time.time()
-        try:
-            result = await func(*args, **kwargs)
-            duration = time.time() - start_time
-            record_tool_call(tool_name, duration, "success")
-            return result
-        except Exception as e:
-            duration = time.time() - start_time
-            record_tool_call(tool_name, duration, "error")
-            record_tool_error(tool_name, type(e).__name__)
-            raise
+
+        # Extract tool arguments for tracing (sanitize sensitive fields)
+        # kwargs contains the actual arguments passed to the tool
+        tool_args = {
+            k: v
+            for k, v in kwargs.items()
+            if k not in ("password", "token", "secret", "api_key", "etag", "ctx")
+        }
+
+        # Create trace span with metrics collection
+        with trace_operation(
+            f"mcp.tool.{tool_name}",
+            attributes={
+                "mcp.tool.name": tool_name,
+                "mcp.tool.args": str(tool_args)[:500]
+                if tool_args
+                else None,  # Limit to 500 chars
+            },
+            record_exception=True,
+        ):
+            try:
+                result = await func(*args, **kwargs)
+                duration = time.time() - start_time
+                record_tool_call(tool_name, duration, "success")
+                return result
+            except Exception as e:
+                duration = time.time() - start_time
+                record_tool_call(tool_name, duration, "error")
+                record_tool_error(tool_name, type(e).__name__)
+                raise
 
     return wrapper

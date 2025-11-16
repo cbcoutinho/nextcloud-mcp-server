@@ -255,8 +255,15 @@ async def nc_mcp_client(anyio_backend) -> AsyncGenerator[ClientSession, Any]:
 
     Note: SSE transport is being deprecated. This fixture uses SSE for compatibility testing.
     """
-    async for session in create_mcp_client_session_sse(
-        url="http://localhost:8000/sse", client_name="Basic MCP (SSE)"
+
+    # async for session in create_mcp_client_session_sse(
+    # url="http://localhost:8000/sse", client_name="Basic MCP (SSE)"
+    # ):
+    # yield session
+
+    async for session in create_mcp_client_session(
+        url="http://localhost:8000/mcp",
+        client_name="Basic MCP (HTTP)",
     ):
         yield session
 
