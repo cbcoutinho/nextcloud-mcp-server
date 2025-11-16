@@ -70,11 +70,13 @@ services:
   mcp:
     build: .
     restart: always
+    command: ["--transport", "streamable-http"]
     depends_on:
       app:
         condition: service_healthy
     ports:
       - 127.0.0.1:8000:8000
+      - 127.0.0.1:9090:9090
     volumes:
       - mcp-data:/app/data
     environment:
@@ -85,7 +87,7 @@ services:
 
       # Vector sync configuration (ADR-007)
       - VECTOR_SYNC_ENABLED=true
-      - VECTOR_SYNC_SCAN_INTERVAL=300
+      - VECTOR_SYNC_SCAN_INTERVAL=60
       - VECTOR_SYNC_PROCESSOR_WORKERS=1
 
       #- LOG_FORMAT=json
@@ -193,8 +195,8 @@ services:
       # Provider auto-detected from OIDC_DISCOVERY_URL issuer
       # Using internal Docker hostname for discovery to get consistent issuer
       - OIDC_DISCOVERY_URL=http://keycloak:8080/realms/nextcloud-mcp/.well-known/openid-configuration
-      - OIDC_CLIENT_ID=nextcloud-mcp-server
-      - OIDC_CLIENT_SECRET=mcp-secret-change-in-production
+      - NEXTCLOUD_OIDC_CLIENT_ID=nextcloud-mcp-server
+      - NEXTCLOUD_OIDC_CLIENT_SECRET=mcp-secret-change-in-production
       - OIDC_JWKS_URI=http://keycloak:8080/realms/nextcloud-mcp/protocol/openid-connect/certs
 
       # Nextcloud API endpoint (for accessing APIs with validated token)
