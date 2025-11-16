@@ -1,9 +1,13 @@
-FROM ghcr.io/astral-sh/uv:0.9.9-python3.11-alpine@sha256:0faa7934fac1db7f5056f159c1224d144bab864fd2677a4066d25a686ae32edd
+FROM python:3.12-slim-trixie
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Install dependencies
 # 1. git (required for caldav dependency from git)
 # 2. sqlite for development with token db
-RUN apk add --no-cache git sqlite
+RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
+    git \
+    sqlite3
 
 WORKDIR /app
 

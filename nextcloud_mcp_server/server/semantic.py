@@ -1,7 +1,6 @@
 """Semantic search MCP tools using vector database."""
 
 import logging
-from typing import Literal
 
 import anyio
 from httpx import RequestError
@@ -26,12 +25,7 @@ from nextcloud_mcp_server.models.semantic import (
 from nextcloud_mcp_server.observability.metrics import (
     instrument_tool,
 )
-from nextcloud_mcp_server.search import (
-    FuzzySearchAlgorithm,
-    HybridSearchAlgorithm,
-    KeywordSearchAlgorithm,
-    SemanticSearchAlgorithm,
-)
+from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
 
 logger = logging.getLogger(__name__)
 
@@ -47,36 +41,30 @@ def configure_semantic_tools(mcp: FastMCP):
         ctx: Context,
         limit: int = 10,
         doc_types: list[str] | None = None,
-        score_threshold: float = 0.7,
-        algorithm: Literal["semantic", "keyword", "fuzzy", "hybrid"] = "hybrid",
-        semantic_weight: float = 0.5,
-        keyword_weight: float = 0.3,
-        fuzzy_weight: float = 0.2,
+        score_threshold: float = 0.0,
     ) -> SemanticSearchResponse:
         """
-        Search Nextcloud content using configurable algorithms with cross-app support.
+        Search Nextcloud content using BM25 hybrid search with cross-app support.
 
-        Supports multiple search algorithms with client-configurable weighting:
-        - semantic: Vector similarity search (requires VECTOR_SYNC_ENABLED=true)
-        - keyword: Token-based matching (title matches weighted 3x)
-        - fuzzy: Character overlap matching (typo-tolerant)
-        - hybrid: Combines all algorithms using Reciprocal Rank Fusion (default)
+        Uses Qdrant's native hybrid search combining:
+        - Dense semantic vectors: For conceptual similarity and natural language queries
+        - BM25 sparse vectors: For precise keyword matching, acronyms, and specific terms
 
-        Document types are queried from the vector database to determine what's
-        actually indexed. Currently only "note" documents are fully supported.
+        Results are automatically fused using Reciprocal Rank Fusion (RRF) in the
+        database for optimal relevance. This provides the best of both semantic
+        understanding and keyword precision.
+
+        Requires VECTOR_SYNC_ENABLED=true. Currently only "note" documents are
+        fully supported for indexing.
 
         Args:
-            query: Natural language search query
+            query: Natural language or keyword search query
             limit: Maximum number of results to return (default: 10)
             doc_types: Document types to search (e.g., ["note", "file"]). None = search all indexed types (default)
-            score_threshold: Minimum similarity score for semantic/hybrid (0-1, default: 0.7)
-            algorithm: Search algorithm to use (default: "hybrid")
-            semantic_weight: Weight for semantic results in hybrid mode (default: 0.5)
-            keyword_weight: Weight for keyword results in hybrid mode (default: 0.3)
-            fuzzy_weight: Weight for fuzzy results in hybrid mode (default: 0.2)
+            score_threshold: Minimum RRF fusion score (0-1, default: 0.0 for RRF scoring)
 
         Returns:
-            SemanticSearchResponse with matching documents and relevance scores
+            SemanticSearchResponse with matching documents ranked by RRF fusion scores
         """
         from nextcloud_mcp_server.config import get_settings
 
@@ -85,42 +73,22 @@ def configure_semantic_tools(mcp: FastMCP):
         username = client.username
 
         logger.info(
-            f"Search: query='{query}', user={username}, algorithm={algorithm}, "
+            f"BM25 hybrid search: query='{query}', user={username}, "
             f"limit={limit}, score_threshold={score_threshold}"
         )
 
+        # Check that vector sync is enabled
+        if not settings.vector_sync_enabled:
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message="BM25 hybrid search requires VECTOR_SYNC_ENABLED=true",
+                )
+            )
+
         try:
-            # Create appropriate algorithm instance
-            if algorithm == "semantic":
-                if not settings.vector_sync_enabled:
-                    raise McpError(
-                        ErrorData(
-                            code=-1,
-                            message="Semantic search requires VECTOR_SYNC_ENABLED=true",
-                        )
-                    )
-                search_algo = SemanticSearchAlgorithm(score_threshold=score_threshold)
-            elif algorithm == "keyword":
-                search_algo = KeywordSearchAlgorithm()
-            elif algorithm == "fuzzy":
-                search_algo = FuzzySearchAlgorithm()
-            elif algorithm == "hybrid":
-                if semantic_weight > 0 and not settings.vector_sync_enabled:
-                    raise McpError(
-                        ErrorData(
-                            code=-1,
-                            message="Hybrid search with semantic component requires VECTOR_SYNC_ENABLED=true",
-                        )
-                    )
-                search_algo = HybridSearchAlgorithm(
-                    semantic_weight=semantic_weight,
-                    keyword_weight=keyword_weight,
-                    fuzzy_weight=fuzzy_weight,
-                )
-            else:
-                raise McpError(
-                    ErrorData(code=-1, message=f"Unknown algorithm: {algorithm}")
-                )
+            # Create BM25 hybrid search algorithm
+            search_algo = BM25HybridSearchAlgorithm(score_threshold=score_threshold)
 
             # Execute search across requested document types
             # If doc_types is None, search all indexed types (cross-app search)
@@ -187,13 +155,13 @@ def configure_semantic_tools(mcp: FastMCP):
                     )
                 )
 
-            logger.info(f"Returning {len(results)} results from {algorithm} search")
+            logger.info(f"Returning {len(results)} results from BM25 hybrid search")
 
             return SemanticSearchResponse(
                 results=results,
                 query=query,
                 total_found=len(results),
-                search_method=algorithm,
+                search_method="bm25_hybrid",
             )
 
         except ValueError as e:

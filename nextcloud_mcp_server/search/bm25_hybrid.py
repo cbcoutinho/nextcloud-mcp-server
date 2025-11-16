@@ -1,12 +1,13 @@
-"""Semantic search algorithm using vector similarity (Qdrant)."""
+"""BM25 hybrid search algorithm using Qdrant native RRF fusion."""
 
 import logging
 from typing import Any
 
+from qdrant_client import models
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.embedding import get_embedding_service
+from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
 from nextcloud_mcp_server.observability.metrics import record_qdrant_operation
 from nextcloud_mcp_server.search.algorithms import SearchAlgorithm, SearchResult
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
@@ -14,24 +15,32 @@ from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 logger = logging.getLogger(__name__)
 
 
-class SemanticSearchAlgorithm(SearchAlgorithm):
-    """Semantic search using vector similarity in Qdrant.
+class BM25HybridSearchAlgorithm(SearchAlgorithm):
+    """
+    Hybrid search combining dense semantic vectors with BM25 sparse vectors.
 
-    Searches documents by meaning rather than exact keywords using
-    768-dimensional embeddings and cosine distance.
+    Uses Qdrant's native Reciprocal Rank Fusion (RRF) to automatically merge
+    results from both dense (semantic) and sparse (BM25 keyword) searches.
+    This provides the best of both worlds: semantic understanding for conceptual
+    queries and precise keyword matching for specific terms, acronyms, and codes.
+
+    The fusion happens efficiently in the database using the prefetch mechanism,
+    eliminating the need for application-layer result merging.
     """
 
-    def __init__(self, score_threshold: float = 0.7):
-        """Initialize semantic search algorithm.
+    def __init__(self, score_threshold: float = 0.0):
+        """
+        Initialize BM25 hybrid search algorithm.
 
         Args:
-            score_threshold: Minimum similarity score (0-1, default: 0.7)
+            score_threshold: Minimum RRF score (0-1, default: 0.0 to allow RRF scoring)
+                           Note: RRF produces normalized scores, so threshold is typically lower
         """
         self.score_threshold = score_threshold
 
     @property
     def name(self) -> str:
-        return "semantic"
+        return "bm25_hybrid"
 
     @property
     def requires_vector_db(self) -> bool:
@@ -45,20 +54,21 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         doc_type: str | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
-        """Execute semantic search using vector similarity.
+        """
+        Execute hybrid search using dense + sparse vectors with native RRF fusion.
 
         Returns unverified results from Qdrant. Access verification should be
         performed separately at the final output stage using verify_search_results().
 
         Args:
-            query: Natural language search query
+            query: Natural language or keyword search query
             user_id: User ID for filtering
             limit: Maximum results to return
             doc_type: Optional document type filter
             **kwargs: Additional parameters (score_threshold override)
 
         Returns:
-            List of unverified SearchResult objects ranked by similarity score
+            List of unverified SearchResult objects ranked by RRF fusion score
 
         Raises:
             McpError: If vector sync is not enabled or search fails
@@ -67,15 +77,21 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         score_threshold = kwargs.get("score_threshold", self.score_threshold)
 
         logger.info(
-            f"Semantic search: query='{query}', user={user_id}, "
+            f"BM25 hybrid search: query='{query}', user={user_id}, "
             f"limit={limit}, score_threshold={score_threshold}, doc_type={doc_type}"
         )
 
-        # Generate embedding for query
+        # Generate dense embedding for semantic search
         embedding_service = get_embedding_service()
-        query_embedding = await embedding_service.embed(query)
+        dense_embedding = await embedding_service.embed(query)
+        logger.debug(f"Generated dense embedding (dimension={len(dense_embedding)})")
+
+        # Generate sparse embedding for BM25 keyword search
+        bm25_service = get_bm25_service()
+        sparse_embedding = bm25_service.encode(query)
         logger.debug(
-            f"Generated embedding for query (dimension={len(query_embedding)})"
+            f"Generated sparse embedding "
+            f"({len(sparse_embedding['indices'])} non-zero terms)"
         )
 
         # Build Qdrant filter
@@ -95,14 +111,36 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
                 )
             )
 
-        # Search Qdrant
+        query_filter = Filter(must=filter_conditions)
+
+        # Execute hybrid search with Qdrant native RRF fusion
         qdrant_client = await get_qdrant_client()
         try:
+            # Use prefetch to run both dense and sparse searches
+            # Qdrant will automatically merge results using RRF
             search_response = await qdrant_client.query_points(
                 collection_name=settings.get_collection_name(),
-                query=query_embedding,
-                using="dense",  # Use named dense vector (BM25 hybrid collections)
-                query_filter=Filter(must=filter_conditions),
+                prefetch=[
+                    # Dense semantic search
+                    models.Prefetch(
+                        query=dense_embedding,
+                        using="dense",
+                        limit=limit * 2,  # Get extra for deduplication
+                        filter=query_filter,
+                    ),
+                    # Sparse BM25 search
+                    models.Prefetch(
+                        query=models.SparseVector(
+                            indices=sparse_embedding["indices"],
+                            values=sparse_embedding["values"],
+                        ),
+                        using="sparse",
+                        limit=limit * 2,  # Get extra for deduplication
+                        filter=query_filter,
+                    ),
+                ],
+                # RRF fusion query (no additional query needed, just fusion)
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
                 limit=limit * 2,  # Get extra for deduplication
                 score_threshold=score_threshold,
                 with_payload=True,
@@ -114,14 +152,14 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
             raise
 
         logger.info(
-            f"Qdrant returned {len(search_response.points)} results "
+            f"Qdrant RRF fusion returned {len(search_response.points)} results "
             f"(before deduplication)"
         )
 
         if search_response.points:
-            # Log top 3 scores to help with threshold tuning
+            # Log top 3 RRF scores to help with threshold tuning
             top_scores = [p.score for p in search_response.points[:3]]
-            logger.debug(f"Top 3 similarity scores: {top_scores}")
+            logger.debug(f"Top 3 RRF fusion scores: {top_scores}")
 
         # Deduplicate by (doc_id, doc_type) - multiple chunks per document
         seen_docs = set()
@@ -145,10 +183,11 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
                     doc_type=doc_type,
                     title=result.payload.get("title", "Untitled"),
                     excerpt=result.payload.get("excerpt", ""),
-                    score=result.score,
+                    score=result.score,  # RRF fusion score
                     metadata={
                         "chunk_index": result.payload.get("chunk_index"),
                         "total_chunks": result.payload.get("total_chunks"),
+                        "search_method": "bm25_hybrid_rrf",
                     },
                 )
             )
