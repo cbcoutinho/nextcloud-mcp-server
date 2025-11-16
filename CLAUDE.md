@@ -15,13 +15,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Use Python 3.10+ union syntax**: `str | None` instead of `Optional[str]`
 - **Use lowercase generics**: `dict[str, Any]` instead of `Dict[str, Any]`
 - **Type all function signatures** - Parameters and return types
-- **No explicit type checker configured** - Ruff handles linting only
+- **Type checker**: `ty` is configured for static type checking
+  ```bash
+  uv run ty check -- nextcloud_mcp_server
+  ```
 
 ### Code Quality
-- **Run ruff before committing**:
+- **Run ruff and ty before committing**:
   ```bash
   uv run ruff check
   uv run ruff format
+  uv run ty check -- nextcloud_mcp_server
   ```
 - **Ruff configuration** in pyproject.toml (extends select: ["I"] for import sorting)
 
