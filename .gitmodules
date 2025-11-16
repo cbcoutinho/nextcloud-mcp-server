@@ -4,6 +4,3 @@
 [submodule "third_party/oidc"]
 	path = third_party/oidc
 	url = https://github.com/cbcoutinho/oidc
-[submodule "third_party/notes"]
-	path = third_party/notes
-	url = https://github.com/cbcoutinho/notes
