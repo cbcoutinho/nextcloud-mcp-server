@@ -468,7 +468,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 ]
             ),
             limit=len(doc_ids) * 2,  # Account for multiple chunks per doc
-            with_vectors=True,
+            with_vectors=["dense"],  # Only fetch dense vectors for visualization
             with_payload=["doc_id"],  # Need doc_id to map vectors to results
         )
 
@@ -484,8 +484,19 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 }
             )
 
-        # Extract vectors
-        vectors = np.array([p.vector for p in points if p.vector is not None])
+        # Extract dense vectors (handle both named and unnamed vectors)
+        def extract_dense_vector(point):
+            if point.vector is None:
+                return None
+            # If named vectors (dict), extract "dense"
+            if isinstance(point.vector, dict):
+                return point.vector.get("dense")
+            # If unnamed vector (array), use directly
+            return point.vector
+
+        vectors = np.array(
+            [v for v in (extract_dense_vector(p) for p in points) if v is not None]
+        )
         vector_fetch_duration = time.perf_counter() - vector_fetch_start
 
         if len(vectors) < 2:

@@ -101,6 +101,7 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
             search_response = await qdrant_client.query_points(
                 collection_name=settings.get_collection_name(),
                 query=query_embedding,
+                using="dense",  # Use named dense vector (BM25 hybrid collections)
                 query_filter=Filter(must=filter_conditions),
                 limit=limit * 2,  # Get extra for deduplication
                 score_threshold=score_threshold,
