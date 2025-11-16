@@ -1,8 +1,4 @@
-Here is a complete Architectural Decision Record (ADR) template based on your requirements. You can copy, paste, and adapt this directly.
-
----
-
-## ADR-007: Replace Custom Keyword Search with BM25 Hybrid Search via Qdrant
+# ADR-014: Replace Custom Keyword Search with BM25 Hybrid Search via Qdrant
 
 **Date:** 2025-11-16
 

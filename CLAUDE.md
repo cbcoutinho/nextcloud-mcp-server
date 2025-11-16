@@ -61,7 +61,59 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `nextcloud_mcp_server/server/` - MCP tool/resource definitions
 - `nextcloud_mcp_server/auth/` - OAuth/OIDC authentication
 - `nextcloud_mcp_server/models/` - Pydantic response models
+- `nextcloud_mcp_server/providers/` - Unified LLM provider infrastructure (embeddings + generation)
 - `tests/` - Layered test suite (unit, smoke, integration, load)
+
+### Provider Architecture (ADR-015)
+
+**Unified Provider System** for embeddings and text generation:
+
+**Location:** `nextcloud_mcp_server/providers/`
+- `base.py` - `Provider` ABC with optional capabilities
+- `registry.py` - Auto-detection and factory pattern
+- `ollama.py` - Ollama provider (embeddings + generation)
+- `anthropic.py` - Anthropic provider (generation only)
+- `bedrock.py` - Amazon Bedrock provider (embeddings + generation)
+- `simple.py` - Simple in-memory provider (embeddings only, fallback)
+
+**Usage:**
+```python
+from nextcloud_mcp_server.providers import get_provider
+
+provider = get_provider()  # Auto-detects from environment
+
+# Check capabilities
+if provider.supports_embeddings:
+    embeddings = await provider.embed_batch(texts)
+
+if provider.supports_generation:
+    text = await provider.generate("prompt", max_tokens=500)
+```
+
+**Environment Variables:**
+
+Bedrock:
+- `AWS_REGION` - AWS region (e.g., "us-east-1")
+- `BEDROCK_EMBEDDING_MODEL` - Embedding model ID (e.g., "amazon.titan-embed-text-v2:0")
+- `BEDROCK_GENERATION_MODEL` - Generation model ID (e.g., "anthropic.claude-3-sonnet-20240229-v1:0")
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` - Optional, uses AWS credential chain
+
+Ollama:
+- `OLLAMA_BASE_URL` - API URL (e.g., "http://localhost:11434")
+- `OLLAMA_EMBEDDING_MODEL` - Embedding model (default: "nomic-embed-text")
+- `OLLAMA_GENERATION_MODEL` - Generation model (e.g., "llama3.2:1b")
+- `OLLAMA_VERIFY_SSL` - SSL verification (default: "true")
+
+Simple (fallback, no config needed):
+- `SIMPLE_EMBEDDING_DIMENSION` - Dimension (default: 384)
+
+**Auto-Detection Priority:** Bedrock → Ollama → Simple
+
+**Backward Compatibility:**
+- Old code using `nextcloud_mcp_server.embedding.get_embedding_service()` still works
+- `EmbeddingService` now wraps `get_provider()` internally
+
+**For Details:** See `docs/ADR-015-unified-provider-architecture.md`
 
 ## Development Commands (Quick Reference)
 
