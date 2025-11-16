@@ -3,6 +3,7 @@
 import logging
 from typing import Literal
 
+import anyio
 from httpx import RequestError
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.exceptions import McpError
@@ -153,11 +154,18 @@ def configure_semantic_tools(mcp: FastMCP):
                 # Sort combined results by score
                 all_results.sort(key=lambda r: r.score, reverse=True)
 
-            # Verify access for all results (deduplicates and filters)
-            from nextcloud_mcp_server.search.verification import verify_search_results
+            # Deduplicate results (hybrid search may return same doc from dense + sparse)
+            # Qdrant already filters by user_id for multi-tenant isolation
+            # Sampling tool will verify access when fetching full content
+            seen = set()
+            unique_results = []
+            for result in all_results:
+                key = (result.id, result.doc_type)
+                if key not in seen:
+                    seen.add(key)
+                    unique_results.append(result)
 
-            verified_results = await verify_search_results(all_results, client)
-            search_results = verified_results[:limit]  # Final limit after verification
+            search_results = unique_results[:limit]  # Final limit after deduplication
 
             # Convert SearchResult objects to SemanticSearchResult for response
             results = []
@@ -334,35 +342,55 @@ def configure_semantic_tools(mcp: FastMCP):
                 success=True,
             )
 
-        # 4. Fetch full content for notes to provide complete context to LLM
-        # Filter out inaccessible notes (deleted or permissions changed)
+        # 4. Fetch full content for notes in parallel (also verifies access)
+        # Use anyio task group for concurrent fetching with semaphore to prevent
+        # connection pool exhaustion
         client = await get_client(ctx)
-        accessible_results = []
-        full_contents = []  # Full content for accessible notes
+        accessible_results = [None] * len(search_response.results)
+        full_contents = [None] * len(search_response.results)
 
-        for result in search_response.results:
-            if result.doc_type == "note":
-                try:
-                    note = await client.notes.get_note(result.id)
-                    # Note is accessible, store full content
-                    accessible_results.append(result)
-                    full_contents.append(note.get("content", ""))
-                    logger.debug(
-                        f"Fetched full content for note {result.id} "
-                        f"(length: {len(full_contents[-1])} chars)"
-                    )
-                except Exception as e:
-                    # Note might have been deleted or permissions changed
-                    # Filter it out to avoid corrupting LLM with inaccessible data
-                    logger.warning(
-                        f"Failed to fetch full content for note {result.id}: {e}. "
-                        f"Excluding from results."
-                    )
-            else:
-                # Non-note document types (future: calendar, deck, files)
-                # For now, keep them with excerpts
-                accessible_results.append(result)
-                full_contents.append(None)
+        # Limit concurrent requests to prevent connection pool exhaustion
+        max_concurrent = 20
+        semaphore = anyio.Semaphore(max_concurrent)
+
+        async def fetch_content(index: int, result: SemanticSearchResult):
+            """Fetch full content for a single document (parallel with semaphore)."""
+            async with semaphore:
+                if result.doc_type == "note":
+                    try:
+                        note = await client.notes.get_note(result.id)
+                        # Note is accessible, store result and full content
+                        content = note.get("content", "")
+                        accessible_results[index] = result
+                        full_contents[index] = content
+                        logger.debug(
+                            f"Fetched full content for note {result.id} "
+                            f"(length: {len(content)} chars)"
+                        )
+                    except Exception as e:
+                        # Note might have been deleted or permissions changed
+                        # Leave as None to filter out later
+                        logger.debug(
+                            f"Note {result.id} not accessible: {e}. "
+                            f"Excluding from results."
+                        )
+                else:
+                    # Non-note document types (future: calendar, deck, files)
+                    # For now, keep them with excerpts
+                    accessible_results[index] = result
+                    # full_contents[index] remains None (will use excerpt)
+
+        # Run all fetches in parallel using anyio task group
+        async with anyio.create_task_group() as tg:
+            for idx, result in enumerate(search_response.results):
+                tg.start_soon(fetch_content, idx, result)
+
+        # Filter out None (inaccessible notes) while preserving order
+        final_pairs = [
+            (r, c) for r, c in zip(accessible_results, full_contents) if r is not None
+        ]
+        accessible_results = [r for r, c in final_pairs]
+        full_contents = [c for r, c in final_pairs]
 
         # Check if we filtered out all results
         if not accessible_results:
@@ -414,7 +442,6 @@ def configure_semantic_tools(mcp: FastMCP):
         )
 
         # 6. Request LLM completion via MCP sampling with timeout
-        import anyio
 
         try:
             with anyio.fail_after(30):
