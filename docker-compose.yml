@@ -240,6 +240,17 @@ services:
     profiles:
       - qdrant
 
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    environment:
+      - OLLAMA_BASE_URL=https://ollama.internal.coutinho.io
+    ports:
+      - 127.0.0.1:3000:8080
+    volumes:
+      - open-webui:/app/backend/data
+    profiles:
+      - open-webui
+
 volumes:
   nextcloud:
   db:
@@ -249,3 +260,4 @@ volumes:
   keycloak-oauth-storage:
   qdrant-data:
   mcp-data:
+  open-webui:
