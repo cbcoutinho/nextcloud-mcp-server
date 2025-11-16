@@ -1,3 +1,13 @@
+## v0.40.0 (2025-11-16)
+
+### Feat
+
+- add unified provider architecture with Amazon Bedrock support
+
+### Fix
+
+- suppress Starlette middleware type warnings in ty checker
+
 ## v0.39.0 (2025-11-16)
 
 ### Feat

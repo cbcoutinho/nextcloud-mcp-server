@@ -1523,7 +1523,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 
     browser_app = Starlette(routes=browser_routes)
     browser_app.add_middleware(
-        AuthenticationMiddleware,
+        AuthenticationMiddleware,  # type: ignore[invalid-argument-type]
         backend=SessionAuthBackend(oauth_enabled=oauth_enabled),
     )
 
@@ -1613,7 +1613,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 
     # Add CORS middleware to allow browser-based clients like MCP Inspector
     app.add_middleware(
-        CORSMiddleware,
+        CORSMiddleware,  # type: ignore[invalid-argument-type]
         allow_origins=["*"],  # Allow all origins for development
         allow_credentials=True,
         allow_methods=["*"],
@@ -1623,7 +1623,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 
     # Add observability middleware (metrics + tracing)
     if settings.metrics_enabled or settings.otel_exporter_otlp_endpoint:
-        app.add_middleware(ObservabilityMiddleware)
+        app.add_middleware(ObservabilityMiddleware)  # type: ignore[invalid-argument-type]
         logger.info("Observability middleware enabled (metrics and/or tracing)")
 
     # Add exception handler for scope challenges (OAuth mode only)
