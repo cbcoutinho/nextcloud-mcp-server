@@ -14,11 +14,11 @@ The Token Broker provides:
 - Session vs background token separation (RFC 8693)
 """
 
-import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Tuple
 
+import anyio
 import httpx
 import jwt
 from cryptography.fernet import Fernet
@@ -43,7 +43,7 @@ class TokenCache:
         self._cache: Dict[str, Tuple[str, datetime]] = {}
         self._ttl = timedelta(seconds=ttl_seconds)
         self._early_refresh = timedelta(seconds=early_refresh_seconds)
-        self._lock = asyncio.Lock()
+        self._lock = anyio.Lock()
 
     async def get(self, user_id: str) -> Optional[str]:
         """Get cached token if valid."""

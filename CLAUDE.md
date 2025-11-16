@@ -5,11 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Coding Conventions
 
 ### async/await Patterns
-- **Use anyio + asyncio hybrid** - Both libraries are available
+- **Use anyio for all async operations** - Provides structured concurrency
   - pytest runs in `anyio` mode (`anyio_mode = "auto"` in pyproject.toml)
-  - asyncio used in auth modules (refresh_token_storage.py, token_exchange.py, token_broker.py)
-  - anyio used in calendar.py, client_registration.py, app.py
+  - Use `anyio.create_task_group()` for concurrent execution (NOT `asyncio.gather()`)
+  - Use `anyio.Lock()` for synchronization primitives (NOT `asyncio.Lock()`)
+  - Use `anyio.run()` for entry points (NOT `asyncio.run()`)
   - Prefer standard async/await syntax without explicit library imports when possible
+  - Examples: app.py, search/hybrid.py, search/verification.py, auth/token_broker.py
 
 ### Type Hints
 - **Use Python 3.10+ union syntax**: `str | None` instead of `Optional[str]`

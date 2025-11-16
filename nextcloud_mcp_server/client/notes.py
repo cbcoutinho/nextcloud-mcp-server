@@ -40,7 +40,7 @@ class NotesClient(BaseNextcloudClient):
         seen_ids: set[int] = set()
 
         while True:
-            params: Dict[str, Any] = {"chunkSize": 10}
+            params: Dict[str, Any] = {"chunkSize": 100}
             if cursor:
                 params["chunkCursor"] = cursor
             if prune_before is not None:

@@ -11,6 +11,7 @@ All processing happens server-side following ADR-012:
 """
 
 import logging
+import time
 
 import numpy as np
 from starlette.authentication import requires
@@ -381,56 +382,17 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
     )
 
     try:
+        # Start total request timer
+        request_start = time.perf_counter()
         # Get authenticated HTTP client from session
         # In BasicAuth mode: uses username/password from session
         # In OAuth mode: uses access token from session
         from nextcloud_mcp_server.auth.userinfo_routes import (
             _get_authenticated_client_for_userinfo,
         )
-        from nextcloud_mcp_server.client.notes import NotesClient
 
-        async with await _get_authenticated_client_for_userinfo(request) as http_client:
-            # Create NotesClient directly with authenticated HTTP client
-            notes_client = NotesClient(http_client, username)
-
-            # Wrap in a minimal client object for search algorithms
-            # This conforms to NextcloudClientProtocol but only implements notes
-            class MinimalNextcloudClient:
-                def __init__(self, notes_client, username):
-                    self._notes = notes_client
-                    self.username = username
-
-                @property
-                def notes(self):
-                    return self._notes
-
-                @property
-                def webdav(self):
-                    return None
-
-                @property
-                def calendar(self):
-                    return None
-
-                @property
-                def contacts(self):
-                    return None
-
-                @property
-                def deck(self):
-                    return None
-
-                @property
-                def cookbook(self):
-                    return None
-
-                @property
-                def tables(self):
-                    return None
-
-            nextcloud_client = MinimalNextcloudClient(notes_client, username)
-
-            # Create search algorithm
+        async with await _get_authenticated_client_for_userinfo(request) as http_client:  # noqa: F841
+            # Create search algorithm (no client needed - verification removed)
             if algorithm == "semantic":
                 search_algo = SemanticSearchAlgorithm(score_threshold=score_threshold)
             elif algorithm == "keyword":
@@ -451,6 +413,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
 
             # Execute search (supports cross-app when doc_types=None)
             # Get unverified results with buffer for filtering
+            search_start = time.perf_counter()
             all_results = []
             if doc_types is None or len(doc_types) == 0:
                 # Cross-app search - search all indexed types
@@ -476,13 +439,28 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 # Sort by score before verification
                 all_results.sort(key=lambda r: r.score, reverse=True)
 
-            # Verify access for all results (deduplicates and filters)
-            from nextcloud_mcp_server.search.verification import verify_search_results
+            # No verification needed for visualization - we only need Qdrant metadata
+            # (title, excerpt, doc_type) which is already in search results.
+            # Verification is only needed for sampling (LLM needs full content).
+            search_results = all_results[:limit]
+            search_duration = time.perf_counter() - search_start
 
-            verified_results = await verify_search_results(
-                all_results, nextcloud_client
+        # Normalize scores relative to this result set for better visualization
+        # (best result = 1.0, worst result = 0.0 within THIS result set)
+        # This makes visual encoding meaningful regardless of RRF normalization
+        if search_results:
+            scores = [r.score for r in search_results]
+            min_score, max_score = min(scores), max(scores)
+            score_range = max_score - min_score if max_score > min_score else 1.0
+
+            logger.info(
+                f"Normalizing scores for viz: original range [{min_score:.3f}, {max_score:.3f}] "
+                f"→ [0.0, 1.0]"
             )
-            search_results = verified_results[:limit]
+
+            # Rescale each result's score to 0-1 within this result set
+            for r in search_results:
+                r.score = (r.score - min_score) / score_range
 
         if not search_results:
             return JSONResponse(
@@ -495,6 +473,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             )
 
         # Fetch vectors for matching results from Qdrant
+        vector_fetch_start = time.perf_counter()
         qdrant_client = await get_qdrant_client()
         doc_ids = [r.id for r in search_results]
 
@@ -534,6 +513,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
 
         # Extract vectors
         vectors = np.array([p.vector for p in points if p.vector is not None])
+        vector_fetch_duration = time.perf_counter() - vector_fetch_start
 
         if len(vectors) < 2:
             # Not enough points for PCA
@@ -556,8 +536,10 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             )
 
         # Apply PCA dimensionality reduction (768-dim → 2D)
+        pca_start = time.perf_counter()
         pca = PCA(n_components=2)
         coords_2d = pca.fit_transform(vectors)
+        pca_duration = time.perf_counter() - pca_start
 
         # After fit, these attributes are guaranteed to be set
         assert pca.explained_variance_ratio_ is not None
@@ -590,6 +572,18 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             for r in search_results
         ]
 
+        # Calculate total request duration
+        total_duration = time.perf_counter() - request_start
+
+        # Log comprehensive timing metrics
+        logger.info(
+            f"Viz search timing: total={total_duration * 1000:.1f}ms, "
+            f"search={search_duration * 1000:.1f}ms ({search_duration / total_duration * 100:.1f}%), "
+            f"vector_fetch={vector_fetch_duration * 1000:.1f}ms ({vector_fetch_duration / total_duration * 100:.1f}%), "
+            f"pca={pca_duration * 1000:.1f}ms ({pca_duration / total_duration * 100:.1f}%), "
+            f"results={len(search_results)}, vectors={len(vectors)}"
+        )
+
         return JSONResponse(
             {
                 "success": True,
@@ -598,6 +592,14 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 "pca_variance": {
                     "pc1": float(pca.explained_variance_ratio_[0]),
                     "pc2": float(pca.explained_variance_ratio_[1]),
+                },
+                "timing": {
+                    "total_ms": round(total_duration * 1000, 2),
+                    "search_ms": round(search_duration * 1000, 2),
+                    "vector_fetch_ms": round(vector_fetch_duration * 1000, 2),
+                    "pca_ms": round(pca_duration * 1000, 2),
+                    "num_results": len(search_results),
+                    "num_vectors": len(vectors),
                 },
             }
         )
