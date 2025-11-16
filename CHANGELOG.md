@@ -1,3 +1,15 @@
+## v0.39.0 (2025-11-16)
+
+### Feat
+
+- Implement BM25 hybrid search with native Qdrant RRF fusion
+
+### Fix
+
+- Handle named vectors in visualization and semantic search
+- Update vizApp to use bm25_hybrid algorithm and remove deprecated weights
+- Update viz routes to use BM25 hybrid search after refactor
+
 ## v0.38.0 (2025-11-16)
 
 ### Feat
