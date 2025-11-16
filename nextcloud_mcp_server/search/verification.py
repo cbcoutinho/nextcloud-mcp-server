@@ -74,39 +74,50 @@ async def verify_search_results(
     # Use list to maintain order (index-based storage)
     verified_results = [None] * len(unique_results)
 
+    # Limit concurrent verifications to prevent connection pool exhaustion
+    # Without this, launching 90+ simultaneous HTTP requests overwhelms the
+    # connection pool, causing RequestError failures
+    max_concurrent = 20
+    semaphore = anyio.Semaphore(max_concurrent)
+
     async def verify_one(index: int, result: SearchResult):
         """
         Verify a single document and store result at index.
+
+        Uses semaphore to limit concurrent requests and prevent connection pool exhaustion.
 
         Args:
             index: Position in verified_results list
             result: Search result to verify
         """
-        try:
-            if result.doc_type == "note":
-                # Fetch note to verify access and get fresh metadata
-                note = await nextcloud_client.notes.get_note(result.id)
-                # Update metadata with fresh data from Nextcloud
-                updated_metadata = {**(result.metadata or {}), **note}
-                verified_results[index] = replace(result, metadata=updated_metadata)
-            # TODO: Add verification for other doc types (calendar, deck, file, etc.)
-            else:
-                # For now, assume other types are accessible
-                # In production, add proper verification for each type
-                logger.debug(
-                    f"No verification implemented for doc_type={result.doc_type}, "
-                    "assuming accessible"
-                )
-                verified_results[index] = result
+        async with semaphore:  # Limit concurrent verifications
+            try:
+                if result.doc_type == "note":
+                    # Fetch note to verify access and get fresh metadata
+                    note = await nextcloud_client.notes.get_note(result.id)
+                    # Update metadata with fresh data from Nextcloud
+                    updated_metadata = {**(result.metadata or {}), **note}
+                    verified_results[index] = replace(result, metadata=updated_metadata)
+                # TODO: Add verification for other doc types (calendar, deck, file, etc.)
+                else:
+                    # For now, assume other types are accessible
+                    # In production, add proper verification for each type
+                    logger.debug(
+                        f"No verification implemented for doc_type={result.doc_type}, "
+                        "assuming accessible"
+                    )
+                    verified_results[index] = result
 
-        except Exception as e:
-            # Document is inaccessible (403, 404, or other error)
-            # Log at debug level since this is expected for filtered results
-            logger.debug(f"Document {result.doc_type}/{result.id} not accessible: {e}")
-            verified_results[index] = None
+            except Exception as e:
+                # Document is inaccessible (403, 404, or other error)
+                # Log at debug level since this is expected for filtered results
+                logger.debug(
+                    f"Document {result.doc_type}/{result.id} not accessible: {e}"
+                )
+                verified_results[index] = None
 
     # Run all verifications in parallel using anyio task group
-    # This provides structured concurrency with automatic cancellation on errors
+    # Semaphore limits concurrency to prevent overwhelming connection pool
     async with anyio.create_task_group() as tg:
         for idx, result in enumerate(unique_results):
             tg.start_soon(verify_one, idx, result)

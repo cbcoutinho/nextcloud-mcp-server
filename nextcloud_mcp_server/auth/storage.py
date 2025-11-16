@@ -1310,7 +1310,7 @@ async def generate_encryption_key() -> str:
 
 # Example usage
 if __name__ == "__main__":
-    import asyncio
+    import anyio
 
     async def main():
         # Generate a key for testing
@@ -1318,4 +1318,4 @@ if __name__ == "__main__":
         print(f"Generated encryption key: {key}")
         print(f"Set this in your environment: export TOKEN_ENCRYPTION_KEY='{key}'")
 
-    asyncio.run(main())
+    anyio.run(main)

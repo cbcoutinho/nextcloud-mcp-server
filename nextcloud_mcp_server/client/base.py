@@ -5,6 +5,7 @@ import time
 from abc import ABC
 from functools import wraps
 
+import anyio
 from httpx import AsyncClient, HTTPStatusError, RequestError, codes
 
 from nextcloud_mcp_server.observability.metrics import (
@@ -47,7 +48,7 @@ def retry_on_429(func):
                     # Record retry metric (extract app name from args if available)
                     if len(args) > 0 and hasattr(args[0], "app_name"):
                         record_nextcloud_api_retry(app=args[0].app_name, reason="429")
-                    time.sleep(5)
+                    await anyio.sleep(5)
                 elif e.response.status_code == 404:
                     # 404 errors are often expected (e.g., checking if attachments exist)
                     # Log as debug instead of warning

@@ -446,7 +446,7 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
         # Start background tasks using anyio TaskGroup
         async with anyio.create_task_group() as tg:
             # Start scanner task
-            tg.start_soon(
+            await tg.start(
                 scanner_task,
                 send_stream,
                 shutdown_event,
@@ -457,7 +457,7 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
 
             # Start processor pool (each gets a cloned receive stream)
             for i in range(settings.vector_sync_processor_workers):
-                tg.start_soon(
+                await tg.start(
                     processor_task,
                     i,
                     receive_stream.clone(),
@@ -1147,7 +1147,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
                 # Start background tasks using anyio TaskGroup
                 async with anyio_module.create_task_group() as tg:
                     # Start scanner task
-                    tg.start_soon(
+                    await tg.start(
                         scanner_task,
                         send_stream,
                         shutdown_event,
@@ -1158,7 +1158,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
 
                     # Start processor pool (each gets a cloned receive stream)
                     for i in range(settings.vector_sync_processor_workers):
-                        tg.start_soon(
+                        await tg.start(
                             processor_task,
                             i,
                             receive_stream.clone(),
