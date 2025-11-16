@@ -8,6 +8,7 @@ import time
 import uuid
 
 import anyio
+from anyio.abc import TaskStatus
 from anyio.streams.memory import MemoryObjectReceiveStream
 from httpx import HTTPStatusError
 from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
@@ -34,6 +35,8 @@ async def processor_task(
     shutdown_event: anyio.Event,
     nc_client: NextcloudClient,
     user_id: str,
+    *,
+    task_status: TaskStatus = anyio.TASK_STATUS_IGNORED,
 ):
     """
     Process documents from stream concurrently.
@@ -53,8 +56,12 @@ async def processor_task(
         shutdown_event: Event signaling shutdown
         nc_client: Authenticated Nextcloud client
         user_id: User being processed
+        task_status: Status object for signaling task readiness
     """
     logger.info(f"Processor {worker_id} started")
+
+    # Signal that the task has started and is ready
+    task_status.started()
 
     while not shutdown_event.is_set():
         try:

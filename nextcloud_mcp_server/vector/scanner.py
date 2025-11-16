@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 
 import anyio
+from anyio.abc import TaskStatus
 from anyio.streams.memory import MemoryObjectSendStream
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
@@ -93,6 +94,8 @@ async def scanner_task(
     wake_event: anyio.Event,
     nc_client: NextcloudClient,
     user_id: str,
+    *,
+    task_status: TaskStatus = anyio.TASK_STATUS_IGNORED,
 ):
     """
     Periodic scanner that detects changed documents for enabled user.
@@ -105,9 +108,13 @@ async def scanner_task(
         wake_event: Event to trigger immediate scan
         nc_client: Authenticated Nextcloud client
         user_id: User to scan
+        task_status: Status object for signaling task readiness
     """
     logger.info(f"Scanner task started for user: {user_id}")
     settings = get_settings()
+
+    # Signal that the task has started and is ready
+    task_status.started()
 
     async with send_stream:
         while not shutdown_event.is_set():

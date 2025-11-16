@@ -1,9 +1,10 @@
 """Hybrid search algorithm using Reciprocal Rank Fusion (RRF)."""
 
-import asyncio
 import logging
 from collections import defaultdict
 from typing import Any
+
+import anyio
 
 from nextcloud_mcp_server.search.algorithms import SearchAlgorithm, SearchResult
 from nextcloud_mcp_server.search.fuzzy import FuzzySearchAlgorithm
@@ -105,30 +106,70 @@ class HybridSearchAlgorithm(SearchAlgorithm):
             f"fuzzy={self.fuzzy_weight})"
         )
 
-        # Run algorithms in parallel
-        tasks = []
-        algo_names = []
-
+        # Prepare algorithm configurations for parallel execution
+        algo_configs = []
         if self.semantic_weight > 0:
-            tasks.append(
-                self.semantic.search(query, user_id, limit * 2, doc_type, **kwargs)
+            algo_configs.append(
+                (
+                    "semantic",
+                    self.semantic.search,
+                    query,
+                    user_id,
+                    limit * 2,
+                    doc_type,
+                    kwargs,
+                )
             )
-            algo_names.append("semantic")
-
         if self.keyword_weight > 0:
-            tasks.append(
-                self.keyword.search(query, user_id, limit * 2, doc_type, **kwargs)
+            algo_configs.append(
+                (
+                    "keyword",
+                    self.keyword.search,
+                    query,
+                    user_id,
+                    limit * 2,
+                    doc_type,
+                    kwargs,
+                )
             )
-            algo_names.append("keyword")
-
         if self.fuzzy_weight > 0:
-            tasks.append(
-                self.fuzzy.search(query, user_id, limit * 2, doc_type, **kwargs)
+            algo_configs.append(
+                (
+                    "fuzzy",
+                    self.fuzzy.search,
+                    query,
+                    user_id,
+                    limit * 2,
+                    doc_type,
+                    kwargs,
+                )
             )
-            algo_names.append("fuzzy")
 
-        # Execute searches in parallel
-        results_list = await asyncio.gather(*tasks)
+        # Pre-allocate results list and extract algorithm names
+        results_list = [None] * len(algo_configs)
+        algo_names = [name for name, *_ in algo_configs]
+
+        async def search_one(
+            index: int,
+            search_func,
+            query_arg: str,
+            user_id_arg: str,
+            limit_arg: int,
+            doc_type_arg: str | None,
+            kwargs_arg: dict,
+        ):
+            """Execute one search algorithm and store result at index."""
+            result = await search_func(
+                query_arg, user_id_arg, limit_arg, doc_type_arg, **kwargs_arg
+            )
+            results_list[index] = result
+
+        # Execute searches in parallel using anyio task group
+        async with anyio.create_task_group() as tg:
+            for idx, (name, search_func, q, uid, lim, dt, kw) in enumerate(
+                algo_configs
+            ):
+                tg.start_soon(search_one, idx, search_func, q, uid, lim, dt, kw)
 
         # Build results dict
         algo_results = {}
