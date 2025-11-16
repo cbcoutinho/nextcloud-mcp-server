@@ -1,3 +1,9 @@
+## v0.37.0 (2025-11-16)
+
+### Feat
+
+- Add OpenTelemetry tracing to @instrument_tool decorator
+
 ## v0.36.0 (2025-11-15)
 
 ### BREAKING CHANGE
