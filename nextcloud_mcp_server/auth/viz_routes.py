@@ -20,9 +20,7 @@ from starlette.responses import HTMLResponse, JSONResponse
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.search import (
-    FuzzySearchAlgorithm,
-    HybridSearchAlgorithm,
-    KeywordSearchAlgorithm,
+    BM25HybridSearchAlgorithm,
     SemanticSearchAlgorithm,
 )
 from nextcloud_mcp_server.vector.pca import PCA
@@ -209,10 +207,8 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                             <div class="viz-control-group" style="margin-bottom: 0;">
                                 <label>Algorithm</label>
                                 <select x-model="algorithm">
-                                    <option value="semantic">Semantic (Vector Similarity)</option>
-                                    <option value="keyword">Keyword (Token Matching)</option>
-                                    <option value="fuzzy">Fuzzy (Character Overlap)</option>
-                                    <option value="hybrid" selected>Hybrid (RRF Fusion)</option>
+                                    <option value="semantic">Semantic (Dense Vectors)</option>
+                                    <option value="bm25_hybrid" selected>BM25 Hybrid (Dense + Sparse RRF)</option>
                                 </select>
                             </div>
 
@@ -260,25 +256,13 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
                                 </div>
                             </div>
 
-                            <!-- Hybrid Weights (only when hybrid selected) -->
-                            <div x-show="algorithm === 'hybrid'" style="margin-top: 16px; padding: 12px; background: #e9ecef; border-radius: 4px;">
-                                <label style="margin-bottom: 12px; display: block;">Hybrid Algorithm Weights</label>
-
-                                <div style="margin-bottom: 8px;">
-                                    <label style="display: inline-block; width: 100px; font-weight: normal;">Semantic:</label>
-                                    <input type="range" x-model.number="semanticWeight" min="0" max="1" step="0.1" style="width: 200px; display: inline-block;">
-                                    <span class="viz-weight-display" x-text="semanticWeight.toFixed(1)"></span>
-                                </div>
-                                <div style="margin-bottom: 8px;">
-                                    <label style="display: inline-block; width: 100px; font-weight: normal;">Keyword:</label>
-                                    <input type="range" x-model.number="keywordWeight" min="0" max="1" step="0.1" style="width: 200px; display: inline-block;">
-                                    <span class="viz-weight-display" x-text="keywordWeight.toFixed(1)"></span>
-                                </div>
-                                <div>
-                                    <label style="display: inline-block; width: 100px; font-weight: normal;">Fuzzy:</label>
-                                    <input type="range" x-model.number="fuzzyWeight" min="0" max="1" step="0.1" style="width: 200px; display: inline-block;">
-                                    <span class="viz-weight-display" x-text="fuzzyWeight.toFixed(1)"></span>
-                                </div>
+                            <!-- Info: BM25 Hybrid uses native RRF fusion (no manual weights) -->
+                            <div x-show="algorithm === 'bm25_hybrid'" style="margin-top: 16px; padding: 12px; background: #e9ecef; border-radius: 4px;">
+                                <p style="margin: 0; font-size: 14px; color: #666;">
+                                    <strong>BM25 Hybrid Search:</strong> Uses Qdrant's native Reciprocal Rank Fusion (RRF)
+                                    to automatically combine dense semantic vectors with sparse BM25 keyword vectors.
+                                    No manual weight tuning required.
+                                </p>
                             </div>
                         </div>
                     </div>
@@ -365,12 +349,9 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
 
     # Parse query parameters
     query = request.query_params.get("query", "")
-    algorithm = request.query_params.get("algorithm", "hybrid")
+    algorithm = request.query_params.get("algorithm", "bm25_hybrid")
     limit = int(request.query_params.get("limit", "50"))
-    score_threshold = float(request.query_params.get("score_threshold", "0.7"))
-    semantic_weight = float(request.query_params.get("semantic_weight", "0.5"))
-    keyword_weight = float(request.query_params.get("keyword_weight", "0.3"))
-    fuzzy_weight = float(request.query_params.get("fuzzy_weight", "0.2"))
+    score_threshold = float(request.query_params.get("score_threshold", "0.0"))
 
     # Parse doc_types (comma-separated list, None = all types)
     doc_types_param = request.query_params.get("doc_types", "")
@@ -395,16 +376,8 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             # Create search algorithm (no client needed - verification removed)
             if algorithm == "semantic":
                 search_algo = SemanticSearchAlgorithm(score_threshold=score_threshold)
-            elif algorithm == "keyword":
-                search_algo = KeywordSearchAlgorithm()
-            elif algorithm == "fuzzy":
-                search_algo = FuzzySearchAlgorithm()
-            elif algorithm == "hybrid":
-                search_algo = HybridSearchAlgorithm(
-                    semantic_weight=semantic_weight,
-                    keyword_weight=keyword_weight,
-                    fuzzy_weight=fuzzy_weight,
-                )
+            elif algorithm == "bm25_hybrid":
+                search_algo = BM25HybridSearchAlgorithm(score_threshold=score_threshold)
             else:
                 return JSONResponse(
                     {"success": False, "error": f"Unknown algorithm: {algorithm}"},

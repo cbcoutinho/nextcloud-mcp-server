@@ -15,7 +15,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.embedding import get_embedding_service
+from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
 from nextcloud_mcp_server.observability.metrics import (
     record_qdrant_operation,
     record_vector_sync_processing,
@@ -233,15 +233,21 @@ async def _index_document(
     )
     chunks = chunker.chunk_text(content)
 
-    # Generate embeddings (I/O bound - external API call)
+    # Generate dense embeddings (I/O bound - external API call)
     embedding_service = get_embedding_service()
-    embeddings = await embedding_service.embed_batch(chunks)
+    dense_embeddings = await embedding_service.embed_batch(chunks)
+
+    # Generate sparse embeddings (BM25 for keyword matching)
+    bm25_service = get_bm25_service()
+    sparse_embeddings = bm25_service.encode_batch(chunks)
 
     # Prepare Qdrant points
     indexed_at = int(time.time())
     points = []
 
-    for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+    for i, (chunk, dense_emb, sparse_emb) in enumerate(
+        zip(chunks, dense_embeddings, sparse_embeddings)
+    ):
         # Generate deterministic UUID for point ID
         # Using uuid5 with DNS namespace and combining doc info
         point_name = f"{doc_task.doc_type}:{doc_task.doc_id}:chunk:{i}"
@@ -250,7 +256,10 @@ async def _index_document(
         points.append(
             PointStruct(
                 id=point_id,
-                vector=embedding,
+                vector={
+                    "dense": dense_emb,
+                    "sparse": sparse_emb,
+                },
                 payload={
                     "user_id": doc_task.user_id,
                     "doc_id": doc_task.doc_id,

@@ -12,7 +12,7 @@ keywords = ["nextcloud", "mcp", "model-context-protocol", "llm", "ai", "claude",
 dependencies = [
     "mcp[cli] (>=1.21,<1.22)",
     "httpx (>=0.28.1,<0.29.0)",
-    "pillow (>=12.0.0,<12.1.0)",
+    "pillow (>=10.3.0,<12.0.0)",  # Compatible with fastembed
     "icalendar (>=6.0.0,<7.0.0)",
     "pythonvcard4>=0.2.0",
     "pydantic>=2.11.4",
@@ -22,6 +22,7 @@ dependencies = [
     "aiosqlite>=0.20.0", # Async SQLite for refresh token storage
     "authlib>=1.6.5",
     "qdrant-client>=1.7.0",
+    "fastembed>=0.4.2",  # BM25 sparse vector embeddings for hybrid search
     # Observability dependencies
     "prometheus-client>=0.21.0", # Prometheus metrics
     "opentelemetry-api>=1.28.2", # OpenTelemetry API

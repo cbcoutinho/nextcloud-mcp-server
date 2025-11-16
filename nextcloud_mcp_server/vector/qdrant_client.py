@@ -2,7 +2,7 @@
 
 import logging
 
-from qdrant_client import AsyncQdrantClient
+from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.models import Distance, VectorParams
 
 from nextcloud_mcp_server.config import get_settings
@@ -84,7 +84,12 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 f"Collection '{collection_name}' found, validating dimensions..."
             )
             collection_info = await _qdrant_client.get_collection(collection_name)
-            actual_dimension = collection_info.config.params.vectors.size
+            # Handle both named vectors (dict) and legacy single vector
+            vectors = collection_info.config.params.vectors
+            if isinstance(vectors, dict):
+                actual_dimension = vectors["dense"].size
+            else:
+                actual_dimension = vectors.size
 
             # Validate dimension matches
             if actual_dimension != expected_dimension:
@@ -112,17 +117,27 @@ async def get_qdrant_client() -> AsyncQdrantClient:
             )
             await _qdrant_client.create_collection(
                 collection_name=collection_name,
-                vectors_config=VectorParams(
-                    size=expected_dimension,
-                    distance=Distance.COSINE,
-                ),
+                vectors_config={
+                    "dense": VectorParams(
+                        size=expected_dimension,
+                        distance=Distance.COSINE,
+                    ),
+                },
+                sparse_vectors_config={
+                    "sparse": models.SparseVectorParams(
+                        index=models.SparseIndexParams(
+                            on_disk=False,
+                        )
+                    ),
+                },
             )
             logger.info(
                 f"Created Qdrant collection: {collection_name}\n"
-                f"  Dimension: {expected_dimension}\n"
-                f"  Model: {settings.ollama_embedding_model}\n"
+                f"  Dense vector dimension: {expected_dimension}\n"
+                f"  Dense embedding model: {settings.ollama_embedding_model}\n"
+                f"  Sparse vectors: BM25 (for hybrid search)\n"
                 f"  Distance: COSINE\n"
-                f"Background sync will index all documents with this embedding model."
+                f"Background sync will index all documents with dense + sparse vectors."
             )
 
     return _qdrant_client

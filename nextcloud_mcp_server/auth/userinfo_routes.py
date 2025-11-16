@@ -676,14 +676,11 @@ async def user_info_html(request: Request) -> HTMLResponse:
             function vizApp() {{
                 return {{
                     query: '',
-                    algorithm: 'hybrid',
+                    algorithm: 'bm25_hybrid',
                     showAdvanced: false,
                     docTypes: [''],  // Default to "All Types"
                     limit: 50,
-                    scoreThreshold: 0.7,
-                    semanticWeight: 0.5,
-                    keywordWeight: 0.3,
-                    fuzzyWeight: 0.2,
+                    scoreThreshold: 0.0,
                     loading: false,
                     results: [],
 
@@ -697,9 +694,6 @@ async def user_info_html(request: Request) -> HTMLResponse:
                                 algorithm: this.algorithm,
                                 limit: this.limit,
                                 score_threshold: this.scoreThreshold,
-                                semantic_weight: this.semanticWeight,
-                                keyword_weight: this.keywordWeight,
-                                fuzzy_weight: this.fuzzyWeight,
                             }});
 
                             // Add doc_types parameter (filter out empty string for "All Types")
