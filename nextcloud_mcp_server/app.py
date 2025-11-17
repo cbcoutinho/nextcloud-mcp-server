@@ -1478,6 +1478,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         vector_sync_status_fragment,
     )
     from nextcloud_mcp_server.auth.viz_routes import (
+        chunk_context_endpoint,
         vector_visualization_html,
         vector_visualization_search,
     )
@@ -1509,6 +1510,11 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             vector_visualization_search,
             methods=["GET"],
         ),  # /app/vector-viz/search
+        Route(
+            "/chunk-context",
+            chunk_context_endpoint,
+            methods=["GET"],
+        ),  # /app/chunk-context
         # Webhook management routes (admin-only)
         Route("/webhooks", webhook_management_pane, methods=["GET"]),  # /app/webhooks
         Route(
