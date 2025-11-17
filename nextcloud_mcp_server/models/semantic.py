@@ -19,9 +19,22 @@ class SemanticSearchResult(BaseModel):
         default="", description="Document category (notes) or location (calendar)"
     )
     excerpt: str = Field(description="Excerpt from matching chunk")
-    score: float = Field(description="Semantic similarity score (0-1)")
+    score: float = Field(
+        description=(
+            "Relevance score (≥ 0.0, higher is better). "
+            "Score range depends on fusion method: "
+            "RRF produces scores in [0.0, 1.0], "
+            "DBSF can exceed 1.0 (sum of normalized scores from multiple systems)"
+        )
+    )
     chunk_index: int = Field(description="Index of matching chunk in document")
     total_chunks: int = Field(description="Total number of chunks in document")
+    chunk_start_offset: Optional[int] = Field(
+        default=None, description="Character position where chunk starts in document"
+    )
+    chunk_end_offset: Optional[int] = Field(
+        default=None, description="Character position where chunk ends in document"
+    )
 
 
 class SemanticSearchResponse(BaseResponse):

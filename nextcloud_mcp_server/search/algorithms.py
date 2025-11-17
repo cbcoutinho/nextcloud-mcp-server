@@ -127,8 +127,12 @@ class SearchResult:
         doc_type: Document type (note, file, calendar, contact, etc.)
         title: Document title
         excerpt: Content excerpt showing match context
-        score: Relevance score (0.0-1.0, higher is better)
+        score: Relevance score (≥ 0.0, higher is better)
+            - RRF fusion: scores in [0.0, 1.0]
+            - DBSF fusion: scores can exceed 1.0 (sum of normalized scores)
         metadata: Additional algorithm-specific metadata
+        chunk_start_offset: Character position where chunk starts (None if not available)
+        chunk_end_offset: Character position where chunk ends (None if not available)
     """
 
     id: int
@@ -137,11 +141,20 @@ class SearchResult:
     excerpt: str
     score: float
     metadata: dict[str, Any] | None = None
+    chunk_start_offset: int | None = None
+    chunk_end_offset: int | None = None
 
     def __post_init__(self):
-        """Validate score is in valid range."""
-        if not 0.0 <= self.score <= 1.0:
-            raise ValueError(f"Score must be between 0.0 and 1.0, got {self.score}")
+        """Validate score is non-negative.
+
+        Note: Different fusion methods produce different score ranges:
+        - RRF (Reciprocal Rank Fusion): Bounded to [0.0, 1.0]
+        - DBSF (Distribution-Based Score Fusion): Unbounded (can exceed 1.0)
+          DBSF sums normalized scores from multiple systems, so scores can be
+          1.5, 2.0, etc. when multiple systems agree a document is highly relevant.
+        """
+        if self.score < 0.0:
+            raise ValueError(f"Score must be non-negative, got {self.score}")
 
 
 class SearchAlgorithm(ABC):

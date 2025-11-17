@@ -677,12 +677,15 @@ async def user_info_html(request: Request) -> HTMLResponse:
                 return {{
                     query: '',
                     algorithm: 'bm25_hybrid',
+                    fusion: 'rrf',  // Default fusion method for BM25 Hybrid
                     showAdvanced: false,
                     docTypes: [''],  // Default to "All Types"
                     limit: 50,
                     scoreThreshold: 0.0,
                     loading: false,
                     results: [],
+                    expandedChunks: {{}},  // Track which chunks are expanded (result_id -> chunk data)
+                    chunkLoading: {{}},    // Track loading state per result
 
                     async executeSearch() {{
                         this.loading = true;
@@ -695,6 +698,11 @@ async def user_info_html(request: Request) -> HTMLResponse:
                                 limit: this.limit,
                                 score_threshold: this.scoreThreshold,
                             }});
+
+                            // Add fusion parameter for BM25 Hybrid
+                            if (this.algorithm === 'bm25_hybrid') {{
+                                params.append('fusion', this.fusion);
+                            }}
 
                             // Add doc_types parameter (filter out empty string for "All Types")
                             const selectedTypes = this.docTypes.filter(t => t !== '');
@@ -777,6 +785,51 @@ async def user_info_html(request: Request) -> HTMLResponse:
                                 return `${{baseUrl}}/apps/deck`;
                             default:
                                 return `${{baseUrl}}`;
+                        }}
+                    }},
+
+                    hasChunkPosition(result) {{
+                        // Check if result has position metadata
+                        return result.chunk_start_offset != null && result.chunk_end_offset != null;
+                    }},
+
+                    isChunkExpanded(resultKey) {{
+                        return this.expandedChunks[resultKey] !== undefined;
+                    }},
+
+                    async toggleChunk(result) {{
+                        const resultKey = `${{result.doc_type}}_${{result.id}}`;
+
+                        // If already expanded, collapse
+                        if (this.isChunkExpanded(resultKey)) {{
+                            delete this.expandedChunks[resultKey];
+                            return;
+                        }}
+
+                        // Otherwise, fetch and expand
+                        this.chunkLoading[resultKey] = true;
+
+                        try {{
+                            const params = new URLSearchParams({{
+                                doc_type: result.doc_type,
+                                doc_id: result.id,
+                                start: result.chunk_start_offset,
+                                end: result.chunk_end_offset,
+                                context: 500  // 500 chars before/after
+                            }});
+
+                            const response = await fetch(`/app/chunk-context?${{params}}`);
+                            const data = await response.json();
+
+                            if (data.success) {{
+                                this.expandedChunks[resultKey] = data;
+                            }} else {{
+                                alert('Failed to load chunk: ' + data.error);
+                            }}
+                        }} catch (error) {{
+                            alert('Error loading chunk: ' + error.message);
+                        }} finally {{
+                            delete this.chunkLoading[resultKey];
                         }}
                     }}
                 }}
