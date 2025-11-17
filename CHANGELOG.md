@@ -1,3 +1,16 @@
+## v0.41.0 (2025-11-17)
+
+### Feat
+
+- add configurable fusion algorithms for BM25 hybrid search
+- add chunk position tracking to vector indexing and search
+- add vector viz template and chunk context endpoint
+
+### Fix
+
+- prevent infinite loop in DocumentChunker with position tracking
+- Relax SearchResult validation to support DBSF fusion scores > 1.0
+
 ## v0.40.0 (2025-11-16)
 
 ### Feat
