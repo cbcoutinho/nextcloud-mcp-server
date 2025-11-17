@@ -1,3 +1,9 @@
+## v0.42.0 (2025-11-17)
+
+### Feat
+
+- **viz**: Add dual-score display and improve UI controls
+
 ## v0.41.0 (2025-11-17)
 
 ### Feat
