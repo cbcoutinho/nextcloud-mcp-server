@@ -186,9 +186,9 @@
                         </select>
                     </div>
 
-                    <div class="viz-control-group" style="margin-bottom: 0;" x-show="algorithm === 'bm25_hybrid'">
+                    <div class="viz-control-group" style="margin-bottom: 0;">
                         <label>Fusion Method</label>
-                        <select x-model="fusion">
+                        <select x-model="fusion" :disabled="algorithm !== 'bm25_hybrid'" :style="algorithm !== 'bm25_hybrid' ? 'opacity: 0.5; cursor: not-allowed;' : ''">
                             <option value="rrf" selected>RRF (Reciprocal Rank Fusion)</option>
                             <option value="dbsf">DBSF (Distribution-Based Score Fusion)</option>
                         </select>
@@ -211,24 +211,39 @@
 
                     <div class="viz-advanced-grid">
                         <div class="viz-control-group">
-                            <label>Document Types</label>
-                            <select x-model="docTypes" multiple>
-                                <option value="">All Types (cross-app search)</option>
-                                <option value="note">Notes</option>
-                                <option value="file">Files</option>
-                                <option value="calendar">Calendar Events</option>
-                                <option value="contact">Contacts</option>
-                                <option value="deck">Deck Cards</option>
-                            </select>
-                            <small style="color: #666; display: block; margin-top: 4px;">
-                                Hold Ctrl/Cmd to select multiple
-                            </small>
+                            <label style="display: block; margin-bottom: 8px;">Document Types</label>
+                            <div style="display: grid; grid-template-columns: 1fr; gap: 6px;">
+                                <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
+                                    <input type="checkbox" x-model="docTypes" value="" style="margin-right: 8px;">
+                                    <span>All Types</span>
+                                </label>
+                                <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
+                                    <input type="checkbox" x-model="docTypes" value="note" style="margin-right: 8px;">
+                                    <span>Notes</span>
+                                </label>
+                                <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
+                                    <input type="checkbox" x-model="docTypes" value="file" style="margin-right: 8px;">
+                                    <span>Files</span>
+                                </label>
+                                <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
+                                    <input type="checkbox" x-model="docTypes" value="calendar" style="margin-right: 8px;">
+                                    <span>Calendar Events</span>
+                                </label>
+                                <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
+                                    <input type="checkbox" x-model="docTypes" value="contact" style="margin-right: 8px;">
+                                    <span>Contacts</span>
+                                </label>
+                                <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
+                                    <input type="checkbox" x-model="docTypes" value="deck" style="margin-right: 8px;">
+                                    <span>Deck Cards</span>
+                                </label>
+                            </div>
                         </div>
 
                         <div>
                             <div class="viz-control-group">
                                 <label>Score Threshold (Semantic/Hybrid)</label>
-                                <input type="number" x-model.number="scoreThreshold" min="0" max="1" step="0.1" />
+                                <input type="number" x-model.number="scoreThreshold" min="0" max="1" step="any" />
                             </div>
 
                             <div class="viz-control-group">
@@ -284,7 +299,8 @@
                         </a>
                         <div style="font-size: 14px; color: #666; margin-top: 4px;" x-text="result.excerpt"></div>
                         <div style="font-size: 12px; color: #999; margin-top: 4px;">
-                            Score: <span x-text="result.score.toFixed(3)"></span> |
+                            Raw Score: <span x-text="result.original_score.toFixed(3)"></span>
+                            (<span x-text="(result.score * 100).toFixed(0)"></span>% relative) |
                             Type: <span x-text="result.doc_type"></span>
                         </div>
 

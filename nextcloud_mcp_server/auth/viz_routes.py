@@ -184,7 +184,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             search_results = all_results[:limit]
             search_duration = time.perf_counter() - search_start
 
-        # Normalize scores relative to this result set for better visualization
+        # Store original scores and normalize for visualization
         # (best result = 1.0, worst result = 0.0 within THIS result set)
         # This makes visual encoding meaningful regardless of RRF normalization
         if search_results:
@@ -197,8 +197,11 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 f"→ [0.0, 1.0]"
             )
 
-            # Rescale each result's score to 0-1 within this result set
+            # Store original score and rescale to 0-1 for visualization
             for r in search_results:
+                # Store original score before normalization
+                r.original_score = r.score
+                # Rescale for visual encoding
                 r.score = (r.score - min_score) / score_range
 
         if not search_results:
@@ -317,7 +320,10 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 "doc_type": r.doc_type,
                 "title": r.title,
                 "excerpt": r.excerpt,
-                "score": r.score,
+                "score": r.score,  # Normalized score for visual encoding (0-1)
+                "original_score": getattr(
+                    r, "original_score", r.score
+                ),  # Raw score from algorithm
                 "chunk_start_offset": r.chunk_start_offset,
                 "chunk_end_offset": r.chunk_end_offset,
             }

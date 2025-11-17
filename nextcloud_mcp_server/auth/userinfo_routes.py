@@ -737,7 +737,7 @@ async def user_info_html(request: Request) -> HTMLResponse:
                             y: coordinates.map(c => c[1]),
                             mode: 'markers',
                             type: 'scatter',
-                            text: results.map(r => `${{r.title}}<br>Score: ${{r.score.toFixed(3)}}`),
+                            text: results.map(r => `${{r.title}}<br>Raw Score: ${{r.original_score.toFixed(3)}} (${{(r.score * 100).toFixed(0)}}% relative)`),
                             marker: {{
                                 // Multi-channel encoding: size + opacity + color for visual hierarchy
                                 // Power scaling (score^2) amplifies visual differences dramatically
