@@ -150,6 +150,8 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
                         "chunk_index": result.payload.get("chunk_index"),
                         "total_chunks": result.payload.get("total_chunks"),
                     },
+                    chunk_start_offset=result.payload.get("chunk_start_offset"),
+                    chunk_end_offset=result.payload.get("chunk_end_offset"),
                 )
             )
 
