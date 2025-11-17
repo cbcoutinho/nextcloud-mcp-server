@@ -5,3 +5,4 @@
 !uv.lock
 
 !nextcloud_mcp_server/**/*.py
+!nextcloud_mcp_server/**/*.html

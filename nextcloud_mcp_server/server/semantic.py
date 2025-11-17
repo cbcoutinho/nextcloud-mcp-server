@@ -42,6 +42,7 @@ def configure_semantic_tools(mcp: FastMCP):
         limit: int = 10,
         doc_types: list[str] | None = None,
         score_threshold: float = 0.0,
+        fusion: str = "rrf",
     ) -> SemanticSearchResponse:
         """
         Search Nextcloud content using BM25 hybrid search with cross-app support.
@@ -50,7 +51,7 @@ def configure_semantic_tools(mcp: FastMCP):
         - Dense semantic vectors: For conceptual similarity and natural language queries
         - BM25 sparse vectors: For precise keyword matching, acronyms, and specific terms
 
-        Results are automatically fused using Reciprocal Rank Fusion (RRF) in the
+        Results are automatically fused using the selected fusion algorithm in the
         database for optimal relevance. This provides the best of both semantic
         understanding and keyword precision.
 
@@ -61,10 +62,13 @@ def configure_semantic_tools(mcp: FastMCP):
             query: Natural language or keyword search query
             limit: Maximum number of results to return (default: 10)
             doc_types: Document types to search (e.g., ["note", "file"]). None = search all indexed types (default)
-            score_threshold: Minimum RRF fusion score (0-1, default: 0.0 for RRF scoring)
+            score_threshold: Minimum fusion score (0-1, default: 0.0)
+            fusion: Fusion algorithm: "rrf" (Reciprocal Rank Fusion, default) or "dbsf" (Distribution-Based Score Fusion)
+                   RRF: Good general-purpose fusion using reciprocal ranks
+                   DBSF: Uses distribution-based normalization, may better balance different score ranges
 
         Returns:
-            SemanticSearchResponse with matching documents ranked by RRF fusion scores
+            SemanticSearchResponse with matching documents ranked by fusion scores
         """
         from nextcloud_mcp_server.config import get_settings
 
@@ -74,7 +78,7 @@ def configure_semantic_tools(mcp: FastMCP):
 
         logger.info(
             f"BM25 hybrid search: query='{query}', user={username}, "
-            f"limit={limit}, score_threshold={score_threshold}"
+            f"limit={limit}, score_threshold={score_threshold}, fusion={fusion}"
         )
 
         # Check that vector sync is enabled
@@ -87,8 +91,10 @@ def configure_semantic_tools(mcp: FastMCP):
             )
 
         try:
-            # Create BM25 hybrid search algorithm
-            search_algo = BM25HybridSearchAlgorithm(score_threshold=score_threshold)
+            # Create BM25 hybrid search algorithm with specified fusion
+            search_algo = BM25HybridSearchAlgorithm(
+                score_threshold=score_threshold, fusion=fusion
+            )
 
             # Execute search across requested document types
             # If doc_types is None, search all indexed types (cross-app search)
@@ -152,6 +158,8 @@ def configure_semantic_tools(mcp: FastMCP):
                         total_chunks=r.metadata.get("total_chunks", 1)
                         if r.metadata
                         else 1,
+                        chunk_start_offset=r.chunk_start_offset,
+                        chunk_end_offset=r.chunk_end_offset,
                     )
                 )
 
@@ -161,7 +169,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 results=results,
                 query=query,
                 total_found=len(results),
-                search_method="bm25_hybrid",
+                search_method=f"bm25_hybrid_{fusion}",
             )
 
         except ValueError as e:
@@ -193,6 +201,7 @@ def configure_semantic_tools(mcp: FastMCP):
         limit: int = 5,
         score_threshold: float = 0.7,
         max_answer_tokens: int = 500,
+        fusion: str = "rrf",
     ) -> SamplingSearchResponse:
         """
         Semantic search with LLM-generated answer using MCP sampling.
@@ -217,6 +226,7 @@ def configure_semantic_tools(mcp: FastMCP):
             limit: Maximum number of documents to retrieve (default: 5)
             score_threshold: Minimum similarity score 0-1 (default: 0.7)
             max_answer_tokens: Maximum tokens for generated answer (default: 500)
+            fusion: Fusion algorithm: "rrf" (Reciprocal Rank Fusion, default) or "dbsf" (Distribution-Based Score Fusion)
 
         Returns:
             SamplingSearchResponse containing:
@@ -256,6 +266,7 @@ def configure_semantic_tools(mcp: FastMCP):
             ctx=ctx,
             limit=limit,
             score_threshold=score_threshold,
+            fusion=fusion,
         )
 
         # 2. Handle no results case - don't waste a sampling call

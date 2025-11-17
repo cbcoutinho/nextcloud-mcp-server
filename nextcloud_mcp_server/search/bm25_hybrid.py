@@ -28,15 +28,27 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
     eliminating the need for application-layer result merging.
     """
 
-    def __init__(self, score_threshold: float = 0.0):
+    def __init__(self, score_threshold: float = 0.0, fusion: str = "rrf"):
         """
         Initialize BM25 hybrid search algorithm.
 
         Args:
-            score_threshold: Minimum RRF score (0-1, default: 0.0 to allow RRF scoring)
-                           Note: RRF produces normalized scores, so threshold is typically lower
+            score_threshold: Minimum fusion score (0-1, default: 0.0 to allow fusion scoring)
+                           Note: Both RRF and DBSF produce normalized scores
+            fusion: Fusion algorithm to use: "rrf" (Reciprocal Rank Fusion, default)
+                   or "dbsf" (Distribution-Based Score Fusion)
+
+        Raises:
+            ValueError: If fusion is not "rrf" or "dbsf"
         """
+        if fusion not in ("rrf", "dbsf"):
+            raise ValueError(
+                f"Invalid fusion algorithm '{fusion}'. Must be 'rrf' or 'dbsf'"
+            )
+
         self.score_threshold = score_threshold
+        self.fusion = models.Fusion.RRF if fusion == "rrf" else models.Fusion.DBSF
+        self.fusion_name = fusion
 
     @property
     def name(self) -> str:
@@ -78,7 +90,8 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
 
         logger.info(
             f"BM25 hybrid search: query='{query}', user={user_id}, "
-            f"limit={limit}, score_threshold={score_threshold}, doc_type={doc_type}"
+            f"limit={limit}, score_threshold={score_threshold}, doc_type={doc_type}, "
+            f"fusion={self.fusion_name}"
         )
 
         # Generate dense embedding for semantic search
@@ -139,8 +152,8 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                         filter=query_filter,
                     ),
                 ],
-                # RRF fusion query (no additional query needed, just fusion)
-                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                # Fusion query (RRF or DBSF based on initialization)
+                query=models.FusionQuery(fusion=self.fusion),
                 limit=limit * 2,  # Get extra for deduplication
                 score_threshold=score_threshold,
                 with_payload=True,
@@ -152,14 +165,16 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             raise
 
         logger.info(
-            f"Qdrant RRF fusion returned {len(search_response.points)} results "
+            f"Qdrant {self.fusion_name.upper()} fusion returned {len(search_response.points)} results "
             f"(before deduplication)"
         )
 
         if search_response.points:
-            # Log top 3 RRF scores to help with threshold tuning
+            # Log top 3 fusion scores to help with threshold tuning
             top_scores = [p.score for p in search_response.points[:3]]
-            logger.debug(f"Top 3 RRF fusion scores: {top_scores}")
+            logger.debug(
+                f"Top 3 {self.fusion_name.upper()} fusion scores: {top_scores}"
+            )
 
         # Deduplicate by (doc_id, doc_type) - multiple chunks per document
         seen_docs = set()
@@ -183,12 +198,14 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                     doc_type=doc_type,
                     title=result.payload.get("title", "Untitled"),
                     excerpt=result.payload.get("excerpt", ""),
-                    score=result.score,  # RRF fusion score
+                    score=result.score,  # Fusion score (RRF or DBSF)
                     metadata={
                         "chunk_index": result.payload.get("chunk_index"),
                         "total_chunks": result.payload.get("total_chunks"),
-                        "search_method": "bm25_hybrid_rrf",
+                        "search_method": f"bm25_hybrid_{self.fusion_name}",
                     },
+                    chunk_start_offset=result.payload.get("chunk_start_offset"),
+                    chunk_end_offset=result.payload.get("chunk_end_offset"),
                 )
             )
 

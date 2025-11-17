@@ -12,8 +12,10 @@ All processing happens server-side following ADR-012:
 
 import logging
 import time
+from pathlib import Path
 
 import numpy as np
+from jinja2 import Environment, FileSystemLoader
 from starlette.authentication import requires
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
@@ -27,6 +29,10 @@ from nextcloud_mcp_server.vector.pca import PCA
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
+
+# Setup Jinja2 environment for templates
+_template_dir = Path(__file__).parent / "templates"
+_jinja_env = Environment(loader=FileSystemLoader(_template_dir))
 
 
 @requires("authenticated", redirect="oauth_login")
@@ -63,252 +69,9 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
         else "unknown"
     )
 
-    html_content = f"""
-        <style>
-            .viz-card {{
-                background: white;
-                border-radius: 8px;
-                padding: 20px;
-                margin-bottom: 20px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            }}
-            .viz-controls {{
-                margin-bottom: 20px;
-            }}
-            .viz-control-row {{
-                display: grid;
-                grid-template-columns: 2fr 1fr auto;
-                gap: 12px;
-                margin-bottom: 12px;
-                align-items: end;
-            }}
-            .viz-control-group {{
-                margin-bottom: 15px;
-            }}
-            .viz-control-group label {{
-                display: block;
-                margin-bottom: 5px;
-                font-weight: 500;
-                color: #333;
-            }}
-            .viz-control-group input[type="text"],
-            .viz-control-group input[type="number"],
-            .viz-control-group select {{
-                width: 100%;
-                padding: 8px 12px;
-                border: 1px solid #ddd;
-                border-radius: 4px;
-                font-size: 14px;
-            }}
-            .viz-control-group input[type="range"] {{
-                width: 100%;
-            }}
-            .viz-control-group select[multiple] {{
-                min-height: 100px;
-            }}
-            .viz-weight-display {{
-                display: inline-block;
-                min-width: 40px;
-                text-align: right;
-                color: #666;
-            }}
-            .viz-btn {{
-                background: #0066cc;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 14px;
-                font-weight: 500;
-            }}
-            .viz-btn:hover {{
-                background: #0052a3;
-            }}
-            .viz-btn-secondary {{
-                background: #6c757d;
-                color: white;
-                border: none;
-                padding: 6px 12px;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 13px;
-                margin-bottom: 12px;
-            }}
-            .viz-btn-secondary:hover {{
-                background: #5a6268;
-            }}
-            #viz-plot-container {{
-                width: 100%;
-                height: 600px;
-                position: relative;
-            }}
-            #viz-plot {{
-                width: 100%;
-                height: 100%;
-            }}
-            .viz-loading {{
-                text-align: center;
-                padding: 40px;
-                color: #666;
-            }}
-            .viz-loading-overlay {{
-                position: absolute;
-                inset: 0;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                background: white;
-                color: #666;
-            }}
-            .viz-no-results {{
-                text-align: center;
-                padding: 40px;
-                color: #666;
-                font-style: italic;
-            }}
-            .viz-advanced-section {{
-                margin-top: 16px;
-                padding: 16px;
-                background: #f8f9fa;
-                border-radius: 4px;
-                border: 1px solid #dee2e6;
-            }}
-            .viz-advanced-grid {{
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 20px;
-            }}
-            .viz-info-box {{
-                background: #e3f2fd;
-                border-left: 4px solid #2196f3;
-                padding: 12px;
-                margin-bottom: 20px;
-                font-size: 14px;
-            }}
-        </style>
-
-        <div x-data="vizApp()">
-            <div class="viz-card">
-                <h2>Vector Visualization</h2>
-                <div class="viz-info-box">
-                    Testing search algorithms on your indexed documents. User: <strong>{username}</strong>
-                </div>
-
-                <form @submit.prevent="executeSearch">
-                    <div class="viz-controls">
-                        <!-- Main Controls -->
-                        <div class="viz-control-group">
-                            <label>Search Query</label>
-                            <input type="text" x-model="query" placeholder="Enter search query..." required />
-                        </div>
-
-                        <div class="viz-control-row">
-                            <div class="viz-control-group" style="margin-bottom: 0;">
-                                <label>Algorithm</label>
-                                <select x-model="algorithm">
-                                    <option value="semantic">Semantic (Dense Vectors)</option>
-                                    <option value="bm25_hybrid" selected>BM25 Hybrid (Dense + Sparse RRF)</option>
-                                </select>
-                            </div>
-
-                            <div style="display: flex; align-items: flex-end;">
-                                <button type="submit" class="viz-btn" style="width: 100%;">Search & Visualize</button>
-                            </div>
-
-                            <div style="display: flex; align-items: flex-end;">
-                                <button type="button" class="viz-btn-secondary" @click="showAdvanced = !showAdvanced" style="white-space: nowrap;">
-                                    <span x-text="showAdvanced ? 'Hide Advanced' : 'Advanced'"></span>
-                                </button>
-                            </div>
-                        </div>
-
-                        <!-- Advanced Options (Collapsible) -->
-                        <div class="viz-advanced-section" x-show="showAdvanced" x-transition.opacity.duration.200ms>
-                            <h3 style="margin-top: 0; margin-bottom: 16px; font-size: 16px;">Advanced Options</h3>
-
-                            <div class="viz-advanced-grid">
-                                <div class="viz-control-group">
-                                    <label>Document Types</label>
-                                    <select x-model="docTypes" multiple>
-                                        <option value="">All Types (cross-app search)</option>
-                                        <option value="note">Notes</option>
-                                        <option value="file">Files</option>
-                                        <option value="calendar">Calendar Events</option>
-                                        <option value="contact">Contacts</option>
-                                        <option value="deck">Deck Cards</option>
-                                    </select>
-                                    <small style="color: #666; display: block; margin-top: 4px;">
-                                        Hold Ctrl/Cmd to select multiple
-                                    </small>
-                                </div>
-
-                                <div>
-                                    <div class="viz-control-group">
-                                        <label>Score Threshold (Semantic/Hybrid)</label>
-                                        <input type="number" x-model.number="scoreThreshold" min="0" max="1" step="0.1" />
-                                    </div>
-
-                                    <div class="viz-control-group">
-                                        <label>Result Limit</label>
-                                        <input type="number" x-model.number="limit" min="1" max="100" />
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Info: BM25 Hybrid uses native RRF fusion (no manual weights) -->
-                            <div x-show="algorithm === 'bm25_hybrid'" style="margin-top: 16px; padding: 12px; background: #e9ecef; border-radius: 4px;">
-                                <p style="margin: 0; font-size: 14px; color: #666;">
-                                    <strong>BM25 Hybrid Search:</strong> Uses Qdrant's native Reciprocal Rank Fusion (RRF)
-                                    to automatically combine dense semantic vectors with sparse BM25 keyword vectors.
-                                    No manual weight tuning required.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                </form>
-            </div>
-
-            <div class="viz-card">
-                <div id="viz-plot-container">
-                    <div x-show="loading" class="viz-loading-overlay" x-transition.opacity.duration.200ms>
-                        Executing search and computing PCA projection...
-                    </div>
-                    <div id="viz-plot" x-show="!loading" x-transition.opacity.duration.200ms></div>
-                </div>
-            </div>
-
-            <div class="viz-card">
-                <h3>Search Results (<span x-text="loading ? '...' : results.length"></span>)</h3>
-
-                <div x-show="loading" class="viz-loading" x-transition.opacity.duration.200ms>
-                    Loading results...
-                </div>
-
-                <div x-show="!loading && results.length === 0" class="viz-no-results" x-transition.opacity.duration.200ms>
-                    No results found. Try a different query or adjust your search parameters.
-                </div>
-
-                <template x-if="!loading && results.length > 0">
-                    <div x-transition.opacity.duration.200ms>
-                        <template x-for="result in results" :key="result.id">
-                            <div style="padding: 12px; border-bottom: 1px solid #eee;">
-                                <a :href="getNextcloudUrl(result)" target="_blank" style="font-weight: 500; color: #0066cc; text-decoration: none;">
-                                    <span x-text="result.title"></span>
-                                </a>
-                                <div style="font-size: 14px; color: #666; margin-top: 4px;" x-text="result.excerpt"></div>
-                                <div style="font-size: 12px; color: #999; margin-top: 4px;">
-                                    Score: <span x-text="result.score.toFixed(3)"></span> |
-                                    Type: <span x-text="result.doc_type"></span>
-                                </div>
-                            </div>
-                        </template>
-                    </div>
-                </template>
-            </div>
-        </div>
-    """
-
+    # Load and render template
+    template = _jinja_env.get_template("vector_viz.html")
+    html_content = template.render(username=username)
     return HTMLResponse(content=html_content)
 
 
@@ -352,6 +115,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
     algorithm = request.query_params.get("algorithm", "bm25_hybrid")
     limit = int(request.query_params.get("limit", "50"))
     score_threshold = float(request.query_params.get("score_threshold", "0.0"))
+    fusion = request.query_params.get("fusion", "rrf")  # Default to RRF
 
     # Parse doc_types (comma-separated list, None = all types)
     doc_types_param = request.query_params.get("doc_types", "")
@@ -359,7 +123,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
 
     logger.info(
         f"Viz search: user={username}, query='{query}', "
-        f"algorithm={algorithm}, limit={limit}, doc_types={doc_types}"
+        f"algorithm={algorithm}, fusion={fusion}, limit={limit}, doc_types={doc_types}"
     )
 
     try:
@@ -377,7 +141,9 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             if algorithm == "semantic":
                 search_algo = SemanticSearchAlgorithm(score_threshold=score_threshold)
             elif algorithm == "bm25_hybrid":
-                search_algo = BM25HybridSearchAlgorithm(score_threshold=score_threshold)
+                search_algo = BM25HybridSearchAlgorithm(
+                    score_threshold=score_threshold, fusion=fusion
+                )
             else:
                 return JSONResponse(
                     {"success": False, "error": f"Unknown algorithm: {algorithm}"},
@@ -552,6 +318,8 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 "title": r.title,
                 "excerpt": r.excerpt,
                 "score": r.score,
+                "chunk_start_offset": r.chunk_start_offset,
+                "chunk_end_offset": r.chunk_end_offset,
             }
             for r in search_results
         ]
@@ -590,6 +358,128 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
 
     except Exception as e:
         logger.error(f"Viz search error: {e}", exc_info=True)
+        return JSONResponse(
+            {"success": False, "error": str(e)},
+            status_code=500,
+        )
+
+
+@requires("authenticated", redirect="oauth_login")
+async def chunk_context_endpoint(request: Request) -> JSONResponse:
+    """Fetch chunk text with surrounding context for visualization.
+
+    This endpoint retrieves the matched chunk along with surrounding text
+    to provide context for the search result. Used by the viz pane to
+    display chunks inline.
+
+    Query parameters:
+        doc_type: Document type (e.g., "note")
+        doc_id: Document ID
+        start: Chunk start offset (character position)
+        end: Chunk end offset (character position)
+        context: Characters of context before/after (default: 500)
+
+    Returns:
+        JSON with chunk_text, before_context, after_context, and flags
+    """
+    try:
+        # Get query parameters
+        doc_type = request.query_params.get("doc_type")
+        doc_id = request.query_params.get("doc_id")
+        start_str = request.query_params.get("start")
+        end_str = request.query_params.get("end")
+        context_chars = int(request.query_params.get("context", "500"))
+
+        # Validate required parameters
+        if not all([doc_type, doc_id, start_str, end_str]):
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": "Missing required parameters: doc_type, doc_id, start, end",
+                },
+                status_code=400,
+            )
+
+        start = int(start_str)
+        end = int(end_str)
+
+        # Currently only support notes
+        if doc_type != "note":
+            return JSONResponse(
+                {"success": False, "error": f"Unsupported doc_type: {doc_type}"},
+                status_code=400,
+            )
+
+        # Get authenticated HTTP client and fetch note
+        from nextcloud_mcp_server.auth.userinfo_routes import (
+            _get_authenticated_client_for_userinfo,
+        )
+        from nextcloud_mcp_server.client.notes import NotesClient
+
+        # Get username from request auth
+        username = (
+            request.user.display_name
+            if hasattr(request.user, "display_name")
+            else "unknown"
+        )
+
+        # Create notes client with authenticated HTTP client
+        http_client = await _get_authenticated_client_for_userinfo(request)
+        notes_client = NotesClient(http_client, username)
+
+        # Fetch full note content
+        note = await notes_client.get_note(int(doc_id))
+        full_content = f"{note['title']}\n\n{note['content']}"
+
+        # Validate offsets
+        if start < 0 or end > len(full_content) or start >= end:
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": f"Invalid offsets: start={start}, end={end}, content_length={len(full_content)}",
+                },
+                status_code=400,
+            )
+
+        # Extract chunk
+        chunk_text = full_content[start:end]
+
+        # Extract context before and after
+        before_start = max(0, start - context_chars)
+        before_context = full_content[before_start:start]
+
+        after_end = min(len(full_content), end + context_chars)
+        after_context = full_content[end:after_end]
+
+        # Determine if there's more content
+        has_more_before = before_start > 0
+        has_more_after = after_end < len(full_content)
+
+        logger.info(
+            f"Fetched chunk context for {doc_type}_{doc_id}: "
+            f"chunk_len={len(chunk_text)}, before_len={len(before_context)}, "
+            f"after_len={len(after_context)}"
+        )
+
+        return JSONResponse(
+            {
+                "success": True,
+                "chunk_text": chunk_text,
+                "before_context": before_context,
+                "after_context": after_context,
+                "has_more_before": has_more_before,
+                "has_more_after": has_more_after,
+            }
+        )
+
+    except ValueError as e:
+        logger.error(f"Invalid parameter format: {e}")
+        return JSONResponse(
+            {"success": False, "error": f"Invalid parameter format: {e}"},
+            status_code=400,
+        )
+    except Exception as e:
+        logger.error(f"Chunk context error: {e}", exc_info=True)
         return JSONResponse(
             {"success": False, "error": str(e)},
             status_code=500,

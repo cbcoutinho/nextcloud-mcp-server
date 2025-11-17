@@ -1861,12 +1861,15 @@ version = "0.40.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
+    { name = "anthropic" },
     { name = "authlib" },
+    { name = "boto3" },
     { name = "caldav" },
     { name = "click" },
     { name = "fastembed" },
     { name = "httpx" },
     { name = "icalendar" },
+    { name = "jinja2" },
     { name = "mcp", extra = ["cli"] },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
@@ -1885,8 +1888,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "anthropic" },
-    { name = "boto3" },
     { name = "commitizen" },
     { name = "datasets" },
     { name = "ipython" },
@@ -1904,12 +1905,15 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
+    { name = "anthropic", specifier = ">=0.42.0" },
     { name = "authlib", specifier = ">=1.6.5" },
+    { name = "boto3", specifier = ">=1.35.0" },
     { name = "caldav", git = "https://github.com/cbcoutinho/caldav?branch=feature%2Fhttpx" },
     { name = "click", specifier = ">=8.1.8" },
     { name = "fastembed", specifier = ">=0.4.2" },
     { name = "httpx", specifier = ">=0.28.1,<0.29.0" },
     { name = "icalendar", specifier = ">=6.0.0,<7.0.0" },
+    { name = "jinja2", specifier = ">=3.1.6" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.21,<1.22" },
     { name = "opentelemetry-api", specifier = ">=1.28.2" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.2" },
@@ -1928,8 +1932,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "anthropic", specifier = ">=0.42.0" },
-    { name = "boto3", specifier = ">=1.35.0" },
     { name = "commitizen", specifier = ">=4.8.2" },
     { name = "datasets", specifier = ">=3.3.0" },
     { name = "ipython", specifier = ">=9.2.0" },

@@ -147,7 +147,95 @@ This decision consolidates our retrieval logic, eliminates the data consistency 
 
 **Benefits Realized:**
 - ✅ Consolidated architecture (single Qdrant database for both dense + sparse)
-- ✅ Native RRF fusion (database-level, more efficient)
+- ✅ Native fusion algorithms (database-level, more efficient)
 - ✅ Industry-standard BM25 (replaces custom keyword search)
 - ✅ Simplified codebase (removed 736 lines of legacy code)
 - ✅ Better relevance (handles both semantic and keyword queries)
+- ✅ Configurable fusion methods (RRF and DBSF)
+
+---
+
+### 7. Fusion Algorithm Options
+
+**Update: 2025-11-16**
+
+The BM25 hybrid search now supports two fusion algorithms for combining dense (semantic) and sparse (BM25) search results:
+
+#### Reciprocal Rank Fusion (RRF)
+
+**Default fusion method.** RRF is a widely-used, well-established algorithm that combines rankings from multiple retrieval systems using the reciprocal rank formula:
+
+```
+RRF(doc) = Σ 1/(k + rank_i(doc))
+```
+
+where `k` is a constant (typically 60) and `rank_i(doc)` is the rank of the document in retrieval system `i`.
+
+**Characteristics:**
+- ✅ **General-purpose**: Works well across diverse query types and document collections
+- ✅ **Rank-based**: Focuses on relative rankings rather than absolute scores
+- ✅ **Established**: Well-tested, documented, and understood in IR literature
+- ✅ **Robust**: Less sensitive to score distribution differences between systems
+
+**When to use RRF:**
+- Default choice for most use cases
+- When you have mixed query types (semantic + keyword)
+- When retrieval systems have very different score ranges
+- When you want predictable, well-understood behavior
+
+#### Distribution-Based Score Fusion (DBSF)
+
+**Alternative fusion method.** DBSF normalizes scores from each retrieval system using distribution statistics before combining them:
+
+1. **Normalization**: For each query, calculates mean (μ) and standard deviation (σ) of scores
+2. **Outlier handling**: Uses μ ± 3σ as normalization bounds
+3. **Fusion**: Sums normalized scores across systems
+
+**Characteristics:**
+- ✅ **Score-aware**: Uses actual relevance scores, not just rankings
+- ✅ **Statistical**: Normalizes based on score distribution properties
+- ⚠️ **Experimental**: Newer algorithm, less battle-tested than RRF
+- ⚠️ **Sensitive**: May behave differently depending on score distributions
+
+**When to use DBSF:**
+- When retrieval systems have vastly different score ranges that RRF doesn't balance well
+- When you want to experiment with score-based (vs rank-based) fusion
+- When statistical normalization better matches your use case
+- For A/B testing against RRF to measure retrieval quality improvements
+
+#### Configuration
+
+Both fusion algorithms are exposed via the `fusion` parameter in MCP tools:
+
+```python
+# Use RRF (default)
+response = await nc_semantic_search(
+    query="async programming",
+    fusion="rrf"  # Can be omitted, RRF is default
+)
+
+# Use DBSF
+response = await nc_semantic_search(
+    query="async programming",
+    fusion="dbsf"
+)
+```
+
+The `nc_semantic_search_answer` tool also supports the `fusion` parameter and passes it through to the underlying search.
+
+#### Future: Configurable Weights
+
+**Current limitation**: Neither RRF nor DBSF currently support per-system weights (e.g., 0.8 for semantic, 0.2 for BM25). This is a Qdrant platform limitation tracked in [qdrant/qdrant#6067](https://github.com/qdrant/qdrant/issues/6067).
+
+When Qdrant adds weight support, the `fusion` parameter can be extended to accept weight configurations:
+
+```python
+# Hypothetical future API
+response = await nc_semantic_search(
+    query="async programming",
+    fusion="rrf",
+    fusion_weights={"dense": 0.7, "sparse": 0.3}  # Not yet implemented
+)
+```
+
+**Recommendation**: Start with RRF (default). If you encounter cases where keyword matches are under- or over-weighted, experiment with DBSF. Monitor [qdrant/qdrant#6067](https://github.com/qdrant/qdrant/issues/6067) for configurable weight support.

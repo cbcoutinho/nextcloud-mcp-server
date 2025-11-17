@@ -233,13 +233,16 @@ async def _index_document(
     )
     chunks = chunker.chunk_text(content)
 
+    # Extract chunk texts for embedding
+    chunk_texts = [chunk.text for chunk in chunks]
+
     # Generate dense embeddings (I/O bound - external API call)
     embedding_service = get_embedding_service()
-    dense_embeddings = await embedding_service.embed_batch(chunks)
+    dense_embeddings = await embedding_service.embed_batch(chunk_texts)
 
     # Generate sparse embeddings (BM25 for keyword matching)
     bm25_service = get_bm25_service()
-    sparse_embeddings = bm25_service.encode_batch(chunks)
+    sparse_embeddings = bm25_service.encode_batch(chunk_texts)
 
     # Prepare Qdrant points
     indexed_at = int(time.time())
@@ -265,12 +268,15 @@ async def _index_document(
                     "doc_id": doc_task.doc_id,
                     "doc_type": doc_task.doc_type,
                     "title": title,
-                    "excerpt": chunk[:200],
+                    "excerpt": chunk.text[:200],
                     "indexed_at": indexed_at,
                     "modified_at": doc_task.modified_at,
                     "etag": etag,
                     "chunk_index": i,
                     "total_chunks": len(chunks),
+                    "chunk_start_offset": chunk.start_offset,
+                    "chunk_end_offset": chunk.end_offset,
+                    "metadata_version": 2,  # v2 includes position metadata
                 },
             )
         )
