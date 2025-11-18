@@ -1,3 +1,9 @@
+## v0.43.0 (2025-11-18)
+
+### Feat
+
+- Replace custom document chunker with LangChain MarkdownTextSplitter
+
 ## v0.42.0 (2025-11-17)
 
 ### Feat
