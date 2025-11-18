@@ -9,14 +9,20 @@ For OAuth mode: Requires browser-based OAuth login to establish session.
 
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
+from jinja2 import Environment, FileSystemLoader
 from starlette.authentication import requires
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
 logger = logging.getLogger(__name__)
+
+# Setup Jinja2 environment for templates
+_template_dir = Path(__file__).parent / "templates"
+_jinja_env = Environment(loader=FileSystemLoader(_template_dir))
 
 
 async def _get_authenticated_client_for_userinfo(request: Request) -> httpx.AsyncClient:
@@ -431,51 +437,14 @@ async def user_info_html(request: Request) -> HTMLResponse:
         oauth_ctx = getattr(request.app.state, "oauth_context", None)
         login_url = str(request.url_for("oauth_login")) if oauth_ctx else "/oauth/login"
 
-        error_html = f"""
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Error - Nextcloud MCP Server</title>
-            <style>
-                body {{
-                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                    max-width: 800px;
-                    margin: 50px auto;
-                    padding: 20px;
-                    background-color: #f5f5f5;
-                }}
-                .container {{
-                    background: white;
-                    border-radius: 8px;
-                    padding: 30px;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                }}
-                h1 {{
-                    color: #d32f2f;
-                    margin-top: 0;
-                }}
-                .error {{
-                    background-color: #ffebee;
-                    border-left: 4px solid #d32f2f;
-                    padding: 15px;
-                    margin: 20px 0;
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>Error Retrieving User Info</h1>
-                <div class="error">
-                    <strong>Error:</strong> {user_context["error"]}
-                </div>
-                <p><a href="{login_url}">Login again</a></p>
-            </div>
-        </body>
-        </html>
-        """
-        return HTMLResponse(content=error_html)
+        template = _jinja_env.get_template("error.html")
+        return HTMLResponse(
+            content=template.render(
+                error_title="Error Retrieving User Info",
+                error_message=user_context["error"],
+                login_url=login_url,
+            )
+        )
 
     # Build HTML response
     auth_mode = user_context.get("auth_mode", "unknown")
@@ -654,457 +623,19 @@ async def user_info_html(request: Request) -> HTMLResponse:
             </div>
         """
 
-    html_content = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Nextcloud MCP Server</title>
-
-        <!-- htmx for dynamic loading -->
-        <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-
-        <!-- Alpine.js for tab state management -->
-        <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-
-        <!-- Plotly.js for vector visualization -->
-        <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-
-        <!-- Vector visualization app (Alpine.js component) -->
-        <script>
-            function vizApp() {{
-                return {{
-                    query: '',
-                    algorithm: 'bm25_hybrid',
-                    fusion: 'rrf',  // Default fusion method for BM25 Hybrid
-                    showAdvanced: false,
-                    docTypes: [''],  // Default to "All Types"
-                    limit: 50,
-                    scoreThreshold: 0.0,
-                    loading: false,
-                    results: [],
-                    expandedChunks: {{}},  // Track which chunks are expanded (result_id -> chunk data)
-                    chunkLoading: {{}},    // Track loading state per result
-
-                    async executeSearch() {{
-                        this.loading = true;
-                        this.results = [];
-
-                        try {{
-                            const params = new URLSearchParams({{
-                                query: this.query,
-                                algorithm: this.algorithm,
-                                limit: this.limit,
-                                score_threshold: this.scoreThreshold,
-                            }});
-
-                            // Add fusion parameter for BM25 Hybrid
-                            if (this.algorithm === 'bm25_hybrid') {{
-                                params.append('fusion', this.fusion);
-                            }}
-
-                            // Add doc_types parameter (filter out empty string for "All Types")
-                            const selectedTypes = this.docTypes.filter(t => t !== '');
-                            if (selectedTypes.length > 0) {{
-                                params.append('doc_types', selectedTypes.join(','));
-                            }}
-
-                            const response = await fetch(`/app/vector-viz/search?${{params}}`);
-                            const data = await response.json();
-
-                            if (data.success) {{
-                                this.results = data.results;
-                                this.renderPlot(data.coordinates_2d, data.results);
-                            }} else {{
-                                alert('Search failed: ' + data.error);
-                            }}
-                        }} catch (error) {{
-                            alert('Error: ' + error.message);
-                        }} finally {{
-                            this.loading = false;
-                        }}
-                    }},
-
-                    renderPlot(coordinates, results) {{
-                        // Calculate score range for auto-scaling
-                        const scores = results.map(r => r.score);
-                        const minScore = Math.min(...scores);
-                        const maxScore = Math.max(...scores);
-
-                        const trace = {{
-                            x: coordinates.map(c => c[0]),
-                            y: coordinates.map(c => c[1]),
-                            mode: 'markers',
-                            type: 'scatter',
-                            text: results.map(r => `${{r.title}}<br>Raw Score: ${{r.original_score.toFixed(3)}} (${{(r.score * 100).toFixed(0)}}% relative)`),
-                            marker: {{
-                                // Multi-channel encoding: size + opacity + color for visual hierarchy
-                                // Power scaling (score^2) amplifies visual differences dramatically
-                                // score=0.0 → 6px, score=0.5 → 9.5px, score=1.0 → 20px
-                                size: results.map(r => 6 + (Math.pow(r.score, 2) * 14)),
-                                // Linear opacity scaling (0.2-1.0 range keeps all points visible)
-                                opacity: results.map(r => 0.2 + (r.score * 0.8)),
-                                // Color gradient shows score
-                                color: scores,
-                                colorscale: 'Viridis',
-                                showscale: true,
-                                colorbar: {{ title: 'Relative Score' }},
-                                // Scores are normalized 0-1 within result set
-                                cmin: 0,
-                                cmax: 1
-                            }}
-                        }};
-
-                        const layout = {{
-                            title: `Vector Space (PCA 2D) - ${{results.length}} results`,
-                            xaxis: {{ title: 'PC1' }},
-                            yaxis: {{ title: 'PC2' }},
-                            hovermode: 'closest',
-                            height: 600
-                        }};
-
-                        Plotly.newPlot('viz-plot', [trace], layout);
-                    }},
-
-                    getNextcloudUrl(result) {{
-                        // Generate Nextcloud URL based on document type
-                        // Use the actual Nextcloud host (port 8080), not the MCP server
-                        const baseUrl = '{nextcloud_host_for_links}';
-
-                        switch (result.doc_type) {{
-                            case 'note':
-                                return `${{baseUrl}}/apps/notes/note/${{result.id}}`;
-                            case 'file':
-                                return `${{baseUrl}}/apps/files/?fileId=${{result.id}}`;
-                            case 'calendar':
-                                return `${{baseUrl}}/apps/calendar`;
-                            case 'contact':
-                                return `${{baseUrl}}/apps/contacts`;
-                            case 'deck':
-                                return `${{baseUrl}}/apps/deck`;
-                            default:
-                                return `${{baseUrl}}`;
-                        }}
-                    }},
-
-                    hasChunkPosition(result) {{
-                        // Check if result has position metadata
-                        return result.chunk_start_offset != null && result.chunk_end_offset != null;
-                    }},
-
-                    isChunkExpanded(resultKey) {{
-                        return this.expandedChunks[resultKey] !== undefined;
-                    }},
-
-                    async toggleChunk(result) {{
-                        const resultKey = `${{result.doc_type}}_${{result.id}}`;
-
-                        // If already expanded, collapse
-                        if (this.isChunkExpanded(resultKey)) {{
-                            delete this.expandedChunks[resultKey];
-                            return;
-                        }}
-
-                        // Otherwise, fetch and expand
-                        this.chunkLoading[resultKey] = true;
-
-                        try {{
-                            const params = new URLSearchParams({{
-                                doc_type: result.doc_type,
-                                doc_id: result.id,
-                                start: result.chunk_start_offset,
-                                end: result.chunk_end_offset,
-                                context: 500  // 500 chars before/after
-                            }});
-
-                            const response = await fetch(`/app/chunk-context?${{params}}`);
-                            const data = await response.json();
-
-                            if (data.success) {{
-                                this.expandedChunks[resultKey] = data;
-                            }} else {{
-                                alert('Failed to load chunk: ' + data.error);
-                            }}
-                        }} catch (error) {{
-                            alert('Error loading chunk: ' + error.message);
-                        }} finally {{
-                            delete this.chunkLoading[resultKey];
-                        }}
-                    }}
-                }}
-            }}
-        </script>
-
-        <style>
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                max-width: 900px;
-                margin: 50px auto;
-                padding: 20px;
-                background-color: #f5f5f5;
-            }}
-            .container {{
-                background: white;
-                border-radius: 8px;
-                padding: 30px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                min-height: calc(100vh - 200px);
-            }}
-            h1 {{
-                color: #0082c9;
-                margin-top: 0;
-                border-bottom: 2px solid #0082c9;
-                padding-bottom: 10px;
-            }}
-            h2 {{
-                color: #333;
-                margin-top: 20px;
-                border-bottom: 1px solid #e0e0e0;
-                padding-bottom: 5px;
-            }}
-
-            /* Tab navigation */
-            .tabs {{
-                display: flex;
-                gap: 0;
-                margin: 20px 0 0 0;
-                border-bottom: 2px solid #e0e0e0;
-            }}
-            .tab {{
-                padding: 12px 24px;
-                cursor: pointer;
-                background: transparent;
-                border: none;
-                font-size: 14px;
-                font-weight: 500;
-                color: #666;
-                border-bottom: 2px solid transparent;
-                margin-bottom: -2px;
-                transition: all 0.2s;
-            }}
-            .tab:hover {{
-                color: #0082c9;
-                background-color: #f5f5f5;
-            }}
-            .tab.active {{
-                color: #0082c9;
-                border-bottom-color: #0082c9;
-            }}
-
-            /* Tab content - use grid to overlay panes */
-            .tab-content {{
-                padding: 20px 0;
-                display: grid;
-            }}
-
-            /* Tab panes - all occupy the same grid cell to overlay */
-            .tab-pane {{
-                grid-area: 1 / 1;
-            }}
-
-            /* Tables */
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin: 15px 0;
-            }}
-            td {{
-                padding: 10px;
-                border-bottom: 1px solid #e0e0e0;
-            }}
-            td:first-child {{
-                width: 200px;
-                color: #666;
-            }}
-            code {{
-                background-color: #f5f5f5;
-                padding: 2px 6px;
-                border-radius: 3px;
-                font-family: 'Courier New', monospace;
-            }}
-
-            /* Badges */
-            .badge {{
-                display: inline-block;
-                padding: 3px 8px;
-                border-radius: 12px;
-                font-size: 12px;
-                font-weight: bold;
-                text-transform: uppercase;
-            }}
-            .badge-oauth {{
-                background-color: #4caf50;
-                color: white;
-            }}
-            .badge-basic {{
-                background-color: #2196f3;
-                color: white;
-            }}
-
-            /* Messages */
-            .warning {{
-                background-color: #fff3cd;
-                border-left: 4px solid #ffc107;
-                padding: 15px;
-                margin: 15px 0;
-                color: #856404;
-            }}
-            .info-message {{
-                background-color: #e3f2fd;
-                border-left: 4px solid #2196f3;
-                padding: 15px;
-                margin: 15px 0;
-                color: #1565c0;
-            }}
-
-            /* Buttons */
-            .button {{
-                display: inline-block;
-                padding: 10px 20px;
-                background-color: #d32f2f;
-                color: white;
-                text-decoration: none;
-                border-radius: 4px;
-                transition: background-color 0.3s;
-                border: none;
-                cursor: pointer;
-                font-size: 14px;
-            }}
-            .button:hover {{
-                background-color: #b71c1c;
-            }}
-            .button-primary {{
-                background-color: #0082c9;
-            }}
-            .button-primary:hover {{
-                background-color: #006ba3;
-            }}
-
-            /* Logout section */
-            .logout {{
-                margin-top: 30px;
-                padding-top: 20px;
-                border-top: 1px solid #e0e0e0;
-            }}
-
-            /* Smooth htmx content swaps */
-            .htmx-swapping {{
-                opacity: 0;
-                transition: opacity 200ms ease-out;
-            }}
-
-            /* Smooth htmx content settling */
-            .htmx-settling {{
-                opacity: 1;
-                transition: opacity 200ms ease-in;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container" x-data="{{ activeTab: 'user-info' }}">
-            <h1>Nextcloud MCP Server</h1>
-
-            <!-- Tab Navigation -->
-            <div class="tabs">
-                <button
-                    class="tab"
-                    :class="activeTab === 'user-info' ? 'active' : ''"
-                    @click="activeTab = 'user-info'">
-                    User Info
-                </button>
-                {
-        ""
-        if not show_vector_sync_tab
-        else '''
-                <button
-                    class="tab"
-                    :class="activeTab === 'vector-sync' ? 'active' : ''"
-                    @click="activeTab = 'vector-sync'">
-                    Vector Sync
-                </button>
-                '''
-    }
-                {
-        ""
-        if not show_vector_sync_tab
-        else '''
-                <button
-                    class="tab"
-                    :class="activeTab === 'vector-viz' ? 'active' : ''"
-                    @click="activeTab = 'vector-viz'">
-                    Vector Viz
-                </button>
-                '''
-    }
-                {
-        ""
-        if not show_webhooks_tab
-        else '''
-                <button
-                    class="tab"
-                    :class="activeTab === 'webhooks' ? 'active' : ''"
-                    @click="activeTab = 'webhooks'">
-                    Webhooks
-                </button>
-                '''
-    }
-            </div>
-
-            <!-- Tab Content -->
-            <div class="tab-content">
-                <!-- User Info Tab -->
-                <div class="tab-pane" x-show="activeTab === 'user-info'" x-transition.opacity.duration.150ms>
-                    {user_info_tab_html}
-                </div>
-
-                {
-        ""
-        if not show_vector_sync_tab
-        else f'''
-                <!-- Vector Sync Tab -->
-                <div class="tab-pane" x-show="activeTab === 'vector-sync'" x-transition.opacity.duration.150ms>
-                    {vector_sync_tab_html}
-                </div>
-                '''
-    }
-
-                {
-        ""
-        if not show_vector_sync_tab
-        else '''
-                <!-- Vector Viz Tab -->
-                <div class="tab-pane" x-show="activeTab === 'vector-viz'" x-transition.opacity.duration.150ms>
-                    <div hx-get="/app/vector-viz" hx-trigger="load" hx-swap="outerHTML">
-                        <p style="color: #999;">Loading vector visualization...</p>
-                    </div>
-                </div>
-                '''
-    }
-
-                {
-        ""
-        if not show_webhooks_tab
-        else f'''
-                <!-- Webhooks Tab (admin-only, loaded dynamically) -->
-                <div class="tab-pane" x-show="activeTab === 'webhooks'" x-transition.opacity.duration.150ms>
-                    {webhooks_tab_html}
-                </div>
-                '''
-    }
-            </div>
-
-            {
-        f'<div class="logout"><a href="{logout_url}" class="button">Logout</a></div>'
-        if auth_mode == "oauth"
-        else ""
-    }
-        </div>
-    </body>
-    </html>
-    """
-
-    return HTMLResponse(content=html_content)
+    # Render template
+    template = _jinja_env.get_template("user_info.html")
+    return HTMLResponse(
+        content=template.render(
+            user_info_tab_html=user_info_tab_html,
+            vector_sync_tab_html=vector_sync_tab_html,
+            webhooks_tab_html=webhooks_tab_html,
+            show_vector_sync_tab=show_vector_sync_tab,
+            show_webhooks_tab=show_webhooks_tab,
+            logout_url=logout_url if auth_mode == "oauth" else None,
+            nextcloud_host_for_links=nextcloud_host_for_links,
+        )
+    )
 
 
 @requires("authenticated", redirect="oauth_login")
@@ -1124,17 +655,12 @@ async def revoke_session(request: Request) -> HTMLResponse:
     oauth_ctx = getattr(request.app.state, "oauth_context", None)
 
     if not oauth_ctx:
+        template = _jinja_env.get_template("error.html")
         return HTMLResponse(
-            """
-            <!DOCTYPE html>
-            <html>
-            <head><title>Error</title></head>
-            <body>
-                <h1>Error</h1>
-                <p>OAuth mode not enabled</p>
-            </body>
-            </html>
-            """,
+            content=template.render(
+                error_title="Error",
+                error_message="OAuth mode not enabled",
+            ),
             status_code=400,
         )
 
@@ -1142,17 +668,12 @@ async def revoke_session(request: Request) -> HTMLResponse:
     session_id = request.cookies.get("mcp_session")
 
     if not storage or not session_id:
+        template = _jinja_env.get_template("error.html")
         return HTMLResponse(
-            """
-            <!DOCTYPE html>
-            <html>
-            <head><title>Error</title></head>
-            <body>
-                <h1>Error</h1>
-                <p>Session not found</p>
-            </body>
-            </html>
-            """,
+            content=template.render(
+                error_title="Error",
+                error_message="Session not found",
+            ),
             status_code=400,
         )
 
@@ -1165,57 +686,26 @@ async def revoke_session(request: Request) -> HTMLResponse:
         # Redirect back to user page
         user_page_url = str(request.url_for("user_info_html"))
 
+        template = _jinja_env.get_template("success.html")
         return HTMLResponse(
-            f"""
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta http-equiv="refresh" content="2;url={user_page_url}">
-                <title>Background Access Revoked</title>
-                <style>
-                    body {{
-                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                        max-width: 600px;
-                        margin: 50px auto;
-                        padding: 20px;
-                        text-align: center;
-                    }}
-                    .success {{
-                        background-color: #e8f5e9;
-                        border: 2px solid #4caf50;
-                        padding: 30px;
-                        border-radius: 8px;
-                    }}
-                    h1 {{
-                        color: #4caf50;
-                    }}
-                </style>
-            </head>
-            <body>
-                <div class="success">
-                    <h1>✓ Background Access Revoked</h1>
-                    <p>Your refresh token has been deleted successfully.</p>
-                    <p>Browser session remains active.</p>
-                    <p>Redirecting back to user page...</p>
-                </div>
-            </body>
-            </html>
-            """
+            content=template.render(
+                success_title="✓ Background Access Revoked",
+                success_messages=[
+                    "Your refresh token has been deleted successfully.",
+                    "Browser session remains active.",
+                ],
+                redirect_url=user_page_url,
+                redirect_delay=2,
+            )
         )
 
     except Exception as e:
         logger.error(f"Failed to revoke background access: {e}")
+        template = _jinja_env.get_template("error.html")
         return HTMLResponse(
-            f"""
-            <!DOCTYPE html>
-            <html>
-            <head><title>Error</title></head>
-            <body>
-                <h1>Error</h1>
-                <p>Failed to revoke background access: {e}</p>
-            </body>
-            </html>
-            """,
+            content=template.render(
+                error_title="Error",
+                error_message=f"Failed to revoke background access: {e}",
+            ),
             status_code=500,
         )

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="astrolabe.svg" alt="Nextcloud MCP Server" width="128" height="128">
+</p>
+
 # Nextcloud MCP Server
 
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io/cbcoutinho/nextcloud--mcp--server-blue)](https://github.com/cbcoutinho/nextcloud-mcp-server/pkgs/container/nextcloud-mcp-server)
@@ -29,6 +33,12 @@ docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
 
 # 3. Test the connection
 curl http://127.0.0.1:8000/health/ready
+
+# 4. Connect to the endpoint
+http://127.0.0.1:8000/sse
+
+# 4. Or with --transport streamable-http
+http://127.0.0.1:8000/mcp
 ```
 
 **Next Steps:**
