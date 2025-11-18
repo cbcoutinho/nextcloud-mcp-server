@@ -22,7 +22,7 @@ dependencies = [
     "aiosqlite>=0.20.0", # Async SQLite for refresh token storage
     "authlib>=1.6.5",
     "qdrant-client>=1.7.0",
-    "fastembed>=0.4.2", # BM25 sparse vector embeddings for hybrid search
+    "fastembed>=0.7.3", # BM25 sparse vector embeddings for hybrid search
     "anthropic>=0.42.0", # For RAG evaluation with Anthropic LLMs
     "boto3>=1.35.0", # For Amazon Bedrock provider (optional)
     # Observability dependencies
@@ -35,6 +35,7 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.28.2", # OTLP gRPC exporter
     "python-json-logger>=3.2.0", # Structured JSON logging
     "jinja2>=3.1.6",
+    "langchain-text-splitters>=1.0.0",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -107,7 +108,7 @@ module-root = ""
 [dependency-groups]
 dev = [
     "commitizen>=4.8.2",
-    "datasets>=3.3.0",  # For BeIR nfcorpus dataset loading
+    "datasets>=3.3.0", # For BeIR nfcorpus dataset loading
     "ipython>=9.2.0",
     "playwright>=1.49.1",
     "pytest>=8.3.5",
