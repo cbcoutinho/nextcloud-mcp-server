@@ -1,7 +1,8 @@
 # ADR-011: Improving Semantic Search Quality Through Better Chunking and Embeddings
 
-**Status**: Proposed
+**Status**: Partially Implemented (Chunking Complete, Embeddings Pending)
 **Date**: 2025-11-12
+**Implementation Date**: 2025-11-18 (Chunking)
 **Authors**: Development Team
 **Related**: ADR-003 (Vector Database Architecture), ADR-008 (MCP Sampling for RAG)
 
@@ -893,3 +894,50 @@ This ADR addresses the root causes of poor semantic search recall:
 - No new infrastructure or ongoing costs
 
 **Next Steps**: Approve ADR → Implement changes → Reindex → Validate → Production rollout
+
+## Implementation Status
+
+### Completed (2025-11-18)
+
+**✅ Semantic Markdown-Aware Chunking (Option C1 + C3 Hybrid)**
+
+Implementation details:
+- Replaced custom word-based chunking with `MarkdownTextSplitter` from LangChain
+- Optimized for Nextcloud Notes markdown content with special handling for:
+  - Headers (`#`, `##`, `###`, etc.)
+  - Code blocks (` ``` `)
+  - Lists (`-`, `*`, `1.`)
+  - Horizontal rules (`---`)
+  - Paragraphs and sentences
+- Maintained `ChunkWithPosition` interface for backward compatibility
+- Updated configuration defaults:
+  - `DOCUMENT_CHUNK_SIZE`: 512 words → 2048 characters
+  - `DOCUMENT_CHUNK_OVERLAP`: 50 words → 200 characters
+- Updated unit tests to verify position tracking and boundary preservation
+- All tests passing with markdown-aware character-based chunking
+
+**Files Modified**:
+- `nextcloud_mcp_server/vector/document_chunker.py` - LangChain integration
+- `nextcloud_mcp_server/config.py` - Character-based defaults
+- `tests/unit/test_document_chunker.py` - Updated test suite
+
+**Dependencies Added**:
+- `langchain-text-splitters>=1.0.0` (already present in `pyproject.toml`)
+
+**Migration Required**:
+- ⚠️ Full reindex required to apply new chunking strategy
+- Existing documents in vector database use old word-based chunks
+- See "Migration Strategy" section above for reindexing process
+
+### Pending
+
+**⏳ Embedding Model Upgrade (Option E1)**
+
+Still to be implemented:
+- Switch from `nomic-embed-text` (768-dim) to `mxbai-embed-large-v1` (1024-dim)
+- Implement dynamic dimension detection in `ollama_provider.py`
+- Create migration script for collection reindexing
+- Run benchmarking to validate improvement
+- Deploy to production with atomic collection swap
+
+**Estimated Timeline**: 1-2 weeks for implementation and validation

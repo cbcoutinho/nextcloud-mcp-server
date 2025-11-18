@@ -181,8 +181,8 @@ class Settings:
     ollama_verify_ssl: bool = True
 
     # Document chunking settings (for vector embeddings)
-    document_chunk_size: int = 512  # Words per chunk
-    document_chunk_overlap: int = 50  # Overlapping words between chunks
+    document_chunk_size: int = 2048  # Characters per chunk
+    document_chunk_overlap: int = 200  # Overlapping characters between chunks
 
     # Observability settings
     metrics_enabled: bool = True
@@ -227,10 +227,10 @@ class Settings:
                 f"Overlap should be 10-20% of chunk size for optimal results."
             )
 
-        if self.document_chunk_size < 100:
+        if self.document_chunk_size < 512:
             logger.warning(
-                f"DOCUMENT_CHUNK_SIZE is set to {self.document_chunk_size} words, which is quite small. "
-                f"Smaller chunks may lose context. Consider using at least 256 words."
+                f"DOCUMENT_CHUNK_SIZE is set to {self.document_chunk_size} characters, which is quite small. "
+                f"Smaller chunks may lose context. Consider using at least 1024 characters."
             )
 
         if self.document_chunk_overlap < 0:
@@ -335,8 +335,8 @@ def get_settings() -> Settings:
         ollama_embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
         ollama_verify_ssl=os.getenv("OLLAMA_VERIFY_SSL", "true").lower() == "true",
         # Document chunking settings
-        document_chunk_size=int(os.getenv("DOCUMENT_CHUNK_SIZE", "512")),
-        document_chunk_overlap=int(os.getenv("DOCUMENT_CHUNK_OVERLAP", "50")),
+        document_chunk_size=int(os.getenv("DOCUMENT_CHUNK_SIZE", "2048")),
+        document_chunk_overlap=int(os.getenv("DOCUMENT_CHUNK_OVERLAP", "200")),
         # Observability settings
         metrics_enabled=os.getenv("METRICS_ENABLED", "true").lower() == "true",
         metrics_port=int(os.getenv("METRICS_PORT", "9090")),

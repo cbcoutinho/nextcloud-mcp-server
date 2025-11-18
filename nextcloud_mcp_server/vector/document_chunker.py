@@ -1,8 +1,9 @@
-"""Document chunking for large texts."""
+"""Document chunking for large texts using LangChain text splitters."""
 
 import logging
-import re
 from dataclasses import dataclass
+
+from langchain_text_splitters import MarkdownTextSplitter
 
 logger = logging.getLogger(__name__)
 
@@ -17,79 +18,74 @@ class ChunkWithPosition:
 
 
 class DocumentChunker:
-    """Chunk large documents for optimal embedding."""
+    """Chunk large documents for optimal embedding using LangChain text splitters.
 
-    def __init__(self, chunk_size: int = 512, overlap: int = 50):
+    Uses MarkdownTextSplitter which is optimized for Markdown content like
+    Nextcloud Notes. Respects markdown structure (headers, code blocks, lists)
+    while maintaining semantic boundaries.
+    """
+
+    def __init__(self, chunk_size: int = 2048, overlap: int = 200):
         """
         Initialize document chunker.
 
         Args:
-            chunk_size: Number of words per chunk (default: 512)
-            overlap: Number of overlapping words between chunks (default: 50)
+            chunk_size: Number of characters per chunk (default: 2048)
+            overlap: Number of overlapping characters between chunks (default: 200)
         """
         self.chunk_size = chunk_size
         self.overlap = overlap
+
+        # Initialize LangChain MarkdownTextSplitter
+        # Optimized for Markdown content with special handling for:
+        # - Headers (# ## ###)
+        # - Code blocks (``` ```)
+        # - Lists (- * 1.)
+        # - Horizontal rules (---)
+        # - Paragraphs and sentences
+        # This preserves both markdown structure and semantic boundaries
+        self.splitter = MarkdownTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=overlap,
+            add_start_index=True,  # Enable position tracking
+            strip_whitespace=True,
+        )
 
     def chunk_text(self, content: str) -> list[ChunkWithPosition]:
         """
         Split text into overlapping chunks with position tracking.
 
-        Uses simple word-based chunking with configurable overlap to preserve
-        context across chunk boundaries. Tracks character positions for each chunk.
+        Uses LangChain's MarkdownTextSplitter to create chunks that respect
+        both markdown structure and semantic boundaries. Optimized for Nextcloud
+        Notes content with special handling for headers, code blocks, lists, etc.
+        Preserves character positions for each chunk to enable precise document
+        retrieval.
 
         Args:
-            content: Text content to chunk
+            content: Markdown text content to chunk
 
         Returns:
             List of chunks with their character positions in the original content
         """
-        # Use regex to find all words and their positions
-        # This preserves the original spacing and allows accurate position tracking
-        word_pattern = re.compile(r"\S+")
-        word_matches = list(word_pattern.finditer(content))
+        # Handle empty content - return single empty chunk for backward compatibility
+        if not content:
+            return [ChunkWithPosition(text="", start_offset=0, end_offset=0)]
 
-        if len(word_matches) <= self.chunk_size:
-            # Single chunk - use entire content
-            return [
-                ChunkWithPosition(text=content, start_offset=0, end_offset=len(content))
-            ]
+        # Use LangChain to create documents with position tracking
+        docs = self.splitter.create_documents([content])
 
-        chunks = []
-        start_idx = 0
-
-        while start_idx < len(word_matches):
-            end_idx = min(start_idx + self.chunk_size, len(word_matches))
-
-            # Get the first and last word positions
-            first_word = word_matches[start_idx]
-            last_word = word_matches[end_idx - 1]
-
-            # Extract chunk using character positions
-            start_offset = first_word.start()
-            end_offset = last_word.end()
-            chunk_text = content[start_offset:end_offset]
-
-            chunks.append(
-                ChunkWithPosition(
-                    text=chunk_text, start_offset=start_offset, end_offset=end_offset
-                )
+        # Convert LangChain Documents to ChunkWithPosition objects
+        chunks = [
+            ChunkWithPosition(
+                text=doc.page_content,
+                start_offset=doc.metadata.get("start_index", 0),
+                end_offset=doc.metadata.get("start_index", 0) + len(doc.page_content),
             )
-
-            # If we've reached the end, break
-            if end_idx >= len(word_matches):
-                break
-
-            # Move to next chunk with overlap
-            next_start_idx = end_idx - self.overlap
-
-            # Safety check: ensure we're making forward progress
-            # If we're not advancing (overlap >= chunk processed), break to prevent infinite loop
-            if next_start_idx <= start_idx:
-                break
-
-            start_idx = next_start_idx
+            for doc in docs
+        ]
 
         logger.debug(
-            f"Chunked document into {len(chunks)} chunks ({len(word_matches)} words)"
+            f"Chunked document into {len(chunks)} chunks "
+            f"(chunk_size={self.chunk_size}, overlap={self.overlap})"
         )
         return chunks
