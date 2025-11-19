@@ -24,6 +24,7 @@ from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from nextcloud_mcp_server.auth import (
     InsufficientScopeError,
@@ -1491,7 +1492,7 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     # Create a separate Starlette app for browser routes that need session auth
     # This prevents SessionAuthBackend from interfering with FastMCP's OAuth
     browser_routes = [
-        Route("/", user_info_html, methods=["GET"]),  # /app → webapp (HTML UI)
+        Route("/", user_info_html, methods=["GET"]),  # /app → user info with all tabs
         Route(
             "/revoke", revoke_session, methods=["POST"], name="revoke_session_endpoint"
         ),  # /app/revoke → revoke_session
@@ -1526,6 +1527,14 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             methods=["DELETE"],
         ),
     ]
+
+    # Add static files mount if directory exists
+    static_dir = os.path.join(os.path.dirname(__file__), "auth", "static")
+    if os.path.isdir(static_dir):
+        browser_routes.append(
+            Mount("/static", StaticFiles(directory=static_dir), name="static")
+        )
+        logger.info(f"Mounted static files from {static_dir}")
 
     browser_app = Starlette(routes=browser_routes)
     browser_app.add_middleware(

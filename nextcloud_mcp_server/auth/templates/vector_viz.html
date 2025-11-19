@@ -1,192 +1,4 @@
-<style>
-    .viz-layout {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-        height: 100%;
-        min-height: 0;
-        overflow-y: auto;
-    }
-    .viz-card {
-        background: var(--color-main-background);
-        border-radius: 0;
-        padding: 16px;
-        box-shadow: none;
-    }
-    .viz-controls-card {
-        flex: 0 0 auto;
-        border-bottom: 1px solid var(--color-border);
-        padding-bottom: 16px;
-    }
-    .viz-controls-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 12px;
-        align-items: end;
-    }
-    @media (min-width: 768px) {
-        .viz-controls-grid {
-            grid-template-columns: 2fr 1.5fr 1.5fr auto auto;
-        }
-    }
-    .viz-control-group {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-    }
-    .viz-control-group label {
-        font-weight: 500;
-        color: var(--color-main-text);
-        font-size: 13px;
-    }
-    .viz-control-group input[type="text"],
-    .viz-control-group input[type="number"],
-    .viz-control-group select {
-        width: 100%;
-        padding: 7px 10px;
-        border: 1px solid var(--color-border-dark);
-        border-radius: var(--border-radius);
-        font-size: 14px;
-        background: var(--color-main-background);
-        color: var(--color-main-text);
-    }
-    .viz-control-group input:focus,
-    .viz-control-group select:focus {
-        outline: none;
-        border-color: var(--color-primary-element);
-    }
-    .viz-control-group input[type="range"] {
-        width: 100%;
-    }
-    .viz-control-group select[multiple] {
-        min-height: 100px;
-    }
-    .viz-weight-display {
-        display: inline-block;
-        min-width: 40px;
-        text-align: right;
-        color: #666;
-    }
-    .viz-btn {
-        background: var(--color-primary-element);
-        color: white;
-        border: none;
-        padding: 7px 16px;
-        border-radius: var(--border-radius);
-        cursor: pointer;
-        font-size: 14px;
-        font-weight: 500;
-        white-space: nowrap;
-    }
-    .viz-btn:hover {
-        background: #0052a3;
-    }
-    .viz-btn-secondary {
-        background: #6c757d;
-        color: white;
-        border: none;
-        padding: 7px 16px;
-        border-radius: var(--border-radius);
-        cursor: pointer;
-        font-size: 14px;
-        white-space: nowrap;
-    }
-    .viz-btn-secondary:hover {
-        background: #5a6268;
-    }
-    .viz-card-plot {
-        flex: 0 0 auto;
-        display: flex;
-        flex-direction: column;
-        min-height: 500px;
-        height: 600px;
-    }
-    #viz-plot-container {
-        width: 100%;
-        height: 100%;
-        position: relative;
-        overflow: visible;
-    }
-    #viz-plot {
-        width: 100%;
-        height: 100%;
-    }
-    .viz-loading {
-        text-align: center;
-        padding: 40px;
-        color: #666;
-    }
-    .viz-loading-overlay {
-        position: absolute;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: white;
-        color: #666;
-    }
-    .viz-no-results {
-        text-align: center;
-        padding: 40px;
-        color: #666;
-        font-style: italic;
-    }
-    .viz-advanced-section {
-        margin-top: 12px;
-        padding: 12px;
-        background: var(--color-background-hover);
-        border-radius: var(--border-radius);
-        border: 1px solid var(--color-border);
-    }
-    .viz-info-box {
-        background: var(--color-primary-element-light);
-        border-left: 3px solid var(--color-primary-element);
-        padding: 10px 12px;
-        margin-bottom: 16px;
-        font-size: 13px;
-        color: var(--color-main-text);
-    }
-    .chunk-toggle-btn {
-        background: #6c757d;
-        color: white;
-        border: none;
-        padding: 4px 10px;
-        border-radius: 3px;
-        cursor: pointer;
-        font-size: 12px;
-        margin-top: 6px;
-    }
-    .chunk-toggle-btn:hover {
-        background: #5a6268;
-    }
-    .chunk-context {
-        background: var(--color-background-hover);
-        border: 1px solid var(--color-border);
-        border-radius: var(--border-radius);
-        padding: 12px;
-        margin-top: 8px;
-        font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
-        font-size: 13px;
-        line-height: 1.6;
-        white-space: pre-wrap;
-        word-wrap: break-word;
-    }
-    .chunk-text {
-        color: var(--color-text-maxcontrast);
-    }
-    .chunk-matched {
-        background: #fff3cd;
-        border: 1px solid #ffc107;
-        padding: 2px 4px;
-        border-radius: var(--border-radius);
-        font-weight: 500;
-        color: var(--color-main-text);
-    }
-    .chunk-ellipsis {
-        color: var(--color-text-maxcontrast);
-        font-style: italic;
-    }
-</style>
+<link rel="stylesheet" href="/app/static/vector-viz.css">
 
 <div x-data="vizApp()">
     <div class="viz-layout">
@@ -233,7 +45,7 @@
                     <div class="viz-controls-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
                         <div class="viz-control-group">
                             <label>Document Types</label>
-                            <div style="display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px;">
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px;">
                                 <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
                                     <input type="checkbox" x-model="docTypes" value="" style="margin-right: 4px;">
                                     <span>All</span>
@@ -268,7 +80,15 @@
 
                         <div class="viz-control-group">
                             <label>Result Limit</label>
-                            <input type="number" x-model.number="limit" min="1" max="100" />
+                            <input type="number" x-model.number="limit" min="1" max="1000" />
+                        </div>
+
+                        <div class="viz-control-group">
+                            <label>Display Options</label>
+                            <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal; margin-top: 4px;">
+                                <input type="checkbox" x-model="showQueryPoint" @change="updatePlot()" style="margin-right: 6px;">
+                                <span>Show Query Point</span>
+                            </label>
                         </div>
                     </div>
                 </div>

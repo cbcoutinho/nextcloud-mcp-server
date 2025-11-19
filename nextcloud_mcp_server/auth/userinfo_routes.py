@@ -623,6 +623,9 @@ async def user_info_html(request: Request) -> HTMLResponse:
             </div>
         """
 
+    # Check if vector sync is enabled (needed for Welcome tab)
+    vector_sync_enabled = os.getenv("VECTOR_SYNC_ENABLED", "false").lower() == "true"
+
     # Render template
     template = _jinja_env.get_template("user_info.html")
     return HTMLResponse(
@@ -634,6 +637,10 @@ async def user_info_html(request: Request) -> HTMLResponse:
             show_webhooks_tab=show_webhooks_tab,
             logout_url=logout_url if auth_mode == "oauth" else None,
             nextcloud_host_for_links=nextcloud_host_for_links,
+            # Additional context for Welcome tab
+            vector_sync_enabled=vector_sync_enabled,
+            username=username,
+            auth_mode=auth_mode,
         )
     )
 

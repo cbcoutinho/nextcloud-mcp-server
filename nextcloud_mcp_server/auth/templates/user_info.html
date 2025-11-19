@@ -31,15 +31,187 @@
         padding-top: 20px;
         border-top: 1px solid var(--color-border);
     }
+
+    /* Welcome tab specific styles */
+    .hero-section {
+        background: linear-gradient(135deg, var(--color-primary-element) 0%, #0082c9 100%);
+        color: white;
+        padding: 60px 24px;
+        margin: -24px -24px 40px -24px;
+        border-radius: 0 0 var(--border-radius-large) var(--border-radius-large);
+        text-align: center;
+    }
+
+    .hero-section h1 {
+        color: white;
+        font-size: 36px;
+        margin: 0 0 16px 0;
+        font-weight: 600;
+    }
+
+    .hero-section p {
+        font-size: 18px;
+        opacity: 0.95;
+        max-width: 700px;
+        margin: 0 auto;
+        line-height: 1.6;
+    }
+
+    .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 24px;
+        margin: 32px 0;
+    }
+
+    .feature-card {
+        background: var(--color-main-background);
+        border: 2px solid var(--color-border);
+        border-radius: var(--border-radius-large);
+        padding: 24px;
+        transition: all 0.2s;
+        cursor: pointer;
+        text-decoration: none;
+        color: inherit;
+        display: block;
+    }
+
+    .feature-card:hover {
+        border-color: var(--color-primary-element);
+        box-shadow: 0 4px 12px rgba(0, 103, 158, 0.15);
+        transform: translateY(-2px);
+    }
+
+    .feature-card h3 {
+        color: var(--color-primary-element);
+        font-size: 20px;
+        margin: 12px 0 8px 0;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
+    .feature-card p {
+        color: var(--color-text-maxcontrast);
+        font-size: 14px;
+        line-height: 1.6;
+        margin: 8px 0 0 0;
+    }
+
+    .feature-icon {
+        width: 48px;
+        height: 48px;
+        background: var(--color-primary-element-light);
+        border-radius: var(--border-radius);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 8px;
+    }
+
+    .feature-icon svg {
+        width: 28px;
+        height: 28px;
+        fill: var(--color-primary-element);
+    }
+
+    .info-section {
+        background: var(--color-background-hover);
+        border-radius: var(--border-radius-large);
+        padding: 32px;
+        margin: 32px 0;
+    }
+
+    .info-section h2 {
+        color: var(--color-main-text);
+        font-size: 24px;
+        margin: 0 0 16px 0;
+        border: none;
+        padding: 0;
+    }
+
+    .info-section p {
+        color: var(--color-text-maxcontrast);
+        line-height: 1.7;
+        margin: 12px 0;
+    }
+
+    .info-section ul {
+        margin: 12px 0;
+        padding-left: 24px;
+    }
+
+    .info-section li {
+        color: var(--color-text-maxcontrast);
+        line-height: 1.7;
+        margin: 8px 0;
+    }
+
+    .info-section code {
+        background: var(--color-main-background);
+        padding: 2px 8px;
+        border-radius: var(--border-radius);
+        font-size: 13px;
+    }
+
+    .auth-status {
+        background: var(--color-primary-element-light);
+        border-left: 4px solid var(--color-primary-element);
+        padding: 16px 20px;
+        margin: 24px 0;
+        border-radius: var(--border-radius);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
+    .auth-status svg {
+        width: 24px;
+        height: 24px;
+        fill: var(--color-primary-element);
+        flex-shrink: 0;
+    }
+
+    .auth-status-text {
+        flex: 1;
+    }
+
+    .auth-status-text strong {
+        display: block;
+        color: var(--color-main-text);
+        font-size: 14px;
+        margin-bottom: 4px;
+    }
+
+    .auth-status-text span {
+        color: var(--color-text-maxcontrast);
+        font-size: 13px;
+    }
 {% endblock %}
 
 {% block content %}
-<div class="app-content-wrapper" x-data="{ activeSection: 'user-info', navOpen: true }">
+<div class="app-content-wrapper" x-data="{ activeSection: 'welcome', navOpen: true }">
     <!-- Side Navigation -->
     <nav id="app-navigation" :class="{ 'app-navigation--closed': !navOpen }">
         <div class="app-navigation__content">
             <!-- Navigation List -->
             <ul class="app-navigation-list">
+                <li class="app-navigation-entry" :class="{ 'active': activeSection === 'welcome' }">
+                    <div class="app-navigation-entry__wrapper">
+                        <a href="#"
+                           @click.prevent="activeSection = 'welcome'"
+                           class="app-navigation-entry-link">
+                            <span class="app-navigation-entry-icon">
+                                <svg class="nav-icon" viewBox="0 0 24 24">
+                                    <path d="M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z" />
+                                </svg>
+                            </span>
+                            <span class="app-navigation-entry__name">Welcome</span>
+                        </a>
+                    </div>
+                </li>
+
                 <li class="app-navigation-entry" :class="{ 'active': activeSection === 'user-info' }">
                     <div class="app-navigation-entry__wrapper">
                         <a href="#"
@@ -135,6 +307,297 @@
     <!-- Main Content Area -->
     <main id="app-content">
         <div class="page-content">
+            <!-- Welcome Section -->
+            <div x-show="activeSection === 'welcome'">
+                <!-- Hero Section -->
+                <div class="hero-section">
+                    <h1>Welcome to Nextcloud MCP Server</h1>
+                    <p>
+                        Interactive user interface for semantic search and document retrieval.
+                        Test queries, visualize results, and explore your Nextcloud content using RAG workflows.
+                    </p>
+                </div>
+
+                <!-- Authentication Status -->
+                <div class="auth-status">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z" />
+                    </svg>
+                    <div class="auth-status-text">
+                        <strong>Authenticated as: {{ username }}</strong>
+                        <span>Authentication mode: <code>{{ auth_mode }}</code></span>
+                    </div>
+                </div>
+
+                {% if vector_sync_enabled %}
+                <!-- Vector Sync Enabled Content -->
+                <div class="info-section">
+                    <h2>About Semantic Search</h2>
+                    <p>
+                        This interface provides access to <strong>semantic search</strong> capabilities powered by vector embeddings.
+                        Unlike traditional keyword search, semantic search understands the <em>meaning</em> of your queries and finds
+                        conceptually similar content across your Nextcloud apps.
+                    </p>
+                    <p>
+                        <strong>How it works:</strong>
+                    </p>
+                    <ul>
+                        <li>Documents from Notes, Calendar, Files, Contacts, and Deck are indexed into a vector database</li>
+                        <li>Each document chunk is converted to a 768-dimensional vector embedding that captures semantic meaning</li>
+                        <li>Queries are also converted to embeddings and matched against document vectors using similarity search</li>
+                        <li>Results can be retrieved using pure semantic search or hybrid BM25 search combining keywords and semantics</li>
+                    </ul>
+                </div>
+
+                <div class="info-section">
+                    <h2>RAG Workflow Integration</h2>
+                    <p>
+                        This UI allows you to <strong>test the same queries that Large Language Models (LLMs) would use</strong> in a
+                        Retrieval-Augmented Generation (RAG) workflow. When an AI assistant needs to answer questions about your data:
+                    </p>
+                    <ul>
+                        <li><strong>Step 1:</strong> The assistant converts your question into a search query</li>
+                        <li><strong>Step 2:</strong> The MCP server retrieves relevant document chunks using semantic search</li>
+                        <li><strong>Step 3:</strong> Retrieved context is passed to the LLM to generate an informed answer</li>
+                    </ul>
+
+                    <!-- RAG Workflow Diagram -->
+                    <div style="background: var(--color-main-background); border: 2px solid var(--color-primary-element); border-radius: var(--border-radius-large); padding: 24px; margin: 24px 0; overflow-x: auto;">
+                        <div style="text-align: center; font-weight: 600; margin-bottom: 20px; color: var(--color-primary-element); font-size: 16px;">
+                            MCP Sampling RAG Workflow
+                        </div>
+
+                        <!-- Four-component bidirectional flow -->
+                        <div style="max-width: 1000px; margin: 0 auto;">
+                            <div style="display: grid; grid-template-columns: 0.7fr auto 1fr auto 1fr auto 0.9fr; gap: 10px; align-items: center;">
+                                <!-- User -->
+                                <div style="background: var(--color-background-hover); border: 2px solid var(--color-border); border-radius: var(--border-radius-large); padding: 14px; text-align: center;">
+                                    <div style="font-size: 26px; margin-bottom: 5px;">👤</div>
+                                    <div style="font-weight: 600; color: var(--color-main-text); font-size: 12px;">User</div>
+                                    <div style="font-size: 9px; color: var(--color-text-maxcontrast); font-style: italic; margin-top: 5px; line-height: 1.2;">
+                                        "What are health<br>benefits of coffee?"
+                                    </div>
+                                </div>
+
+                                <!-- Arrow User <-> Client -->
+                                <div style="text-align: center;">
+                                    <div style="font-size: 20px; color: var(--color-text-maxcontrast);">↔</div>
+                                </div>
+
+                                <!-- MCP Client + LLM (combined) -->
+                                <div style="background: var(--color-primary-element-light); border: 2px solid var(--color-primary-element); border-radius: var(--border-radius-large); padding: 12px; text-align: center;">
+                                    <div style="font-weight: 600; color: var(--color-primary-element); font-size: 13px; margin-bottom: 8px;">MCP Client + LLM</div>
+
+                                    <div style="background: var(--color-main-background); border-radius: var(--border-radius); padding: 8px; margin-bottom: 6px;">
+                                        <div style="font-size: 9px; color: var(--color-text-maxcontrast);">(Claude Code)</div>
+                                    </div>
+
+                                    <div style="background: var(--color-main-background); border-radius: var(--border-radius); padding: 8px; border: 2px solid var(--color-primary-element);">
+                                        <div style="font-size: 16px; margin-bottom: 2px;">🧠</div>
+                                        <div style="font-weight: 600; color: var(--color-main-text); font-size: 10px;">Client's LLM</div>
+                                        <div style="font-size: 8px; color: var(--color-text-maxcontrast);">(Claude)</div>
+                                    </div>
+
+                                    <div style="margin-top: 8px; font-size: 8px; color: var(--color-text-maxcontrast); line-height: 1.2;">
+                                        <strong>Enables RAG:</strong><br>
+                                        Receives context,<br>
+                                        generates answer
+                                    </div>
+                                </div>
+
+                                <!-- Arrow Client <-> Server -->
+                                <div style="text-align: center;">
+                                    <div style="font-size: 20px; color: var(--color-primary-element);">↔</div>
+                                    <div style="font-size: 7px; color: var(--color-text-maxcontrast); margin-top: 2px; font-weight: 600; line-height: 1.1;">
+                                        Query +<br>
+                                        Sampling
+                                    </div>
+                                </div>
+
+                                <!-- MCP Server -->
+                                <div style="background: var(--color-primary-element-light); border: 2px solid var(--color-primary-element); border-radius: var(--border-radius-large); padding: 12px; text-align: center;">
+                                    <div style="font-weight: 600; color: var(--color-primary-element); font-size: 13px; margin-bottom: 8px;">MCP Server</div>
+
+                                    <div style="background: var(--color-main-background); border-radius: var(--border-radius); padding: 7px; margin-bottom: 5px;">
+                                        <div style="font-weight: 600; color: var(--color-main-text); font-size: 9px; margin-bottom: 2px;">1. Semantic Search</div>
+                                        <div style="font-size: 7px; color: var(--color-text-maxcontrast); line-height: 1.2;">
+                                            Vector embeddings<br>
+                                            BM25 Hybrid + RRF
+                                        </div>
+                                    </div>
+
+                                    <div style="background: var(--color-main-background); border-radius: var(--border-radius); padding: 7px; margin-bottom: 5px;">
+                                        <div style="font-weight: 600; color: var(--color-main-text); font-size: 9px; margin-bottom: 2px;">2. Retrieve Context</div>
+                                        <div style="font-size: 7px; color: var(--color-text-maxcontrast); line-height: 1.2;">
+                                            Top relevant docs<br>
+                                            with scores
+                                        </div>
+                                    </div>
+
+                                    <div style="background: var(--color-main-background); border-radius: var(--border-radius); padding: 7px; margin-bottom: 5px;">
+                                        <div style="font-weight: 600; color: var(--color-main-text); font-size: 9px; margin-bottom: 2px;">3. Format Response</div>
+                                        <div style="font-size: 7px; color: var(--color-text-maxcontrast); line-height: 1.2;">
+                                            Document chunks<br>
+                                            with citations
+                                        </div>
+                                    </div>
+
+                                    <div style="background: var(--color-main-background); border-radius: var(--border-radius); padding: 7px;">
+                                        <div style="font-weight: 600; color: var(--color-main-text); font-size: 9px; margin-bottom: 2px;">4. Send to LLM</div>
+                                        <div style="font-size: 7px; color: var(--color-text-maxcontrast); line-height: 1.2;">
+                                            Via MCP sampling<br>
+                                            for answer generation
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Arrow Server <-> Nextcloud -->
+                                <div style="text-align: center;">
+                                    <div style="font-size: 20px; color: var(--color-primary-element);">↔</div>
+                                    <div style="font-size: 7px; color: var(--color-text-maxcontrast); margin-top: 2px; font-weight: 600; line-height: 1.1;">
+                                        Retrieve
+                                    </div>
+                                </div>
+
+                                <!-- Nextcloud -->
+                                <div style="background: var(--color-background-hover); border: 2px solid var(--color-border); border-radius: var(--border-radius-large); padding: 12px; text-align: center; position: relative;">
+                                    <img src="/app/static/nextcloud-logo.png" alt="Nextcloud" style="width: 40px; height: 40px; margin-bottom: 6px;" />
+                                    <div style="font-weight: 600; color: var(--color-main-text); font-size: 12px; margin-bottom: 4px;">Nextcloud</div>
+                                    <div style="font-size: 8px; color: var(--color-text-maxcontrast); line-height: 1.2;">
+                                        Notes, Calendar,<br>
+                                        Files, Contacts,<br>
+                                        Deck
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Explanation below diagram -->
+                            <div style="margin-top: 24px; padding: 16px; background: var(--color-background-hover); border-radius: var(--border-radius); border-left: 4px solid var(--color-primary-element);">
+                                <div style="font-size: 12px; color: var(--color-main-text); line-height: 1.6;">
+                                    <strong>How RAG works via MCP Sampling:</strong>
+                                </div>
+                                <ol style="margin: 8px 0 0 0; padding-left: 20px; font-size: 11px; color: var(--color-text-maxcontrast); line-height: 1.6;">
+                                    <li>User asks question through MCP Client</li>
+                                    <li>Client sends query to MCP Server</li>
+                                    <li>Server retrieves relevant document context from Nextcloud</li>
+                                    <li><strong>Server sends context back to Client's LLM</strong> (MCP Sampling)</li>
+                                    <li>Client's LLM generates answer with citations using retrieved context</li>
+                                    <li>Answer returned to user</li>
+                                </ol>
+                                <div style="margin-top: 8px; font-size: 10px; color: var(--color-text-maxcontrast); font-style: italic;">
+                                    The server has no LLM - it only retrieves context. The client's existing LLM is reused for answer generation.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <p style="margin-top: 16px;">
+                        <strong>Key Point:</strong> The MCP server retrieves context but doesn't generate answers itself.
+                        Through <strong>MCP sampling</strong>, it requests the client's LLM to generate responses, giving users
+                        full control over which model is used and ensuring all processing happens client-side.
+                    </p>
+
+                    <p>
+                        By using this interface, you can preview search results, understand relevance scores, and verify
+                        that the system retrieves the right information before it reaches the LLM.
+                    </p>
+                </div>
+
+                <!-- Feature Cards -->
+                <h2>Available Features</h2>
+                <div class="feature-grid">
+                    <a href="#" @click.prevent="activeSection = 'user-info'" class="feature-card">
+                        <div class="feature-icon">
+                            <svg viewBox="0 0 24 24">
+                                <path d="M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z" />
+                            </svg>
+                        </div>
+                        <h3>User Information</h3>
+                        <p>
+                            View your authentication details, session information, and IdP profile.
+                            Manage background access permissions.
+                        </p>
+                    </a>
+
+                    <a href="#" @click.prevent="activeSection = 'vector-sync'" class="feature-card">
+                        <div class="feature-icon">
+                            <svg viewBox="0 0 24 24">
+                                <path d="M12,18A6,6 0 0,1 6,12C6,11 6.25,10.03 6.7,9.2L5.24,7.74C4.46,8.97 4,10.43 4,12A8,8 0 0,0 12,20V23L16,19L12,15M12,4V1L8,5L12,9V6A6,6 0 0,1 18,12C18,13 17.75,13.97 17.3,14.8L18.76,16.26C19.54,15.03 20,13.57 20,12A8,8 0 0,0 12,4Z" />
+                            </svg>
+                        </div>
+                        <h3>Vector Sync Status</h3>
+                        <p>
+                            Monitor real-time indexing progress with metrics for indexed documents, pending queue,
+                            and synchronization status.
+                        </p>
+                    </a>
+
+                    <a href="#" @click.prevent="activeSection = 'vector-viz'" class="feature-card">
+                        <div class="feature-icon">
+                            <svg viewBox="0 0 24 24">
+                                <path d="M22,21H2V3H4V19H6V10H10V19H12V6H16V19H18V14H22V21Z" />
+                            </svg>
+                        </div>
+                        <h3>Vector Visualization</h3>
+                        <p>
+                            Interactive search interface with 2D PCA visualization. Compare algorithms,
+                            view relevance scores, and explore matched document chunks.
+                        </p>
+                    </a>
+                </div>
+
+                {% else %}
+                <!-- Vector Sync Disabled Content -->
+                <div class="warning">
+                    <h3 style="margin-top: 0;">Vector Sync is Disabled</h3>
+                    <p>
+                        Semantic search and vector visualization features are currently disabled.
+                        To enable these features, set <code>VECTOR_SYNC_ENABLED=true</code> in your environment configuration.
+                    </p>
+                    <p style="margin-bottom: 0;">
+                        <strong>Learn more:</strong>
+                        <a href="https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/configuration.md" target="_blank" style="color: inherit; text-decoration: underline;">
+                            Configuration Guide
+                        </a>
+                    </p>
+                </div>
+
+                <!-- Limited Feature Card -->
+                <h2>Available Features</h2>
+                <div class="feature-grid">
+                    <a href="#" @click.prevent="activeSection = 'user-info'" class="feature-card">
+                        <div class="feature-icon">
+                            <svg viewBox="0 0 24 24">
+                                <path d="M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z" />
+                            </svg>
+                        </div>
+                        <h3>User Information</h3>
+                        <p>
+                            View your authentication details, session information, and IdP profile.
+                            Manage background access permissions.
+                        </p>
+                    </a>
+                </div>
+                {% endif %}
+
+                <!-- Documentation Section -->
+                <div class="info-section" style="margin-top: 40px;">
+                    <h2>Documentation</h2>
+                    <p>
+                        For detailed information about configuration, authentication modes, and advanced features,
+                        please refer to the project documentation:
+                    </p>
+                    <ul>
+                        <li><a href="https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/installation.md" target="_blank">Installation Guide</a></li>
+                        <li><a href="https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/configuration.md" target="_blank">Configuration Options</a></li>
+                        <li><a href="https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/authentication.md" target="_blank">Authentication Modes</a></li>
+                        {% if vector_sync_enabled %}
+                        <li><a href="https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/user-guide/vector-sync-ui.md" target="_blank">Vector Sync UI Guide</a></li>
+                        {% endif %}
+                    </ul>
+                </div>
+            </div>
+
             <!-- User Info Section -->
             <div x-show="activeSection === 'user-info'">
                 <div class="content-section">
@@ -177,149 +640,8 @@
 </div>
 
 <script>
-    // Initialize vizApp for vector visualization (if needed)
-    function vizApp() {
-        return {
-            query: '',
-            algorithm: 'bm25_hybrid',
-            fusion: 'rrf',
-            showAdvanced: false,
-            docTypes: [''],
-            limit: 50,
-            scoreThreshold: 0.0,
-            loading: false,
-            results: [],
-            expandedChunks: {},
-            chunkLoading: {},
-
-            async executeSearch() {
-                this.loading = true;
-                this.results = [];
-
-                try {
-                    const params = new URLSearchParams({
-                        query: this.query,
-                        algorithm: this.algorithm,
-                        limit: this.limit,
-                        score_threshold: this.scoreThreshold,
-                    });
-
-                    if (this.algorithm === 'bm25_hybrid') {
-                        params.append('fusion', this.fusion);
-                    }
-
-                    const selectedTypes = this.docTypes.filter(t => t !== '');
-                    if (selectedTypes.length > 0) {
-                        params.append('doc_types', selectedTypes.join(','));
-                    }
-
-                    const response = await fetch(`/app/vector-viz/search?${params}`);
-                    const data = await response.json();
-
-                    if (data.success) {
-                        this.results = data.results;
-                        this.renderPlot(data.coordinates_2d, data.results);
-                    } else {
-                        alert('Search failed: ' + data.error);
-                    }
-                } catch (error) {
-                    alert('Error: ' + error.message);
-                } finally {
-                    this.loading = false;
-                }
-            },
-
-            renderPlot(coordinates, results) {
-                const scores = results.map(r => r.score);
-                const trace = {
-                    x: coordinates.map(c => c[0]),
-                    y: coordinates.map(c => c[1]),
-                    mode: 'markers',
-                    type: 'scatter',
-                    text: results.map(r => `${r.title}<br>Raw Score: ${r.original_score.toFixed(3)} (${(r.score * 100).toFixed(0)}% relative)`),
-                    marker: {
-                        size: results.map(r => 6 + (Math.pow(r.score, 2) * 14)),
-                        opacity: results.map(r => 0.2 + (r.score * 0.8)),
-                        color: scores,
-                        colorscale: 'Viridis',
-                        showscale: true,
-                        colorbar: { title: 'Relative Score' },
-                        cmin: 0,
-                        cmax: 1
-                    }
-                };
-
-                const layout = {
-                    title: `Vector Space (PCA 2D) - ${results.length} results`,
-                    xaxis: { title: 'PC1' },
-                    yaxis: { title: 'PC2' },
-                    hovermode: 'closest',
-                    height: 600
-                };
-
-                Plotly.newPlot('viz-plot', [trace], layout);
-            },
-
-            getNextcloudUrl(result) {
-                const baseUrl = '{{ nextcloud_host_for_links }}';
-                switch (result.doc_type) {
-                    case 'note':
-                        return `${baseUrl}/apps/notes/note/${result.id}`;
-                    case 'file':
-                        return `${baseUrl}/apps/files/?fileId=${result.id}`;
-                    case 'calendar':
-                        return `${baseUrl}/apps/calendar`;
-                    case 'contact':
-                        return `${baseUrl}/apps/contacts`;
-                    case 'deck':
-                        return `${baseUrl}/apps/deck`;
-                    default:
-                        return `${baseUrl}`;
-                }
-            },
-
-            hasChunkPosition(result) {
-                return result.chunk_start_offset != null && result.chunk_end_offset != null;
-            },
-
-            isChunkExpanded(resultKey) {
-                return this.expandedChunks[resultKey] !== undefined;
-            },
-
-            async toggleChunk(result) {
-                const resultKey = `${result.doc_type}_${result.id}`;
-
-                if (this.isChunkExpanded(resultKey)) {
-                    delete this.expandedChunks[resultKey];
-                    return;
-                }
-
-                this.chunkLoading[resultKey] = true;
-
-                try {
-                    const params = new URLSearchParams({
-                        doc_type: result.doc_type,
-                        doc_id: result.id,
-                        start: result.chunk_start_offset,
-                        end: result.chunk_end_offset,
-                        context: 500
-                    });
-
-                    const response = await fetch(`/app/chunk-context?${params}`);
-                    const data = await response.json();
-
-                    if (data.success) {
-                        this.expandedChunks[resultKey] = data;
-                    } else {
-                        alert('Failed to load chunk: ' + data.error);
-                    }
-                } catch (error) {
-                    alert('Error loading chunk: ' + error.message);
-                } finally {
-                    delete this.chunkLoading[resultKey];
-                }
-            }
-        };
-    }
+    // Set global Nextcloud base URL for use in external JS
+    window.NEXTCLOUD_BASE_URL = '{{ nextcloud_host_for_links }}';
 </script>
+<script src="/app/static/vector-viz.js"></script>
 {% endblock %}

@@ -3,7 +3,7 @@
 import logging
 from dataclasses import dataclass
 
-from langchain_text_splitters import MarkdownTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +20,9 @@ class ChunkWithPosition:
 class DocumentChunker:
     """Chunk large documents for optimal embedding using LangChain text splitters.
 
-    Uses MarkdownTextSplitter which is optimized for Markdown content like
-    Nextcloud Notes. Respects markdown structure (headers, code blocks, lists)
-    while maintaining semantic boundaries.
+    Uses RecursiveCharacterTextSplitter which preserves semantic boundaries
+    by splitting on sentence and paragraph boundaries before resorting to
+    character-level splitting.
     """
 
     def __init__(self, chunk_size: int = 2048, overlap: int = 200):
@@ -36,15 +36,14 @@ class DocumentChunker:
         self.chunk_size = chunk_size
         self.overlap = overlap
 
-        # Initialize LangChain MarkdownTextSplitter
-        # Optimized for Markdown content with special handling for:
-        # - Headers (# ## ###)
-        # - Code blocks (``` ```)
-        # - Lists (- * 1.)
-        # - Horizontal rules (---)
-        # - Paragraphs and sentences
-        # This preserves both markdown structure and semantic boundaries
-        self.splitter = MarkdownTextSplitter(
+        # Initialize LangChain RecursiveCharacterTextSplitter
+        # Uses hierarchical splitting to preserve semantic boundaries:
+        # - Paragraphs (\n\n)
+        # - Sentences (. ! ?)
+        # - Words (spaces)
+        # - Characters (last resort)
+        # This prevents mid-sentence splitting while maintaining semantic coherence
+        self.splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=overlap,
             add_start_index=True,  # Enable position tracking
@@ -55,14 +54,14 @@ class DocumentChunker:
         """
         Split text into overlapping chunks with position tracking.
 
-        Uses LangChain's MarkdownTextSplitter to create chunks that respect
-        both markdown structure and semantic boundaries. Optimized for Nextcloud
-        Notes content with special handling for headers, code blocks, lists, etc.
-        Preserves character positions for each chunk to enable precise document
-        retrieval.
+        Uses LangChain's RecursiveCharacterTextSplitter to create chunks that
+        preserve semantic boundaries by splitting at paragraphs and sentences
+        before resorting to word or character-level splitting. This ensures
+        sentences are kept intact. Preserves character positions for each chunk
+        to enable precise document retrieval.
 
         Args:
-            content: Markdown text content to chunk
+            content: Text content to chunk
 
         Returns:
             List of chunks with their character positions in the original content

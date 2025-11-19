@@ -133,6 +133,7 @@ This enables natural language queries and helps discover related content across 
 - **[App Documentation](docs/)** - Notes, Calendar, Contacts, WebDAV, Deck, Cookbook, Tables
 - **[Document Processing](docs/configuration.md#document-processing)** - OCR and text extraction setup
 - **[Semantic Search Architecture](docs/semantic-search-architecture.md)** - Experimental vector search (Notes only, opt-in)
+- **[Vector Sync UI Guide](docs/user-guide/vector-sync-ui.md)** - Browser interface for semantic search visualization and testing
 
 ### Advanced Topics
 - **[OAuth Architecture](docs/oauth-architecture.md)** - How OAuth works (experimental)
