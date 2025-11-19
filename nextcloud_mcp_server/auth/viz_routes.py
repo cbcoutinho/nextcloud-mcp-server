@@ -1,13 +1,14 @@
 """Vector visualization routes for testing search algorithms.
 
 Provides a web UI for users to test different search algorithms on their own
-indexed documents and visualize results in 2D space using PCA.
+indexed documents and visualize results in 3D space using PCA.
 
 All processing happens server-side following ADR-012:
 - Search execution via shared search/algorithms.py
-- PCA dimensionality reduction (768-dim → 2D)
-- Only 2D coordinates + metadata sent to client
-- Bandwidth-efficient (2 floats per doc vs 768)
+- Query embedding generation
+- PCA dimensionality reduction (768-dim → 3D)
+- Only 3D coordinates + metadata sent to client
+- Bandwidth-efficient (3 floats per doc vs 768)
 """
 
 import logging
@@ -77,19 +78,20 @@ async def vector_visualization_html(request: Request) -> HTMLResponse:
 
 @requires("authenticated", redirect="oauth_login")
 async def vector_visualization_search(request: Request) -> JSONResponse:
-    """Execute server-side search and return 2D coordinates + results.
+    """Execute server-side search and return 3D coordinates + results.
 
     All processing happens server-side:
     1. Execute search via shared algorithm module
-    2. Fetch matching vectors from Qdrant
-    3. Apply PCA reduction (768-dim → 2D)
-    4. Return coordinates + metadata only
+    2. Generate query embedding
+    3. Fetch matching vectors from Qdrant
+    4. Apply PCA reduction (768-dim → 3D) to query + documents
+    5. Return coordinates + metadata only
 
     Args:
         request: Starlette request with query parameters
 
     Returns:
-        JSON response with coordinates_2d and results
+        JSON response with coordinates_3d and results (including query point)
     """
     settings = get_settings()
 
@@ -209,7 +211,8 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 {
                     "success": True,
                     "results": [],
-                    "coordinates_2d": [],
+                    "coordinates_3d": [],
+                    "query_coords": None,
                     "message": "No results found",
                 }
             )
@@ -253,7 +256,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 }
             )
 
-        # Extract dense vectors (handle both named and unnamed vectors)
+        # Extract dense vectors and group by document
         def extract_dense_vector(point):
             if point.vector is None:
                 return None
@@ -263,13 +266,21 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             # If unnamed vector (array), use directly
             return point.vector
 
-        vectors = np.array(
-            [v for v in (extract_dense_vector(p) for p in points) if v is not None]
-        )
+        # Group chunk vectors by doc_id
+        from collections import defaultdict
+
+        doc_chunks = defaultdict(list)
+        for point in points:
+            if point.payload:
+                doc_id = int(point.payload.get("doc_id", 0))
+                vector = extract_dense_vector(point)
+                if vector is not None:
+                    doc_chunks[doc_id].append(vector)
+
         vector_fetch_duration = time.perf_counter() - vector_fetch_start
 
-        if len(vectors) < 2:
-            # Not enough points for PCA
+        if len(doc_chunks) < 2:
+            # Not enough documents for PCA
             return JSONResponse(
                 {
                     "success": True,
@@ -283,35 +294,131 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                         }
                         for r in search_results
                     ],
-                    "coordinates_2d": [[0, 0]] * len(search_results),
-                    "message": "Not enough vectors for PCA",
+                    "coordinates_3d": [[0, 0, 0]] * len(search_results),
+                    "query_coords": [0, 0, 0],
+                    "message": "Not enough documents for PCA",
                 }
             )
 
-        # Apply PCA dimensionality reduction (768-dim → 2D)
+        # Detect embedding dimension from first available vector
+        embedding_dim = None
+        for chunks in doc_chunks.values():
+            if chunks:
+                embedding_dim = len(chunks[0])
+                break
+
+        if embedding_dim is None:
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": "Could not determine embedding dimension",
+                },
+                status_code=500,
+            )
+
+        logger.info(f"Detected embedding dimension: {embedding_dim}")
+
+        # Average chunk vectors per document to create document-level embeddings
+        # Maintain order of search_results for coordinate mapping
+        doc_vectors = []
+        for result in search_results:
+            if result.id in doc_chunks:
+                # Average all chunk embeddings for this document
+                chunk_vectors = np.array(doc_chunks[result.id])
+                avg_vector = np.mean(chunk_vectors, axis=0)
+                doc_vectors.append(avg_vector)
+                logger.debug(f"Doc {result.id}: averaged {len(chunk_vectors)} chunks")
+            else:
+                # Document not found in vectors (shouldn't happen)
+                logger.warning(f"Doc {result.id} not found in fetched vectors")
+                # Use zero vector as fallback with detected dimension
+                doc_vectors.append(np.zeros(embedding_dim))
+
+        doc_vectors = np.array(doc_vectors)
+
+        # Generate query embedding for visualization
+        query_embed_start = time.perf_counter()
+        from nextcloud_mcp_server.embedding.service import get_embedding_service
+
+        embedding_service = get_embedding_service()
+        query_embedding = await embedding_service.embed(query)
+        query_embed_duration = time.perf_counter() - query_embed_start
+
+        logger.info(f"Generated query embedding (dimension={len(query_embedding)})")
+
+        # Combine query vector with document vectors for PCA
+        # Query will be the last point in the array
+        all_vectors = np.vstack([doc_vectors, np.array([query_embedding])])
+
+        # Normalize vectors to unit length (L2 normalization)
+        # This is critical because Qdrant uses COSINE distance, which only measures
+        # vector direction (angle), not magnitude. PCA uses Euclidean distance which
+        # considers both direction and magnitude. By normalizing to unit length,
+        # Euclidean distances in PCA space will match cosine distances.
+        norms = np.linalg.norm(all_vectors, axis=1, keepdims=True)
+
+        # Check for zero-norm vectors (can happen with empty/corrupted embeddings)
+        zero_norm_mask = norms[:, 0] < 1e-10
+        if zero_norm_mask.any():
+            zero_indices = np.where(zero_norm_mask)[0]
+            logger.warning(
+                f"Found {zero_norm_mask.sum()} zero-norm vectors at indices {zero_indices.tolist()}. "
+                "Replacing with small epsilon to avoid division by zero."
+            )
+            # Replace zero norms with small epsilon to avoid NaN
+            norms[zero_norm_mask] = 1e-10
+
+        all_vectors_normalized = all_vectors / norms
+        logger.info(
+            f"Normalized vectors: query_norm={norms[-1][0]:.3f}, "
+            f"doc_norm_range=[{norms[:-1].min():.3f}, {norms[:-1].max():.3f}]"
+        )
+
+        # Apply PCA dimensionality reduction (768-dim → 3D) on normalized vectors
         pca_start = time.perf_counter()
-        pca = PCA(n_components=2)
-        coords_2d = pca.fit_transform(vectors)
+        pca = PCA(n_components=3)
+        coords_3d = pca.fit_transform(all_vectors_normalized)
         pca_duration = time.perf_counter() - pca_start
 
         # After fit, these attributes are guaranteed to be set
         assert pca.explained_variance_ratio_ is not None
 
-        logger.info(
-            f"PCA explained variance: PC1={pca.explained_variance_ratio_[0]:.3f}, "
-            f"PC2={pca.explained_variance_ratio_[1]:.3f}"
+        # Check for NaN values in PCA output (numerical instability)
+        nan_mask = np.isnan(coords_3d)
+        if nan_mask.any():
+            nan_rows = np.where(nan_mask.any(axis=1))[0]
+            logger.error(
+                f"Found NaN values in PCA output at {len(nan_rows)} points: {nan_rows.tolist()[:10]}. "
+                "Replacing NaN with 0.0 to prevent JSON serialization error."
+            )
+            # Replace NaN with 0 to allow JSON serialization
+            coords_3d = np.nan_to_num(coords_3d, nan=0.0)
+
+        # Split query coords from document coords
+        # Round to 2 decimal places for cleaner display
+        query_coords_3d = [
+            round(float(x), 2) for x in coords_3d[-1]
+        ]  # Last point is query
+        doc_coords_3d = coords_3d[:-1]  # All but last are documents
+
+        total_chunks = sum(len(chunks) for chunks in doc_chunks.values())
+        avg_chunks_per_doc = (
+            total_chunks / len(doc_vectors) if doc_vectors.size > 0 else 0
         )
 
-        # Map results to coordinates (use first chunk per document)
-        result_coords = []
-        seen_doc_ids = set()
+        logger.info(
+            f"PCA explained variance: PC1={pca.explained_variance_ratio_[0]:.3f}, "
+            f"PC2={pca.explained_variance_ratio_[1]:.3f}, "
+            f"PC3={pca.explained_variance_ratio_[2]:.3f}"
+        )
+        logger.info(
+            f"Embedding stats: documents={len(doc_vectors)}, "
+            f"total_chunks={total_chunks}, avg_chunks_per_doc={avg_chunks_per_doc:.1f}, "
+            f"query_dim={len(query_embedding)}, doc_vector_dim={doc_vectors.shape[1] if doc_vectors.size > 0 else 0}"
+        )
 
-        for point, coord in zip(points, coords_2d):
-            if point.payload:
-                doc_id = int(point.payload.get("doc_id", 0))
-                if doc_id not in seen_doc_ids and doc_id in doc_ids:
-                    seen_doc_ids.add(doc_id)
-                    result_coords.append(coord.tolist())
+        # Coordinates already match search_results order (1:1 mapping)
+        result_coords = [[round(float(x), 2) for x in coord] for coord in doc_coords_3d]
 
         # Build response
         response_results = [
@@ -338,26 +445,30 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             f"Viz search timing: total={total_duration * 1000:.1f}ms, "
             f"search={search_duration * 1000:.1f}ms ({search_duration / total_duration * 100:.1f}%), "
             f"vector_fetch={vector_fetch_duration * 1000:.1f}ms ({vector_fetch_duration / total_duration * 100:.1f}%), "
+            f"query_embed={query_embed_duration * 1000:.1f}ms ({query_embed_duration / total_duration * 100:.1f}%), "
             f"pca={pca_duration * 1000:.1f}ms ({pca_duration / total_duration * 100:.1f}%), "
-            f"results={len(search_results)}, vectors={len(vectors)}"
+            f"results={len(search_results)}, doc_vectors={len(doc_vectors)}"
         )
 
         return JSONResponse(
             {
                 "success": True,
                 "results": response_results,
-                "coordinates_2d": result_coords[: len(search_results)],
+                "coordinates_3d": result_coords[: len(search_results)],
+                "query_coords": query_coords_3d,
                 "pca_variance": {
                     "pc1": float(pca.explained_variance_ratio_[0]),
                     "pc2": float(pca.explained_variance_ratio_[1]),
+                    "pc3": float(pca.explained_variance_ratio_[2]),
                 },
                 "timing": {
                     "total_ms": round(total_duration * 1000, 2),
                     "search_ms": round(search_duration * 1000, 2),
                     "vector_fetch_ms": round(vector_fetch_duration * 1000, 2),
+                    "query_embed_ms": round(query_embed_duration * 1000, 2),
                     "pca_ms": round(pca_duration * 1000, 2),
                     "num_results": len(search_results),
-                    "num_vectors": len(vectors),
+                    "num_doc_vectors": len(doc_vectors),
                 },
             }
         )

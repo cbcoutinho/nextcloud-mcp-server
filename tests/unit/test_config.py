@@ -159,8 +159,8 @@ class TestChunkConfigValidation:
     def test_default_chunk_settings(self):
         """Test default chunk size and overlap values."""
         settings = Settings()
-        assert settings.document_chunk_size == 512
-        assert settings.document_chunk_overlap == 50
+        assert settings.document_chunk_size == 2048
+        assert settings.document_chunk_overlap == 200
 
     def test_valid_chunk_settings(self):
         """Test valid chunk size and overlap configuration."""
@@ -205,7 +205,7 @@ class TestChunkConfigValidation:
             )
 
     def test_small_chunk_size_warning(self, caplog):
-        """Test that chunk size < 100 triggers warning."""
+        """Test that chunk size < 512 triggers warning."""
         import logging
 
         caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
@@ -214,19 +214,19 @@ class TestChunkConfigValidation:
             document_chunk_overlap=10,
         )
         assert (
-            "DOCUMENT_CHUNK_SIZE is set to 64 words, which is quite small"
+            "DOCUMENT_CHUNK_SIZE is set to 64 characters, which is quite small"
             in caplog.text
         )
-        assert "Consider using at least 256 words" in caplog.text
+        assert "Consider using at least 1024 characters" in caplog.text
 
     def test_reasonable_chunk_size_no_warning(self, caplog):
-        """Test that chunk size >= 100 doesn't trigger warning."""
+        """Test that chunk size >= 512 doesn't trigger warning."""
         import logging
 
         caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
         Settings(
-            document_chunk_size=256,
-            document_chunk_overlap=25,
+            document_chunk_size=1024,
+            document_chunk_overlap=100,
         )
         assert "DOCUMENT_CHUNK_SIZE" not in caplog.text
 

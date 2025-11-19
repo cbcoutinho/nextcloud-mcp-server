@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}{{ error_title|default('Error') }} - Nextcloud MCP Server{% endblock %}
+
+{% block content %}
+<h1>{{ error_title|default('Error') }}</h1>
+
+<div class="error">
+    <strong>Error:</strong> {{ error_message }}
+</div>
+
+{% if login_url %}
+<p><a href="{{ login_url }}" class="btn btn-primary">Login again</a></p>
+{% endif %}
+
+{% if back_url %}
+<p><a href="{{ back_url }}" class="btn">Go Back</a></p>
+{% endif %}
+{% endblock %}

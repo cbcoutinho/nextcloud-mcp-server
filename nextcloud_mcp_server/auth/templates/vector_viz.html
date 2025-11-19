@@ -1,286 +1,111 @@
-<style>
-    .viz-card {
-        background: white;
-        border-radius: 8px;
-        padding: 20px;
-        margin-bottom: 20px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .viz-controls {
-        margin-bottom: 20px;
-    }
-    .viz-control-row {
-        display: grid;
-        grid-template-columns: 2fr 1fr auto;
-        gap: 12px;
-        margin-bottom: 12px;
-        align-items: end;
-    }
-    .viz-control-group {
-        margin-bottom: 15px;
-    }
-    .viz-control-group label {
-        display: block;
-        margin-bottom: 5px;
-        font-weight: 500;
-        color: #333;
-    }
-    .viz-control-group input[type="text"],
-    .viz-control-group input[type="number"],
-    .viz-control-group select {
-        width: 100%;
-        padding: 8px 12px;
-        border: 1px solid #ddd;
-        border-radius: 4px;
-        font-size: 14px;
-    }
-    .viz-control-group input[type="range"] {
-        width: 100%;
-    }
-    .viz-control-group select[multiple] {
-        min-height: 100px;
-    }
-    .viz-weight-display {
-        display: inline-block;
-        min-width: 40px;
-        text-align: right;
-        color: #666;
-    }
-    .viz-btn {
-        background: #0066cc;
-        color: white;
-        border: none;
-        padding: 10px 20px;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 14px;
-        font-weight: 500;
-    }
-    .viz-btn:hover {
-        background: #0052a3;
-    }
-    .viz-btn-secondary {
-        background: #6c757d;
-        color: white;
-        border: none;
-        padding: 6px 12px;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 13px;
-        margin-bottom: 12px;
-    }
-    .viz-btn-secondary:hover {
-        background: #5a6268;
-    }
-    #viz-plot-container {
-        width: 100%;
-        height: 600px;
-        position: relative;
-    }
-    #viz-plot {
-        width: 100%;
-        height: 100%;
-    }
-    .viz-loading {
-        text-align: center;
-        padding: 40px;
-        color: #666;
-    }
-    .viz-loading-overlay {
-        position: absolute;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: white;
-        color: #666;
-    }
-    .viz-no-results {
-        text-align: center;
-        padding: 40px;
-        color: #666;
-        font-style: italic;
-    }
-    .viz-advanced-section {
-        margin-top: 16px;
-        padding: 16px;
-        background: #f8f9fa;
-        border-radius: 4px;
-        border: 1px solid #dee2e6;
-    }
-    .viz-advanced-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 20px;
-    }
-    .viz-info-box {
-        background: #e3f2fd;
-        border-left: 4px solid #2196f3;
-        padding: 12px;
-        margin-bottom: 20px;
-        font-size: 14px;
-    }
-    .chunk-toggle-btn {
-        background: #6c757d;
-        color: white;
-        border: none;
-        padding: 4px 10px;
-        border-radius: 3px;
-        cursor: pointer;
-        font-size: 12px;
-        margin-top: 6px;
-    }
-    .chunk-toggle-btn:hover {
-        background: #5a6268;
-    }
-    .chunk-context {
-        background: #f8f9fa;
-        border: 1px solid #dee2e6;
-        border-radius: 4px;
-        padding: 12px;
-        margin-top: 8px;
-        font-family: monospace;
-        font-size: 13px;
-        line-height: 1.6;
-        white-space: pre-wrap;
-        word-wrap: break-word;
-    }
-    .chunk-text {
-        color: #666;
-    }
-    .chunk-matched {
-        background: #fff3cd;
-        border: 1px solid #ffc107;
-        padding: 2px 4px;
-        border-radius: 2px;
-        font-weight: 500;
-        color: #333;
-    }
-    .chunk-ellipsis {
-        color: #999;
-        font-style: italic;
-    }
-</style>
-
 <div x-data="vizApp()">
-    <div class="viz-card">
-        <h2>Vector Visualization</h2>
-        <div class="viz-info-box">
-            Testing search algorithms on your indexed documents. User: <strong>{{ username }}</strong>
-        </div>
+    <div class="viz-layout">
+        <!-- Top: Search Controls -->
+        <div class="viz-card viz-controls-card">
+            <form @submit.prevent="executeSearch">
+                <div class="viz-controls-grid">
+                    <div class="viz-control-group">
+                        <label>Search Query</label>
+                        <input type="text" x-model="query" placeholder="Enter search query..." required />
+                    </div>
 
-        <form @submit.prevent="executeSearch">
-            <div class="viz-controls">
-                <!-- Main Controls -->
-                <div class="viz-control-group">
-                    <label>Search Query</label>
-                    <input type="text" x-model="query" placeholder="Enter search query..." required />
-                </div>
-
-                <div class="viz-control-row">
-                    <div class="viz-control-group" style="margin-bottom: 0;">
+                    <div class="viz-control-group">
                         <label>Algorithm</label>
                         <select x-model="algorithm">
-                            <option value="semantic">Semantic (Dense Vectors)</option>
-                            <option value="bm25_hybrid" selected>BM25 Hybrid (Dense + Sparse)</option>
+                            <option value="semantic">Semantic (Dense)</option>
+                            <option value="bm25_hybrid" selected>BM25 Hybrid</option>
                         </select>
                     </div>
 
-                    <div class="viz-control-group" style="margin-bottom: 0;">
-                        <label>Fusion Method</label>
+                    <div class="viz-control-group">
+                        <label>Fusion</label>
                         <select x-model="fusion" :disabled="algorithm !== 'bm25_hybrid'" :style="algorithm !== 'bm25_hybrid' ? 'opacity: 0.5; cursor: not-allowed;' : ''">
-                            <option value="rrf" selected>RRF (Reciprocal Rank Fusion)</option>
-                            <option value="dbsf">DBSF (Distribution-Based Score Fusion)</option>
+                            <option value="rrf" selected>RRF</option>
+                            <option value="dbsf">DBSF</option>
                         </select>
                     </div>
 
-                    <div style="display: flex; align-items: flex-end;">
-                        <button type="submit" class="viz-btn" style="width: 100%;">Search & Visualize</button>
+                    <div class="viz-control-group">
+                        <label>&nbsp;</label>
+                        <button type="submit" class="viz-btn">Search</button>
                     </div>
 
-                    <div style="display: flex; align-items: flex-end;">
-                        <button type="button" class="viz-btn-secondary" @click="showAdvanced = !showAdvanced" style="white-space: nowrap;">
-                            <span x-text="showAdvanced ? 'Hide Advanced' : 'Advanced'"></span>
+                    <div class="viz-control-group">
+                        <label>&nbsp;</label>
+                        <button type="button" class="viz-btn-secondary" @click="showAdvanced = !showAdvanced">
+                            <span x-text="showAdvanced ? 'Hide' : 'Advanced'"></span>
                         </button>
                     </div>
                 </div>
 
                 <!-- Advanced Options (Collapsible) -->
-                <div class="viz-advanced-section" x-show="showAdvanced" x-transition.opacity.duration.200ms>
-                    <h3 style="margin-top: 0; margin-bottom: 16px; font-size: 16px;">Advanced Options</h3>
-
-                    <div class="viz-advanced-grid">
+                <div x-show="showAdvanced" style="margin-top: 16px;">
+                    <div class="viz-controls-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
                         <div class="viz-control-group">
-                            <label style="display: block; margin-bottom: 8px;">Document Types</label>
-                            <div style="display: grid; grid-template-columns: 1fr; gap: 6px;">
+                            <label>Document Types</label>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px;">
                                 <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
-                                    <input type="checkbox" x-model="docTypes" value="" style="margin-right: 8px;">
-                                    <span>All Types</span>
+                                    <input type="checkbox" x-model="docTypes" value="" style="margin-right: 4px;">
+                                    <span>All</span>
                                 </label>
                                 <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
-                                    <input type="checkbox" x-model="docTypes" value="note" style="margin-right: 8px;">
+                                    <input type="checkbox" x-model="docTypes" value="note" style="margin-right: 4px;">
                                     <span>Notes</span>
                                 </label>
                                 <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
-                                    <input type="checkbox" x-model="docTypes" value="file" style="margin-right: 8px;">
+                                    <input type="checkbox" x-model="docTypes" value="file" style="margin-right: 4px;">
                                     <span>Files</span>
                                 </label>
                                 <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
-                                    <input type="checkbox" x-model="docTypes" value="calendar" style="margin-right: 8px;">
-                                    <span>Calendar Events</span>
+                                    <input type="checkbox" x-model="docTypes" value="calendar" style="margin-right: 4px;">
+                                    <span>Calendar</span>
                                 </label>
                                 <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
-                                    <input type="checkbox" x-model="docTypes" value="contact" style="margin-right: 8px;">
+                                    <input type="checkbox" x-model="docTypes" value="contact" style="margin-right: 4px;">
                                     <span>Contacts</span>
                                 </label>
                                 <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
-                                    <input type="checkbox" x-model="docTypes" value="deck" style="margin-right: 8px;">
-                                    <span>Deck Cards</span>
+                                    <input type="checkbox" x-model="docTypes" value="deck" style="margin-right: 4px;">
+                                    <span>Deck</span>
                                 </label>
                             </div>
                         </div>
 
-                        <div>
-                            <div class="viz-control-group">
-                                <label>Score Threshold (Semantic/Hybrid)</label>
-                                <input type="number" x-model.number="scoreThreshold" min="0" max="1" step="any" />
-                            </div>
+                        <div class="viz-control-group">
+                            <label>Score Threshold</label>
+                            <input type="number" x-model.number="scoreThreshold" min="0" max="1" step="any" />
+                        </div>
 
-                            <div class="viz-control-group">
-                                <label>Result Limit</label>
-                                <input type="number" x-model.number="limit" min="1" max="100" />
-                            </div>
+                        <div class="viz-control-group">
+                            <label>Result Limit</label>
+                            <input type="number" x-model.number="limit" min="1" max="1000" />
+                        </div>
+
+                        <div class="viz-control-group">
+                            <label>Display Options</label>
+                            <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal; margin-top: 4px;">
+                                <input type="checkbox" x-model="showQueryPoint" @change="updatePlot()" style="margin-right: 6px;">
+                                <span>Show Query Point</span>
+                            </label>
                         </div>
                     </div>
-
-                    <!-- Info: BM25 Hybrid fusion methods -->
-                    <div x-show="algorithm === 'bm25_hybrid'" style="margin-top: 16px; padding: 12px; background: #e9ecef; border-radius: 4px;">
-                        <p style="margin: 0; font-size: 14px; color: #666;">
-                            <strong>BM25 Hybrid Search:</strong> Combines dense semantic vectors with sparse BM25 keyword vectors.
-                        </p>
-                        <p style="margin: 8px 0 0 0; font-size: 13px; color: #666;">
-                            <strong>RRF:</strong> Reciprocal Rank Fusion - Rank-based fusion producing scores in [0.0, 1.0]
-                        </p>
-                        <p style="margin: 4px 0 0 0; font-size: 13px; color: #666;">
-                            <strong>DBSF:</strong> Distribution-Based Score Fusion - Sums normalized scores (can exceed 1.0)
-                        </p>
-                    </div>
                 </div>
-            </div>
-        </form>
-    </div>
-
-    <div class="viz-card">
-        <div id="viz-plot-container">
-            <div x-show="loading" class="viz-loading-overlay" x-transition.opacity.duration.200ms>
-                Executing search and computing PCA projection...
-            </div>
-            <div id="viz-plot" x-show="!loading" x-transition.opacity.duration.200ms></div>
+            </form>
         </div>
-    </div>
 
-    <div class="viz-card">
-        <h3>Search Results (<span x-text="loading ? '...' : results.length"></span>)</h3>
+        <!-- Plot -->
+        <div class="viz-card viz-card-plot">
+            <div id="viz-plot-container">
+                <div x-show="loading" class="viz-loading-overlay" x-transition.opacity.duration.200ms>
+                    Executing search and computing PCA projection...
+                </div>
+                <div id="viz-plot" x-show="!loading" x-transition.opacity.duration.200ms></div>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div class="viz-card" style="flex: 0 0 auto;">
+            <h3 style="margin-top: 0;">Search Results (<span x-text="loading ? '...' : results.length"></span>)</h3>
 
         <div x-show="loading" class="viz-loading" x-transition.opacity.duration.200ms>
             Loading results...
@@ -335,5 +160,6 @@
                 </template>
             </div>
         </template>
-    </div>
-</div>
+        </div><!-- Search Results -->
+    </div><!-- .viz-layout -->
+</div><!-- x-data="vizApp()" -->

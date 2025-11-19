@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}{{ success_title|default('Success') }} - Nextcloud MCP Server{% endblock %}
+
+{% block extra_head %}
+{% if redirect_url and redirect_delay %}
+<meta http-equiv="refresh" content="{{ redirect_delay }};url={{ redirect_url }}">
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="success">
+    <h1>{{ success_title|default('✓ Success') }}</h1>
+    {% for message in success_messages %}
+    <p>{{ message }}</p>
+    {% endfor %}
+    {% if redirect_url %}
+    <p>Redirecting...</p>
+    {% endif %}
+</div>
+{% endblock %}
