@@ -120,15 +120,22 @@ function vizApp() {
                 }
             };
 
+            // Preserve camera position if plot already exists
+            const plotDiv = document.getElementById('viz-plot');
+            let cameraSettings = { eye: { x: 1.5, y: 1.5, z: 1.5 } }; // Default camera position
+
+            if (plotDiv && plotDiv.layout && plotDiv.layout.scene && plotDiv.layout.scene.camera) {
+                // Plot exists and has been interacted with - preserve current camera
+                cameraSettings = plotDiv.layout.scene.camera;
+            }
+
             const layout = {
                 title: `Vector Space (PCA 3D) - ${results.length} results`,
                 scene: {
                     xaxis: { title: 'PC1' },
                     yaxis: { title: 'PC2' },
                     zaxis: { title: 'PC3' },
-                    camera: {
-                        eye: { x: 1.5, y: 1.5, z: 1.5 }
-                    }
+                    camera: cameraSettings
                 },
                 hovermode: 'closest',
                 autosize: true,  // Enable auto-sizing to fit container
@@ -145,7 +152,9 @@ function vizApp() {
                 displayModeBar: true
             };
 
-            Plotly.newPlot('viz-plot', traces, layout, config);
+            // Use Plotly.react() instead of newPlot() to preserve camera position
+            // when toggling query point visibility
+            Plotly.react('viz-plot', traces, layout, config);
         },
 
         getNextcloudUrl(result) {
