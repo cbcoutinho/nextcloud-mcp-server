@@ -16,6 +16,15 @@ function vizApp() {
         expandedChunks: {},
         chunkLoading: {},
 
+        init() {
+            // Set up window resize listener to resize plot
+            window.addEventListener('resize', () => {
+                if (this.coordinates && this.results.length > 0) {
+                    Plotly.Plots.resize('viz-plot');
+                }
+            });
+        },
+
         async executeSearch() {
             this.loading = true;
             this.results = [];
@@ -73,6 +82,11 @@ function vizApp() {
         },
 
         renderPlot(coordinates, queryCoords, results) {
+            // Get container dimensions before creating layout
+            const container = document.getElementById('viz-plot-container');
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+
             const scores = results.map(r => r.score);
 
             // Trace 1: Document results (always visible)
@@ -103,7 +117,13 @@ function vizApp() {
                     color: scores,
                     colorscale: 'Viridis',
                     showscale: true,
-                    colorbar: { title: 'Relative Score' },
+                    colorbar: {
+                        title: 'Relative Score',
+                        x: 1.02,
+                        xanchor: 'left',
+                        thickness: 20,
+                        len: 0.8
+                    },
                     cmin: 0,
                     cmax: 1
                 }
@@ -134,18 +154,25 @@ function vizApp() {
 
             const layout = {
                 title: `Vector Space (PCA 3D) - ${results.length} results`,
+                width: width,   // Explicit width from container
+                height: height, // Explicit height from container
                 scene: {
                     xaxis: { title: 'PC1' },
                     yaxis: { title: 'PC2' },
                     zaxis: { title: 'PC3' },
                     camera: {
                         eye: { x: 1.5, y: 1.5, z: 1.5 }
+                    },
+                    // Full width for 3D scene
+                    domain: {
+                        x: [0, 1],
+                        y: [0, 1]
                     }
                 },
                 hovermode: 'closest',
-                autosize: true,  // Enable auto-sizing to fit container
-                showlegend: true,
-                margin: { l: 0, r: 0, t: 40, b: 0 }  // Minimize margins for full width
+                autosize: true,  // Enable auto-sizing for window resizes
+                showlegend: false,  // Hide legend
+                margin: { l: 0, r: 100, t: 40, b: 0 }  // Right margin for colorbar
             };
 
             // Always render both traces - visibility is controlled by the visible property
@@ -157,8 +184,8 @@ function vizApp() {
                 displayModeBar: true
             };
 
-            // Use newPlot() for initial render - camera position will be preserved
-            // by subsequent Plotly.restyle() calls in updatePlot()
+            // Use newPlot() with explicit dimensions - renders at correct size immediately
+            // Camera position will be preserved by subsequent Plotly.restyle() calls in updatePlot()
             Plotly.newPlot('viz-plot', traces, layout, config);
         },
 
