@@ -1,3 +1,16 @@
+## v0.44.0 (2025-11-19)
+
+### Feat
+
+- Improve vector visualization with static assets and fixes
+- Redesign UI to match Nextcloud ecosystem aesthetic
+
+### Fix
+
+- Improve 3D plot rendering with explicit dimensions and window resize support
+- Preserve 3D plot camera and improve documentation
+- Preserve 3D plot camera position and fix CSS loading
+
 ## v0.43.0 (2025-11-18)
 
 ### Feat
