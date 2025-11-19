@@ -56,16 +56,26 @@ function vizApp() {
         },
 
         updatePlot() {
-            // Re-render plot with current data when toggle changes
+            // Toggle query point visibility without recreating the plot
+            // This preserves camera position naturally since layout is untouched
             if (this.coordinates && this.queryCoords && this.results.length > 0) {
-                this.renderPlot(this.coordinates, this.queryCoords, this.results);
+                const plotDiv = document.getElementById('viz-plot');
+
+                // If plot exists, just toggle the query trace visibility
+                if (plotDiv && plotDiv.data && plotDiv.data.length >= 2) {
+                    // Trace index 1 is the query point
+                    Plotly.restyle('viz-plot', { visible: this.showQueryPoint }, [1]);
+                } else {
+                    // Plot doesn't exist yet, render it
+                    this.renderPlot(this.coordinates, this.queryCoords, this.results);
+                }
             }
         },
 
         renderPlot(coordinates, queryCoords, results) {
             const scores = results.map(r => r.score);
 
-            // Trace 1: Document results
+            // Trace 1: Document results (always visible)
             const documentTrace = {
                 x: coordinates.map(c => c[0]),
                 y: coordinates.map(c => c[1]),
@@ -73,6 +83,7 @@ function vizApp() {
                 mode: 'markers',
                 type: 'scatter3d',
                 name: 'Documents',
+                visible: true,
                 customdata: results.map((r, i) => ({
                     title: r.title,
                     raw_score: r.original_score,
@@ -98,7 +109,7 @@ function vizApp() {
                 }
             };
 
-            // Trace 2: Query point (distinct marker)
+            // Trace 2: Query point (visibility controlled by toggle)
             const queryTrace = {
                 x: [queryCoords[0]],
                 y: [queryCoords[1]],
@@ -106,6 +117,7 @@ function vizApp() {
                 mode: 'markers',
                 type: 'scatter3d',
                 name: 'Query',
+                visible: this.showQueryPoint,  // Initial visibility from state
                 hovertemplate:
                     '<b>Search Query</b><br>' +
                     `(x=${queryCoords[0]}, y=${queryCoords[1]}, z=${queryCoords[2]})` +
@@ -120,22 +132,15 @@ function vizApp() {
                 }
             };
 
-            // Preserve camera position if plot already exists
-            const plotDiv = document.getElementById('viz-plot');
-            let cameraSettings = { eye: { x: 1.5, y: 1.5, z: 1.5 } }; // Default camera position
-
-            if (plotDiv && plotDiv.layout && plotDiv.layout.scene && plotDiv.layout.scene.camera) {
-                // Plot exists and has been interacted with - preserve current camera
-                cameraSettings = plotDiv.layout.scene.camera;
-            }
-
             const layout = {
                 title: `Vector Space (PCA 3D) - ${results.length} results`,
                 scene: {
                     xaxis: { title: 'PC1' },
                     yaxis: { title: 'PC2' },
                     zaxis: { title: 'PC3' },
-                    camera: cameraSettings
+                    camera: {
+                        eye: { x: 1.5, y: 1.5, z: 1.5 }
+                    }
                 },
                 hovermode: 'closest',
                 autosize: true,  // Enable auto-sizing to fit container
@@ -143,8 +148,8 @@ function vizApp() {
                 margin: { l: 0, r: 0, t: 40, b: 0 }  // Minimize margins for full width
             };
 
-            // Conditionally include query trace based on toggle
-            const traces = this.showQueryPoint ? [documentTrace, queryTrace] : [documentTrace];
+            // Always render both traces - visibility is controlled by the visible property
+            const traces = [documentTrace, queryTrace];
 
             // Enable responsive resizing
             const config = {
@@ -152,9 +157,9 @@ function vizApp() {
                 displayModeBar: true
             };
 
-            // Use Plotly.react() instead of newPlot() to preserve camera position
-            // when toggling query point visibility
-            Plotly.react('viz-plot', traces, layout, config);
+            // Use newPlot() for initial render - camera position will be preserved
+            // by subsequent Plotly.restyle() calls in updatePlot()
+            Plotly.newPlot('viz-plot', traces, layout, config);
         },
 
         getNextcloudUrl(result) {
