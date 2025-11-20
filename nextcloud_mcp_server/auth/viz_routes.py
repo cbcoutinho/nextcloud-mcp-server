@@ -212,7 +212,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                     "success": True,
                     "results": [],
                     "coordinates_3d": [],
-                    "query_coords": None,
+                    "query_coords": [],
                     "message": "No results found",
                 }
             )
