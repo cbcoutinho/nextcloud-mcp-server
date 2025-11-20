@@ -266,10 +266,11 @@ async def scan_user_documents(
                     needs_indexing = True
                 elif existing_metadata.get("is_placeholder", False):
                     # Placeholder exists - check if it's stale (processing may have failed)
-                    # Only requeue if placeholder is older than 2x scan interval
+                    # Only requeue if placeholder is older than 5x scan interval
+                    # (Large PDFs can take 3-4 minutes to process)
                     queued_at = existing_metadata.get("queued_at", 0)
                     placeholder_age = time.time() - queued_at
-                    stale_threshold = get_settings().vector_sync_scan_interval * 2
+                    stale_threshold = get_settings().vector_sync_scan_interval * 5
                     if placeholder_age > stale_threshold:
                         logger.debug(
                             f"Found stale placeholder for note {doc_id} "
@@ -460,10 +461,11 @@ async def scan_user_documents(
                         needs_indexing = True
                     elif existing_metadata.get("is_placeholder", False):
                         # Placeholder exists - check if it's stale (processing may have failed)
-                        # Only requeue if placeholder is older than 2x scan interval
+                        # Only requeue if placeholder is older than 5x scan interval
+                        # (Large PDFs can take 3-4 minutes to process)
                         queued_at = existing_metadata.get("queued_at", 0)
                         placeholder_age = time.time() - queued_at
-                        stale_threshold = get_settings().vector_sync_scan_interval * 2
+                        stale_threshold = get_settings().vector_sync_scan_interval * 5
                         if placeholder_age > stale_threshold:
                             logger.debug(
                                 f"Found stale placeholder for file {file_path} (ID: {file_id}) "

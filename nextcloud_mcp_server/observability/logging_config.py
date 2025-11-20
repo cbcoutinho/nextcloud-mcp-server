@@ -37,14 +37,17 @@ class HealthCheckFilter(logging.Filter):
         """
         # Check if the log message contains health check endpoints
         message = record.getMessage()
-        return not any(
-            endpoint in message
-            for endpoint in [
-                "/health/live",
-                "/health/ready",
-                "/metrics",
-                "/app/vector-sync/status",
-            ]
+        return (
+            not any(
+                endpoint in message
+                for endpoint in [
+                    "/health/live",
+                    "/health/ready",
+                    "/metrics",
+                    "/app/vector-sync/status",
+                ]
+            )
+            or "OpenCV not installed. Disabling OCR" in message
         )
 
 
