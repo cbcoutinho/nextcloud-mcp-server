@@ -27,10 +27,11 @@ class DocumentTask:
     """Document task for processing queue."""
 
     user_id: str
-    doc_id: str
+    doc_id: int | str  # int for files/notes, str for legacy
     doc_type: str  # "note", "file", "calendar"
     operation: str  # "index" or "delete"
     modified_at: int
+    file_path: str | None = None  # File path for files (when doc_id is file_id)
 
 
 # Track documents potentially deleted (grace period before actual deletion)
@@ -337,7 +338,7 @@ async def scan_user_documents(
         # Scan for tagged PDF files
         file_count = 0
         file_queued = 0
-        nextcloud_file_paths = set()
+        nextcloud_file_ids = set()
 
         try:
             # Find files with vector-index tag using OCS Tags API
@@ -352,8 +353,9 @@ async def scan_user_documents(
             for file_info in tagged_files:
                 # Files are already filtered by MIME type in find_files_by_tag()
                 file_count += 1
-                file_path = file_info["path"]
-                nextcloud_file_paths.add(file_path)
+                file_id = file_info["id"]  # Use numeric file ID, not path
+                file_path = file_info["path"]  # Keep path for logging
+                nextcloud_file_ids.add(file_id)
 
                 # Use last_modified timestamp if available, otherwise use current time
                 modified_at = file_info.get("last_modified_timestamp", int(time.time()))
@@ -372,22 +374,23 @@ async def scan_user_documents(
                     await send_stream.send(
                         DocumentTask(
                             user_id=user_id,
-                            doc_id=file_path,
+                            doc_id=file_id,  # Use numeric file ID
                             doc_type="file",
                             operation="index",
                             modified_at=modified_at,
+                            file_path=file_path,  # Pass file path for content retrieval
                         )
                     )
                     file_queued += 1
                 else:
                     # Incremental sync: compare with indexed state
-                    indexed_at = indexed_files.get(file_path)
+                    indexed_at = indexed_files.get(file_id)
 
                     # If file reappeared, remove from potentially_deleted
-                    file_key = (user_id, file_path)
+                    file_key = (user_id, file_id)
                     if file_key in _potentially_deleted:
                         logger.debug(
-                            f"File {file_path} reappeared, removing from deletion grace period"
+                            f"File {file_path} (ID: {file_id}) reappeared, removing from deletion grace period"
                         )
                         del _potentially_deleted[file_key]
 
@@ -396,10 +399,11 @@ async def scan_user_documents(
                         await send_stream.send(
                             DocumentTask(
                                 user_id=user_id,
-                                doc_id=file_path,
+                                doc_id=file_id,  # Use numeric file ID
                                 doc_type="file",
                                 operation="index",
                                 modified_at=modified_at,
+                                file_path=file_path,  # Pass file path for content retrieval
                             )
                         )
                         file_queued += 1
@@ -411,9 +415,9 @@ async def scan_user_documents(
 
             # Check for deleted files (not initial sync)
             if not initial_sync:
-                for file_path in indexed_files:
-                    if file_path not in nextcloud_file_paths:
-                        file_key = (user_id, file_path)
+                for file_id in indexed_files:
+                    if file_id not in nextcloud_file_ids:
+                        file_key = (user_id, file_id)
 
                         if file_key in _potentially_deleted:
                             # Check if grace period elapsed
@@ -423,13 +427,13 @@ async def scan_user_documents(
                             if time_missing >= grace_period:
                                 # Grace period elapsed, send for deletion
                                 logger.info(
-                                    f"File {file_path} missing for {time_missing:.1f}s "
+                                    f"File ID {file_id} missing for {time_missing:.1f}s "
                                     f"(>{grace_period:.1f}s grace period), sending deletion"
                                 )
                                 await send_stream.send(
                                     DocumentTask(
                                         user_id=user_id,
-                                        doc_id=file_path,
+                                        doc_id=file_id,  # Use numeric file ID
                                         doc_type="file",
                                         operation="delete",
                                         modified_at=0,
@@ -440,7 +444,7 @@ async def scan_user_documents(
                         else:
                             # First time missing, add to grace period tracking
                             logger.debug(
-                                f"File {file_path} missing for first time, starting grace period"
+                                f"File ID {file_id} missing for first time, starting grace period"
                             )
                             _potentially_deleted[file_key] = current_time
 

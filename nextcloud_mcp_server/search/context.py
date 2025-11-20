@@ -12,6 +12,68 @@ from nextcloud_mcp_server.client import NextcloudClient
 logger = logging.getLogger(__name__)
 
 
+async def _get_file_path_from_qdrant(
+    user_id: str, file_id: int, chunk_start: int, chunk_end: int
+) -> str | None:
+    """Resolve file_id to file_path by querying Qdrant payload.
+
+    Args:
+        user_id: User ID who owns the file
+        file_id: Numeric file ID
+        chunk_start: Character offset where chunk starts
+        chunk_end: Character offset where chunk ends
+
+    Returns:
+        File path string, or None if not found in Qdrant
+    """
+    try:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        from nextcloud_mcp_server.config import get_settings
+        from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+        qdrant_client = await get_qdrant_client()
+        settings = get_settings()
+
+        # Query for the specific chunk
+        scroll_result = await qdrant_client.scroll(
+            collection_name=settings.get_collection_name(),
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    FieldCondition(key="doc_id", match=MatchValue(value=file_id)),
+                    FieldCondition(key="doc_type", match=MatchValue(value="file")),
+                    FieldCondition(
+                        key="chunk_start_offset", match=MatchValue(value=chunk_start)
+                    ),
+                    FieldCondition(
+                        key="chunk_end_offset", match=MatchValue(value=chunk_end)
+                    ),
+                ]
+            ),
+            limit=1,
+            with_payload=["file_path"],
+            with_vectors=False,
+        )
+
+        if scroll_result[0]:
+            point = scroll_result[0][0]
+            file_path = point.payload.get("file_path")
+            if file_path:
+                logger.debug(f"Resolved file_id {file_id} to file_path {file_path}")
+                return str(file_path)
+
+        logger.warning(
+            f"Could not find file_path in Qdrant for file_id {file_id}, "
+            f"chunk [{chunk_start}:{chunk_end}]"
+        )
+        return None
+
+    except Exception as e:
+        logger.error(f"Error querying Qdrant for file_path: {e}", exc_info=True)
+        return None
+
+
 @dataclass
 class ChunkContext:
     """Expanded chunk with surrounding context and position markers.
@@ -64,7 +126,7 @@ async def get_chunk_with_context(
     Args:
         nc_client: Authenticated Nextcloud client
         user_id: User ID who owns the document
-        doc_id: Document ID (note ID or file path)
+        doc_id: Document ID (int for notes/files)
         doc_type: Type of document ("note", "file", etc.)
         chunk_start: Character offset where chunk starts
         chunk_end: Character offset where chunk ends
@@ -77,8 +139,22 @@ async def get_chunk_with_context(
         ChunkContext with expanded context and markers, or None if document
         cannot be retrieved
     """
+    # For files, retrieve file_path from Qdrant payload
+    resolved_doc_id = doc_id
+    if doc_type == "file" and isinstance(doc_id, int):
+        file_path = await _get_file_path_from_qdrant(
+            user_id, doc_id, chunk_start, chunk_end
+        )
+        if not file_path:
+            logger.warning(
+                f"Could not resolve file_id {doc_id} to file_path from Qdrant"
+            )
+            return None
+        resolved_doc_id = file_path
+        logger.debug(f"Resolved file_id {doc_id} to file_path {file_path}")
+
     # Fetch full document text
-    full_text = await _fetch_document_text(nc_client, doc_id, doc_type)
+    full_text = await _fetch_document_text(nc_client, resolved_doc_id, doc_type)
     if full_text is None:
         logger.warning(
             f"Could not fetch document text for {doc_type} {doc_id}, "

@@ -261,9 +261,14 @@ async def _index_document(
         title = document["title"]
         etag = document.get("etag", "")
         file_metadata = {}  # No file-specific metadata for notes
+        file_path = None  # Notes don't have file paths
     elif doc_task.doc_type == "file":
-        # For files, doc_id is the file path
-        file_path = doc_task.doc_id
+        # For files, doc_id is now the numeric file ID, file_path comes from DocumentTask
+        if not doc_task.file_path:
+            raise ValueError(
+                f"File path required for file indexing but not provided (file_id={doc_task.doc_id})"
+            )
+        file_path = doc_task.file_path
 
         # Read file content via WebDAV
         content_bytes, content_type = await nc_client.webdav.read_file(file_path)
@@ -347,7 +352,7 @@ async def _index_document(
                     # File-specific metadata (PDF, etc.)
                     **(
                         {
-                            "file_path": doc_task.doc_id,
+                            "file_path": file_path,  # Store file path for retrieval
                             "mime_type": file_metadata.get("content_type", ""),
                             "file_size": file_metadata.get("file_size"),
                             "page_number": chunk.page_number,
