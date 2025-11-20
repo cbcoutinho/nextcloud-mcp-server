@@ -190,6 +190,15 @@ class NextcloudClient:
         """Helper to get the base WebDAV path for the authenticated user."""
         return f"/remote.php/dav/files/{self.username}"
 
+    async def __aenter__(self):
+        """Async context manager entry."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit - closes all clients."""
+        await self.close()
+        return False  # Don't suppress exceptions
+
     async def close(self):
         """Close the HTTP client and CalDAV client."""
         await self._client.aclose()

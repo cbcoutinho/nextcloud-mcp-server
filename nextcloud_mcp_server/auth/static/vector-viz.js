@@ -217,7 +217,7 @@ function vizApp() {
         },
 
         async toggleChunk(result) {
-            const resultKey = `${result.doc_type}_${result.id}`;
+            const resultKey = `${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`;
 
             if (this.isChunkExpanded(resultKey)) {
                 delete this.expandedChunks[resultKey];

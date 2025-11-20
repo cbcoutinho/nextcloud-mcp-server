@@ -18,6 +18,8 @@ from starlette.authentication import requires
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
+from nextcloud_mcp_server.client import NextcloudClient
+
 logger = logging.getLogger(__name__)
 
 # Setup Jinja2 environment for templates
@@ -25,14 +27,20 @@ _template_dir = Path(__file__).parent / "templates"
 _jinja_env = Environment(loader=FileSystemLoader(_template_dir))
 
 
-async def _get_authenticated_client_for_userinfo(request: Request) -> httpx.AsyncClient:
-    """Get an authenticated HTTP client for user info page operations.
+async def _get_authenticated_client_for_userinfo(request: Request) -> NextcloudClient:
+    """Get an authenticated Nextcloud client for user info page operations.
+
+    This is a shared helper for authenticated routes that need to access
+    Nextcloud APIs. It handles both BasicAuth and OAuth authentication modes.
 
     Args:
         request: Starlette request object
 
     Returns:
-        Authenticated httpx.AsyncClient
+        Authenticated NextcloudClient
+
+    Raises:
+        RuntimeError: If credentials/session not configured
     """
     oauth_ctx = getattr(request.app.state, "oauth_context", None)
 
@@ -45,11 +53,15 @@ async def _get_authenticated_client_for_userinfo(request: Request) -> httpx.Asyn
         if not all([nextcloud_host, username, password]):
             raise RuntimeError("BasicAuth credentials not configured")
 
-        assert nextcloud_host is not None  # Type narrowing for type checker
-        return httpx.AsyncClient(
+        from httpx import BasicAuth
+
+        assert nextcloud_host is not None
+        assert username is not None
+        assert password is not None
+        return NextcloudClient(
             base_url=nextcloud_host,
-            auth=(username, password),
-            timeout=30.0,
+            username=username,
+            auth=BasicAuth(username, password),
         )
 
     # OAuth mode - get token from session
@@ -64,15 +76,14 @@ async def _get_authenticated_client_for_userinfo(request: Request) -> httpx.Asyn
         raise RuntimeError("No access token found in session")
 
     access_token = token_data["access_token"]
+    username = token_data.get("username")
     nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
 
-    if not nextcloud_host:
-        raise RuntimeError("Nextcloud host not configured")
+    if not nextcloud_host or not username:
+        raise RuntimeError("Nextcloud host or username not configured")
 
-    return httpx.AsyncClient(
-        base_url=nextcloud_host,
-        headers={"Authorization": f"Bearer {access_token}"},
-        timeout=30.0,
+    return NextcloudClient.from_token(
+        base_url=nextcloud_host, token=access_token, username=username
     )
 
 
@@ -423,10 +434,10 @@ async def user_info_html(request: Request) -> HTMLResponse:
     try:
         from nextcloud_mcp_server.auth.permissions import is_nextcloud_admin
 
-        # Get authenticated HTTP client
-        http_client = await _get_authenticated_client_for_userinfo(request)
-        is_admin = await is_nextcloud_admin(request, http_client)
-        await http_client.aclose()
+        # Get authenticated Nextcloud client
+        nc_client = await _get_authenticated_client_for_userinfo(request)
+        is_admin = await is_nextcloud_admin(request, nc_client._client)
+        await nc_client.close()
     except Exception as e:
         logger.warning(f"Failed to check admin status: {e}")
         # Default to not admin if check fails

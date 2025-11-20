@@ -35,6 +35,29 @@ class SemanticSearchResult(BaseModel):
     chunk_end_offset: Optional[int] = Field(
         default=None, description="Character position where chunk ends in document"
     )
+    page_number: Optional[int] = Field(
+        default=None, description="Page number for PDF documents"
+    )
+    # Context expansion fields (optional, populated when include_context=True)
+    has_context_expansion: bool = Field(
+        default=False, description="Whether context expansion was performed"
+    )
+    marked_text: Optional[str] = Field(
+        default=None,
+        description="Full text with position markers around matched chunk",
+    )
+    before_context: Optional[str] = Field(
+        default=None, description="Text before the matched chunk"
+    )
+    after_context: Optional[str] = Field(
+        default=None, description="Text after the matched chunk"
+    )
+    has_before_truncation: Optional[bool] = Field(
+        default=None, description="Whether before_context was truncated"
+    )
+    has_after_truncation: Optional[bool] = Field(
+        default=None, description="Whether after_context was truncated"
+    )
 
 
 class SemanticSearchResponse(BaseResponse):

@@ -133,6 +133,9 @@ class SearchResult:
         metadata: Additional algorithm-specific metadata
         chunk_start_offset: Character position where chunk starts (None if not available)
         chunk_end_offset: Character position where chunk ends (None if not available)
+        page_number: Page number for PDF documents (None for other doc types)
+        chunk_index: Zero-based index of this chunk in the document
+        total_chunks: Total number of chunks in the document
     """
 
     id: int
@@ -143,6 +146,9 @@ class SearchResult:
     metadata: dict[str, Any] | None = None
     chunk_start_offset: int | None = None
     chunk_end_offset: int | None = None
+    page_number: int | None = None
+    chunk_index: int = 0
+    total_chunks: int = 1
 
     def __post_init__(self):
         """Validate score is non-negative.
