@@ -122,6 +122,26 @@ def initialize_document_processors():
         except Exception as e:
             logger.warning(f"Failed to register Tesseract processor: {e}")
 
+    # Register PyMuPDF processor (high priority, local, no API required)
+    if "pymupdf" in config["processors"]:
+        pymupdf_config = config["processors"]["pymupdf"]
+        try:
+            from nextcloud_mcp_server.document_processors.pymupdf import (
+                PyMuPDFProcessor,
+            )
+
+            processor = PyMuPDFProcessor(
+                extract_images=pymupdf_config.get("extract_images", True),
+                image_dir=pymupdf_config.get("image_dir"),
+            )
+            registry.register(processor, priority=15)  # Higher than unstructured
+            logger.info(
+                f"Registered PyMuPDF processor: extract_images={pymupdf_config.get('extract_images', True)}"
+            )
+            registered_count += 1
+        except Exception as e:
+            logger.warning(f"Failed to register PyMuPDF processor: {e}")
+
     # Register custom processor
     if "custom" in config["processors"]:
         custom_config = config["processors"]["custom"]

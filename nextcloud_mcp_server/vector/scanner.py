@@ -4,6 +4,7 @@ Periodically scans enabled users' content and queues changed documents for proce
 """
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 
@@ -309,7 +310,148 @@ async def scan_user_documents(
                     )
                     _potentially_deleted[doc_key] = current_time
 
+        # Scan tagged PDF files (after notes)
+        # Get indexed files from Qdrant (separate query for doc_type="file")
+        indexed_files = {}
+        if not initial_sync:
+            file_scroll_result = await qdrant_client.scroll(
+                collection_name=settings.get_collection_name(),
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                        FieldCondition(key="doc_type", match=MatchValue(value="file")),
+                    ]
+                ),
+                limit=10000,  # Reasonable limit for file count
+                with_payload=["doc_id", "indexed_at"],
+                with_vectors=False,
+            )
+
+            indexed_files = {
+                point.payload["doc_id"]: point.payload["indexed_at"]
+                for point in file_scroll_result[0]
+            }
+
+            logger.debug(f"Found {len(indexed_files)} indexed files in Qdrant")
+
+        # Scan for tagged PDF files
+        file_count = 0
+        file_queued = 0
+        nextcloud_file_paths = set()
+
+        try:
+            # Find files with vector-index tag using OCS Tags API
+            settings = get_settings()
+            tag_name = os.getenv("VECTOR_SYNC_PDF_TAG", "vector-index")
+            # Use NextcloudClient.find_files_by_tag() which uses proper OCS API
+            # and filters by PDF MIME type
+            tagged_files = await nc_client.find_files_by_tag(
+                tag_name, mime_type_filter="application/pdf"
+            )
+
+            for file_info in tagged_files:
+                # Files are already filtered by MIME type in find_files_by_tag()
+                file_count += 1
+                file_path = file_info["path"]
+                nextcloud_file_paths.add(file_path)
+
+                # Use last_modified timestamp if available, otherwise use current time
+                modified_at = file_info.get("last_modified_timestamp", int(time.time()))
+                if isinstance(file_info.get("last_modified"), str):
+                    # Parse RFC 2822 date format if needed
+                    from email.utils import parsedate_to_datetime
+
+                    try:
+                        dt = parsedate_to_datetime(file_info["last_modified"])
+                        modified_at = int(dt.timestamp())
+                    except (ValueError, KeyError):
+                        pass
+
+                if initial_sync:
+                    # Send everything on first sync
+                    await send_stream.send(
+                        DocumentTask(
+                            user_id=user_id,
+                            doc_id=file_path,
+                            doc_type="file",
+                            operation="index",
+                            modified_at=modified_at,
+                        )
+                    )
+                    file_queued += 1
+                else:
+                    # Incremental sync: compare with indexed state
+                    indexed_at = indexed_files.get(file_path)
+
+                    # If file reappeared, remove from potentially_deleted
+                    file_key = (user_id, file_path)
+                    if file_key in _potentially_deleted:
+                        logger.debug(
+                            f"File {file_path} reappeared, removing from deletion grace period"
+                        )
+                        del _potentially_deleted[file_key]
+
+                    # Send if never indexed or modified since last index
+                    if indexed_at is None or modified_at > indexed_at:
+                        await send_stream.send(
+                            DocumentTask(
+                                user_id=user_id,
+                                doc_id=file_path,
+                                doc_type="file",
+                                operation="index",
+                                modified_at=modified_at,
+                            )
+                        )
+                        file_queued += 1
+
+            logger.info(
+                f"[SCAN-{scan_id}] Found {file_count} tagged PDFs for {user_id}"
+            )
+            record_vector_sync_scan(file_count)
+
+            # Check for deleted files (not initial sync)
+            if not initial_sync:
+                for file_path in indexed_files:
+                    if file_path not in nextcloud_file_paths:
+                        file_key = (user_id, file_path)
+
+                        if file_key in _potentially_deleted:
+                            # Check if grace period elapsed
+                            first_missing_time = _potentially_deleted[file_key]
+                            time_missing = current_time - first_missing_time
+
+                            if time_missing >= grace_period:
+                                # Grace period elapsed, send for deletion
+                                logger.info(
+                                    f"File {file_path} missing for {time_missing:.1f}s "
+                                    f"(>{grace_period:.1f}s grace period), sending deletion"
+                                )
+                                await send_stream.send(
+                                    DocumentTask(
+                                        user_id=user_id,
+                                        doc_id=file_path,
+                                        doc_type="file",
+                                        operation="delete",
+                                        modified_at=0,
+                                    )
+                                )
+                                file_queued += 1
+                                del _potentially_deleted[file_key]
+                        else:
+                            # First time missing, add to grace period tracking
+                            logger.debug(
+                                f"File {file_path} missing for first time, starting grace period"
+                            )
+                            _potentially_deleted[file_key] = current_time
+
+        except Exception as e:
+            logger.warning(f"Failed to scan tagged files for {user_id}: {e}")
+
+        queued += file_queued
+
         if queued > 0:
-            logger.info(f"Sent {queued} documents for incremental sync: {user_id}")
+            logger.info(
+                f"Sent {queued} documents ({file_queued} files) for incremental sync: {user_id}"
+            )
         else:
             logger.debug(f"No changes detected for {user_id}")

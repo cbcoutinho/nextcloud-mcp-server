@@ -29,6 +29,43 @@ from nextcloud_mcp_server.vector.scanner import DocumentTask
 logger = logging.getLogger(__name__)
 
 
+def assign_page_numbers(chunks, page_boundaries):
+    """Assign page numbers to chunks based on page boundaries.
+
+    Each chunk gets the page number where most of its content appears.
+    For chunks spanning multiple pages, assigns the page containing the
+    majority of the chunk's characters.
+
+    Args:
+        chunks: List of ChunkWithPosition objects
+        page_boundaries: List of dicts with {page, start_offset, end_offset}
+
+    Returns:
+        None (modifies chunks in place)
+    """
+    if not page_boundaries:
+        return
+
+    for chunk in chunks:
+        # Find which page(s) this chunk overlaps with
+        max_overlap = 0
+        assigned_page = None
+
+        for boundary in page_boundaries:
+            # Calculate overlap between chunk and page
+            overlap_start = max(chunk.start_offset, boundary["start_offset"])
+            overlap_end = min(chunk.end_offset, boundary["end_offset"])
+            overlap = max(0, overlap_end - overlap_start)
+
+            # Assign to page with maximum overlap
+            if overlap > max_overlap:
+                max_overlap = overlap
+                assigned_page = boundary["page"]
+
+        if assigned_page is not None:
+            chunk.page_number = assigned_page
+
+
 async def processor_task(
     worker_id: int,
     receive_stream: MemoryObjectReceiveStream[DocumentTask],
@@ -223,6 +260,32 @@ async def _index_document(
         content = f"{document['title']}\n\n{document['content']}"
         title = document["title"]
         etag = document.get("etag", "")
+        file_metadata = {}  # No file-specific metadata for notes
+    elif doc_task.doc_type == "file":
+        # For files, doc_id is the file path
+        file_path = doc_task.doc_id
+
+        # Read file content via WebDAV
+        content_bytes, content_type = await nc_client.webdav.read_file(file_path)
+
+        # Use document processor registry to extract text
+        from nextcloud_mcp_server.document_processors import get_registry
+
+        registry = get_registry()
+
+        try:
+            result = await registry.process(
+                content=content_bytes,
+                content_type=content_type,
+                filename=file_path,
+            )
+            content = result.text
+            file_metadata = result.metadata
+            title = file_metadata.get("title") or file_path.split("/")[-1]
+            etag = ""  # WebDAV read_file doesn't return etag
+        except Exception as e:
+            logger.error(f"Failed to process file {file_path}: {e}")
+            raise
     else:
         raise ValueError(f"Unsupported doc_type: {doc_task.doc_type}")
 
@@ -231,7 +294,11 @@ async def _index_document(
         chunk_size=settings.document_chunk_size,
         overlap=settings.document_chunk_overlap,
     )
-    chunks = chunker.chunk_text(content)
+    chunks = await chunker.chunk_text(content)
+
+    # Assign page numbers to chunks if page boundaries are available (PDFs)
+    if doc_task.doc_type == "file" and "page_boundaries" in file_metadata:
+        assign_page_numbers(chunks, file_metadata["page_boundaries"])
 
     # Extract chunk texts for embedding
     chunk_texts = [chunk.text for chunk in chunks]
@@ -242,7 +309,7 @@ async def _index_document(
 
     # Generate sparse embeddings (BM25 for keyword matching)
     bm25_service = get_bm25_service()
-    sparse_embeddings = bm25_service.encode_batch(chunk_texts)
+    sparse_embeddings = await bm25_service.encode_batch(chunk_texts)
 
     # Prepare Qdrant points
     indexed_at = int(time.time())
@@ -277,6 +344,22 @@ async def _index_document(
                     "chunk_start_offset": chunk.start_offset,
                     "chunk_end_offset": chunk.end_offset,
                     "metadata_version": 2,  # v2 includes position metadata
+                    # File-specific metadata (PDF, etc.)
+                    **(
+                        {
+                            "file_path": doc_task.doc_id,
+                            "mime_type": file_metadata.get("content_type", ""),
+                            "file_size": file_metadata.get("file_size"),
+                            "page_number": chunk.page_number,
+                            "page_count": file_metadata.get("page_count"),
+                            "author": file_metadata.get("author"),
+                            "creation_date": file_metadata.get("creation_date"),
+                            "has_images": file_metadata.get("has_images", False),
+                            "image_count": file_metadata.get("image_count", 0),
+                        }
+                        if doc_task.doc_type == "file"
+                        else {}
+                    ),
                 },
             )
         )

@@ -821,6 +821,20 @@ class WebDAVClient(BaseNextcloudClient):
                     item["file_id"] = int(value) if value else None
                 elif tag == "favorite":
                     item["is_favorite"] = value == "1"
+                elif tag == "tags":
+                    # Tags can be comma-separated or have multiple child elements
+                    if value:
+                        # Handle comma-separated tags
+                        item["tags"] = [
+                            t.strip() for t in value.split(",") if t.strip()
+                        ]
+                    else:
+                        # Check for child tag elements (alternative format)
+                        tag_elements = child.findall(".//{http://owncloud.org/ns}tag")
+                        if tag_elements:
+                            item["tags"] = [t.text for t in tag_elements if t.text]
+                        else:
+                            item["tags"] = []
                 elif tag == "permissions":
                     item["permissions"] = value
                 elif tag == "size":
@@ -948,3 +962,336 @@ class WebDAVClient(BaseNextcloudClient):
             properties=properties,
             limit=limit,
         )
+
+    async def find_by_tag(
+        self, tag_name: str, scope: str = "", limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Find files by tag name.
+
+        DEPRECATED: Use NextcloudClient.find_files_by_tag() instead, which uses
+        the proper OCS Tags API rather than WebDAV SEARCH.
+
+        Args:
+            tag_name: Tag to filter by (e.g., "vector-index")
+            scope: Directory path to search in (empty string for user root)
+            limit: Maximum number of results to return
+
+        Returns:
+            List of files/directories with the specified tag
+
+        Examples:
+            # Find all files tagged with "vector-index"
+            results = await find_by_tag("vector-index")
+
+            # Find tagged files in a specific folder
+            results = await find_by_tag("vector-index", scope="Documents")
+        """
+        # Use LIKE for tag matching since tags can be comma-separated
+        where_conditions = f"""
+            <d:like>
+                <d:prop>
+                    <oc:tags/>
+                </d:prop>
+                <d:literal>%{tag_name}%</d:literal>
+            </d:like>
+        """
+
+        # Request tag property along with standard properties
+        properties = [
+            "displayname",
+            "getcontentlength",
+            "getcontenttype",
+            "getlastmodified",
+            "resourcetype",
+            "getetag",
+            "fileid",
+            "tags",
+        ]
+
+        return await self.search_files(
+            scope=scope,
+            where_conditions=where_conditions,
+            properties=properties,
+            limit=limit,
+        )
+
+    async def _get_file_info_by_id(self, file_id: int) -> Dict[str, Any]:
+        """Get file information by Nextcloud file ID using WebDAV.
+
+        Args:
+            file_id: Nextcloud internal file ID
+
+        Returns:
+            File information dictionary with path, size, content_type, etc.
+
+        Raises:
+            HTTPStatusError: If file not found or request fails
+        """
+        # Nextcloud allows accessing files by ID via special meta endpoint
+        meta_path = f"/remote.php/dav/meta/{file_id}/"
+
+        propfind_body = """<?xml version="1.0"?>
+        <d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+            <d:prop>
+                <d:displayname/>
+                <d:getcontentlength/>
+                <d:getcontenttype/>
+                <d:getlastmodified/>
+                <d:resourcetype/>
+                <d:getetag/>
+                <oc:fileid/>
+            </d:prop>
+        </d:propfind>"""
+
+        headers = {"Depth": "0", "Content-Type": "text/xml", "OCS-APIRequest": "true"}
+
+        response = await self._make_request(
+            "PROPFIND", meta_path, content=propfind_body, headers=headers
+        )
+        response.raise_for_status()
+
+        # Parse the XML response
+        root = ET.fromstring(response.content)
+        responses = root.findall(".//{DAV:}response")
+
+        if not responses:
+            raise RuntimeError(f"File ID {file_id} not found")
+
+        response_elem = responses[0]
+        href = response_elem.find(".//{DAV:}href")
+        if href is None:
+            raise RuntimeError(f"No href in response for file ID {file_id}")
+
+        propstat = response_elem.find(".//{DAV:}propstat")
+        if propstat is None:
+            raise RuntimeError(f"No propstat for file ID {file_id}")
+
+        prop = propstat.find(".//{DAV:}prop")
+        if prop is None:
+            raise RuntimeError(f"No prop for file ID {file_id}")
+
+        # Extract file path from displayname or construct from file ID
+        displayname_elem = prop.find(".//{DAV:}displayname")
+        name = (
+            displayname_elem.text if displayname_elem is not None else f"file_{file_id}"
+        )
+
+        # Get file properties
+        size_elem = prop.find(".//{DAV:}getcontentlength")
+        size = int(size_elem.text) if size_elem is not None and size_elem.text else 0
+
+        content_type_elem = prop.find(".//{DAV:}getcontenttype")
+        content_type = content_type_elem.text if content_type_elem is not None else None
+
+        modified_elem = prop.find(".//{DAV:}getlastmodified")
+        modified = modified_elem.text if modified_elem is not None else None
+
+        etag_elem = prop.find(".//{DAV:}getetag")
+        etag = (
+            etag_elem.text.strip('"')
+            if etag_elem is not None and etag_elem.text
+            else None
+        )
+
+        # Check if it's a directory
+        resourcetype = prop.find(".//{DAV:}resourcetype")
+        is_directory = (
+            resourcetype is not None
+            and resourcetype.find(".//{DAV:}collection") is not None
+        )
+
+        # Try to get actual file path - meta endpoint doesn't give us the real path
+        # so we'll construct a reasonable path from the name
+        # The calling code in NextcloudClient will have the context to determine the actual path
+        file_info = {
+            "name": name,
+            "path": f"/{name}",  # Placeholder - caller should use WebDAV to get real path if needed
+            "size": size,
+            "content_type": content_type,
+            "last_modified": modified,
+            "etag": etag,
+            "is_directory": is_directory,
+            "file_id": file_id,
+        }
+
+        logger.debug(f"Retrieved file info for ID {file_id}: {name}")
+        return file_info
+
+    async def get_tag_by_name(self, tag_name: str) -> dict[str, Any] | None:
+        """Get a system tag by its name via WebDAV.
+
+        Args:
+            tag_name: Name of the tag to find (case-sensitive)
+
+        Returns:
+            Tag dictionary if found, None otherwise
+        """
+        # Use WebDAV PROPFIND to list all systemtags
+        propfind_body = """<?xml version="1.0"?>
+<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:prop>
+    <oc:id/>
+    <oc:display-name/>
+    <oc:user-visible/>
+    <oc:user-assignable/>
+  </d:prop>
+</d:propfind>"""
+
+        response = await self._client.request(
+            "PROPFIND",
+            "/remote.php/dav/systemtags/",
+            headers={"Depth": "1"},
+            content=propfind_body,
+        )
+        response.raise_for_status()
+
+        # Parse XML response
+        root = ET.fromstring(response.content)
+        ns = {
+            "d": "DAV:",
+            "oc": "http://owncloud.org/ns",
+        }
+
+        for response_elem in root.findall("d:response", ns):
+            href = response_elem.find("d:href", ns)
+            if href is None or href.text == "/remote.php/dav/systemtags/":
+                # Skip the collection itself
+                continue
+
+            propstat = response_elem.find("d:propstat", ns)
+            if propstat is None:
+                continue
+
+            prop = propstat.find("d:prop", ns)
+            if prop is None:
+                continue
+
+            # Extract tag properties
+            tag_id_elem = prop.find("oc:id", ns)
+            display_name_elem = prop.find("oc:display-name", ns)
+            user_visible_elem = prop.find("oc:user-visible", ns)
+            user_assignable_elem = prop.find("oc:user-assignable", ns)
+
+            if display_name_elem is not None and display_name_elem.text == tag_name:
+                tag_info = {
+                    "id": int(tag_id_elem.text) if tag_id_elem is not None else None,
+                    "name": display_name_elem.text,
+                    "userVisible": user_visible_elem.text.lower() == "true"
+                    if user_visible_elem is not None
+                    else True,
+                    "userAssignable": user_assignable_elem.text.lower() == "true"
+                    if user_assignable_elem is not None
+                    else True,
+                }
+                logger.debug(f"Found tag '{tag_name}' with ID {tag_info['id']}")
+                return tag_info
+
+        logger.debug(f"Tag '{tag_name}' not found")
+        return None
+
+    async def get_files_by_tag(self, tag_id: int) -> list[dict[str, Any]]:
+        """Get all files tagged with a specific system tag via WebDAV REPORT.
+
+        Args:
+            tag_id: Numeric ID of the tag
+
+        Returns:
+            List of file info dictionaries with path, size, content_type, etc.
+        """
+        # Use WebDAV REPORT method with systemtag filter, requesting all properties
+        report_body = f"""<?xml version="1.0"?>
+<oc:filter-files xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
+  <d:prop>
+    <oc:fileid/>
+    <d:displayname/>
+    <d:getcontentlength/>
+    <d:getcontenttype/>
+    <d:getlastmodified/>
+    <d:getetag/>
+  </d:prop>
+  <oc:filter-rules>
+    <oc:systemtag>{tag_id}</oc:systemtag>
+  </oc:filter-rules>
+</oc:filter-files>"""
+
+        response = await self._client.request(
+            "REPORT",
+            f"{self._get_webdav_base_path()}/",
+            content=report_body,
+        )
+        response.raise_for_status()
+
+        # Parse XML response
+        root = ET.fromstring(response.content)
+        ns = {
+            "d": "DAV:",
+            "oc": "http://owncloud.org/ns",
+        }
+
+        files = []
+        for response_elem in root.findall("d:response", ns):
+            # Extract href (file path)
+            href_elem = response_elem.find("d:href", ns)
+            if href_elem is None or not href_elem.text:
+                continue
+
+            propstat = response_elem.find("d:propstat", ns)
+            if propstat is None:
+                continue
+
+            prop = propstat.find("d:prop", ns)
+            if prop is None:
+                continue
+
+            # Extract all properties
+            fileid_elem = prop.find("oc:fileid", ns)
+            displayname_elem = prop.find("d:displayname", ns)
+            contentlength_elem = prop.find("d:getcontentlength", ns)
+            contenttype_elem = prop.find("d:getcontenttype", ns)
+            lastmodified_elem = prop.find("d:getlastmodified", ns)
+            etag_elem = prop.find("d:getetag", ns)
+
+            if fileid_elem is None or not fileid_elem.text:
+                continue
+
+            # Decode href path and extract the file path
+            from urllib.parse import unquote
+
+            href_path = unquote(href_elem.text)
+            # Remove WebDAV prefix to get user-relative path
+            webdav_prefix = f"/remote.php/dav/files/{self.username}/"
+            file_path = href_path.replace(webdav_prefix, "/")
+
+            # Parse last modified timestamp
+            last_modified_timestamp = None
+            if lastmodified_elem is not None and lastmodified_elem.text:
+                from email.utils import parsedate_to_datetime
+
+                try:
+                    dt = parsedate_to_datetime(lastmodified_elem.text)
+                    last_modified_timestamp = int(dt.timestamp())
+                except Exception:
+                    pass
+
+            file_info = {
+                "id": int(fileid_elem.text),
+                "path": file_path,
+                "name": displayname_elem.text
+                if displayname_elem is not None
+                else file_path.split("/")[-1],
+                "size": int(contentlength_elem.text)
+                if contentlength_elem is not None and contentlength_elem.text
+                else 0,
+                "content_type": contenttype_elem.text
+                if contenttype_elem is not None
+                else "",
+                "last_modified": lastmodified_elem.text
+                if lastmodified_elem is not None
+                else None,
+                "last_modified_timestamp": last_modified_timestamp,
+                "etag": etag_elem.text if etag_elem is not None else None,
+            }
+            files.append(file_info)
+
+        logger.debug(f"Found {len(files)} files with tag ID {tag_id}")
+        return files

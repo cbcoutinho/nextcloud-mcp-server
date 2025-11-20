@@ -9,12 +9,12 @@ from nextcloud_mcp_server.vector.document_chunker import (
 class TestDocumentChunkerPositions:
     """Test suite for DocumentChunker position tracking functionality."""
 
-    def test_single_chunk_simple_text(self):
+    async def test_single_chunk_simple_text(self):
         """Test that single-chunk documents return correct positions."""
         chunker = DocumentChunker(chunk_size=2048, overlap=200)
         content = "This is a short document."
 
-        chunks = chunker.chunk_text(content)
+        chunks = await chunker.chunk_text(content)
 
         assert len(chunks) == 1
         assert isinstance(chunks[0], ChunkWithPosition)
@@ -22,7 +22,7 @@ class TestDocumentChunkerPositions:
         assert chunks[0].start_offset == 0
         assert chunks[0].end_offset == len(content)
 
-    def test_multiple_chunks_positions(self):
+    async def test_multiple_chunks_positions(self):
         """Test that multi-chunk documents have correct positions."""
         # Use small chunk size to force multiple chunks
         chunker = DocumentChunker(chunk_size=50, overlap=10)
@@ -34,7 +34,7 @@ class TestDocumentChunkerPositions:
             "This is the fourth sentence adding more context."
         )
 
-        chunks = chunker.chunk_text(content)
+        chunks = await chunker.chunk_text(content)
 
         # Verify we got multiple chunks
         assert len(chunks) > 1
@@ -61,12 +61,12 @@ class TestDocumentChunkerPositions:
             extracted = content[chunk.start_offset : chunk.end_offset]
             assert extracted == chunk.text
 
-    def test_chunk_positions_with_whitespace(self):
+    async def test_chunk_positions_with_whitespace(self):
         """Test position tracking with various whitespace."""
         chunker = DocumentChunker(chunk_size=30, overlap=5)
         content = "First sentence here.  Second sentence.\n\nThird sentence.\tFourth sentence."
 
-        chunks = chunker.chunk_text(content)
+        chunks = await chunker.chunk_text(content)
 
         # Verify positions correctly handle whitespace
         for chunk in chunks:
@@ -75,19 +75,19 @@ class TestDocumentChunkerPositions:
             # LangChain strips whitespace by default
             assert len(chunk.text.strip()) > 0
 
-    def test_empty_content(self):
+    async def test_empty_content(self):
         """Test that empty content returns empty chunk."""
         chunker = DocumentChunker(chunk_size=2048, overlap=200)
         content = ""
 
-        chunks = chunker.chunk_text(content)
+        chunks = await chunker.chunk_text(content)
 
         assert len(chunks) == 1
         assert chunks[0].text == ""
         assert chunks[0].start_offset == 0
         assert chunks[0].end_offset == 0
 
-    def test_chunk_overlap_positions(self):
+    async def test_chunk_overlap_positions(self):
         """Test that overlapping chunks have correct positions."""
         chunker = DocumentChunker(chunk_size=50, overlap=15)
         content = (
@@ -97,7 +97,7 @@ class TestDocumentChunkerPositions:
             "This is sentence four adding details."
         )
 
-        chunks = chunker.chunk_text(content)
+        chunks = await chunker.chunk_text(content)
 
         # Verify overlap exists if we have multiple chunks
         if len(chunks) > 1:
@@ -112,14 +112,14 @@ class TestDocumentChunkerPositions:
                 # With overlap, next chunk may start before current ends
                 assert next_chunk.start_offset <= current_chunk.end_offset
 
-    def test_unicode_content_positions(self):
+    async def test_unicode_content_positions(self):
         """Test position tracking with Unicode characters."""
         chunker = DocumentChunker(chunk_size=50, overlap=10)
         content = (
             "Hello 世界. こんにちは there. мир Привет world. שלום مرحبا 你好 friend."
         )
 
-        chunks = chunker.chunk_text(content)
+        chunks = await chunker.chunk_text(content)
 
         # Verify all chunks extract correctly
         for chunk in chunks:
@@ -131,7 +131,7 @@ class TestDocumentChunkerPositions:
             assert chunks[0].start_offset == 0
             assert chunks[0].end_offset == len(content)
 
-    def test_realistic_note_content(self):
+    async def test_realistic_note_content(self):
         """Test with realistic note content similar to Nextcloud Notes."""
         chunker = DocumentChunker(chunk_size=200, overlap=50)
         content = """My Project Notes
@@ -152,7 +152,7 @@ position tracking for each chunk.
 This allows us to highlight the exact chunk that matched a search query,
 which builds trust in the RAG system."""
 
-        chunks = chunker.chunk_text(content)
+        chunks = await chunker.chunk_text(content)
 
         # Should have multiple chunks
         assert len(chunks) > 1
@@ -168,7 +168,7 @@ which builds trust in the RAG system."""
             assert chunk.end_offset <= len(content)
             assert chunk.start_offset < chunk.end_offset
 
-    def test_semantic_boundary_preservation(self):
+    async def test_semantic_boundary_preservation(self):
         """Test that LangChain creates semantically coherent chunks."""
         chunker = DocumentChunker(chunk_size=100, overlap=20)
         content = (
@@ -178,7 +178,7 @@ which builds trust in the RAG system."""
             "Fourth sentence ends."
         )
 
-        chunks = chunker.chunk_text(content)
+        chunks = await chunker.chunk_text(content)
 
         # Verify all chunks are extractable using their positions
         for chunk in chunks:
@@ -193,7 +193,7 @@ which builds trust in the RAG system."""
             assert chunk.end_offset <= len(content)
             assert chunk.start_offset < chunk.end_offset
 
-    def test_paragraph_boundary_preservation(self):
+    async def test_paragraph_boundary_preservation(self):
         """Test that LangChain preserves paragraph boundaries."""
         chunker = DocumentChunker(chunk_size=80, overlap=15)
         content = """First paragraph here.
@@ -204,7 +204,7 @@ Third paragraph here.
 
 Fourth paragraph here."""
 
-        chunks = chunker.chunk_text(content)
+        chunks = await chunker.chunk_text(content)
 
         # LangChain should prefer splitting at paragraph boundaries (\n\n)
         # Verify we got multiple chunks
@@ -215,7 +215,7 @@ Fourth paragraph here."""
             extracted = content[chunk.start_offset : chunk.end_offset]
             assert extracted == chunk.text
 
-    def test_default_parameters(self):
+    async def test_default_parameters(self):
         """Test that default parameters work correctly."""
         chunker = DocumentChunker()  # Use defaults: 2048 chars, 200 overlap
 
@@ -224,14 +224,14 @@ Fourth paragraph here."""
             "This is a short note with a few sentences. It should fit in one chunk."
         )
 
-        chunks = chunker.chunk_text(content)
+        chunks = await chunker.chunk_text(content)
 
         assert len(chunks) == 1
         assert chunks[0].text == content
         assert chunks[0].start_offset == 0
         assert chunks[0].end_offset == len(content)
 
-    def test_large_document_chunking(self):
+    async def test_large_document_chunking(self):
         """Test chunking of a large document."""
         chunker = DocumentChunker(chunk_size=100, overlap=20)
 
@@ -244,7 +244,7 @@ Fourth paragraph here."""
         ]
         content = "\n\n".join(paragraphs)
 
-        chunks = chunker.chunk_text(content)
+        chunks = await chunker.chunk_text(content)
 
         # Should create multiple chunks
         assert len(chunks) > 1
@@ -261,12 +261,12 @@ Fourth paragraph here."""
         assert chunks[0].start_offset == 0
         assert chunks[-1].end_offset == len(content)
 
-    def test_position_tracking_with_overlap(self):
+    async def test_position_tracking_with_overlap(self):
         """Test that position tracking works correctly with overlap."""
         chunker = DocumentChunker(chunk_size=50, overlap=15)
         content = "A" * 25 + ". " + "B" * 25 + ". " + "C" * 25 + ". " + "D" * 25 + "."
 
-        chunks = chunker.chunk_text(content)
+        chunks = await chunker.chunk_text(content)
 
         if len(chunks) > 1:
             # Verify overlap creates correct positions

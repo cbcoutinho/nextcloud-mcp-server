@@ -53,7 +53,7 @@ class BM25SparseEmbeddingProvider:
             "values": sparse_embedding.values.tolist(),
         }
 
-    def encode_batch(self, texts: list[str]) -> list[dict[str, Any]]:
+    async def encode_batch(self, texts: list[str]) -> list[dict[str, Any]]:
         """
         Generate BM25 sparse embeddings for multiple texts (batched).
 
@@ -63,7 +63,12 @@ class BM25SparseEmbeddingProvider:
         Returns:
             List of dictionaries with 'indices' and 'values' for each text
         """
-        sparse_embeddings = list(self.model.embed(texts))
+        import anyio
+
+        # Run CPU-bound BM25 encoding in thread pool to avoid blocking event loop
+        sparse_embeddings = await anyio.to_thread.run_sync(
+            lambda: list(self.model.embed(texts))
+        )
 
         return [
             {

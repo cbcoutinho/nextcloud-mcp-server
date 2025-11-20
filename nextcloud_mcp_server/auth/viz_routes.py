@@ -272,7 +272,9 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
         doc_chunks = defaultdict(list)
         for point in points:
             if point.payload:
-                doc_id = int(point.payload.get("doc_id", 0))
+                # doc_id can be int (for notes) or str (for files - file path)
+                # Keep original type instead of forcing to int
+                doc_id = point.payload.get("doc_id", 0)
                 vector = extract_dense_vector(point)
                 if vector is not None:
                     doc_chunks[doc_id].append(vector)

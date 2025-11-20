@@ -128,7 +128,8 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         results = []
 
         for result in search_response.points:
-            doc_id = int(result.payload["doc_id"])
+            # doc_id can be int (notes) or str (files - file paths)
+            doc_id = result.payload["doc_id"]
             doc_type = result.payload.get("doc_type", "note")
             doc_key = (doc_id, doc_type)
 
