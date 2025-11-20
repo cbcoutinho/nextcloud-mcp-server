@@ -153,7 +153,11 @@ async def _fetch_document_text(
         if doc_type == "note":
             # Fetch note by ID
             note = await nc_client.notes.get_note(note_id=int(doc_id))
-            return note.get("content", "")
+            # Reconstruct full content as indexed: title + "\n\n" + content
+            # This ensures chunk offsets align with indexed content structure
+            title = note.get("title", "")
+            content = note.get("content", "")
+            return f"{title}\n\n{content}"
         elif doc_type == "file":
             # Fetch file content via WebDAV
             try:
