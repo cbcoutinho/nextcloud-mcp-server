@@ -10,7 +10,7 @@ from .base import BaseResponse
 class SemanticSearchResult(BaseModel):
     """Model for semantic search results with additional metadata."""
 
-    id: int = Field(description="Document ID")
+    id: int = Field(description="Document ID (int for all document types)")
     doc_type: str = Field(
         description="Document type (note, calendar_event, deck_card, etc.)"
     )

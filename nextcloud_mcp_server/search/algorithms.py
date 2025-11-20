@@ -123,7 +123,7 @@ class SearchResult:
     """A single search result with metadata and score.
 
     Attributes:
-        id: Document ID
+        id: Document ID (int for all document types)
         doc_type: Document type (note, file, calendar, contact, etc.)
         title: Document title
         excerpt: Content excerpt showing match context

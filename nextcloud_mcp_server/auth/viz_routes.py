@@ -235,7 +235,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             must_conditions = [
                 FieldCondition(
                     key="doc_id",
-                    match=MatchValue(value=str(result.id)),
+                    match=MatchValue(value=result.id),
                 ),
                 FieldCondition(
                     key="user_id",
@@ -524,6 +524,8 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
 
         start = int(start_str)
         end = int(end_str)
+        # Convert doc_id to int (all document types use int IDs)
+        doc_id_int = int(doc_id)
 
         # Get authenticated Nextcloud client
         from nextcloud_mcp_server.auth.userinfo_routes import (
@@ -536,7 +538,7 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
             chunk_context = await get_chunk_with_context(
                 nc_client=nc_client,
                 user_id=request.user.display_name,  # User ID from auth
-                doc_id=doc_id,
+                doc_id=doc_id_int,
                 doc_type=doc_type,
                 chunk_start=start,
                 chunk_end=end,
