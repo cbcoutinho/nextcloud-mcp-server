@@ -265,11 +265,22 @@ async def scan_user_documents(
                     # Document modified since last indexing
                     needs_indexing = True
                 elif existing_metadata.get("is_placeholder", False):
-                    # Placeholder exists but processing may have failed - requeue
-                    logger.debug(
-                        f"Found existing placeholder for note {doc_id}, requeuing"
-                    )
-                    needs_indexing = True
+                    # Placeholder exists - check if it's stale (processing may have failed)
+                    # Only requeue if placeholder is older than 2x scan interval
+                    queued_at = existing_metadata.get("queued_at", 0)
+                    placeholder_age = time.time() - queued_at
+                    stale_threshold = get_settings().vector_sync_scan_interval * 2
+                    if placeholder_age > stale_threshold:
+                        logger.debug(
+                            f"Found stale placeholder for note {doc_id} "
+                            f"(age={placeholder_age:.1f}s), requeuing"
+                        )
+                        needs_indexing = True
+                    else:
+                        logger.debug(
+                            f"Skipping note {doc_id} with recent placeholder "
+                            f"(age={placeholder_age:.1f}s < {stale_threshold:.1f}s)"
+                        )
 
                 if needs_indexing:
                     # Write placeholder before queuing
@@ -448,11 +459,22 @@ async def scan_user_documents(
                         # File modified since last indexing
                         needs_indexing = True
                     elif existing_metadata.get("is_placeholder", False):
-                        # Placeholder exists but processing may have failed - requeue
-                        logger.debug(
-                            f"Found existing placeholder for file {file_path} (ID: {file_id}), requeuing"
-                        )
-                        needs_indexing = True
+                        # Placeholder exists - check if it's stale (processing may have failed)
+                        # Only requeue if placeholder is older than 2x scan interval
+                        queued_at = existing_metadata.get("queued_at", 0)
+                        placeholder_age = time.time() - queued_at
+                        stale_threshold = get_settings().vector_sync_scan_interval * 2
+                        if placeholder_age > stale_threshold:
+                            logger.debug(
+                                f"Found stale placeholder for file {file_path} (ID: {file_id}) "
+                                f"(age={placeholder_age:.1f}s), requeuing"
+                            )
+                            needs_indexing = True
+                        else:
+                            logger.debug(
+                                f"Skipping file {file_path} (ID: {file_id}) with recent placeholder "
+                                f"(age={placeholder_age:.1f}s < {stale_threshold:.1f}s)"
+                            )
 
                     if needs_indexing:
                         # Write placeholder before queuing
