@@ -23,6 +23,7 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.vector.document_chunker import DocumentChunker
+from nextcloud_mcp_server.vector.placeholder import delete_placeholder_point
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 from nextcloud_mcp_server.vector.scanner import DocumentTask
 
@@ -416,6 +417,20 @@ async def _index_document(
                     ),
                 },
             )
+        )
+
+    # Delete placeholder before writing real vectors
+    # This prevents duplicates and cleans up the placeholder state
+    try:
+        await delete_placeholder_point(
+            doc_id=doc_task.doc_id,
+            doc_type=doc_task.doc_type,
+            user_id=doc_task.user_id,
+        )
+    except Exception as e:
+        # Log but don't fail indexing if placeholder deletion fails
+        logger.warning(
+            f"Failed to delete placeholder for {doc_task.doc_type}_{doc_task.doc_id}: {e}"
         )
 
     # Upsert to Qdrant

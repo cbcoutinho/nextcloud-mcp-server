@@ -9,6 +9,7 @@ from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_embedding_service
 from nextcloud_mcp_server.observability.metrics import record_qdrant_operation
 from nextcloud_mcp_server.search.algorithms import SearchAlgorithm, SearchResult
+from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -83,10 +84,11 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
 
         # Build Qdrant filter
         filter_conditions = [
+            get_placeholder_filter(),  # Always exclude placeholders from user-facing queries
             FieldCondition(
                 key="user_id",
                 match=MatchValue(value=user_id),
-            )
+            ),
         ]
 
         # Add doc_type filter if specified

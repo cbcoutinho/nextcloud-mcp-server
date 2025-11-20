@@ -83,6 +83,7 @@ async def get_indexed_doc_types(user_id: str) -> set[str]:
     from qdrant_client.models import FieldCondition, Filter, MatchValue
 
     from nextcloud_mcp_server.config import get_settings
+    from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
     from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
     logger = logging.getLogger(__name__)
@@ -97,7 +98,10 @@ async def get_indexed_doc_types(user_id: str) -> set[str]:
         scroll_results, _next_offset = await qdrant_client.scroll(
             collection_name=collection,
             scroll_filter=Filter(
-                must=[FieldCondition(key="user_id", match=MatchValue(value=user_id))]
+                must=[
+                    get_placeholder_filter(),  # Exclude placeholders from doc_type discovery
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                ]
             ),
             limit=1000,  # Sample size to discover types
             with_payload=["doc_type"],

@@ -27,6 +27,7 @@ from nextcloud_mcp_server.search import (
     SemanticSearchAlgorithm,
 )
 from nextcloud_mcp_server.vector.pca import PCA
+from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -233,6 +234,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
 
             # Build filter for this specific chunk
             must_conditions = [
+                get_placeholder_filter(),  # Always exclude placeholders from user-facing queries
                 FieldCondition(
                     key="doc_id",
                     match=MatchValue(value=result.id),
