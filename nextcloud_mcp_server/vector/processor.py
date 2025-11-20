@@ -389,6 +389,7 @@ async def _index_document(
                     "user_id": doc_task.user_id,
                     "doc_id": doc_task.doc_id,
                     "doc_type": doc_task.doc_type,
+                    "is_placeholder": False,  # Real indexed document (not placeholder)
                     "title": title,
                     "excerpt": chunk.text[:200],
                     "indexed_at": indexed_at,
