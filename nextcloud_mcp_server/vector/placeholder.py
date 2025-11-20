@@ -80,6 +80,12 @@ async def write_placeholder_point(
         # Create zero vectors
         zero_dense = [0.0] * dimension
 
+        # Create empty sparse vector for placeholders
+        # Use models.SparseVector with empty indices/values
+        from qdrant_client import models
+
+        empty_sparse = models.SparseVector(indices=[], values=[])
+
         # Generate deterministic point ID
         point_id = _generate_placeholder_id(doc_type, doc_id)
 
@@ -104,7 +110,7 @@ async def write_placeholder_point(
             id=point_id,
             vector={
                 "dense": zero_dense,
-                "sparse": None,  # No sparse vector for placeholders
+                "sparse": empty_sparse,  # Empty sparse vector for placeholders
             },
             payload=payload,
         )
