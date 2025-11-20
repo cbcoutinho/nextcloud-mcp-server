@@ -288,6 +288,30 @@ async def _index_document(
             file_metadata = result.metadata
             title = file_metadata.get("title") or file_path.split("/")[-1]
             etag = ""  # WebDAV read_file doesn't return etag
+
+            # Diagnostic: Log page boundary information if available
+            if "page_boundaries" in file_metadata:
+                page_boundaries = file_metadata["page_boundaries"]
+                logger.info(
+                    f"Page boundaries for {file_path}: "
+                    f"{len(page_boundaries)} pages, text length: {len(content)}"
+                )
+                # Log first 3 page boundaries for debugging
+                for boundary in page_boundaries[:3]:
+                    logger.debug(
+                        f"  Page {boundary['page']}: "
+                        f"offsets [{boundary['start_offset']}:{boundary['end_offset']}]"
+                    )
+                # Verify last boundary matches text length
+                if page_boundaries:
+                    last_boundary = page_boundaries[-1]
+                    if last_boundary["end_offset"] != len(content):
+                        logger.warning(
+                            f"Text length mismatch: content={len(content)}, "
+                            f"last_boundary_end={last_boundary['end_offset']}"
+                        )
+            else:
+                logger.debug(f"No page_boundaries in metadata for {file_path}")
         except Exception as e:
             logger.error(f"Failed to process file {file_path}: {e}")
             raise
@@ -304,6 +328,31 @@ async def _index_document(
     # Assign page numbers to chunks if page boundaries are available (PDFs)
     if doc_task.doc_type == "file" and "page_boundaries" in file_metadata:
         assign_page_numbers(chunks, file_metadata["page_boundaries"])
+
+        # Diagnostic: Verify page number assignment
+        assigned_count = sum(1 for c in chunks if c.page_number is not None)
+        logger.info(
+            f"Assigned page numbers to {assigned_count}/{len(chunks)} chunks "
+            f"for {file_path}"
+        )
+
+        # Log first 3 chunks to see their page assignments
+        for i, chunk in enumerate(chunks[:3]):
+            logger.debug(
+                f"  Chunk {i}: page={chunk.page_number}, "
+                f"offsets=[{chunk.start_offset}:{chunk.end_offset}]"
+            )
+
+        # Warning if NO page numbers were assigned
+        if assigned_count == 0:
+            logger.warning(
+                f"NO page numbers assigned! "
+                f"Text length: {len(content)}, "
+                f"Chunks: {len(chunks)}, "
+                f"Chunk offset range: [{chunks[0].start_offset}:{chunks[-1].end_offset}], "
+                f"Page boundaries: {len(file_metadata['page_boundaries'])} pages, "
+                f"First boundary: {file_metadata['page_boundaries'][0] if file_metadata['page_boundaries'] else 'None'}"
+            )
 
     # Extract chunk texts for embedding
     chunk_texts = [chunk.text for chunk in chunks]
@@ -353,7 +402,7 @@ async def _index_document(
                     **(
                         {
                             "file_path": file_path,  # Store file path for retrieval
-                            "mime_type": file_metadata.get("content_type", ""),
+                            "mime_type": content_type,  # From WebDAV response
                             "file_size": file_metadata.get("file_size"),
                             "page_number": chunk.page_number,
                             "page_count": file_metadata.get("page_count"),

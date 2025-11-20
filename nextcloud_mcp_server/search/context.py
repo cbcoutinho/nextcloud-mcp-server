@@ -247,19 +247,32 @@ async def _fetch_document_text(
 
                 if is_pdf:
                     # Extract text from PDF using PyMuPDF
-                    import fitz  # PyMuPDF
+                    # IMPORTANT: Use pymupdf4llm.to_markdown() to match indexing extraction
+                    # This ensures character offsets align between indexed chunks and retrieval
+                    import pymupdf
+                    import pymupdf4llm
 
                     logger.debug(f"Extracting text from PDF: {file_path}")
-                    pdf_doc = fitz.open(stream=file_content, filetype="pdf")
+                    pdf_doc = pymupdf.open(stream=file_content, filetype="pdf")
                     text_parts = []
-                    for page in pdf_doc:
-                        text_parts.append(page.get_text())
+
+                    # Extract each page as markdown (same as indexing)
+                    for page_num in range(pdf_doc.page_count):
+                        page_md = pymupdf4llm.to_markdown(
+                            pdf_doc,
+                            pages=[page_num],
+                            write_images=False,  # Don't need images for context
+                            page_chunks=False,
+                        )
+                        text_parts.append(page_md)
+
                     pdf_doc.close()
 
-                    full_text = "\n".join(text_parts)
+                    # Join pages (no separator - matches indexing)
+                    full_text = "".join(text_parts)
                     logger.debug(
                         f"Extracted {len(full_text)} characters from "
-                        f"{len(text_parts)} pages in {file_path}"
+                        f"{pdf_doc.page_count} pages in {file_path}"
                     )
                     return full_text
                 else:
