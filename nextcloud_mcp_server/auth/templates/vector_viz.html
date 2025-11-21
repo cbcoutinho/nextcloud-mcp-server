@@ -122,7 +122,8 @@
                         <a :href="getNextcloudUrl(result)" target="_blank" style="font-weight: 500; color: #0066cc; text-decoration: none;">
                             <span x-text="result.title"></span>
                         </a>
-                        <div style="font-size: 14px; color: #666; margin-top: 4px;" x-text="result.excerpt"></div>
+                        <div style="font-size: 14px; color: #666; margin-top: 4px;"
+                             x-text="result.excerpt.length > 200 ? result.excerpt.substring(0, 200) + '...' : result.excerpt"></div>
                         <div style="font-size: 12px; color: #999; margin-top: 4px;">
                             Raw Score: <span x-text="result.original_score.toFixed(3)"></span>
                             (<span x-text="(result.score * 100).toFixed(0)"></span>% relative) |

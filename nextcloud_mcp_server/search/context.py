@@ -12,6 +12,141 @@ from nextcloud_mcp_server.client import NextcloudClient
 logger = logging.getLogger(__name__)
 
 
+async def _get_chunk_from_qdrant(
+    user_id: str, doc_id: int, doc_type: str, chunk_start: int, chunk_end: int
+) -> str | None:
+    """Retrieve full chunk text from Qdrant payload.
+
+    This avoids re-fetching and re-parsing documents by using the cached
+    chunk content already stored in Qdrant.
+
+    Args:
+        user_id: User ID who owns the document
+        doc_id: Document ID
+        doc_type: Document type (e.g., "note", "file")
+        chunk_start: Character offset where chunk starts
+        chunk_end: Character offset where chunk ends
+
+    Returns:
+        Full chunk text from Qdrant excerpt field, or None if not found
+    """
+    try:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        from nextcloud_mcp_server.config import get_settings
+        from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+        qdrant_client = await get_qdrant_client()
+        settings = get_settings()
+
+        # Query for the specific chunk
+        scroll_result = await qdrant_client.scroll(
+            collection_name=settings.get_collection_name(),
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+                    FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
+                    FieldCondition(
+                        key="chunk_start_offset", match=MatchValue(value=chunk_start)
+                    ),
+                    FieldCondition(
+                        key="chunk_end_offset", match=MatchValue(value=chunk_end)
+                    ),
+                ]
+            ),
+            limit=1,
+            with_payload=["excerpt"],
+            with_vectors=False,
+        )
+
+        if scroll_result[0]:
+            point = scroll_result[0][0]
+            excerpt = point.payload.get("excerpt")
+            if excerpt:
+                logger.debug(
+                    f"Retrieved chunk from Qdrant for {doc_type} {doc_id}: "
+                    f"{len(excerpt)} chars"
+                )
+                return str(excerpt)
+
+        logger.debug(
+            f"Chunk not found in Qdrant for {doc_type} {doc_id}, "
+            f"chunk [{chunk_start}:{chunk_end}]. Will fall back to document fetch."
+        )
+        return None
+
+    except Exception as e:
+        logger.error(
+            f"Error querying Qdrant for chunk: {e}. Falling back to document fetch.",
+            exc_info=True,
+        )
+        return None
+
+
+async def _get_chunk_by_index_from_qdrant(
+    user_id: str, doc_id: int, doc_type: str, chunk_index: int
+) -> str | None:
+    """Retrieve chunk text by chunk_index from Qdrant payload.
+
+    Used to fetch adjacent chunks for context expansion.
+
+    Args:
+        user_id: User ID who owns the document
+        doc_id: Document ID
+        doc_type: Document type (e.g., "note", "file")
+        chunk_index: Zero-based chunk index in document
+
+    Returns:
+        Full chunk text from Qdrant excerpt field, or None if not found
+    """
+    try:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        from nextcloud_mcp_server.config import get_settings
+        from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+        qdrant_client = await get_qdrant_client()
+        settings = get_settings()
+
+        # Query for chunk by index
+        scroll_result = await qdrant_client.scroll(
+            collection_name=settings.get_collection_name(),
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+                    FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
+                    FieldCondition(
+                        key="chunk_index", match=MatchValue(value=chunk_index)
+                    ),
+                ]
+            ),
+            limit=1,
+            with_payload=["excerpt"],
+            with_vectors=False,
+        )
+
+        if scroll_result[0]:
+            point = scroll_result[0][0]
+            excerpt = point.payload.get("excerpt")
+            if excerpt:
+                logger.debug(
+                    f"Retrieved adjacent chunk {chunk_index} from Qdrant for "
+                    f"{doc_type} {doc_id}: {len(excerpt)} chars"
+                )
+                return str(excerpt)
+
+        return None
+
+    except Exception as e:
+        logger.debug(
+            f"Could not retrieve adjacent chunk {chunk_index} for "
+            f"{doc_type} {doc_id}: {e}"
+        )
+        return None
+
+
 async def _get_file_path_from_qdrant(
     user_id: str, file_id: int, chunk_start: int, chunk_end: int
 ) -> str | None:
@@ -117,11 +252,11 @@ async def get_chunk_with_context(
     total_chunks: int = 1,
     context_chars: int = 300,
 ) -> ChunkContext | None:
-    """Fetch chunk with surrounding context from original document.
+    """Fetch chunk with surrounding context.
 
-    Retrieves the full document text and expands the matched chunk to include
-    surrounding context for better understanding. Inserts position markers
-    around the chunk for visualization.
+    First tries to retrieve the chunk from Qdrant (fast, cached). If that fails
+    (e.g., legacy data with truncated excerpts), falls back to fetching and
+    parsing the full document (slower, for PDFs especially).
 
     Args:
         nc_client: Authenticated Nextcloud client
@@ -139,6 +274,111 @@ async def get_chunk_with_context(
         ChunkContext with expanded context and markers, or None if document
         cannot be retrieved
     """
+    # Convert doc_id to int for Qdrant query
+    doc_id_int = (
+        int(doc_id)
+        if isinstance(doc_id, str) and doc_id.isdigit()
+        else (doc_id if isinstance(doc_id, int) else None)
+    )
+
+    # Try to get chunk from Qdrant first (fast path)
+    if doc_id_int is not None:
+        chunk_text = await _get_chunk_from_qdrant(
+            user_id, doc_id_int, doc_type, chunk_start, chunk_end
+        )
+        if chunk_text:
+            logger.info(
+                f"Retrieved chunk from Qdrant cache for {doc_type} {doc_id} "
+                f"(avoids document re-fetch/re-parse)"
+            )
+
+            # Fetch adjacent chunks for context expansion
+            # Get chunk overlap from config to remove duplicate text
+            from nextcloud_mcp_server.config import get_settings
+
+            settings = get_settings()
+            chunk_overlap = settings.document_chunk_overlap
+
+            before_context = ""
+            after_context = ""
+            has_before_truncation = False
+            has_after_truncation = False
+
+            # Fetch previous chunk if not first chunk
+            if chunk_index > 0:
+                before_chunk = await _get_chunk_by_index_from_qdrant(
+                    user_id, doc_id_int, doc_type, chunk_index - 1
+                )
+                if before_chunk:
+                    # Remove overlap: the last chunk_overlap chars of previous chunk
+                    # overlap with the first chunk_overlap chars of current chunk
+                    before_context = (
+                        before_chunk[:-chunk_overlap]
+                        if len(before_chunk) > chunk_overlap
+                        else ""
+                    )
+                    # Truncate if requested context_chars < remaining length
+                    if before_context and len(before_context) > context_chars:
+                        before_context = before_context[-context_chars:]
+                        has_before_truncation = True
+                else:
+                    # Could not fetch previous chunk, but we're not at start
+                    has_before_truncation = True
+
+            # Fetch next chunk if not last chunk
+            if chunk_index < total_chunks - 1:
+                after_chunk = await _get_chunk_by_index_from_qdrant(
+                    user_id, doc_id_int, doc_type, chunk_index + 1
+                )
+                if after_chunk:
+                    # Remove overlap: the first chunk_overlap chars of next chunk
+                    # overlap with the last chunk_overlap chars of current chunk
+                    after_context = (
+                        after_chunk[chunk_overlap:]
+                        if len(after_chunk) > chunk_overlap
+                        else ""
+                    )
+                    # Truncate if requested context_chars < remaining length
+                    if after_context and len(after_context) > context_chars:
+                        after_context = after_context[:context_chars]
+                        has_after_truncation = True
+                else:
+                    # Could not fetch next chunk, but we're not at end
+                    has_after_truncation = True
+
+            marked_text = _insert_position_markers(
+                before_context=before_context,
+                chunk_text=chunk_text,
+                after_context=after_context,
+                page_number=page_number,
+                chunk_index=chunk_index,
+                total_chunks=total_chunks,
+                has_before_truncation=has_before_truncation,
+                has_after_truncation=has_after_truncation,
+            )
+            return ChunkContext(
+                chunk_text=chunk_text,
+                before_context=before_context,
+                after_context=after_context,
+                chunk_start_offset=chunk_start,
+                chunk_end_offset=chunk_end,
+                page_number=page_number,
+                chunk_index=chunk_index,
+                total_chunks=total_chunks,
+                marked_text=marked_text,
+                has_before_truncation=has_before_truncation,
+                has_after_truncation=has_after_truncation,
+            )
+
+    # Fallback: Fetch full document and extract chunk with context
+    # This path is taken for:
+    # 1. Legacy data with truncated excerpts in Qdrant
+    # 2. Failed Qdrant queries
+    logger.info(
+        f"Falling back to document fetch for {doc_type} {doc_id} "
+        f"(Qdrant cache miss, possibly legacy data)"
+    )
+
     # For files, retrieve file_path from Qdrant payload
     resolved_doc_id = doc_id
     if doc_type == "file" and isinstance(doc_id, int):

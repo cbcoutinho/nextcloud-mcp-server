@@ -8,12 +8,12 @@ from typing import Any, Optional
 
 import pymupdf
 import pymupdf.layout
-import pymupdf4llm
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 
 # Activate layout analysis for better text extraction
 pymupdf.layout.activate()
+import pymupdf4llm  # noqa
 
 logger = logging.getLogger(__name__)
 

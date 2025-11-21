@@ -391,7 +391,7 @@ async def _index_document(
                     "doc_type": doc_task.doc_type,
                     "is_placeholder": False,  # Real indexed document (not placeholder)
                     "title": title,
-                    "excerpt": chunk.text[:200],
+                    "excerpt": chunk.text,  # Full chunk text (up to chunk_size, default 2048 chars)
                     "indexed_at": indexed_at,
                     "modified_at": doc_task.modified_at,
                     "etag": etag,
