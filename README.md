@@ -18,7 +18,20 @@ This is a **dedicated standalone MCP server** designed for external MCP clients 
 
 ## Quick Start
 
-Get up and running in 60 seconds using Docker:
+The fastest way to get started is via [Smithery](https://smithery.ai/server/@cbcoutinho/nextcloud-mcp-server) - no Docker or self-hosting required:
+
+1. Visit the [Smithery marketplace page](https://smithery.ai/server/@cbcoutinho/nextcloud-mcp-server)
+2. Click "Deploy" and configure:
+   - **Nextcloud URL**: Your Nextcloud instance (e.g., `https://cloud.example.com`)
+   - **Username**: Your Nextcloud username
+   - **App Password**: Generate one in Nextcloud → Settings → Security → Devices & sessions
+
+> [!NOTE]
+> Smithery runs in stateless mode without semantic search. For full features, use [Docker](#docker-self-hosted) or see [ADR-016](docs/ADR-016-smithery-stateless-deployment.md).
+
+## Docker (Self-Hosted)
+
+For full features including semantic search, run with Docker:
 
 ```bash
 # 1. Create a minimal configuration
@@ -38,12 +51,11 @@ curl http://127.0.0.1:8000/health/ready
 # 4. Connect to the endpoint
 http://127.0.0.1:8000/sse
 
-# 4. Or with --transport streamable-http
+# Or with --transport streamable-http
 http://127.0.0.1:8000/mcp
 ```
 
 **Next Steps:**
-- Create an app password in Nextcloud: Settings → Security → Devices & sessions
 - Connect your MCP client (Claude Desktop, IDEs, `mcp dev`, etc.)
 - See [docs/installation.md](docs/installation.md) for other deployment options (local, Kubernetes)
 
