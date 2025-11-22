@@ -93,27 +93,29 @@ async def get_qdrant_client() -> AsyncQdrantClient:
 
             # Validate dimension matches
             if actual_dimension != expected_dimension:
+                embedding_model = settings.get_embedding_model_name()
                 raise ValueError(
                     f"Dimension mismatch for collection '{collection_name}':\n"
-                    f"  Expected: {expected_dimension} (from embedding model '{settings.ollama_embedding_model}')\n"
+                    f"  Expected: {expected_dimension} (from embedding model '{embedding_model}')\n"
                     f"  Found: {actual_dimension}\n"
                     f"This usually means you changed the embedding model.\n"
                     f"Solutions:\n"
                     f"  1. Delete the old collection: Collection will be recreated with new dimensions\n"
                     f"  2. Set QDRANT_COLLECTION to use a different collection name\n"
-                    f"  3. Revert OLLAMA_EMBEDDING_MODEL to the original model"
+                    f"  3. Revert to the original embedding model"
                 )
 
             logger.info(
                 f"Using existing Qdrant collection: {collection_name} "
-                f"(dimension={actual_dimension}, model={settings.ollama_embedding_model})"
+                f"(dimension={actual_dimension}, model={settings.get_embedding_model_name()})"
             )
 
         else:
             # Collection doesn't exist - create it
+            embedding_model = settings.get_embedding_model_name()
             logger.info(
                 f"Collection '{collection_name}' not found, creating with "
-                f"dimension={expected_dimension}, model={settings.ollama_embedding_model}..."
+                f"dimension={expected_dimension}, model={embedding_model}..."
             )
             await _qdrant_client.create_collection(
                 collection_name=collection_name,
@@ -134,7 +136,7 @@ async def get_qdrant_client() -> AsyncQdrantClient:
             logger.info(
                 f"Created Qdrant collection: {collection_name}\n"
                 f"  Dense vector dimension: {expected_dimension}\n"
-                f"  Dense embedding model: {settings.ollama_embedding_model}\n"
+                f"  Dense embedding model: {embedding_model}\n"
                 f"  Sparse vectors: BM25 (for hybrid search)\n"
                 f"  Distance: COSINE\n"
                 f"Background sync will index all documents with dense + sparse vectors."

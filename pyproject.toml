@@ -39,6 +39,7 @@ dependencies = [
     "pymupdf>=1.26.6",
     "pymupdf4llm>=0.2.2",
     "pymupdf-layout>=1.26.6",
+    "openai>=2.8.1",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

@@ -217,6 +217,11 @@ class Settings:
     ollama_embedding_model: str = "nomic-embed-text"
     ollama_verify_ssl: bool = True
 
+    # OpenAI settings (for embeddings)
+    openai_api_key: Optional[str] = None
+    openai_base_url: Optional[str] = None
+    openai_embedding_model: str = "text-embedding-3-small"
+
     # Document chunking settings (for vector embeddings)
     document_chunk_size: int = 2048  # Characters per chunk
     document_chunk_overlap: int = 200  # Overlapping characters between chunks
@@ -275,6 +280,29 @@ class Settings:
                 f"DOCUMENT_CHUNK_OVERLAP ({self.document_chunk_overlap}) cannot be negative."
             )
 
+    def get_embedding_model_name(self) -> str:
+        """
+        Get the active embedding model name based on provider priority.
+
+        Priority order (same as ProviderRegistry):
+        1. OpenAI - if OPENAI_API_KEY is set
+        2. Ollama - if OLLAMA_BASE_URL is set
+        3. Simple - fallback (returns "simple-384")
+
+        Returns:
+            Active embedding model name
+        """
+        # Check OpenAI first (higher priority than Ollama in registry)
+        if self.openai_api_key:
+            return self.openai_embedding_model
+
+        # Check Ollama
+        if self.ollama_base_url:
+            return self.ollama_embedding_model
+
+        # Fallback to simple provider indicator
+        return "simple-384"
+
     def get_collection_name(self) -> str:
         """
         Get Qdrant collection name.
@@ -290,8 +318,9 @@ class Settings:
         Format: {deployment-id}-{model-name}
 
         Examples:
-            - "my-deployment-nomic-embed-text" (OTEL_SERVICE_NAME set)
-            - "mcp-container-all-minilm" (hostname fallback)
+            - "my-deployment-nomic-embed-text" (Ollama)
+            - "my-deployment-text-embedding-3-small" (OpenAI)
+            - "mcp-container-openai-text-embedding-3-small" (hostname fallback)
 
         Returns:
             Collection name string
@@ -311,7 +340,7 @@ class Settings:
 
         # Sanitize deployment ID and model name
         deployment_id = deployment_id.lower().replace(" ", "-").replace("_", "-")
-        model_name = self.ollama_embedding_model.replace("/", "-").replace(":", "-")
+        model_name = self.get_embedding_model_name().replace("/", "-").replace(":", "-")
 
         return f"{deployment_id}-{model_name}"
 
@@ -371,6 +400,12 @@ def get_settings() -> Settings:
         ollama_base_url=os.getenv("OLLAMA_BASE_URL"),
         ollama_embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
         ollama_verify_ssl=os.getenv("OLLAMA_VERIFY_SSL", "true").lower() == "true",
+        # OpenAI settings
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
+        openai_base_url=os.getenv("OPENAI_BASE_URL"),
+        openai_embedding_model=os.getenv(
+            "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
+        ),
         # Document chunking settings
         document_chunk_size=int(os.getenv("DOCUMENT_CHUNK_SIZE", "2048")),
         document_chunk_overlap=int(os.getenv("DOCUMENT_CHUNK_OVERLAP", "200")),
