@@ -39,6 +39,7 @@ dependencies = [
     "pymupdf>=1.26.6",
     "pymupdf4llm>=0.2.2",
     "pymupdf-layout>=1.26.6",
+    "smithery>=0.4.4",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -132,3 +133,6 @@ name = "testpypi"
 url = "https://test.pypi.org/simple/"
 publish-url = "https://test.pypi.org/legacy/"
 explicit = true
+
+[tool.smithery]
+server = "nextcloud_mcp_server.smithery_server:create_server"
