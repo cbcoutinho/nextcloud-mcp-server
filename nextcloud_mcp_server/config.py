@@ -2,7 +2,36 @@ import logging
 import logging.config
 import os
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Optional
+
+
+class DeploymentMode(Enum):
+    """Deployment mode for the MCP server.
+
+    SELF_HOSTED: Full features, environment-based configuration.
+                 Supports vector sync, semantic search, admin UI.
+
+    SMITHERY_STATELESS: Stateless mode for Smithery hosting.
+                        Session-based configuration, no persistent storage.
+                        Excludes semantic search, vector sync, admin UI.
+    """
+
+    SELF_HOSTED = "self_hosted"
+    SMITHERY_STATELESS = "smithery"
+
+
+def get_deployment_mode() -> DeploymentMode:
+    """Detect deployment mode from environment.
+
+    Returns:
+        DeploymentMode.SMITHERY_STATELESS if SMITHERY_DEPLOYMENT=true,
+        otherwise DeploymentMode.SELF_HOSTED (default).
+    """
+    if os.getenv("SMITHERY_DEPLOYMENT", "false").lower() == "true":
+        return DeploymentMode.SMITHERY_STATELESS
+    return DeploymentMode.SELF_HOSTED
+
 
 LOGGING_CONFIG = {
     "version": 1,

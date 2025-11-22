@@ -1,0 +1,38 @@
+# Smithery configuration for Nextcloud MCP Server
+# See: https://smithery.ai/docs/build/configuration
+# ADR-016: Stateless deployment mode for multi-user public Nextcloud instances
+
+runtime: "container"
+
+build:
+  dockerfile: "Dockerfile.smithery"
+  dockerBuildPath: "."
+
+startCommand:
+  type: "http"
+  configSchema:
+    type: "object"
+    required:
+      - "nextcloud_url"
+      - "username"
+      - "app_password"
+    properties:
+      nextcloud_url:
+        type: "string"
+        title: "Nextcloud URL"
+        description: "Your Nextcloud instance URL (e.g., https://cloud.example.com). Must be publicly accessible."
+        pattern: "^https?://.+"
+      username:
+        type: "string"
+        title: "Username"
+        description: "Your Nextcloud username"
+        minLength: 1
+      app_password:
+        type: "string"
+        title: "App Password"
+        description: "Nextcloud app password. Generate at Settings > Security > App passwords. Do NOT use your main password."
+        minLength: 1
+  exampleConfig:
+    nextcloud_url: "https://cloud.example.com"
+    username: "alice"
+    app_password: "xxxxx-xxxxx-xxxxx-xxxxx-xxxxx"

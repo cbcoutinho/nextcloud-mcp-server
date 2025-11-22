@@ -224,6 +224,26 @@ services:
       - keycloak-tokens:/app/data
       - keycloak-oauth-storage:/app/.oauth
 
+  # Smithery stateless deployment mode (ADR-016)
+  # Test with: docker compose --profile smithery up smithery
+  # Then: curl http://localhost:8081/.well-known/mcp-config
+  smithery:
+    build:
+      context: .
+      dockerfile: Dockerfile.smithery
+    restart: always
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:8081:8081
+    environment:
+      - SMITHERY_DEPLOYMENT=true
+      - VECTOR_SYNC_ENABLED=false
+      - PORT=8081
+    profiles:
+      - smithery
+
   qdrant:
     image: qdrant/qdrant:v1.16.0@sha256:1005201498cf927d835383d0f918b17d8c9da7db58550f169f694455e42d78f4
     restart: always
