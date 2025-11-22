@@ -99,129 +99,132 @@ class PyMuPDFProcessor(DocumentProcessor):
 
         try:
             if progress_callback:
-                await progress_callback(0, 100, "Processing PDF in background thread")
+                await progress_callback(0, 100, "Opening PDF document")
 
-            # Run CPU-bound PDF processing in thread pool to avoid blocking event loop
-            result = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
-                self._process_sync,
-                content,
-                filename,
+            # Open document and extract metadata in thread
+            doc = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
+                lambda: pymupdf.open("pdf", content)
             )
+
+            metadata = self._extract_metadata(doc, filename)
+            metadata["file_size"] = len(content)
+            page_count = doc.page_count
+
+            if progress_callback:
+                await progress_callback(10, 100, f"Extracting {page_count} pages")
+
+            # Prepare image directory if needed
+            pdf_image_dir = None
+            if self.extract_images:
+                pdf_id = filename.replace("/", "_") if filename else "unknown"
+                pdf_image_dir = self.image_dir / pdf_id
+                pdf_image_dir.mkdir(exist_ok=True, parents=True)
+
+            # OPTIMIZATION: Extract pages in parallel using anyio task group
+            page_texts = await self._extract_pages_parallel(
+                doc, page_count, pdf_image_dir
+            )
+
+            if progress_callback:
+                await progress_callback(90, 100, "Building result")
+
+            # Calculate page boundaries (sequential, fast)
+            page_boundaries = []
+            current_offset = 0
+            for page_num, page_md in enumerate(page_texts):
+                page_boundaries.append(
+                    {
+                        "page": page_num + 1,
+                        "start_offset": current_offset,
+                        "end_offset": current_offset + len(page_md),
+                    }
+                )
+                current_offset += len(page_md)
+
+            # Collect image paths
+            image_paths = []
+            if pdf_image_dir and pdf_image_dir.exists():
+                image_paths = [str(p) for p in pdf_image_dir.glob("*")]
+
+            # Build final text and metadata
+            md_text = "".join(page_texts)
+            metadata["has_images"] = len(image_paths) > 0
+            if image_paths:
+                metadata["image_count"] = len(image_paths)
+                metadata["image_paths"] = image_paths
+            metadata["page_boundaries"] = page_boundaries
+
+            # Close document
+            doc.close()
 
             if progress_callback:
                 await progress_callback(100, 100, "Processing complete")
 
-            return result
+            logger.info(
+                f"Successfully processed PDF {filename or '<bytes>'}: "
+                f"{metadata['page_count']} pages, {len(md_text)} chars, "
+                f"{metadata.get('image_count', 0)} images"
+            )
+
+            return ProcessingResult(
+                text=md_text,
+                metadata=metadata,
+                processor=self.name,
+                success=True,
+            )
 
         except Exception as e:
             error_msg = f"Failed to process PDF {filename or '<bytes>'}: {e}"
             logger.error(error_msg, exc_info=True)
             raise ProcessorError(error_msg) from e
 
-    def _process_sync(
+    async def _extract_pages_parallel(
         self,
-        content: bytes,
-        filename: Optional[str] = None,
-    ) -> ProcessingResult:
-        """Synchronous PDF processing (runs in thread pool).
+        doc: pymupdf.Document,
+        page_count: int,
+        pdf_image_dir: pathlib.Path | None,
+    ) -> list[str]:
+        """Extract text from all pages in parallel using anyio.
 
         Args:
-            content: PDF document bytes
-            filename: Optional filename for better error messages
+            doc: Opened PyMuPDF document
+            page_count: Number of pages to extract
+            pdf_image_dir: Directory for extracted images (or None)
 
         Returns:
-            ProcessingResult with extracted text and metadata
-
-        Raises:
-            Exception: If PDF processing fails
+            List of page texts in order
         """
-        # Open PDF from bytes
-        doc = pymupdf.open("pdf", content)
+        import anyio
 
-        # Extract metadata from PDF
-        metadata = self._extract_metadata(doc, filename)
+        results: list[str | None] = [None] * page_count
 
-        # Add file size to metadata
-        metadata["file_size"] = len(content)
+        async def extract_one(page_num: int) -> None:
+            """Extract single page in thread pool."""
 
-        # Extract text page-by-page to preserve page boundaries
-        # pymupdf.layout.activate() causes page_chunks=True to return a string,
-        # so we manually extract text per page instead.
-        page_boundaries = []
-        current_offset = 0
-        full_text_parts = []
-        image_paths = []
-
-        for page_num in range(doc.page_count):
-            if self.extract_images:
-                # Generate unique directory for this PDF's images
-                pdf_id = filename.replace("/", "_") if filename else "unknown"
-                pdf_image_dir = self.image_dir / pdf_id
-                pdf_image_dir.mkdir(exist_ok=True, parents=True)
-
-                # Extract page as markdown with images
-                page_md = pymupdf4llm.to_markdown(
+            def do_extract() -> str:
+                return pymupdf4llm.to_markdown(
                     doc,
-                    pages=[page_num],  # Extract single page
-                    write_images=True,
-                    image_path=pdf_image_dir,
-                    page_chunks=False,  # Single page, no chunking needed
+                    pages=[page_num],
+                    write_images=self.extract_images,
+                    image_path=pdf_image_dir if self.extract_images else None,
+                    page_chunks=False,
                 )
 
-                # Collect image paths
-                if pdf_image_dir.exists():
-                    page_images = [str(p) for p in pdf_image_dir.glob("*")]
-                    image_paths.extend(page_images)
-            else:
-                # Extract page as markdown without images
-                page_md = pymupdf4llm.to_markdown(
-                    doc,
-                    pages=[page_num],  # Extract single page
-                    write_images=False,
-                    page_chunks=False,  # Single page, no chunking needed
-                )
+            results[page_num] = await anyio.to_thread.run_sync(do_extract)  # type: ignore[attr-defined]
 
-            # Store page text
-            full_text_parts.append(page_md)
+        # Run all page extractions in parallel
+        async with anyio.create_task_group() as tg:
+            for page_num in range(page_count):
+                tg.start_soon(extract_one, page_num)
 
-            # Store boundary info: {page (1-indexed), start, end}
-            page_boundaries.append(
-                {
-                    "page": page_num + 1,  # Convert to 1-indexed
-                    "start_offset": current_offset,
-                    "end_offset": current_offset + len(page_md),
-                }
-            )
+        # Verify all pages extracted
+        final_results: list[str] = []
+        for i, text in enumerate(results):
+            if text is None:
+                raise ProcessorError(f"Page {i} extraction failed")
+            final_results.append(text)
 
-            current_offset += len(page_md)
-
-        # Join all page texts
-        md_text = "".join(full_text_parts)
-
-        # Store image metadata
-        metadata["has_images"] = len(image_paths) > 0
-        if image_paths:
-            metadata["image_count"] = len(image_paths)
-            metadata["image_paths"] = image_paths
-
-        # Add page boundaries to metadata for chunker to use
-        metadata["page_boundaries"] = page_boundaries
-
-        # Close the document
-        doc.close()
-
-        logger.info(
-            f"Successfully processed PDF {filename or '<bytes>'}: "
-            f"{metadata['page_count']} pages, {len(md_text)} chars, "
-            f"{metadata.get('image_count', 0)} images"
-        )
-
-        return ProcessingResult(
-            text=md_text,
-            metadata=metadata,
-            processor=self.name,
-            success=True,
-        )
+        return final_results
 
     def _extract_metadata(
         self, doc: pymupdf.Document, filename: Optional[str]

@@ -394,6 +394,65 @@ class PDFHighlighter:
         return clean_text if clean_text else None
 
     @staticmethod
+    def _find_chunk_bbox(
+        page: pymupdf.Page,
+        chunk_text: str,
+        page_relative_start: int,
+        page_relative_end: int,
+        page_text_length: int,
+    ) -> tuple[float, float, float, float] | None:
+        """Find bounding box for a chunk without modifying the page.
+
+        Returns (x0, y0, x1, y1) in page coordinates, or None if not found.
+        """
+        page_rect = page.rect
+
+        # Strip markdown for searching
+        search_text = PDFHighlighter.strip_markdown(chunk_text)
+
+        # Try to find chunk location using text search
+        anchor_rect = None
+        search_phrases = []
+
+        # Build search phrases from chunk text
+        sentences = re.split(r"[.!?]\s+", search_text)
+        for sentence in sentences[:3]:
+            sentence = sentence.strip()
+            if len(sentence) >= 20:
+                search_phrases.append(sentence[:80])
+                if len(sentence) >= 40:
+                    search_phrases.append(sentence[:40])
+
+        # Also try first N characters
+        if len(search_text) >= 30:
+            search_phrases.append(search_text[:60])
+            search_phrases.append(search_text[:30])
+
+        for phrase in search_phrases:
+            if not phrase:
+                continue
+            rects = page.search_for(phrase.strip())
+            if rects:
+                anchor_rect = rects[0]
+                break
+
+        if not anchor_rect:
+            return None
+
+        # Calculate chunk height based on character count
+        chunk_chars = len(search_text)
+        estimated_lines = max(1, chunk_chars / 60)
+        estimated_height = estimated_lines * 14
+
+        # Build bounding box
+        return (
+            page_rect.x0 + 30,  # Left margin
+            anchor_rect.y0 - 5,  # Start slightly above anchor
+            page_rect.x1 - 30,  # Right margin
+            min(anchor_rect.y0 + estimated_height + 10, page_rect.y1 - 30),
+        )
+
+    @staticmethod
     def highlight_chunk_on_page(
         page: pymupdf.Page,
         chunk_text: str,
@@ -739,20 +798,32 @@ class PDFHighlighter:
                 f"Chunks distributed across {len(chunks_by_page)} unique pages"
             )
 
-            # Process each chunk, rendering with only its own highlights
-            # Store original page contents to restore between chunks
-            page_contents_cache: dict[int, list[bytes]] = {}
+            # OPTIMIZATION: Render each page ONCE, then draw highlights using PIL
+            # This avoids expensive page.get_pixmap() calls per chunk
+            from io import BytesIO
+
+            from PIL import Image, ImageDraw
+
+            # PIL color for bounding box (RGB tuple)
+            rgb = PDFHighlighter.COLORS.get(color, PDFHighlighter.COLORS["yellow"])
+            pil_color = tuple(int(c * 255) for c in rgb)
+            fill_color = (255, 255, 178, 38)  # Light yellow with alpha
 
             for page_num, page_chunks in chunks_by_page.items():
                 page = doc[page_num - 1]
 
-                # Cache original page contents (before any highlights added)
-                # xref is the PDF object reference for each content stream
-                if page_num not in page_contents_cache:
-                    page_contents_cache[page_num] = []
-                    xrefs = page.get_contents()
-                    for xref in xrefs:
-                        page_contents_cache[page_num].append(doc.xref_stream(xref))
+                # Render page ONCE to get base image (most expensive operation)
+                mat = pymupdf.Matrix(zoom, zoom)
+                base_pix = page.get_pixmap(matrix=mat, alpha=False)
+                base_png = base_pix.tobytes("png")
+
+                # Convert to PIL Image for fast highlight drawing
+                base_image = Image.open(BytesIO(base_png)).convert("RGBA")
+                page_rect = page.rect
+
+                logger.debug(
+                    f"Page {page_num}: rendered once, processing {len(page_chunks)} chunks"
+                )
 
                 for (
                     chunk_index,
@@ -761,42 +832,48 @@ class PDFHighlighter:
                     page_text_length,
                 ) in page_chunks:
                     try:
-                        # Restore original page contents to remove previous highlights
-                        # Highlights are drawn shapes, not annotations, so we must
-                        # restore the content stream to clear them
-                        xrefs = page.get_contents()
-                        for i, xref in enumerate(xrefs):
-                            if i < len(page_contents_cache[page_num]):
-                                doc.update_stream(
-                                    xref, page_contents_cache[page_num][i]
-                                )
-
-                        # Add highlights for this chunk with region constraint
-                        page_relative_start = chunk_page_info["page_relative_start"]
-                        page_relative_end = chunk_page_info["page_relative_end"]
-                        highlight_count = PDFHighlighter.highlight_chunk_on_page(
+                        # Find chunk bounding box using text search
+                        bbox = PDFHighlighter._find_chunk_bbox(
                             page,
                             chunk_text,
-                            color,
-                            page_relative_start=page_relative_start,
-                            page_relative_end=page_relative_end,
-                            page_text_length=page_text_length,
+                            chunk_page_info["page_relative_start"],
+                            chunk_page_info["page_relative_end"],
+                            page_text_length,
                         )
 
-                        if highlight_count == 0:
-                            logger.warning(f"Chunk {chunk_index}: no highlights added")
+                        if bbox is None:
+                            logger.warning(f"Chunk {chunk_index}: could not find bbox")
                             continue
 
-                        # Render page to PNG
-                        mat = pymupdf.Matrix(zoom, zoom)
-                        pix = page.get_pixmap(matrix=mat, alpha=False)
-                        png_bytes = pix.tobytes("png")
+                        # Copy base image and draw highlight using PIL (fast!)
+                        chunk_image = base_image.copy()
+                        draw = ImageDraw.Draw(chunk_image, "RGBA")
 
-                        results[chunk_index] = (png_bytes, page_num, highlight_count)
+                        # Scale bbox coordinates to pixmap coordinates
+                        scale_x = base_pix.width / page_rect.width
+                        scale_y = base_pix.height / page_rect.height
+                        pil_bbox = (
+                            int(bbox[0] * scale_x),
+                            int(bbox[1] * scale_y),
+                            int(bbox[2] * scale_x),
+                            int(bbox[3] * scale_y),
+                        )
+
+                        # Draw semi-transparent fill
+                        draw.rectangle(pil_bbox, fill=fill_color)
+                        # Draw dashed border (PIL doesn't support dashes, use solid)
+                        draw.rectangle(pil_bbox, outline=pil_color, width=3)
+
+                        # Convert back to PNG bytes
+                        output = BytesIO()
+                        chunk_image.convert("RGB").save(output, format="PNG")
+                        png_bytes = output.getvalue()
+
+                        results[chunk_index] = (png_bytes, page_num, 1)
 
                         logger.debug(
                             f"Chunk {chunk_index}: {len(png_bytes):,} bytes, "
-                            f"page {page_num}, {highlight_count} highlights"
+                            f"page {page_num}, bbox {pil_bbox}"
                         )
 
                     except Exception as e:
