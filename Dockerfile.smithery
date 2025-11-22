@@ -25,16 +25,10 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.10@sha256:29bd45092ea8902c0bbb7f0a338f0494a
 RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
     git
 
-# Copy dependency files first (for better layer caching)
-COPY pyproject.toml uv.lock ./
+# Copy project files
+COPY . .
 
-# Copy application code
-COPY nextcloud_mcp_server ./nextcloud_mcp_server
-
-# Install dependencies without vector/semantic extras
-# Use --no-dev to exclude development dependencies
-RUN uv sync --frozen --no-dev --no-install-project && \
-    uv pip install -e . --no-deps
+RUN uv sync --locked --no-dev --no-editable --no-cache
 
 # Set Smithery mode environment variables
 ENV SMITHERY_DEPLOYMENT=true
