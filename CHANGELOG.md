@@ -1,3 +1,9 @@
+## v0.46.2 (2025-11-22)
+
+### Fix
+
+- **smithery**: Enable JSON response format for scanner compatibility
+
 ## v0.46.1 (2025-11-22)
 
 ### Perf
