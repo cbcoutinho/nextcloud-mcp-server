@@ -1072,7 +1072,11 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         # ADR-016: Use Smithery lifespan for stateless mode, BasicAuth otherwise
         if deployment_mode == DeploymentMode.SMITHERY_STATELESS:
             logger.info("Configuring MCP server for Smithery stateless mode")
-            mcp = FastMCP("Nextcloud MCP", lifespan=app_lifespan_smithery)
+            # json_response=True returns plain JSON-RPC instead of SSE format,
+            # required for Smithery scanner compatibility
+            mcp = FastMCP(
+                "Nextcloud MCP", lifespan=app_lifespan_smithery, json_response=True
+            )
         else:
             logger.info("Configuring MCP server for BasicAuth mode")
             mcp = FastMCP("Nextcloud MCP", lifespan=app_lifespan_basic)
