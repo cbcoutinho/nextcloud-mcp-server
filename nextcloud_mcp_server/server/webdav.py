@@ -64,20 +64,6 @@ def configure_webdav_tools(mcp: FastMCP):
             - Text files are decoded to UTF-8
             - Documents (PDF, DOCX, etc.) are parsed and text is extracted
             - Other binary files are base64 encoded
-
-        Examples:
-            # Read a text file
-            result = await nc_webdav_read_file("Documents/readme.txt")
-            logger.info(result['content'])  # Decoded text content
-
-            # Read a PDF document (automatically parsed)
-            result = await nc_webdav_read_file("Documents/report.pdf")
-            logger.info(result['content'])  # Extracted text from PDF
-            logger.info(result['parsing_metadata'])  # Document parsing info
-
-            # Read a binary file
-            result = await nc_webdav_read_file("Images/photo.jpg")
-            logger.info(result['encoding'])  # 'base64'
         """
         client = await get_client(ctx)
         content, content_type = await client.webdav.read_file(path)

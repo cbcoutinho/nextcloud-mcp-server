@@ -335,27 +335,6 @@ def configure_semantic_tools(mcp: FastMCP):
         Note: Requires MCP client to support sampling. If sampling is unavailable,
         the tool gracefully degrades to returning documents with an explanation.
         The client may prompt the user to approve the sampling request.
-
-        Examples:
-            >>> # Query about objectives across multiple apps
-            >>> result = await nc_semantic_search_answer(
-            ...     query="What are my Q1 2025 project goals?",
-            ...     ctx=ctx
-            ... )
-            >>> print(result.generated_answer)
-            "Based on Document 1 (note: Project Kickoff), Document 2 (calendar event:
-            Q1 Planning Meeting), and Document 3 (deck card: Implement semantic search),
-            your main goals are: 1) Improve semantic search accuracy by 20%,
-            2) Deploy new embedding model, 3) Reduce indexing latency..."
-
-            >>> # Query about appointments
-            >>> result = await nc_semantic_search_answer(
-            ...     query="When is my next dentist appointment?",
-            ...     ctx=ctx,
-            ...     limit=10
-            ... )
-            >>> len(result.sources)  # Calendar events and related notes
-            3
         """
         # 1. Retrieve relevant documents via existing semantic search
         search_response = await nc_semantic_search(
