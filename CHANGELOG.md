@@ -1,3 +1,36 @@
+## v0.45.0 (2025-11-22)
+
+### Feat
+
+- Add context expansion to semantic search with chunk overlap removal
+- Use Ollama native batch API in embed_batch()
+- Implement Qdrant placeholder state management
+- Switch files to use numeric IDs with file_path resolution
+- Implement per-chunk vector visualization with context expansion
+
+### Fix
+
+- Use alpha_composite for proper RGBA highlight blending
+- Remove pymupdf.layout.activate() to fix page_chunks behavior
+- Centralize PDF processing and generate separate images per chunk
+- Set is_placeholder=False in processor to fix search filtering
+- Increase placeholder staleness threshold to 5x scan interval
+- Add placeholder staleness check to prevent duplicate processing
+- Use empty SparseVector instead of None for placeholders
+- Return empty array instead of null for query_coords when no results
+- Align PDF text extraction between indexing and context expansion
+- Update models and viz to use int-only doc_id
+- Reconstruct full content for notes to match indexed offsets
+- Add async/await, PDF metadata, and type safety fixes
+
+### Refactor
+
+- Simplify PDF text extraction with single to_markdown call
+
+### Perf
+
+- Optimize PDF processing with parallel extraction and single-render highlights
+
 ## v0.44.1 (2025-11-21)
 
 ### Fix
