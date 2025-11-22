@@ -1,0 +1,45 @@
+# Dockerfile for Smithery stateless deployment
+# ADR-016: Stateless mode for multi-user public Nextcloud instances
+#
+# This image excludes:
+# - Vector database dependencies (qdrant-client)
+# - Background sync workers
+# - Admin UI routes (/app)
+# - Semantic search tools
+#
+# Features included:
+# - Core Nextcloud tools (notes, calendar, contacts, files, deck, tables, cookbook)
+# - Per-session app password authentication
+# - Multi-user support via Smithery session config
+
+FROM docker.io/library/python:3.12-slim-trixie@sha256:2e683fc3e18a248aa23b8022f2a3474b072b04fb851efe9b49f6b516a8944939
+
+WORKDIR /app
+
+# Install uv for fast dependency management
+COPY --from=ghcr.io/astral-sh/uv:0.9.10@sha256:29bd45092ea8902c0bbb7f0a338f0494a382b1f4b18355df5be270ade679ff1d /uv /uvx /bin/
+
+# Copy dependency files first (for better layer caching)
+COPY pyproject.toml uv.lock ./
+
+# Copy application code
+COPY nextcloud_mcp_server ./nextcloud_mcp_server
+
+# Install dependencies without vector/semantic extras
+# Use --no-dev to exclude development dependencies
+RUN uv sync --frozen --no-dev --no-install-project && \
+    uv pip install -e . --no-deps
+
+# Set Smithery mode environment variables
+ENV SMITHERY_DEPLOYMENT=true
+ENV VECTOR_SYNC_ENABLED=false
+
+# Smithery sets PORT=8081 by default
+EXPOSE 8081
+
+# Health check endpoint
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD uv run python -c "import httpx; httpx.get('http://localhost:${PORT:-8081}/health/live').raise_for_status()"
+
+# Run the Smithery-specific entrypoint
+CMD ["uv", "run", "python", "-m", "nextcloud_mcp_server.smithery_main"]

@@ -36,6 +36,8 @@ from nextcloud_mcp_server.auth import (
 from nextcloud_mcp_server.auth.unified_verifier import UnifiedTokenVerifier
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import (
+    DeploymentMode,
+    get_deployment_mode,
     get_document_processor_config,
     get_settings,
 )
@@ -957,8 +959,12 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             )
 
     # Register semantic search tools (cross-app feature)
+    # ADR-016: Skip in Smithery stateless mode (no vector database)
     settings = get_settings()
-    if settings.vector_sync_enabled:
+    deployment_mode = get_deployment_mode()
+    if deployment_mode == DeploymentMode.SMITHERY_STATELESS:
+        logger.info("Skipping semantic search tools (Smithery stateless mode)")
+    elif settings.vector_sync_enabled:
         logger.info("Configuring semantic search tools (vector sync enabled)")
         configure_semantic_tools(mcp)
     else:
@@ -1491,85 +1497,98 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
         )
 
     # Add user info routes (available in both BasicAuth and OAuth modes)
-    # These require session authentication, so we wrap them in a separate app
-    from nextcloud_mcp_server.auth.session_backend import SessionAuthBackend
-    from nextcloud_mcp_server.auth.userinfo_routes import (
-        revoke_session,
-        user_info_html,
-        vector_sync_status_fragment,
-    )
-    from nextcloud_mcp_server.auth.viz_routes import (
-        chunk_context_endpoint,
-        vector_visualization_html,
-        vector_visualization_search,
-    )
-    from nextcloud_mcp_server.auth.webhook_routes import (
-        disable_webhook_preset,
-        enable_webhook_preset,
-        webhook_management_pane,
-    )
-
-    # Create a separate Starlette app for browser routes that need session auth
-    # This prevents SessionAuthBackend from interfering with FastMCP's OAuth
-    browser_routes = [
-        Route("/", user_info_html, methods=["GET"]),  # /app → user info with all tabs
-        Route(
-            "/revoke", revoke_session, methods=["POST"], name="revoke_session_endpoint"
-        ),  # /app/revoke → revoke_session
-        # Vector sync status fragment (htmx polling)
-        Route(
-            "/vector-sync/status",
+    # ADR-016: Skip /app admin UI in Smithery stateless mode (no vector sync, webhooks)
+    if deployment_mode != DeploymentMode.SMITHERY_STATELESS:
+        # These require session authentication, so we wrap them in a separate app
+        from nextcloud_mcp_server.auth.session_backend import SessionAuthBackend
+        from nextcloud_mcp_server.auth.userinfo_routes import (
+            revoke_session,
+            user_info_html,
             vector_sync_status_fragment,
-            methods=["GET"],
-        ),  # /app/vector-sync/status
-        # Vector visualization routes
-        Route(
-            "/vector-viz", vector_visualization_html, methods=["GET"]
-        ),  # /app/vector-viz
-        Route(
-            "/vector-viz/search",
-            vector_visualization_search,
-            methods=["GET"],
-        ),  # /app/vector-viz/search
-        Route(
-            "/chunk-context",
-            chunk_context_endpoint,
-            methods=["GET"],
-        ),  # /app/chunk-context
-        # Webhook management routes (admin-only)
-        Route("/webhooks", webhook_management_pane, methods=["GET"]),  # /app/webhooks
-        Route(
-            "/webhooks/enable/{preset_id:str}", enable_webhook_preset, methods=["POST"]
-        ),
-        Route(
-            "/webhooks/disable/{preset_id:str}",
-            disable_webhook_preset,
-            methods=["DELETE"],
-        ),
-    ]
-
-    # Add static files mount if directory exists
-    static_dir = os.path.join(os.path.dirname(__file__), "auth", "static")
-    if os.path.isdir(static_dir):
-        browser_routes.append(
-            Mount("/static", StaticFiles(directory=static_dir), name="static")
         )
-        logger.info(f"Mounted static files from {static_dir}")
+        from nextcloud_mcp_server.auth.viz_routes import (
+            chunk_context_endpoint,
+            vector_visualization_html,
+            vector_visualization_search,
+        )
+        from nextcloud_mcp_server.auth.webhook_routes import (
+            disable_webhook_preset,
+            enable_webhook_preset,
+            webhook_management_pane,
+        )
 
-    browser_app = Starlette(routes=browser_routes)
-    browser_app.add_middleware(
-        AuthenticationMiddleware,  # type: ignore[invalid-argument-type]
-        backend=SessionAuthBackend(oauth_enabled=oauth_enabled),
-    )
+        # Create a separate Starlette app for browser routes that need session auth
+        # This prevents SessionAuthBackend from interfering with FastMCP's OAuth
+        browser_routes = [
+            Route(
+                "/", user_info_html, methods=["GET"]
+            ),  # /app → user info with all tabs
+            Route(
+                "/revoke",
+                revoke_session,
+                methods=["POST"],
+                name="revoke_session_endpoint",
+            ),  # /app/revoke → revoke_session
+            # Vector sync status fragment (htmx polling)
+            Route(
+                "/vector-sync/status",
+                vector_sync_status_fragment,
+                methods=["GET"],
+            ),  # /app/vector-sync/status
+            # Vector visualization routes
+            Route(
+                "/vector-viz", vector_visualization_html, methods=["GET"]
+            ),  # /app/vector-viz
+            Route(
+                "/vector-viz/search",
+                vector_visualization_search,
+                methods=["GET"],
+            ),  # /app/vector-viz/search
+            Route(
+                "/chunk-context",
+                chunk_context_endpoint,
+                methods=["GET"],
+            ),  # /app/chunk-context
+            # Webhook management routes (admin-only)
+            Route(
+                "/webhooks", webhook_management_pane, methods=["GET"]
+            ),  # /app/webhooks
+            Route(
+                "/webhooks/enable/{preset_id:str}",
+                enable_webhook_preset,
+                methods=["POST"],
+            ),
+            Route(
+                "/webhooks/disable/{preset_id:str}",
+                disable_webhook_preset,
+                methods=["DELETE"],
+            ),
+        ]
 
-    # Add redirect from /app to /app/ (Starlette requires trailing slash for mounted apps)
-    routes.append(
-        Route("/app", lambda request: RedirectResponse("/app/", status_code=307))
-    )
+        # Add static files mount if directory exists
+        static_dir = os.path.join(os.path.dirname(__file__), "auth", "static")
+        if os.path.isdir(static_dir):
+            browser_routes.append(
+                Mount("/static", StaticFiles(directory=static_dir), name="static")
+            )
+            logger.info(f"Mounted static files from {static_dir}")
 
-    # Mount browser app at /app (webapp and admin routes)
-    routes.append(Mount("/app", app=browser_app))
-    logger.info("App routes with session auth: /app, /app/webhooks, /app/revoke")
+        browser_app = Starlette(routes=browser_routes)
+        browser_app.add_middleware(
+            AuthenticationMiddleware,  # type: ignore[invalid-argument-type]
+            backend=SessionAuthBackend(oauth_enabled=oauth_enabled),
+        )
+
+        # Add redirect from /app to /app/ (Starlette requires trailing slash for mounted apps)
+        routes.append(
+            Route("/app", lambda request: RedirectResponse("/app/", status_code=307))
+        )
+
+        # Mount browser app at /app (webapp and admin routes)
+        routes.append(Mount("/app", app=browser_app))
+        logger.info("App routes with session auth: /app, /app/webhooks, /app/revoke")
+    else:
+        logger.info("Admin UI (/app) disabled in Smithery stateless mode")
 
     # Mount FastMCP at root last (catch-all, handles OAuth via token_verifier)
     routes.append(Mount("/", app=mcp_app))
