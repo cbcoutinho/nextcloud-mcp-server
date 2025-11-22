@@ -37,7 +37,9 @@ class BM25SparseEmbeddingProvider:
 
     def encode(self, text: str) -> dict[str, Any]:
         """
-        Generate BM25 sparse embedding for a single text.
+        Generate BM25 sparse embedding for a single text (synchronous).
+
+        Note: For async contexts, prefer encode_async() to avoid blocking the event loop.
 
         Args:
             text: Input text to encode
@@ -52,6 +54,23 @@ class BM25SparseEmbeddingProvider:
             "indices": sparse_embedding.indices.tolist(),
             "values": sparse_embedding.values.tolist(),
         }
+
+    async def encode_async(self, text: str) -> dict[str, Any]:
+        """
+        Generate BM25 sparse embedding for a single text (async).
+
+        Runs CPU-bound BM25 encoding in thread pool to avoid blocking the event loop.
+
+        Args:
+            text: Input text to encode
+
+        Returns:
+            Dictionary with 'indices' and 'values' keys for Qdrant sparse vector
+        """
+        import anyio
+
+        # Run CPU-bound BM25 encoding in thread pool
+        return await anyio.to_thread.run_sync(lambda: self.encode(text))  # type: ignore[attr-defined]
 
     async def encode_batch(self, texts: list[str]) -> list[dict[str, Any]]:
         """

@@ -218,71 +218,41 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 }
             )
 
-        # Fetch vectors for specific matching chunks from Qdrant
+        # Fetch vectors for specific matching chunks from Qdrant using batch retrieve
         vector_fetch_start = time.perf_counter()
         qdrant_client = await get_qdrant_client()
 
-        # Build filters for each specific chunk
-        from qdrant_client.models import FieldCondition, Filter, MatchValue
-
         chunk_vectors_map = {}  # Map (doc_id, chunk_start, chunk_end) -> vector
 
-        # Fetch vectors in batches by filtering on chunk-specific fields
-        for result in search_results:
-            chunk_start = result.chunk_start_offset
-            chunk_end = result.chunk_end_offset
+        # Collect point IDs from search results for batch retrieval
+        # point_id is the Qdrant internal ID returned by search algorithms
+        point_ids = [r.point_id for r in search_results if r.point_id]
 
-            # Build filter for this specific chunk
-            must_conditions = [
-                get_placeholder_filter(),  # Always exclude placeholders from user-facing queries
-                FieldCondition(
-                    key="doc_id",
-                    match=MatchValue(value=result.id),
-                ),
-                FieldCondition(
-                    key="user_id",
-                    match=MatchValue(value=username),
-                ),
-            ]
-
-            # Add chunk position filters if available
-            if chunk_start is not None:
-                must_conditions.append(
-                    FieldCondition(
-                        key="chunk_start_offset",
-                        match=MatchValue(value=chunk_start),
-                    )
-                )
-            if chunk_end is not None:
-                must_conditions.append(
-                    FieldCondition(
-                        key="chunk_end_offset",
-                        match=MatchValue(value=chunk_end),
-                    )
-                )
-
-            # Fetch this specific chunk vector
-            points_response = await qdrant_client.scroll(
+        if point_ids:
+            # Single batch retrieve call instead of N sequential scroll calls
+            # This is ~50x faster for 50 results (1 HTTP request vs 50)
+            points_response = await qdrant_client.retrieve(
                 collection_name=settings.get_collection_name(),
-                scroll_filter=Filter(must=must_conditions),
-                limit=1,  # Only need the first match
+                ids=point_ids,
                 with_vectors=["dense"],
-                with_payload=False,
+                with_payload=["doc_id", "chunk_start_offset", "chunk_end_offset"],
             )
 
-            points = points_response[0]
-            if points:
-                # Extract dense vector
-                point = points[0]
+            # Build chunk_vectors_map from batch response
+            for point in points_response:
                 if point.vector is not None:
-                    # If named vectors (dict), extract "dense"
+                    # Extract dense vector (handle both named and unnamed vectors)
                     if isinstance(point.vector, dict):
                         vector = point.vector.get("dense")
                     else:
                         vector = point.vector
 
-                    chunk_key = (result.id, chunk_start, chunk_end)
-                    chunk_vectors_map[chunk_key] = vector
+                    if vector is not None and point.payload:
+                        doc_id = point.payload.get("doc_id")
+                        chunk_start = point.payload.get("chunk_start_offset")
+                        chunk_end = point.payload.get("chunk_end_offset")
+                        chunk_key = (doc_id, chunk_start, chunk_end)
+                        chunk_vectors_map[chunk_key] = vector
 
         vector_fetch_duration = time.perf_counter() - vector_fetch_start
 
@@ -341,15 +311,22 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
 
         chunk_vectors = np.array(chunk_vectors)
 
-        # Generate query embedding for visualization
+        # Reuse query embedding from search algorithm (avoids redundant embedding call)
         query_embed_start = time.perf_counter()
-        from nextcloud_mcp_server.embedding.service import get_embedding_service
+        if search_algo.query_embedding is not None:
+            query_embedding = search_algo.query_embedding
+            logger.info(
+                f"Reusing query embedding from search algorithm "
+                f"(dimension={len(query_embedding)})"
+            )
+        else:
+            # Fallback: generate embedding if not available from search
+            from nextcloud_mcp_server.embedding.service import get_embedding_service
 
-        embedding_service = get_embedding_service()
-        query_embedding = await embedding_service.embed(query)
+            embedding_service = get_embedding_service()
+            query_embedding = await embedding_service.embed(query)
+            logger.info(f"Generated query embedding (dimension={len(query_embedding)})")
         query_embed_duration = time.perf_counter() - query_embed_start
-
-        logger.info(f"Generated query embedding (dimension={len(query_embedding)})")
 
         # Combine query vector with chunk vectors for PCA
         # Query will be the last point in the array
@@ -380,9 +357,19 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
         )
 
         # Apply PCA dimensionality reduction (768-dim → 3D) on normalized vectors
+        # Run in thread pool to avoid blocking the event loop (CPU-bound)
         pca_start = time.perf_counter()
-        pca = PCA(n_components=3)
-        coords_3d = pca.fit_transform(all_vectors_normalized)
+
+        def _compute_pca(vectors: np.ndarray) -> tuple[np.ndarray, PCA]:
+            pca = PCA(n_components=3)
+            coords = pca.fit_transform(vectors)
+            return coords, pca
+
+        import anyio
+
+        coords_3d, pca = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
+            lambda: _compute_pca(all_vectors_normalized)
+        )
         pca_duration = time.perf_counter() - pca_start
 
         # After fit, these attributes are guaranteed to be set

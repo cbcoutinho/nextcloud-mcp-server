@@ -78,6 +78,8 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         # Generate embedding for query
         embedding_service = get_embedding_service()
         query_embedding = await embedding_service.embed(query)
+        # Store for reuse by callers (e.g., viz_routes PCA visualization)
+        self.query_embedding = query_embedding
         logger.debug(
             f"Generated embedding for query (dimension={len(query_embedding)})"
         )
@@ -164,6 +166,7 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
                     page_number=result.payload.get("page_number"),
                     chunk_index=result.payload.get("chunk_index", 0),
                     total_chunks=result.payload.get("total_chunks", 1),
+                    point_id=str(result.id),  # Qdrant point ID for batch retrieval
                 )
             )
 

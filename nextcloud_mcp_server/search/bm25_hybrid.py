@@ -101,11 +101,13 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         # Generate dense embedding for semantic search
         embedding_service = get_embedding_service()
         dense_embedding = await embedding_service.embed(query)
+        # Store for reuse by callers (e.g., viz_routes PCA visualization)
+        self.query_embedding = dense_embedding
         logger.debug(f"Generated dense embedding (dimension={len(dense_embedding)})")
 
         # Generate sparse embedding for BM25 keyword search
         bm25_service = get_bm25_service()
-        sparse_embedding = bm25_service.encode(query)
+        sparse_embedding = await bm25_service.encode_async(query)
         logger.debug(
             f"Generated sparse embedding "
             f"({len(sparse_embedding['indices'])} non-zero terms)"
@@ -218,6 +220,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                     page_number=result.payload.get("page_number"),
                     chunk_index=result.payload.get("chunk_index", 0),
                     total_chunks=result.payload.get("total_chunks", 1),
+                    point_id=str(result.id),  # Qdrant point ID for batch retrieval
                 )
             )
 
