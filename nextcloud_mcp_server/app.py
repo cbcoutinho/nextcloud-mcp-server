@@ -281,7 +281,13 @@ class SmitheryAppContext:
 
 # ADR-016: Smithery config schema for container runtime
 # This schema is served at /.well-known/mcp-config for Smithery discovery
+# See: https://smithery.ai/docs/build/session-config
 SMITHERY_CONFIG_SCHEMA = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "https://server.smithery.ai/nextcloud-mcp-server/.well-known/mcp-config",
+    "title": "Nextcloud MCP Server Configuration",
+    "description": "Configuration for connecting to your Nextcloud instance via app password authentication",
+    "x-query-style": "flat",  # Our schema has no nested objects, so flat style works
     "type": "object",
     "required": ["nextcloud_url", "username", "app_password"],
     "properties": {
@@ -304,6 +310,7 @@ SMITHERY_CONFIG_SCHEMA = {
             "minLength": 1,
         },
     },
+    "additionalProperties": False,
 }
 
 
