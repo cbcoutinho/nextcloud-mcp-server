@@ -1,3 +1,9 @@
+## v0.46.1 (2025-11-22)
+
+### Perf
+
+- Optimize vector viz search performance
+
 ## v0.46.0 (2025-11-22)
 
 ### Feat
