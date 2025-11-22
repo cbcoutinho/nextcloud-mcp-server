@@ -845,9 +845,8 @@ class PDFHighlighter:
                             logger.warning(f"Chunk {chunk_index}: could not find bbox")
                             continue
 
-                        # Copy base image and draw highlight using PIL (fast!)
+                        # Copy base image for this chunk
                         chunk_image = base_image.copy()
-                        draw = ImageDraw.Draw(chunk_image, "RGBA")
 
                         # Scale bbox coordinates to pixmap coordinates
                         scale_x = base_pix.width / page_rect.width
@@ -859,10 +858,17 @@ class PDFHighlighter:
                             int(bbox[3] * scale_y),
                         )
 
-                        # Draw semi-transparent fill
-                        draw.rectangle(pil_bbox, fill=fill_color)
-                        # Draw dashed border (PIL doesn't support dashes, use solid)
-                        draw.rectangle(pil_bbox, outline=pil_color, width=3)
+                        # Create transparent overlay for fill (proper alpha blending)
+                        overlay = Image.new("RGBA", chunk_image.size, (0, 0, 0, 0))
+                        overlay_draw = ImageDraw.Draw(overlay)
+                        overlay_draw.rectangle(pil_bbox, fill=fill_color)
+
+                        # Alpha composite the overlay onto the chunk image
+                        chunk_image = Image.alpha_composite(chunk_image, overlay)
+
+                        # Draw border on top (solid, not transparent)
+                        border_draw = ImageDraw.Draw(chunk_image)
+                        border_draw.rectangle(pil_bbox, outline=pil_color, width=3)
 
                         # Convert back to PNG bytes
                         output = BytesIO()
