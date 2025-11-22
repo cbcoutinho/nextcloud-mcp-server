@@ -92,14 +92,21 @@ class OllamaProvider(Provider):
         response.raise_for_status()
         return response.json()["embedding"]
 
-    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def embed_batch(
+        self, texts: list[str], batch_size: int = 32
+    ) -> list[list[float]]:
         """
-        Generate embeddings for multiple texts (batched requests).
+        Generate embeddings for multiple texts using Ollama's batch API.
 
-        Note: Ollama doesn't have native batch API, so we send requests sequentially.
+        Uses /api/embed endpoint with array input for efficient batch processing.
+        Conservative batch size (32) prevents quality degradation observed in
+        Ollama issue #6262 with larger batches.
+
+        Note: Ollama processes batches serially, not in parallel.
 
         Args:
             texts: List of texts to embed
+            batch_size: Maximum texts per batch (default: 32)
 
         Returns:
             List of vector embeddings
@@ -112,11 +119,17 @@ class OllamaProvider(Provider):
                 "Embedding not supported - no embedding_model configured"
             )
 
-        embeddings = []
-        for text in texts:
-            embedding = await self.embed(text)
-            embeddings.append(embedding)
-        return embeddings
+        all_embeddings = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            response = await self.client.post(
+                f"{self.base_url}/api/embed",
+                json={"model": self.embedding_model, "input": batch},
+            )
+            response.raise_for_status()
+            all_embeddings.extend(response.json()["embeddings"])
+
+        return all_embeddings
 
     async def _detect_dimension(self):
         """

@@ -15,6 +15,8 @@ class ChunkWithPosition:
     text: str
     start_offset: int  # Character position where chunk starts
     end_offset: int  # Character position where chunk ends (exclusive)
+    page_number: int | None = None  # Page number for PDF chunks (optional)
+    metadata: dict | None = None  # Additional processor-specific metadata (optional)
 
 
 class DocumentChunker:
@@ -50,7 +52,7 @@ class DocumentChunker:
             strip_whitespace=True,
         )
 
-    def chunk_text(self, content: str) -> list[ChunkWithPosition]:
+    async def chunk_text(self, content: str) -> list[ChunkWithPosition]:
         """
         Split text into overlapping chunks with position tracking.
 
@@ -66,12 +68,17 @@ class DocumentChunker:
         Returns:
             List of chunks with their character positions in the original content
         """
+        import anyio
+
         # Handle empty content - return single empty chunk for backward compatibility
         if not content:
             return [ChunkWithPosition(text="", start_offset=0, end_offset=0)]
 
-        # Use LangChain to create documents with position tracking
-        docs = self.splitter.create_documents([content])
+        # Run CPU-bound text splitting in thread pool to avoid blocking event loop
+        docs = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
+            self.splitter.create_documents,
+            [content],
+        )
 
         # Convert LangChain Documents to ChunkWithPosition objects
         chunks = [

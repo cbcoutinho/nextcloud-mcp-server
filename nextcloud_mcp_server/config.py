@@ -102,6 +102,14 @@ def get_document_processor_config() -> dict[str, Any]:
             "lang": os.getenv("TESSERACT_LANG", "eng"),
         }
 
+    # PyMuPDF configuration (local PDF processing)
+    if os.getenv("ENABLE_PYMUPDF", "true").lower() == "true":  # Enabled by default
+        config["processors"]["pymupdf"] = {
+            "extract_images": os.getenv("PYMUPDF_EXTRACT_IMAGES", "true").lower()
+            == "true",
+            "image_dir": os.getenv("PYMUPDF_IMAGE_DIR"),  # None = use temp directory
+        }
+
     # Custom processor (via HTTP API)
     if os.getenv("ENABLE_CUSTOM_PROCESSOR", "false").lower() == "true":
         custom_url = os.getenv("CUSTOM_PROCESSOR_URL")

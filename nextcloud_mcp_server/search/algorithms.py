@@ -83,6 +83,7 @@ async def get_indexed_doc_types(user_id: str) -> set[str]:
     from qdrant_client.models import FieldCondition, Filter, MatchValue
 
     from nextcloud_mcp_server.config import get_settings
+    from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
     from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
     logger = logging.getLogger(__name__)
@@ -97,7 +98,10 @@ async def get_indexed_doc_types(user_id: str) -> set[str]:
         scroll_results, _next_offset = await qdrant_client.scroll(
             collection_name=collection,
             scroll_filter=Filter(
-                must=[FieldCondition(key="user_id", match=MatchValue(value=user_id))]
+                must=[
+                    get_placeholder_filter(),  # Exclude placeholders from doc_type discovery
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                ]
             ),
             limit=1000,  # Sample size to discover types
             with_payload=["doc_type"],
@@ -123,7 +127,7 @@ class SearchResult:
     """A single search result with metadata and score.
 
     Attributes:
-        id: Document ID
+        id: Document ID (int for all document types)
         doc_type: Document type (note, file, calendar, contact, etc.)
         title: Document title
         excerpt: Content excerpt showing match context
@@ -133,6 +137,9 @@ class SearchResult:
         metadata: Additional algorithm-specific metadata
         chunk_start_offset: Character position where chunk starts (None if not available)
         chunk_end_offset: Character position where chunk ends (None if not available)
+        page_number: Page number for PDF documents (None for other doc types)
+        chunk_index: Zero-based index of this chunk in the document
+        total_chunks: Total number of chunks in the document
     """
 
     id: int
@@ -143,6 +150,9 @@ class SearchResult:
     metadata: dict[str, Any] | None = None
     chunk_start_offset: int | None = None
     chunk_end_offset: int | None = None
+    page_number: int | None = None
+    chunk_index: int = 0
+    total_chunks: int = 1
 
     def __post_init__(self):
         """Validate score is non-negative.

@@ -27,6 +27,7 @@ from nextcloud_mcp_server.search import (
     SemanticSearchAlgorithm,
 )
 from nextcloud_mcp_server.vector.pca import PCA
+from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -138,7 +139,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             _get_authenticated_client_for_userinfo,
         )
 
-        async with await _get_authenticated_client_for_userinfo(request) as http_client:  # noqa: F841
+        async with await _get_authenticated_client_for_userinfo(request) as nc_client:  # noqa: F841
             # Create search algorithm (no client needed - verification removed)
             if algorithm == "semantic":
                 search_algo = SemanticSearchAlgorithm(score_threshold=score_threshold)
@@ -212,75 +213,81 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                     "success": True,
                     "results": [],
                     "coordinates_3d": [],
-                    "query_coords": None,
+                    "query_coords": [],
                     "message": "No results found",
                 }
             )
 
-        # Fetch vectors for matching results from Qdrant
+        # Fetch vectors for specific matching chunks from Qdrant
         vector_fetch_start = time.perf_counter()
         qdrant_client = await get_qdrant_client()
-        doc_ids = [r.id for r in search_results]
 
-        # Retrieve vectors for the matching documents
-        from qdrant_client.models import FieldCondition, Filter, MatchAny
+        # Build filters for each specific chunk
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-        points_response = await qdrant_client.scroll(
-            collection_name=settings.get_collection_name(),
-            scroll_filter=Filter(
-                must=[
+        chunk_vectors_map = {}  # Map (doc_id, chunk_start, chunk_end) -> vector
+
+        # Fetch vectors in batches by filtering on chunk-specific fields
+        for result in search_results:
+            chunk_start = result.chunk_start_offset
+            chunk_end = result.chunk_end_offset
+
+            # Build filter for this specific chunk
+            must_conditions = [
+                get_placeholder_filter(),  # Always exclude placeholders from user-facing queries
+                FieldCondition(
+                    key="doc_id",
+                    match=MatchValue(value=result.id),
+                ),
+                FieldCondition(
+                    key="user_id",
+                    match=MatchValue(value=username),
+                ),
+            ]
+
+            # Add chunk position filters if available
+            if chunk_start is not None:
+                must_conditions.append(
                     FieldCondition(
-                        key="doc_id",
-                        match=MatchAny(any=[str(doc_id) for doc_id in doc_ids]),
-                    ),
+                        key="chunk_start_offset",
+                        match=MatchValue(value=chunk_start),
+                    )
+                )
+            if chunk_end is not None:
+                must_conditions.append(
                     FieldCondition(
-                        key="user_id",
-                        match={"value": username},
-                    ),
-                ]
-            ),
-            limit=len(doc_ids) * 2,  # Account for multiple chunks per doc
-            with_vectors=["dense"],  # Only fetch dense vectors for visualization
-            with_payload=["doc_id"],  # Need doc_id to map vectors to results
-        )
+                        key="chunk_end_offset",
+                        match=MatchValue(value=chunk_end),
+                    )
+                )
 
-        points = points_response[0]
-
-        if not points:
-            return JSONResponse(
-                {
-                    "success": True,
-                    "results": [],
-                    "coordinates_2d": [],
-                    "message": "No vectors found for results",
-                }
+            # Fetch this specific chunk vector
+            points_response = await qdrant_client.scroll(
+                collection_name=settings.get_collection_name(),
+                scroll_filter=Filter(must=must_conditions),
+                limit=1,  # Only need the first match
+                with_vectors=["dense"],
+                with_payload=False,
             )
 
-        # Extract dense vectors and group by document
-        def extract_dense_vector(point):
-            if point.vector is None:
-                return None
-            # If named vectors (dict), extract "dense"
-            if isinstance(point.vector, dict):
-                return point.vector.get("dense")
-            # If unnamed vector (array), use directly
-            return point.vector
+            points = points_response[0]
+            if points:
+                # Extract dense vector
+                point = points[0]
+                if point.vector is not None:
+                    # If named vectors (dict), extract "dense"
+                    if isinstance(point.vector, dict):
+                        vector = point.vector.get("dense")
+                    else:
+                        vector = point.vector
 
-        # Group chunk vectors by doc_id
-        from collections import defaultdict
-
-        doc_chunks = defaultdict(list)
-        for point in points:
-            if point.payload:
-                doc_id = int(point.payload.get("doc_id", 0))
-                vector = extract_dense_vector(point)
-                if vector is not None:
-                    doc_chunks[doc_id].append(vector)
+                    chunk_key = (result.id, chunk_start, chunk_end)
+                    chunk_vectors_map[chunk_key] = vector
 
         vector_fetch_duration = time.perf_counter() - vector_fetch_start
 
-        if len(doc_chunks) < 2:
-            # Not enough documents for PCA
+        if len(chunk_vectors_map) < 2:
+            # Not enough chunks for PCA
             return JSONResponse(
                 {
                     "success": True,
@@ -296,15 +303,15 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                     ],
                     "coordinates_3d": [[0, 0, 0]] * len(search_results),
                     "query_coords": [0, 0, 0],
-                    "message": "Not enough documents for PCA",
+                    "message": "Not enough chunks for PCA",
                 }
             )
 
         # Detect embedding dimension from first available vector
         embedding_dim = None
-        for chunks in doc_chunks.values():
-            if chunks:
-                embedding_dim = len(chunks[0])
+        for vector in chunk_vectors_map.values():
+            if vector is not None:
+                embedding_dim = len(vector)
                 break
 
         if embedding_dim is None:
@@ -318,23 +325,21 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
 
         logger.info(f"Detected embedding dimension: {embedding_dim}")
 
-        # Average chunk vectors per document to create document-level embeddings
-        # Maintain order of search_results for coordinate mapping
-        doc_vectors = []
+        # Build chunk vectors array in search_results order (1:1 mapping)
+        chunk_vectors = []
         for result in search_results:
-            if result.id in doc_chunks:
-                # Average all chunk embeddings for this document
-                chunk_vectors = np.array(doc_chunks[result.id])
-                avg_vector = np.mean(chunk_vectors, axis=0)
-                doc_vectors.append(avg_vector)
-                logger.debug(f"Doc {result.id}: averaged {len(chunk_vectors)} chunks")
+            chunk_key = (result.id, result.chunk_start_offset, result.chunk_end_offset)
+            if chunk_key in chunk_vectors_map:
+                chunk_vectors.append(chunk_vectors_map[chunk_key])
             else:
-                # Document not found in vectors (shouldn't happen)
-                logger.warning(f"Doc {result.id} not found in fetched vectors")
-                # Use zero vector as fallback with detected dimension
-                doc_vectors.append(np.zeros(embedding_dim))
+                # Chunk not found in vectors (shouldn't happen)
+                logger.warning(
+                    f"Chunk {chunk_key} not found in fetched vectors, using zero vector"
+                )
+                # Use zero vector as fallback
+                chunk_vectors.append(np.zeros(embedding_dim))
 
-        doc_vectors = np.array(doc_vectors)
+        chunk_vectors = np.array(chunk_vectors)
 
         # Generate query embedding for visualization
         query_embed_start = time.perf_counter()
@@ -346,9 +351,9 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
 
         logger.info(f"Generated query embedding (dimension={len(query_embedding)})")
 
-        # Combine query vector with document vectors for PCA
+        # Combine query vector with chunk vectors for PCA
         # Query will be the last point in the array
-        all_vectors = np.vstack([doc_vectors, np.array([query_embedding])])
+        all_vectors = np.vstack([chunk_vectors, np.array([query_embedding])])
 
         # Normalize vectors to unit length (L2 normalization)
         # This is critical because Qdrant uses COSINE distance, which only measures
@@ -394,17 +399,12 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             # Replace NaN with 0 to allow JSON serialization
             coords_3d = np.nan_to_num(coords_3d, nan=0.0)
 
-        # Split query coords from document coords
+        # Split query coords from chunk coords
         # Round to 2 decimal places for cleaner display
         query_coords_3d = [
             round(float(x), 2) for x in coords_3d[-1]
         ]  # Last point is query
-        doc_coords_3d = coords_3d[:-1]  # All but last are documents
-
-        total_chunks = sum(len(chunks) for chunks in doc_chunks.values())
-        avg_chunks_per_doc = (
-            total_chunks / len(doc_vectors) if doc_vectors.size > 0 else 0
-        )
+        chunk_coords_3d = coords_3d[:-1]  # All but last are chunks
 
         logger.info(
             f"PCA explained variance: PC1={pca.explained_variance_ratio_[0]:.3f}, "
@@ -412,13 +412,14 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             f"PC3={pca.explained_variance_ratio_[2]:.3f}"
         )
         logger.info(
-            f"Embedding stats: documents={len(doc_vectors)}, "
-            f"total_chunks={total_chunks}, avg_chunks_per_doc={avg_chunks_per_doc:.1f}, "
-            f"query_dim={len(query_embedding)}, doc_vector_dim={doc_vectors.shape[1] if doc_vectors.size > 0 else 0}"
+            f"Embedding stats: chunks={len(chunk_vectors)}, "
+            f"query_dim={len(query_embedding)}, chunk_vector_dim={chunk_vectors.shape[1] if chunk_vectors.size > 0 else 0}"
         )
 
         # Coordinates already match search_results order (1:1 mapping)
-        result_coords = [[round(float(x), 2) for x in coord] for coord in doc_coords_3d]
+        result_coords = [
+            [round(float(x), 2) for x in coord] for coord in chunk_coords_3d
+        ]
 
         # Build response
         response_results = [
@@ -447,7 +448,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             f"vector_fetch={vector_fetch_duration * 1000:.1f}ms ({vector_fetch_duration / total_duration * 100:.1f}%), "
             f"query_embed={query_embed_duration * 1000:.1f}ms ({query_embed_duration / total_duration * 100:.1f}%), "
             f"pca={pca_duration * 1000:.1f}ms ({pca_duration / total_duration * 100:.1f}%), "
-            f"results={len(search_results)}, doc_vectors={len(doc_vectors)}"
+            f"results={len(search_results)}, chunk_vectors={len(chunk_vectors)}"
         )
 
         return JSONResponse(
@@ -468,7 +469,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                     "query_embed_ms": round(query_embed_duration * 1000, 2),
                     "pca_ms": round(pca_duration * 1000, 2),
                     "num_results": len(search_results),
-                    "num_doc_vectors": len(doc_vectors),
+                    "num_chunk_vectors": len(chunk_vectors),
                 },
             }
         )
@@ -517,77 +518,118 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
                 status_code=400,
             )
 
+        # Type assertions - we validated these above
+        assert doc_type is not None
+        assert doc_id is not None
+        assert start_str is not None
+        assert end_str is not None
+
         start = int(start_str)
         end = int(end_str)
+        # Convert doc_id to int (all document types use int IDs)
+        doc_id_int = int(doc_id)
 
-        # Currently only support notes
-        if doc_type != "note":
-            return JSONResponse(
-                {"success": False, "error": f"Unsupported doc_type: {doc_type}"},
-                status_code=400,
-            )
-
-        # Get authenticated HTTP client and fetch note
+        # Get authenticated Nextcloud client
         from nextcloud_mcp_server.auth.userinfo_routes import (
             _get_authenticated_client_for_userinfo,
         )
-        from nextcloud_mcp_server.client.notes import NotesClient
+        from nextcloud_mcp_server.search.context import get_chunk_with_context
 
-        # Get username from request auth
-        username = (
-            request.user.display_name
-            if hasattr(request.user, "display_name")
-            else "unknown"
-        )
+        # Use context expansion module to fetch chunk with surrounding context
+        async with await _get_authenticated_client_for_userinfo(request) as nc_client:
+            chunk_context = await get_chunk_with_context(
+                nc_client=nc_client,
+                user_id=request.user.display_name,  # User ID from auth
+                doc_id=doc_id_int,
+                doc_type=doc_type,
+                chunk_start=start,
+                chunk_end=end,
+                context_chars=context_chars,
+            )
 
-        # Create notes client with authenticated HTTP client
-        http_client = await _get_authenticated_client_for_userinfo(request)
-        notes_client = NotesClient(http_client, username)
-
-        # Fetch full note content
-        note = await notes_client.get_note(int(doc_id))
-        full_content = f"{note['title']}\n\n{note['content']}"
-
-        # Validate offsets
-        if start < 0 or end > len(full_content) or start >= end:
+        # Check if context expansion succeeded
+        if chunk_context is None:
             return JSONResponse(
                 {
                     "success": False,
-                    "error": f"Invalid offsets: start={start}, end={end}, content_length={len(full_content)}",
+                    "error": f"Failed to fetch chunk context for {doc_type} {doc_id}",
                 },
-                status_code=400,
+                status_code=404,
             )
-
-        # Extract chunk
-        chunk_text = full_content[start:end]
-
-        # Extract context before and after
-        before_start = max(0, start - context_chars)
-        before_context = full_content[before_start:start]
-
-        after_end = min(len(full_content), end + context_chars)
-        after_context = full_content[end:after_end]
-
-        # Determine if there's more content
-        has_more_before = before_start > 0
-        has_more_after = after_end < len(full_content)
 
         logger.info(
             f"Fetched chunk context for {doc_type}_{doc_id}: "
-            f"chunk_len={len(chunk_text)}, before_len={len(before_context)}, "
-            f"after_len={len(after_context)}"
+            f"chunk_len={len(chunk_context.chunk_text)}, "
+            f"before_len={len(chunk_context.before_context)}, "
+            f"after_len={len(chunk_context.after_context)}"
         )
 
-        return JSONResponse(
-            {
-                "success": True,
-                "chunk_text": chunk_text,
-                "before_context": before_context,
-                "after_context": after_context,
-                "has_more_before": has_more_before,
-                "has_more_after": has_more_after,
-            }
-        )
+        # For PDF files, also fetch the highlighted page image from Qdrant
+        highlighted_page_image = None
+        page_number = None
+        if doc_type == "file":
+            try:
+                from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+                settings = get_settings()
+                qdrant_client = await get_qdrant_client()
+                username = request.user.display_name
+
+                # Query for this specific chunk's highlighted image
+                points_response = await qdrant_client.scroll(
+                    collection_name=settings.get_collection_name(),
+                    scroll_filter=Filter(
+                        must=[
+                            get_placeholder_filter(),
+                            FieldCondition(
+                                key="doc_id", match=MatchValue(value=doc_id_int)
+                            ),
+                            FieldCondition(
+                                key="user_id", match=MatchValue(value=username)
+                            ),
+                            FieldCondition(
+                                key="chunk_start_offset", match=MatchValue(value=start)
+                            ),
+                            FieldCondition(
+                                key="chunk_end_offset", match=MatchValue(value=end)
+                            ),
+                        ]
+                    ),
+                    limit=1,
+                    with_vectors=False,
+                    with_payload=["highlighted_page_image", "page_number"],
+                )
+
+                points = points_response[0]
+                if points and points[0].payload:
+                    highlighted_page_image = points[0].payload.get(
+                        "highlighted_page_image"
+                    )
+                    page_number = points[0].payload.get("page_number")
+                    if highlighted_page_image:
+                        logger.info(
+                            f"Found highlighted image for chunk: "
+                            f"page={page_number}, image_size={len(highlighted_page_image)}"
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to fetch highlighted image: {e}")
+
+        # Return response compatible with frontend expectations
+        response_data: dict = {
+            "success": True,
+            "chunk_text": chunk_context.chunk_text,
+            "before_context": chunk_context.before_context,
+            "after_context": chunk_context.after_context,
+            "has_more_before": chunk_context.has_before_truncation,
+            "has_more_after": chunk_context.has_after_truncation,
+        }
+
+        # Add image data if available
+        if highlighted_page_image:
+            response_data["highlighted_page_image"] = highlighted_page_image
+            response_data["page_number"] = page_number
+
+        return JSONResponse(response_data)
 
     except ValueError as e:
         logger.error(f"Invalid parameter format: {e}")

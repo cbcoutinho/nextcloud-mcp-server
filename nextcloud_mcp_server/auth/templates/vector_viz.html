@@ -117,12 +117,13 @@
 
         <template x-if="!loading && results.length > 0">
             <div x-transition.opacity.duration.200ms>
-                <template x-for="result in results" :key="result.id">
+                <template x-for="result in results" :key="`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`">
                     <div style="padding: 12px; border-bottom: 1px solid #eee;">
                         <a :href="getNextcloudUrl(result)" target="_blank" style="font-weight: 500; color: #0066cc; text-decoration: none;">
                             <span x-text="result.title"></span>
                         </a>
-                        <div style="font-size: 14px; color: #666; margin-top: 4px;" x-text="result.excerpt"></div>
+                        <div style="font-size: 14px; color: #666; margin-top: 4px;"
+                             x-text="result.excerpt.length > 200 ? result.excerpt.substring(0, 200) + '...' : result.excerpt"></div>
                         <div style="font-size: 12px; color: #999; margin-top: 4px;">
                             Raw Score: <span x-text="result.original_score.toFixed(3)"></span>
                             (<span x-text="(result.score * 100).toFixed(0)"></span>% relative) |
@@ -134,22 +135,36 @@
                             <button
                                 class="chunk-toggle-btn"
                                 @click="toggleChunk(result)"
-                                x-text="isChunkExpanded(`${result.doc_type}_${result.id}`) ? 'Hide Chunk' : 'Show Chunk'"
+                                x-text="isChunkExpanded(`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`) ? 'Hide Chunk' : 'Show Chunk'"
                             ></button>
                         </template>
 
                         <!-- Chunk context (expanded inline) -->
-                        <template x-if="isChunkExpanded(`${result.doc_type}_${result.id}`)">
+                        <template x-if="isChunkExpanded(`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`)">
                             <div class="chunk-context" x-transition.opacity.duration.200ms>
-                                <template x-if="chunkLoading[`${result.doc_type}_${result.id}`]">
+                                <template x-if="chunkLoading[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]">
                                     <div style="color: #666; font-style: italic;">Loading chunk...</div>
                                 </template>
-                                <template x-if="!chunkLoading[`${result.doc_type}_${result.id}`]">
+                                <template x-if="!chunkLoading[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]">
                                     <div>
-                                        <template x-if="expandedChunks[`${result.doc_type}_${result.id}`]?.has_more_before">
+                                        <!-- Highlighted page image for PDFs -->
+                                        <template x-if="expandedChunks[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]?.highlighted_page_image">
+                                            <div class="chunk-image-container">
+                                                <div class="chunk-image-header">
+                                                    <span>Page <span x-text="expandedChunks[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]?.page_number"></span></span>
+                                                </div>
+                                                <img
+                                                    :src="'data:image/png;base64,' + expandedChunks[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]?.highlighted_page_image"
+                                                    :alt="'Page ' + expandedChunks[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]?.page_number"
+                                                    class="chunk-highlighted-image"
+                                                />
+                                            </div>
+                                        </template>
+                                        <!-- Text context -->
+                                        <template x-if="expandedChunks[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]?.has_more_before">
                                             <span class="chunk-ellipsis">...</span>
                                         </template>
-                                        <span class="chunk-text" x-text="expandedChunks[`${result.doc_type}_${result.id}`]?.before_context"></span><span class="chunk-matched" x-text="expandedChunks[`${result.doc_type}_${result.id}`]?.chunk_text"></span><span class="chunk-text" x-text="expandedChunks[`${result.doc_type}_${result.id}`]?.after_context"></span><template x-if="expandedChunks[`${result.doc_type}_${result.id}`]?.has_more_after">
+                                        <span class="chunk-text" x-text="expandedChunks[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]?.before_context"></span><span class="chunk-matched" x-text="expandedChunks[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]?.chunk_text"></span><span class="chunk-text" x-text="expandedChunks[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]?.after_context"></span><template x-if="expandedChunks[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]?.has_more_after">
                                             <span class="chunk-ellipsis">...</span>
                                         </template>
                                     </div>

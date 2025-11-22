@@ -130,9 +130,74 @@ class NextcloudClient:
         all_notes = self.notes.get_all_notes()
         return await self._notes_search.search_notes(all_notes, query)
 
+    async def find_files_by_tag(
+        self, tag_name: str, mime_type_filter: str | None = None
+    ) -> list[dict]:
+        """Find files by system tag name, optionally filtered by MIME type.
+
+        This method coordinates tag lookup and file retrieval via WebDAV:
+        1. Look up the tag ID by name
+        2. Get all files with that tag (via REPORT with full metadata)
+        3. Optionally filter by MIME type
+
+        Args:
+            tag_name: Name of the system tag to search for (e.g., "vector-index")
+            mime_type_filter: Optional MIME type filter (e.g., "application/pdf")
+
+        Returns:
+            List of file dictionaries with WebDAV properties (path, size, content_type, etc.)
+
+        Raises:
+            RuntimeError: If tag lookup or file query fails
+
+        Examples:
+            # Find all files with "vector-index" tag
+            files = await nc_client.find_files_by_tag("vector-index")
+
+            # Find only PDFs with the tag
+            pdfs = await nc_client.find_files_by_tag("vector-index", "application/pdf")
+        """
+        # Look up tag by name using WebDAV
+        tag = await self.webdav.get_tag_by_name(tag_name)
+        if not tag:
+            logger.debug(f"Tag '{tag_name}' not found, returning empty list")
+            return []
+
+        # Get files with this tag (returns full file info from REPORT)
+        files = await self.webdav.get_files_by_tag(tag["id"])
+        if not files:
+            logger.debug(f"No files found with tag '{tag_name}'")
+            return []
+
+        logger.debug(f"Found {len(files)} files with tag '{tag_name}'")
+
+        # Apply MIME type filter if specified
+        if mime_type_filter:
+            filtered_files = [
+                f
+                for f in files
+                if f.get("content_type", "").startswith(mime_type_filter)
+            ]
+            logger.info(
+                f"Returning {len(filtered_files)} files with tag '{tag_name}' (filtered by {mime_type_filter})"
+            )
+            return filtered_files
+
+        logger.info(f"Returning {len(files)} files with tag '{tag_name}'")
+        return files
+
     def _get_webdav_base_path(self) -> str:
         """Helper to get the base WebDAV path for the authenticated user."""
         return f"/remote.php/dav/files/{self.username}"
+
+    async def __aenter__(self):
+        """Async context manager entry."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit - closes all clients."""
+        await self.close()
+        return False  # Don't suppress exceptions
 
     async def close(self):
         """Close the HTTP client and CalDAV client."""

@@ -9,6 +9,7 @@ from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_embedding_service
 from nextcloud_mcp_server.observability.metrics import record_qdrant_operation
 from nextcloud_mcp_server.search.algorithms import SearchAlgorithm, SearchResult
+from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,9 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         Returns unverified results from Qdrant. Access verification should be
         performed separately at the final output stage using verify_search_results().
 
+        Deduplicates by (doc_id, doc_type, chunk_start_offset, chunk_end_offset)
+        to show multiple chunks from the same document while avoiding duplicate chunks.
+
         Args:
             query: Natural language search query
             user_id: User ID for filtering
@@ -80,10 +84,11 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
 
         # Build Qdrant filter
         filter_conditions = [
+            get_placeholder_filter(),  # Always exclude placeholders from user-facing queries
             FieldCondition(
                 key="user_id",
                 match=MatchValue(value=user_id),
-            )
+            ),
         ]
 
         # Add doc_type filter if specified
@@ -123,20 +128,24 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
             top_scores = [p.score for p in search_response.points[:3]]
             logger.debug(f"Top 3 similarity scores: {top_scores}")
 
-        # Deduplicate by (doc_id, doc_type) - multiple chunks per document
-        seen_docs = set()
+        # Deduplicate by (doc_id, doc_type, chunk_start, chunk_end)
+        # This allows multiple chunks from same doc, but removes duplicate chunks
+        seen_chunks = set()
         results = []
 
         for result in search_response.points:
-            doc_id = int(result.payload["doc_id"])
+            # doc_id can be int (notes) or str (files - file paths)
+            doc_id = result.payload["doc_id"]
             doc_type = result.payload.get("doc_type", "note")
-            doc_key = (doc_id, doc_type)
+            chunk_start = result.payload.get("chunk_start_offset")
+            chunk_end = result.payload.get("chunk_end_offset")
+            chunk_key = (doc_id, doc_type, chunk_start, chunk_end)
 
-            # Skip if we've already seen this document
-            if doc_key in seen_docs:
+            # Skip if we've already seen this exact chunk
+            if chunk_key in seen_chunks:
                 continue
 
-            seen_docs.add(doc_key)
+            seen_chunks.add(chunk_key)
 
             # Return unverified results (verification happens at output stage)
             results.append(
@@ -152,6 +161,9 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
                     },
                     chunk_start_offset=result.payload.get("chunk_start_offset"),
                     chunk_end_offset=result.payload.get("chunk_end_offset"),
+                    page_number=result.payload.get("page_number"),
+                    chunk_index=result.payload.get("chunk_index", 0),
+                    total_chunks=result.payload.get("total_chunks", 1),
                 )
             )
 

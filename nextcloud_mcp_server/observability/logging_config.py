@@ -37,7 +37,7 @@ class HealthCheckFilter(logging.Filter):
         """
         # Check if the log message contains health check endpoints
         message = record.getMessage()
-        return not any(
+        health_check = any(
             endpoint in message
             for endpoint in [
                 "/health/live",
@@ -46,6 +46,8 @@ class HealthCheckFilter(logging.Filter):
                 "/app/vector-sync/status",
             ]
         )
+
+        return not health_check
 
 
 class TraceContextFormatter(JsonFormatter):

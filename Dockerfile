@@ -7,6 +7,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.11@sha256:5aa820129de0a600924f166aec9cb5161
 # 2. sqlite for development with token db
 RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
     git \
+    tesseract-ocr \
     sqlite3 && apt clean
 
 WORKDIR /app
@@ -17,5 +18,7 @@ RUN uv sync --locked --no-dev --no-editable --no-cache
 
 ENV PYTHONUNBUFFERED=1
 ENV VIRTUAL_ENV=/app/.venv
+ENV PATH=/app/.vnev/bin:$PATH
+ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
 ENTRYPOINT ["/app/.venv/bin/nextcloud-mcp-server", "--host", "0.0.0.0"]
