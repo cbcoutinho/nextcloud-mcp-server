@@ -266,17 +266,57 @@ class OAuthAppContext:
     )
 
 
+@dataclass
+class SmitheryAppContext:
+    """Application context for Smithery stateless mode.
+
+    ADR-016: No shared client - clients created per-request from session config.
+    """
+
+    pass  # No shared state needed - everything comes from session config
+
+
+@asynccontextmanager
+async def app_lifespan_smithery(server: FastMCP) -> AsyncIterator[SmitheryAppContext]:
+    """
+    Manage application lifecycle for Smithery stateless mode.
+
+    ADR-016: Minimal lifespan with no shared state.
+    - No shared Nextcloud client (created per-request from session config)
+    - No vector sync (disabled in Smithery mode)
+    - No persistent storage (stateless deployment)
+    - No document processors (not enabled in Smithery mode)
+    """
+    logger.info("Starting MCP server in Smithery stateless mode")
+    logger.info("Clients will be created per-request from session config")
+
+    try:
+        yield SmitheryAppContext()
+    finally:
+        logger.info("Shutting down Smithery stateless mode")
+
+
 def is_oauth_mode() -> bool:
     """
     Determine if OAuth mode should be used.
 
     OAuth mode is enabled when:
     - NEXTCLOUD_USERNAME and NEXTCLOUD_PASSWORD are NOT set
+    - AND we are NOT in Smithery stateless mode
     - Or explicitly enabled via configuration
 
     Returns:
         True if OAuth mode, False if BasicAuth mode
     """
+    # ADR-016: Smithery stateless mode uses per-request BasicAuth from session config
+    # It's not OAuth mode even though env credentials aren't set
+    deployment_mode = get_deployment_mode()
+    if deployment_mode == DeploymentMode.SMITHERY_STATELESS:
+        logger.info(
+            "BasicAuth mode (Smithery stateless - credentials from session config)"
+        )
+        return False
+
     username = os.getenv("NEXTCLOUD_USERNAME")
     password = os.getenv("NEXTCLOUD_PASSWORD")
 
@@ -860,8 +900,9 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             "OpenTelemetry tracing disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)"
         )
 
-    # Determine authentication mode
+    # Determine authentication mode and deployment mode
     oauth_enabled = is_oauth_mode()
+    deployment_mode = get_deployment_mode()
 
     if oauth_enabled:
         logger.info("Configuring MCP server for OAuth mode")
@@ -922,8 +963,13 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             auth=auth_settings,
         )
     else:
-        logger.info("Configuring MCP server for BasicAuth mode")
-        mcp = FastMCP("Nextcloud MCP", lifespan=app_lifespan_basic)
+        # ADR-016: Use Smithery lifespan for stateless mode, BasicAuth otherwise
+        if deployment_mode == DeploymentMode.SMITHERY_STATELESS:
+            logger.info("Configuring MCP server for Smithery stateless mode")
+            mcp = FastMCP("Nextcloud MCP", lifespan=app_lifespan_smithery)
+        else:
+            logger.info("Configuring MCP server for BasicAuth mode")
+            mcp = FastMCP("Nextcloud MCP", lifespan=app_lifespan_basic)
 
     @mcp.resource("nc://capabilities")
     async def nc_get_capabilities():
@@ -1360,6 +1406,51 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     routes.append(Route("/health/live", health_live, methods=["GET"]))
     routes.append(Route("/health/ready", health_ready, methods=["GET"]))
     logger.info("Health check endpoints enabled: /health/live, /health/ready")
+
+    # ADR-016: MCP config discovery endpoint for Smithery
+    # Returns the session configuration schema that Smithery uses to render the config UI
+    def mcp_config(request):
+        """MCP configuration discovery endpoint.
+
+        Returns the JSON schema for session configuration parameters.
+        Used by Smithery to render the configuration form for users.
+        """
+        return JSONResponse(
+            {
+                "configSchema": {
+                    "type": "object",
+                    "required": ["nextcloud_url", "username", "app_password"],
+                    "properties": {
+                        "nextcloud_url": {
+                            "type": "string",
+                            "title": "Nextcloud URL",
+                            "description": "Your Nextcloud instance URL (e.g., https://cloud.example.com). Must be publicly accessible.",
+                            "pattern": "^https?://.+",
+                        },
+                        "username": {
+                            "type": "string",
+                            "title": "Username",
+                            "description": "Your Nextcloud username",
+                            "minLength": 1,
+                        },
+                        "app_password": {
+                            "type": "string",
+                            "title": "App Password",
+                            "description": "Nextcloud app password. Generate at Settings > Security > App passwords. Do NOT use your main password.",
+                            "minLength": 1,
+                        },
+                    },
+                },
+                "exampleConfig": {
+                    "nextcloud_url": "https://cloud.example.com",
+                    "username": "alice",
+                    "app_password": "xxxxx-xxxxx-xxxxx-xxxxx-xxxxx",
+                },
+            }
+        )
+
+    routes.append(Route("/.well-known/mcp-config", mcp_config, methods=["GET"]))
+    logger.info("MCP config discovery endpoint enabled: /.well-known/mcp-config")
 
     # Add test webhook endpoint (for development/testing)
     routes.append(
