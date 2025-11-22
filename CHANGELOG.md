@@ -1,3 +1,16 @@
+## v0.46.0 (2025-11-22)
+
+### Feat
+
+- Add Smithery CLI deployment support
+- Implement ADR-016 Smithery stateless deployment mode
+
+### Fix
+
+- **smithery**: Add JSON Schema metadata to mcp-config endpoint
+- **smithery**: Use container runtime pattern for config discovery
+- Add Smithery lifespan and auth mode detection
+
 ## v0.45.0 (2025-11-22)
 
 ### Feat
