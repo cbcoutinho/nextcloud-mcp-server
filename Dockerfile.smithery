@@ -23,7 +23,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.10@sha256:29bd45092ea8902c0bbb7f0a338f0494a
 # 1. git (required for caldav dependency from git)
 # 2. sqlite for development with token db
 RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
-    git \
+    git
 
 # Copy dependency files first (for better layer caching)
 COPY pyproject.toml uv.lock ./
