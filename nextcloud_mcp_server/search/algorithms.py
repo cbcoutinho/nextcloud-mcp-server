@@ -140,6 +140,7 @@ class SearchResult:
         page_number: Page number for PDF documents (None for other doc types)
         chunk_index: Zero-based index of this chunk in the document
         total_chunks: Total number of chunks in the document
+        point_id: Qdrant point ID for batch vector retrieval (None if not from Qdrant)
     """
 
     id: int
@@ -153,6 +154,7 @@ class SearchResult:
     page_number: int | None = None
     chunk_index: int = 0
     total_chunks: int = 1
+    point_id: str | None = None
 
     def __post_init__(self):
         """Validate score is non-negative.
@@ -172,7 +174,14 @@ class SearchAlgorithm(ABC):
 
     All search algorithms must implement the search() method with consistent
     interface, allowing them to be used interchangeably.
+
+    Attributes:
+        query_embedding: The query embedding generated during the last search.
+            Available after search() completes for algorithms that use embeddings.
+            Can be reused by callers to avoid redundant embedding generation.
     """
+
+    query_embedding: list[float] | None = None
 
     @abstractmethod
     async def search(
