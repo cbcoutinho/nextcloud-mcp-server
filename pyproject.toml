@@ -127,12 +127,10 @@ dev = [
 
 [project.scripts]
 nextcloud-mcp-server = "nextcloud_mcp_server.cli:run"
+smithery-main = "nextcloud_mcp_server.smithery_main:main"
 
 [[tool.uv.index]]
 name = "testpypi"
 url = "https://test.pypi.org/simple/"
 publish-url = "https://test.pypi.org/legacy/"
 explicit = true
-
-[tool.smithery]
-server = "nextcloud_mcp_server.smithery_server:create_server"

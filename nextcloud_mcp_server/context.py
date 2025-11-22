@@ -108,13 +108,16 @@ def _get_client_from_session_config(ctx: Context) -> NextcloudClient:
     with the user's Nextcloud credentials. This function creates a fresh client
     for each request - no state is persisted between requests.
 
+    For container runtime, config is extracted from URL query parameters by
+    SmitheryConfigMiddleware and stored in a context variable.
+
     Expected session config fields (from Smithery configSchema):
     - nextcloud_url: str - Nextcloud instance URL (required)
     - username: str - Nextcloud username (required)
     - app_password: str - Nextcloud app password (required)
 
     Args:
-        ctx: MCP request context containing session_config
+        ctx: MCP request context (not used directly for Smithery config)
 
     Returns:
         NextcloudClient configured with session credentials
@@ -122,25 +125,21 @@ def _get_client_from_session_config(ctx: Context) -> NextcloudClient:
     Raises:
         ValueError: If required session config fields are missing
     """
-    # Access session config from context
-    # In Smithery mode, this is populated from URL parameters
-    session_config = getattr(ctx, "session_config", None)
+    # ADR-016: Get session config from context variable (set by SmitheryConfigMiddleware)
+    from nextcloud_mcp_server.app import get_smithery_session_config
+
+    session_config = get_smithery_session_config()
 
     if session_config is None:
         raise ValueError(
             "Session configuration required in Smithery mode. "
-            "Ensure nextcloud_url, username, and app_password are provided."
+            "Ensure nextcloud_url, username, and app_password are provided as URL query parameters."
         )
 
-    # Extract required fields - support both dict and object access
-    if isinstance(session_config, dict):
-        nextcloud_url = session_config.get("nextcloud_url")
-        username = session_config.get("username")
-        app_password = session_config.get("app_password")
-    else:
-        nextcloud_url = getattr(session_config, "nextcloud_url", None)
-        username = getattr(session_config, "username", None)
-        app_password = getattr(session_config, "app_password", None)
+    # Extract required fields - config is always a dict from SmitheryConfigMiddleware
+    nextcloud_url = session_config.get("nextcloud_url")
+    username = session_config.get("username")
+    app_password = session_config.get("app_password")
 
     # Validate required fields
     missing_fields = []

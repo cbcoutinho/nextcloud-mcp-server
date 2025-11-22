@@ -3,6 +3,7 @@ import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
@@ -25,6 +26,8 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Receive, Send
+from starlette.types import Scope as StarletteScope
 
 from nextcloud_mcp_server.auth import (
     InsufficientScopeError,
@@ -274,6 +277,102 @@ class SmitheryAppContext:
     """
 
     pass  # No shared state needed - everything comes from session config
+
+
+# ADR-016: Smithery config schema for container runtime
+# This schema is served at /.well-known/mcp-config for Smithery discovery
+SMITHERY_CONFIG_SCHEMA = {
+    "type": "object",
+    "required": ["nextcloud_url", "username", "app_password"],
+    "properties": {
+        "nextcloud_url": {
+            "type": "string",
+            "title": "Nextcloud URL",
+            "description": "Your Nextcloud instance URL (e.g., https://cloud.example.com). Must be publicly accessible.",
+            "pattern": "^https?://.+",
+        },
+        "username": {
+            "type": "string",
+            "title": "Username",
+            "description": "Your Nextcloud username",
+            "minLength": 1,
+        },
+        "app_password": {
+            "type": "string",
+            "title": "App Password",
+            "description": "Nextcloud app password. Generate at Settings > Security > App passwords. Do NOT use your main password.",
+            "minLength": 1,
+        },
+    },
+}
+
+
+# ADR-016: Context variable to hold Smithery session config per-request
+# This is set by SmitheryConfigMiddleware and accessed in context.py
+_smithery_session_config: ContextVar[dict[str, str] | None] = ContextVar(
+    "smithery_session_config"
+)
+_smithery_session_config.set(None)  # Set initial value
+
+
+def get_smithery_session_config() -> dict | None:
+    """Get the current Smithery session config from context variable.
+
+    Used by context.py to access config extracted from URL query parameters.
+    """
+    return _smithery_session_config.get()
+
+
+class SmitheryConfigMiddleware:
+    """Middleware to extract Smithery config from URL query parameters.
+
+    ADR-016: For container runtime, Smithery passes configuration as URL query
+    parameters to the /mcp endpoint. This middleware extracts those parameters
+    and stores them in a context variable for access in tools.
+
+    Configuration parameters:
+    - nextcloud_url: Nextcloud instance URL
+    - username: Nextcloud username
+    - app_password: Nextcloud app password
+
+    The extracted config is stored in a ContextVar and can be accessed via
+    get_smithery_session_config() in context.py.
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(
+        self, scope: StarletteScope, receive: Receive, send: Send
+    ) -> None:
+        if scope["type"] == "http":
+            # Extract config from query parameters
+            from urllib.parse import parse_qs
+
+            query_string = scope.get("query_string", b"").decode("utf-8")
+            params = parse_qs(query_string)
+
+            # Build session config from query parameters
+            # Smithery uses dot notation for nested objects, but our schema is flat
+            session_config = {}
+            for key in ["nextcloud_url", "username", "app_password"]:
+                if key in params:
+                    # parse_qs returns lists, take first value
+                    session_config[key] = params[key][0]
+
+            # Store in context variable for access by context.py
+            if session_config:
+                _smithery_session_config.set(session_config)
+                logger.debug(
+                    f"Smithery config extracted: nextcloud_url={session_config.get('nextcloud_url')}, "
+                    f"username={session_config.get('username')}"
+                )
+
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            # Clear context variable after request
+            _smithery_session_config.set(None)
 
 
 @asynccontextmanager
@@ -1413,6 +1512,26 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
     )
     logger.info("Test webhook endpoint enabled: /webhooks/nextcloud")
 
+    # ADR-016: Add Smithery well-known config endpoint for container runtime discovery
+    if deployment_mode == DeploymentMode.SMITHERY_STATELESS:
+
+        def smithery_mcp_config(request):
+            """Smithery MCP configuration endpoint.
+
+            Returns JSON Schema for Smithery's configuration UI.
+            This endpoint is required for Smithery container runtime discovery.
+            """
+            return JSONResponse(SMITHERY_CONFIG_SCHEMA)
+
+        routes.append(
+            Route(
+                "/.well-known/mcp-config",
+                smithery_mcp_config,
+                methods=["GET"],
+            )
+        )
+        logger.info("Smithery config endpoint enabled: /.well-known/mcp-config")
+
     # Note: Metrics endpoint is NOT exposed on main HTTP port for security reasons.
     # Metrics are served on dedicated port via setup_metrics() (default: 9090)
 
@@ -1753,5 +1872,12 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             )
 
         logger.info("WWW-Authenticate scope challenge handler enabled")
+
+    # ADR-016: Apply SmitheryConfigMiddleware in Smithery stateless mode
+    # This must be the outermost middleware to extract config from URL query parameters
+    # before any other middleware processes the request
+    if deployment_mode == DeploymentMode.SMITHERY_STATELESS:
+        app = SmitheryConfigMiddleware(app)
+        logger.info("SmitheryConfigMiddleware enabled for query parameter config")
 
     return app

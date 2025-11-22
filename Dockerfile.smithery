@@ -41,5 +41,4 @@ EXPOSE 8081
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD uv run python -c "import httpx; httpx.get('http://localhost:${PORT:-8081}/health/live').raise_for_status()"
 
-# Run the Smithery-specific entrypoint
-CMD ["uv", "run", "python", "-m", "nextcloud_mcp_server.smithery_main"]
+CMD ["/app/.venv/bin/smithery-main"]
