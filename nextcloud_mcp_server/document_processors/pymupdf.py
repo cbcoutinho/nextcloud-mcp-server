@@ -6,14 +6,14 @@ import tempfile
 from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
+# NOTE: Do NOT call pymupdf.layout.activate() here!
+# It changes the behavior of pymupdf4llm.to_markdown() when page_chunks=True,
+# causing it to return a string instead of a list[dict].
+# See: https://github.com/pymupdf/pymupdf4llm/issues/323
 import pymupdf
-import pymupdf.layout
+import pymupdf4llm
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
-
-# Activate layout analysis for better text extraction
-pymupdf.layout.activate()
-import pymupdf4llm  # noqa
 
 logger = logging.getLogger(__name__)
 
