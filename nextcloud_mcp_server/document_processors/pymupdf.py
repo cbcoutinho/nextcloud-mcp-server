@@ -102,7 +102,7 @@ class PyMuPDFProcessor(DocumentProcessor):
                 await progress_callback(0, 100, "Processing PDF in background thread")
 
             # Run CPU-bound PDF processing in thread pool to avoid blocking event loop
-            result = await anyio.to_thread.run_sync(
+            result = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
                 self._process_sync,
                 content,
                 filename,
@@ -240,7 +240,7 @@ class PyMuPDFProcessor(DocumentProcessor):
         # Basic document info
         metadata["page_count"] = doc.page_count
         metadata["format"] = "PDF 1." + str(
-            doc.pdf_version() if hasattr(doc, "pdf_version") else "?"
+            doc.pdf_version() if hasattr(doc, "pdf_version") else "?"  # type: ignore[call-non-callable]
         )
 
         if filename:

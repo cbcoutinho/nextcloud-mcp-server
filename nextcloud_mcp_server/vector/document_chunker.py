@@ -75,7 +75,7 @@ class DocumentChunker:
             return [ChunkWithPosition(text="", start_offset=0, end_offset=0)]
 
         # Run CPU-bound text splitting in thread pool to avoid blocking event loop
-        docs = await anyio.to_thread.run_sync(
+        docs = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
             self.splitter.create_documents,
             [content],
         )

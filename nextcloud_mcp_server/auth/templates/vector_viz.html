@@ -147,6 +147,20 @@
                                 </template>
                                 <template x-if="!chunkLoading[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]">
                                     <div>
+                                        <!-- Highlighted page image for PDFs -->
+                                        <template x-if="expandedChunks[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]?.highlighted_page_image">
+                                            <div class="chunk-image-container">
+                                                <div class="chunk-image-header">
+                                                    <span>Page <span x-text="expandedChunks[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]?.page_number"></span></span>
+                                                </div>
+                                                <img
+                                                    :src="'data:image/png;base64,' + expandedChunks[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]?.highlighted_page_image"
+                                                    :alt="'Page ' + expandedChunks[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]?.page_number"
+                                                    class="chunk-highlighted-image"
+                                                />
+                                            </div>
+                                        </template>
+                                        <!-- Text context -->
                                         <template x-if="expandedChunks[`${result.doc_type}_${result.id}_${result.chunk_start_offset || 0}`]?.has_more_before">
                                             <span class="chunk-ellipsis">...</span>
                                         </template>

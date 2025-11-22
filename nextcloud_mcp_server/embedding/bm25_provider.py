@@ -66,7 +66,7 @@ class BM25SparseEmbeddingProvider:
         import anyio
 
         # Run CPU-bound BM25 encoding in thread pool to avoid blocking event loop
-        sparse_embeddings = await anyio.to_thread.run_sync(
+        sparse_embeddings = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
             lambda: list(self.model.embed(texts))
         )
 

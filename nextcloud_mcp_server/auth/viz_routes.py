@@ -564,17 +564,72 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
             f"after_len={len(chunk_context.after_context)}"
         )
 
+        # For PDF files, also fetch the highlighted page image from Qdrant
+        highlighted_page_image = None
+        page_number = None
+        if doc_type == "file":
+            try:
+                from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+                settings = get_settings()
+                qdrant_client = await get_qdrant_client()
+                username = request.user.display_name
+
+                # Query for this specific chunk's highlighted image
+                points_response = await qdrant_client.scroll(
+                    collection_name=settings.get_collection_name(),
+                    scroll_filter=Filter(
+                        must=[
+                            get_placeholder_filter(),
+                            FieldCondition(
+                                key="doc_id", match=MatchValue(value=doc_id_int)
+                            ),
+                            FieldCondition(
+                                key="user_id", match=MatchValue(value=username)
+                            ),
+                            FieldCondition(
+                                key="chunk_start_offset", match=MatchValue(value=start)
+                            ),
+                            FieldCondition(
+                                key="chunk_end_offset", match=MatchValue(value=end)
+                            ),
+                        ]
+                    ),
+                    limit=1,
+                    with_vectors=False,
+                    with_payload=["highlighted_page_image", "page_number"],
+                )
+
+                points = points_response[0]
+                if points and points[0].payload:
+                    highlighted_page_image = points[0].payload.get(
+                        "highlighted_page_image"
+                    )
+                    page_number = points[0].payload.get("page_number")
+                    if highlighted_page_image:
+                        logger.info(
+                            f"Found highlighted image for chunk: "
+                            f"page={page_number}, image_size={len(highlighted_page_image)}"
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to fetch highlighted image: {e}")
+
         # Return response compatible with frontend expectations
-        return JSONResponse(
-            {
-                "success": True,
-                "chunk_text": chunk_context.chunk_text,
-                "before_context": chunk_context.before_context,
-                "after_context": chunk_context.after_context,
-                "has_more_before": chunk_context.has_before_truncation,
-                "has_more_after": chunk_context.has_after_truncation,
-            }
-        )
+        response_data: dict = {
+            "success": True,
+            "chunk_text": chunk_context.chunk_text,
+            "before_context": chunk_context.before_context,
+            "after_context": chunk_context.after_context,
+            "has_more_before": chunk_context.has_before_truncation,
+            "has_more_after": chunk_context.has_after_truncation,
+        }
+
+        # Add image data if available
+        if highlighted_page_image:
+            response_data["highlighted_page_image"] = highlighted_page_image
+            response_data["page_number"] = page_number
+
+        return JSONResponse(response_data)
 
     except ValueError as e:
         logger.error(f"Invalid parameter format: {e}")
