@@ -1,3 +1,10 @@
+## v0.48.2 (2025-11-23)
+
+### Fix
+
+- Share vector sync state with FastMCP session lifespan via module singleton
+- Share vector sync state with FastMCP session lifespan via module singleton
+
 ## v0.48.1 (2025-11-23)
 
 ### Fix
