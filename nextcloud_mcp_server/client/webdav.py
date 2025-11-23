@@ -1398,7 +1398,7 @@ class WebDAVClient(BaseNextcloudClient):
         user_visible: bool = True,
         user_assignable: bool = True,
     ) -> dict[str, Any]:
-        """Create a system tag via OCS API.
+        """Create a system tag via WebDAV.
 
         Args:
             name: Name of the tag to create
@@ -1411,12 +1411,10 @@ class WebDAVClient(BaseNextcloudClient):
         Raises:
             HTTPStatusError: If tag creation fails (409 if already exists)
         """
+        # Use WebDAV POST with JSON body to create tag
         response = await self._client.post(
-            "/ocs/v2.php/apps/systemtags/api/v1/tags",
-            headers={
-                "OCS-APIRequest": "true",
-                "Content-Type": "application/json",
-            },
+            "/remote.php/dav/systemtags/",
+            headers={"Content-Type": "application/json"},
             json={
                 "name": name,
                 "userVisible": user_visible,
@@ -1425,15 +1423,21 @@ class WebDAVClient(BaseNextcloudClient):
         )
         response.raise_for_status()
 
-        # Parse OCS response
-        data = response.json()
-        ocs_data = data.get("ocs", {}).get("data", {})
+        # Extract tag ID from Content-Location header (e.g., /remote.php/dav/systemtags/42)
+        content_location = response.headers.get("Content-Location", "")
+        tag_id = None
+        if content_location:
+            # Extract the numeric ID from the path
+            try:
+                tag_id = int(content_location.rstrip("/").split("/")[-1])
+            except (ValueError, IndexError):
+                pass
 
         tag_info = {
-            "id": ocs_data.get("id"),
-            "name": ocs_data.get("name", name),
-            "userVisible": ocs_data.get("userVisible", user_visible),
-            "userAssignable": ocs_data.get("userAssignable", user_assignable),
+            "id": tag_id,
+            "name": name,
+            "userVisible": user_visible,
+            "userAssignable": user_assignable,
         }
 
         logger.info(f"Created tag '{name}' with ID {tag_info['id']}")
