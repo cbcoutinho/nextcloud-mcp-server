@@ -1,0 +1,25 @@
+# CI-specific overrides for RAG evaluation pipeline
+# This file is used by the rag-evaluation.yml workflow to configure the MCP
+# container with OpenAI/GitHub Models API for vector embeddings.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml up
+#
+# Environment variables (set in CI workflow):
+#   OPENAI_API_KEY - API key for embeddings (GitHub Models uses GITHUB_TOKEN)
+#   OPENAI_BASE_URL - API endpoint (e.g., https://models.github.ai/inference)
+#   OPENAI_EMBEDDING_MODEL - Model name (e.g., openai/text-embedding-3-small)
+#   OPENAI_GENERATION_MODEL - Model name for generation (e.g., openai/gpt-4o-mini)
+
+services:
+  mcp:
+    environment:
+      # OpenAI provider configuration (required for CI vector sync)
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://models.github.ai/inference}
+      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-openai/text-embedding-3-small}
+      - OPENAI_GENERATION_MODEL=${OPENAI_GENERATION_MODEL:-openai/gpt-4o-mini}
+      # Faster sync for CI
+      - VECTOR_SYNC_SCAN_INTERVAL=${VECTOR_SYNC_SCAN_INTERVAL:-5}
+      # Enable document processing for PDF parsing
+      - ENABLE_DOCUMENT_PROCESSING=true

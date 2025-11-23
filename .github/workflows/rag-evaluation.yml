@@ -29,16 +29,17 @@ jobs:
       - name: Run docker compose with vector sync
         uses: hoverkraft-tech/compose-action@3846bcd61da338e9eaaf83e7ed0234a12b099b72 # v2.4.1
         with:
-          compose-file: "./docker-compose.yml"
+          compose-file: |
+            ./docker-compose.yml
+            ./docker-compose.ci.yml
           up-flags: "--build"
         env:
-          # Override MCP container environment for OpenAI + vector sync
-          VECTOR_SYNC_ENABLED: "true"
-          VECTOR_SYNC_SCAN_INTERVAL: "5"
+          # Environment variables passed to docker-compose.ci.yml
           OPENAI_API_KEY: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_BASE_URL: "https://models.github.ai/inference"
           OPENAI_EMBEDDING_MODEL: ${{ inputs.embedding_model }}
           OPENAI_GENERATION_MODEL: ${{ inputs.generation_model }}
+          VECTOR_SYNC_SCAN_INTERVAL: "5"
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244 # v7.1.4
