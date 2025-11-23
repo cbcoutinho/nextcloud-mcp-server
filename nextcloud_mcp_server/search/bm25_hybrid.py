@@ -9,6 +9,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
 from nextcloud_mcp_server.observability.metrics import record_qdrant_operation
+from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.search.algorithms import SearchAlgorithm, SearchResult
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
@@ -99,15 +100,19 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         )
 
         # Generate dense embedding for semantic search
-        embedding_service = get_embedding_service()
-        dense_embedding = await embedding_service.embed(query)
+        with trace_operation("search.get_embedding_service"):
+            embedding_service = get_embedding_service()
+        with trace_operation("search.dense_embedding"):
+            dense_embedding = await embedding_service.embed(query)
         # Store for reuse by callers (e.g., viz_routes PCA visualization)
         self.query_embedding = dense_embedding
         logger.debug(f"Generated dense embedding (dimension={len(dense_embedding)})")
 
         # Generate sparse embedding for BM25 keyword search
-        bm25_service = get_bm25_service()
-        sparse_embedding = await bm25_service.encode_async(query)
+        with trace_operation("search.get_bm25_service"):
+            bm25_service = get_bm25_service()
+        with trace_operation("search.sparse_embedding_bm25"):
+            sparse_embedding = await bm25_service.encode_async(query)
         logger.debug(
             f"Generated sparse embedding "
             f"({len(sparse_embedding['indices'])} non-zero terms)"
@@ -134,38 +139,44 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         query_filter = Filter(must=filter_conditions)
 
         # Execute hybrid search with Qdrant native RRF fusion
-        qdrant_client = await get_qdrant_client()
+        with trace_operation("search.get_qdrant_client"):
+            qdrant_client = await get_qdrant_client()
+
         try:
             # Use prefetch to run both dense and sparse searches
             # Qdrant will automatically merge results using RRF
-            search_response = await qdrant_client.query_points(
-                collection_name=settings.get_collection_name(),
-                prefetch=[
-                    # Dense semantic search
-                    models.Prefetch(
-                        query=dense_embedding,
-                        using="dense",
-                        limit=limit * 2,  # Get extra for deduplication
-                        filter=query_filter,
-                    ),
-                    # Sparse BM25 search
-                    models.Prefetch(
-                        query=models.SparseVector(
-                            indices=sparse_embedding["indices"],
-                            values=sparse_embedding["values"],
+            with trace_operation(
+                "search.qdrant_query",
+                attributes={"query.limit": limit * 2, "query.fusion": self.fusion_name},
+            ):
+                search_response = await qdrant_client.query_points(
+                    collection_name=settings.get_collection_name(),
+                    prefetch=[
+                        # Dense semantic search
+                        models.Prefetch(
+                            query=dense_embedding,
+                            using="dense",
+                            limit=limit * 2,  # Get extra for deduplication
+                            filter=query_filter,
                         ),
-                        using="sparse",
-                        limit=limit * 2,  # Get extra for deduplication
-                        filter=query_filter,
-                    ),
-                ],
-                # Fusion query (RRF or DBSF based on initialization)
-                query=models.FusionQuery(fusion=self.fusion),
-                limit=limit * 2,  # Get extra for deduplication
-                score_threshold=score_threshold,
-                with_payload=True,
-                with_vectors=False,  # Don't return vectors to save bandwidth
-            )
+                        # Sparse BM25 search
+                        models.Prefetch(
+                            query=models.SparseVector(
+                                indices=sparse_embedding["indices"],
+                                values=sparse_embedding["values"],
+                            ),
+                            using="sparse",
+                            limit=limit * 2,  # Get extra for deduplication
+                            filter=query_filter,
+                        ),
+                    ],
+                    # Fusion query (RRF or DBSF based on initialization)
+                    query=models.FusionQuery(fusion=self.fusion),
+                    limit=limit * 2,  # Get extra for deduplication
+                    score_threshold=score_threshold,
+                    with_payload=True,
+                    with_vectors=False,  # Don't return vectors to save bandwidth
+                )
             record_qdrant_operation("search", "success")
         except Exception:
             record_qdrant_operation("search", "error")
@@ -185,47 +196,51 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
 
         # Deduplicate by (doc_id, doc_type, chunk_start, chunk_end)
         # This allows multiple chunks from same doc, but removes duplicate chunks
-        seen_chunks = set()
-        results = []
+        with trace_operation(
+            "search.deduplicate",
+            attributes={"dedupe.num_points": len(search_response.points)},
+        ):
+            seen_chunks = set()
+            results = []
 
-        for result in search_response.points:
-            # doc_id can be int (notes) or str (files - file paths)
-            doc_id = result.payload["doc_id"]
-            doc_type = result.payload.get("doc_type", "note")
-            chunk_start = result.payload.get("chunk_start_offset")
-            chunk_end = result.payload.get("chunk_end_offset")
-            chunk_key = (doc_id, doc_type, chunk_start, chunk_end)
+            for result in search_response.points:
+                # doc_id can be int (notes) or str (files - file paths)
+                doc_id = result.payload["doc_id"]
+                doc_type = result.payload.get("doc_type", "note")
+                chunk_start = result.payload.get("chunk_start_offset")
+                chunk_end = result.payload.get("chunk_end_offset")
+                chunk_key = (doc_id, doc_type, chunk_start, chunk_end)
 
-            # Skip if we've already seen this exact chunk
-            if chunk_key in seen_chunks:
-                continue
+                # Skip if we've already seen this exact chunk
+                if chunk_key in seen_chunks:
+                    continue
 
-            seen_chunks.add(chunk_key)
+                seen_chunks.add(chunk_key)
 
-            # Return unverified results (verification happens at output stage)
-            results.append(
-                SearchResult(
-                    id=doc_id,
-                    doc_type=doc_type,
-                    title=result.payload.get("title", "Untitled"),
-                    excerpt=result.payload.get("excerpt", ""),
-                    score=result.score,  # Fusion score (RRF or DBSF)
-                    metadata={
-                        "chunk_index": result.payload.get("chunk_index"),
-                        "total_chunks": result.payload.get("total_chunks"),
-                        "search_method": f"bm25_hybrid_{self.fusion_name}",
-                    },
-                    chunk_start_offset=result.payload.get("chunk_start_offset"),
-                    chunk_end_offset=result.payload.get("chunk_end_offset"),
-                    page_number=result.payload.get("page_number"),
-                    chunk_index=result.payload.get("chunk_index", 0),
-                    total_chunks=result.payload.get("total_chunks", 1),
-                    point_id=str(result.id),  # Qdrant point ID for batch retrieval
+                # Return unverified results (verification happens at output stage)
+                results.append(
+                    SearchResult(
+                        id=doc_id,
+                        doc_type=doc_type,
+                        title=result.payload.get("title", "Untitled"),
+                        excerpt=result.payload.get("excerpt", ""),
+                        score=result.score,  # Fusion score (RRF or DBSF)
+                        metadata={
+                            "chunk_index": result.payload.get("chunk_index"),
+                            "total_chunks": result.payload.get("total_chunks"),
+                            "search_method": f"bm25_hybrid_{self.fusion_name}",
+                        },
+                        chunk_start_offset=result.payload.get("chunk_start_offset"),
+                        chunk_end_offset=result.payload.get("chunk_end_offset"),
+                        page_number=result.payload.get("page_number"),
+                        chunk_index=result.payload.get("chunk_index", 0),
+                        total_chunks=result.payload.get("total_chunks", 1),
+                        point_id=str(result.id),  # Qdrant point ID for batch retrieval
+                    )
                 )
-            )
 
-            if len(results) >= limit:
-                break
+                if len(results) >= limit:
+                    break
 
         logger.info(f"Returning {len(results)} unverified results after deduplication")
         if results:

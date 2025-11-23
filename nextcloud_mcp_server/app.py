@@ -555,15 +555,15 @@ async def load_oauth_client_credentials(
 @asynccontextmanager
 async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
     """
-    Manage application lifecycle for BasicAuth mode.
+    Manage application lifecycle for BasicAuth mode (FastMCP session lifespan).
 
     Creates a single Nextcloud client with basic authentication
-    that is shared across all requests.
+    that is shared across all requests within a session.
 
-    If vector sync is enabled (VECTOR_SYNC_ENABLED=true), also starts
-    background tasks for automatic document indexing (ADR-007).
+    Note: Background tasks (scanner, processor) are started at server level
+    in starlette_lifespan, not here. This lifespan runs per-session.
     """
-    logger.info("Starting MCP server in BasicAuth mode")
+    logger.info("Starting MCP session in BasicAuth mode")
     logger.info("Creating Nextcloud client with BasicAuth")
 
     client = NextcloudClient.from_env()
@@ -579,91 +579,12 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
     # Initialize document processors
     initialize_document_processors()
 
-    settings = get_settings()
-
-    # Check if vector sync is enabled
-    if settings.vector_sync_enabled:
-        logger.info("Vector sync enabled - starting background tasks")
-
-        # Get username from environment for BasicAuth mode
-        username = os.getenv("NEXTCLOUD_USERNAME")
-        if not username:
-            raise ValueError(
-                "NEXTCLOUD_USERNAME is required for vector sync in BasicAuth mode"
-            )
-
-        # Initialize Qdrant collection before starting background tasks
-        logger.info("Initializing Qdrant collection...")
-        from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
-
-        try:
-            await get_qdrant_client()  # Triggers collection creation if needed
-            logger.info("Qdrant collection ready")
-        except Exception as e:
-            logger.error(f"Failed to initialize Qdrant collection: {e}")
-            raise RuntimeError(
-                f"Cannot start vector sync - Qdrant initialization failed: {e}"
-            ) from e
-
-        # Initialize shared state
-        send_stream, receive_stream = anyio.create_memory_object_stream(
-            max_buffer_size=settings.vector_sync_queue_max_size
-        )
-        shutdown_event = anyio.Event()
-        scanner_wake_event = anyio.Event()
-
-        # Start background tasks using anyio TaskGroup
-        async with anyio.create_task_group() as tg:
-            # Start scanner task
-            await tg.start(
-                scanner_task,
-                send_stream,
-                shutdown_event,
-                scanner_wake_event,
-                client,
-                username,
-            )
-
-            # Start processor pool (each gets a cloned receive stream)
-            for i in range(settings.vector_sync_processor_workers):
-                await tg.start(
-                    processor_task,
-                    i,
-                    receive_stream.clone(),
-                    shutdown_event,
-                    client,
-                    username,
-                )
-
-            logger.info(
-                f"Background sync tasks started: 1 scanner + {settings.vector_sync_processor_workers} processors"
-            )
-
-            # Yield with background tasks running
-            try:
-                yield AppContext(
-                    client=client,
-                    storage=storage,
-                    document_send_stream=send_stream,
-                    document_receive_stream=receive_stream,
-                    shutdown_event=shutdown_event,
-                    scanner_wake_event=scanner_wake_event,
-                )
-            finally:
-                # Shutdown signal
-                logger.info("Shutting down background sync tasks")
-                shutdown_event.set()
-
-                # TaskGroup automatically cancels all tasks on exit
-                logger.info("Background sync tasks stopped")
-                await client.close()
-    else:
-        # No vector sync - simple lifecycle
-        try:
-            yield AppContext(client=client, storage=storage)
-        finally:
-            logger.info("Shutting down BasicAuth mode")
-            await client.close()
+    # Yield client context - scanner runs at server level (starlette_lifespan)
+    try:
+        yield AppContext(client=client, storage=storage)
+    finally:
+        logger.info("Shutting down BasicAuth session")
+        await client.close()
 
 
 async def setup_oauth_config():
@@ -979,7 +900,7 @@ async def setup_oauth_config():
     )
 
 
-def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
+def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None = None):
     # Initialize observability (logging will be configured by uvicorn)
     settings = get_settings()
 
@@ -1197,180 +1118,170 @@ def get_app(transport: str = "sse", enabled_apps: list[str] | None = None):
             "Dynamic tool filtering enabled for OAuth mode (JWT and Bearer tokens)"
         )
 
-    if transport == "sse":
-        mcp_app = mcp.sse_app()
-        starlette_lifespan = None
-    elif transport in ("http", "streamable-http"):
-        mcp_app = mcp.streamable_http_app()
+    mcp_app = mcp.streamable_http_app()
 
-        @asynccontextmanager
-        async def starlette_lifespan(app: Starlette):
-            # Set OAuth context for OAuth login routes (ADR-004)
-            if oauth_enabled:
-                # Prepare OAuth config from setup_oauth_config closure variables
-                mcp_server_url = os.getenv(
-                    "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
-                )
-                nextcloud_resource_uri = os.getenv(
-                    "NEXTCLOUD_RESOURCE_URI", nextcloud_host
-                )
-                discovery_url = os.getenv(
-                    "OIDC_DISCOVERY_URL",
-                    f"{nextcloud_host}/.well-known/openid-configuration",
-                )
-                scopes = os.getenv("NEXTCLOUD_OIDC_SCOPES", "")
+    @asynccontextmanager
+    async def starlette_lifespan(app: Starlette):
+        # Set OAuth context for OAuth login routes (ADR-004)
+        if oauth_enabled:
+            # Prepare OAuth config from setup_oauth_config closure variables
+            mcp_server_url = os.getenv(
+                "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
+            )
+            nextcloud_resource_uri = os.getenv("NEXTCLOUD_RESOURCE_URI", nextcloud_host)
+            discovery_url = os.getenv(
+                "OIDC_DISCOVERY_URL",
+                f"{nextcloud_host}/.well-known/openid-configuration",
+            )
+            scopes = os.getenv("NEXTCLOUD_OIDC_SCOPES", "")
 
-                oauth_context_dict = {
-                    "storage": refresh_token_storage,
-                    "oauth_client": oauth_client,
-                    "token_verifier": token_verifier,  # For querying IdP userinfo endpoint
-                    "config": {
-                        "mcp_server_url": mcp_server_url,
-                        "discovery_url": discovery_url,
-                        "client_id": client_id,  # From setup_oauth_config (DCR or static)
-                        "client_secret": client_secret,  # From setup_oauth_config (DCR or static)
-                        "scopes": scopes,
-                        "nextcloud_host": nextcloud_host,
-                        "nextcloud_resource_uri": nextcloud_resource_uri,
-                        "oauth_provider": oauth_provider,
-                    },
-                }
-                app.state.oauth_context = oauth_context_dict
+            oauth_context_dict = {
+                "storage": refresh_token_storage,
+                "oauth_client": oauth_client,
+                "token_verifier": token_verifier,  # For querying IdP userinfo endpoint
+                "config": {
+                    "mcp_server_url": mcp_server_url,
+                    "discovery_url": discovery_url,
+                    "client_id": client_id,  # From setup_oauth_config (DCR or static)
+                    "client_secret": client_secret,  # From setup_oauth_config (DCR or static)
+                    "scopes": scopes,
+                    "nextcloud_host": nextcloud_host,
+                    "nextcloud_resource_uri": nextcloud_resource_uri,
+                    "oauth_provider": oauth_provider,
+                },
+            }
+            app.state.oauth_context = oauth_context_dict
 
-                # Also set oauth_context on browser_app for session authentication
-                # browser_app is in the same function scope (defined later in create_app)
-                # We need to find it in the mounted routes
-                for route in app.routes:
-                    if isinstance(route, Mount) and route.path == "/app":
-                        route.app.state.oauth_context = oauth_context_dict
-                        logger.info(
-                            "OAuth context shared with browser_app for session auth"
-                        )
-                        break
-
-                logger.info(
-                    f"OAuth context initialized for login routes (client_id={client_id[:16]}...)"
-                )
-            else:
-                # BasicAuth mode - share storage with browser_app for webhook management
-                from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
-
-                storage = RefreshTokenStorage.from_env()
-                await storage.initialize()
-
-                app.state.storage = storage
-
-                # Also share with browser_app for webhook routes
-                for route in app.routes:
-                    if isinstance(route, Mount) and route.path == "/app":
-                        route.app.state.storage = storage
-                        logger.info(
-                            "Storage shared with browser_app for webhook management"
-                        )
-                        break
-
-            # Start background vector sync tasks for BasicAuth mode (ADR-007)
-            # For streamable-http transport, FastMCP lifespan isn't automatically triggered
-            # so we manually start background tasks here if vector sync is enabled
-            import anyio as anyio_module
-
-            settings = get_settings()
-            if not oauth_enabled and settings.vector_sync_enabled:
-                logger.info("Starting background vector sync tasks for BasicAuth mode")
-
-                # Get username from environment
-                username = os.getenv("NEXTCLOUD_USERNAME")
-                if not username:
-                    raise ValueError(
-                        "NEXTCLOUD_USERNAME required for vector sync in BasicAuth mode"
+            # Also set oauth_context on browser_app for session authentication
+            # browser_app is in the same function scope (defined later in create_app)
+            # We need to find it in the mounted routes
+            for route in app.routes:
+                if isinstance(route, Mount) and route.path == "/app":
+                    route.app.state.oauth_context = oauth_context_dict
+                    logger.info(
+                        "OAuth context shared with browser_app for session auth"
                     )
+                    break
 
-                # Get Nextcloud client from MCP app context
-                # Create client since we're outside FastMCP lifespan
-                client = NextcloudClient.from_env()
+            logger.info(
+                f"OAuth context initialized for login routes (client_id={client_id[:16]}...)"
+            )
+        else:
+            # BasicAuth mode - share storage with browser_app for webhook management
+            from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
-                # Initialize Qdrant collection before starting background tasks
-                logger.info("Initializing Qdrant collection...")
-                from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+            storage = RefreshTokenStorage.from_env()
+            await storage.initialize()
 
-                try:
-                    await get_qdrant_client()  # Triggers collection creation if needed
-                    logger.info("Qdrant collection ready")
-                except Exception as e:
-                    logger.error(f"Failed to initialize Qdrant collection: {e}")
-                    raise RuntimeError(
-                        f"Cannot start vector sync - Qdrant initialization failed: {e}"
-                    ) from e
+            app.state.storage = storage
 
-                # Initialize shared state
-                send_stream, receive_stream = anyio_module.create_memory_object_stream(
-                    max_buffer_size=settings.vector_sync_queue_max_size
+            # Also share with browser_app for webhook routes
+            for route in app.routes:
+                if isinstance(route, Mount) and route.path == "/app":
+                    route.app.state.storage = storage
+                    logger.info(
+                        "Storage shared with browser_app for webhook management"
+                    )
+                    break
+
+        # Start background vector sync tasks for BasicAuth mode (ADR-007)
+        # Scanner runs at server-level (once), not per-session
+        import anyio as anyio_module
+
+        settings = get_settings()
+        if not oauth_enabled and settings.vector_sync_enabled:
+            logger.info("Starting background vector sync tasks for BasicAuth mode")
+
+            # Get username from environment
+            username = os.getenv("NEXTCLOUD_USERNAME")
+            if not username:
+                raise ValueError(
+                    "NEXTCLOUD_USERNAME required for vector sync in BasicAuth mode"
                 )
-                shutdown_event = anyio_module.Event()
-                scanner_wake_event = anyio_module.Event()
 
-                # Store in app state for access from routes (ADR-007)
-                app.state.document_send_stream = send_stream
-                app.state.document_receive_stream = receive_stream
-                app.state.shutdown_event = shutdown_event
-                app.state.scanner_wake_event = scanner_wake_event
+            # Create client for vector sync (server-level, not per-session)
+            client = NextcloudClient.from_env()
 
-                # Also share with browser_app for /app route
-                for route in app.routes:
-                    if isinstance(route, Mount) and route.path == "/app":
-                        route.app.state.document_send_stream = send_stream
-                        route.app.state.document_receive_stream = receive_stream
-                        route.app.state.shutdown_event = shutdown_event
-                        route.app.state.scanner_wake_event = scanner_wake_event
-                        logger.info(
-                            "Vector sync state shared with browser_app for /app"
-                        )
-                        break
+            # Initialize Qdrant collection before starting background tasks
+            logger.info("Initializing Qdrant collection...")
+            from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
-                # Start background tasks using anyio TaskGroup
-                async with anyio_module.create_task_group() as tg:
-                    # Start scanner task
+            try:
+                await get_qdrant_client()  # Triggers collection creation if needed
+                logger.info("Qdrant collection ready")
+            except Exception as e:
+                logger.error(f"Failed to initialize Qdrant collection: {e}")
+                raise RuntimeError(
+                    f"Cannot start vector sync - Qdrant initialization failed: {e}"
+                ) from e
+
+            # Initialize shared state
+            send_stream, receive_stream = anyio_module.create_memory_object_stream(
+                max_buffer_size=settings.vector_sync_queue_max_size
+            )
+            shutdown_event = anyio_module.Event()
+            scanner_wake_event = anyio_module.Event()
+
+            # Store in app state for access from routes (ADR-007)
+            app.state.document_send_stream = send_stream
+            app.state.document_receive_stream = receive_stream
+            app.state.shutdown_event = shutdown_event
+            app.state.scanner_wake_event = scanner_wake_event
+
+            # Also share with browser_app for /app route
+            for route in app.routes:
+                if isinstance(route, Mount) and route.path == "/app":
+                    route.app.state.document_send_stream = send_stream
+                    route.app.state.document_receive_stream = receive_stream
+                    route.app.state.shutdown_event = shutdown_event
+                    route.app.state.scanner_wake_event = scanner_wake_event
+                    logger.info("Vector sync state shared with browser_app for /app")
+                    break
+
+            # Start background tasks using anyio TaskGroup
+            async with anyio_module.create_task_group() as tg:
+                # Start scanner task
+                await tg.start(
+                    scanner_task,
+                    send_stream,
+                    shutdown_event,
+                    scanner_wake_event,
+                    client,
+                    username,
+                )
+
+                # Start processor pool (each gets a cloned receive stream)
+                for i in range(settings.vector_sync_processor_workers):
                     await tg.start(
-                        scanner_task,
-                        send_stream,
+                        processor_task,
+                        i,
+                        receive_stream.clone(),
                         shutdown_event,
-                        scanner_wake_event,
                         client,
                         username,
                     )
 
-                    # Start processor pool (each gets a cloned receive stream)
-                    for i in range(settings.vector_sync_processor_workers):
-                        await tg.start(
-                            processor_task,
-                            i,
-                            receive_stream.clone(),
-                            shutdown_event,
-                            client,
-                            username,
-                        )
+                logger.info(
+                    f"Background sync tasks started: 1 scanner + "
+                    f"{settings.vector_sync_processor_workers} processors"
+                )
 
-                    logger.info(
-                        f"Background sync tasks started: 1 scanner + "
-                        f"{settings.vector_sync_processor_workers} processors"
-                    )
-
-                    # Run MCP session manager and yield
-                    async with AsyncExitStack() as stack:
-                        await stack.enter_async_context(mcp.session_manager.run())
-                        try:
-                            yield
-                        finally:
-                            # Shutdown signal
-                            logger.info("Shutting down background sync tasks")
-                            shutdown_event.set()
-                            await client.close()
-                            # TaskGroup automatically cancels all tasks on exit
-            else:
-                # No vector sync - just run MCP session manager
+                # Run MCP session manager and yield
                 async with AsyncExitStack() as stack:
                     await stack.enter_async_context(mcp.session_manager.run())
-                    yield
+                    try:
+                        yield
+                    finally:
+                        # Shutdown signal
+                        logger.info("Shutting down background sync tasks")
+                        shutdown_event.set()
+                        await client.close()
+                        # TaskGroup automatically cancels all tasks on exit
+        else:
+            # No vector sync - just run MCP session manager
+            async with AsyncExitStack() as stack:
+                await stack.enter_async_context(mcp.session_manager.run())
+                yield
 
     # Health check endpoints for Kubernetes probes
     def health_live(request):

@@ -22,6 +22,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.search import (
     BM25HybridSearchAlgorithm,
     SemanticSearchAlgorithm,
@@ -139,7 +140,10 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             _get_authenticated_client_for_userinfo,
         )
 
-        async with await _get_authenticated_client_for_userinfo(request) as nc_client:  # noqa: F841
+        with trace_operation("vector_viz.get_auth_client"):
+            auth_client_ctx = await _get_authenticated_client_for_userinfo(request)
+
+        async with auth_client_ctx as nc_client:  # noqa: F841
             # Create search algorithm (no client needed - verification removed)
             if algorithm == "semantic":
                 search_algo = SemanticSearchAlgorithm(score_threshold=score_threshold)
@@ -159,24 +163,40 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             all_results = []
             if doc_types is None or len(doc_types) == 0:
                 # Cross-app search - search all indexed types
-                unverified_results = await search_algo.search(
-                    query=query,
-                    user_id=username,
-                    limit=limit * 2,  # Buffer for verification filtering
-                    doc_type=None,  # Search all types
-                    score_threshold=score_threshold,
-                )
-                all_results.extend(unverified_results)
-            else:
-                # Search each document type and combine
-                for doc_type in doc_types:
+                with trace_operation(
+                    "vector_viz.search_execute",
+                    attributes={
+                        "search.algorithm": algorithm,
+                        "search.limit": limit * 2,
+                        "search.doc_type": "all",
+                    },
+                ):
                     unverified_results = await search_algo.search(
                         query=query,
                         user_id=username,
                         limit=limit * 2,  # Buffer for verification filtering
-                        doc_type=doc_type,
+                        doc_type=None,  # Search all types
                         score_threshold=score_threshold,
                     )
+                all_results.extend(unverified_results)
+            else:
+                # Search each document type and combine
+                for doc_type in doc_types:
+                    with trace_operation(
+                        "vector_viz.search_execute",
+                        attributes={
+                            "search.algorithm": algorithm,
+                            "search.limit": limit * 2,
+                            "search.doc_type": doc_type,
+                        },
+                    ):
+                        unverified_results = await search_algo.search(
+                            query=query,
+                            user_id=username,
+                            limit=limit * 2,  # Buffer for verification filtering
+                            doc_type=doc_type,
+                            score_threshold=score_threshold,
+                        )
                     all_results.extend(unverified_results)
                 # Sort by score before verification
                 all_results.sort(key=lambda r: r.score, reverse=True)
@@ -190,22 +210,26 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
         # Store original scores and normalize for visualization
         # (best result = 1.0, worst result = 0.0 within THIS result set)
         # This makes visual encoding meaningful regardless of RRF normalization
-        if search_results:
-            scores = [r.score for r in search_results]
-            min_score, max_score = min(scores), max(scores)
-            score_range = max_score - min_score if max_score > min_score else 1.0
+        with trace_operation(
+            "vector_viz.score_normalize",
+            attributes={"normalize.num_results": len(search_results)},
+        ):
+            if search_results:
+                scores = [r.score for r in search_results]
+                min_score, max_score = min(scores), max(scores)
+                score_range = max_score - min_score if max_score > min_score else 1.0
 
-            logger.info(
-                f"Normalizing scores for viz: original range [{min_score:.3f}, {max_score:.3f}] "
-                f"→ [0.0, 1.0]"
-            )
+                logger.info(
+                    f"Normalizing scores for viz: original range [{min_score:.3f}, {max_score:.3f}] "
+                    f"→ [0.0, 1.0]"
+                )
 
-            # Store original score and rescale to 0-1 for visualization
-            for r in search_results:
-                # Store original score before normalization
-                r.original_score = r.score
-                # Rescale for visual encoding
-                r.score = (r.score - min_score) / score_range
+                # Store original score and rescale to 0-1 for visualization
+                for r in search_results:
+                    # Store original score before normalization
+                    r.original_score = r.score
+                    # Rescale for visual encoding
+                    r.score = (r.score - min_score) / score_range
 
         if not search_results:
             return JSONResponse(
@@ -220,7 +244,9 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
 
         # Fetch vectors for specific matching chunks from Qdrant using batch retrieve
         vector_fetch_start = time.perf_counter()
-        qdrant_client = await get_qdrant_client()
+
+        with trace_operation("vector_viz.get_qdrant_client"):
+            qdrant_client = await get_qdrant_client()
 
         chunk_vectors_map = {}  # Map (doc_id, chunk_start, chunk_end) -> vector
 
@@ -231,12 +257,16 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
         if point_ids:
             # Single batch retrieve call instead of N sequential scroll calls
             # This is ~50x faster for 50 results (1 HTTP request vs 50)
-            points_response = await qdrant_client.retrieve(
-                collection_name=settings.get_collection_name(),
-                ids=point_ids,
-                with_vectors=["dense"],
-                with_payload=["doc_id", "chunk_start_offset", "chunk_end_offset"],
-            )
+            with trace_operation(
+                "vector_viz.vector_retrieve",
+                attributes={"retrieve.num_points": len(point_ids)},
+            ):
+                points_response = await qdrant_client.retrieve(
+                    collection_name=settings.get_collection_name(),
+                    ids=point_ids,
+                    with_vectors=["dense"],
+                    with_payload=["doc_id", "chunk_start_offset", "chunk_end_offset"],
+                )
 
             # Build chunk_vectors_map from batch response
             for point in points_response:
@@ -367,9 +397,16 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
 
         import anyio
 
-        coords_3d, pca = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
-            lambda: _compute_pca(all_vectors_normalized)
-        )
+        with trace_operation(
+            "vector_viz.pca_compute",
+            attributes={
+                "pca.num_vectors": len(all_vectors_normalized),
+                "pca.embedding_dim": embedding_dim,
+            },
+        ):
+            coords_3d, pca = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
+                lambda: _compute_pca(all_vectors_normalized)
+            )
         pca_duration = time.perf_counter() - pca_start
 
         # After fit, these attributes are guaranteed to be set
