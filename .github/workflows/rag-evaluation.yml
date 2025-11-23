@@ -89,6 +89,12 @@ jobs:
         run: |
           uv run pytest tests/integration/test_rag.py -v --log-cli-level=INFO --provider openai
 
+      - name: Capture MCP container logs
+        if: always()
+        run: |
+          echo "=== MCP Container Logs ==="
+          docker compose logs mcp --tail=500
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
