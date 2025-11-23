@@ -1,0 +1,37 @@
+[
+  {
+    "id": "nc-manual-001",
+    "query": "What is two-factor authentication and how does it protect my Nextcloud account?",
+    "ground_truth": "Two-factor authentication (2FA) protects your Nextcloud account by requiring two different proofs of identity - something you know (like a password) and something you have (like a code from your phone). The first factor is typically a password, and the second can be a text message or code generated on your phone.",
+    "expected_topics": ["two-factor authentication", "2FA", "password", "security"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "nc-manual-002",
+    "query": "How do file quotas work in Nextcloud when sharing files?",
+    "ground_truth": "When you share files with other users, the shared files count against the original share owner's quota. When you share a folder and allow others to upload files, all uploaded and edited files count against your quota. Re-shared files still count against the original share owner's quota. Deleted files in trash don't count against quotas until trash exceeds 50% of quota.",
+    "expected_topics": ["quota", "sharing", "files", "storage"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "nc-manual-003",
+    "query": "How do I install the Nextcloud desktop sync client on Linux?",
+    "ground_truth": "Linux users must follow instructions on the download page to add the appropriate repository for their Linux distribution, install the signing key, and use their package managers to install the desktop sync client. Linux users also need a password manager enabled, such as GNOME Keyring or KWallet, so the sync client can login automatically.",
+    "expected_topics": ["Linux", "desktop client", "installation", "package manager", "GNOME Keyring", "KWallet"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "nc-manual-004",
+    "query": "What are the system requirements for the Nextcloud desktop client on Windows?",
+    "ground_truth": "The Nextcloud desktop sync client requires Windows 10 or later, 64-bits only.",
+    "expected_topics": ["Windows", "system requirements", "desktop client"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "nc-manual-005",
+    "query": "How do I use client applications with two-factor authentication enabled?",
+    "ground_truth": "Once you have enabled 2FA, your clients will no longer be able to connect with just your password unless they also support two-factor authentication. To solve this, you should generate device-specific passwords for them. This is managed through the connected browsers and devices settings.",
+    "expected_topics": ["2FA", "client applications", "device-specific passwords", "app passwords"],
+    "difficulty": "medium"
+  }
+]

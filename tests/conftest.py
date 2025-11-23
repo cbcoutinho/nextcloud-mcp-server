@@ -114,6 +114,7 @@ async def create_mcp_client_session(
     token: str | None = None,
     client_name: str = "MCP",
     elicitation_callback: Any = None,
+    sampling_callback: Any = None,
 ) -> AsyncGenerator[ClientSession, Any]:
     """
     Factory function to create an MCP client session with proper lifecycle management.
@@ -133,6 +134,8 @@ async def create_mcp_client_session(
         client_name: Client name for logging (e.g., "OAuth MCP (Playwright)")
         elicitation_callback: Optional callback for handling elicitation requests.
             Should match signature: async def callback(context: RequestContext, params: ElicitRequestParams) -> ElicitResult | ErrorData
+        sampling_callback: Optional callback for handling sampling (LLM generation) requests.
+            Should match signature: async def callback(context: RequestContext, params: CreateMessageRequestParams) -> CreateMessageResult | ErrorData
 
     Yields:
         Initialized MCP ClientSession
@@ -156,7 +159,10 @@ async def create_mcp_client_session(
         _,
     ):
         async with ClientSession(
-            read_stream, write_stream, elicitation_callback=elicitation_callback
+            read_stream,
+            write_stream,
+            elicitation_callback=elicitation_callback,
+            sampling_callback=sampling_callback,
         ) as session:
             await session.initialize()
             logger.info(f"{client_name} client session initialized successfully")

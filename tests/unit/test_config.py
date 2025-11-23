@@ -259,3 +259,89 @@ class TestChunkConfigValidation:
             match="DOCUMENT_CHUNK_OVERLAP .* must be less than DOCUMENT_CHUNK_SIZE",
         ):
             get_settings()
+
+
+class TestEmbeddingModelName:
+    """Test get_embedding_model_name() method."""
+
+    def test_openai_takes_priority(self):
+        """Test that OpenAI model is returned when OPENAI_API_KEY is set."""
+        settings = Settings(
+            openai_api_key="test-key",
+            openai_embedding_model="text-embedding-3-large",
+            ollama_base_url="http://ollama:11434",
+            ollama_embedding_model="nomic-embed-text",
+        )
+        assert settings.get_embedding_model_name() == "text-embedding-3-large"
+
+    def test_ollama_used_when_no_openai(self):
+        """Test that Ollama model is returned when no OpenAI configured."""
+        settings = Settings(
+            ollama_base_url="http://ollama:11434",
+            ollama_embedding_model="all-minilm",
+        )
+        assert settings.get_embedding_model_name() == "all-minilm"
+
+    def test_simple_fallback(self):
+        """Test fallback to simple provider when nothing configured."""
+        settings = Settings()
+        assert settings.get_embedding_model_name() == "simple-384"
+
+    @patch.dict(
+        os.environ,
+        {
+            "OPENAI_API_KEY": "test-openai-key",
+            "OPENAI_EMBEDDING_MODEL": "openai/text-embedding-3-small",
+        },
+        clear=True,
+    )
+    def test_get_settings_openai_model(self):
+        """Test get_settings() loads OpenAI embedding model."""
+        settings = get_settings()
+        assert settings.openai_api_key == "test-openai-key"
+        assert settings.openai_embedding_model == "openai/text-embedding-3-small"
+        assert settings.get_embedding_model_name() == "openai/text-embedding-3-small"
+
+
+class TestCollectionNameWithProviders:
+    """Test get_collection_name() with different providers."""
+
+    def test_collection_name_with_openai(self):
+        """Test collection name uses OpenAI model when configured."""
+        settings = Settings(
+            openai_api_key="test-key",
+            openai_embedding_model="text-embedding-3-small",
+            otel_service_name="my-deployment",
+        )
+        assert settings.get_collection_name() == "my-deployment-text-embedding-3-small"
+
+    def test_collection_name_with_github_models(self):
+        """Test collection name sanitizes GitHub Models prefix."""
+        settings = Settings(
+            openai_api_key="ghp_test",
+            openai_embedding_model="openai/text-embedding-3-small",
+            otel_service_name="my-deployment",
+        )
+        # Slashes should be replaced with dashes
+        assert (
+            settings.get_collection_name()
+            == "my-deployment-openai-text-embedding-3-small"
+        )
+
+    def test_collection_name_with_ollama(self):
+        """Test collection name uses Ollama model when no OpenAI."""
+        settings = Settings(
+            ollama_base_url="http://ollama:11434",
+            ollama_embedding_model="nomic-embed-text",
+            otel_service_name="my-deployment",
+        )
+        assert settings.get_collection_name() == "my-deployment-nomic-embed-text"
+
+    def test_collection_name_explicit_override(self):
+        """Test explicit QDRANT_COLLECTION overrides auto-generation."""
+        settings = Settings(
+            qdrant_collection="custom-collection",
+            openai_api_key="test-key",
+            openai_embedding_model="text-embedding-3-large",
+        )
+        assert settings.get_collection_name() == "custom-collection"
