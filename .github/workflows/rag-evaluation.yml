@@ -86,7 +86,7 @@ jobs:
           OPENAI_EMBEDDING_MODEL: ${{ inputs.embedding_model }}
           OPENAI_GENERATION_MODEL: ${{ inputs.generation_model }}
         run: |
-          uv run pytest tests/integration/test_rag_openai.py -v --log-cli-level=INFO --provider openai
+          uv run pytest tests/integration/test_rag.py -v --log-cli-level=INFO --provider openai
 
       - name: Upload test results
         if: always()
