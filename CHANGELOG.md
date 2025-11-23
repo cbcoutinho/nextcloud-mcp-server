@@ -1,3 +1,9 @@
+## v0.48.3 (2025-11-23)
+
+### Fix
+
+- Increase MCP sampling timeout to 5 minutes for slower LLMs
+
 ## v0.48.2 (2025-11-23)
 
 ### Fix
