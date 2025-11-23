@@ -1,7 +1,7 @@
 """MCP sampling support for integration tests.
 
 This module provides utilities to enable real LLM-based sampling in integration tests
-using OpenAI or GitHub Models API.
+using any provider that supports text generation (OpenAI, Ollama, Anthropic, Bedrock).
 """
 
 import logging
@@ -10,46 +10,58 @@ from typing import Any
 from mcp import types
 from mcp.client.session import ClientSession, RequestContext
 
-from nextcloud_mcp_server.providers.openai import OpenAIProvider
+from nextcloud_mcp_server.providers.base import Provider
 
 logger = logging.getLogger(__name__)
 
 
-def create_openai_sampling_callback(provider: OpenAIProvider):
-    """Factory to create a sampling callback using OpenAI provider.
+def create_sampling_callback(provider: Provider):
+    """Factory to create a sampling callback using any generation-capable provider.
 
     The callback conforms to MCP's SamplingFnT protocol and can be passed
     to ClientSession for handling sampling requests from the server.
 
     Args:
-        provider: OpenAIProvider instance configured with a generation model
+        provider: Any Provider instance that supports generation
+                  (supports_generation=True)
 
     Returns:
         Async callback function for MCP sampling
 
+    Raises:
+        ValueError: If provider doesn't support generation
+
     Example:
         ```python
-        provider = OpenAIProvider(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            base_url=os.getenv("OPENAI_BASE_URL"),
-            generation_model="gpt-4o-mini",
-        )
-        callback = create_openai_sampling_callback(provider)
+        from nextcloud_mcp_server.providers import get_provider
 
-        async for session in create_mcp_client_session(
-            url="http://localhost:8000/mcp",
-            sampling_callback=callback,
-        ):
-            # Session now supports sampling
-            pass
+        provider = get_provider()  # Auto-detect from environment
+        if provider.supports_generation:
+            callback = create_sampling_callback(provider)
+
+            async for session in create_mcp_client_session(
+                url="http://localhost:8000/mcp",
+                sampling_callback=callback,
+            ):
+                # Session now supports sampling
+                pass
         ```
     """
+    if not provider.supports_generation:
+        raise ValueError(
+            f"Provider {provider.__class__.__name__} does not support generation"
+        )
+
+    # Get model name for logging (provider-specific attribute)
+    model_name = (
+        getattr(provider, "generation_model", None) or provider.__class__.__name__
+    )
 
     async def sampling_callback(
         context: RequestContext[ClientSession, Any],
         params: types.CreateMessageRequestParams,
     ) -> types.CreateMessageResult | types.ErrorData:
-        """Handle sampling requests using OpenAI provider."""
+        """Handle sampling requests using the configured provider."""
         logger.debug(f"Sampling callback invoked with {len(params.messages)} messages")
 
         # Extract messages and build prompt
@@ -68,14 +80,13 @@ def create_openai_sampling_callback(provider: OpenAIProvider):
         logger.debug(f"Generating response for prompt ({len(prompt)} chars)")
 
         try:
-            # Generate response using OpenAI provider
-            # Note: temperature is hardcoded in the provider at 0.7
+            # Generate response using provider
+            # Note: temperature is typically hardcoded in providers at 0.7
             response = await provider.generate(
                 prompt=prompt,
                 max_tokens=params.maxTokens,
             )
 
-            model_name = provider.generation_model or "unknown"
             logger.info(f"Sampling completed: {len(response)} chars from {model_name}")
 
             return types.CreateMessageResult(
@@ -85,10 +96,25 @@ def create_openai_sampling_callback(provider: OpenAIProvider):
                 stopReason="endTurn",
             )
         except Exception as e:
-            logger.error(f"OpenAI generation failed: {e}")
+            logger.error(f"Generation failed ({provider.__class__.__name__}): {e}")
             return types.ErrorData(
                 code=types.INTERNAL_ERROR,
-                message=f"OpenAI generation failed: {e!s}",
+                message=f"Generation failed: {e!s}",
             )
 
     return sampling_callback
+
+
+def create_openai_sampling_callback(provider: "Provider"):
+    """Factory to create a sampling callback using OpenAI provider.
+
+    This is a backward-compatible wrapper around create_sampling_callback().
+    Prefer using create_sampling_callback() directly for new code.
+
+    Args:
+        provider: OpenAIProvider instance configured with a generation model
+
+    Returns:
+        Async callback function for MCP sampling
+    """
+    return create_sampling_callback(provider)

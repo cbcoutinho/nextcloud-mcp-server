@@ -499,9 +499,11 @@ def configure_semantic_tools(mcp: FastMCP):
         )
 
         # 6. Request LLM completion via MCP sampling with timeout
+        # Note: 5 minute timeout to accommodate slower local LLMs (e.g., Ollama)
+        sampling_timeout_seconds = 300
 
         try:
-            with anyio.fail_after(30):
+            with anyio.fail_after(sampling_timeout_seconds):
                 sampling_result = await ctx.session.create_message(
                     messages=[
                         SamplingMessage(
@@ -548,14 +550,14 @@ def configure_semantic_tools(mcp: FastMCP):
 
         except TimeoutError:
             logger.warning(
-                f"Sampling request timed out after 30 seconds for query: '{query}', "
+                f"Sampling request timed out after {sampling_timeout_seconds} seconds for query: '{query}', "
                 f"returning search results only"
             )
             return SamplingSearchResponse(
                 query=query,
                 generated_answer=(
                     f"[Sampling request timed out]\n\n"
-                    f"The answer generation took too long (>30s). "
+                    f"The answer generation took too long (>{sampling_timeout_seconds}s). "
                     f"Found {len(accessible_results)} relevant documents. "
                     f"Please review the sources below or try a simpler query."
                 ),
@@ -675,15 +677,22 @@ def configure_semantic_tools(mcp: FastMCP):
             # Get Qdrant client and query indexed count
             indexed_count = 0
             try:
+                from qdrant_client.models import Filter
+
                 from nextcloud_mcp_server.config import get_settings
+                from nextcloud_mcp_server.vector.placeholder import (
+                    get_placeholder_filter,
+                )
                 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
                 settings = get_settings()
                 qdrant_client = await get_qdrant_client()
 
-                # Count documents in collection
+                # Count documents in collection, excluding placeholders
+                # Placeholders are zero-vector points used to track processing state
                 count_result = await qdrant_client.count(
-                    collection_name=settings.get_collection_name()
+                    collection_name=settings.get_collection_name(),
+                    count_filter=Filter(must=[get_placeholder_filter()]),
                 )
                 indexed_count = count_result.count
 

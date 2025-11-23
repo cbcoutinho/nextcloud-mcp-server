@@ -25,21 +25,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
-        with:
-          submodules: 'true'
-
-      ###### Required to build OIDC App ######
-      - name: Set up php 8.4
-        uses: shivammathur/setup-php@bf6b4fbd49ca58e4608c9c89fba0b8d90bd2a39f # v2
-        with:
-          php-version: 8.4
-          coverage: none
-
-      - name: Install OIDC app composer dependencies
-        run: |
-          cd third_party/oidc
-          composer install --no-dev
-      ###### Required to build OIDC App ######
 
       - name: Run docker compose with vector sync
         uses: hoverkraft-tech/compose-action@3846bcd61da338e9eaaf83e7ed0234a12b099b72 # v2.4.1
@@ -101,7 +86,7 @@ jobs:
           OPENAI_EMBEDDING_MODEL: ${{ inputs.embedding_model }}
           OPENAI_GENERATION_MODEL: ${{ inputs.generation_model }}
         run: |
-          uv run pytest tests/integration/test_rag_openai.py -v --log-cli-level=INFO
+          uv run pytest tests/integration/test_rag_openai.py -v --log-cli-level=INFO --provider openai
 
       - name: Upload test results
         if: always()

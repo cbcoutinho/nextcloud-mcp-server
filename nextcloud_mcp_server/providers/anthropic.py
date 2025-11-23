@@ -17,18 +17,20 @@ class AnthropicProvider(Provider):
     Note: Anthropic doesn't provide embedding models, only text generation.
     """
 
-    def __init__(self, api_key: str, model: str = "claude-3-5-sonnet-20241022"):
+    def __init__(
+        self, api_key: str, generation_model: str = "claude-3-5-sonnet-20241022"
+    ):
         """
         Initialize Anthropic provider.
 
         Args:
             api_key: Anthropic API key
-            model: Model name (e.g., "claude-3-5-sonnet-20241022")
+            generation_model: Model name (e.g., "claude-3-5-sonnet-20241022")
         """
         self.client = AsyncAnthropic(api_key=api_key)
-        self.model = model
+        self.model = generation_model
 
-        logger.info(f"Initialized Anthropic provider (model={model})")
+        logger.info(f"Initialized Anthropic provider (model={self.model})")
 
     @property
     def supports_embeddings(self) -> bool:

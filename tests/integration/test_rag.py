@@ -1,26 +1,33 @@
-"""Integration tests for RAG pipeline with OpenAI/GitHub Models API.
+"""Integration tests for RAG pipeline with multiple LLM providers.
 
 These tests validate the complete semantic search and MCP sampling flow using:
-1. OpenAI embeddings for semantic search
-2. MCP sampling for answer generation
+1. MCP server's built-in semantic search (embeddings handled server-side)
+2. MCP sampling for answer generation (any generation-capable provider)
 3. Pre-indexed Nextcloud User Manual as the knowledge base
 
-Environment Variables:
-    OPENAI_API_KEY: OpenAI API key or GitHub token for models.github.ai
-    OPENAI_BASE_URL: Base URL override (e.g., "https://models.github.ai/inference")
-    OPENAI_EMBEDDING_MODEL: Embedding model (default: "text-embedding-3-small")
-    OPENAI_GENERATION_MODEL: Generation model for sampling (default: "gpt-4o-mini")
-    RAG_MANUAL_PATH: Path to manual PDF in Nextcloud (default: "Nextcloud_User_Manual.pdf")
+Usage:
+    # Run with OpenAI (including GitHub Models API)
+    OPENAI_API_KEY=... pytest tests/integration/test_rag.py --provider=openai -v
 
-For GitHub CI, set:
-    OPENAI_API_KEY: ${{ secrets.GITHUB_TOKEN }}
-    OPENAI_BASE_URL: https://models.github.ai/inference
-    OPENAI_EMBEDDING_MODEL: openai/text-embedding-3-small
-    OPENAI_GENERATION_MODEL: openai/gpt-4o-mini
+    # Run with Ollama
+    OLLAMA_BASE_URL=http://localhost:11434 OLLAMA_GENERATION_MODEL=llama3.2:1b \\
+        pytest tests/integration/test_rag.py --provider=ollama -v
+
+    # Run with Anthropic
+    ANTHROPIC_API_KEY=... pytest tests/integration/test_rag.py --provider=anthropic -v
+
+    # Run with AWS Bedrock
+    AWS_REGION=us-east-1 BEDROCK_GENERATION_MODEL=... \\
+        pytest tests/integration/test_rag.py --provider=bedrock -v
+
+Environment Variables:
+    See tests/integration/provider_fixtures.py for provider-specific configuration.
+    RAG_MANUAL_PATH: Path to manual PDF in Nextcloud (default: "Nextcloud Manual.pdf")
 
 Prerequisites:
     - Nextcloud User Manual PDF uploaded to Nextcloud
     - VECTOR_SYNC_ENABLED=true on the MCP server
+    - Provider-specific environment variables set
 """
 
 import json
@@ -33,9 +40,10 @@ import anyio
 import pytest
 from mcp import ClientSession
 
-from nextcloud_mcp_server.providers.openai import OpenAIProvider
+from nextcloud_mcp_server.providers.base import Provider
 from tests.conftest import create_mcp_client_session
-from tests.integration.sampling_support import create_openai_sampling_callback
+from tests.integration.provider_fixtures import create_generation_provider
+from tests.integration.sampling_support import create_sampling_callback
 
 logger = logging.getLogger(__name__)
 
@@ -44,14 +52,14 @@ DEFAULT_MANUAL_PATH = "Nextcloud Manual.pdf"
 
 
 async def llm_judge(
-    provider: "OpenAIProvider",
+    provider: Provider,
     ground_truth: str,
     system_output: str,
 ) -> bool:
     """Use LLM to judge if system output aligns with ground truth.
 
     Args:
-        provider: OpenAI provider with generation capability
+        provider: Any provider with generation capability
         ground_truth: The expected/reference answer
         system_output: The system's actual output to evaluate
 
@@ -66,17 +74,18 @@ Does the system output contain the key facts from the ground truth?
 
 Answer: TRUE or FALSE"""
 
+    logger.info("Received ground truth: %s", ground_truth)
+    logger.info("Received system output: %s", system_output)
+
     response = await provider.generate(prompt, max_tokens=10)
+    logger.info("LLM Judge response: %s", response)
     return "TRUE" in response.upper()
 
 
-# Skip all tests if OpenAI API key not configured
+# Mark all tests as integration tests
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(
-        not os.getenv("OPENAI_API_KEY"),
-        reason="OPENAI_API_KEY not set - skipping OpenAI RAG tests",
-    ),
+    pytest.mark.rag,
 ]
 
 # Ground truth fixture path
@@ -175,78 +184,49 @@ async def indexed_manual_pdf(nc_client, nc_mcp_client):
 
 
 @pytest.fixture(scope="module")
-async def openai_provider():
-    """OpenAI provider configured from environment (embeddings only)."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    base_url = os.getenv("OPENAI_BASE_URL")
-    embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+def provider_name(request) -> str:
+    """Get the provider name from --provider flag.
 
-    provider = OpenAIProvider(
-        api_key=api_key,
-        base_url=base_url,
-        embedding_model=embedding_model,
-        generation_model=None,  # Embeddings only
-    )
-
-    yield provider
-    await provider.close()
+    Raises pytest.skip if --provider not specified.
+    """
+    name = request.config.getoption("--provider")
+    if not name:
+        pytest.skip("--provider flag required (openai, ollama, anthropic, bedrock)")
+    return name
 
 
 @pytest.fixture(scope="module")
-async def openai_generation_provider():
-    """OpenAI provider configured for text generation (for sampling callback)."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    base_url = os.getenv("OPENAI_BASE_URL")
-    generation_model = os.getenv("OPENAI_GENERATION_MODEL", "gpt-4o-mini")
+async def generation_provider(provider_name: str) -> AsyncGenerator[Provider, None]:
+    """Provider configured for text generation.
 
-    # For GitHub Models API, use the prefixed model name
-    if base_url and "models.github.ai" in base_url:
-        if not generation_model.startswith("openai/"):
-            generation_model = f"openai/{generation_model}"
-
-    provider = OpenAIProvider(
-        api_key=api_key,
-        base_url=base_url,
-        embedding_model=None,  # Generation only
-        generation_model=generation_model,
-    )
-
+    Requires --provider flag to be set.
+    """
+    provider = await create_generation_provider(provider_name)
     yield provider
     await provider.close()
 
 
 @pytest.fixture(scope="module")
 async def nc_mcp_client_with_sampling(
-    anyio_backend, openai_generation_provider
+    anyio_backend, generation_provider, provider_name
 ) -> AsyncGenerator[ClientSession, Any]:
-    """MCP client with OpenAI-based sampling support.
+    """MCP client with sampling support using the specified provider.
 
     This fixture creates an MCP client that can handle sampling requests
-    from the server using OpenAI for text generation.
+    from the server using the configured generation provider.
     """
-    sampling_callback = create_openai_sampling_callback(openai_generation_provider)
+    sampling_callback = create_sampling_callback(generation_provider)
 
     async for session in create_mcp_client_session(
         url="http://localhost:8000/mcp",
-        client_name="OpenAI Sampling MCP",
+        client_name=f"Sampling MCP ({provider_name})",
         sampling_callback=sampling_callback,
     ):
         yield session
 
 
-async def test_openai_embeddings_work(openai_provider: OpenAIProvider):
-    """Test that OpenAI embeddings can be generated."""
-    embedding = await openai_provider.embed("test query about Nextcloud")
-
-    assert isinstance(embedding, list)
-    assert len(embedding) > 0
-    assert all(isinstance(x, float) for x in embedding)
-    # OpenAI embedding dimensions: 1536 (small) or 3072 (large)
-    assert len(embedding) in [1536, 3072]
-
-
 async def test_semantic_search_retrieval(
-    nc_mcp_client, ground_truth_qa, indexed_manual_pdf, openai_generation_provider
+    nc_mcp_client, ground_truth_qa, indexed_manual_pdf, generation_provider
 ):
     """Test that semantic search retrieves relevant documents from the manual.
 
@@ -278,7 +258,7 @@ async def test_semantic_search_retrieval(
     # Use LLM judge to evaluate if excerpts are relevant to ground truth
     all_excerpts = " ".join([r["excerpt"] for r in data["results"]])
     is_relevant = await llm_judge(
-        openai_generation_provider,
+        generation_provider,
         test_case["ground_truth"],
         all_excerpts,
     )
@@ -289,16 +269,16 @@ async def test_semantic_search_answer_with_sampling(
     nc_mcp_client_with_sampling,
     ground_truth_qa,
     indexed_manual_pdf,
-    openai_generation_provider,
+    generation_provider,
 ):
     """Test semantic search with MCP sampling for answer generation.
 
     This tests the full RAG pipeline:
     1. Semantic search retrieves relevant documents
     2. MCP sampling generates an answer from the retrieved context
-    3. OpenAI generates the answer via the sampling callback
+    3. Provider generates the answer via the sampling callback
 
-    Uses nc_mcp_client_with_sampling which has OpenAI-based sampling enabled.
+    Uses nc_mcp_client_with_sampling which has sampling enabled.
     """
     # Use the 2FA question - has clear expected answer
     test_case = ground_truth_qa[0]
@@ -348,7 +328,7 @@ async def test_semantic_search_answer_with_sampling(
 
         # Use LLM judge to evaluate answer relevance
         is_relevant = await llm_judge(
-            openai_generation_provider,
+            generation_provider,
             test_case["ground_truth"],
             data["generated_answer"],
         )
