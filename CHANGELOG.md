@@ -1,3 +1,9 @@
+## v0.47.0 (2025-11-23)
+
+### Feat
+
+- Add OpenAI provider support for embeddings and generation
+
 ## v0.46.2 (2025-11-22)
 
 ### Fix
