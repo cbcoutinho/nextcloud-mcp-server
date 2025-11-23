@@ -1,3 +1,9 @@
+## v0.48.4 (2025-11-23)
+
+### Fix
+
+- Add rate limit retry logic to OpenAI provider
+
 ## v0.48.3 (2025-11-23)
 
 ### Fix
