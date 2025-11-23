@@ -42,6 +42,34 @@ logger = logging.getLogger(__name__)
 # Default path to the Nextcloud User Manual PDF
 DEFAULT_MANUAL_PATH = "Nextcloud Manual.pdf"
 
+
+async def llm_judge(
+    provider: "OpenAIProvider",
+    ground_truth: str,
+    system_output: str,
+) -> bool:
+    """Use LLM to judge if system output aligns with ground truth.
+
+    Args:
+        provider: OpenAI provider with generation capability
+        ground_truth: The expected/reference answer
+        system_output: The system's actual output to evaluate
+
+    Returns:
+        True if output aligns with ground truth, False otherwise
+    """
+    prompt = f"""GROUND TRUTH: {ground_truth}
+
+SYSTEM OUTPUT: {system_output}
+
+Does the system output contain the key facts from the ground truth?
+
+Answer: TRUE or FALSE"""
+
+    response = await provider.generate(prompt, max_tokens=10)
+    return "TRUE" in response.upper()
+
+
 # Skip all tests if OpenAI API key not configured
 pytestmark = [
     pytest.mark.integration,
@@ -218,7 +246,7 @@ async def test_openai_embeddings_work(openai_provider: OpenAIProvider):
 
 
 async def test_semantic_search_retrieval(
-    nc_mcp_client, ground_truth_qa, indexed_manual_pdf
+    nc_mcp_client, ground_truth_qa, indexed_manual_pdf, openai_generation_provider
 ):
     """Test that semantic search retrieves relevant documents from the manual.
 
@@ -228,7 +256,6 @@ async def test_semantic_search_retrieval(
     # Use first query from ground truth
     test_case = ground_truth_qa[0]  # 2FA question
     query = test_case["query"]
-    expected_topics = test_case["expected_topics"]
 
     # Perform semantic search via MCP tool
     result = await nc_mcp_client.call_tool(
@@ -248,16 +275,21 @@ async def test_semantic_search_retrieval(
     assert data["total_found"] > 0, f"No results for query: {query}"
     assert len(data["results"]) > 0
 
-    # Check that at least one result contains expected topic keywords
-    all_excerpts = " ".join([r["excerpt"].lower() for r in data["results"]])
-    topic_found = any(topic.lower() in all_excerpts for topic in expected_topics)
-    assert topic_found, (
-        f"Expected topics {expected_topics} not found in results for query: {query}"
+    # Use LLM judge to evaluate if excerpts are relevant to ground truth
+    all_excerpts = " ".join([r["excerpt"] for r in data["results"]])
+    is_relevant = await llm_judge(
+        openai_generation_provider,
+        test_case["ground_truth"],
+        all_excerpts,
     )
+    assert is_relevant, f"LLM judge: excerpts not relevant to query: {query}"
 
 
 async def test_semantic_search_answer_with_sampling(
-    nc_mcp_client_with_sampling, ground_truth_qa, indexed_manual_pdf
+    nc_mcp_client_with_sampling,
+    ground_truth_qa,
+    indexed_manual_pdf,
+    openai_generation_provider,
 ):
     """Test semantic search with MCP sampling for answer generation.
 
@@ -314,12 +346,13 @@ async def test_semantic_search_answer_with_sampling(
         assert data["generated_answer"] is not None
         assert len(data["generated_answer"]) > 50  # Non-trivial answer
 
-        # Check answer contains relevant content
-        answer_lower = data["generated_answer"].lower()
-        assert any(
-            keyword in answer_lower
-            for keyword in ["two-factor", "2fa", "authentication", "password"]
-        ), f"Answer doesn't seem relevant to query: {data['generated_answer'][:200]}"
+        # Use LLM judge to evaluate answer relevance
+        is_relevant = await llm_judge(
+            openai_generation_provider,
+            test_case["ground_truth"],
+            data["generated_answer"],
+        )
+        assert is_relevant, f"LLM judge: answer not relevant to query: {query}"
 
 
 @pytest.mark.parametrize(

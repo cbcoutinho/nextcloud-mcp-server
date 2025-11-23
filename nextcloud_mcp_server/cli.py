@@ -29,9 +29,9 @@ from .app import get_app
 @click.option(
     "--transport",
     "-t",
-    default="sse",
+    default="streamable-http",
     show_default=True,
-    type=click.Choice(["sse", "streamable-http", "http"]),
+    type=click.Choice(["streamable-http", "http"]),
     help="MCP transport protocol",
 )
 @click.option(
