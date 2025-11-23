@@ -244,6 +244,25 @@ def validate_pkce_support(discovery: dict, discovery_url: str) -> None:
 
 
 @dataclass
+class VectorSyncState:
+    """
+    Module-level state for vector sync background tasks.
+
+    This singleton bridges the Starlette server lifespan (where background tasks run)
+    and FastMCP session lifespans (where MCP tools need access to the streams).
+    """
+
+    document_send_stream: Optional[MemoryObjectSendStream] = None
+    document_receive_stream: Optional[MemoryObjectReceiveStream] = None
+    shutdown_event: Optional[anyio.Event] = None
+    scanner_wake_event: Optional[anyio.Event] = None
+
+
+# Module-level singleton for vector sync state
+_vector_sync_state = VectorSyncState()
+
+
+@dataclass
 class AppContext:
     """Application context for BasicAuth mode."""
 
@@ -580,8 +599,16 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
     initialize_document_processors()
 
     # Yield client context - scanner runs at server level (starlette_lifespan)
+    # Include vector sync state from module singleton (set by starlette_lifespan)
     try:
-        yield AppContext(client=client, storage=storage)
+        yield AppContext(
+            client=client,
+            storage=storage,
+            document_send_stream=_vector_sync_state.document_send_stream,
+            document_receive_stream=_vector_sync_state.document_receive_stream,
+            shutdown_event=_vector_sync_state.shutdown_event,
+            scanner_wake_event=_vector_sync_state.scanner_wake_event,
+        )
     finally:
         logger.info("Shutting down BasicAuth session")
         await client.close()
@@ -1227,6 +1254,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             app.state.document_receive_stream = receive_stream
             app.state.shutdown_event = shutdown_event
             app.state.scanner_wake_event = scanner_wake_event
+
+            # Also store in module singleton for FastMCP session lifespans
+            _vector_sync_state.document_send_stream = send_stream
+            _vector_sync_state.document_receive_stream = receive_stream
+            _vector_sync_state.shutdown_event = shutdown_event
+            _vector_sync_state.scanner_wake_event = scanner_wake_event
+            logger.info("Vector sync state stored in module singleton")
 
             # Also share with browser_app for /app route
             for route in app.routes:
