@@ -1,3 +1,25 @@
+## v0.48.1 (2025-11-23)
+
+### Fix
+
+- Use WebDAV for tag creation and add LLM-as-a-judge for RAG tests
+
+### Refactor
+
+- Move background tasks to server lifespan and deprecate SSE transport
+
+## v0.48.0 (2025-11-23)
+
+### Feat
+
+- Add tag management methods to WebDAV client
+
+## v0.47.0 (2025-11-23)
+
+### Feat
+
+- Add OpenAI provider support for embeddings and generation
+
 ## v0.46.2 (2025-11-22)
 
 ### Fix
