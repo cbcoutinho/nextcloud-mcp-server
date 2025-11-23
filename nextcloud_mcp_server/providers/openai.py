@@ -7,12 +7,47 @@ Supports:
 """
 
 import logging
+from functools import wraps
 
-from openai import AsyncOpenAI
+import anyio
+from openai import AsyncOpenAI, RateLimitError
 
 from .base import Provider
 
 logger = logging.getLogger(__name__)
+
+# Rate limit retry configuration
+MAX_RETRIES = 5
+INITIAL_RETRY_DELAY = 2.0  # seconds
+MAX_RETRY_DELAY = 60.0  # seconds
+
+
+def retry_on_rate_limit(func):
+    """Decorator to retry on OpenAI rate limit errors with exponential backoff."""
+
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        retry_delay = INITIAL_RETRY_DELAY
+        last_error: Exception | None = None
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                return await func(*args, **kwargs)
+            except RateLimitError as e:
+                last_error = e
+                if attempt < MAX_RETRIES:
+                    logger.warning(
+                        f"Rate limit hit (attempt {attempt}/{MAX_RETRIES}), "
+                        f"retrying in {retry_delay:.1f}s..."
+                    )
+                    await anyio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, MAX_RETRY_DELAY)
+
+        logger.error(f"Rate limit exceeded after {MAX_RETRIES} attempts")
+        raise last_error  # type: ignore[misc]
+
+    return wrapper
+
 
 # Well-known embedding dimensions for OpenAI models
 OPENAI_EMBEDDING_DIMENSIONS: dict[str, int] = {
@@ -86,6 +121,7 @@ class OpenAIProvider(Provider):
         """Whether this provider supports text generation."""
         return self.generation_model is not None
 
+    @retry_on_rate_limit
     async def embed(self, text: str) -> list[float]:
         """
         Generate embedding vector for text.
@@ -151,14 +187,8 @@ class OpenAIProvider(Provider):
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
 
-            response = await self.client.embeddings.create(
-                input=batch,
-                model=self.embedding_model,
-            )
-
-            # Sort by index to maintain order
-            sorted_data = sorted(response.data, key=lambda x: x.index)
-            batch_embeddings = [item.embedding for item in sorted_data]
+            # Use helper method with retry logic for each batch
+            batch_embeddings = await self._embed_batch_request(batch)
             all_embeddings.extend(batch_embeddings)
 
             # Update dimension if not set
@@ -170,6 +200,17 @@ class OpenAIProvider(Provider):
                 )
 
         return all_embeddings
+
+    @retry_on_rate_limit
+    async def _embed_batch_request(self, batch: list[str]) -> list[list[float]]:
+        """Make a single batch embedding request with retry logic."""
+        response = await self.client.embeddings.create(
+            input=batch,
+            model=self.embedding_model,
+        )
+        # Sort by index to maintain order
+        sorted_data = sorted(response.data, key=lambda x: x.index)
+        return [item.embedding for item in sorted_data]
 
     def get_dimension(self) -> int:
         """
@@ -194,6 +235,7 @@ class OpenAIProvider(Provider):
             )
         return self._dimension
 
+    @retry_on_rate_limit
     async def generate(self, prompt: str, max_tokens: int = 500) -> str:
         """
         Generate text from a prompt.
