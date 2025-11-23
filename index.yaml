@@ -5,6 +5,46 @@ entries:
       grafana_dashboard: "true"
       grafana_dashboard_folder: Nextcloud MCP
     apiVersion: v2
+    appVersion: 0.48.1
+    created: "2025-11-23T03:04:10.159482596Z"
+    dependencies:
+    - condition: qdrant.networkMode.deploySubchart
+      name: qdrant
+      repository: https://qdrant.github.io/qdrant-helm
+      version: 1.16.0
+    - condition: ollama.enabled
+      name: ollama
+      repository: https://otwld.github.io/ollama-helm
+      version: 1.35.0
+    description: A Helm chart for Nextcloud MCP Server - enables AI assistants to
+      interact with Nextcloud
+    digest: 20f6a804cd20327decc52f6ae5188a2ecdddd526f9c8a0b611e86f27c319c268
+    home: https://github.com/cbcoutinho/nextcloud-mcp-server
+    icon: https://raw.githubusercontent.com/nextcloud/server/master/core/img/logo/logo.svg
+    keywords:
+    - nextcloud
+    - mcp
+    - model-context-protocol
+    - llm
+    - ai
+    - claude
+    - webdav
+    - caldav
+    - carddav
+    maintainers:
+    - email: chris@coutinho.io
+      name: Chris Coutinho
+    name: nextcloud-mcp-server
+    sources:
+    - https://github.com/cbcoutinho/nextcloud-mcp-server
+    type: application
+    urls:
+    - https://github.com/cbcoutinho/nextcloud-mcp-server/releases/download/nextcloud-mcp-server-0.48.1/nextcloud-mcp-server-0.48.1.tgz
+    version: 0.48.1
+  - annotations:
+      grafana_dashboard: "true"
+      grafana_dashboard_folder: Nextcloud MCP
+    apiVersion: v2
     appVersion: 0.48.0
     created: "2025-11-23T00:53:40.760773761Z"
     dependencies:
@@ -1661,4 +1701,4 @@ entries:
     urls:
     - https://github.com/cbcoutinho/nextcloud-mcp-server/releases/download/nextcloud-mcp-server-0.1.0/nextcloud-mcp-server-0.1.0.tgz
     version: 0.1.0
-generated: "2025-11-23T00:53:40.761056878Z"
+generated: "2025-11-23T03:04:10.159779011Z"
