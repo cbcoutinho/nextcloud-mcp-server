@@ -79,7 +79,7 @@ jobs:
           echo "Waiting for MCP server..."
           max_attempts=30
           attempt=0
-          until curl -o /dev/null -s -w "%{http_code}\n" http://localhost:8000/health | grep -q "200"; do
+          until curl -o /dev/null -s -w "%{http_code}\n" http://localhost:8000/health/live | grep -q "200"; do
             attempt=$((attempt + 1))
             if [ $attempt -ge $max_attempts ]; then
               echo "MCP server did not become ready in time."
