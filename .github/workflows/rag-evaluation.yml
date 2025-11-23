@@ -49,7 +49,7 @@ jobs:
         env:
           # Override MCP container environment for OpenAI + vector sync
           VECTOR_SYNC_ENABLED: "true"
-          VECTOR_SYNC_SCAN_INTERVAL: "30"
+          VECTOR_SYNC_SCAN_INTERVAL: "5"
           OPENAI_API_KEY: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_BASE_URL: "https://models.github.ai/inference"
           OPENAI_EMBEDDING_MODEL: ${{ inputs.embedding_model }}
