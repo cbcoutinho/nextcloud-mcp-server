@@ -1,3 +1,9 @@
+## v0.48.0 (2025-11-23)
+
+### Feat
+
+- Add tag management methods to WebDAV client
+
 ## v0.47.0 (2025-11-23)
 
 ### Feat
