@@ -3,6 +3,10 @@ name: RAG Evaluation
 on:
   workflow_dispatch:
     inputs:
+      manual_path:
+        description: 'Path to Nextcloud User Manual PDF in Nextcloud'
+        required: false
+        default: 'Nextcloud Manual.pdf'
       embedding_model:
         description: 'OpenAI embedding model'
         required: false
@@ -15,39 +19,14 @@ on:
 jobs:
   rag-evaluation:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
+    permissions:
+      models: read
 
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
           submodules: 'true'
-
-      - name: Clone Nextcloud documentation
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
-        with:
-          repository: 'nextcloud/documentation'
-          path: 'nextcloud-docs'
-
-      - name: Install Sphinx and LaTeX dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            python3-sphinx \
-            python3-pip \
-            latexmk \
-            texlive-latex-recommended \
-            texlive-latex-extra \
-            texlive-fonts-recommended \
-            texlive-fonts-extra
-
-      - name: Build User Manual PDF
-        run: |
-          cd nextcloud-docs/user_manual
-          pip3 install -r ../requirements.txt
-          make latexpdf
-          ls -la _build/latex/
-          cp _build/latex/NextcloudUserManual.pdf ../../Nextcloud_User_Manual.pdf
-          echo "PDF built successfully"
 
       ###### Required to build OIDC App ######
       - name: Set up php 8.4
@@ -111,149 +90,12 @@ jobs:
           done
           echo "MCP server is ready."
 
-      - name: Upload User Manual PDF to Nextcloud
-        run: |
-          echo "Uploading Nextcloud_User_Manual.pdf to Nextcloud..."
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u admin:admin \
-            -X PUT \
-            -T Nextcloud_User_Manual.pdf \
-            "http://localhost:8080/remote.php/dav/files/admin/Nextcloud_User_Manual.pdf")
-
-          if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
-            echo "PDF uploaded successfully (HTTP $HTTP_CODE)"
-          else
-            echo "Failed to upload PDF (HTTP $HTTP_CODE)"
-            exit 1
-          fi
-
-      - name: Create vector-index tag
-        id: create_tag
-        run: |
-          # Create the tag using OCS API
-          echo "Creating vector-index tag..."
-          RESPONSE=$(curl -s -u admin:admin \
-            -X POST \
-            -H 'Content-Type: application/json' \
-            -H 'OCS-APIRequest: true' \
-            -d '{"name":"vector-index","userVisible":true,"userAssignable":true}' \
-            "http://localhost:8080/ocs/v2.php/apps/systemtags/api/v1/tags")
-
-          echo "Create tag response: $RESPONSE"
-
-          # Get tag ID from response or lookup
-          TAG_ID=$(echo "$RESPONSE" | grep -oP '(?<="id":)[0-9]+' | head -1 || echo "")
-
-          if [ -z "$TAG_ID" ]; then
-            echo "Tag may already exist, looking it up..."
-            TAG_ID=$(curl -s -u admin:admin \
-              -X PROPFIND \
-              -H 'Content-Type: application/xml' \
-              -d '<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:prop><oc:id/><oc:display-name/></d:prop></d:propfind>' \
-              http://localhost:8080/remote.php/dav/systemtags/ \
-              | grep -B2 "vector-index" | grep -oP '(?<=<oc:id>)[0-9]+(?=</oc:id>)' | head -1 || echo "")
-          fi
-
-          if [ -z "$TAG_ID" ]; then
-            echo "ERROR: Could not create or find vector-index tag"
-            exit 1
-          fi
-
-          echo "Tag ID: $TAG_ID"
-          echo "tag_id=$TAG_ID" >> $GITHUB_OUTPUT
-
-      - name: Get file ID of uploaded PDF
-        id: get_file_id
-        run: |
-          echo "Getting file ID for Nextcloud_User_Manual.pdf..."
-
-          # Get file ID using PROPFIND
-          FILE_ID=$(curl -s -u admin:admin \
-            -X PROPFIND \
-            -H 'Content-Type: application/xml' \
-            -d '<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:prop><oc:fileid/></d:prop></d:propfind>' \
-            "http://localhost:8080/remote.php/dav/files/admin/Nextcloud_User_Manual.pdf" \
-            | grep -oP '(?<=<oc:fileid>)[0-9]+(?=</oc:fileid>)' || echo "")
-
-          if [ -z "$FILE_ID" ]; then
-            echo "ERROR: Could not find file ID"
-            exit 1
-          fi
-
-          echo "Found file ID: $FILE_ID"
-          echo "file_id=$FILE_ID" >> $GITHUB_OUTPUT
-
-      - name: Tag file with vector-index
-        env:
-          FILE_ID: ${{ steps.get_file_id.outputs.file_id }}
-          TAG_ID: ${{ steps.create_tag.outputs.tag_id }}
-        run: |
-          echo "Tagging file $FILE_ID with tag $TAG_ID..."
-
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u admin:admin \
-            -X PUT \
-            -H 'Content-Type: application/json' \
-            -H 'Content-Length: 0' \
-            "http://localhost:8080/remote.php/dav/systemtags-relations/files/$FILE_ID/$TAG_ID")
-
-          if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "409" ]; then
-            echo "File tagged successfully (HTTP $HTTP_CODE)"
-          else
-            echo "Failed to tag file (HTTP $HTTP_CODE)"
-            exit 1
-          fi
-
-      - name: Wait for vector sync to complete indexing
-        env:
-          NEXTCLOUD_HOST: "http://localhost:8080"
-          NEXTCLOUD_USERNAME: "admin"
-          NEXTCLOUD_PASSWORD: "admin"
-        run: |
-          echo "Waiting for vector sync to index the manual..."
-          max_attempts=60
-          attempt=0
-
-          # Wait for initial scan to pick up the file
-          sleep 10
-
-          while [ $attempt -lt $max_attempts ]; do
-            attempt=$((attempt + 1))
-
-            # Check vector sync status via MCP
-            STATUS=$(curl -s http://localhost:8000/health || echo "{}")
-            echo "Attempt $attempt/$max_attempts: $STATUS"
-
-            # Also check indexed count via semantic search
-            # If we get results, indexing is done
-            RESULT=$(curl -s -X POST http://localhost:8000/mcp \
-              -H "Content-Type: application/json" \
-              -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"nc_get_vector_sync_status","arguments":{}}}' \
-              2>/dev/null || echo "{}")
-
-            echo "Vector sync status: $RESULT"
-
-            # Check if pending is 0 and indexed > 0
-            INDEXED=$(echo "$RESULT" | jq -r '.result.structuredContent.indexed // 0' 2>/dev/null || echo "0")
-            PENDING=$(echo "$RESULT" | jq -r '.result.structuredContent.pending // 1' 2>/dev/null || echo "1")
-
-            echo "Indexed: $INDEXED, Pending: $PENDING"
-
-            if [ "$INDEXED" -gt "0" ] && [ "$PENDING" -eq "0" ]; then
-              echo "Indexing complete! $INDEXED documents indexed."
-              break
-            fi
-
-            sleep 10
-          done
-
-          if [ $attempt -ge $max_attempts ]; then
-            echo "WARNING: Indexing may not be complete, proceeding anyway..."
-          fi
-
       - name: Run RAG evaluation tests
         env:
           NEXTCLOUD_HOST: "http://localhost:8080"
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
+          RAG_MANUAL_PATH: ${{ inputs.manual_path }}
           OPENAI_API_KEY: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_BASE_URL: "https://models.github.ai/inference"
           OPENAI_EMBEDDING_MODEL: ${{ inputs.embedding_model }}
