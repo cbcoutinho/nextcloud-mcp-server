@@ -10,6 +10,7 @@ Environment Variables:
     OPENAI_BASE_URL: Base URL override (e.g., "https://models.github.ai/inference")
     OPENAI_EMBEDDING_MODEL: Embedding model (default: "text-embedding-3-small")
     OPENAI_GENERATION_MODEL: Generation model for sampling (default: "gpt-4o-mini")
+    RAG_MANUAL_PATH: Path to manual PDF in Nextcloud (default: "Nextcloud_User_Manual.pdf")
 
 For GitHub CI, set:
     OPENAI_API_KEY: ${{ secrets.GITHUB_TOKEN }}
@@ -18,21 +19,28 @@ For GitHub CI, set:
     OPENAI_GENERATION_MODEL: openai/gpt-4o-mini
 
 Prerequisites:
-    - Nextcloud User Manual indexed in Qdrant (via vector sync)
+    - Nextcloud User Manual PDF uploaded to Nextcloud
     - VECTOR_SYNC_ENABLED=true on the MCP server
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
+import anyio
 import pytest
 from mcp import ClientSession
 
 from nextcloud_mcp_server.providers.openai import OpenAIProvider
 from tests.conftest import create_mcp_client_session
 from tests.integration.sampling_support import create_openai_sampling_callback
+
+logger = logging.getLogger(__name__)
+
+# Default path to the Nextcloud User Manual PDF
+DEFAULT_MANUAL_PATH = "Nextcloud Manual.pdf"
 
 # Skip all tests if OpenAI API key not configured
 pytestmark = [
@@ -56,6 +64,86 @@ def ground_truth_qa():
 
     with open(GROUND_TRUTH_FILE) as f:
         return json.load(f)
+
+
+@pytest.fixture(scope="module")
+async def indexed_manual_pdf(nc_client, nc_mcp_client):
+    """Ensure the Nextcloud User Manual PDF is tagged and indexed for vector search.
+
+    This fixture:
+    1. Gets file info for the manual PDF
+    2. Creates/gets the 'vector-index' tag
+    3. Assigns the tag to the file
+    4. Waits for vector sync to complete indexing
+
+    Environment Variables:
+        RAG_MANUAL_PATH: Path to manual PDF in Nextcloud (default: Nextcloud Manual.pdf)
+    """
+    manual_path = os.getenv("RAG_MANUAL_PATH", DEFAULT_MANUAL_PATH)
+
+    logger.info(f"Setting up indexed manual PDF: {manual_path}")
+
+    # Get file info to verify file exists and get file ID
+    file_info = await nc_client.webdav.get_file_info(manual_path)
+    if not file_info:
+        pytest.skip(f"Manual PDF not found at '{manual_path}'")
+
+    file_id = file_info["id"]
+    logger.info(f"Found manual PDF: {manual_path} (file_id={file_id})")
+
+    # Create or get the vector-index tag
+    tag = await nc_client.webdav.get_or_create_tag("vector-index")
+    tag_id = tag["id"]
+    logger.info(f"Using tag 'vector-index' (tag_id={tag_id})")
+
+    # Assign tag to file
+    await nc_client.webdav.assign_tag_to_file(file_id, tag_id)
+    logger.info(f"Tagged file {file_id} with vector-index tag")
+
+    # Wait for vector sync to complete indexing
+    max_attempts = 60
+    poll_interval = 10
+
+    logger.info("Waiting for vector sync to index the manual...")
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # Call the MCP tool via the existing client session
+            result = await nc_mcp_client.call_tool(
+                "nc_get_vector_sync_status",
+                arguments={},
+            )
+
+            if not result.isError:
+                content = result.structuredContent or {}
+                indexed = content.get("indexed_count", 0)
+                pending = content.get("pending_count", 1)
+
+                logger.info(
+                    f"Attempt {attempt}/{max_attempts}: "
+                    f"indexed={indexed}, pending={pending}"
+                )
+
+                if indexed > 0 and pending == 0:
+                    logger.info(
+                        f"Vector indexing complete: {indexed} documents indexed"
+                    )
+                    break
+        except Exception as e:
+            logger.warning(f"Attempt {attempt}: Error checking status: {e}")
+
+        if attempt < max_attempts:
+            await anyio.sleep(poll_interval)
+    else:
+        logger.warning(
+            f"Vector indexing may not be complete after {max_attempts} attempts"
+        )
+
+    yield {
+        "path": manual_path,
+        "file_id": file_id,
+        "tag_id": tag_id,
+    }
 
 
 @pytest.fixture(scope="module")
@@ -129,7 +217,9 @@ async def test_openai_embeddings_work(openai_provider: OpenAIProvider):
     assert len(embedding) in [1536, 3072]
 
 
-async def test_semantic_search_retrieval(nc_mcp_client, ground_truth_qa):
+async def test_semantic_search_retrieval(
+    nc_mcp_client, ground_truth_qa, indexed_manual_pdf
+):
     """Test that semantic search retrieves relevant documents from the manual.
 
     This tests the retrieval component of RAG - ensuring that queries
@@ -167,7 +257,7 @@ async def test_semantic_search_retrieval(nc_mcp_client, ground_truth_qa):
 
 
 async def test_semantic_search_answer_with_sampling(
-    nc_mcp_client_with_sampling, ground_truth_qa
+    nc_mcp_client_with_sampling, ground_truth_qa, indexed_manual_pdf
 ):
     """Test semantic search with MCP sampling for answer generation.
 
@@ -243,7 +333,7 @@ async def test_semantic_search_answer_with_sampling(
     ],
 )
 async def test_retrieval_quality_all_queries(
-    nc_mcp_client, ground_truth_qa, qa_index, min_expected_results
+    nc_mcp_client, ground_truth_qa, indexed_manual_pdf, qa_index, min_expected_results
 ):
     """Test retrieval quality for all ground truth queries.
 
@@ -274,7 +364,7 @@ async def test_retrieval_quality_all_queries(
     )
 
 
-async def test_no_results_for_unrelated_query(nc_mcp_client):
+async def test_no_results_for_unrelated_query(nc_mcp_client, indexed_manual_pdf):
     """Test that completely unrelated queries return low/no scores.
 
     The Nextcloud manual shouldn't have relevant content for

@@ -1295,3 +1295,233 @@ class WebDAVClient(BaseNextcloudClient):
 
         logger.debug(f"Found {len(files)} files with tag ID {tag_id}")
         return files
+
+    async def get_file_info(self, path: str) -> dict[str, Any] | None:
+        """Get file info including file ID via WebDAV PROPFIND.
+
+        Args:
+            path: Path to the file (relative to user's files directory)
+
+        Returns:
+            File info dictionary with id, name, size, content_type, etc.
+            Returns None if file not found.
+        """
+        webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
+
+        propfind_body = """<?xml version="1.0"?>
+<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:prop>
+    <oc:fileid/>
+    <d:displayname/>
+    <d:getcontentlength/>
+    <d:getcontenttype/>
+    <d:getlastmodified/>
+    <d:getetag/>
+    <d:resourcetype/>
+  </d:prop>
+</d:propfind>"""
+
+        try:
+            response = await self._client.request(
+                "PROPFIND",
+                webdav_path,
+                headers={"Depth": "0"},
+                content=propfind_body,
+            )
+            response.raise_for_status()
+        except HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.debug(f"File not found: {path}")
+                return None
+            raise
+
+        # Parse XML response
+        root = ET.fromstring(response.content)
+        ns = {
+            "d": "DAV:",
+            "oc": "http://owncloud.org/ns",
+        }
+
+        response_elem = root.find("d:response", ns)
+        if response_elem is None:
+            return None
+
+        propstat = response_elem.find("d:propstat", ns)
+        if propstat is None:
+            return None
+
+        prop = propstat.find("d:prop", ns)
+        if prop is None:
+            return None
+
+        # Extract properties
+        fileid_elem = prop.find("oc:fileid", ns)
+        displayname_elem = prop.find("d:displayname", ns)
+        contentlength_elem = prop.find("d:getcontentlength", ns)
+        contenttype_elem = prop.find("d:getcontenttype", ns)
+        lastmodified_elem = prop.find("d:getlastmodified", ns)
+        etag_elem = prop.find("d:getetag", ns)
+        resourcetype_elem = prop.find("d:resourcetype", ns)
+
+        is_directory = (
+            resourcetype_elem is not None
+            and resourcetype_elem.find("d:collection", ns) is not None
+        )
+
+        file_info = {
+            "id": int(fileid_elem.text) if fileid_elem is not None else None,
+            "path": path,
+            "name": displayname_elem.text
+            if displayname_elem is not None
+            else path.split("/")[-1],
+            "size": int(contentlength_elem.text)
+            if contentlength_elem is not None and contentlength_elem.text
+            else 0,
+            "content_type": contenttype_elem.text
+            if contenttype_elem is not None
+            else "",
+            "last_modified": lastmodified_elem.text
+            if lastmodified_elem is not None
+            else None,
+            "etag": etag_elem.text.strip('"')
+            if etag_elem is not None and etag_elem.text
+            else None,
+            "is_directory": is_directory,
+        }
+
+        logger.debug(f"Got file info for '{path}': id={file_info['id']}")
+        return file_info
+
+    async def create_tag(
+        self,
+        name: str,
+        user_visible: bool = True,
+        user_assignable: bool = True,
+    ) -> dict[str, Any]:
+        """Create a system tag via OCS API.
+
+        Args:
+            name: Name of the tag to create
+            user_visible: Whether the tag is visible to users
+            user_assignable: Whether users can assign this tag
+
+        Returns:
+            Tag dictionary with id, name, userVisible, userAssignable
+
+        Raises:
+            HTTPStatusError: If tag creation fails (409 if already exists)
+        """
+        response = await self._client.post(
+            "/ocs/v2.php/apps/systemtags/api/v1/tags",
+            headers={
+                "OCS-APIRequest": "true",
+                "Content-Type": "application/json",
+            },
+            json={
+                "name": name,
+                "userVisible": user_visible,
+                "userAssignable": user_assignable,
+            },
+        )
+        response.raise_for_status()
+
+        # Parse OCS response
+        data = response.json()
+        ocs_data = data.get("ocs", {}).get("data", {})
+
+        tag_info = {
+            "id": ocs_data.get("id"),
+            "name": ocs_data.get("name", name),
+            "userVisible": ocs_data.get("userVisible", user_visible),
+            "userAssignable": ocs_data.get("userAssignable", user_assignable),
+        }
+
+        logger.info(f"Created tag '{name}' with ID {tag_info['id']}")
+        return tag_info
+
+    async def get_or_create_tag(
+        self,
+        name: str,
+        user_visible: bool = True,
+        user_assignable: bool = True,
+    ) -> dict[str, Any]:
+        """Get a tag by name, creating it if it doesn't exist.
+
+        Args:
+            name: Name of the tag
+            user_visible: Whether the tag is visible to users (for creation)
+            user_assignable: Whether users can assign this tag (for creation)
+
+        Returns:
+            Tag dictionary with id, name, userVisible, userAssignable
+        """
+        # First try to get existing tag
+        existing_tag = await self.get_tag_by_name(name)
+        if existing_tag:
+            logger.debug(f"Tag '{name}' already exists with ID {existing_tag['id']}")
+            return existing_tag
+
+        # Create new tag
+        try:
+            return await self.create_tag(name, user_visible, user_assignable)
+        except HTTPStatusError as e:
+            if e.response.status_code == 409:
+                # Tag was created between our check and creation, fetch it
+                existing_tag = await self.get_tag_by_name(name)
+                if existing_tag:
+                    return existing_tag
+            raise
+
+    async def assign_tag_to_file(self, file_id: int, tag_id: int) -> bool:
+        """Assign a system tag to a file.
+
+        Args:
+            file_id: Numeric file ID
+            tag_id: Numeric tag ID
+
+        Returns:
+            True if tag was assigned successfully (or already assigned)
+
+        Raises:
+            HTTPStatusError: If tag assignment fails
+        """
+        response = await self._client.request(
+            "PUT",
+            f"/remote.php/dav/systemtags-relations/files/{file_id}/{tag_id}",
+            headers={"Content-Length": "0"},
+            content=b"",
+        )
+
+        # 201 = Created (new assignment), 409 = Conflict (already assigned)
+        if response.status_code in (201, 409):
+            logger.info(f"Tagged file {file_id} with tag {tag_id}")
+            return True
+
+        response.raise_for_status()
+        return True
+
+    async def remove_tag_from_file(self, file_id: int, tag_id: int) -> bool:
+        """Remove a system tag from a file.
+
+        Args:
+            file_id: Numeric file ID
+            tag_id: Numeric tag ID
+
+        Returns:
+            True if tag was removed successfully (or wasn't assigned)
+
+        Raises:
+            HTTPStatusError: If tag removal fails
+        """
+        response = await self._client.request(
+            "DELETE",
+            f"/remote.php/dav/systemtags-relations/files/{file_id}/{tag_id}",
+        )
+
+        # 204 = No Content (removed), 404 = Not Found (wasn't assigned)
+        if response.status_code in (204, 404):
+            logger.info(f"Removed tag {tag_id} from file {file_id}")
+            return True
+
+        response.raise_for_status()
+        return True
