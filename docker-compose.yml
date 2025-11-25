@@ -245,7 +245,7 @@ services:
       - smithery
 
   qdrant:
-    image: qdrant/qdrant:v1.16.0@sha256:1005201498cf927d835383d0f918b17d8c9da7db58550f169f694455e42d78f4
+    image: qdrant/qdrant:v1.16.1@sha256:db1c735496dfa982ef27576a17b624e48e6b46a140bcdc2ac34e39d186204ef5
     restart: always
     ports:
       - 127.0.0.1:6333:6333  # REST API
