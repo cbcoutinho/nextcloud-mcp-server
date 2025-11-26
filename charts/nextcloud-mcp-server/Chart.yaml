@@ -27,7 +27,7 @@ annotations:
   grafana_dashboard_folder: "Nextcloud MCP"
 dependencies:
   - name: qdrant
-    version: "1.16.0"
+    version: "1.16.1"
     repository: https://qdrant.github.io/qdrant-helm
     condition: qdrant.networkMode.deploySubchart
   - name: ollama
