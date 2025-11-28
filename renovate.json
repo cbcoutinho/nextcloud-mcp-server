@@ -4,5 +4,11 @@
     "config:best-practices",
     "mergeConfidence:all-badges"
   ],
-  "dependencyDashboard": true
+  "dependencyDashboard": true,
+  "packageRules": [
+    {
+      "matchPackageNames": ["pillow"],
+      "allowedVersions": "<12.0.0"
+    }
+  ]
 }
