@@ -309,6 +309,25 @@ async def test_news_api_get_items_unread_only(mocker):
     assert params["getRead"] == "false"
 
 
+async def test_news_api_get_item(mocker):
+    """Test that get_item fetches a single item by ID."""
+    item = create_mock_news_item(item_id=123, title="Single Item")
+    mock_response = create_mock_response(status_code=200, json_data=item)
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        NewsClient, "_make_request", return_value=mock_response
+    )
+
+    client = NewsClient(mock_client, "testuser")
+    result = await client.get_item(item_id=123)
+
+    assert result["id"] == 123
+    assert result["title"] == "Single Item"
+
+    mock_make_request.assert_called_once_with("GET", "/apps/news/api/v1-3/items/123")
+
+
 async def test_news_api_get_updated_items(mocker):
     """Test that get_updated_items correctly calls the updated endpoint."""
     items = [create_mock_news_item(item_id=1)]

@@ -228,10 +228,6 @@ class NewsClient(BaseNextcloudClient):
     async def get_item(self, item_id: int) -> dict[str, Any]:
         """Get a specific item by ID.
 
-        Note: The News API doesn't have a direct single-item endpoint,
-        so we fetch all items and filter. For efficiency, consider
-        caching or using get_items with specific feed if known.
-
         Args:
             item_id: Item ID
 
@@ -239,15 +235,10 @@ class NewsClient(BaseNextcloudClient):
             Item data
 
         Raises:
-            ValueError: If item not found
+            HTTPStatusError: 404 if item not found
         """
-        # Fetch all items and find the one we need
-        # This is inefficient but the API doesn't provide a direct endpoint
-        items = await self.get_items(batch_size=-1, get_read=True)
-        for item in items:
-            if item.get("id") == item_id:
-                return item
-        raise ValueError(f"Item {item_id} not found")
+        response = await self._make_request("GET", f"{self.API_BASE}/items/{item_id}")
+        return response.json()
 
     async def get_updated_items(
         self,
