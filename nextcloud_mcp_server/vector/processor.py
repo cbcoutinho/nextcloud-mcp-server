@@ -272,6 +272,45 @@ async def _index_document(
             file_path = None  # Notes don't have file paths
             content_bytes = None  # Notes don't have binary content
             content_type = None
+        elif doc_task.doc_type == "news_item":
+            from nextcloud_mcp_server.vector.html_processor import html_to_markdown
+
+            item = await nc_client.news.get_item(int(doc_task.doc_id))
+            # Convert HTML body to Markdown for better embedding
+            body_markdown = html_to_markdown(item.get("body", ""))
+            # Build content: title + URL + body
+            item_title = item.get("title", "")
+            item_url = item.get("url", "")
+            feed_title = item.get("feedTitle", "")
+
+            # Structure content for embedding
+            content_parts = [item_title]
+            if feed_title:
+                content_parts.append(f"Source: {feed_title}")
+            if item_url:
+                content_parts.append(f"URL: {item_url}")
+            content_parts.append("")  # Blank line
+            content_parts.append(body_markdown)
+            content = "\n".join(content_parts)
+
+            title = item_title
+            etag = item.get("guidHash", "")
+            # Store news-specific metadata for later use in payload
+            file_metadata = {
+                "feed_id": item.get("feedId"),
+                "feed_title": feed_title,
+                "author": item.get("author"),
+                "pub_date": item.get("pubDate"),
+                "starred": item.get("starred", False),
+                "unread": item.get("unread", True),
+                "url": item_url,
+                "guid_hash": item.get("guidHash"),
+                "enclosure_link": item.get("enclosureLink"),
+                "enclosure_mime": item.get("enclosureMime"),
+            }
+            file_path = None
+            content_bytes = None
+            content_type = None
         elif doc_task.doc_type == "file":
             # For files, doc_id is now the numeric file ID, file_path comes from DocumentTask
             if not doc_task.file_path:
@@ -358,15 +397,16 @@ async def _index_document(
         chunks = await chunker.chunk_text(content)
 
     # Assign page numbers to chunks if page boundaries are available (PDFs)
-    if doc_task.doc_type == "file" and "page_boundaries" in file_metadata:
+    page_boundaries = file_metadata.get("page_boundaries")
+    if doc_task.doc_type == "file" and page_boundaries is not None:
         with trace_operation(
             "vector_sync.assign_page_numbers",
             attributes={
                 "vector_sync.chunk_count": len(chunks),
-                "vector_sync.page_count": len(file_metadata["page_boundaries"]),
+                "vector_sync.page_count": len(page_boundaries),
             },
         ):
-            assign_page_numbers(chunks, file_metadata["page_boundaries"])
+            assign_page_numbers(chunks, page_boundaries)
 
             # Diagnostic: Verify page number assignment
             assigned_count = sum(1 for c in chunks if c.page_number is not None)
@@ -389,8 +429,8 @@ async def _index_document(
                     f"Text length: {len(content)}, "
                     f"Chunks: {len(chunks)}, "
                     f"Chunk offset range: [{chunks[0].start_offset}:{chunks[-1].end_offset}], "
-                    f"Page boundaries: {len(file_metadata['page_boundaries'])} pages, "
-                    f"First boundary: {file_metadata['page_boundaries'][0] if file_metadata['page_boundaries'] else 'None'}"
+                    f"Page boundaries: {len(page_boundaries)} pages, "
+                    f"First boundary: {page_boundaries[0] if page_boundaries else 'None'}"
                 )
 
     # Extract chunk texts for embedding
@@ -564,6 +604,23 @@ async def _index_document(
                             "image_count": file_metadata.get("image_count", 0),
                         }
                         if doc_task.doc_type == "file"
+                        else {}
+                    ),
+                    # News item-specific metadata
+                    **(
+                        {
+                            "feed_id": file_metadata.get("feed_id"),
+                            "feed_title": file_metadata.get("feed_title"),
+                            "author": file_metadata.get("author"),
+                            "pub_date": file_metadata.get("pub_date"),
+                            "starred": file_metadata.get("starred"),
+                            "unread": file_metadata.get("unread"),
+                            "url": file_metadata.get("url"),
+                            "guid_hash": file_metadata.get("guid_hash"),
+                            "enclosure_link": file_metadata.get("enclosure_link"),
+                            "enclosure_mime": file_metadata.get("enclosure_mime"),
+                        }
+                        if doc_task.doc_type == "news_item"
                         else {}
                     ),
                     # Highlighted page image (PDF only)
