@@ -1,3 +1,9 @@
+## v0.48.5 (2025-11-28)
+
+### Fix
+
+- **deps**: update dependency pillow to v12
+
 ## v0.48.4 (2025-11-23)
 
 ### Fix
