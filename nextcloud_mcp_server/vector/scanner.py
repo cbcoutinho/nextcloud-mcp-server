@@ -574,11 +574,11 @@ async def scan_news_items(
     scan_id: int,
 ) -> int:
     """
-    Scan user's News items (starred + unread) and queue changed items.
+    Scan user's News items and queue changed items for indexing.
 
-    Indexes starred and unread items for semantic search. This provides
-    a balanced approach - important items (starred) and current items
-    (unread) are searchable, while avoiding indexing the entire history.
+    Indexes all items from the user's feeds. The News app's auto-purge
+    feature (default: 200 items per feed) naturally limits the total
+    number of items, making explicit filtering unnecessary.
 
     Args:
         user_id: User to scan
@@ -614,34 +614,19 @@ async def scan_news_items(
         indexed_item_ids = {point.payload["doc_id"] for point in scroll_result[0]}
         logger.debug(f"Found {len(indexed_item_ids)} indexed news items in Qdrant")
 
-    # Fetch starred items (type=STARRED)
-    starred_items = await nc_client.news.get_items(
-        batch_size=-1,  # Get all
-        type_=NewsItemType.STARRED,
-        get_read=True,  # Include read starred items
-    )
-    logger.debug(f"[SCAN-{scan_id}] Found {len(starred_items)} starred news items")
-
-    # Fetch unread items (type=ALL, get_read=False)
-    unread_items = await nc_client.news.get_items(
+    # Fetch all items (News app caps at ~200 per feed via auto-purge)
+    all_items = await nc_client.news.get_items(
         batch_size=-1,
         type_=NewsItemType.ALL,
-        get_read=False,  # Only unread
+        get_read=True,
     )
-    logger.debug(f"[SCAN-{scan_id}] Found {len(unread_items)} unread news items")
+    logger.debug(f"[SCAN-{scan_id}] Found {len(all_items)} news items")
 
-    # Combine and deduplicate (an item can be both starred and unread)
-    items_by_id: dict[int, dict] = {}
-    for item in starred_items:
-        items_by_id[item["id"]] = item
-    for item in unread_items:
-        items_by_id[item["id"]] = item
-
-    item_count = len(items_by_id)
+    item_count = len(all_items)
     nextcloud_item_ids: set[str] = set()
 
-    for item_id, item in items_by_id.items():
-        doc_id = str(item_id)
+    for item in all_items:
+        doc_id = str(item["id"])
         nextcloud_item_ids.add(doc_id)
 
         # Use lastModified timestamp (microseconds in News API)
