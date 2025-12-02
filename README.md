@@ -1,11 +1,12 @@
+```markdown
 <p align="center">
   <img src="astrolabe.svg" alt="Nextcloud MCP Server" width="128" height="128">
 </p>
 
 # Nextcloud MCP Server
 
-[![Docker Image](https://img.shields.io/badge/docker-ghcr.io/cbcoutinho/nextcloud--mcp--server-blue)](https://github.com/cbcoutinho/nextcloud-mcp-server/pkgs/container/nextcloud-mcp-server)
 [![smithery badge](https://smithery.ai/badge/@cbcoutinho/nextcloud-mcp-server)](https://smithery.ai/server/@cbcoutinho/nextcloud-mcp-server)
+[![Docker Image](https://img.shields.io/badge/docker-ghcr.io/cbcoutinho/nextcloud--mcp--server-blue)](https://github.com/cbcoutinho/nextcloud-mcp-server/pkgs/container/nextcloud-mcp-server)
 
 **A production-ready MCP server that connects AI assistants to your Nextcloud instance.**
 
@@ -223,3 +224,4 @@ This project is licensed under the AGPL-3.0 License. See [LICENSE](./LICENSE) fo
 - [Model Context Protocol](https://github.com/modelcontextprotocol)
 - [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
 - [Nextcloud](https://nextcloud.com/)
+```
