@@ -18,6 +18,7 @@ from .contacts import ContactsClient
 from .cookbook import CookbookClient
 from .deck import DeckClient
 from .groups import GroupsClient
+from .news import NewsClient
 from .notes import NotesClient
 from .sharing import SharingClient
 from .tables import TablesClient
@@ -81,6 +82,7 @@ class NextcloudClient:
         self.contacts = ContactsClient(self._client, username)
         self.cookbook = CookbookClient(self._client, username)
         self.deck = DeckClient(self._client, username)
+        self.news = NewsClient(self._client, username)
         self.users = UsersClient(self._client, username)
         self.groups = GroupsClient(self._client, username)
         self.sharing = SharingClient(self._client, username)

@@ -480,3 +480,222 @@ def create_mock_table_row_ocs_response(
     ocs_response = {"ocs": {"meta": {"status": "ok"}, "data": row_data}}
 
     return create_mock_response(status_code=200, json_data=ocs_response)
+
+
+# ============================================================================
+# News Mock Response Helpers
+# ============================================================================
+
+
+def create_mock_news_folders_response(
+    folders: list[dict] | None = None,
+) -> httpx.Response:
+    """Create a mock response for News folders list.
+
+    Args:
+        folders: List of folder dictionaries. If None, returns empty list.
+
+    Returns:
+        Mock httpx.Response with folders data
+    """
+    if folders is None:
+        folders = []
+
+    return create_mock_response(status_code=200, json_data={"folders": folders})
+
+
+def create_mock_news_folder_response(
+    folder_id: int = 1,
+    name: str = "Test Folder",
+    **kwargs,
+) -> httpx.Response:
+    """Create a mock response for a News folder.
+
+    Args:
+        folder_id: Folder ID
+        name: Folder name
+        **kwargs: Additional folder fields
+
+    Returns:
+        Mock httpx.Response with folder data
+    """
+    folder_data = {
+        "id": folder_id,
+        "name": name,
+        **kwargs,
+    }
+
+    return create_mock_response(status_code=200, json_data={"folders": [folder_data]})
+
+
+def create_mock_news_feeds_response(
+    feeds: list[dict] | None = None,
+    starred_count: int = 0,
+    newest_item_id: int | None = None,
+) -> httpx.Response:
+    """Create a mock response for News feeds list.
+
+    Args:
+        feeds: List of feed dictionaries. If None, returns empty list.
+        starred_count: Number of starred items
+        newest_item_id: ID of newest item
+
+    Returns:
+        Mock httpx.Response with feeds data
+    """
+    if feeds is None:
+        feeds = []
+
+    data = {
+        "feeds": feeds,
+        "starredCount": starred_count,
+    }
+    if newest_item_id is not None:
+        data["newestItemId"] = newest_item_id
+
+    return create_mock_response(status_code=200, json_data=data)
+
+
+def create_mock_news_feed_response(
+    feed_id: int = 1,
+    url: str = "https://example.com/feed",
+    title: str = "Test Feed",
+    favicon_link: str | None = None,
+    folder_id: int | None = None,
+    unread_count: int = 0,
+    **kwargs,
+) -> httpx.Response:
+    """Create a mock response for a News feed.
+
+    Args:
+        feed_id: Feed ID
+        url: Feed URL
+        title: Feed title
+        favicon_link: Favicon URL
+        folder_id: Parent folder ID
+        unread_count: Number of unread items
+        **kwargs: Additional feed fields
+
+    Returns:
+        Mock httpx.Response with feed data
+    """
+    feed_data = {
+        "id": feed_id,
+        "url": url,
+        "title": title,
+        "faviconLink": favicon_link,
+        "folderId": folder_id,
+        "unreadCount": unread_count,
+        "link": kwargs.get("link", "https://example.com"),
+        "added": kwargs.get("added", 1700000000),
+        "updateErrorCount": kwargs.get("updateErrorCount", 0),
+        "lastUpdateError": kwargs.get("lastUpdateError"),
+        **{
+            k: v
+            for k, v in kwargs.items()
+            if k not in ["link", "added", "updateErrorCount", "lastUpdateError"]
+        },
+    }
+
+    return create_mock_response(status_code=200, json_data={"feeds": [feed_data]})
+
+
+def create_mock_news_items_response(
+    items: list[dict] | None = None,
+) -> httpx.Response:
+    """Create a mock response for News items list.
+
+    Args:
+        items: List of item dictionaries. If None, returns empty list.
+
+    Returns:
+        Mock httpx.Response with items data
+    """
+    if items is None:
+        items = []
+
+    return create_mock_response(status_code=200, json_data={"items": items})
+
+
+def create_mock_news_item(
+    item_id: int = 1,
+    feed_id: int = 1,
+    title: str = "Test Article",
+    body: str = "<p>Test content</p>",
+    url: str = "https://example.com/article",
+    author: str | None = "Test Author",
+    pub_date: int = 1700000000,
+    unread: bool = True,
+    starred: bool = False,
+    **kwargs,
+) -> dict:
+    """Create a mock News item dictionary.
+
+    Args:
+        item_id: Item ID
+        feed_id: Parent feed ID
+        title: Article title
+        body: Article body (HTML)
+        url: Article URL
+        author: Article author
+        pub_date: Publication timestamp (Unix)
+        unread: Whether item is unread
+        starred: Whether item is starred
+        **kwargs: Additional item fields
+
+    Returns:
+        Item dictionary
+    """
+    return {
+        "id": item_id,
+        "feedId": feed_id,
+        "title": title,
+        "body": body,
+        "url": url,
+        "author": author,
+        "pubDate": pub_date,
+        "unread": unread,
+        "starred": starred,
+        "guid": kwargs.get("guid", f"guid-{item_id}"),
+        "guidHash": kwargs.get("guidHash", f"hash-{item_id}"),
+        "lastModified": kwargs.get("lastModified", pub_date * 1000000),
+        "enclosureLink": kwargs.get("enclosureLink"),
+        "enclosureMime": kwargs.get("enclosureMime"),
+        "fingerprint": kwargs.get("fingerprint", f"fp-{item_id}"),
+        "contentHash": kwargs.get("contentHash", f"ch-{item_id}"),
+        **{
+            k: v
+            for k, v in kwargs.items()
+            if k
+            not in [
+                "guid",
+                "guidHash",
+                "lastModified",
+                "enclosureLink",
+                "enclosureMime",
+                "fingerprint",
+                "contentHash",
+            ]
+        },
+    }
+
+
+def create_mock_news_status_response(
+    version: str = "25.0.0",
+    warnings: dict | None = None,
+) -> httpx.Response:
+    """Create a mock response for News status.
+
+    Args:
+        version: News app version
+        warnings: Warning messages
+
+    Returns:
+        Mock httpx.Response with status data
+    """
+    data = {
+        "version": version,
+        "warnings": warnings or {},
+    }
+
+    return create_mock_response(status_code=200, json_data=data)
