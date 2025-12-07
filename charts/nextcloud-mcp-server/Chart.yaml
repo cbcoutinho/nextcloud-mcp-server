@@ -2,8 +2,8 @@ apiVersion: v2
 name: nextcloud-mcp-server
 description: A Helm chart for Nextcloud MCP Server - enables AI assistants to interact with Nextcloud
 type: application
-version: 0.48.5
-appVersion: "0.48.5"
+version: 0.48.6
+appVersion: "0.48.6"
 keywords:
   - nextcloud
   - mcp
@@ -27,7 +27,7 @@ annotations:
   grafana_dashboard_folder: "Nextcloud MCP"
 dependencies:
   - name: qdrant
-    version: "1.16.1"
+    version: "1.16.2"
     repository: https://qdrant.github.io/qdrant-helm
     condition: qdrant.networkMode.deploySubchart
   - name: ollama
