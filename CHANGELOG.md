@@ -1,3 +1,21 @@
+## v0.49.0 (2025-12-08)
+
+### Feat
+
+- **news**: add Nextcloud News app integration
+
+### Fix
+
+- resolve all type checking errors (8 errors fixed)
+
+### Refactor
+
+- **news**: simplify vector sync to fetch all items
+
+### Perf
+
+- **news**: use direct API endpoint for get_item()
+
 ## v0.48.6 (2025-12-03)
 
 ### Fix
