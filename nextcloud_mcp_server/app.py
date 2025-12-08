@@ -60,6 +60,7 @@ from nextcloud_mcp_server.server import (
     configure_contacts_tools,
     configure_cookbook_tools,
     configure_deck_tools,
+    configure_news_tools,
     configure_notes_tools,
     configure_semantic_tools,
     configure_sharing_tools,
@@ -514,7 +515,7 @@ async def load_oauth_client_credentials(
         # and the authorization server will limit them to these allowed scopes.
         #
         # The PRM endpoint advertises the same scopes dynamically via @require_scopes decorators.
-        dcr_scopes = "openid profile email notes:read notes:write calendar:read calendar:write todo:read todo:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write"
+        dcr_scopes = "openid profile email notes:read notes:write calendar:read calendar:write todo:read todo:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write news:read news:write"
 
         # Add offline_access scope if refresh tokens are enabled
         enable_offline_access = os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() in (
@@ -1046,6 +1047,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         "contacts": configure_contacts_tools,
         "cookbook": configure_cookbook_tools,
         "deck": configure_deck_tools,
+        "news": configure_news_tools,
     }
 
     # If no specific apps are specified, enable all

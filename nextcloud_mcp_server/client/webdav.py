@@ -1174,7 +1174,9 @@ class WebDAVClient(BaseNextcloudClient):
 
             if display_name_elem is not None and display_name_elem.text == tag_name:
                 tag_info = {
-                    "id": int(tag_id_elem.text) if tag_id_elem is not None else None,
+                    "id": int(tag_id_elem.text)
+                    if tag_id_elem is not None and tag_id_elem.text is not None
+                    else None,
                     "name": display_name_elem.text,
                     "userVisible": user_visible_elem.text.lower() == "true"
                     if user_visible_elem is not None
@@ -1369,7 +1371,9 @@ class WebDAVClient(BaseNextcloudClient):
         )
 
         file_info = {
-            "id": int(fileid_elem.text) if fileid_elem is not None else None,
+            "id": int(fileid_elem.text)
+            if fileid_elem is not None and fileid_elem.text is not None
+            else None,
             "path": path,
             "name": displayname_elem.text
             if displayname_elem is not None

@@ -189,25 +189,14 @@ async def test_get_file_info_returns_none_for_missing_file(mocker):
 
 @pytest.mark.unit
 async def test_create_tag_creates_system_tag(mocker):
-    """Test that create_tag creates a system tag via OCS API."""
+    """Test that create_tag creates a system tag via WebDAV."""
     mock_http_client = AsyncMock()
     client = WebDAVClient(mock_http_client, "testuser")
 
-    # Mock OCS response
+    # Mock WebDAV response with Content-Location header
     mock_response = AsyncMock()
-    mock_response.status_code = 200
-    mock_response.json = mocker.Mock(
-        return_value={
-            "ocs": {
-                "data": {
-                    "id": 42,
-                    "name": "vector-index",
-                    "userVisible": True,
-                    "userAssignable": True,
-                }
-            }
-        }
-    )
+    mock_response.status_code = 201
+    mock_response.headers = {"Content-Location": "/remote.php/dav/systemtags/42"}
     mock_response.raise_for_status = mocker.Mock()
 
     mock_http_client.post = AsyncMock(return_value=mock_response)
@@ -224,8 +213,10 @@ async def test_create_tag_creates_system_tag(mocker):
     # Verify API call
     mock_http_client.post.assert_called_once()
     call_args = mock_http_client.post.call_args
-    assert call_args[0][0] == "/ocs/v2.php/apps/systemtags/api/v1/tags"
+    assert call_args[0][0] == "/remote.php/dav/systemtags/"
     assert call_args[1]["json"]["name"] == "vector-index"
+    assert call_args[1]["json"]["userVisible"] is True
+    assert call_args[1]["json"]["userAssignable"] is True
 
 
 @pytest.mark.unit

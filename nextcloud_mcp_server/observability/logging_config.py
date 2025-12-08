@@ -60,7 +60,7 @@ class TraceContextFormatter(JsonFormatter):
 
     def add_fields(
         self,
-        log_record: dict[str, Any],
+        log_data: dict[str, Any],
         record: logging.LogRecord,
         message_dict: dict[str, Any],
     ) -> None:
@@ -68,28 +68,28 @@ class TraceContextFormatter(JsonFormatter):
         Add custom fields to the log record, including trace context.
 
         Args:
-            log_record: Dictionary to be serialized as JSON
+            log_data: Dictionary to be serialized as JSON
             record: LogRecord instance
             message_dict: Dictionary of extra fields from log call
         """
         # Call parent to add standard fields
-        super().add_fields(log_record, record, message_dict)
+        super().add_fields(log_data, record, message_dict)
 
         # Add trace context if available
         trace_context = get_trace_context()
         if trace_context:
-            log_record["trace_id"] = trace_context.get("trace_id")
-            log_record["span_id"] = trace_context.get("span_id")
+            log_data["trace_id"] = trace_context.get("trace_id")
+            log_data["span_id"] = trace_context.get("span_id")
 
         # Add standard fields with consistent naming
-        log_record["timestamp"] = self.formatTime(record)
-        log_record["level"] = record.levelname
-        log_record["logger"] = record.name
-        log_record["message"] = record.getMessage()
+        log_data["timestamp"] = self.formatTime(record)
+        log_data["level"] = record.levelname
+        log_data["logger"] = record.name
+        log_data["message"] = record.getMessage()
 
         # Include exception info if present
         if record.exc_info:
-            log_record["exception"] = self.formatException(record.exc_info)
+            log_data["exception"] = self.formatException(record.exc_info)
 
 
 class TraceContextTextFormatter(logging.Formatter):

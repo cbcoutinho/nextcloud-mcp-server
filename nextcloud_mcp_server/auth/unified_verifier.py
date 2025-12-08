@@ -303,10 +303,13 @@ class UnifiedTokenVerifier(TokenVerifier):
 
         try:
             # Introspection requires client authentication
+            client_id = self.settings.oidc_client_id
+            client_secret = self.settings.oidc_client_secret
+            assert client_id is not None and client_secret is not None
             response = await self.http_client.post(
                 self.introspection_uri,
                 data={"token": token},
-                auth=(self.settings.oidc_client_id, self.settings.oidc_client_secret),
+                auth=(client_id, client_secret),
             )
 
             if response.status_code == 200:
