@@ -139,6 +139,7 @@ async def _get_authenticated_client(request: Request) -> httpx.AsyncClient:
             raise RuntimeError("BasicAuth credentials not configured")
 
         assert nextcloud_host is not None  # Type narrowing for type checker
+        assert username is not None and password is not None  # Type narrowing
         return httpx.AsyncClient(
             base_url=nextcloud_host,
             auth=(username, password),

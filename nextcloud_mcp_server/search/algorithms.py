@@ -108,8 +108,8 @@ async def get_indexed_doc_types(user_id: str) -> set[str]:
             with_vectors=False,  # Don't need vectors for type discovery
         )
 
-        doc_types = {
-            point.payload.get("doc_type")
+        doc_types: set[str] = {
+            str(point.payload.get("doc_type"))
             for point in scroll_results
             if point.payload.get("doc_type")
         }

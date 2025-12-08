@@ -206,7 +206,11 @@ async def scan_user_documents(
                 limit=10000,
             )
 
-            indexed_doc_ids = {point.payload["doc_id"] for point in scroll_result[0]}
+            indexed_doc_ids = {
+                point.payload["doc_id"]
+                for point in (scroll_result[0] or [])
+                if point.payload is not None
+            }
 
             logger.debug(f"Found {len(indexed_doc_ids)} indexed documents in Qdrant")
 
@@ -376,7 +380,9 @@ async def scan_user_documents(
             )
 
             indexed_file_ids = {
-                point.payload["doc_id"] for point in file_scroll_result[0]
+                point.payload["doc_id"]
+                for point in (file_scroll_result[0] or [])
+                if point.payload is not None
             }
 
             logger.debug(f"Found {len(indexed_file_ids)} indexed files in Qdrant")
@@ -611,7 +617,11 @@ async def scan_news_items(
             with_vectors=False,
             limit=10000,
         )
-        indexed_item_ids = {point.payload["doc_id"] for point in scroll_result[0]}
+        indexed_item_ids = {
+            point.payload["doc_id"]
+            for point in (scroll_result[0] or [])
+            if point.payload is not None
+        }
         logger.debug(f"Found {len(indexed_item_ids)} indexed news items in Qdrant")
 
     # Fetch all items (News app caps at ~200 per feed via auto-purge)

@@ -140,6 +140,7 @@ class OpenAIProvider(Provider):
                 "Embedding not supported - no embedding_model configured"
             )
 
+        assert self.embedding_model is not None  # Type narrowing
         response = await self.client.embeddings.create(
             input=text,
             model=self.embedding_model,
@@ -204,6 +205,7 @@ class OpenAIProvider(Provider):
     @retry_on_rate_limit
     async def _embed_batch_request(self, batch: list[str]) -> list[list[float]]:
         """Make a single batch embedding request with retry logic."""
+        assert self.embedding_model is not None  # Type narrowing
         response = await self.client.embeddings.create(
             input=batch,
             model=self.embedding_model,
