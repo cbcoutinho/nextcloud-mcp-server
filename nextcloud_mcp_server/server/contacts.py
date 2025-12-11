@@ -1,6 +1,7 @@
 import logging
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
@@ -11,7 +12,10 @@ logger = logging.getLogger(__name__)
 
 def configure_contacts_tools(mcp: FastMCP):
     # Contacts tools
-    @mcp.tool()
+    @mcp.tool(
+        title="List Address Books",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("contacts:read")
     @instrument_tool
     async def nc_contacts_list_addressbooks(ctx: Context):
@@ -19,7 +23,10 @@ def configure_contacts_tools(mcp: FastMCP):
         client = await get_client(ctx)
         return await client.contacts.list_addressbooks()
 
-    @mcp.tool()
+    @mcp.tool(
+        title="List Contacts",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("contacts:read")
     @instrument_tool
     async def nc_contacts_list_contacts(ctx: Context, *, addressbook: str):
@@ -27,7 +34,10 @@ def configure_contacts_tools(mcp: FastMCP):
         client = await get_client(ctx)
         return await client.contacts.list_contacts(addressbook=addressbook)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Create Address Book",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("contacts:write")
     @instrument_tool
     async def nc_contacts_create_addressbook(
@@ -44,7 +54,12 @@ def configure_contacts_tools(mcp: FastMCP):
             name=name, display_name=display_name
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Delete Address Book",
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
+    )
     @require_scopes("contacts:write")
     @instrument_tool
     async def nc_contacts_delete_addressbook(ctx: Context, *, name: str):
@@ -52,7 +67,10 @@ def configure_contacts_tools(mcp: FastMCP):
         client = await get_client(ctx)
         return await client.contacts.delete_addressbook(name=name)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Create Contact",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("contacts:write")
     @instrument_tool
     async def nc_contacts_create_contact(
@@ -70,7 +88,12 @@ def configure_contacts_tools(mcp: FastMCP):
             addressbook=addressbook, uid=uid, contact_data=contact_data
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Delete Contact",
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
+    )
     @require_scopes("contacts:write")
     @instrument_tool
     async def nc_contacts_delete_contact(ctx: Context, *, addressbook: str, uid: str):
@@ -78,7 +101,10 @@ def configure_contacts_tools(mcp: FastMCP):
         client = await get_client(ctx)
         return await client.contacts.delete_contact(addressbook=addressbook, uid=uid)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Update Contact",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("contacts:write")
     @instrument_tool
     async def nc_contacts_update_contact(

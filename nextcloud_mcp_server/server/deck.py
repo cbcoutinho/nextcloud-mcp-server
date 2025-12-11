@@ -2,6 +2,7 @@ import logging
 from typing import Optional
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
@@ -117,7 +118,10 @@ def configure_deck_tools(mcp: FastMCP):
 
     # Read Tools (converted from resources)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="List Deck Boards",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("deck:read")
     @instrument_tool
     async def deck_get_boards(ctx: Context) -> list[DeckBoard]:
@@ -126,7 +130,10 @@ def configure_deck_tools(mcp: FastMCP):
         boards = await client.deck.get_boards()
         return boards
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Deck Board",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("deck:read")
     @instrument_tool
     async def deck_get_board(ctx: Context, board_id: int) -> DeckBoard:
@@ -135,7 +142,10 @@ def configure_deck_tools(mcp: FastMCP):
         board = await client.deck.get_board(board_id)
         return board
 
-    @mcp.tool()
+    @mcp.tool(
+        title="List Deck Stacks",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("deck:read")
     @instrument_tool
     async def deck_get_stacks(ctx: Context, board_id: int) -> list[DeckStack]:
@@ -144,7 +154,10 @@ def configure_deck_tools(mcp: FastMCP):
         stacks = await client.deck.get_stacks(board_id)
         return stacks
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Deck Stack",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("deck:read")
     @instrument_tool
     async def deck_get_stack(ctx: Context, board_id: int, stack_id: int) -> DeckStack:
@@ -153,7 +166,10 @@ def configure_deck_tools(mcp: FastMCP):
         stack = await client.deck.get_stack(board_id, stack_id)
         return stack
 
-    @mcp.tool()
+    @mcp.tool(
+        title="List Deck Cards",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("deck:read")
     @instrument_tool
     async def deck_get_cards(
@@ -166,7 +182,10 @@ def configure_deck_tools(mcp: FastMCP):
             return stack.cards
         return []
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Deck Card",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("deck:read")
     @instrument_tool
     async def deck_get_card(
@@ -177,7 +196,10 @@ def configure_deck_tools(mcp: FastMCP):
         card = await client.deck.get_card(board_id, stack_id, card_id)
         return card
 
-    @mcp.tool()
+    @mcp.tool(
+        title="List Deck Labels",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("deck:read")
     @instrument_tool
     async def deck_get_labels(ctx: Context, board_id: int) -> list[DeckLabel]:
@@ -186,7 +208,10 @@ def configure_deck_tools(mcp: FastMCP):
         board = await client.deck.get_board(board_id)
         return board.labels
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Deck Label",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("deck:read")
     @instrument_tool
     async def deck_get_label(ctx: Context, board_id: int, label_id: int) -> DeckLabel:
@@ -197,7 +222,10 @@ def configure_deck_tools(mcp: FastMCP):
 
     # Create/Update/Delete Tools
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Create Deck Board",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_create_board(
@@ -215,7 +243,10 @@ def configure_deck_tools(mcp: FastMCP):
 
     # Stack Tools
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Create Deck Stack",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_create_stack(
@@ -232,7 +263,10 @@ def configure_deck_tools(mcp: FastMCP):
         stack = await client.deck.create_stack(board_id, title, order)
         return CreateStackResponse(id=stack.id, title=stack.title, order=stack.order)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Update Deck Stack",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_update_stack(
@@ -259,7 +293,12 @@ def configure_deck_tools(mcp: FastMCP):
             board_id=board_id,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Delete Deck Stack",
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_delete_stack(
@@ -281,7 +320,10 @@ def configure_deck_tools(mcp: FastMCP):
         )
 
     # Card Tools
-    @mcp.tool()
+    @mcp.tool(
+        title="Create Deck Card",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_create_card(
@@ -316,7 +358,10 @@ def configure_deck_tools(mcp: FastMCP):
             stackId=card.stackId,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Update Deck Card",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_update_card(
@@ -370,7 +415,12 @@ def configure_deck_tools(mcp: FastMCP):
             board_id=board_id,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Delete Deck Card",
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_delete_card(
@@ -393,7 +443,10 @@ def configure_deck_tools(mcp: FastMCP):
             board_id=board_id,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Archive Deck Card",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_archive_card(
@@ -416,7 +469,10 @@ def configure_deck_tools(mcp: FastMCP):
             board_id=board_id,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Unarchive Deck Card",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_unarchive_card(
@@ -439,7 +495,10 @@ def configure_deck_tools(mcp: FastMCP):
             board_id=board_id,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Reorder/Move Deck Card",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_reorder_card(
@@ -472,7 +531,10 @@ def configure_deck_tools(mcp: FastMCP):
         )
 
     # Label Tools
-    @mcp.tool()
+    @mcp.tool(
+        title="Create Deck Label",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_create_label(
@@ -489,7 +551,10 @@ def configure_deck_tools(mcp: FastMCP):
         label = await client.deck.create_label(board_id, title, color)
         return CreateLabelResponse(id=label.id, title=label.title, color=label.color)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Update Deck Label",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_update_label(
@@ -516,7 +581,12 @@ def configure_deck_tools(mcp: FastMCP):
             board_id=board_id,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Delete Deck Label",
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_delete_label(
@@ -538,7 +608,10 @@ def configure_deck_tools(mcp: FastMCP):
         )
 
     # Card-Label Assignment Tools
-    @mcp.tool()
+    @mcp.tool(
+        title="Assign Label to Deck Card",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_assign_label_to_card(
@@ -562,7 +635,10 @@ def configure_deck_tools(mcp: FastMCP):
             board_id=board_id,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Remove Label from Deck Card",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_remove_label_from_card(
@@ -587,7 +663,10 @@ def configure_deck_tools(mcp: FastMCP):
         )
 
     # Card-User Assignment Tools
-    @mcp.tool()
+    @mcp.tool(
+        title="Assign User to Deck Card",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_assign_user_to_card(
@@ -611,7 +690,10 @@ def configure_deck_tools(mcp: FastMCP):
             board_id=board_id,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Unassign User from Deck Card",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("deck:write")
     @instrument_tool
     async def deck_unassign_user_from_card(

@@ -3,6 +3,7 @@ import logging
 from typing import Optional
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
@@ -19,7 +20,10 @@ logger = logging.getLogger(__name__)
 
 def configure_calendar_tools(mcp: FastMCP):
     # Calendar tools
-    @mcp.tool()
+    @mcp.tool(
+        title="List Calendars",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("calendar:read")
     @instrument_tool
     async def nc_calendar_list_calendars(ctx: Context) -> ListCalendarsResponse:
@@ -30,7 +34,10 @@ def configure_calendar_tools(mcp: FastMCP):
         calendars = [Calendar(**cal_data) for cal_data in calendars_data]
         return ListCalendarsResponse(calendars=calendars, total_count=len(calendars))
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Create Calendar Event",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("calendar:write")
     @instrument_tool
     async def nc_calendar_create_event(
@@ -107,7 +114,10 @@ def configure_calendar_tools(mcp: FastMCP):
 
         return await client.calendar.create_event(calendar_name, event_data)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="List Calendar Events",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("calendar:read")
     @instrument_tool
     async def nc_calendar_list_events(
@@ -210,7 +220,10 @@ def configure_calendar_tools(mcp: FastMCP):
 
             return events
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Calendar Event",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("calendar:read")
     @instrument_tool
     async def nc_calendar_get_event(
@@ -223,7 +236,10 @@ def configure_calendar_tools(mcp: FastMCP):
         event_data, etag = await client.calendar.get_event(calendar_name, event_uid)
         return event_data
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Update Calendar Event",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("calendar:write")
     @instrument_tool
     async def nc_calendar_update_event(
@@ -297,7 +313,12 @@ def configure_calendar_tools(mcp: FastMCP):
             calendar_name, event_uid, event_data, etag
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Delete Calendar Event",
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
+    )
     @require_scopes("calendar:write")
     @instrument_tool
     async def nc_calendar_delete_event(
@@ -309,7 +330,10 @@ def configure_calendar_tools(mcp: FastMCP):
         client = await get_client(ctx)
         return await client.calendar.delete_event(calendar_name, event_uid)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Create Meeting",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("calendar:write")
     @instrument_tool
     async def nc_calendar_create_meeting(
@@ -376,7 +400,10 @@ def configure_calendar_tools(mcp: FastMCP):
 
         return await client.calendar.create_event(calendar_name, event_data)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Upcoming Events",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("calendar:read")
     @instrument_tool
     async def nc_calendar_get_upcoming_events(
@@ -427,7 +454,10 @@ def configure_calendar_tools(mcp: FastMCP):
             all_events.sort(key=lambda x: x.get("start_datetime", ""))
             return all_events[:limit]
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Find Availability",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("calendar:read")
     @instrument_tool
     async def nc_calendar_find_availability(
@@ -508,7 +538,10 @@ def configure_calendar_tools(mcp: FastMCP):
             constraints=constraints,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Bulk Calendar Operations",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("calendar:write")
     @instrument_tool
     async def nc_calendar_bulk_operations(
@@ -758,7 +791,10 @@ def configure_calendar_tools(mcp: FastMCP):
                 "results": results,
             }
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Manage Calendar",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("calendar:write")
     @instrument_tool
     async def nc_calendar_manage_calendar(
@@ -828,7 +864,10 @@ def configure_calendar_tools(mcp: FastMCP):
 
     # ============= Todo/Task Tools =============
 
-    @mcp.tool()
+    @mcp.tool(
+        title="List Todo Tasks",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("todo:read", "calendar:read")
     @instrument_tool
     async def nc_calendar_list_todos(
@@ -874,7 +913,10 @@ def configure_calendar_tools(mcp: FastMCP):
             todos=todos, calendar_name=calendar_name, total_count=len(todos)
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Create Todo Task",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("todo:write", "calendar:read")
     @instrument_tool
     async def nc_calendar_create_todo(
@@ -918,7 +960,10 @@ def configure_calendar_tools(mcp: FastMCP):
 
         return await client.calendar.create_todo(calendar_name, todo_data)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Update Todo Task",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("todo:write", "calendar:read")
     @instrument_tool
     async def nc_calendar_update_todo(
@@ -979,7 +1024,12 @@ def configure_calendar_tools(mcp: FastMCP):
 
         return await client.calendar.update_todo(calendar_name, todo_uid, todo_data)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Delete Todo Task",
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
+    )
     @require_scopes("todo:write", "calendar:read")
     @instrument_tool
     async def nc_calendar_delete_todo(
@@ -1000,7 +1050,10 @@ def configure_calendar_tools(mcp: FastMCP):
         client = await get_client(ctx)
         return await client.calendar.delete_todo(calendar_name, todo_uid)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Search Todo Tasks",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("todo:read", "calendar:read")
     @instrument_tool
     async def nc_calendar_search_todos(

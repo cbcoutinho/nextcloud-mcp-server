@@ -1,6 +1,7 @@
 import logging
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
@@ -11,7 +12,10 @@ logger = logging.getLogger(__name__)
 
 def configure_tables_tools(mcp: FastMCP):
     # Tables tools
-    @mcp.tool()
+    @mcp.tool(
+        title="List Tables",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("tables:read")
     @instrument_tool
     async def nc_tables_list_tables(ctx: Context):
@@ -19,7 +23,10 @@ def configure_tables_tools(mcp: FastMCP):
         client = await get_client(ctx)
         return await client.tables.list_tables()
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Table Schema",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("tables:read")
     @instrument_tool
     async def nc_tables_get_schema(table_id: int, ctx: Context):
@@ -27,7 +34,10 @@ def configure_tables_tools(mcp: FastMCP):
         client = await get_client(ctx)
         return await client.tables.get_table_schema(table_id)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Read Table Rows",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("tables:read")
     @instrument_tool
     async def nc_tables_read_table(
@@ -40,7 +50,10 @@ def configure_tables_tools(mcp: FastMCP):
         client = await get_client(ctx)
         return await client.tables.get_table_rows(table_id, limit, offset)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Insert Table Row",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("tables:write")
     @instrument_tool
     async def nc_tables_insert_row(table_id: int, data: dict, ctx: Context):
@@ -51,7 +64,10 @@ def configure_tables_tools(mcp: FastMCP):
         client = await get_client(ctx)
         return await client.tables.create_row(table_id, data)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Update Table Row",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("tables:write")
     @instrument_tool
     async def nc_tables_update_row(row_id: int, data: dict, ctx: Context):
@@ -62,7 +78,12 @@ def configure_tables_tools(mcp: FastMCP):
         client = await get_client(ctx)
         return await client.tables.update_row(row_id, data)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Delete Table Row",
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
+    )
     @require_scopes("tables:write")
     @instrument_tool
     async def nc_tables_delete_row(row_id: int, ctx: Context):

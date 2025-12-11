@@ -1,6 +1,7 @@
 import logging
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
@@ -16,7 +17,13 @@ logger = logging.getLogger(__name__)
 
 def configure_webdav_tools(mcp: FastMCP):
     # WebDAV file system tools
-    @mcp.tool()
+    @mcp.tool(
+        title="List Files and Directories",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("files:read")
     @instrument_tool
     async def nc_webdav_list_directory(
@@ -50,7 +57,13 @@ def configure_webdav_tools(mcp: FastMCP):
             total_size=total_size,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Read File",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("files:read")
     @instrument_tool
     async def nc_webdav_read_file(path: str, ctx: Context):
@@ -117,7 +130,13 @@ def configure_webdav_tools(mcp: FastMCP):
             "encoding": "base64",
         }
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Write File",
+        annotations=ToolAnnotations(
+            idempotentHint=False,  # No etag/version control = not truly idempotent
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("files:write")
     @instrument_tool
     async def nc_webdav_write_file(
@@ -146,7 +165,13 @@ def configure_webdav_tools(mcp: FastMCP):
 
         return await client.webdav.write_file(path, content_bytes, content_type)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Create Directory",
+        annotations=ToolAnnotations(
+            idempotentHint=True,  # Creating existing dir returns 405 = same end state
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("files:write")
     @instrument_tool
     async def nc_webdav_create_directory(path: str, ctx: Context):
@@ -161,7 +186,14 @@ def configure_webdav_tools(mcp: FastMCP):
         client = await get_client(ctx)
         return await client.webdav.create_directory(path)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Delete File or Directory",
+        annotations=ToolAnnotations(
+            destructiveHint=True,  # Permanently deletes data
+            idempotentHint=True,  # Deleting deleted resource = same end state
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("files:write")
     @instrument_tool
     async def nc_webdav_delete_resource(path: str, ctx: Context):
@@ -176,7 +208,13 @@ def configure_webdav_tools(mcp: FastMCP):
         client = await get_client(ctx)
         return await client.webdav.delete_resource(path)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Move or Rename File",
+        annotations=ToolAnnotations(
+            idempotentHint=False,  # Moving changes source and dest
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("files:write")
     @instrument_tool
     async def nc_webdav_move_resource(
@@ -197,7 +235,13 @@ def configure_webdav_tools(mcp: FastMCP):
             source_path, destination_path, overwrite
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Copy File or Directory",
+        annotations=ToolAnnotations(
+            idempotentHint=False,  # Creates new resource each time
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("files:write")
     @instrument_tool
     async def nc_webdav_copy_resource(
@@ -218,7 +262,13 @@ def configure_webdav_tools(mcp: FastMCP):
             source_path, destination_path, overwrite
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Search Files",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("files:read")
     @instrument_tool
     async def nc_webdav_search_files(
@@ -335,7 +385,13 @@ def configure_webdav_tools(mcp: FastMCP):
             filters_applied=filters if filters else None,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Find Files by Name",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("files:read")
     @instrument_tool
     async def nc_webdav_find_by_name(
@@ -363,7 +419,13 @@ def configure_webdav_tools(mcp: FastMCP):
             filters_applied={"name_pattern": pattern},
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Find Files by Type",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("files:read")
     @instrument_tool
     async def nc_webdav_find_by_type(
@@ -391,7 +453,13 @@ def configure_webdav_tools(mcp: FastMCP):
             filters_applied={"mime_type": mime_type},
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="List Favorite Files",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("files:read")
     @instrument_tool
     async def nc_webdav_list_favorites(
