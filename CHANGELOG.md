@@ -1,3 +1,13 @@
+## v0.50.0 (2025-12-11)
+
+### Feat
+
+- add MCP tool annotations for enhanced UX
+
+### Fix
+
+- address PR review feedback
+
 ## v0.49.2 (2025-12-09)
 
 ### Fix
