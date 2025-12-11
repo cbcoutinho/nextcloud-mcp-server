@@ -5,7 +5,7 @@ import logging
 from httpx import HTTPStatusError, RequestError
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData
+from mcp.types import ErrorData, ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.client.news import NewsItemType
@@ -30,7 +30,10 @@ logger = logging.getLogger(__name__)
 def configure_news_tools(mcp: FastMCP):
     """Configure News app MCP tools."""
 
-    @mcp.tool()
+    @mcp.tool(
+        title="List News Folders",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("news:read")
     @instrument_tool
     async def nc_news_list_folders(ctx: Context) -> ListFoldersResponse:
@@ -52,7 +55,10 @@ def configure_news_tools(mcp: FastMCP):
                 )
             )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="List News Feeds",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("news:read")
     @instrument_tool
     async def nc_news_list_feeds(ctx: Context) -> ListFeedsResponse:
@@ -82,7 +88,10 @@ def configure_news_tools(mcp: FastMCP):
                 )
             )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="List News Items",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("news:read")
     @instrument_tool
     async def nc_news_list_items(
@@ -153,7 +162,10 @@ def configure_news_tools(mcp: FastMCP):
                 )
             )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get News Item",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("news:read")
     @instrument_tool
     async def nc_news_get_item(item_id: int, ctx: Context) -> GetItemResponse:
@@ -188,7 +200,10 @@ def configure_news_tools(mcp: FastMCP):
                 )
             )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Starred News Items",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("news:read")
     @instrument_tool
     async def nc_news_get_starred_items(
@@ -238,7 +253,10 @@ def configure_news_tools(mcp: FastMCP):
                 )
             )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Unread News Items",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("news:read")
     @instrument_tool
     async def nc_news_get_unread_items(
@@ -288,7 +306,10 @@ def configure_news_tools(mcp: FastMCP):
                 )
             )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get News Feed Health",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("news:read")
     @instrument_tool
     async def nc_news_get_feed_health(feed_id: int, ctx: Context) -> FeedHealthResponse:
@@ -332,7 +353,10 @@ def configure_news_tools(mcp: FastMCP):
                 )
             )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get News App Status",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("news:read")
     @instrument_tool
     async def nc_news_get_status(ctx: Context) -> GetStatusResponse:

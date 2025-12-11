@@ -3,7 +3,7 @@ import logging
 from httpx import HTTPStatusError, RequestError
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData
+from mcp.types import ErrorData, ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
@@ -85,7 +85,13 @@ def configure_notes_tools(mcp: FastMCP):
                     )
                 )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Create Note",
+        annotations=ToolAnnotations(
+            idempotentHint=False,  # Multiple calls create multiple notes
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("notes:write")
     @instrument_tool
     async def nc_notes_create_note(
@@ -132,7 +138,13 @@ def configure_notes_tools(mcp: FastMCP):
                     )
                 )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Update Note",
+        annotations=ToolAnnotations(
+            idempotentHint=False,  # Requires etag which changes = not idempotent
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("notes:write")
     @instrument_tool
     async def nc_notes_update_note(
@@ -198,7 +210,13 @@ def configure_notes_tools(mcp: FastMCP):
                     )
                 )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Append to Note",
+        annotations=ToolAnnotations(
+            idempotentHint=False,  # Each call adds content = not idempotent
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("notes:write")
     @instrument_tool
     async def nc_notes_append_content(
@@ -249,7 +267,13 @@ def configure_notes_tools(mcp: FastMCP):
                     )
                 )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Search Notes",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,  # Search doesn't modify data
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("notes:read")
     @instrument_tool
     async def nc_notes_search_notes(query: str, ctx: Context) -> SearchNotesResponse:
@@ -296,7 +320,13 @@ def configure_notes_tools(mcp: FastMCP):
                     )
                 )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Note",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,  # Read operation only
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("notes:read")
     @instrument_tool
     async def nc_notes_get_note(note_id: int, ctx: Context) -> Note:
@@ -326,7 +356,13 @@ def configure_notes_tools(mcp: FastMCP):
                     )
                 )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Note Attachment",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,  # Read operation only
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("notes:read")
     @instrument_tool
     async def nc_notes_get_attachment(
@@ -373,7 +409,14 @@ def configure_notes_tools(mcp: FastMCP):
                     )
                 )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Delete Note",
+        annotations=ToolAnnotations(
+            destructiveHint=True,  # Permanently deletes data
+            idempotentHint=True,  # Deleting deleted note = same end state
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("notes:write")
     @instrument_tool
     async def nc_notes_delete_note(note_id: int, ctx: Context) -> DeleteNoteResponse:

@@ -12,6 +12,7 @@ from mcp.types import (
     ModelPreferences,
     SamplingMessage,
     TextContent,
+    ToolAnnotations,
 )
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -34,7 +35,13 @@ logger = logging.getLogger(__name__)
 def configure_semantic_tools(mcp: FastMCP):
     """Configure semantic search tools for MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Semantic Search",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,  # Search doesn't modify data
+            openWorldHint=True,  # Queries external Nextcloud service
+        ),
+    )
     @require_scopes("semantic:read")
     @instrument_tool
     async def nc_semantic_search(
@@ -285,7 +292,13 @@ def configure_semantic_tools(mcp: FastMCP):
             logger.error(f"Search error: {e}", exc_info=True)
             raise McpError(ErrorData(code=-1, message=f"Search failed: {str(e)}"))
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Search with AI-Generated Answer",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,  # Search doesn't modify data
+            openWorldHint=False,  # Searches only indexed Nextcloud data
+        ),
+    )
     @require_scopes("semantic:read")
     @instrument_tool
     async def nc_semantic_search_answer(
@@ -623,7 +636,13 @@ def configure_semantic_tools(mcp: FastMCP):
                 success=True,
             )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Check Indexing Status",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,  # Only checks status
+            openWorldHint=True,
+        ),
+    )
     @require_scopes("semantic:read")
     @instrument_tool
     async def nc_get_vector_sync_status(ctx: Context) -> VectorSyncStatusResponse:

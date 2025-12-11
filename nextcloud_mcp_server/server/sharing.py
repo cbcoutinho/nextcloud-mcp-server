@@ -3,6 +3,7 @@
 import json
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
@@ -16,7 +17,10 @@ def configure_sharing_tools(mcp: FastMCP):
         mcp: FastMCP server instance
     """
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Create Share",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("sharing:write")
     @instrument_tool
     async def nc_share_create(
@@ -56,7 +60,12 @@ def configure_sharing_tools(mcp: FastMCP):
         )
         return json.dumps(share_data, indent=2)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Delete Share",
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
+    )
     @require_scopes("sharing:write")
     @instrument_tool
     async def nc_share_delete(share_id: int, ctx: Context) -> str:
@@ -76,7 +85,10 @@ def configure_sharing_tools(mcp: FastMCP):
             {"success": True, "message": f"Share {share_id} deleted"}, indent=2
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Share Details",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("sharing:write")
     @instrument_tool
     async def nc_share_get(share_id: int, ctx: Context) -> str:
@@ -95,7 +107,10 @@ def configure_sharing_tools(mcp: FastMCP):
         share_data = await client.sharing.get_share(share_id)
         return json.dumps(share_data, indent=2)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="List Shares",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
     @require_scopes("sharing:write")
     @instrument_tool
     async def nc_share_list(
@@ -117,7 +132,10 @@ def configure_sharing_tools(mcp: FastMCP):
         )
         return json.dumps(shares, indent=2)
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Update Share",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
     @require_scopes("sharing:write")
     @instrument_tool
     async def nc_share_update(share_id: int, permissions: int, ctx: Context) -> str:

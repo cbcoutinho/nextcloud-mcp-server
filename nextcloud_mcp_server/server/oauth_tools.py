@@ -15,6 +15,7 @@ import httpx
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
 from mcp.server.fastmcp import Context
+from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -684,10 +685,15 @@ def register_oauth_tools(mcp):
 
     @mcp.tool(
         name="provision_nextcloud_access",
+        title="Grant Server Access to Nextcloud",
         description=(
             "Provision offline access to Nextcloud resources. "
             "This is required before using Nextcloud tools. "
             "You'll need to complete an OAuth authorization in your browser."
+        ),
+        annotations=ToolAnnotations(
+            idempotentHint=False,  # Creates new OAuth session each time
+            openWorldHint=True,
         ),
     )
     @require_scopes("openid")
@@ -699,7 +705,13 @@ def register_oauth_tools(mcp):
 
     @mcp.tool(
         name="revoke_nextcloud_access",
+        title="Revoke Server Access to Nextcloud",
         description="Revoke offline access to Nextcloud resources.",
+        annotations=ToolAnnotations(
+            destructiveHint=True,  # Removes stored access tokens
+            idempotentHint=True,  # Revoking revoked access = same end state
+            openWorldHint=True,
+        ),
     )
     @require_scopes("openid")
     async def tool_revoke_access(
@@ -709,7 +721,12 @@ def register_oauth_tools(mcp):
 
     @mcp.tool(
         name="check_provisioning_status",
+        title="Check Provisioning Status",
         description="Check whether Nextcloud access is provisioned.",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,  # Only checks status, doesn't modify
+            openWorldHint=True,
+        ),
     )
     @require_scopes("openid")
     async def tool_check_status(
@@ -719,9 +736,14 @@ def register_oauth_tools(mcp):
 
     @mcp.tool(
         name="check_logged_in",
+        title="Check Server Login Status",
         description=(
             "Check if you are logged in to Nextcloud. "
             "If not logged in, this tool will prompt you to complete the login flow."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True,  # Checking status doesn't modify state
+            openWorldHint=True,
         ),
     )
     @require_scopes("openid")
