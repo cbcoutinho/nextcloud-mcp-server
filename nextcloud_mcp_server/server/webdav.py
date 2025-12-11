@@ -133,7 +133,7 @@ def configure_webdav_tools(mcp: FastMCP):
     @mcp.tool(
         title="Write File",
         annotations=ToolAnnotations(
-            idempotentHint=False,  # No etag/version control = not truly idempotent
+            idempotentHint=True,  # HTTP PUT without version control is idempotent
             openWorldHint=True,
         ),
     )

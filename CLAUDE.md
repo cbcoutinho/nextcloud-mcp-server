@@ -56,6 +56,68 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - Pass-through (default): Simple, stateless (ENABLE_TOKEN_EXCHANGE=false)
   - Token exchange (opt-in): RFC 8693 delegation (ENABLE_TOKEN_EXCHANGE=true)
 
+### MCP Tool Annotations (ADR-017)
+
+**All tools MUST include annotations** following these patterns:
+
+```python
+from mcp.types import ToolAnnotations
+
+# Read-only tools (list, search, get)
+@mcp.tool(
+    title="Human Readable Name",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        openWorldHint=True,  # Nextcloud is external to MCP server
+    ),
+)
+
+# Create operations
+@mcp.tool(
+    title="Create Resource",
+    annotations=ToolAnnotations(
+        idempotentHint=False,  # Creates new resources each time
+        openWorldHint=True,
+    ),
+)
+
+# Update operations (with etag/version control)
+@mcp.tool(
+    title="Update Resource",
+    annotations=ToolAnnotations(
+        idempotentHint=False,  # ETag changes = different inputs
+        openWorldHint=True,
+    ),
+)
+
+# Delete operations
+@mcp.tool(
+    title="Delete Resource",
+    annotations=ToolAnnotations(
+        destructiveHint=True,   # Permanently deletes data
+        idempotentHint=True,    # Same end state if called repeatedly
+        openWorldHint=True,
+    ),
+)
+
+# HTTP PUT without version control (special case)
+@mcp.tool(
+    title="Write File",
+    annotations=ToolAnnotations(
+        idempotentHint=True,  # Same content = same end state
+        openWorldHint=True,
+    ),
+)
+```
+
+**Key Principles**:
+- **Idempotency**: Same inputs → same result. ETags change after updates, making them non-idempotent
+- **Destructive**: Operations that permanently delete/overwrite data
+- **Open World**: All Nextcloud tools access external service (openWorldHint=True)
+- **Titles**: Use human-readable names, not snake_case function names
+
+**See**: `docs/ADR-017-mcp-tool-annotations.md` for detailed rationale and examples
+
 ### Project Structure
 - `nextcloud_mcp_server/client/` - HTTP clients for Nextcloud APIs
 - `nextcloud_mcp_server/server/` - MCP tool/resource definitions

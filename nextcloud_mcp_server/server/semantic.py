@@ -39,7 +39,7 @@ def configure_semantic_tools(mcp: FastMCP):
         title="Semantic Search",
         annotations=ToolAnnotations(
             readOnlyHint=True,  # Search doesn't modify data
-            openWorldHint=False,  # Searches only indexed Nextcloud data
+            openWorldHint=True,  # Queries external Nextcloud service
         ),
     )
     @require_scopes("semantic:read")

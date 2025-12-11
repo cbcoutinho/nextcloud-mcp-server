@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Implemented
 
 ## Context
 
@@ -67,10 +67,12 @@ async def tool(
 - **Deletes**: `delete_note(id=1)` → note deleted
   - Second call → 404 or success (same end state: note doesn't exist)
   - Note: May return different status code, but end state is identical
-- **Full resource PUT without version control**: Would be idempotent (we don't have these)
+- **Full resource PUT without version control**: `write_file(path="/test.txt", content="Hello")` → file has "Hello"
+  - Second call → file still has "Hello" (same end state)
+  - Example: `nc_webdav_write_file` uses HTTP PUT without etags/version control
 - **Set operations**: `set_property(id=1, value="X")` → property = X
   - Second call → property still = X (same result)
-  - Note: Nextcloud updates use etags, so not applicable
+  - Note: Nextcloud updates with etags use version control, so not idempotent
 
 **Read-Only** (always idempotent, never destructive):
 - All list, search, get operations
@@ -471,11 +473,23 @@ def test_notes_tools_have_annotations():
 - Add annotation guidelines to CLAUDE.md
 - Include examples in developer documentation
 
-## Open Questions
+## Resolved Questions
 
-1. **Icons**: Should we add visual icons for tools? (Requires design work)
-2. **Semantic search openWorldHint**: False (internal data only) or True (Nextcloud is external)?
+1. **WebDAV write_file idempotency** (Resolved: 2025-12-11)
+   - **Decision**: Mark as `idempotentHint=True`
+   - **Rationale**: Uses HTTP PUT without version control. Writing same content to same path repeatedly produces identical end state, which is the definition of idempotency in HTTP semantics.
+
+2. **Semantic search openWorldHint** (Resolved: 2025-12-11)
+   - **Decision**: Mark as `openWorldHint=True`
+   - **Rationale**: For consistency with other Nextcloud tools. While the data being searched is "indexed/internal", Nextcloud itself is external to the MCP server. The fact that data is indexed is an implementation detail, not a fundamental difference from other Nextcloud queries.
+
 3. **Read-only with side effects**: Should tools that log analytics still be readOnlyHint=true?
+   - **Decision**: Yes. Logging/analytics are non-visible side effects that don't change user-observable state. Read-only refers to data modifications that affect the user's content.
+
+## Future Considerations
+
+1. **Icons**: Visual icons for tools (requires design work, deferred to future ADR)
+2. **Parameter descriptions**: Add Pydantic `Field(description=...)` for better auto-completion (Phase 3, future work)
 
 ## References
 
@@ -487,6 +501,6 @@ def test_notes_tools_have_annotations():
 ## Decision Timeline
 
 - **Proposed**: 2025-12-11
-- **Reviewed**: TBD
-- **Accepted**: TBD
-- **Implemented**: TBD
+- **Reviewed**: 2025-12-11 (Self-review during implementation)
+- **Accepted**: 2025-12-11
+- **Implemented**: 2025-12-11 (Phase 1 & 2 complete)
