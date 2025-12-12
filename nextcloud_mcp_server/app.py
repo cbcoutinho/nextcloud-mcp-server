@@ -19,6 +19,7 @@ import httpx
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.middleware.authentication import AuthenticationMiddleware
@@ -1016,6 +1017,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             lifespan=oauth_lifespan,
             token_verifier=token_verifier,
             auth=auth_settings,
+            # Disable DNS rebinding protection for containerized deployments (k8s, Docker)
+            # MCP 1.23+ auto-enables this for localhost, breaking k8s service DNS names
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=False
+            ),
         )
     else:
         # ADR-016: Use Smithery lifespan for stateless mode, BasicAuth otherwise
@@ -1024,11 +1030,26 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # json_response=True returns plain JSON-RPC instead of SSE format,
             # required for Smithery scanner compatibility
             mcp = FastMCP(
-                "Nextcloud MCP", lifespan=app_lifespan_smithery, json_response=True
+                "Nextcloud MCP",
+                lifespan=app_lifespan_smithery,
+                json_response=True,
+                # Disable DNS rebinding protection for containerized deployments (k8s, Docker)
+                # MCP 1.23+ auto-enables this for localhost, breaking k8s service DNS names
+                transport_security=TransportSecuritySettings(
+                    enable_dns_rebinding_protection=False
+                ),
             )
         else:
             logger.info("Configuring MCP server for BasicAuth mode")
-            mcp = FastMCP("Nextcloud MCP", lifespan=app_lifespan_basic)
+            mcp = FastMCP(
+                "Nextcloud MCP",
+                lifespan=app_lifespan_basic,
+                # Disable DNS rebinding protection for containerized deployments (k8s, Docker)
+                # MCP 1.23+ auto-enables this for localhost, breaking k8s service DNS names
+                transport_security=TransportSecuritySettings(
+                    enable_dns_rebinding_protection=False
+                ),
+            )
 
     @mcp.resource("nc://capabilities")
     async def nc_get_capabilities():
