@@ -1,3 +1,10 @@
+## v0.50.1 (2025-12-12)
+
+### Fix
+
+- Disable DNS rebinding protection for containerized deployments
+- **deps**: update dependency mcp to >=1.23,<1.24
+
 ## v0.50.0 (2025-12-11)
 
 ### Feat
