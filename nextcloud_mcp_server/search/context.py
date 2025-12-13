@@ -524,6 +524,26 @@ async def _fetch_document_text(
                     f"Error fetching file content for {doc_id}: {e}", exc_info=True
                 )
                 return None
+        elif doc_type == "news_item":
+            # Fetch news item by ID
+            from nextcloud_mcp_server.vector.html_processor import html_to_markdown
+
+            item = await nc_client.news.get_item(int(doc_id))
+            # Reconstruct full content as indexed: title + source + URL + body
+            # This ensures chunk offsets align with indexed content structure
+            body_markdown = html_to_markdown(item.get("body", ""))
+            item_title = item.get("title", "")
+            item_url = item.get("url", "")
+            feed_title = item.get("feedTitle", "")
+
+            content_parts = [item_title]
+            if feed_title:
+                content_parts.append(f"Source: {feed_title}")
+            if item_url:
+                content_parts.append(f"URL: {item_url}")
+            content_parts.append("")  # Blank line
+            content_parts.append(body_markdown)
+            return "\n".join(content_parts)
         else:
             logger.warning(f"Unsupported doc_type for context expansion: {doc_type}")
             return None

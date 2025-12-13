@@ -203,6 +203,8 @@ function vizApp() {
                     return `${baseUrl}/apps/contacts`;
                 case 'deck':
                     return `${baseUrl}/apps/deck`;
+                case 'news_item':
+                    return `${baseUrl}/apps/news/item/${result.id}`;
                 default:
                     return `${baseUrl}`;
             }
