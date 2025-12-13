@@ -1,3 +1,9 @@
+## v0.52.0 (2025-12-13)
+
+### Feat
+
+- **vector**: add Deck card vector search with visualization support
+
 ## v0.51.0 (2025-12-13)
 
 ### Feat
