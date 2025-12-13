@@ -310,14 +310,16 @@ async def test_news_api_get_items_unread_only(mocker):
 
 
 async def test_news_api_get_item(mocker):
-    """Test that get_item fetches a single item by ID."""
-    item = create_mock_news_item(item_id=123, title="Single Item")
-    mock_response = create_mock_response(status_code=200, json_data=item)
+    """Test that get_item fetches all items and filters for the requested ID."""
+    # Create multiple items, only one should be returned
+    items = [
+        create_mock_news_item(item_id=100, title="Other Item 1"),
+        create_mock_news_item(item_id=123, title="Single Item"),
+        create_mock_news_item(item_id=200, title="Other Item 2"),
+    ]
 
     mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
-    mock_make_request = mocker.patch.object(
-        NewsClient, "_make_request", return_value=mock_response
-    )
+    mock_get_items = mocker.patch.object(NewsClient, "get_items", return_value=items)
 
     client = NewsClient(mock_client, "testuser")
     result = await client.get_item(item_id=123)
@@ -325,7 +327,24 @@ async def test_news_api_get_item(mocker):
     assert result["id"] == 123
     assert result["title"] == "Single Item"
 
-    mock_make_request.assert_called_once_with("GET", "/apps/news/api/v1-3/items/123")
+    # Verify it fetched all items with correct params
+    mock_get_items.assert_called_once_with(batch_size=-1, get_read=True)
+
+
+async def test_news_api_get_item_not_found(mocker):
+    """Test that get_item raises ValueError when item not found."""
+    items = [
+        create_mock_news_item(item_id=100, title="Item 1"),
+        create_mock_news_item(item_id=200, title="Item 2"),
+    ]
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mocker.patch.object(NewsClient, "get_items", return_value=items)
+
+    client = NewsClient(mock_client, "testuser")
+
+    with pytest.raises(ValueError, match="Item 999 not found"):
+        await client.get_item(item_id=999)
 
 
 async def test_news_api_get_updated_items(mocker):
