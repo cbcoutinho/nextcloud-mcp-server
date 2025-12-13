@@ -79,9 +79,11 @@ async def get_last_indexed_timestamp(user_id: str) -> int | None:
 
         if scroll_result[0]:
             timestamps = [
-                point.payload.get("indexed_at", 0) for point in scroll_result[0]
+                point.payload.get("indexed_at", 0)
+                for point in scroll_result[0]
+                if point.payload is not None
             ]
-            max_timestamp = max(timestamps)
+            max_timestamp = max(timestamps) if timestamps else 0
             logger.info(
                 f"Max indexed_at: {max_timestamp}, timestamps sample: {timestamps[:3]}"
             )
@@ -564,9 +566,23 @@ async def scan_user_documents(
         except Exception as e:
             logger.warning(f"Failed to scan news items for {user_id}: {e}")
 
+        # Scan Deck cards
+        deck_queued = 0
+        try:
+            deck_queued = await scan_deck_cards(
+                user_id=user_id,
+                send_stream=send_stream,
+                nc_client=nc_client,
+                initial_sync=initial_sync,
+                scan_id=scan_id,
+            )
+            queued += deck_queued
+        except Exception as e:
+            logger.warning(f"Failed to scan deck cards for {user_id}: {e}")
+
         if queued > 0:
             logger.info(
-                f"Sent {queued} documents ({file_queued} files, {news_queued} news items) for incremental sync: {user_id}"
+                f"Sent {queued} documents ({file_queued} files, {news_queued} news items, {deck_queued} deck cards) for incremental sync: {user_id}"
             )
         else:
             logger.debug(f"No changes detected for {user_id}")
@@ -749,6 +765,203 @@ async def scan_news_items(
                 else:
                     logger.debug(
                         f"News item {doc_id} missing for first time, starting grace period"
+                    )
+                    _potentially_deleted[doc_key] = current_time
+
+    return queued
+
+
+async def scan_deck_cards(
+    user_id: str,
+    send_stream: MemoryObjectSendStream[DocumentTask],
+    nc_client: NextcloudClient,
+    initial_sync: bool,
+    scan_id: int,
+) -> int:
+    """
+    Scan user's Deck cards and queue changed cards for indexing.
+
+    Indexes cards from all non-archived boards and stacks.
+
+    Args:
+        user_id: User to scan
+        send_stream: Stream to send changed documents to processors
+        nc_client: Authenticated Nextcloud client
+        initial_sync: If True, send all documents (first-time sync)
+        scan_id: Scan identifier for logging
+
+    Returns:
+        Number of cards queued for processing
+    """
+    settings = get_settings()
+    queued = 0
+
+    # Get indexed deck card IDs from Qdrant (for deletion tracking)
+    indexed_card_ids: set[str] = set()
+    if not initial_sync:
+        qdrant_client = await get_qdrant_client()
+        scroll_result = await qdrant_client.scroll(
+            collection_name=settings.get_collection_name(),
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    FieldCondition(key="doc_type", match=MatchValue(value="deck_card")),
+                ]
+            ),
+            with_payload=["doc_id"],
+            with_vectors=False,
+            limit=10000,
+        )
+        indexed_card_ids = {
+            point.payload["doc_id"]
+            for point in (scroll_result[0] or [])
+            if point.payload is not None
+        }
+        logger.debug(f"Found {len(indexed_card_ids)} indexed deck cards in Qdrant")
+
+    # Fetch all boards
+    boards = await nc_client.deck.get_boards()
+    logger.debug(f"[SCAN-{scan_id}] Found {len(boards)} deck boards")
+
+    card_count = 0
+    nextcloud_card_ids: set[str] = set()
+
+    # Iterate through boards
+    for board in boards:
+        # Skip archived boards
+        if board.archived:
+            continue
+
+        # Skip deleted boards (soft delete: deletedAt > 0)
+        if board.deletedAt > 0:
+            logger.debug(f"[SCAN-{scan_id}] Skipping deleted board {board.id}")
+            continue
+
+        # Get stacks for this board
+        stacks = await nc_client.deck.get_stacks(board.id)
+
+        # Iterate through stacks
+        for stack in stacks:
+            # Skip if stack has no cards
+            if not stack.cards:
+                continue
+
+            # Iterate through cards in stack
+            for card in stack.cards:
+                # Skip archived cards
+                if card.archived:
+                    continue
+
+                card_count += 1
+                doc_id = str(card.id)
+                nextcloud_card_ids.add(doc_id)
+
+                # Use lastModified timestamp if available
+                modified_at = card.lastModified or 0
+
+                if initial_sync:
+                    # Send everything on first sync - write placeholder first
+                    await write_placeholder_point(
+                        doc_id=doc_id,
+                        doc_type="deck_card",
+                        user_id=user_id,
+                        modified_at=modified_at,
+                    )
+                    await send_stream.send(
+                        DocumentTask(
+                            user_id=user_id,
+                            doc_id=doc_id,
+                            doc_type="deck_card",
+                            operation="index",
+                            modified_at=modified_at,
+                        )
+                    )
+                    queued += 1
+                else:
+                    # Incremental sync: check if card exists and compare modified_at
+                    doc_key = (user_id, doc_id)
+                    if doc_key in _potentially_deleted:
+                        logger.debug(
+                            f"Deck card {doc_id} reappeared, removing from deletion grace period"
+                        )
+                        del _potentially_deleted[doc_key]
+
+                    # Query Qdrant for existing entry
+                    existing_metadata = await query_document_metadata(
+                        doc_id=doc_id, doc_type="deck_card", user_id=user_id
+                    )
+
+                    needs_indexing = False
+                    if existing_metadata is None:
+                        needs_indexing = True
+                    elif existing_metadata.get("modified_at", 0) < modified_at:
+                        needs_indexing = True
+                    elif existing_metadata.get("is_placeholder", False):
+                        queued_at = existing_metadata.get("queued_at", 0)
+                        placeholder_age = time.time() - queued_at
+                        stale_threshold = settings.vector_sync_scan_interval * 5
+                        if placeholder_age > stale_threshold:
+                            logger.debug(
+                                f"Found stale placeholder for deck card {doc_id} "
+                                f"(age={placeholder_age:.1f}s), requeuing"
+                            )
+                            needs_indexing = True
+
+                    if needs_indexing:
+                        await write_placeholder_point(
+                            doc_id=doc_id,
+                            doc_type="deck_card",
+                            user_id=user_id,
+                            modified_at=modified_at,
+                        )
+                        await send_stream.send(
+                            DocumentTask(
+                                user_id=user_id,
+                                doc_id=doc_id,
+                                doc_type="deck_card",
+                                operation="index",
+                                modified_at=modified_at,
+                            )
+                        )
+                        queued += 1
+
+    logger.info(
+        f"[SCAN-{scan_id}] Found {card_count} deck cards (non-archived) for {user_id}"
+    )
+    record_vector_sync_scan(card_count)
+
+    # Check for deleted cards (not initial sync)
+    if not initial_sync:
+        grace_period = settings.vector_sync_scan_interval * 1.5
+        current_time = time.time()
+
+        for doc_id in indexed_card_ids:
+            if doc_id not in nextcloud_card_ids:
+                doc_key = (user_id, doc_id)
+
+                if doc_key in _potentially_deleted:
+                    first_missing_time = _potentially_deleted[doc_key]
+                    time_missing = current_time - first_missing_time
+
+                    if time_missing >= grace_period:
+                        logger.info(
+                            f"Deck card {doc_id} missing for {time_missing:.1f}s "
+                            f"(>{grace_period:.1f}s grace period), sending deletion"
+                        )
+                        await send_stream.send(
+                            DocumentTask(
+                                user_id=user_id,
+                                doc_id=doc_id,
+                                doc_type="deck_card",
+                                operation="delete",
+                                modified_at=0,
+                            )
+                        )
+                        queued += 1
+                        del _potentially_deleted[doc_key]
+                else:
+                    logger.debug(
+                        f"Deck card {doc_id} missing for first time, starting grace period"
                     )
                     _potentially_deleted[doc_key] = current_time
 

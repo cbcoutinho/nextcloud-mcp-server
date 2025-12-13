@@ -65,13 +65,13 @@ def configure_semantic_tools(mcp: FastMCP):
         database for optimal relevance. This provides the best of both semantic
         understanding and keyword precision.
 
-        Requires VECTOR_SYNC_ENABLED=true. Currently only "note" documents are
-        fully supported for indexing.
+        Requires VECTOR_SYNC_ENABLED=true. Supports indexing of notes, files,
+        news items, and deck cards.
 
         Args:
             query: Natural language or keyword search query
             limit: Maximum number of results to return (default: 10)
-            doc_types: Document types to search (e.g., ["note", "file"]). None = search all indexed types (default)
+            doc_types: Document types to search (e.g., ["note", "file", "deck_card", "news_item"]). None = search all indexed types (default)
             score_threshold: Minimum fusion score (0-1, default: 0.0)
             fusion: Fusion algorithm: "rrf" (Reciprocal Rank Fusion, default) or "dbsf" (Distribution-Based Score Fusion)
                    RRF: Good general-purpose fusion using reciprocal ranks

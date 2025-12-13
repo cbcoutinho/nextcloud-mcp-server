@@ -544,6 +544,46 @@ async def _fetch_document_text(
             content_parts.append("")  # Blank line
             content_parts.append(body_markdown)
             return "\n".join(content_parts)
+        elif doc_type == "deck_card":
+            # Fetch card from Deck API
+            # Note: Deck API requires board_id and stack_id, but we don't store those
+            # We need to search through boards to find the card (same as processor.py)
+            boards = await nc_client.deck.get_boards()
+            card_found = False
+
+            for board in boards:
+                if card_found:
+                    break
+
+                # Skip deleted boards (soft delete: deletedAt > 0)
+                if board.deletedAt > 0:
+                    logger.debug(
+                        f"Skipping deleted board {board.id} while searching for card {doc_id}"
+                    )
+                    continue
+
+                stacks = await nc_client.deck.get_stacks(board.id)
+
+                for stack in stacks:
+                    if card_found:
+                        break
+                    if stack.cards:
+                        for card in stack.cards:
+                            if card.id == int(doc_id):
+                                # Reconstruct full content as indexed: title + "\n\n" + description
+                                # This ensures chunk offsets align with indexed content structure
+                                content_parts = [card.title]
+                                if card.description:
+                                    content_parts.append(card.description)
+                                card_found = True
+                                logger.debug(
+                                    f"Found deck card {doc_id} in board {board.id}, stack {stack.id}"
+                                )
+                                return "\n\n".join(content_parts)
+
+            # Card not found (might be archived or deleted)
+            logger.warning(f"Deck card {doc_id} not found in any board/stack")
+            return None
         else:
             logger.warning(f"Unsupported doc_type for context expansion: {doc_type}")
             return None

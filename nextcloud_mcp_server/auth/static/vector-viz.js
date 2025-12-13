@@ -201,7 +201,12 @@ function vizApp() {
                     return `${baseUrl}/apps/calendar`;
                 case 'contact':
                     return `${baseUrl}/apps/contacts`;
-                case 'deck':
+                case 'deck_card':
+                    // URL pattern: /apps/deck/board/:boardId/card/:cardId
+                    if (result.metadata && result.metadata.board_id) {
+                        return `${baseUrl}/apps/deck/board/${result.metadata.board_id}/card/${result.id}`;
+                    }
+                    // Fallback if board_id not available
                     return `${baseUrl}/apps/deck`;
                 case 'news_item':
                     return `${baseUrl}/apps/news/item/${result.id}`;
