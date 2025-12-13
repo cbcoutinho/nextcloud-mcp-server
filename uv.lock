@@ -2044,7 +2044,7 @@ requires-dist = [
     { name = "pymupdf4llm", specifier = ">=0.2.2" },
     { name = "python-json-logger", specifier = ">=3.2.0" },
     { name = "pythonvcard4", specifier = ">=0.2.0" },
-    { name = "qdrant-client", specifier = ">=1.7.0" },
+    { name = "qdrant-client", git = "https://github.com/cbcoutinho/qdrant-client?branch=fix%2Ffusion-score-threshold" },
 ]
 
 [package.metadata.requires-dev]
@@ -3329,8 +3329,8 @@ wheels = [
 
 [[package]]
 name = "qdrant-client"
-version = "1.16.1"
-source = { registry = "https://pypi.org/simple" }
+version = "1.16.2"
+source = { git = "https://github.com/cbcoutinho/qdrant-client?branch=fix%2Ffusion-score-threshold#a62ec3098bca86af799147695a0e2b6fb759b3aa" }
 dependencies = [
     { name = "grpcio" },
     { name = "httpx", extra = ["http2"] },
@@ -3339,10 +3339,6 @@ dependencies = [
     { name = "protobuf" },
     { name = "pydantic" },
     { name = "urllib3" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/d9/68/fec3816a223c0b73b0e0036460be45c61ce2770ffb9197ac371e4f615ddc/qdrant_client-1.16.1.tar.gz", hash = "sha256:676c7c10fd4d4cb2981b8fcb32fd764f5f661b04b7334d024034d07212f971fd", size = 332130, upload-time = "2025-11-25T04:31:54.212Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/e2/60a20d04b0595c641516463168909c5bbcc192d3d6eacb637c1677109c6a/qdrant_client-1.16.1-py3-none-any.whl", hash = "sha256:1eefe89f66e8a468ba0de1680e28b441e69825cfb62e8fb2e457c15e24ce5e3b", size = 378481, upload-time = "2025-11-25T04:31:52.629Z" },
 ]
 
 [[package]]

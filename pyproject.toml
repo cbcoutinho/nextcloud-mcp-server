@@ -101,6 +101,7 @@ extend-select = ["I"]
 
 [tool.uv.sources]
 caldav = { git = "https://github.com/cbcoutinho/caldav", branch = "feature/httpx" }
+qdrant-client = { git = "https://github.com/cbcoutinho/qdrant-client", branch = "fix/fusion-score-threshold" }
 
 [build-system]
 requires = ["uv_build>=0.9.4,<0.10.0"]
