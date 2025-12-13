@@ -5,7 +5,7 @@ This document explains the architecture of the semantic search feature in the Ne
 > [!IMPORTANT]
 > **Status: Experimental**
 > - Disabled by default (`VECTOR_SYNC_ENABLED=false`)
-> - Currently supports **Notes app only** (multi-app architecture ready, additional apps planned)
+> - Currently supports **Notes, Files (PDFs), News items, and Deck cards**
 > - Requires additional infrastructure (Qdrant vector database + Ollama embedding service)
 > - RAG answer generation requires MCP client sampling support
 
@@ -39,9 +39,9 @@ Semantic search enables:
 
 ### Current Support
 
-- **Supported Apps**: Notes (fully implemented)
-- **Planned Apps**: Calendar events, Calendar tasks, Deck cards, Files (with text extraction), Contacts
-- **Architecture**: Multi-app plugin system ready, awaiting implementation
+- **Supported Apps**: Notes, Files (PDFs with text extraction), News items, Deck cards
+- **Planned Apps**: Calendar events, Calendar tasks, Contacts
+- **Architecture**: Multi-app plugin system ready for additional apps
 
 ## System Components
 

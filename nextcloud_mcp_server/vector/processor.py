@@ -6,6 +6,7 @@ Processes documents from stream: fetches content, generates embeddings, stores i
 import logging
 import time
 import uuid
+from typing import Any, cast
 
 import anyio
 from anyio.abc import TaskStatus
@@ -311,6 +312,64 @@ async def _index_document(
             file_path = None
             content_bytes = None
             content_type = None
+        elif doc_task.doc_type == "deck_card":
+            # Fetch card from Deck API
+            # Note: We need board_id and stack_id to fetch the card
+            # For now, we'll need to get all boards and find the card
+            # This is not optimal, but Deck API requires board_id and stack_id
+            boards = await nc_client.deck.get_boards()
+            card_found = False
+
+            for board in boards:
+                if card_found:
+                    break
+                # Skip deleted boards (soft delete: deletedAt > 0)
+                if board.deletedAt > 0:
+                    continue
+                stacks = await nc_client.deck.get_stacks(board.id)
+                for stack in stacks:
+                    if card_found:
+                        break
+                    if stack.cards:
+                        for card in stack.cards:
+                            if card.id == int(doc_task.doc_id):
+                                # Build content from card title and description
+                                content_parts = [card.title]
+                                if card.description:
+                                    content_parts.append(card.description)
+                                content = "\n\n".join(content_parts)
+                                title = card.title
+
+                                # Store deck-specific metadata
+                                file_metadata = {
+                                    "board_id": board.id,
+                                    "board_title": board.title,
+                                    "stack_id": stack.id,
+                                    "stack_title": stack.title,
+                                    "card_type": card.type,
+                                    "duedate": (
+                                        card.duedate.isoformat()
+                                        if card.duedate
+                                        else None
+                                    ),
+                                    "archived": card.archived,
+                                    "owner": (
+                                        card.owner.uid
+                                        if hasattr(card.owner, "uid")
+                                        else str(card.owner)
+                                    ),
+                                }
+                                etag = card.etag or ""
+                                file_path = None
+                                content_bytes = None
+                                content_type = None
+                                card_found = True
+                                break
+
+            if not card_found:
+                raise ValueError(
+                    f"Deck card {doc_task.doc_id} not found in any board/stack"
+                )
         elif doc_task.doc_type == "file":
             # For files, doc_id is now the numeric file ID, file_path comes from DocumentTask
             if not doc_task.file_path:
@@ -399,14 +458,16 @@ async def _index_document(
     # Assign page numbers to chunks if page boundaries are available (PDFs)
     page_boundaries = file_metadata.get("page_boundaries")
     if doc_task.doc_type == "file" and page_boundaries is not None:
+        # Type narrowing: page_boundaries is guaranteed to be list[dict] here
+        page_boundaries_list = cast(list[dict[str, Any]], page_boundaries)
         with trace_operation(
             "vector_sync.assign_page_numbers",
             attributes={
                 "vector_sync.chunk_count": len(chunks),
-                "vector_sync.page_count": len(page_boundaries),
+                "vector_sync.page_count": len(page_boundaries_list),
             },
         ):
-            assign_page_numbers(chunks, page_boundaries)
+            assign_page_numbers(chunks, page_boundaries_list)
 
             # Diagnostic: Verify page number assignment
             assigned_count = sum(1 for c in chunks if c.page_number is not None)
@@ -429,8 +490,8 @@ async def _index_document(
                     f"Text length: {len(content)}, "
                     f"Chunks: {len(chunks)}, "
                     f"Chunk offset range: [{chunks[0].start_offset}:{chunks[-1].end_offset}], "
-                    f"Page boundaries: {len(page_boundaries)} pages, "
-                    f"First boundary: {page_boundaries[0] if page_boundaries else 'None'}"
+                    f"Page boundaries: {len(page_boundaries_list)} pages, "
+                    f"First boundary: {page_boundaries_list[0] if page_boundaries_list else 'None'}"
                 )
 
     # Extract chunk texts for embedding
@@ -504,6 +565,9 @@ async def _index_document(
                 logger.warning("No page boundaries available, skipping highlighting")
                 return
 
+            # Type narrowing: page_boundaries is guaranteed to be list[dict] here
+            page_boundaries_list = cast(list[dict[str, Any]], page_boundaries)
+
             logger.info(
                 f"Batch generating highlighted page images for {len(chunk_data)} PDF chunks"
             )
@@ -514,7 +578,7 @@ async def _index_document(
                 lambda: PDFHighlighter.highlight_chunks_batch(
                     pdf_bytes=content_bytes,
                     chunks=chunk_data,
-                    page_boundaries=page_boundaries,
+                    page_boundaries=page_boundaries_list,
                     full_text=content,
                     color="yellow",
                     zoom=2.0,
@@ -621,6 +685,20 @@ async def _index_document(
                             "enclosure_mime": file_metadata.get("enclosure_mime"),
                         }
                         if doc_task.doc_type == "news_item"
+                        else {}
+                    ),
+                    # Deck card-specific metadata
+                    **(
+                        {
+                            "board_id": file_metadata.get("board_id"),
+                            "board_title": file_metadata.get("board_title"),
+                            "stack_id": file_metadata.get("stack_id"),
+                            "stack_title": file_metadata.get("stack_title"),
+                            "card_type": file_metadata.get("card_type"),
+                            "duedate": file_metadata.get("duedate"),
+                            "owner": file_metadata.get("owner"),
+                        }
+                        if doc_task.doc_type == "deck_card"
                         else {}
                     ),
                     # Highlighted page image (PDF only)

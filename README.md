@@ -63,7 +63,7 @@ http://127.0.0.1:8000/mcp
 
 - **90+ MCP Tools** - Comprehensive API coverage across 8 Nextcloud apps
 - **MCP Resources** - Structured data URIs for browsing Nextcloud data
-- **Semantic Search (Experimental)** - Optional vector-powered search for Notes (requires Qdrant + Ollama)
+- **Semantic Search (Experimental)** - Optional vector-powered search for Notes, Files, News items, and Deck cards (requires Qdrant + Ollama)
 - **Document Processing** - OCR and text extraction from PDFs, DOCX, images with progress notifications
 - **Flexible Deployment** - Docker, Kubernetes (Helm), VM, or local installation
 - **Production-Ready Auth** - Basic Auth with app passwords (recommended) or OAuth2/OIDC (experimental)
@@ -81,7 +81,7 @@ http://127.0.0.1:8000/mcp
 | **Cookbook** | 13 | Recipe management, URL import (schema.org) |
 | **Tables** | 5 | Row operations on Nextcloud Tables |
 | **Sharing** | 10+ | Create and manage shares |
-| **Semantic Search** | 2+ | Vector search for Notes (experimental, opt-in, requires infrastructure) |
+| **Semantic Search** | 2+ | Vector search for Notes, Files, News items, and Deck cards (experimental, opt-in, requires infrastructure) |
 
 Want to see another Nextcloud app supported? [Open an issue](https://github.com/cbcoutinho/nextcloud-mcp-server/issues) or contribute a pull request!
 
@@ -145,7 +145,7 @@ This enables natural language queries and helps discover related content across 
 ### Features
 - **[App Documentation](docs/)** - Notes, Calendar, Contacts, WebDAV, Deck, Cookbook, Tables
 - **[Document Processing](docs/configuration.md#document-processing)** - OCR and text extraction setup
-- **[Semantic Search Architecture](docs/semantic-search-architecture.md)** - Experimental vector search (Notes only, opt-in)
+- **[Semantic Search Architecture](docs/semantic-search-architecture.md)** - Experimental vector search (Notes, Files, News items, Deck cards; opt-in)
 - **[Vector Sync UI Guide](docs/user-guide/vector-sync-ui.md)** - Browser interface for semantic search visualization and testing
 
 ### Advanced Topics

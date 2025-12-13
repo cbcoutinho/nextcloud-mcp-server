@@ -298,6 +298,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                             "title": r.title,
                             "excerpt": r.excerpt,
                             "score": r.score,
+                            "metadata": r.metadata,
                         }
                         for r in search_results
                     ],
@@ -458,6 +459,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 ),  # Raw score from algorithm
                 "chunk_start_offset": r.chunk_start_offset,
                 "chunk_end_offset": r.chunk_end_offset,
+                "metadata": r.metadata,  # Include metadata (e.g., board_id for deck_card)
             }
             for r in search_results
         ]

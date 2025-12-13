@@ -219,6 +219,18 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
 
                 seen_chunks.add(chunk_key)
 
+                # Build metadata dict with common fields
+                metadata = {
+                    "chunk_index": result.payload.get("chunk_index"),
+                    "total_chunks": result.payload.get("total_chunks"),
+                    "search_method": f"bm25_hybrid_{self.fusion_name}",
+                }
+
+                # Add deck_card-specific metadata for frontend URL construction
+                if doc_type == "deck_card":
+                    if board_id := result.payload.get("board_id"):
+                        metadata["board_id"] = board_id
+
                 # Return unverified results (verification happens at output stage)
                 results.append(
                     SearchResult(
@@ -227,11 +239,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                         title=result.payload.get("title", "Untitled"),
                         excerpt=result.payload.get("excerpt", ""),
                         score=result.score,  # Fusion score (RRF or DBSF)
-                        metadata={
-                            "chunk_index": result.payload.get("chunk_index"),
-                            "total_chunks": result.payload.get("total_chunks"),
-                            "search_method": f"bm25_hybrid_{self.fusion_name}",
-                        },
+                        metadata=metadata,
                         chunk_start_offset=result.payload.get("chunk_start_offset"),
                         chunk_end_offset=result.payload.get("chunk_end_offset"),
                         page_number=result.payload.get("page_number"),
