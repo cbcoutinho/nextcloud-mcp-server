@@ -314,62 +314,95 @@ async def _index_document(
             content_type = None
         elif doc_task.doc_type == "deck_card":
             # Fetch card from Deck API
-            # Note: We need board_id and stack_id to fetch the card
-            # For now, we'll need to get all boards and find the card
-            # This is not optimal, but Deck API requires board_id and stack_id
-            boards = await nc_client.deck.get_boards()
-            card_found = False
+            # Use metadata from scanner if available (O(1) lookup)
+            # Otherwise fall back to iteration (legacy data)
+            card = None
+            board = None
+            stack = None
 
-            for board in boards:
-                if card_found:
-                    break
-                # Skip deleted boards (soft delete: deletedAt > 0)
-                if board.deletedAt > 0:
-                    continue
-                stacks = await nc_client.deck.get_stacks(board.id)
-                for stack in stacks:
+            if (
+                doc_task.metadata
+                and "board_id" in doc_task.metadata
+                and "stack_id" in doc_task.metadata
+            ):
+                # Fast path: Direct lookup with known board_id/stack_id
+                board_id = doc_task.metadata["board_id"]
+                stack_id = doc_task.metadata["stack_id"]
+                try:
+                    card = await nc_client.deck.get_card(
+                        board_id=int(board_id),
+                        stack_id=int(stack_id),
+                        card_id=int(doc_task.doc_id),
+                    )
+                    # Fetch board and stack info for metadata
+                    boards = await nc_client.deck.get_boards()
+                    for b in boards:
+                        if b.id == int(board_id):
+                            board = b
+                            stacks = await nc_client.deck.get_stacks(b.id)
+                            for s in stacks:
+                                if s.id == int(stack_id):
+                                    stack = s
+                                    break
+                            break
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to fetch card with metadata (board_id={board_id}, stack_id={stack_id}, card_id={doc_task.doc_id}): {e}, falling back to iteration"
+                    )
+
+            # Fallback: Iterate through all boards/stacks (for legacy data or if fast path failed)
+            if card is None:
+                boards = await nc_client.deck.get_boards()
+                card_found = False
+
+                for b in boards:
                     if card_found:
                         break
-                    if stack.cards:
-                        for card in stack.cards:
-                            if card.id == int(doc_task.doc_id):
-                                # Build content from card title and description
-                                content_parts = [card.title]
-                                if card.description:
-                                    content_parts.append(card.description)
-                                content = "\n\n".join(content_parts)
-                                title = card.title
+                    # Skip deleted boards (soft delete: deletedAt > 0)
+                    if b.deletedAt > 0:
+                        continue
+                    stacks = await nc_client.deck.get_stacks(b.id)
+                    for s in stacks:
+                        if card_found:
+                            break
+                        if s.cards:
+                            for c in s.cards:
+                                if c.id == int(doc_task.doc_id):
+                                    card = c
+                                    board = b
+                                    stack = s
+                                    card_found = True
+                                    break
 
-                                # Store deck-specific metadata
-                                file_metadata = {
-                                    "board_id": board.id,
-                                    "board_title": board.title,
-                                    "stack_id": stack.id,
-                                    "stack_title": stack.title,
-                                    "card_type": card.type,
-                                    "duedate": (
-                                        card.duedate.isoformat()
-                                        if card.duedate
-                                        else None
-                                    ),
-                                    "archived": card.archived,
-                                    "owner": (
-                                        card.owner.uid
-                                        if hasattr(card.owner, "uid")
-                                        else str(card.owner)
-                                    ),
-                                }
-                                etag = card.etag or ""
-                                file_path = None
-                                content_bytes = None
-                                content_type = None
-                                card_found = True
-                                break
+                if not card_found:
+                    raise ValueError(
+                        f"Deck card {doc_task.doc_id} not found in any board/stack"
+                    )
 
-            if not card_found:
-                raise ValueError(
-                    f"Deck card {doc_task.doc_id} not found in any board/stack"
-                )
+            # Build content from card title and description
+            content_parts = [card.title]
+            if card.description:
+                content_parts.append(card.description)
+            content = "\n\n".join(content_parts)
+            title = card.title
+
+            # Store deck-specific metadata
+            file_metadata = {
+                "board_id": board.id,
+                "board_title": board.title,
+                "stack_id": stack.id,
+                "stack_title": stack.title,
+                "card_type": card.type,
+                "duedate": (card.duedate.isoformat() if card.duedate else None),
+                "archived": card.archived,
+                "owner": (
+                    card.owner.uid if hasattr(card.owner, "uid") else str(card.owner)
+                ),
+            }
+            etag = card.etag or ""
+            file_path = None
+            content_bytes = None
+            content_type = None
         elif doc_task.doc_type == "file":
             # For files, doc_id is now the numeric file ID, file_path comes from DocumentTask
             if not doc_task.file_path:

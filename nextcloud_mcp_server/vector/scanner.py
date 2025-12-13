@@ -36,6 +36,9 @@ class DocumentTask:
     operation: str  # "index" or "delete"
     modified_at: int
     file_path: str | None = None  # File path for files (when doc_id is file_id)
+    metadata: dict[str, int | str] | None = (
+        None  # Additional metadata (e.g., board_id/stack_id for deck_card)
+    )
 
 
 # Track documents potentially deleted (grace period before actual deletion)
@@ -874,6 +877,7 @@ async def scan_deck_cards(
                             doc_type="deck_card",
                             operation="index",
                             modified_at=modified_at,
+                            metadata={"board_id": board.id, "stack_id": stack.id},
                         )
                     )
                     queued += 1
@@ -921,6 +925,7 @@ async def scan_deck_cards(
                                 doc_type="deck_card",
                                 operation="index",
                                 modified_at=modified_at,
+                                metadata={"board_id": board.id, "stack_id": stack.id},
                             )
                         )
                         queued += 1
