@@ -1,3 +1,9 @@
+## v0.50.2 (2025-12-13)
+
+### Fix
+
+- **news**: revert get_item() to use get_items() + filter
+
 ## v0.50.1 (2025-12-12)
 
 ### Fix
