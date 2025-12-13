@@ -209,6 +209,64 @@ async def _get_file_path_from_qdrant(
         return None
 
 
+async def _get_deck_metadata_from_qdrant(
+    user_id: str, card_id: int
+) -> dict[str, int] | None:
+    """Retrieve board_id and stack_id for a deck card from Qdrant payload.
+
+    Args:
+        user_id: User ID who owns the card
+        card_id: Card ID
+
+    Returns:
+        Dictionary with board_id and stack_id, or None if not found
+    """
+    try:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        from nextcloud_mcp_server.config import get_settings
+        from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+        qdrant_client = await get_qdrant_client()
+        settings = get_settings()
+
+        # Query for any chunk of this card (we just need metadata)
+        scroll_result = await qdrant_client.scroll(
+            collection_name=settings.get_collection_name(),
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    FieldCondition(key="doc_id", match=MatchValue(value=card_id)),
+                    FieldCondition(key="doc_type", match=MatchValue(value="deck_card")),
+                ]
+            ),
+            limit=1,
+            with_payload=["board_id", "stack_id"],
+            with_vectors=False,
+        )
+
+        if scroll_result[0]:
+            point = scroll_result[0][0]
+            board_id = point.payload.get("board_id")
+            stack_id = point.payload.get("stack_id")
+            if board_id is not None and stack_id is not None:
+                logger.debug(
+                    f"Retrieved deck metadata for card {card_id}: "
+                    f"board_id={board_id}, stack_id={stack_id}"
+                )
+                return {"board_id": int(board_id), "stack_id": int(stack_id)}
+
+        logger.debug(
+            f"Could not find deck metadata in Qdrant for card {card_id} "
+            f"(might be legacy data without board_id/stack_id)"
+        )
+        return None
+
+    except Exception as e:
+        logger.debug(f"Error querying Qdrant for deck metadata: {e}")
+        return None
+
+
 @dataclass
 class ChunkContext:
     """Expanded chunk with surrounding context and position markers.
@@ -394,7 +452,9 @@ async def get_chunk_with_context(
         logger.debug(f"Resolved file_id {doc_id} to file_path {file_path}")
 
     # Fetch full document text
-    full_text = await _fetch_document_text(nc_client, resolved_doc_id, doc_type)
+    full_text = await _fetch_document_text(
+        nc_client, resolved_doc_id, doc_type, user_id
+    )
     if full_text is None:
         logger.warning(
             f"Could not fetch document text for {doc_type} {doc_id}, "
@@ -453,7 +513,7 @@ async def get_chunk_with_context(
 
 
 async def _fetch_document_text(
-    nc_client: NextcloudClient, doc_id: str | int, doc_type: str
+    nc_client: NextcloudClient, doc_id: str | int, doc_type: str, user_id: str
 ) -> str | None:
     """Fetch full text content of a document.
 
@@ -546,44 +606,71 @@ async def _fetch_document_text(
             return "\n".join(content_parts)
         elif doc_type == "deck_card":
             # Fetch card from Deck API
-            # Note: Deck API requires board_id and stack_id, but we don't store those
-            # We need to search through boards to find the card (same as processor.py)
-            boards = await nc_client.deck.get_boards()
-            card_found = False
+            # Try to get board_id/stack_id from Qdrant metadata (O(1) lookup)
+            # Otherwise fall back to iteration (legacy data)
+            card = None
+            deck_metadata = await _get_deck_metadata_from_qdrant(user_id, int(doc_id))
 
-            for board in boards:
-                if card_found:
-                    break
-
-                # Skip deleted boards (soft delete: deletedAt > 0)
-                if board.deletedAt > 0:
-                    logger.debug(
-                        f"Skipping deleted board {board.id} while searching for card {doc_id}"
+            if deck_metadata:
+                # Fast path: Direct lookup with known board_id/stack_id
+                board_id = deck_metadata["board_id"]
+                stack_id = deck_metadata["stack_id"]
+                try:
+                    card = await nc_client.deck.get_card(
+                        board_id=board_id, stack_id=stack_id, card_id=int(doc_id)
                     )
-                    continue
+                    logger.debug(
+                        f"Retrieved deck card {doc_id} using metadata "
+                        f"(board_id={board_id}, stack_id={stack_id})"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to fetch card with metadata (board_id={board_id}, "
+                        f"stack_id={stack_id}, card_id={doc_id}): {e}, falling back to iteration"
+                    )
 
-                stacks = await nc_client.deck.get_stacks(board.id)
+            # Fallback: Iterate through all boards/stacks (for legacy data or if fast path failed)
+            if card is None:
+                boards = await nc_client.deck.get_boards()
+                card_found = False
 
-                for stack in stacks:
+                for board in boards:
                     if card_found:
                         break
-                    if stack.cards:
-                        for card in stack.cards:
-                            if card.id == int(doc_id):
-                                # Reconstruct full content as indexed: title + "\n\n" + description
-                                # This ensures chunk offsets align with indexed content structure
-                                content_parts = [card.title]
-                                if card.description:
-                                    content_parts.append(card.description)
-                                card_found = True
-                                logger.debug(
-                                    f"Found deck card {doc_id} in board {board.id}, stack {stack.id}"
-                                )
-                                return "\n\n".join(content_parts)
 
-            # Card not found (might be archived or deleted)
-            logger.warning(f"Deck card {doc_id} not found in any board/stack")
-            return None
+                    # Skip deleted boards (soft delete: deletedAt > 0)
+                    if board.deletedAt > 0:
+                        logger.debug(
+                            f"Skipping deleted board {board.id} while searching for card {doc_id}"
+                        )
+                        continue
+
+                    stacks = await nc_client.deck.get_stacks(board.id)
+
+                    for stack in stacks:
+                        if card_found:
+                            break
+                        if stack.cards:
+                            for c in stack.cards:
+                                if c.id == int(doc_id):
+                                    card = c
+                                    card_found = True
+                                    logger.debug(
+                                        f"Found deck card {doc_id} in board {board.id}, "
+                                        f"stack {stack.id} (fallback iteration)"
+                                    )
+                                    break
+
+                if not card_found:
+                    logger.warning(f"Deck card {doc_id} not found in any board/stack")
+                    return None
+
+            # Reconstruct full content as indexed: title + "\n\n" + description
+            # This ensures chunk offsets align with indexed content structure
+            content_parts = [card.title]
+            if card.description:
+                content_parts.append(card.description)
+            return "\n\n".join(content_parts)
         else:
             logger.warning(f"Unsupported doc_type for context expansion: {doc_type}")
             return None
