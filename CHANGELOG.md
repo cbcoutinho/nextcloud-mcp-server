@@ -1,3 +1,9 @@
+## v0.51.0 (2025-12-13)
+
+### Feat
+
+- **vector-viz**: add news_item support for links and chunk expansion
+
 ## v0.50.2 (2025-12-13)
 
 ### Fix
