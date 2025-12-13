@@ -12,7 +12,7 @@
 # - Per-session app password authentication
 # - Multi-user support via Smithery session config
 
-FROM docker.io/library/python:3.12-slim-trixie@sha256:590cad70271b6c1795c6a11fb5c110efca593adbd0d4883cd19c36df6a56467b
+FROM docker.io/library/python:3.12-slim-trixie@sha256:fa48eefe2146644c2308b909d6bb7651a768178f84fc9550dcd495e4d6d84d01
 
 WORKDIR /app
 
