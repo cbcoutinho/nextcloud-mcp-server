@@ -1,3 +1,9 @@
+## v0.52.1 (2025-12-13)
+
+### Perf
+
+- **deck**: optimize card lookup by storing board_id/stack_id in metadata
+
 ## v0.52.0 (2025-12-13)
 
 ### Feat
