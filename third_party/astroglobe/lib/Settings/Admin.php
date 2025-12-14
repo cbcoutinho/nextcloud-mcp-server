@@ -12,10 +12,10 @@ use OCP\IConfig;
 use OCP\Settings\ISettings;
 
 /**
- * Admin settings panel for MCP Server.
+ * Admin settings panel for Astroglobe.
  *
- * Displays server status, vector sync metrics, configuration,
- * and provides administrative controls.
+ * Displays semantic search service status, indexing metrics,
+ * configuration, and provides administrative controls.
  */
 class Admin implements ISettings {
 	private $client;
@@ -89,7 +89,7 @@ class Admin implements ISettings {
 	 * @return string The section ID
 	 */
 	public function getSection(): string {
-		return 'mcp';
+		return 'astroglobe';
 	}
 
 	/**

@@ -2,12 +2,12 @@
 /**
  * OAuth authorization required template.
  *
- * Shown when user needs to authorize Nextcloud to access MCP server.
+ * Shown when user needs to authorize Astroglobe for semantic search.
  * Implements OAuth 2.0 Authorization Code flow with PKCE.
  *
  * @var array $_ Template parameters
  * @var string $_['oauth_url'] URL to initiate OAuth flow
- * @var string $_['server_url'] MCP server base URL
+ * @var string $_['server_url'] Astroglobe service URL
  * @var bool $_['has_expired'] Whether token exists but is expired
  * @var string|null $_['error_message'] Optional error message to display
  */
@@ -19,7 +19,7 @@ Util::addStyle('astroglobe', 'astroglobe-settings');
 
 <div id="mcp-personal-settings">
 	<div class="mcp-settings-info">
-		<p><?php p($l->t('Configure your personal MCP Server integration.')); ?></p>
+		<p><?php p($l->t('AI-powered semantic search across your Nextcloud content.')); ?></p>
 	</div>
 
 	<?php if (isset($_['error_message'])): ?>
@@ -34,17 +34,17 @@ Util::addStyle('astroglobe', 'astroglobe-settings');
 
 	<div class="mcp-status-card">
 		<h3>
-			<span class="icon icon-password"></span>
-			<?php p($l->t('Authorization Required')); ?>
+			<span class="icon icon-search"></span>
+			<?php p($l->t('Enable Semantic Search')); ?>
 		</h3>
 
 		<?php if (isset($_['has_expired']) && $_['has_expired']): ?>
 			<p>
-				<?php p($l->t('Your MCP server access has expired. Please sign in again to continue using MCP features.')); ?>
+				<?php p($l->t('Your authorization has expired. Please sign in again to continue using semantic search.')); ?>
 			</p>
 		<?php else: ?>
 			<p>
-				<?php p($l->t('To access MCP server features, you need to authorize Nextcloud to connect to your MCP server on your behalf.')); ?>
+				<?php p($l->t('To search your content by meaning, Astroglobe needs permission to index your Nextcloud data.')); ?>
 			</p>
 		<?php endif; ?>
 
@@ -53,34 +53,34 @@ Util::addStyle('astroglobe', 'astroglobe-settings');
 		</p>
 
 		<ol class="mcp-help-text">
-			<li><?php p($l->t('You will be redirected to your identity provider')); ?></li>
-			<li><?php p($l->t('Sign in with your credentials')); ?></li>
-			<li><?php p($l->t('Authorize Nextcloud to access the MCP server')); ?></li>
-			<li><?php p($l->t('You will be redirected back to this page')); ?></li>
+			<li><?php p($l->t('Sign in to confirm your identity')); ?></li>
+			<li><?php p($l->t('Grant permission to index your content')); ?></li>
+			<li><?php p($l->t('Your content will be indexed for semantic search')); ?></li>
+			<li><?php p($l->t('Start searching with natural language')); ?></li>
 		</ol>
 
-		<h4><?php p($l->t('Permissions Requested')); ?></h4>
+		<h4><?php p($l->t('Content to be Indexed')); ?></h4>
 
 		<ul class="mcp-feature-list">
 			<li>
-				<span class="icon icon-info"></span>
-				<div>
-					<strong><?php p($l->t('Profile Information')); ?></strong>
-					<p><?php p($l->t('Basic profile information (user ID, email) for identification')); ?></p>
-				</div>
-			</li>
-			<li>
 				<span class="icon icon-files"></span>
 				<div>
-					<strong><?php p($l->t('Read Access')); ?></strong>
-					<p><?php p($l->t('View your Notes, Calendar, Files, and other Nextcloud data')); ?></p>
+					<strong><?php p($l->t('Notes & Files')); ?></strong>
+					<p><?php p($l->t('Your notes and documents will be searchable by meaning')); ?></p>
 				</div>
 			</li>
 			<li>
-				<span class="icon icon-rename"></span>
+				<span class="icon icon-calendar"></span>
 				<div>
-					<strong><?php p($l->t('Write Access')); ?></strong>
-					<p><?php p($l->t('Create and modify Notes, Calendar events, Files, and other Nextcloud data')); ?></p>
+					<strong><?php p($l->t('Calendar & Tasks')); ?></strong>
+					<p><?php p($l->t('Find events and tasks with natural language queries')); ?></p>
+				</div>
+			</li>
+			<li>
+				<span class="icon icon-category-dashboard"></span>
+				<div>
+					<strong><?php p($l->t('Deck Cards')); ?></strong>
+					<p><?php p($l->t('Search across your Deck boards and cards')); ?></p>
 				</div>
 			</li>
 		</ul>
@@ -91,47 +91,35 @@ Util::addStyle('astroglobe', 'astroglobe-settings');
 				<?php if (isset($_['has_expired']) && $_['has_expired']): ?>
 					<?php p($l->t('Sign In Again')); ?>
 				<?php else: ?>
-					<?php p($l->t('Authorize Access')); ?>
+					<?php p($l->t('Enable Semantic Search')); ?>
 				<?php endif; ?>
 			</a>
 		</div>
 
 		<p class="mcp-help-text" style="margin-top: 16px;">
-			<?php p($l->t('By authorizing, you allow Nextcloud to access the MCP server at:')); ?>
-			<br>
-			<code><?php p($_['server_url']); ?></code>
-		</p>
-
-		<p class="mcp-help-text">
-			<?php p($l->t('You can revoke this access at any time from this settings page.')); ?>
+			<?php p($l->t('You can disable indexing at any time from this settings page.')); ?>
 		</p>
 	</div>
 
 	<div class="mcp-status-card">
 		<h3>
 			<span class="icon icon-info"></span>
-			<?php p($l->t('About MCP Server')); ?>
+			<?php p($l->t('About Astroglobe')); ?>
 		</h3>
 
 		<p>
-			<?php p($l->t('The Model Context Protocol (MCP) server provides AI assistants with access to your Nextcloud data.')); ?>
+			<?php p($l->t('Astroglobe enables semantic search - finding content by meaning rather than exact keywords. Ask questions like "meeting notes from last week" or "recipes with chicken" to find relevant documents.')); ?>
 		</p>
 
 		<p class="mcp-help-text">
-			<?php p($l->t('Once authorized, you can use AI tools like Claude Desktop to interact with your Notes, Calendar, Files, and more through natural language.')); ?>
+			<?php p($l->t('Your content is processed to understand its meaning, enabling powerful natural language search across all your Nextcloud data.')); ?>
 		</p>
 
 		<ul class="mcp-links">
 			<li>
 				<a href="https://github.com/cbcoutinho/nextcloud-mcp-server" target="_blank" rel="noopener noreferrer">
 					<span class="icon icon-external"></span>
-					<?php p($l->t('MCP Server Documentation')); ?>
-				</a>
-			</li>
-			<li>
-				<a href="https://modelcontextprotocol.io" target="_blank" rel="noopener noreferrer">
-					<span class="icon icon-external"></span>
-					<?php p($l->t('Learn about Model Context Protocol')); ?>
+					<?php p($l->t('Learn More')); ?>
 				</a>
 			</li>
 		</ul>

@@ -14,12 +14,12 @@ use OCP\IUserSession;
 use OCP\Settings\ISettings;
 
 /**
- * Personal settings panel for MCP Server.
+ * Personal settings panel for Astroglobe.
  *
- * Displays user session information, background access status,
- * and provides controls for managing MCP server integration.
+ * Displays semantic search status, background indexing access,
+ * and provides controls for managing content indexing.
  *
- * Uses OAuth PKCE flow - each user must authorize access to MCP server.
+ * Uses OAuth PKCE flow - each user must authorize background access.
  */
 class Personal implements ISettings {
 	private $client;
@@ -146,7 +146,7 @@ class Personal implements ISettings {
 	 * @return string The section ID
 	 */
 	public function getSection(): string {
-		return 'mcp';
+		return 'astroglobe';
 	}
 
 	/**

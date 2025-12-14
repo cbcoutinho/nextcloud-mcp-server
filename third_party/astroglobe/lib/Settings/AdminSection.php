@@ -9,9 +9,9 @@ use OCP\IURLGenerator;
 use OCP\Settings\IIconSection;
 
 /**
- * Admin settings section for MCP Server.
+ * Admin settings section for Astroglobe.
  *
- * Creates a dedicated section in admin settings for MCP-related configuration.
+ * Creates a dedicated section in admin settings for semantic search administration.
  */
 class AdminSection implements IIconSection {
 	private $l;
@@ -26,14 +26,14 @@ class AdminSection implements IIconSection {
 	 * @return string The section ID
 	 */
 	public function getID(): string {
-		return 'mcp';
+		return 'astroglobe';
 	}
 
 	/**
 	 * @return string The translated section name
 	 */
 	public function getName(): string {
-		return $this->l->t('MCP Server');
+		return $this->l->t('Astroglobe');
 	}
 
 	/**

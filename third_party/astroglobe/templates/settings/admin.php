@@ -1,14 +1,14 @@
 <?php
 /**
- * Admin settings template for MCP Server UI.
+ * Admin settings template for Astroglobe.
  *
- * Displays server status, vector sync metrics, configuration,
+ * Displays semantic search service status, indexing metrics, configuration,
  * and provides administrative controls.
  *
  * @var array $_ Template parameters
  * @var array $_['serverStatus'] Server status from API
  * @var array $_['vectorSyncStatus'] Vector sync metrics from API
- * @var string $_['serverUrl'] Configured MCP server URL
+ * @var string $_['serverUrl'] Configured Astroglobe service URL
  * @var bool $_['apiKeyConfigured'] Whether API key is set in config.php
  * @var bool $_['vectorSyncEnabled'] Whether vector sync is enabled
  */
@@ -18,10 +18,10 @@ style('astroglobe', 'astroglobe-settings');
 ?>
 
 <div id="mcp-admin-settings" class="section">
-	<h2><?php p($l->t('MCP Server Administration')); ?></h2>
+	<h2><?php p($l->t('Astroglobe Administration')); ?></h2>
 
 	<div class="mcp-settings-info">
-		<p><?php p($l->t('Monitor and configure the Nextcloud MCP (Model Context Protocol) Server.')); ?></p>
+		<p><?php p($l->t('Monitor and configure the semantic search service for your Nextcloud instance.')); ?></p>
 	</div>
 
 	<!-- Configuration Status -->
@@ -29,7 +29,7 @@ style('astroglobe', 'astroglobe-settings');
 		<h3><?php p($l->t('Configuration')); ?></h3>
 		<table class="mcp-info-table">
 			<tr>
-				<td><strong><?php p($l->t('Server URL')); ?></strong></td>
+				<td><strong><?php p($l->t('Service URL')); ?></strong></td>
 				<td>
 					<?php if (!empty($_['serverUrl'])): ?>
 						<code><?php p($_['serverUrl']); ?></code>
@@ -63,7 +63,7 @@ style('astroglobe', 'astroglobe-settings');
 				<pre><code>'mcp_server_url' => 'http://localhost:8000',
 'mcp_server_api_key' => 'your-secret-api-key',</code></pre>
 				<p class="mcp-help-text">
-					<a href="https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/ADR-018-nextcloud-php-app-for-settings-ui.md" target="_blank">
+					<a href="https://github.com/cbcoutinho/nextcloud-mcp-server" target="_blank">
 						<?php p($l->t('See documentation for details')); ?>
 					</a>
 				</p>
@@ -71,21 +71,13 @@ style('astroglobe', 'astroglobe-settings');
 		<?php endif; ?>
 	</div>
 
-	<!-- Server Status -->
+	<!-- Service Status -->
 	<div class="mcp-status-card">
-		<h3><?php p($l->t('Server Status')); ?></h3>
+		<h3><?php p($l->t('Service Status')); ?></h3>
 		<table class="mcp-info-table">
 			<tr>
 				<td><strong><?php p($l->t('Version')); ?></strong></td>
 				<td><?php p($_['serverStatus']['version'] ?? 'Unknown'); ?></td>
-			</tr>
-			<tr>
-				<td><strong><?php p($l->t('Authentication Mode')); ?></strong></td>
-				<td><code><?php p($_['serverStatus']['auth_mode'] ?? 'Unknown'); ?></code></td>
-			</tr>
-			<tr>
-				<td><strong><?php p($l->t('Management API Version')); ?></strong></td>
-				<td><?php p($_['serverStatus']['management_api_version'] ?? 'Unknown'); ?></td>
 			</tr>
 			<tr>
 				<td><strong><?php p($l->t('Uptime')); ?></strong></td>
@@ -103,7 +95,7 @@ style('astroglobe', 'astroglobe-settings');
 				</td>
 			</tr>
 			<tr>
-				<td><strong><?php p($l->t('Vector Sync')); ?></strong></td>
+				<td><strong><?php p($l->t('Semantic Search')); ?></strong></td>
 				<td>
 					<?php if ($_['vectorSyncEnabled']): ?>
 						<span class="badge badge-success">
@@ -120,10 +112,10 @@ style('astroglobe', 'astroglobe-settings');
 		</table>
 	</div>
 
-	<!-- Vector Sync Metrics -->
+	<!-- Indexing Metrics -->
 	<?php if ($_['vectorSyncEnabled'] && !isset($_['vectorSyncStatus']['error'])): ?>
 		<div class="mcp-status-card" id="vector-sync-metrics">
-			<h3><?php p($l->t('Vector Sync Metrics')); ?></h3>
+			<h3><?php p($l->t('Indexing Metrics')); ?></h3>
 			<table class="mcp-info-table">
 				<tr>
 					<td><strong><?php p($l->t('Status')); ?></strong></td>
@@ -173,34 +165,39 @@ style('astroglobe', 'astroglobe-settings');
 		</div>
 	<?php elseif ($_['vectorSyncEnabled']): ?>
 		<div class="mcp-status-card mcp-error">
-			<h3><?php p($l->t('Vector Sync Metrics')); ?></h3>
+			<h3><?php p($l->t('Indexing Metrics')); ?></h3>
 			<div class="notecard notecard-error">
-				<p><?php p($l->t('Failed to retrieve vector sync status:')); ?></p>
+				<p><?php p($l->t('Failed to retrieve indexing status:')); ?></p>
 				<p><code><?php p($_['vectorSyncStatus']['error'] ?? 'Unknown error'); ?></code></p>
 			</div>
 		</div>
 	<?php endif; ?>
 
-	<!-- Additional Features -->
+	<!-- Capabilities -->
 	<div class="mcp-status-card">
-		<h3><?php p($l->t('Features')); ?></h3>
+		<h3><?php p($l->t('Capabilities')); ?></h3>
 		<ul class="mcp-feature-list">
 			<li>
-				<span class="icon icon-user"></span>
-				<strong><?php p($l->t('User Settings')); ?></strong>
-				<p><?php p($l->t('Users can manage their MCP server connections in Personal Settings.')); ?></p>
+				<span class="icon icon-search"></span>
+				<strong><?php p($l->t('Semantic Search')); ?></strong>
+				<p><?php p($l->t('Search by meaning across Notes, Files, Calendar, and Deck using natural language queries.')); ?></p>
 			</li>
 			<?php if ($_['vectorSyncEnabled']): ?>
 				<li>
-					<span class="icon icon-search"></span>
+					<span class="icon icon-category-monitoring"></span>
 					<strong><?php p($l->t('Vector Visualization')); ?></strong>
-					<p><?php p($l->t('Interactive semantic search interface with 2D PCA visualization.')); ?></p>
+					<p><?php p($l->t('Explore content relationships in an interactive 2D visualization.')); ?></p>
 				</li>
 			<?php endif; ?>
 			<li>
-				<span class="icon icon-link"></span>
-				<strong><?php p($l->t('MCP Protocol')); ?></strong>
-				<p><?php p($l->t('Full support for MCP sampling, elicitation, and bidirectional streaming.')); ?></p>
+				<span class="icon icon-user"></span>
+				<strong><?php p($l->t('Per-User Indexing')); ?></strong>
+				<p><?php p($l->t('Users control their own content indexing via Personal Settings.')); ?></p>
+			</li>
+			<li>
+				<span class="icon icon-toggle"></span>
+				<strong><?php p($l->t('Hybrid Search')); ?></strong>
+				<p><?php p($l->t('Combines semantic understanding with keyword matching for optimal results.')); ?></p>
 			</li>
 		</ul>
 	</div>
@@ -209,11 +206,6 @@ style('astroglobe', 'astroglobe-settings');
 	<div class="mcp-status-card">
 		<h3><?php p($l->t('Documentation')); ?></h3>
 		<ul class="mcp-links">
-			<li>
-				<a href="https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/ADR-018-nextcloud-php-app-for-settings-ui.md" target="_blank">
-					<?php p($l->t('Architecture Decision Record (ADR-018)')); ?>
-				</a>
-			</li>
 			<li>
 				<a href="https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/configuration.md" target="_blank">
 					<?php p($l->t('Configuration Guide')); ?>

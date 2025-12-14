@@ -3,25 +3,31 @@
 	  xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
 	<id>astroglobe</id>
 	<name>Astroglobe</name>
-	<summary>Manage your Nextcloud MCP Server</summary>
+	<summary>AI-powered semantic search across your Nextcloud</summary>
 	<description><![CDATA[
-# MCP Server Management UI
+# Astroglobe - Semantic Search for Nextcloud
 
-This app provides a native Nextcloud interface for managing your MCP (Model Context Protocol) Server.
+Find your content by meaning, not just keywords. Astroglobe brings AI-powered semantic search to your Nextcloud, helping you discover documents, notes, calendar events, and files through natural language.
 
 ## Features
 
-- **User Settings**: View session information, manage background access permissions
-- **Admin Settings**: Monitor server status, vector sync metrics
-- **Vector Visualization**: Interactive semantic search with 2D PCA visualization
-- **Webhook Management**: Configure and enable webhook presets (admin only)
+- **Semantic Search**: Search across Notes, Files, Calendar, Deck, and more using natural language queries
+- **Unified Search Integration**: Results appear in Nextcloud's global search bar alongside traditional results
+- **Background Indexing**: Your content is automatically indexed for instant semantic search
+- **Vector Visualization**: Explore your content in an interactive 2D visualization showing semantic relationships
+- **Hybrid Search**: Combines semantic understanding with keyword matching for best results
 
-## Requirements
+## How It Works
 
-- Nextcloud MCP Server running in OAuth mode with Management API enabled
-- Configure `mcp_server_url` and `mcp_server_api_key` in config.php
+Astroglobe connects to a semantic search service that understands the meaning of your content. Instead of exact keyword matches, you can search for concepts - ask "meeting notes from last week" or "recipes with chicken" and find relevant documents even if they don't contain those exact words.
 
-See [documentation](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/ADR-018-nextcloud-php-app-for-settings-ui.md) for details.
+## Getting Started
+
+1. Install and enable the app
+2. Grant background access to allow indexing of your content
+3. Start searching with natural language in Nextcloud's search bar
+
+See [documentation](https://github.com/cbcoutinho/nextcloud-mcp-server) for configuration details.
 	]]></description>
 	<version>0.1.0</version>
 	<licence>agpl</licence>

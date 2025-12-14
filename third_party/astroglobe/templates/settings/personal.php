@@ -1,9 +1,9 @@
 <?php
 /**
- * Personal settings template for MCP Server UI.
+ * Personal settings template for Astroglobe.
  *
- * Displays user session information, background access status,
- * and provides controls for managing MCP server integration.
+ * Displays semantic search status, background indexing access,
+ * and provides controls for managing content indexing.
  *
  * @var array $_ Template parameters
  * @var string $_['userId'] Current user ID
@@ -11,7 +11,7 @@
  * @var array $_['session'] User session details from API
  * @var bool $_['vectorSyncEnabled'] Whether vector sync is enabled
  * @var bool $_['backgroundAccessGranted'] Whether user has granted background access
- * @var string $_['serverUrl'] MCP server URL
+ * @var string $_['serverUrl'] Astroglobe service URL
  */
 
 // Get URL generator from Nextcloud's service container
@@ -22,50 +22,42 @@ style('astroglobe', 'astroglobe-settings');
 ?>
 
 <div id="mcp-personal-settings" class="section">
-	<h2><?php p($l->t('MCP Server')); ?></h2>
+	<h2><?php p($l->t('Astroglobe')); ?></h2>
 
 	<div class="mcp-settings-info">
-		<p><?php p($l->t('Manage your connection to the Nextcloud MCP (Model Context Protocol) Server.')); ?></p>
+		<p><?php p($l->t('AI-powered semantic search across your Nextcloud content. Find documents by meaning, not just keywords.')); ?></p>
 	</div>
 
-	<!-- Server Connection Status -->
+	<!-- Service Status -->
 	<div class="mcp-status-card">
-		<h3><?php p($l->t('Server Connection')); ?></h3>
+		<h3><?php p($l->t('Service Status')); ?></h3>
 		<table class="mcp-info-table">
 			<tr>
-				<td><strong><?php p($l->t('Server URL')); ?></strong></td>
+				<td><strong><?php p($l->t('Service URL')); ?></strong></td>
 				<td><code><?php p($_['serverUrl']); ?></code></td>
 			</tr>
 			<tr>
-				<td><strong><?php p($l->t('Server Version')); ?></strong></td>
+				<td><strong><?php p($l->t('Version')); ?></strong></td>
 				<td><?php p($_['serverStatus']['version'] ?? 'Unknown'); ?></td>
-			</tr>
-			<tr>
-				<td><strong><?php p($l->t('Auth Mode')); ?></strong></td>
-				<td><?php p($_['serverStatus']['auth_mode'] ?? 'Unknown'); ?></td>
 			</tr>
 		</table>
 	</div>
 
-	<!-- Session Information -->
+	<!-- Indexing Status -->
 	<div class="mcp-status-card">
-		<h3><?php p($l->t('Session Information')); ?></h3>
+		<h3><?php p($l->t('Content Indexing')); ?></h3>
 		<table class="mcp-info-table">
 			<tr>
-				<td><strong><?php p($l->t('User ID')); ?></strong></td>
-				<td><code><?php p($_['userId']); ?></code></td>
-			</tr>
-			<tr>
-				<td><strong><?php p($l->t('Background Access')); ?></strong></td>
+				<td><strong><?php p($l->t('Status')); ?></strong></td>
 				<td>
 					<?php if ($_['backgroundAccessGranted']): ?>
 						<span class="badge badge-success">
 							<span class="icon icon-checkmark-white"></span>
-							<?php p($l->t('Granted')); ?>
+							<?php p($l->t('Active')); ?>
 						</span>
 					<?php else: ?>
 						<span class="badge badge-neutral">
-							<?php p($l->t('Not Granted')); ?>
+							<?php p($l->t('Not Enabled')); ?>
 						</span>
 					<?php endif; ?>
 				</td>
@@ -75,33 +67,25 @@ style('astroglobe', 'astroglobe-settings');
 		<?php if (!$_['backgroundAccessGranted']): ?>
 			<div class="mcp-grant-section">
 				<p class="mcp-help-text">
-					<?php p($l->t('Background access allows the MCP server to sync your documents in the background for semantic search. Without it, your documents will not be indexed.')); ?>
+					<?php p($l->t('Enable background indexing to use semantic search. Your Notes, Files, Calendar events, and Deck cards will be indexed so you can search by meaning.')); ?>
 				</p>
 				<a href="<?php p($_['serverUrl']); ?>/oauth/login?next=<?php p(urlencode($urlGenerator->getAbsoluteURL($urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'astroglobe'])))); ?>" class="button primary" id="mcp-grant-button">
 					<span class="icon icon-confirm"></span>
-					<?php p($l->t('Grant Background Access')); ?>
+					<?php p($l->t('Enable Semantic Search')); ?>
 				</a>
 			</div>
 		<?php endif; ?>
 
 		<?php if ($_['backgroundAccessGranted'] && isset($_['session']['background_access_details'])): ?>
 			<div class="mcp-background-details">
-				<h4><?php p($l->t('Background Access Details')); ?></h4>
+				<h4><?php p($l->t('Indexing Details')); ?></h4>
 				<table class="mcp-info-table">
 					<tr>
-						<td><strong><?php p($l->t('Flow Type')); ?></strong></td>
-						<td><?php p($_['session']['background_access_details']['flow_type'] ?? 'N/A'); ?></td>
-					</tr>
-					<tr>
-						<td><strong><?php p($l->t('Provisioned At')); ?></strong></td>
+						<td><strong><?php p($l->t('Enabled Since')); ?></strong></td>
 						<td><?php p($_['session']['background_access_details']['provisioned_at'] ?? 'N/A'); ?></td>
 					</tr>
 					<tr>
-						<td><strong><?php p($l->t('Token Audience')); ?></strong></td>
-						<td><?php p($_['session']['background_access_details']['token_audience'] ?? 'N/A'); ?></td>
-					</tr>
-					<tr>
-						<td><strong><?php p($l->t('Scopes')); ?></strong></td>
+						<td><strong><?php p($l->t('Indexed Content')); ?></strong></td>
 						<td><code style="font-size: 11px;"><?php p($_['session']['background_access_details']['scopes'] ?? 'N/A'); ?></code></td>
 					</tr>
 				</table>
@@ -111,10 +95,10 @@ style('astroglobe', 'astroglobe-settings');
 						<input type="hidden" name="requesttoken" value="<?php p($_['requesttoken']); ?>">
 						<button type="submit" class="button warning" id="mcp-revoke-button">
 							<span class="icon icon-delete"></span>
-							<?php p($l->t('Revoke Background Access')); ?>
+							<?php p($l->t('Disable Indexing')); ?>
 						</button>
 						<p class="mcp-help-text">
-							<?php p($l->t('This will delete the refresh token and prevent background operations from running on your behalf.')); ?>
+							<?php p($l->t('This will stop background indexing and remove your content from semantic search. You can re-enable it at any time.')); ?>
 						</p>
 					</form>
 				</div>
@@ -143,39 +127,39 @@ style('astroglobe', 'astroglobe-settings');
 		</div>
 	<?php endif; ?>
 
-	<!-- Vector Sync Features -->
+	<!-- Semantic Search Features -->
 	<?php if ($_['vectorSyncEnabled']): ?>
 		<div class="mcp-status-card">
-			<h3><?php p($l->t('Semantic Search')); ?></h3>
-			<p><?php p($l->t('Search your indexed content using semantic similarity. Find documents by meaning, not just keywords.')); ?></p>
+			<h3><?php p($l->t('Search Your Content')); ?></h3>
+			<p><?php p($l->t('Use natural language to search across your Notes, Files, Calendar, and Deck cards. Ask questions like "meeting notes from last week" or "recipes with chicken".')); ?></p>
 			<a href="<?php p($urlGenerator->linkToRoute('astroglobe.page.index')); ?>" class="button primary">
 				<span class="icon icon-search"></span>
-				<?php p($l->t('Open MCP Server UI')); ?>
+				<?php p($l->t('Open Astroglobe')); ?>
 			</a>
 		</div>
 	<?php else: ?>
 		<div class="mcp-status-card mcp-disabled">
 			<h3><?php p($l->t('Semantic Search')); ?></h3>
 			<p class="mcp-help-text">
-				<?php p($l->t('Vector sync is not enabled on the MCP server. Contact your administrator to enable this feature.')); ?>
+				<?php p($l->t('Semantic search is not enabled on this server. Contact your administrator to enable this feature.')); ?>
 			</p>
 		</div>
 	<?php endif; ?>
 
-	<!-- OAuth Connection Management -->
+	<!-- Connection Management -->
 	<div class="mcp-status-card">
-		<h3><?php p($l->t('Connection Management')); ?></h3>
-		<p><?php p($l->t('You are currently connected to the MCP server via OAuth.')); ?></p>
+		<h3><?php p($l->t('Manage Connection')); ?></h3>
+		<p><?php p($l->t('You are connected to the Astroglobe service.')); ?></p>
 
 		<div class="mcp-revoke-section">
 			<form method="post" action="<?php p($urlGenerator->linkToRoute('astroglobe.oauth.disconnect')); ?>" id="mcp-disconnect-form">
 				<input type="hidden" name="requesttoken" value="<?php p($_['requesttoken']); ?>">
 				<button type="submit" class="button warning" id="mcp-disconnect-button">
 					<span class="icon icon-close"></span>
-					<?php p($l->t('Disconnect from MCP Server')); ?>
+					<?php p($l->t('Disconnect')); ?>
 				</button>
 				<p class="mcp-help-text">
-					<?php p($l->t('This will remove your OAuth connection to the MCP server. You will need to authorize access again to use MCP features.')); ?>
+					<?php p($l->t('This will disconnect from the Astroglobe service. You will need to re-authorize to use semantic search features.')); ?>
 				</p>
 			</form>
 		</div>
@@ -183,12 +167,12 @@ style('astroglobe', 'astroglobe-settings');
 </div>
 
 <script>
-	// Confirm revoke and disconnect actions
+	// Confirm disable and disconnect actions
 	document.addEventListener('DOMContentLoaded', function() {
 		const revokeForm = document.getElementById('mcp-revoke-form');
 		if (revokeForm) {
 			revokeForm.addEventListener('submit', function(e) {
-				if (!confirm('<?php p($l->t('Are you sure you want to revoke background access? This action cannot be undone.')); ?>')) {
+				if (!confirm('<?php p($l->t('Are you sure you want to disable indexing? Your content will be removed from semantic search.')); ?>')) {
 					e.preventDefault();
 				}
 			});
@@ -197,7 +181,7 @@ style('astroglobe', 'astroglobe-settings');
 		const disconnectForm = document.getElementById('mcp-disconnect-form');
 		if (disconnectForm) {
 			disconnectForm.addEventListener('submit', function(e) {
-				if (!confirm('<?php p($l->t('Are you sure you want to disconnect from the MCP server? You will need to authorize access again.')); ?>')) {
+				if (!confirm('<?php p($l->t('Are you sure you want to disconnect from Astroglobe? You will need to re-authorize to use semantic search.')); ?>')) {
 					e.preventDefault();
 				}
 			});

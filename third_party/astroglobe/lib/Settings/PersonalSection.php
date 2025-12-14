@@ -9,9 +9,9 @@ use OCP\IURLGenerator;
 use OCP\Settings\IIconSection;
 
 /**
- * Personal settings section for MCP Server.
+ * Personal settings section for Astroglobe.
  *
- * Creates a dedicated section in personal settings for MCP-related configuration.
+ * Creates a dedicated section in personal settings for semantic search configuration.
  */
 class PersonalSection implements IIconSection {
 	private $l;
@@ -23,17 +23,17 @@ class PersonalSection implements IIconSection {
 	}
 
 	/**
-	 * @return string The section ID (e.g. 'mcp')
+	 * @return string The section ID
 	 */
 	public function getID(): string {
-		return 'mcp';
+		return 'astroglobe';
 	}
 
 	/**
 	 * @return string The translated section name
 	 */
 	public function getName(): string {
-		return $this->l->t('MCP Server');
+		return $this->l->t('Astroglobe');
 	}
 
 	/**
