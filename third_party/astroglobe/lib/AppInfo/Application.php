@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OCA\Astroglobe\AppInfo;
 
+use OCA\Astroglobe\Search\SemanticSearchProvider;
 use OCP\AppFramework\App;
 use OCP\AppFramework\Bootstrap\IBootContext;
 use OCP\AppFramework\Bootstrap\IBootstrap;
@@ -18,6 +19,8 @@ class Application extends App implements IBootstrap {
 	}
 
 	public function register(IRegistrationContext $context): void {
+		// Register unified search provider for semantic search
+		$context->registerSearchProvider(SemanticSearchProvider::class);
 	}
 
 	public function boot(IBootContext $context): void {
