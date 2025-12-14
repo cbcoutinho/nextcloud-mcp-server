@@ -21,7 +21,6 @@ from typing import Dict, Optional, Tuple
 import anyio
 import httpx
 import jwt
-from cryptography.fernet import Fernet
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.auth.token_exchange import exchange_token_for_delegation
@@ -104,7 +103,8 @@ class TokenBrokerService:
         storage: RefreshTokenStorage,
         oidc_discovery_url: str,
         nextcloud_host: str,
-        encryption_key: str,
+        client_id: str,
+        client_secret: str,
         cache_ttl: int = 300,
         cache_early_refresh: int = 30,
     ):
@@ -112,21 +112,19 @@ class TokenBrokerService:
         Initialize the Token Broker Service.
 
         Args:
-            storage: Database storage for refresh tokens
+            storage: Database storage for refresh tokens (handles encryption internally)
             oidc_discovery_url: OIDC provider discovery URL
             nextcloud_host: Nextcloud server URL
-            encryption_key: Fernet key for token encryption
+            client_id: OAuth client ID for token operations
+            client_secret: OAuth client secret for token operations
             cache_ttl: Cache TTL in seconds (default: 5 minutes)
             cache_early_refresh: Early refresh threshold in seconds (default: 30 seconds)
         """
         self.storage = storage
         self.oidc_discovery_url = oidc_discovery_url
         self.nextcloud_host = nextcloud_host
-        self.fernet = Fernet(
-            encryption_key.encode()
-            if isinstance(encryption_key, str)
-            else encryption_key
-        )
+        self.client_id = client_id
+        self.client_secret = client_secret
         self.cache = TokenCache(cache_ttl, cache_early_refresh)
         self._oidc_config = None
         self._http_client = None
@@ -147,6 +145,37 @@ class TokenBrokerService:
             response.raise_for_status()
             self._oidc_config = response.json()
         return self._oidc_config
+
+    def _rewrite_token_endpoint(self, token_endpoint: str) -> str:
+        """Rewrite token endpoint from public URL to internal Docker URL.
+
+        OIDC discovery documents return public URLs (e.g., http://localhost:8080/...)
+        but server-side requests must use internal Docker network (e.g., http://app:80/...).
+
+        Args:
+            token_endpoint: Token endpoint URL from discovery document
+
+        Returns:
+            Rewritten URL using internal Docker host
+        """
+        import os
+        from urllib.parse import urlparse
+
+        public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+        if not public_issuer:
+            return token_endpoint
+
+        internal_parsed = urlparse(self.nextcloud_host)
+        token_parsed = urlparse(token_endpoint)
+        public_parsed = urlparse(public_issuer)
+
+        if token_parsed.hostname == public_parsed.hostname:
+            # Replace public URL with internal Docker URL
+            rewritten = f"{internal_parsed.scheme}://{internal_parsed.netloc}{token_parsed.path}"
+            logger.info(f"Rewrote token endpoint: {token_endpoint} -> {rewritten}")
+            return rewritten
+
+        return token_endpoint
 
     async def get_nextcloud_token(self, user_id: str) -> Optional[str]:
         """
@@ -180,9 +209,8 @@ class TokenBrokerService:
             return None
 
         try:
-            # Decrypt refresh token
-            encrypted_token = refresh_data["refresh_token"]
-            refresh_token = self.fernet.decrypt(encrypted_token.encode()).decode()
+            # storage.get_refresh_token() returns already-decrypted token
+            refresh_token = refresh_data["refresh_token"]
 
             # Exchange refresh token for new access token
             access_token, expires_in = await self._refresh_access_token(refresh_token)
@@ -282,9 +310,8 @@ class TokenBrokerService:
             return None
 
         try:
-            # Decrypt refresh token
-            encrypted_token = refresh_data["refresh_token"]
-            refresh_token = self.fernet.decrypt(encrypted_token.encode()).decode()
+            # storage.get_refresh_token() returns already-decrypted token
+            refresh_token = refresh_data["refresh_token"]
 
             # Get token with specific scopes for background operation
             access_token, expires_in = await self._refresh_access_token_with_scopes(
@@ -301,7 +328,10 @@ class TokenBrokerService:
             return access_token
 
         except Exception as e:
-            logger.error(f"Failed to get background token for user {user_id}: {e}")
+            logger.error(
+                f"Failed to get background token for user {user_id}: {e}",
+                exc_info=True,
+            )
             await self.cache.invalidate(cache_key)
             return None
 
@@ -318,15 +348,18 @@ class TokenBrokerService:
             Tuple of (access_token, expires_in_seconds)
         """
         config = await self._get_oidc_config()
-        token_endpoint = config["token_endpoint"]
+        token_endpoint = self._rewrite_token_endpoint(config["token_endpoint"])
 
         client = await self._get_http_client()
 
         # Request new access token using refresh token
+        # Include client credentials as required by most OAuth servers
         data = {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
             "scope": "openid profile email notes:read notes:write calendar:read calendar:write",
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
         }
 
         response = await client.post(
@@ -345,8 +378,7 @@ class TokenBrokerService:
         access_token = token_data["access_token"]
         expires_in = token_data.get("expires_in", 3600)  # Default 1 hour
 
-        # Validate audience
-        await self._validate_token_audience(access_token, "nextcloud")
+        # Note: Nextcloud validates token audience on API calls - no need to pre-validate here
 
         logger.info(f"Refreshed access token (expires in {expires_in}s)")
         return access_token, expires_in
@@ -367,7 +399,7 @@ class TokenBrokerService:
             Tuple of (access_token, expires_in_seconds)
         """
         config = await self._get_oidc_config()
-        token_endpoint = config["token_endpoint"]
+        token_endpoint = self._rewrite_token_endpoint(config["token_endpoint"])
 
         client = await self._get_http_client()
 
@@ -375,11 +407,18 @@ class TokenBrokerService:
         scopes = list(set(["openid", "profile", "email"] + required_scopes))
 
         # Request new access token with specific scopes
+        # Include client credentials as required by most OAuth servers
         data = {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
             "scope": " ".join(scopes),
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
         }
+
+        logger.info(
+            f"Token refresh request to {token_endpoint} with client_id={self.client_id[:16]}..."
+        )
 
         response = await client.post(
             token_endpoint,
@@ -391,14 +430,14 @@ class TokenBrokerService:
             logger.error(
                 f"Token refresh with scopes failed: {response.status_code} - {response.text}"
             )
+            logger.error(f"  client_id used: {self.client_id[:16]}...")
             raise Exception(f"Token refresh failed: {response.status_code}")
 
         token_data = response.json()
         access_token = token_data["access_token"]
         expires_in = token_data.get("expires_in", 3600)  # Default 1 hour
 
-        # Validate audience
-        await self._validate_token_audience(access_token, "nextcloud")
+        # Note: Nextcloud validates token audience on API calls - no need to pre-validate here
 
         logger.info(
             f"Refreshed access token with scopes {scopes} (expires in {expires_in}s)"
@@ -453,11 +492,8 @@ class TokenBrokerService:
             return False
 
         try:
-            # Decrypt current refresh token
-            encrypted_token = refresh_data["refresh_token"]
-            current_refresh_token = self.fernet.decrypt(
-                encrypted_token.encode()
-            ).decode()
+            # storage.get_refresh_token() returns already-decrypted token
+            current_refresh_token = refresh_data["refresh_token"]
 
             # Get OIDC configuration
             config = await self._get_oidc_config()
@@ -486,11 +522,10 @@ class TokenBrokerService:
             new_refresh_token = token_data.get("refresh_token")
 
             if new_refresh_token and new_refresh_token != current_refresh_token:
-                # Encrypt and store new refresh token
-                encrypted_new = self.fernet.encrypt(new_refresh_token.encode()).decode()
+                # storage.store_refresh_token() handles encryption internally
                 await self.storage.store_refresh_token(
                     user_id=user_id,
-                    refresh_token=encrypted_new,
+                    refresh_token=new_refresh_token,
                     expires_at=datetime.now(timezone.utc)
                     + timedelta(days=90),  # 90-day expiry
                 )
@@ -536,11 +571,8 @@ class TokenBrokerService:
             refresh_data = await self.storage.get_refresh_token(user_id)
             if refresh_data:
                 try:
-                    # Attempt to revoke at IdP
-                    encrypted_token = refresh_data["refresh_token"]
-                    refresh_token = self.fernet.decrypt(
-                        encrypted_token.encode()
-                    ).decode()
+                    # storage.get_refresh_token() returns already-decrypted token
+                    refresh_token = refresh_data["refresh_token"]
                     await self._revoke_token_at_idp(refresh_token)
                 except Exception as e:
                     logger.warning(f"Failed to revoke at IdP: {e}")

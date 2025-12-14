@@ -50,6 +50,10 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
     logger.info(f"oauth_login called - client_id: {oauth_config.get('client_id')}")
     logger.info(f"oauth_login called - oauth_client: {oauth_client is not None}")
 
+    # Get redirect URL from query params (default to /app)
+    next_url = request.query_params.get("next", "/app")
+    logger.info(f"oauth_login - next_url: {next_url}")
+
     # Generate state for CSRF protection
     state = secrets.token_urlsafe(32)
 
@@ -71,7 +75,7 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
     await storage.store_oauth_session(
         session_id=state,  # Use state as session ID
         client_id="browser-ui",
-        client_redirect_uri="/app",
+        client_redirect_uri=next_url,  # Store the redirect URL for after auth
         state=state,
         code_challenge=code_challenge,
         code_challenge_method="S256",
@@ -85,6 +89,11 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
         if not oauth_client.authorization_endpoint:
             await oauth_client.discover()
 
+        # Get Nextcloud resource URI for audience (background sync needs Nextcloud-scoped tokens)
+        nextcloud_resource_uri = oauth_config.get(
+            "nextcloud_resource_uri", oauth_config.get("nextcloud_host")
+        )
+
         idp_params = {
             "client_id": oauth_client.client_id,
             "redirect_uri": callback_uri,
@@ -94,6 +103,7 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
             "prompt": "consent",  # Ensure refresh token
+            "resource": nextcloud_resource_uri,  # Request tokens for Nextcloud API access
         }
 
         auth_url = f"{oauth_client.authorization_endpoint}?{urlencode(idp_params)}"
@@ -131,6 +141,11 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
                     f"{public_parsed.scheme}://{public_parsed.netloc}{auth_parsed.path}"
                 )
 
+        # Get Nextcloud resource URI for audience (background sync needs Nextcloud-scoped tokens)
+        nextcloud_resource_uri = oauth_config.get(
+            "nextcloud_resource_uri", oauth_config.get("nextcloud_host")
+        )
+
         idp_params = {
             "client_id": oauth_config["client_id"],
             "redirect_uri": callback_uri,
@@ -140,6 +155,7 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
             "prompt": "consent",  # Ensure refresh token
+            "resource": nextcloud_resource_uri,  # Request tokens for Nextcloud API access
         }
 
         # Debug: Log full parameters
@@ -214,12 +230,15 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     oauth_client = oauth_ctx["oauth_client"]
     oauth_config = oauth_ctx["config"]
 
-    # Retrieve code_verifier from session storage (PKCE required for all modes)
+    # Retrieve code_verifier and redirect URL from session storage
     code_verifier = ""
+    next_url = "/app"  # Default redirect
     oauth_session = await storage.get_oauth_session(state)
     if oauth_session:
         # code_verifier was stored in mcp_authorization_code field
         code_verifier = oauth_session.get("mcp_authorization_code", "")
+        # next_url was stored in client_redirect_uri field
+        next_url = oauth_session.get("client_redirect_uri", "/app")
         # Clean up the temporary session
         # Note: We don't have delete_oauth_session method, but it will expire after TTL
 
@@ -261,6 +280,25 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
                 response.raise_for_status()
                 discovery = response.json()
                 token_endpoint = discovery["token_endpoint"]
+
+            # Rewrite token_endpoint from public URL to internal Docker URL
+            # Discovery document returns public URLs (e.g., http://localhost:8080/...)
+            # but server-side requests must use internal Docker network (e.g., http://app:80/...)
+            public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+            if public_issuer:
+                from urllib.parse import urlparse as parse_url
+
+                internal_host = oauth_config["nextcloud_host"]
+                internal_parsed = parse_url(internal_host)
+                token_parsed = parse_url(token_endpoint)
+                public_parsed = parse_url(public_issuer)
+
+                if token_parsed.hostname == public_parsed.hostname:
+                    # Replace public URL with internal Docker URL
+                    token_endpoint = f"{internal_parsed.scheme}://{internal_parsed.netloc}{token_parsed.path}"
+                    logger.info(
+                        f"Rewrote token endpoint to internal URL: {token_endpoint}"
+                    )
 
             token_params = {
                 "grant_type": "authorization_code",
@@ -383,7 +421,8 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
             # Continue anyway - profile cache is optional for browser UI
 
     # Create response and set session cookie
-    response = RedirectResponse("/app", status_code=302)
+    # Redirect to stored next_url (from OAuth session) or /app as default
+    response = RedirectResponse(next_url, status_code=302)
     response.set_cookie(
         key="mcp_session",
         value=user_id,

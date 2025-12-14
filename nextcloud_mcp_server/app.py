@@ -676,6 +676,29 @@ async def setup_oauth_config():
         logger.info(f"OIDC_JWKS_URI override: {jwks_uri} → {jwks_uri_override}")
         jwks_uri = jwks_uri_override
 
+    # Rewrite discovered endpoint URLs from public issuer to internal host
+    # This is needed when OIDC discovery returns public URLs (e.g., http://localhost:8080)
+    # but the server needs to access them via internal docker network (e.g., http://app:80)
+    from urllib.parse import urlparse
+
+    issuer_parsed = urlparse(issuer)
+    nextcloud_parsed = urlparse(nextcloud_host)
+    issuer_base = f"{issuer_parsed.scheme}://{issuer_parsed.netloc}"
+    nextcloud_base = f"{nextcloud_parsed.scheme}://{nextcloud_parsed.netloc}"
+
+    if issuer_base != nextcloud_base:
+        logger.info(f"Rewriting OIDC endpoints: {issuer_base} → {nextcloud_base}")
+
+        def rewrite_url(url: str | None) -> str | None:
+            if url and url.startswith(issuer_base):
+                return url.replace(issuer_base, nextcloud_base, 1)
+            return url
+
+        userinfo_uri = rewrite_url(userinfo_uri) or userinfo_uri
+        jwks_uri = rewrite_url(jwks_uri)
+        introspection_uri = rewrite_url(introspection_uri)
+        registration_endpoint = rewrite_url(registration_endpoint)
+
     logger.info("OIDC endpoints discovered:")
     logger.info(f"  Issuer: {issuer}")
     logger.info(f"  Userinfo: {userinfo_uri}")
@@ -687,8 +710,6 @@ async def setup_oauth_config():
     # Auto-detect provider mode based on issuer
     # External IdP mode: issuer doesn't match Nextcloud host
     # Normalize URLs for comparison (handle port differences like :80 for HTTP)
-    from urllib.parse import urlparse
-
     def normalize_url(url: str) -> str:
         """Normalize URL by removing default ports (80 for HTTP, 443 for HTTPS)."""
         parsed = urlparse(url)
@@ -704,7 +725,16 @@ async def setup_oauth_config():
     issuer_normalized = normalize_url(issuer)
     nextcloud_normalized = normalize_url(nextcloud_host)
 
-    is_external_idp = not issuer_normalized.startswith(nextcloud_normalized)
+    # Use NEXTCLOUD_PUBLIC_ISSUER_URL for IdP detection when set
+    # This handles the case where MCP server accesses Nextcloud via internal URL (http://app:80)
+    # but the issuer in OIDC discovery is the public URL (http://localhost:8080)
+    public_issuer_for_detection = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+    if public_issuer_for_detection:
+        comparison_issuer = normalize_url(public_issuer_for_detection)
+    else:
+        comparison_issuer = nextcloud_normalized
+
+    is_external_idp = not issuer_normalized.startswith(comparison_issuer)
 
     if is_external_idp:
         oauth_provider = "external"  # Could be Keycloak, Auth0, Okta, etc.
@@ -715,6 +745,28 @@ async def setup_oauth_config():
     else:
         oauth_provider = "nextcloud"
         logger.info("✓ Detected integrated mode (Nextcloud OIDC app)")
+
+        # For integrated mode, rewrite OIDC endpoints to use internal URL
+        # The discovery document returns external URLs (http://localhost:8080)
+        # but the MCP server needs internal URLs (http://app:80) for backend requests
+        if jwks_uri and not os.getenv("OIDC_JWKS_URI"):
+            internal_jwks_uri = f"{nextcloud_host}/apps/oidc/jwks"
+            logger.info(
+                f"  Auto-rewriting JWKS URI for internal access: {jwks_uri} → {internal_jwks_uri}"
+            )
+            jwks_uri = internal_jwks_uri
+        if introspection_uri and not os.getenv("OIDC_INTROSPECTION_URI"):
+            internal_introspection_uri = f"{nextcloud_host}/apps/oidc/introspect"
+            logger.info(
+                f"  Auto-rewriting introspection URI for internal access: {introspection_uri} → {internal_introspection_uri}"
+            )
+            introspection_uri = internal_introspection_uri
+        if userinfo_uri:
+            internal_userinfo_uri = f"{nextcloud_host}/apps/oidc/userinfo"
+            logger.info(
+                f"  Auto-rewriting userinfo URI for internal access: {userinfo_uri} → {internal_userinfo_uri}"
+            )
+            userinfo_uri = internal_userinfo_uri
 
     # Check if offline access (refresh tokens) is enabled
     enable_offline_access = os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() in (
@@ -1234,12 +1286,20 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     )
                     break
 
-        # Start background vector sync tasks for BasicAuth mode (ADR-007)
+        # Start background vector sync tasks (ADR-007)
         # Scanner runs at server-level (once), not per-session
         import anyio as anyio_module
 
         settings = get_settings()
-        if not oauth_enabled and settings.vector_sync_enabled:
+
+        # Check if vector sync is enabled and determine the mode
+        enable_offline_access_for_sync = os.getenv(
+            "ENABLE_OFFLINE_ACCESS", "false"
+        ).lower() in ("true", "1", "yes")
+        encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
+
+        if settings.vector_sync_enabled and not oauth_enabled:
+            # BasicAuth mode - single user sync
             logger.info("Starting background vector sync tasks for BasicAuth mode")
 
             # Get username from environment
@@ -1334,8 +1394,161 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         shutdown_event.set()
                         await client.close()
                         # TaskGroup automatically cancels all tasks on exit
+
+        elif (
+            settings.vector_sync_enabled
+            and oauth_enabled
+            and enable_offline_access_for_sync
+            and refresh_token_storage
+            and encryption_key
+        ):
+            # OAuth mode with offline access - multi-user sync
+            logger.info("Starting background vector sync tasks for OAuth mode")
+
+            from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
+            from nextcloud_mcp_server.vector.oauth_sync import (
+                oauth_processor_task,
+                user_manager_task,
+            )
+
+            # Get OIDC discovery URL (same as used for OAuth setup)
+            discovery_url = os.getenv(
+                "OIDC_DISCOVERY_URL",
+                f"{nextcloud_host}/.well-known/openid-configuration",
+            )
+
+            # Get client credentials from oauth_context (set by setup_oauth_config)
+            # This includes credentials from DCR if dynamic registration was used
+            # Use different variable names to avoid shadowing client_id/client_secret from outer scope
+            oauth_ctx = getattr(app.state, "oauth_context", {})
+            oauth_config = oauth_ctx.get("config", {})
+            sync_client_id = oauth_config.get("client_id")
+            sync_client_secret = oauth_config.get("client_secret")
+
+            if not sync_client_id or not sync_client_secret:
+                logger.error(
+                    "Cannot start OAuth vector sync: client credentials not found in oauth_context"
+                )
+                raise ValueError("OAuth client credentials required for vector sync")
+
+            # Create token broker for background operations
+            # Note: storage handles encryption internally, no key needed here
+            # Client credentials are needed for token refresh operations
+            token_broker = TokenBrokerService(
+                storage=refresh_token_storage,
+                oidc_discovery_url=discovery_url,
+                nextcloud_host=nextcloud_host,
+                client_id=sync_client_id,
+                client_secret=sync_client_secret,
+            )
+
+            # Initialize Qdrant collection before starting background tasks
+            logger.info("Initializing Qdrant collection...")
+            from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+            try:
+                await get_qdrant_client()  # Triggers collection creation if needed
+                logger.info("Qdrant collection ready")
+            except Exception as e:
+                logger.error(f"Failed to initialize Qdrant collection: {e}")
+                raise RuntimeError(
+                    f"Cannot start vector sync - Qdrant initialization failed: {e}"
+                ) from e
+
+            # Initialize shared state
+            send_stream, receive_stream = anyio_module.create_memory_object_stream(
+                max_buffer_size=settings.vector_sync_queue_max_size
+            )
+            shutdown_event = anyio_module.Event()
+            scanner_wake_event = anyio_module.Event()
+
+            # User state tracking for user manager
+            user_states: dict = {}
+
+            # Store in app state for access from routes (ADR-007)
+            app.state.document_send_stream = send_stream
+            app.state.document_receive_stream = receive_stream
+            app.state.shutdown_event = shutdown_event
+            app.state.scanner_wake_event = scanner_wake_event
+
+            # Also store in module singleton for FastMCP session lifespans
+            _vector_sync_state.document_send_stream = send_stream
+            _vector_sync_state.document_receive_stream = receive_stream
+            _vector_sync_state.shutdown_event = shutdown_event
+            _vector_sync_state.scanner_wake_event = scanner_wake_event
+            logger.info("Vector sync state stored in module singleton")
+
+            # Also share with browser_app for /app route
+            for route in app.routes:
+                if isinstance(route, Mount) and route.path == "/app":
+                    route.app.state.document_send_stream = send_stream
+                    route.app.state.document_receive_stream = receive_stream
+                    route.app.state.shutdown_event = shutdown_event
+                    route.app.state.scanner_wake_event = scanner_wake_event
+                    logger.info("Vector sync state shared with browser_app for /app")
+                    break
+
+            # Start background tasks using anyio TaskGroup
+            async with anyio_module.create_task_group() as tg:
+                # Start user manager task (supervises per-user scanners)
+                await tg.start(
+                    user_manager_task,
+                    send_stream,
+                    shutdown_event,
+                    scanner_wake_event,
+                    token_broker,
+                    refresh_token_storage,
+                    nextcloud_host,
+                    user_states,
+                    tg,
+                )
+
+                # Start processor pool (each gets a cloned receive stream)
+                for i in range(settings.vector_sync_processor_workers):
+                    await tg.start(
+                        oauth_processor_task,
+                        i,
+                        receive_stream.clone(),
+                        shutdown_event,
+                        token_broker,
+                        nextcloud_host,
+                    )
+
+                logger.info(
+                    f"Background sync tasks started: 1 user manager + "
+                    f"{settings.vector_sync_processor_workers} processors"
+                )
+
+                # Run MCP session manager and yield
+                async with AsyncExitStack() as stack:
+                    await stack.enter_async_context(mcp.session_manager.run())
+                    try:
+                        yield
+                    finally:
+                        # Shutdown signal
+                        logger.info("Shutting down background sync tasks")
+                        shutdown_event.set()
+                        # Close token broker HTTP client
+                        if token_broker._http_client:
+                            await token_broker._http_client.aclose()
+                        # TaskGroup automatically cancels all tasks on exit
         else:
             # No vector sync - just run MCP session manager
+            if settings.vector_sync_enabled:
+                # Log why vector sync is not starting
+                if oauth_enabled and not enable_offline_access_for_sync:
+                    logger.warning(
+                        "Vector sync enabled but ENABLE_OFFLINE_ACCESS=false - "
+                        "vector sync requires offline access in OAuth mode"
+                    )
+                elif oauth_enabled and not refresh_token_storage:
+                    logger.warning(
+                        "Vector sync enabled but refresh token storage not available"
+                    )
+                elif oauth_enabled and not encryption_key:
+                    logger.warning(
+                        "Vector sync enabled but TOKEN_ENCRYPTION_KEY not set"
+                    )
             async with AsyncExitStack() as stack:
                 await stack.enter_async_context(mcp.session_manager.run())
                 yield
@@ -1490,6 +1703,46 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         Route("/webhooks/nextcloud", handle_nextcloud_webhook, methods=["POST"])
     )
     logger.info("Test webhook endpoint enabled: /webhooks/nextcloud")
+
+    # Add management API endpoints for Nextcloud PHP app (OAuth mode only)
+    if oauth_enabled:
+        from nextcloud_mcp_server.api.management import (
+            get_server_status,
+            get_user_session,
+            get_vector_sync_status,
+            revoke_user_access,
+            vector_search,
+        )
+
+        routes.append(Route("/api/v1/status", get_server_status, methods=["GET"]))
+        routes.append(
+            Route(
+                "/api/v1/vector-sync/status",
+                get_vector_sync_status,
+                methods=["GET"],
+            )
+        )
+        routes.append(
+            Route(
+                "/api/v1/users/{user_id}/session",
+                get_user_session,
+                methods=["GET"],
+            )
+        )
+        routes.append(
+            Route(
+                "/api/v1/users/{user_id}/revoke",
+                revoke_user_access,
+                methods=["POST"],
+            )
+        )
+        routes.append(
+            Route("/api/v1/vector-viz/search", vector_search, methods=["POST"])
+        )
+        logger.info(
+            "Management API endpoints enabled: /api/v1/status, /api/v1/vector-sync/status, "
+            "/api/v1/users/{user_id}/session, /api/v1/users/{user_id}/revoke, /api/v1/vector-viz/search"
+        )
 
     # ADR-016: Add Smithery well-known config endpoint for container runtime discovery
     if deployment_mode == DeploymentMode.SMITHERY_STATELESS:
