@@ -47,6 +47,6 @@ class AdminSection implements IIconSection {
 	 * @return string Section icon (SVG or image URL)
 	 */
 	public function getIcon(): string {
-		return $this->urlGenerator->imagePath('astroglobe', 'app.svg');
+		return $this->urlGenerator->imagePath('astroglobe', 'app-dark.svg');
 	}
 }

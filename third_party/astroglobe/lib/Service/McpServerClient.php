@@ -249,6 +249,80 @@ class McpServerClient {
 	}
 
 	/**
+	 * Execute semantic search for Nextcloud Unified Search.
+	 *
+	 * Simplified search method specifically for the unified search provider.
+	 * Uses OAuth bearer token for authentication and user-scoped filtering.
+	 *
+	 * @param string $query Search query string
+	 * @param string $token OAuth bearer token for authentication
+	 * @param int $limit Maximum number of results (default: 20)
+	 * @param int $offset Pagination offset (default: 0)
+	 * @param string $algorithm Search algorithm: hybrid, semantic, or bm25 (default: hybrid)
+	 * @param string $fusion Fusion method for hybrid: rrf or dbsf (default: rrf)
+	 * @param float $scoreThreshold Minimum score threshold 0-1 (default: 0)
+	 * @return array{
+	 *   results?: array<array{
+	 *     id?: string|int,
+	 *     title?: string,
+	 *     doc_type?: string,
+	 *     excerpt?: string,
+	 *     score?: float,
+	 *     path?: string,
+	 *     board_id?: int,
+	 *     card_id?: int
+	 *   }>,
+	 *   total_found?: int,
+	 *   algorithm_used?: string,
+	 *   error?: string
+	 * }
+	 */
+	public function searchForUnifiedSearch(
+		string $query,
+		string $token,
+		int $limit = 20,
+		int $offset = 0,
+		string $algorithm = 'hybrid',
+		string $fusion = 'rrf',
+		float $scoreThreshold = 0.0
+	): array {
+		try {
+			$response = $this->httpClient->post(
+				$this->baseUrl . '/api/v1/search',
+				[
+					'headers' => [
+						'Authorization' => 'Bearer ' . $token,
+						'Content-Type' => 'application/json',
+					],
+					'json' => [
+						'query' => $query,
+						'algorithm' => $algorithm,
+						'fusion' => $fusion,
+						'score_threshold' => $scoreThreshold,
+						'limit' => min($limit, 100),
+						'offset' => $offset,
+						'include_pca' => false,
+						'include_chunks' => true,
+					]
+				]
+			);
+			$data = json_decode($response->getBody(), true);
+
+			if (json_last_error() !== JSON_ERROR_NONE) {
+				throw new \RuntimeException('Invalid JSON response from server');
+			}
+
+			return $data;
+		} catch (\Exception $e) {
+			$this->logger->error('Unified search failed', [
+				'error' => $e->getMessage(),
+				'query' => $query,
+			]);
+			return ['error' => $e->getMessage()];
+		}
+	}
+
+	/**
 	 * Check if the MCP server is reachable and API key is valid.
 	 *
 	 * @return bool True if server is reachable and healthy

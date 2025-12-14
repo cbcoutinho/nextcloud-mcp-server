@@ -50,7 +50,7 @@ class SemanticSearchProvider implements IProvider {
 	 * Display name shown in search results grouping.
 	 */
 	public function getName(): string {
-		return $this->l10n->t('Astroglob');
+		return $this->l10n->t('Astroglobe');
 	}
 
 	/**

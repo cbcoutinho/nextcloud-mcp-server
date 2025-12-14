@@ -18,6 +18,17 @@ use OCP\Settings\ISettings;
  * configuration, and provides administrative controls.
  */
 class Admin implements ISettings {
+	// Search settings keys and defaults
+	public const SETTING_SEARCH_ALGORITHM = 'search_algorithm';
+	public const SETTING_SEARCH_FUSION = 'search_fusion';
+	public const SETTING_SEARCH_SCORE_THRESHOLD = 'search_score_threshold';
+	public const SETTING_SEARCH_LIMIT = 'search_limit';
+
+	public const DEFAULT_SEARCH_ALGORITHM = 'hybrid';
+	public const DEFAULT_SEARCH_FUSION = 'rrf';
+	public const DEFAULT_SEARCH_SCORE_THRESHOLD = 0;
+	public const DEFAULT_SEARCH_LIMIT = 20;
+
 	private $client;
 	private $config;
 	private $initialState;
@@ -59,6 +70,30 @@ class Admin implements ISettings {
 			);
 		}
 
+		// Load search settings from app config
+		$searchSettings = [
+			'algorithm' => $this->config->getAppValue(
+				Application::APP_ID,
+				self::SETTING_SEARCH_ALGORITHM,
+				self::DEFAULT_SEARCH_ALGORITHM
+			),
+			'fusion' => $this->config->getAppValue(
+				Application::APP_ID,
+				self::SETTING_SEARCH_FUSION,
+				self::DEFAULT_SEARCH_FUSION
+			),
+			'scoreThreshold' => (int)$this->config->getAppValue(
+				Application::APP_ID,
+				self::SETTING_SEARCH_SCORE_THRESHOLD,
+				(string)self::DEFAULT_SEARCH_SCORE_THRESHOLD
+			),
+			'limit' => (int)$this->config->getAppValue(
+				Application::APP_ID,
+				self::SETTING_SEARCH_LIMIT,
+				(string)self::DEFAULT_SEARCH_LIMIT
+			),
+		];
+
 		// Provide initial state for Vue.js frontend (if needed)
 		$this->initialState->provideInitialState('server-data', [
 			'serverStatus' => $serverStatus,
@@ -67,6 +102,7 @@ class Admin implements ISettings {
 				'serverUrl' => $serverUrl,
 				'apiKeyConfigured' => $apiKeyConfigured,
 			],
+			'searchSettings' => $searchSettings,
 		]);
 
 		$parameters = [
@@ -75,6 +111,7 @@ class Admin implements ISettings {
 			'serverUrl' => $serverUrl,
 			'apiKeyConfigured' => $apiKeyConfigured,
 			'vectorSyncEnabled' => $serverStatus['vector_sync_enabled'] ?? false,
+			'searchSettings' => $searchSettings,
 		];
 
 		return new TemplateResponse(

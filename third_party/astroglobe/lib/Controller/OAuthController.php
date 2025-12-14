@@ -367,6 +367,10 @@ class OAuthController extends Controller {
 			'astroglobe.oauth.oauthCallback'
 		);
 
+		// Get public MCP server URL for token audience (RFC 8707 Resource Indicator)
+		// Use public URL that clients/browsers see, not internal Docker URL
+		$mcpServerPublicUrl = $this->config->getSystemValue('mcp_server_public_url', $mcpServerUrl);
+
 		// Build authorization URL with PKCE
 		$params = [
 			'client_id' => 'nextcloudMcpServerUIPublicClient',  // Public client ID (32+ chars required by NC OIDC)
@@ -376,6 +380,7 @@ class OAuthController extends Controller {
 			'state' => $state,
 			'code_challenge' => $codeChallenge,
 			'code_challenge_method' => 'S256',
+			'resource' => $mcpServerPublicUrl,  // RFC 8707 Resource Indicator - request token with MCP server audience
 		];
 
 		return $authEndpoint . '?' . http_build_query($params);

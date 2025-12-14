@@ -109,6 +109,17 @@
 									:min="1"
 									:max="100" />
 							</div>
+
+							<div class="mcp-option-group">
+								<label>{{ t('astroglobe', 'Minimum Score') }}: {{ scoreThreshold }}%</label>
+								<input
+									v-model="scoreThreshold"
+									type="range"
+									min="0"
+									max="100"
+									step="5"
+									class="mcp-score-slider" />
+							</div>
 						</div>
 					</div>
 				</div>
@@ -127,7 +138,12 @@
 				<!-- Results -->
 				<div v-if="results.length > 0 && !loading" class="mcp-results">
 					<div class="mcp-results-header">
-						<span>{{ results.length }} {{ t('astroglobe', 'results found') }}</span>
+						<span>
+							{{ filteredResults.length }} {{ t('astroglobe', 'results') }}
+							<span v-if="filteredResults.length !== results.length" class="mcp-filter-info">
+								({{ results.length - filteredResults.length }} {{ t('astroglobe', 'filtered by score') }})
+							</span>
+						</span>
 						<span class="mcp-algorithm-badge">{{ algorithmUsed }}</span>
 					</div>
 
@@ -149,21 +165,43 @@
 
 					<div class="mcp-results-list">
 						<div
-							v-for="result in results"
-							:key="result.id"
+							v-for="(result, index) in filteredResults"
+							:key="result.id || index"
 							class="mcp-result-item"
 							:class="'mcp-doc-type-' + (result.doc_type || 'unknown')">
 							<div class="mcp-result-header">
 								<span class="mcp-result-type">{{ result.doc_type || 'unknown' }}</span>
-								<span class="mcp-result-score">{{ formatScore(result.score) }}%</span>
+								<div class="mcp-result-actions">
+									<NcButton
+										v-if="result.excerpt"
+										type="tertiary"
+										:aria-label="t('astroglobe', 'Toggle excerpt')"
+										@click="toggleExcerpt(index)">
+										<template #icon>
+											<TextBoxOutline v-if="!expandedExcerpts[index]" :size="18" />
+											<TextBoxRemoveOutline v-else :size="18" />
+										</template>
+									</NcButton>
+									<span class="mcp-result-score">{{ formatScore(result.score) }}%</span>
+								</div>
 							</div>
-							<a v-if="result.link" :href="result.link" target="_blank" class="mcp-result-title">
+							<a
+								:href="getDocumentUrl(result)"
+								class="mcp-result-title"
+								@click.prevent="navigateToDocument(result)">
 								{{ result.title || t('astroglobe', 'Untitled') }}
+								<OpenInNew :size="14" class="mcp-external-icon" />
 							</a>
-							<div v-else class="mcp-result-title">
-								{{ result.title || t('astroglobe', 'Untitled') }}
+							<div
+								v-if="result.excerpt && expandedExcerpts[index]"
+								class="mcp-result-excerpt mcp-result-excerpt--expanded">
+								{{ result.excerpt }}
 							</div>
-							<div class="mcp-result-excerpt">{{ result.excerpt }}</div>
+							<div
+								v-else-if="result.excerpt"
+								class="mcp-result-excerpt">
+								{{ truncateExcerpt(result.excerpt) }}
+							</div>
 						</div>
 					</div>
 				</div>
@@ -261,6 +299,9 @@ import Cog from 'vue-material-design-icons/Cog.vue'
 import ChevronDown from 'vue-material-design-icons/ChevronDown.vue'
 import ChevronUp from 'vue-material-design-icons/ChevronUp.vue'
 import Refresh from 'vue-material-design-icons/Refresh.vue'
+import TextBoxOutline from 'vue-material-design-icons/TextBoxOutline.vue'
+import TextBoxRemoveOutline from 'vue-material-design-icons/TextBoxRemoveOutline.vue'
+import OpenInNew from 'vue-material-design-icons/OpenInNew.vue'
 
 import axios from '@nextcloud/axios'
 import { generateUrl } from '@nextcloud/router'
@@ -289,6 +330,9 @@ export default {
 		ChevronDown,
 		ChevronUp,
 		Refresh,
+		TextBoxOutline,
+		TextBoxRemoveOutline,
+		OpenInNew,
 	},
 	data() {
 		return {
@@ -299,11 +343,13 @@ export default {
 			showAdvanced: false,
 			selectedDocTypes: [],
 			limit: '20',
+			scoreThreshold: 0,
 			loading: false,
 			error: null,
 			results: [],
 			algorithmUsed: '',
 			searched: false,
+			expandedExcerpts: {},
 			// Visualization state
 			coordinates: [],
 			queryCoords: [],
@@ -335,6 +381,10 @@ export default {
 		selectedAlgorithmOption() {
 			return this.algorithmOptions.find(opt => opt.id === this.algorithm) || this.algorithmOptions[0]
 		},
+		filteredResults() {
+			const threshold = this.scoreThreshold / 100
+			return this.results.filter(r => (r.score || 0) >= threshold)
+		},
 	},
 	methods: {
 		async performSearch() {
@@ -348,6 +398,7 @@ export default {
 			this.searched = true
 			this.coordinates = []
 			this.queryCoords = []
+			this.expandedExcerpts = {}
 
 			try {
 				const url = generateUrl('/apps/astroglobe/api/search')
@@ -412,6 +463,51 @@ export default {
 
 		formatScore(score) {
 			return Math.round((score || 0) * 100)
+		},
+
+		toggleExcerpt(index) {
+			this.$set(this.expandedExcerpts, index, !this.expandedExcerpts[index])
+		},
+
+		truncateExcerpt(text, maxLength = 150) {
+			if (!text || text.length <= maxLength) return text
+			return text.substring(0, maxLength).trim() + '...'
+		},
+
+		getDocumentUrl(result) {
+			const docType = result.doc_type || 'unknown'
+			const id = result.id || result.note_id
+
+			switch (docType) {
+			case 'note':
+				return generateUrl(`/apps/notes/#/note/${id}`)
+			case 'file':
+				if (result.path) {
+					const dir = result.path.substring(0, result.path.lastIndexOf('/')) || '/'
+					const file = result.path.substring(result.path.lastIndexOf('/') + 1)
+					return generateUrl(`/apps/files/?dir=${encodeURIComponent(dir)}&scrollto=${encodeURIComponent(file)}`)
+				}
+				return generateUrl('/apps/files/')
+			case 'deck_card':
+				if (result.board_id && result.card_id) {
+					return generateUrl(`/apps/deck/#!/board/${result.board_id}/card/${result.card_id}`)
+				}
+				return generateUrl('/apps/deck/')
+			case 'calendar':
+			case 'calendar_event':
+				return generateUrl('/apps/calendar/')
+			case 'news_item':
+				return generateUrl('/apps/news/')
+			case 'contact':
+				return generateUrl('/apps/contacts/')
+			default:
+				return generateUrl('/apps/astroglobe/')
+			}
+		},
+
+		navigateToDocument(result) {
+			const url = this.getDocumentUrl(result)
+			window.open(url, '_blank')
 		},
 
 		goToSettings() {
@@ -691,6 +787,12 @@ export default {
 	background: var(--color-background-dark);
 }
 
+.mcp-filter-info {
+	font-size: 12px;
+	color: var(--color-text-lighter);
+	font-weight: normal;
+}
+
 .mcp-results-list {
 	display: flex;
 	flex-direction: column;
@@ -785,6 +887,39 @@ a.mcp-result-title {
 	-webkit-line-clamp: 2;
 	-webkit-box-orient: vertical;
 	overflow: hidden;
+
+	&--expanded {
+		display: block;
+		-webkit-line-clamp: unset;
+		background: var(--color-background-dark);
+		padding: 12px;
+		border-radius: var(--border-radius);
+		margin-top: 8px;
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+}
+
+.mcp-result-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.mcp-external-icon {
+	opacity: 0.5;
+	margin-left: 4px;
+	vertical-align: middle;
+}
+
+.mcp-result-title:hover .mcp-external-icon {
+	opacity: 1;
+}
+
+.mcp-score-slider {
+	width: 100%;
+	margin-top: 8px;
+	accent-color: var(--color-primary-element);
 }
 
 // Status section

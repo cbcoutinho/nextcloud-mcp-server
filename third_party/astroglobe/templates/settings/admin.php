@@ -173,6 +173,92 @@ style('astroglobe', 'astroglobe-settings');
 		</div>
 	<?php endif; ?>
 
+	<!-- Search Settings -->
+	<?php if ($_['vectorSyncEnabled']): ?>
+		<div class="mcp-status-card" id="search-settings">
+			<h3><?php p($l->t('AI Search Provider Settings')); ?></h3>
+			<p class="mcp-settings-description">
+				<?php p($l->t('Configure the default search parameters for the AI Search provider in Nextcloud unified search.')); ?>
+			</p>
+
+			<form id="astroglobe-search-settings-form" class="mcp-settings-form">
+				<div class="mcp-form-group">
+					<label for="search-algorithm"><?php p($l->t('Search Algorithm')); ?></label>
+					<select id="search-algorithm" name="algorithm" class="mcp-select">
+						<option value="hybrid" <?php if ($_['searchSettings']['algorithm'] === 'hybrid') echo 'selected'; ?>>
+							<?php p($l->t('Hybrid (Recommended)')); ?>
+						</option>
+						<option value="semantic" <?php if ($_['searchSettings']['algorithm'] === 'semantic') echo 'selected'; ?>>
+							<?php p($l->t('Semantic Only')); ?>
+						</option>
+						<option value="bm25" <?php if ($_['searchSettings']['algorithm'] === 'bm25') echo 'selected'; ?>>
+							<?php p($l->t('Keyword (BM25) Only')); ?>
+						</option>
+					</select>
+					<p class="mcp-help-text">
+						<?php p($l->t('Hybrid combines semantic understanding with keyword matching. Semantic finds conceptually similar content. BM25 matches exact keywords.')); ?>
+					</p>
+				</div>
+
+				<div class="mcp-form-group">
+					<label for="search-fusion"><?php p($l->t('Fusion Method')); ?></label>
+					<select id="search-fusion" name="fusion" class="mcp-select">
+						<option value="rrf" <?php if ($_['searchSettings']['fusion'] === 'rrf') echo 'selected'; ?>>
+							<?php p($l->t('RRF - Reciprocal Rank Fusion (Recommended)')); ?>
+						</option>
+						<option value="dbsf" <?php if ($_['searchSettings']['fusion'] === 'dbsf') echo 'selected'; ?>>
+							<?php p($l->t('DBSF - Distribution-Based Score Fusion')); ?>
+						</option>
+					</select>
+					<p class="mcp-help-text">
+						<?php p($l->t('Only applies to hybrid search. RRF balances results well for most queries. DBSF may work better when keyword matches are over/under-weighted.')); ?>
+					</p>
+				</div>
+
+				<div class="mcp-form-group">
+					<label for="search-score-threshold">
+						<?php p($l->t('Minimum Score Threshold')); ?>:
+						<span id="score-threshold-value"><?php p($_['searchSettings']['scoreThreshold']); ?>%</span>
+					</label>
+					<input type="range"
+						   id="search-score-threshold"
+						   name="scoreThreshold"
+						   min="0"
+						   max="100"
+						   step="5"
+						   value="<?php p($_['searchSettings']['scoreThreshold']); ?>"
+						   class="mcp-range" />
+					<p class="mcp-help-text">
+						<?php p($l->t('Filter out results below this relevance score. Set to 0 to show all results.')); ?>
+					</p>
+				</div>
+
+				<div class="mcp-form-group">
+					<label for="search-limit"><?php p($l->t('Maximum Results')); ?></label>
+					<input type="number"
+						   id="search-limit"
+						   name="limit"
+						   min="5"
+						   max="100"
+						   step="5"
+						   value="<?php p($_['searchSettings']['limit']); ?>"
+						   class="mcp-input" />
+					<p class="mcp-help-text">
+						<?php p($l->t('Maximum number of results to return per search query (5-100).')); ?>
+					</p>
+				</div>
+
+				<div class="mcp-form-actions">
+					<button type="submit" class="primary">
+						<?php p($l->t('Save Settings')); ?>
+					</button>
+					<span id="search-settings-status" class="mcp-status-message"></span>
+				</div>
+			</form>
+		</div>
+
+	<?php endif; ?>
+
 	<!-- Capabilities -->
 	<div class="mcp-status-card">
 		<h3><?php p($l->t('Capabilities')); ?></h3>

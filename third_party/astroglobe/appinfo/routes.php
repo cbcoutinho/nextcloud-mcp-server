@@ -45,5 +45,12 @@ return [
 			'url' => '/api/vector-status',
 			'verb' => 'GET',
 		],
+
+		// Admin settings routes
+		[
+			'name' => 'api#saveSearchSettings',
+			'url' => '/api/admin/search-settings',
+			'verb' => 'POST',
+		],
 	],
 ];

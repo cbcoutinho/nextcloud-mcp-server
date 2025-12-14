@@ -6,12 +6,14 @@ namespace OCA\Astroglobe\Controller;
 
 use OCA\Astroglobe\Service\McpServerClient;
 use OCA\Astroglobe\Service\McpTokenStorage;
+use OCA\Astroglobe\Settings\Admin as AdminSettings;
 use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
 use OCP\AppFramework\Http\Attribute\NoCSRFRequired;
 use OCP\AppFramework\Http\JSONResponse;
 use OCP\AppFramework\Http\RedirectResponse;
+use OCP\IConfig;
 use OCP\IRequest;
 use OCP\IURLGenerator;
 use OCP\IUserSession;
@@ -28,6 +30,7 @@ class ApiController extends Controller {
 	private $urlGenerator;
 	private $logger;
 	private $tokenStorage;
+	private $config;
 
 	public function __construct(
 		string $appName,
@@ -36,7 +39,8 @@ class ApiController extends Controller {
 		IUserSession $userSession,
 		IURLGenerator $urlGenerator,
 		LoggerInterface $logger,
-		McpTokenStorage $tokenStorage
+		McpTokenStorage $tokenStorage,
+		IConfig $config
 	) {
 		parent::__construct($appName, $request);
 		$this->client = $client;
@@ -44,6 +48,7 @@ class ApiController extends Controller {
 		$this->urlGenerator = $urlGenerator;
 		$this->logger = $logger;
 		$this->tokenStorage = $tokenStorage;
+		$this->config = $config;
 	}
 
 	/**
@@ -221,6 +226,85 @@ class ApiController extends Controller {
 		return new JSONResponse([
 			'success' => true,
 			'status' => $status
+		]);
+	}
+
+	/**
+	 * Save admin search settings.
+	 *
+	 * Admin-only endpoint to configure AI Search provider parameters.
+	 *
+	 * @return JSONResponse
+	 */
+	public function saveSearchSettings(): JSONResponse {
+		// Parse JSON body
+		$input = file_get_contents('php://input');
+		$data = json_decode($input, true);
+
+		if ($data === null) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => 'Invalid JSON body'
+			], Http::STATUS_BAD_REQUEST);
+		}
+
+		// Validate and save algorithm
+		$validAlgorithms = ['hybrid', 'semantic', 'bm25'];
+		$algorithm = $data['algorithm'] ?? AdminSettings::DEFAULT_SEARCH_ALGORITHM;
+		if (!in_array($algorithm, $validAlgorithms)) {
+			$algorithm = AdminSettings::DEFAULT_SEARCH_ALGORITHM;
+		}
+		$this->config->setAppValue(
+			$this->appName,
+			AdminSettings::SETTING_SEARCH_ALGORITHM,
+			$algorithm
+		);
+
+		// Validate and save fusion method
+		$validFusions = ['rrf', 'dbsf'];
+		$fusion = $data['fusion'] ?? AdminSettings::DEFAULT_SEARCH_FUSION;
+		if (!in_array($fusion, $validFusions)) {
+			$fusion = AdminSettings::DEFAULT_SEARCH_FUSION;
+		}
+		$this->config->setAppValue(
+			$this->appName,
+			AdminSettings::SETTING_SEARCH_FUSION,
+			$fusion
+		);
+
+		// Validate and save score threshold (0-100)
+		$scoreThreshold = (int)($data['scoreThreshold'] ?? AdminSettings::DEFAULT_SEARCH_SCORE_THRESHOLD);
+		$scoreThreshold = max(0, min(100, $scoreThreshold));
+		$this->config->setAppValue(
+			$this->appName,
+			AdminSettings::SETTING_SEARCH_SCORE_THRESHOLD,
+			(string)$scoreThreshold
+		);
+
+		// Validate and save limit (5-100)
+		$limit = (int)($data['limit'] ?? AdminSettings::DEFAULT_SEARCH_LIMIT);
+		$limit = max(5, min(100, $limit));
+		$this->config->setAppValue(
+			$this->appName,
+			AdminSettings::SETTING_SEARCH_LIMIT,
+			(string)$limit
+		);
+
+		$this->logger->info('Admin search settings saved', [
+			'algorithm' => $algorithm,
+			'fusion' => $fusion,
+			'scoreThreshold' => $scoreThreshold,
+			'limit' => $limit,
+		]);
+
+		return new JSONResponse([
+			'success' => true,
+			'settings' => [
+				'algorithm' => $algorithm,
+				'fusion' => $fusion,
+				'scoreThreshold' => $scoreThreshold,
+				'limit' => $limit,
+			]
 		]);
 	}
 }
