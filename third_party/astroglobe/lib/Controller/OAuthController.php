@@ -200,7 +200,7 @@ class OAuthController extends Controller {
 
 			// Redirect back to personal settings
 			return new RedirectResponse(
-				$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'mcp'])
+				$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'astroglobe'])
 			);
 		} catch (\Exception $e) {
 			$this->logger->error('OAuth callback failed', [
@@ -215,7 +215,7 @@ class OAuthController extends Controller {
 			// Redirect to settings with error
 			return new RedirectResponse(
 				$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', [
-					'section' => 'mcp',
+					'section' => 'astroglobe',
 					'error' => urlencode($e->getMessage())
 				])
 			);
@@ -234,7 +234,7 @@ class OAuthController extends Controller {
 		$user = $this->userSession->getUser();
 		if (!$user) {
 			return new RedirectResponse(
-				$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'mcp'])
+				$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'astroglobe'])
 			);
 		}
 
@@ -250,7 +250,7 @@ class OAuthController extends Controller {
 		}
 
 		return new RedirectResponse(
-			$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'mcp'])
+			$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'astroglobe'])
 		);
 	}
 

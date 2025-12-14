@@ -131,6 +131,22 @@
 						<span class="mcp-algorithm-badge">{{ algorithmUsed }}</span>
 					</div>
 
+					<!-- 3D Visualization -->
+					<div v-if="coordinates.length > 0" class="mcp-viz-container">
+						<div class="mcp-viz-header">
+							<h3>{{ t('astroglobe', 'Vector Space Visualization') }}</h3>
+							<NcCheckboxRadioSwitch
+								:checked.sync="showQueryPoint"
+								type="switch"
+								@update:checked="updatePlot">
+								{{ t('astroglobe', 'Show query point') }}
+							</NcCheckboxRadioSwitch>
+						</div>
+						<div id="viz-plot-container" class="mcp-viz-plot-container">
+							<div id="viz-plot" ref="vizPlot" />
+						</div>
+					</div>
+
 					<div class="mcp-results-list">
 						<div
 							v-for="result in results"
@@ -248,6 +264,7 @@ import Refresh from 'vue-material-design-icons/Refresh.vue'
 
 import axios from '@nextcloud/axios'
 import { generateUrl } from '@nextcloud/router'
+import Plotly from 'plotly.js-dist-min'
 
 // App name for translations
 const APP_NAME = 'astroglobe'
@@ -287,6 +304,10 @@ export default {
 			results: [],
 			algorithmUsed: '',
 			searched: false,
+			// Visualization state
+			coordinates: [],
+			queryCoords: [],
+			showQueryPoint: true,
 			// Vector status state
 			vectorStatus: null,
 			statusLoading: false,
@@ -325,6 +346,8 @@ export default {
 			this.loading = true
 			this.error = null
 			this.searched = true
+			this.coordinates = []
+			this.queryCoords = []
 
 			try {
 				const url = generateUrl('/apps/astroglobe/api/search')
@@ -332,6 +355,7 @@ export default {
 					query: queryText,
 					algorithm: this.algorithm,
 					limit: parseInt(this.limit) || 20,
+					include_pca: true,
 				}
 
 				if (this.selectedDocTypes.length > 0) {
@@ -343,6 +367,15 @@ export default {
 				if (response.data.success) {
 					this.results = response.data.results || []
 					this.algorithmUsed = response.data.algorithm_used || this.algorithm
+					this.coordinates = response.data.coordinates_3d || []
+					this.queryCoords = response.data.query_coords || []
+
+					// Render visualization after DOM updates
+					if (this.coordinates.length > 0) {
+						this.$nextTick(() => {
+							this.renderPlot()
+						})
+					}
 				} else {
 					this.error = response.data.error || this.t('astroglobe', 'Search failed')
 					this.results = []
@@ -382,7 +415,130 @@ export default {
 		},
 
 		goToSettings() {
-			window.location.href = generateUrl('/settings/user/mcp')
+			window.location.href = generateUrl('/settings/user/astroglobe')
+		},
+
+		renderPlot() {
+			const container = document.getElementById('viz-plot-container')
+			if (!container) return
+
+			const width = container.clientWidth
+			const height = container.clientHeight || 400
+
+			const coordinates = this.coordinates
+			const queryCoords = this.queryCoords
+			const results = this.results
+
+			const scores = results.map(r => r.score)
+
+			// Trace 1: Document results (always visible)
+			const documentTrace = {
+				x: coordinates.map(c => c[0]),
+				y: coordinates.map(c => c[1]),
+				z: coordinates.map(c => c[2]),
+				mode: 'markers',
+				type: 'scatter3d',
+				name: 'Documents',
+				visible: true,
+				customdata: results.map((r, i) => ({
+					title: r.title,
+					raw_score: r.original_score || r.score,
+					relative_score: r.score,
+					x: coordinates[i][0],
+					y: coordinates[i][1],
+					z: coordinates[i][2],
+				})),
+				hovertemplate:
+					'<b>%{customdata.title}</b><br>'
+					+ 'Raw Score: %{customdata.raw_score:.3f} (%{customdata.relative_score:.0%} relative)<br>'
+					+ '(x=%{customdata.x}, y=%{customdata.y}, z=%{customdata.z})'
+					+ '<extra></extra>',
+				marker: {
+					size: results.map(r => 4 + (Math.pow(r.score, 2) * 10)),
+					opacity: results.map(r => 0.3 + (r.score * 0.7)),
+					color: scores,
+					colorscale: 'Viridis',
+					showscale: true,
+					colorbar: {
+						title: 'Relative Score',
+						x: 1.02,
+						xanchor: 'left',
+						thickness: 20,
+						len: 0.8,
+					},
+					cmin: 0,
+					cmax: 1,
+				},
+			}
+
+			// Trace 2: Query point (visibility controlled by toggle)
+			const queryTrace = {
+				x: [queryCoords[0]],
+				y: [queryCoords[1]],
+				z: [queryCoords[2]],
+				mode: 'markers',
+				type: 'scatter3d',
+				name: 'Query',
+				visible: this.showQueryPoint,
+				hovertemplate:
+					'<b>Search Query</b><br>'
+					+ `(x=${queryCoords[0]}, y=${queryCoords[1]}, z=${queryCoords[2]})`
+					+ '<extra></extra>',
+				marker: {
+					size: 10,
+					color: '#ef5350', // Subdued red (Material Design Red 400)
+					line: {
+						color: '#c62828', // Darker red border (Material Design Red 800)
+						width: 1,
+					},
+				},
+			}
+
+			const layout = {
+				title: `Vector Space (PCA 3D) - ${results.length} results`,
+				width,
+				height,
+				scene: {
+					xaxis: { title: 'PC1' },
+					yaxis: { title: 'PC2' },
+					zaxis: { title: 'PC3' },
+					camera: {
+						eye: { x: 1.5, y: 1.5, z: 1.5 },
+					},
+					domain: {
+						x: [0, 1],
+						y: [0, 1],
+					},
+				},
+				hovermode: 'closest',
+				autosize: true,
+				showlegend: false,
+				margin: { l: 0, r: 100, t: 40, b: 0 },
+			}
+
+			const traces = [documentTrace, queryTrace]
+
+			const config = {
+				responsive: true,
+				displayModeBar: true,
+			}
+
+			Plotly.newPlot('viz-plot', traces, layout, config)
+		},
+
+		updatePlot() {
+			// Toggle query point visibility without recreating the plot
+			if (this.coordinates.length > 0 && this.queryCoords.length > 0 && this.results.length > 0) {
+				const plotDiv = document.getElementById('viz-plot')
+
+				if (plotDiv && plotDiv.data && plotDiv.data.length >= 2) {
+					// Trace index 1 is the query point
+					Plotly.restyle('viz-plot', { visible: this.showQueryPoint }, [1])
+				} else {
+					// Plot doesn't exist yet, render it
+					this.renderPlot()
+				}
+			}
 		},
 	},
 }
@@ -476,6 +632,39 @@ export default {
 
 .mcp-error {
 	margin: 16px 0;
+}
+
+// Visualization
+.mcp-viz-container {
+	background: var(--color-background-hover);
+	border-radius: var(--border-radius-large);
+	padding: 16px;
+	margin-bottom: 24px;
+}
+
+.mcp-viz-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-bottom: 12px;
+
+	h3 {
+		margin: 0;
+		font-size: 16px;
+		font-weight: 600;
+	}
+}
+
+.mcp-viz-plot-container {
+	width: 100%;
+	height: 400px;
+	background: var(--color-main-background);
+	border-radius: var(--border-radius);
+}
+
+#viz-plot {
+	width: 100%;
+	height: 100%;
 }
 
 // Results

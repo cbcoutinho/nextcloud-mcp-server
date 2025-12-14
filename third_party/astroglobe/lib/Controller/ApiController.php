@@ -61,7 +61,7 @@ class ApiController extends Controller {
 			// Should not happen (NoAdminRequired ensures user is logged in)
 			$this->logger->error('Revoke access called without authenticated user');
 			return new RedirectResponse(
-				$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'mcp'])
+				$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'astroglobe'])
 			);
 		}
 
@@ -72,7 +72,7 @@ class ApiController extends Controller {
 		if (!$token) {
 			$this->logger->error("Cannot revoke access: No token found for user $userId");
 			return new RedirectResponse(
-				$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'mcp'])
+				$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'astroglobe'])
 			);
 		}
 
@@ -93,7 +93,7 @@ class ApiController extends Controller {
 
 		// Redirect back to personal settings
 		return new RedirectResponse(
-			$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'mcp'])
+			$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'astroglobe'])
 		);
 	}
 
@@ -107,6 +107,7 @@ class ApiController extends Controller {
 	 * @param string $algorithm Search algorithm (semantic, bm25, hybrid)
 	 * @param int $limit Number of results (max 50)
 	 * @param string $doc_types Comma-separated document types (e.g., "note,file")
+	 * @param string $include_pca Whether to include PCA coordinates for visualization
 	 * @return JSONResponse
 	 */
 	#[NoAdminRequired]
@@ -114,7 +115,8 @@ class ApiController extends Controller {
 		string $query = '',
 		string $algorithm = 'hybrid',
 		int $limit = 10,
-		string $doc_types = ''
+		string $doc_types = '',
+		string $include_pca = 'true'
 	): JSONResponse {
 		if (empty($query)) {
 			return new JSONResponse([
@@ -166,8 +168,11 @@ class ApiController extends Controller {
 			}
 		}
 
+		// Parse include_pca (string "true"/"false" from query params)
+		$includePcaBool = in_array(strtolower($include_pca), ['true', '1', 'yes'], true);
+
 		// Execute search via MCP server with OAuth token
-		$result = $this->client->search($query, $algorithm, $limit, false, $docTypesArray, $accessToken);
+		$result = $this->client->search($query, $algorithm, $limit, $includePcaBool, $docTypesArray, $accessToken);
 
 		if (isset($result['error'])) {
 			return new JSONResponse([
@@ -176,12 +181,23 @@ class ApiController extends Controller {
 			], Http::STATUS_INTERNAL_SERVER_ERROR);
 		}
 
-		return new JSONResponse([
+		$response = [
 			'success' => true,
 			'results' => $result['results'] ?? [],
 			'algorithm_used' => $result['algorithm_used'] ?? $algorithm,
 			'total_documents' => $result['total_documents'] ?? 0,
-		]);
+		];
+
+		// Include PCA visualization coordinates if requested and available
+		if ($includePcaBool) {
+			$response['coordinates_3d'] = $result['coordinates_3d'] ?? [];
+			$response['query_coords'] = $result['query_coords'] ?? [];
+			if (isset($result['pca_variance'])) {
+				$response['pca_variance'] = $result['pca_variance'];
+			}
+		}
+
+		return new JSONResponse($response);
 	}
 
 	/**
