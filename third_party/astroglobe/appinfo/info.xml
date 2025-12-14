@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	  xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
+	<id>astroglobe</id>
+	<name>Astroglobe</name>
+	<summary>Manage your Nextcloud MCP Server</summary>
+	<description><![CDATA[
+# MCP Server Management UI
+
+This app provides a native Nextcloud interface for managing your MCP (Model Context Protocol) Server.
+
+## Features
+
+- **User Settings**: View session information, manage background access permissions
+- **Admin Settings**: Monitor server status, vector sync metrics
+- **Vector Visualization**: Interactive semantic search with 2D PCA visualization
+- **Webhook Management**: Configure and enable webhook presets (admin only)
+
+## Requirements
+
+- Nextcloud MCP Server running in OAuth mode with Management API enabled
+- Configure `mcp_server_url` and `mcp_server_api_key` in config.php
+
+See [documentation](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/ADR-018-nextcloud-php-app-for-settings-ui.md) for details.
+	]]></description>
+	<version>0.1.0</version>
+	<licence>agpl</licence>
+	<author mail="chris@coutinho.io" homepage="https://github.com/cbcoutinho">Chris Coutinho</author>
+	<namespace>Astroglobe</namespace>
+	<category>ai</category>
+	<bugs>https://github.com/cbcoutinho/nextcloud-mcp-server/issues</bugs>
+	<repository type="git">https://github.com/cbcoutinho/nextcloud-mcp-server</repository>
+	<screenshot>https://raw.githubusercontent.com/cbcoutinho/nextcloud-mcp-server/master/docs/images/mcp-ui-screenshot.png</screenshot>
+	<dependencies>
+		<nextcloud min-version="30" max-version="32"/>
+	</dependencies>
+	<settings>
+		<personal>OCA\Astroglobe\Settings\Personal</personal>
+		<personal-section>OCA\Astroglobe\Settings\PersonalSection</personal-section>
+		<admin>OCA\Astroglobe\Settings\Admin</admin>
+		<admin-section>OCA\Astroglobe\Settings\AdminSection</admin-section>
+	</settings>
+	<navigations>
+		<navigation>
+			<id>astroglobe</id>
+			<name>Astroglobe</name>
+			<route>astroglobe.page.index</route>
+			<icon>app.svg</icon>
+			<type>link</type>
+		</navigation>
+	</navigations>
+</info>
