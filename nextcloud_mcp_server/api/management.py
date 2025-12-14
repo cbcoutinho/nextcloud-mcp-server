@@ -393,6 +393,231 @@ async def revoke_user_access(request: Request) -> JSONResponse:
         )
 
 
+async def unified_search(request: Request) -> JSONResponse:
+    """POST /api/v1/search - Search endpoint for Nextcloud Unified Search.
+
+    Optimized search endpoint for the Nextcloud Unified Search provider
+    and other PHP app integrations. Returns results with metadata needed
+    for navigation to source documents.
+
+    Request body:
+    {
+        "query": "search query",
+        "algorithm": "semantic|bm25|hybrid",  // default: hybrid
+        "limit": 20,  // max: 100
+        "offset": 0,  // pagination offset
+        "include_pca": false,  // optional PCA coordinates
+        "include_chunks": true  // include text snippets
+    }
+
+    Response:
+    {
+        "results": [{
+            "id": "doc123",
+            "doc_type": "note",
+            "title": "Document Title",
+            "excerpt": "Matching text snippet...",
+            "score": 0.85,
+            "path": "/path/to/file.txt",  // for files
+            "board_id": 1,  // for deck cards
+            "card_id": 42
+        }],
+        "total_found": 150,
+        "algorithm_used": "hybrid"
+    }
+
+    Requires OAuth bearer token for user filtering.
+    """
+    from nextcloud_mcp_server.config import get_settings
+
+    settings = get_settings()
+    if not settings.vector_sync_enabled:
+        return JSONResponse(
+            {"error": "Vector sync is disabled on this server"},
+            status_code=404,
+        )
+
+    # Validate OAuth token and extract user
+    try:
+        user_id, _validated = await validate_token_and_get_user(request)
+    except Exception as e:
+        logger.warning(f"Unauthorized access to /api/v1/search: {e}")
+        return JSONResponse(
+            {"error": "Unauthorized", "message": str(e)},
+            status_code=401,
+        )
+
+    try:
+        # Parse request body
+        body = await request.json()
+        query = body.get("query", "")
+        algorithm = body.get("algorithm", "hybrid")
+        fusion = body.get("fusion", "rrf")
+        score_threshold = body.get("score_threshold", 0.0)
+        limit = min(body.get("limit", 20), 100)  # Enforce max limit
+        offset = body.get("offset", 0)
+        include_pca = body.get("include_pca", False)
+        include_chunks = body.get("include_chunks", True)
+        doc_types = body.get("doc_types")  # Optional filter
+
+        if not query:
+            return JSONResponse({"results": [], "total_found": 0})
+
+        # Validate algorithm
+        valid_algorithms = {"semantic", "bm25", "hybrid"}
+        if algorithm not in valid_algorithms:
+            algorithm = "hybrid"
+
+        # Validate fusion method
+        valid_fusions = {"rrf", "dbsf"}
+        if fusion not in valid_fusions:
+            fusion = "rrf"
+
+        # Validate score threshold
+        score_threshold = max(0.0, min(1.0, float(score_threshold)))
+
+        # Execute search using the appropriate algorithm
+        from nextcloud_mcp_server.search import (
+            BM25HybridSearchAlgorithm,
+            SemanticSearchAlgorithm,
+        )
+
+        # Select search algorithm
+        if algorithm == "semantic":
+            search_algo = SemanticSearchAlgorithm(score_threshold=score_threshold)
+        else:
+            search_algo = BM25HybridSearchAlgorithm(
+                score_threshold=score_threshold, fusion=fusion
+            )
+
+        # Request extra results to handle offset
+        search_limit = limit + offset
+
+        # Execute search
+        all_results = []
+        if doc_types and isinstance(doc_types, list):
+            for doc_type in doc_types:
+                if doc_type:
+                    results = await search_algo.search(
+                        query=query,
+                        user_id=user_id,
+                        limit=search_limit,
+                        doc_type=doc_type,
+                    )
+                    all_results.extend(results)
+            all_results.sort(key=lambda r: r.score, reverse=True)
+        else:
+            all_results = await search_algo.search(
+                query=query,
+                user_id=user_id,
+                limit=search_limit,
+            )
+
+        # Deduplicate results by document (multiple chunks may come from same doc)
+        # Keep highest-scoring chunk per document
+        doc_map: dict[str, Any] = {}  # key: "doc_type:id" -> best result
+        for result in all_results:
+            # Build document key from type and ID
+            doc_id = result.id
+            if result.metadata:
+                # Use note_id if present (for notes), otherwise use result.id
+                doc_id = result.metadata.get("note_id", result.id)
+            doc_key = f"{result.doc_type}:{doc_id}"
+
+            # Keep only the highest-scoring chunk per document
+            if doc_key not in doc_map or result.score > doc_map[doc_key].score:
+                doc_map[doc_key] = result
+
+        # Convert back to list and sort by score
+        deduplicated_results = sorted(
+            doc_map.values(), key=lambda r: r.score, reverse=True
+        )
+
+        # Calculate total and apply pagination (on deduplicated results)
+        total_found = len(deduplicated_results)
+        paginated_results = deduplicated_results[offset : offset + limit]
+
+        # Format results for Unified Search
+        formatted_results = []
+        for result in paginated_results:
+            # Get document ID (prefer note_id for notes)
+            doc_id = result.id
+            if result.metadata and "note_id" in result.metadata:
+                doc_id = result.metadata["note_id"]
+
+            result_data: dict[str, Any] = {
+                "id": doc_id,
+                "doc_type": result.doc_type,
+                "title": result.title,
+                "score": result.score,
+            }
+
+            # Include excerpt/chunk if requested (full content, no truncation)
+            if include_chunks and result.excerpt:
+                result_data["excerpt"] = result.excerpt
+
+            # Include navigation metadata from result.metadata
+            if result.metadata:
+                # File path and mimetype for files
+                if "path" in result.metadata:
+                    result_data["path"] = result.metadata["path"]
+                if "mime_type" in result.metadata:
+                    result_data["mime_type"] = result.metadata["mime_type"]
+
+                # Deck card navigation
+                if "board_id" in result.metadata:
+                    result_data["board_id"] = result.metadata["board_id"]
+                if "card_id" in result.metadata:
+                    result_data["card_id"] = result.metadata["card_id"]
+
+                # Calendar event metadata
+                if "calendar_id" in result.metadata:
+                    result_data["calendar_id"] = result.metadata["calendar_id"]
+                if "event_uid" in result.metadata:
+                    result_data["event_uid"] = result.metadata["event_uid"]
+
+            formatted_results.append(result_data)
+
+        response_data: dict[str, Any] = {
+            "results": formatted_results,
+            "total_found": total_found,
+            "algorithm_used": algorithm,
+        }
+
+        # Optional PCA coordinates
+        if include_pca and len(paginated_results) >= 2:
+            try:
+                from nextcloud_mcp_server.vector.visualization import (
+                    compute_pca_coordinates,
+                )
+
+                if search_algo.query_embedding is not None:
+                    query_embedding = search_algo.query_embedding
+                else:
+                    from nextcloud_mcp_server.embedding.service import (
+                        get_embedding_service,
+                    )
+
+                    embedding_service = get_embedding_service()
+                    query_embedding = await embedding_service.embed(query)
+
+                pca_data = await compute_pca_coordinates(
+                    paginated_results, query_embedding
+                )
+                response_data["pca_data"] = pca_data
+            except Exception as e:
+                logger.warning(f"Failed to compute PCA for unified search: {e}")
+
+        return JSONResponse(response_data)
+
+    except Exception as e:
+        logger.error(f"Error in unified search: {e}")
+        return JSONResponse(
+            {"error": "Internal error", "message": str(e)},
+            status_code=500,
+        )
+
+
 async def vector_search(request: Request) -> JSONResponse:
     """POST /api/v1/vector-viz/search - Vector search for visualization.
 

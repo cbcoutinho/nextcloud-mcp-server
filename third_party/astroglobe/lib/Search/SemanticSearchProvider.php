@@ -8,8 +8,11 @@ use OCA\Astroglobe\AppInfo\Application;
 use OCA\Astroglobe\Service\McpServerClient;
 use OCA\Astroglobe\Service\McpTokenStorage;
 use OCA\Astroglobe\Settings\Admin as AdminSettings;
+use OCP\Files\FileInfo;
+use OCP\Files\IMimeTypeDetector;
 use OCP\IConfig;
 use OCP\IL10N;
+use OCP\IPreview;
 use OCP\IURLGenerator;
 use OCP\IUser;
 use OCP\Search\IProvider;
@@ -35,6 +38,8 @@ class SemanticSearchProvider implements IProvider {
 		private IConfig $config,
 		private IL10N $l10n,
 		private IURLGenerator $urlGenerator,
+		private IMimeTypeDetector $mimeTypeDetector,
+		private IPreview $previewManager,
 		private LoggerInterface $logger,
 	) {
 	}
@@ -174,12 +179,14 @@ class SemanticSearchProvider implements IProvider {
 		$title = $result['title'] ?? $this->l10n->t('Untitled');
 		$excerpt = $result['excerpt'] ?? '';
 		$score = $result['score'] ?? 0;
+		$id = $result['id'] ?? null;
+		$mimeType = $result['mime_type'] ?? null;
 
 		// Build resource URL based on document type
 		$resourceUrl = $this->buildResourceUrl($result);
 
-		// Build thumbnail URL based on document type
-		$thumbnailUrl = $this->buildThumbnailUrl($docType);
+		// Get icon and thumbnail based on document type
+		[$thumbnailUrl, $iconClass] = $this->getIconAndThumbnail($docType, $id, $mimeType);
 
 		// Subline shows full excerpt if available, otherwise document type and score
 		if (!empty($excerpt)) {
@@ -199,7 +206,7 @@ class SemanticSearchProvider implements IProvider {
 			$title,
 			$subline,
 			$resourceUrl,
-			'', // icon class (empty, using thumbnail)
+			$iconClass,
 			false // not rounded
 		);
 	}
@@ -239,19 +246,44 @@ class SemanticSearchProvider implements IProvider {
 	}
 
 	/**
-	 * Get thumbnail URL for document type.
+	 * Get icon and thumbnail for document type.
+	 *
+	 * Returns [thumbnailUrl, iconClass] tuple.
+	 * For files, uses mimetype-specific icons and preview thumbnails when available.
+	 * For other document types, uses appropriate icon classes.
+	 *
+	 * @return array{string, string} [thumbnailUrl, iconClass]
 	 */
-	private function buildThumbnailUrl(string $docType): string {
-		// Use app icons for different document types
-		return match ($docType) {
-			'note' => $this->urlGenerator->imagePath('notes', 'app.svg'),
-			'file' => $this->urlGenerator->imagePath('files', 'app.svg'),
-			'deck_card' => $this->urlGenerator->imagePath('deck', 'app.svg'),
-			'calendar', 'calendar_event' => $this->urlGenerator->imagePath('calendar', 'app.svg'),
-			'news_item' => $this->urlGenerator->imagePath('news', 'app.svg'),
-			'contact' => $this->urlGenerator->imagePath('contacts', 'app.svg'),
-			default => $this->urlGenerator->imagePath(Application::APP_ID, 'app.svg'),
+	private function getIconAndThumbnail(string $docType, ?string $id, ?string $mimeType): array {
+		if ($docType === 'file' && $id !== null && $mimeType !== null) {
+			// For files, check if preview is supported
+			$thumbnailUrl = '';
+			if ($this->previewManager->isMimeSupported($mimeType)) {
+				$thumbnailUrl = $this->urlGenerator->linkToRouteAbsolute(
+					'core.Preview.getPreviewByFileId',
+					['x' => 32, 'y' => 32, 'fileId' => $id]
+				);
+			}
+
+			// Get mimetype-specific icon class
+			$iconClass = $mimeType === FileInfo::MIMETYPE_FOLDER
+				? 'icon-folder'
+				: $this->mimeTypeDetector->mimeTypeIcon($mimeType);
+
+			return [$thumbnailUrl, $iconClass];
+		}
+
+		// For non-file document types, use icon classes
+		$iconClass = match ($docType) {
+			'note' => 'icon-notes',
+			'deck_card' => 'icon-deck',
+			'calendar', 'calendar_event' => 'icon-calendar',
+			'news_item' => 'icon-rss',
+			'contact' => 'icon-contacts',
+			default => 'icon-file',
 		};
+
+		return ['', $iconClass];
 	}
 
 	/**
