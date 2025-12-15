@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace OCA\Astroglobe\Controller;
 
+use OCA\Astroglobe\Service\IdpTokenRefresher;
 use OCA\Astroglobe\Service\McpServerClient;
 use OCA\Astroglobe\Service\McpTokenStorage;
+use OCA\Astroglobe\Service\WebhookPresets;
 use OCA\Astroglobe\Settings\Admin as AdminSettings;
 use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http;
@@ -31,6 +33,7 @@ class ApiController extends Controller {
 	private $logger;
 	private $tokenStorage;
 	private $config;
+	private $tokenRefresher;
 
 	public function __construct(
 		string $appName,
@@ -40,7 +43,8 @@ class ApiController extends Controller {
 		IURLGenerator $urlGenerator,
 		LoggerInterface $logger,
 		McpTokenStorage $tokenStorage,
-		IConfig $config
+		IConfig $config,
+		IdpTokenRefresher $tokenRefresher
 	) {
 		parent::__construct($appName, $request);
 		$this->client = $client;
@@ -49,6 +53,7 @@ class ApiController extends Controller {
 		$this->logger = $logger;
 		$this->tokenStorage = $tokenStorage;
 		$this->config = $config;
+		$this->tokenRefresher = $tokenRefresher;
 	}
 
 	/**
@@ -141,8 +146,23 @@ class ApiController extends Controller {
 
 		$userId = $user->getUID();
 
-		// Get user's OAuth token for MCP server
-		$accessToken = $this->tokenStorage->getAccessToken($userId);
+		// Create refresh callback that calls IdP directly
+		$refreshCallback = function (string $refreshToken) {
+			$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
+
+			if (!$newTokenData) {
+				return null;
+			}
+
+			return [
+				'access_token' => $newTokenData['access_token'],
+				'refresh_token' => $newTokenData['refresh_token'] ?? $refreshToken,
+				'expires_in' => $newTokenData['expires_in'] ?? 3600,
+			];
+		};
+
+		// Get user's OAuth token for MCP server with automatic refresh
+		$accessToken = $this->tokenStorage->getAccessToken($userId, $refreshCallback);
 		if (!$accessToken) {
 			return new JSONResponse([
 				'success' => false,
@@ -306,5 +326,397 @@ class ApiController extends Controller {
 				'limit' => $limit,
 			]
 		]);
+	}
+
+	/**
+	 * Get available webhook presets.
+	 *
+	 * Admin-only endpoint that lists webhook presets filtered by installed apps.
+	 *
+	 * @return JSONResponse
+	 */
+	public function getWebhookPresets(): JSONResponse {
+		// Get admin's OAuth token for API calls
+		$user = $this->userSession->getUser();
+		if (!$user) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => 'User not authenticated'
+			], Http::STATUS_UNAUTHORIZED);
+		}
+
+		$userId = $user->getUID();
+
+		// Create refresh callback
+		$refreshCallback = function (string $refreshToken) {
+			$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
+
+			if (!$newTokenData) {
+				return null;
+			}
+
+			return [
+				'access_token' => $newTokenData['access_token'],
+				'refresh_token' => $newTokenData['refresh_token'] ?? $refreshToken,
+				'expires_in' => $newTokenData['expires_in'] ?? 3600,
+			];
+		};
+
+		// Get access token with automatic refresh
+		$accessToken = $this->tokenStorage->getAccessToken($userId, $refreshCallback);
+		if (!$accessToken) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => 'MCP server authorization required'
+			], Http::STATUS_UNAUTHORIZED);
+		}
+
+		// Get installed apps to filter presets
+		$installedAppsResult = $this->client->getInstalledApps($accessToken);
+		if (isset($installedAppsResult['error'])) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => $installedAppsResult['error']
+			], Http::STATUS_INTERNAL_SERVER_ERROR);
+		}
+
+		$installedApps = $installedAppsResult['apps'] ?? [];
+
+		// Get registered webhooks to check preset status
+		$webhooksResult = $this->client->listWebhooks($accessToken);
+		if (isset($webhooksResult['error'])) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => $webhooksResult['error']
+			], Http::STATUS_INTERNAL_SERVER_ERROR);
+		}
+
+		$registeredWebhooks = $webhooksResult['webhooks'] ?? [];
+
+		// Filter presets by installed apps
+		$presets = WebhookPresets::filterPresetsByInstalledApps($installedApps);
+
+		// Add enabled status to each preset
+		// IMPORTANT: Match both event type AND filter to avoid false positives
+		// (e.g., Notes and Files both use FILE_EVENT_* but with different filters)
+		$presetsWithStatus = [];
+		foreach ($presets as $presetId => $preset) {
+			// Check if all events for this preset are registered with matching filters
+			$allEventsRegistered = true;
+			foreach ($preset['events'] as $presetEvent) {
+				$eventMatched = false;
+				foreach ($registeredWebhooks as $webhook) {
+					// Match event type
+					if ($webhook['event'] !== $presetEvent['event']) {
+						continue;
+					}
+
+					// Match filter (both must have filter or both must not have filter)
+					$presetFilter = !empty($presetEvent['filter']) ? $presetEvent['filter'] : null;
+					$webhookFilter = !empty($webhook['eventFilter']) ? $webhook['eventFilter'] : null;
+
+					// Compare filters (use json_encode for deep comparison)
+					if (json_encode($presetFilter) === json_encode($webhookFilter)) {
+						$eventMatched = true;
+						break;
+					}
+				}
+
+				if (!$eventMatched) {
+					$allEventsRegistered = false;
+					break;
+				}
+			}
+
+			$presetsWithStatus[$presetId] = array_merge($preset, [
+				'enabled' => $allEventsRegistered
+			]);
+		}
+
+		return new JSONResponse([
+			'success' => true,
+			'presets' => $presetsWithStatus
+		]);
+	}
+
+	/**
+	 * Enable a webhook preset.
+	 *
+	 * Admin-only endpoint that registers all webhooks for a preset.
+	 *
+	 * @param string $presetId Preset ID to enable
+	 * @return JSONResponse
+	 */
+	public function enableWebhookPreset(string $presetId): JSONResponse {
+		// Get admin's OAuth token
+		$user = $this->userSession->getUser();
+		if (!$user) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => 'User not authenticated'
+			], Http::STATUS_UNAUTHORIZED);
+		}
+
+		$userId = $user->getUID();
+
+		// Create refresh callback
+		$refreshCallback = function (string $refreshToken) {
+			$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
+
+			if (!$newTokenData) {
+				return null;
+			}
+
+			return [
+				'access_token' => $newTokenData['access_token'],
+				'refresh_token' => $newTokenData['refresh_token'] ?? $refreshToken,
+				'expires_in' => $newTokenData['expires_in'] ?? 3600,
+			];
+		};
+
+		// Get access token with automatic refresh
+		$accessToken = $this->tokenStorage->getAccessToken($userId, $refreshCallback);
+		if (!$accessToken) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => 'MCP server authorization required'
+			], Http::STATUS_UNAUTHORIZED);
+		}
+
+		// Get preset configuration
+		$preset = WebhookPresets::getPreset($presetId);
+		if ($preset === null) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => "Unknown preset: $presetId"
+			], Http::STATUS_BAD_REQUEST);
+		}
+
+		// Get MCP server URL for webhook callback URI
+		$mcpServerUrl = $this->client->getServerUrl();
+		$callbackUri = $mcpServerUrl . '/api/v1/webhooks/callback';
+
+		// Register each event in the preset
+		$registered = [];
+		$errors = [];
+		foreach ($preset['events'] as $eventConfig) {
+			$result = $this->client->createWebhook(
+				$eventConfig['event'],
+				$callbackUri,
+				!empty($eventConfig['filter']) ? $eventConfig['filter'] : null,
+				$accessToken
+			);
+
+			if (isset($result['error'])) {
+				$errors[] = [
+					'event' => $eventConfig['event'],
+					'error' => $result['error']
+				];
+			} else {
+				$registered[] = $result;
+			}
+		}
+
+		if (!empty($errors)) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => 'Failed to register some webhooks',
+				'registered' => $registered,
+				'errors' => $errors
+			], Http::STATUS_INTERNAL_SERVER_ERROR);
+		}
+
+		$this->logger->info("Enabled webhook preset $presetId for user $userId", [
+			'preset_id' => $presetId,
+			'webhooks_registered' => count($registered)
+		]);
+
+		return new JSONResponse([
+			'success' => true,
+			'message' => "Enabled {$preset['name']}",
+			'webhooks' => $registered
+		]);
+	}
+
+	/**
+	 * Disable a webhook preset.
+	 *
+	 * Admin-only endpoint that deletes all webhooks for a preset.
+	 *
+	 * @param string $presetId Preset ID to disable
+	 * @return JSONResponse
+	 */
+	public function disableWebhookPreset(string $presetId): JSONResponse {
+		// Get admin's OAuth token
+		$user = $this->userSession->getUser();
+		if (!$user) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => 'User not authenticated'
+			], Http::STATUS_UNAUTHORIZED);
+		}
+
+		$userId = $user->getUID();
+
+		// Create refresh callback
+		$refreshCallback = function (string $refreshToken) {
+			$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
+
+			if (!$newTokenData) {
+				return null;
+			}
+
+			return [
+				'access_token' => $newTokenData['access_token'],
+				'refresh_token' => $newTokenData['refresh_token'] ?? $refreshToken,
+				'expires_in' => $newTokenData['expires_in'] ?? 3600,
+			];
+		};
+
+		// Get access token with automatic refresh
+		$accessToken = $this->tokenStorage->getAccessToken($userId, $refreshCallback);
+		if (!$accessToken) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => 'MCP server authorization required'
+			], Http::STATUS_UNAUTHORIZED);
+		}
+
+		// Get preset configuration
+		$preset = WebhookPresets::getPreset($presetId);
+		if ($preset === null) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => "Unknown preset: $presetId"
+			], Http::STATUS_BAD_REQUEST);
+		}
+
+		// Get all registered webhooks
+		$webhooksResult = $this->client->listWebhooks($accessToken);
+		if (isset($webhooksResult['error'])) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => $webhooksResult['error']
+			], Http::STATUS_INTERNAL_SERVER_ERROR);
+		}
+
+		$registeredWebhooks = $webhooksResult['webhooks'] ?? [];
+
+		// Find webhooks that match this preset's events AND filters
+		// IMPORTANT: Must match both event type AND filter to avoid deleting
+		// webhooks from other presets (e.g., Notes vs Files both use FILE_EVENT_*)
+		$webhooksToDelete = [];
+		foreach ($registeredWebhooks as $webhook) {
+			// Check if this webhook matches any event in the preset
+			foreach ($preset['events'] as $presetEvent) {
+				// Match event type
+				if ($webhook['event'] !== $presetEvent['event']) {
+					continue;
+				}
+
+				// Match filter (both must have filter or both must not have filter)
+				$presetFilter = !empty($presetEvent['filter']) ? $presetEvent['filter'] : null;
+				$webhookFilter = !empty($webhook['eventFilter']) ? $webhook['eventFilter'] : null;
+
+				// Compare filters (use json_encode for deep comparison)
+				if (json_encode($presetFilter) === json_encode($webhookFilter)) {
+					$webhooksToDelete[] = $webhook;
+					break; // This webhook matches, no need to check other preset events
+				}
+			}
+		}
+
+		// Delete each matching webhook
+		$deleted = [];
+		$errors = [];
+		foreach ($webhooksToDelete as $webhook) {
+			$result = $this->client->deleteWebhook($webhook['id'], $accessToken);
+
+			if (isset($result['error'])) {
+				$errors[] = [
+					'webhook_id' => $webhook['id'],
+					'event' => $webhook['event'],
+					'error' => $result['error']
+				];
+			} else {
+				$deleted[] = $webhook['id'];
+			}
+		}
+
+		if (!empty($errors)) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => 'Failed to delete some webhooks',
+				'deleted' => $deleted,
+				'errors' => $errors
+			], Http::STATUS_INTERNAL_SERVER_ERROR);
+		}
+
+		$this->logger->info("Disabled webhook preset $presetId for user $userId", [
+			'preset_id' => $presetId,
+			'webhooks_deleted' => count($deleted)
+		]);
+
+		return new JSONResponse([
+			'success' => true,
+			'message' => "Disabled {$preset['name']}",
+			'deleted' => $deleted
+		]);
+	}
+
+	/**
+	 * Get chunk context for visualization.
+	 *
+	 * @param string $doc_type Document type
+	 * @param string $doc_id Document ID
+	 * @param int $start Start offset
+	 * @param int $end End offset
+	 * @return JSONResponse
+	 */
+	#[NoAdminRequired]
+	public function chunkContext(
+		string $doc_type,
+		string $doc_id,
+		int $start,
+		int $end
+	): JSONResponse {
+		$user = $this->userSession->getUser();
+		if (!$user) {
+			return new JSONResponse(['error' => 'User not authenticated'], Http::STATUS_UNAUTHORIZED);
+		}
+
+		$userId = $user->getUID();
+
+		// Create refresh callback
+		$refreshCallback = function (string $refreshToken) {
+			$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
+
+			if (!$newTokenData) {
+				return null;
+			}
+
+			return [
+				'access_token' => $newTokenData['access_token'],
+				'refresh_token' => $newTokenData['refresh_token'] ?? $refreshToken,
+				'expires_in' => $newTokenData['expires_in'] ?? 3600,
+			];
+		};
+
+		// Get user's OAuth token for MCP server with automatic refresh
+		$accessToken = $this->tokenStorage->getAccessToken($userId, $refreshCallback);
+		if (!$accessToken) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => 'MCP server authorization required.'
+			], Http::STATUS_UNAUTHORIZED);
+		}
+
+		$result = $this->client->getChunkContext($doc_type, $doc_id, $start, $end, $accessToken);
+
+		if (isset($result['error'])) {
+			return new JSONResponse(['success' => false, 'error' => $result['error']], Http::STATUS_INTERNAL_SERVER_ERROR);
+		}
+
+		return new JSONResponse($result);
 	}
 }

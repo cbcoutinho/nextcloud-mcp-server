@@ -45,11 +45,33 @@ return [
 			'url' => '/api/vector-status',
 			'verb' => 'GET',
 		],
+		[
+			'name' => 'api#chunkContext',
+			'url' => '/api/chunk-context',
+			'verb' => 'GET',
+		],
 
 		// Admin settings routes
 		[
 			'name' => 'api#saveSearchSettings',
 			'url' => '/api/admin/search-settings',
+			'verb' => 'POST',
+		],
+
+		// Webhook management routes (admin only)
+		[
+			'name' => 'api#getWebhookPresets',
+			'url' => '/api/admin/webhooks/presets',
+			'verb' => 'GET',
+		],
+		[
+			'name' => 'api#enableWebhookPreset',
+			'url' => '/api/admin/webhooks/presets/{presetId}/enable',
+			'verb' => 'POST',
+		],
+		[
+			'name' => 'api#disableWebhookPreset',
+			'url' => '/api/admin/webhooks/presets/{presetId}/disable',
 			'verb' => 'POST',
 		],
 	],
