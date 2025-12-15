@@ -173,14 +173,13 @@
 								<span class="mcp-result-type">{{ result.doc_type || 'unknown' }}</span>
 								<div class="mcp-result-actions">
 									<NcButton
-										v-if="result.excerpt"
 										type="tertiary"
-										:aria-label="t('astroglobe', 'Toggle excerpt')"
-										@click="toggleExcerpt(index)">
+										:aria-label="t('astroglobe', 'Show Chunk')"
+										@click="viewChunk(result)">
 										<template #icon>
-											<TextBoxOutline v-if="!expandedExcerpts[index]" :size="18" />
-											<TextBoxRemoveOutline v-else :size="18" />
+											<Eye :size="18" />
 										</template>
+										{{ t('astroglobe', 'Show Chunk') }}
 									</NcButton>
 									<span class="mcp-result-score">{{ formatScore(result.score) }}%</span>
 								</div>
@@ -192,15 +191,17 @@
 								{{ result.title || t('astroglobe', 'Untitled') }}
 								<OpenInNew :size="14" class="mcp-external-icon" />
 							</a>
-							<div
-								v-if="result.excerpt && expandedExcerpts[index]"
-								class="mcp-result-excerpt mcp-result-excerpt--expanded">
-								{{ result.excerpt }}
+							<div class="mcp-result-metadata">
+								<span v-if="result.chunk_index !== undefined && result.total_chunks">
+									{{ t('astroglobe', 'Chunk {chunk}/{total}', { chunk: result.chunk_index + 1, total: result.total_chunks }) }}
+								</span>
+								<span v-if="result.page_number && result.page_count" class="mcp-metadata-separator">
+									· {{ t('astroglobe', 'Page {page}/{total}', { page: result.page_number, total: result.page_count }) }}
+								</span>
 							</div>
 							<div
-								v-else-if="result.excerpt"
 								class="mcp-result-excerpt">
-								{{ truncateExcerpt(result.excerpt) }}
+								{{ result.excerpt }}
 							</div>
 						</div>
 					</div>
@@ -277,6 +278,43 @@
 				</NcButton>
 			</div>
 		</NcAppContent>
+
+		<!-- PDF/Chunk Viewer Modal -->
+		<div v-if="showViewer" class="mcp-modal-overlay" @click.self="closeViewer">
+			<div class="mcp-modal">
+				<div class="mcp-modal-header">
+					<h3>{{ viewerTitle }}</h3>
+					<NcButton type="tertiary" @click="closeViewer">
+						<template #icon>
+							<Close :size="20" />
+						</template>
+					</NcButton>
+				</div>
+				<div class="mcp-modal-body">
+					<!-- Loading State -->
+					<div v-if="viewerLoading" class="mcp-viewer-loading">
+						<NcLoadingIcon :size="32" />
+						<span>{{ t('astroglobe', 'Loading content...') }}</span>
+					</div>
+
+					<!-- PDF Viewer -->
+					<PDFViewer
+						v-else-if="viewerType === 'pdf'"
+						:file-path="currentPdfPath"
+						:page-number="viewerPage"
+						@prev-page="viewerPage--"
+						@next-page="viewerPage++"
+						@error="handlePdfError" />
+
+					<!-- Text Viewer (for non-PDFs) -->
+					<div v-else class="mcp-text-viewer">
+						<div v-if="viewerContext.before" class="mcp-context-text">{{ viewerContext.before }}</div>
+						<div class="mcp-highlighted-chunk">{{ viewerContext.chunk }}</div>
+						<div v-if="viewerContext.after" class="mcp-context-text">{{ viewerContext.after }}</div>
+					</div>
+				</div>
+			</div>
+		</div>
 	</NcContent>
 </template>
 
@@ -302,10 +340,26 @@ import Refresh from 'vue-material-design-icons/Refresh.vue'
 import TextBoxOutline from 'vue-material-design-icons/TextBoxOutline.vue'
 import TextBoxRemoveOutline from 'vue-material-design-icons/TextBoxRemoveOutline.vue'
 import OpenInNew from 'vue-material-design-icons/OpenInNew.vue'
+import Eye from 'vue-material-design-icons/Eye.vue'
+import Close from 'vue-material-design-icons/Close.vue'
+
+import PDFViewer from './components/PDFViewer.vue'
 
 import axios from '@nextcloud/axios'
 import { generateUrl } from '@nextcloud/router'
 import Plotly from 'plotly.js-dist-min'
+import * as pdfjsLib from 'pdfjs-dist'
+
+// Set worker source with error handling
+try {
+	pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+		'pdfjs-dist/build/pdf.worker.mjs',
+		import.meta.url
+	).toString()
+} catch (e) {
+	console.warn('Failed to set PDF.js worker, will use fallback', e)
+	// PDF.js will use fake worker automatically
+}
 
 // App name for translations
 const APP_NAME = 'astroglobe'
@@ -324,6 +378,7 @@ export default {
 		NcNoteCard,
 		NcEmptyContent,
 		NcCheckboxRadioSwitch,
+		PDFViewer,
 		Magnify,
 		ChartBox,
 		Cog,
@@ -333,6 +388,8 @@ export default {
 		TextBoxOutline,
 		TextBoxRemoveOutline,
 		OpenInNew,
+		Eye,
+		Close,
 	},
 	data() {
 		return {
@@ -358,6 +415,18 @@ export default {
 			vectorStatus: null,
 			statusLoading: false,
 			statusError: null,
+			// Viewer state
+			showViewer: false,
+			viewerLoading: false,
+			viewerTitle: '',
+			viewerType: 'text',
+			viewerPage: 1,
+			currentPdfPath: '',
+			viewerContext: {
+				chunk: '',
+				before: '',
+				after: '',
+			},
 		}
 	},
 	computed: {
@@ -482,15 +551,13 @@ export default {
 			case 'note':
 				return generateUrl(`/apps/notes/#/note/${id}`)
 			case 'file':
-				if (result.path) {
-					const dir = result.path.substring(0, result.path.lastIndexOf('/')) || '/'
-					const file = result.path.substring(result.path.lastIndexOf('/') + 1)
-					return generateUrl(`/apps/files/?dir=${encodeURIComponent(dir)}&scrollto=${encodeURIComponent(file)}`)
+				if (id) {
+					return generateUrl(`/apps/files/files/${id}?dir=/&editing=false&openfile=true`)
 				}
 				return generateUrl('/apps/files/')
 			case 'deck_card':
-				if (result.board_id && result.card_id) {
-					return generateUrl(`/apps/deck/#!/board/${result.board_id}/card/${result.card_id}`)
+				if (result.board_id && id) {
+					return generateUrl(`/apps/deck/board/${result.board_id}/card/${id}`)
 				}
 				return generateUrl('/apps/deck/')
 			case 'calendar':
@@ -636,14 +703,68 @@ export default {
 				}
 			}
 		},
+
+		async viewChunk(result) {
+			this.showViewer = true
+			this.viewerLoading = true
+			this.viewerTitle = result.title || 'Chunk Viewer'
+
+			try {
+				// Fetch chunk context
+				const url = generateUrl('/apps/astroglobe/api/chunk-context')
+				const params = {
+					doc_type: result.doc_type,
+					doc_id: result.id,
+					start: result.chunk_start_offset,
+					end: result.chunk_end_offset,
+				}
+
+				const response = await axios.get(url, { params })
+
+				if (response.data.success) {
+					// Determine viewer type and setup
+					if (result.doc_type === 'file' && response.data.page_number) {
+						this.viewerType = 'pdf'
+						this.currentPdfPath = result.metadata?.path || ''
+						this.viewerPage = response.data.page_number
+					} else {
+						this.viewerType = 'text'
+						this.viewerContext = {
+							chunk: response.data.chunk_text,
+							before: response.data.before_context,
+							after: response.data.after_context,
+						}
+					}
+				} else {
+					console.error('Failed to load chunk:', response.data.error)
+					this.closeViewer()
+				}
+			} catch (err) {
+				console.error('Error loading chunk:', err)
+				this.closeViewer()
+			} finally {
+				this.viewerLoading = false
+			}
+		},
+
+		handlePdfError(error) {
+			console.error('PDF viewer error:', error)
+			this.viewerType = 'text'
+		},
+
+		closeViewer() {
+			this.showViewer = false
+		}
 	},
 }
 </script>
 
 <style scoped lang="scss">
 .mcp-section {
-	padding: 24px;
-	max-width: 1000px;
+	/* Standard Nextcloud app padding - matches Deck/core spacing */
+	padding: 44px 24px 24px var(--default-clickable-area);
+	/* Remove max-width to allow content to fill available space like Notes app */
+	min-height: calc(100vh - 150px); /* Ensure content extends to bottom of viewport */
 }
 
 .mcp-section-header {
@@ -879,14 +1000,19 @@ a.mcp-result-title {
 	cursor: pointer;
 }
 
+.mcp-result-metadata {
+	font-size: 12px;
+	color: var(--color-text-maxcontrast);
+	margin-bottom: 6px;
+	line-height: 1.4;
+}
+
 .mcp-result-excerpt {
 	font-size: 13px;
 	color: var(--color-text-maxcontrast);
 	line-height: 1.5;
-	display: -webkit-box;
-	-webkit-line-clamp: 2;
-	-webkit-box-orient: vertical;
-	overflow: hidden;
+	white-space: pre-wrap;
+	word-wrap: break-word;
 
 	&--expanded {
 		display: block;
@@ -963,6 +1089,80 @@ a.mcp-result-title {
 	margin: 0 3px;
 }
 
+// Modal
+.mcp-modal-overlay {
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background: rgba(0, 0, 0, 0.5);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 10000;
+}
+
+.mcp-modal {
+	background: var(--color-main-background);
+	border-radius: var(--border-radius-large);
+	width: 90%;
+	max-width: 900px;
+	height: 80vh;
+	display: flex;
+	flex-direction: column;
+	box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+.mcp-modal-header {
+	padding: 16px 20px;
+	border-bottom: 1px solid var(--color-border);
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+
+	h3 {
+		margin: 0;
+		font-size: 18px;
+		font-weight: 600;
+	}
+}
+
+.mcp-modal-body {
+	flex: 1;
+	overflow: auto;
+	padding: 20px;
+	position: relative;
+}
+
+.mcp-viewer-loading {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	height: 100%;
+	color: var(--color-text-lighter);
+	gap: 16px;
+}
+
+.mcp-text-viewer {
+	font-family: monospace;
+	line-height: 1.6;
+	white-space: pre-wrap;
+}
+
+.mcp-context-text {
+	color: var(--color-text-lighter);
+}
+
+.mcp-highlighted-chunk {
+	background: #fff9c4;
+	color: #000;
+	padding: 4px;
+	border-radius: 2px;
+	font-weight: bold;
+}
+
 @media (max-width: 768px) {
 	.mcp-search-row {
 		flex-direction: column;
@@ -977,5 +1177,19 @@ a.mcp-result-title {
 	.mcp-checkbox-grid {
 		grid-template-columns: 1fr;
 	}
+	
+	.mcp-modal {
+		width: 100%;
+		height: 100%;
+		border-radius: 0;
+	}
+}
+</style>
+
+<style lang="scss">
+/* Fix for double margin/padding issue when nested in #content */
+#content-vue {
+	margin-top: 0 !important;
+	margin-left: 0 !important;
 }
 </style>
