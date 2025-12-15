@@ -177,7 +177,6 @@ class SemanticSearchProvider implements IProvider {
 	private function transformResult(array $result): SearchResultEntry {
 		$docType = $result['doc_type'] ?? 'unknown';
 		$title = $result['title'] ?? $this->l10n->t('Untitled');
-		$excerpt = $result['excerpt'] ?? '';
 		$score = $result['score'] ?? 0;
 		$id = isset($result['id']) ? (string)$result['id'] : null;
 		$mimeType = $result['mime_type'] ?? null;
@@ -205,17 +204,13 @@ class SemanticSearchProvider implements IProvider {
 		// Combine metadata parts
 		$metadata = !empty($metadataParts) ? implode(' · ', $metadataParts) : '';
 
-		// Subline shows metadata + excerpt (or just metadata if no excerpt)
-		if (!empty($excerpt)) {
-			$subline = $metadata ? $metadata . "\n" . $excerpt : $excerpt;
-		} else {
-			$subline = $metadata ?: sprintf(
-				'%s · %d%% %s',
-				$this->getDocTypeLabel($docType),
-				(int)($score * 100),
-				$this->l10n->t('relevant')
-			);
-		}
+		// Subline shows only chunk/page metadata (no excerpt, consistent with chunk viz)
+		$subline = $metadata ?: sprintf(
+			'%s · %d%% %s',
+			$this->getDocTypeLabel($docType),
+			(int)($score * 100),
+			$this->l10n->t('relevant')
+		);
 
 		return new SearchResultEntry(
 			$thumbnailUrl,
@@ -253,7 +248,9 @@ class SemanticSearchProvider implements IProvider {
 
 			'calendar', 'calendar_event' => $this->urlGenerator->linkToRoute('calendar.view.index'),
 
-			'news_item' => $this->urlGenerator->linkToRoute('news.page.index'),
+			'news_item' => $id
+				? $this->urlGenerator->linkToRoute('news.page.index') . 'item/' . $id
+				: $this->urlGenerator->linkToRoute('news.page.index'),
 
 			'contact' => $this->urlGenerator->linkToRoute('contacts.page.index'),
 
@@ -317,24 +314,4 @@ class SemanticSearchProvider implements IProvider {
 		};
 	}
 
-	/**
-	 * Truncate excerpt to a maximum length, breaking at word boundaries.
-	 */
-	private function truncateExcerpt(string $excerpt, int $maxLength): string {
-		$excerpt = trim($excerpt);
-
-		if (mb_strlen($excerpt) <= $maxLength) {
-			return $excerpt;
-		}
-
-		// Find last space before limit
-		$truncated = mb_substr($excerpt, 0, $maxLength);
-		$lastSpace = mb_strrpos($truncated, ' ');
-
-		if ($lastSpace !== false && $lastSpace > $maxLength * 0.7) {
-			$truncated = mb_substr($truncated, 0, $lastSpace);
-		}
-
-		return $truncated . '…';
-	}
 }
