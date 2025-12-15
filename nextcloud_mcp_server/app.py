@@ -1707,10 +1707,16 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # Add management API endpoints for Nextcloud PHP app (OAuth mode only)
     if oauth_enabled:
         from nextcloud_mcp_server.api.management import (
+            create_webhook,
+            delete_webhook,
+            get_chunk_context,
+            get_installed_apps,
             get_server_status,
             get_user_session,
             get_vector_sync_status,
+            list_webhooks,
             revoke_user_access,
+            unified_search,
             vector_search,
         )
 
@@ -1739,9 +1745,23 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         routes.append(
             Route("/api/v1/vector-viz/search", vector_search, methods=["POST"])
         )
+        routes.append(
+            Route("/api/v1/chunk-context", get_chunk_context, methods=["GET"])
+        )
+        # ADR-018: Unified search endpoint for Nextcloud PHP app integration
+        routes.append(Route("/api/v1/search", unified_search, methods=["POST"]))
+        routes.append(Route("/api/v1/apps", get_installed_apps, methods=["GET"]))
+        # Webhook management endpoints
+        routes.append(Route("/api/v1/webhooks", list_webhooks, methods=["GET"]))
+        routes.append(Route("/api/v1/webhooks", create_webhook, methods=["POST"]))
+        routes.append(
+            Route("/api/v1/webhooks/{webhook_id}", delete_webhook, methods=["DELETE"])
+        )
         logger.info(
             "Management API endpoints enabled: /api/v1/status, /api/v1/vector-sync/status, "
-            "/api/v1/users/{user_id}/session, /api/v1/users/{user_id}/revoke, /api/v1/vector-viz/search"
+            "/api/v1/users/{user_id}/session, /api/v1/users/{user_id}/revoke, "
+            "/api/v1/vector-viz/search, /api/v1/search, /api/v1/apps, "
+            "/api/v1/webhooks"
         )
 
     # ADR-016: Add Smithery well-known config endpoint for container runtime discovery

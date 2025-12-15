@@ -314,8 +314,9 @@ class TokenBrokerService:
             refresh_token = refresh_data["refresh_token"]
 
             # Get token with specific scopes for background operation
+            # Pass user_id to enable refresh token rotation storage
             access_token, expires_in = await self._refresh_access_token_with_scopes(
-                refresh_token, required_scopes
+                refresh_token, required_scopes, user_id=user_id
             )
 
             # Cache the background token
@@ -335,7 +336,9 @@ class TokenBrokerService:
             await self.cache.invalidate(cache_key)
             return None
 
-    async def _refresh_access_token(self, refresh_token: str) -> Tuple[str, int]:
+    async def _refresh_access_token(
+        self, refresh_token: str, user_id: str | None = None
+    ) -> Tuple[str, int]:
         """
         Exchange refresh token for new access token.
 
@@ -343,6 +346,7 @@ class TokenBrokerService:
 
         Args:
             refresh_token: The refresh token
+            user_id: If provided, store the rotated refresh token for this user
 
         Returns:
             Tuple of (access_token, expires_in_seconds)
@@ -357,7 +361,7 @@ class TokenBrokerService:
         data = {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
-            "scope": "openid profile email notes:read notes:write calendar:read calendar:write",
+            "scope": "openid profile email offline_access notes:read notes:write calendar:read calendar:write",
             "client_id": self.client_id,
             "client_secret": self.client_secret,
         }
@@ -378,22 +382,41 @@ class TokenBrokerService:
         access_token = token_data["access_token"]
         expires_in = token_data.get("expires_in", 3600)  # Default 1 hour
 
+        # Handle refresh token rotation (Nextcloud OIDC rotates on every use)
+        new_refresh_token = token_data.get("refresh_token")
+        if user_id and new_refresh_token and new_refresh_token != refresh_token:
+            # Calculate expiry as Unix timestamp (90 days from now)
+            expires_at = int(
+                (datetime.now(timezone.utc) + timedelta(days=90)).timestamp()
+            )
+            await self.storage.store_refresh_token(
+                user_id=user_id,
+                refresh_token=new_refresh_token,
+                expires_at=expires_at,
+            )
+            logger.info(f"Stored rotated refresh token for user {user_id}")
+
         # Note: Nextcloud validates token audience on API calls - no need to pre-validate here
 
         logger.info(f"Refreshed access token (expires in {expires_in}s)")
         return access_token, expires_in
 
     async def _refresh_access_token_with_scopes(
-        self, refresh_token: str, required_scopes: list[str]
+        self, refresh_token: str, required_scopes: list[str], user_id: str | None = None
     ) -> Tuple[str, int]:
         """
         Exchange refresh token for new access token with specific scopes.
 
         This method implements scope downscoping for least privilege.
 
+        IMPORTANT: Nextcloud OIDC rotates refresh tokens on every use (one-time use).
+        When user_id is provided, this method stores the new refresh token returned
+        by Nextcloud to ensure subsequent refresh operations succeed.
+
         Args:
             refresh_token: The refresh token
             required_scopes: Minimal scopes needed for this operation
+            user_id: If provided, store the rotated refresh token for this user
 
         Returns:
             Tuple of (access_token, expires_in_seconds)
@@ -403,8 +426,10 @@ class TokenBrokerService:
 
         client = await self._get_http_client()
 
-        # Always include basic OpenID scopes
-        scopes = list(set(["openid", "profile", "email"] + required_scopes))
+        # Always include basic OpenID scopes + offline_access to get new refresh token
+        scopes = list(
+            set(["openid", "profile", "email", "offline_access"] + required_scopes)
+        )
 
         # Request new access token with specific scopes
         # Include client credentials as required by most OAuth servers
@@ -436,6 +461,21 @@ class TokenBrokerService:
         token_data = response.json()
         access_token = token_data["access_token"]
         expires_in = token_data.get("expires_in", 3600)  # Default 1 hour
+
+        # Handle refresh token rotation (Nextcloud OIDC rotates on every use)
+        new_refresh_token = token_data.get("refresh_token")
+        if user_id and new_refresh_token and new_refresh_token != refresh_token:
+            # Store the new refresh token for future use
+            # Calculate expiry as Unix timestamp (90 days from now)
+            expires_at = int(
+                (datetime.now(timezone.utc) + timedelta(days=90)).timestamp()
+            )
+            await self.storage.store_refresh_token(
+                user_id=user_id,
+                refresh_token=new_refresh_token,
+                expires_at=expires_at,
+            )
+            logger.info(f"Stored rotated refresh token for user {user_id}")
 
         # Note: Nextcloud validates token audience on API calls - no need to pre-validate here
 
@@ -523,11 +563,14 @@ class TokenBrokerService:
 
             if new_refresh_token and new_refresh_token != current_refresh_token:
                 # storage.store_refresh_token() handles encryption internally
+                # Convert datetime to Unix timestamp (int) for database storage
+                expires_at = int(
+                    (datetime.now(timezone.utc) + timedelta(days=90)).timestamp()
+                )
                 await self.storage.store_refresh_token(
                     user_id=user_id,
                     refresh_token=new_refresh_token,
-                    expires_at=datetime.now(timezone.utc)
-                    + timedelta(days=90),  # 90-day expiry
+                    expires_at=expires_at,
                 )
                 logger.info(f"Rotated master refresh token for user {user_id}")
 
