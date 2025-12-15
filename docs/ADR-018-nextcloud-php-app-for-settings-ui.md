@@ -2,7 +2,8 @@
 
 **Status**: Proposed
 **Date**: 2025-12-14
-**Related**: ADR-011 (AppAPI Architecture - Rejected), ADR-008 (MCP Sampling)
+**Updated**: 2025-12-15 (Added deployment modes and authentication architecture)
+**Related**: ADR-011 (AppAPI Architecture - Rejected), ADR-008 (MCP Sampling), ADR-004 (OAuth Progressive Consent)
 
 ## Context
 
@@ -195,6 +196,335 @@ Claude Desktop → MCP Server /mcp/sse endpoint
 
 ## Implementation Details
 
+### Deployment Modes and Authentication Architecture
+
+The MCP server supports three deployment modes, each with different authentication requirements for the three critical communication paths:
+
+1. **External MCP Client → MCP Server** (e.g., Claude Desktop)
+2. **Astroglobe UI → MCP Server** (PHP app REST API calls)
+3. **MCP Server → Nextcloud** (background jobs, vector sync)
+
+#### Mode 1: Basic Single-User (Development/Simple Deployments)
+
+**Configuration:**
+```bash
+DEPLOYMENT_MODE=basic
+NEXTCLOUD_USERNAME=admin
+NEXTCLOUD_PASSWORD=admin_password
+```
+
+**Authentication Flows:**
+
+| Communication Path | Method |
+|-------------------|--------|
+| MCP Client → Server | None (assumes single user) |
+| Astroglobe UI → Server | None (uses env credentials) |
+| Server → Nextcloud | BasicAuth from environment |
+
+**Use Cases:**
+- ✅ Local development
+- ✅ Single-user personal deployments
+- ✅ Quick start / proof-of-concept
+
+**Limitations:**
+- ❌ All clients share same identity
+- ❌ No per-user access control
+- ❌ Not suitable for multi-user environments
+
+#### Mode 2: Basic Multi-User Pass-Through (Multi-User Without OIDC)
+
+**Configuration:**
+```bash
+DEPLOYMENT_MODE=basic_multiuser
+# No credentials in env - clients provide their own
+```
+
+**Authentication Flows:**
+
+| Communication Path | Method |
+|-------------------|--------|
+| MCP Client → Server | BasicAuth with Nextcloud app password |
+| Astroglobe UI → Server | BasicAuth with Nextcloud app password |
+| Server → Nextcloud | Pass-through client's credentials |
+
+**Architecture:**
+
+```
+┌─────────────────────────────────────────────────────┐
+│  MCP Client (Claude Desktop)                        │
+│  Config: username=alice, password=<app_password>    │
+└──────────────────────┬──────────────────────────────┘
+                       │ Authorization: Basic base64(alice:app_pass)
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│  MCP Server (Pass-Through Mode)                     │
+│  ├─ Extract BasicAuth credentials from header       │
+│  ├─ NO token validation/exchange                    │
+│  ├─ Store credentials in request context            │
+│  └─ Create NextcloudClient with user's credentials  │
+└──────────────────────┬──────────────────────────────┘
+                       │ Authorization: Basic base64(alice:app_pass)
+                       │ (same credentials forwarded)
+                       ▼
+                  Nextcloud APIs
+                  (validates app password on each request)
+```
+
+**Implementation:**
+
+```python
+# nextcloud_mcp_server/context.py
+
+async def _get_basic_multiuser_client(ctx: Context) -> NextcloudClient:
+    """Create client using BasicAuth credentials from request context.
+
+    In BasicAuth multi-user mode:
+    1. Credentials extracted from Authorization header by middleware
+    2. Stored in ctx.request_context["basic_auth"]
+    3. Used to create NextcloudClient for this request
+    4. Nextcloud validates credentials on each API call
+    """
+    basic_auth = ctx.request_context.get("basic_auth")
+    if not basic_auth:
+        raise ValueError("BasicAuth credentials not found in context")
+
+    username = basic_auth.get("username")
+    password = basic_auth.get("password")
+
+    if not username or not password:
+        raise ValueError("Invalid BasicAuth credentials")
+
+    # Create client with user's credentials
+    http_client = get_http_client(ctx)
+    settings = get_settings()
+
+    return NextcloudClient(
+        http_client=http_client,
+        host=settings.nextcloud_host,
+        username=username,
+        basic_auth=(username, password),  # Forwarded to all NC API calls
+    )
+
+
+# nextcloud_mcp_server/app.py - BasicAuth extraction middleware
+
+class BasicAuthMiddleware:
+    """Extract BasicAuth credentials and store in request context."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: StarletteScope, receive: Receive, send: Send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(b"authorization", b"").decode()
+
+            if auth_header.startswith("Basic "):
+                try:
+                    encoded = auth_header[6:]
+                    decoded = base64.b64decode(encoded).decode('utf-8')
+                    username, password = decoded.split(':', 1)
+
+                    # Store in scope for MCP context
+                    scope.setdefault("state", {})
+                    scope["state"]["basic_auth"] = {
+                        "username": username,
+                        "password": password,
+                    }
+                except Exception as e:
+                    logger.warning(f"Failed to parse BasicAuth: {e}")
+
+        await self.app(scope, receive, send)
+```
+
+**User Experience:**
+
+Users generate app passwords in Nextcloud settings:
+1. Settings → Security → Devices & sessions
+2. Create new app password: "Claude Desktop"
+3. Copy generated password
+4. Configure MCP client:
+
+```json
+{
+  "mcpServers": {
+    "nextcloud": {
+      "url": "https://mcp.example.com/mcp",
+      "auth": {
+        "type": "basic",
+        "username": "alice",
+        "password": "xxxx-xxxx-xxxx-xxxx"
+      }
+    }
+  }
+}
+```
+
+**Astroglobe UI in BasicAuth Multi-User:**
+
+The PHP app prompts users to save their app password:
+
+```php
+// lib/Service/McpServerClient.php
+
+public function search(string $query, array $options = []): array {
+    $user = $this->userSession->getUser();
+    $userId = $user->getUID();
+
+    // Get user's app password from settings
+    $appPassword = $this->config->getUserValue(
+        $userId, 'astroglobe', 'app_password', ''
+    );
+
+    if (empty($appPassword)) {
+        return ['error' => 'Please configure app password in Astroglobe settings'];
+    }
+
+    $response = $this->httpClient->post(
+        $this->baseUrl . '/api/v1/vector-viz/search',
+        [
+            'json' => ['query' => $query] + $options,
+            'auth' => [$userId, $appPassword],  // BasicAuth
+        ]
+    );
+
+    return json_decode($response->getBody(), true);
+}
+```
+
+**Use Cases:**
+- ✅ Multi-user deployments
+- ✅ No OIDC infrastructure required
+- ✅ Each user has independent identity
+- ✅ App passwords revocable per-device
+- ✅ Background jobs work (same credentials)
+
+**Security Considerations:**
+
+| Aspect | BasicAuth Multi-User | OAuth (Mode 3) |
+|--------|---------------------|----------------|
+| **Credential scope** | ⚠️ Full NC access | ✅ Token audience-scoped |
+| **Credential lifetime** | ⚠️ Until manually revoked | ✅ Short-lived access tokens |
+| **MCP server sees** | ⚠️ Password in plaintext | ✅ Only opaque tokens |
+| **Credential exposure** | ⚠️ Higher risk | ✅ Lower risk |
+| **Setup complexity** | ✅ Simple | ⚠️ Requires OIDC |
+
+**Required Security Measures:**
+
+```python
+# nextcloud_mcp_server/app.py
+
+if deployment_mode == DeploymentMode.BASIC_MULTIUSER:
+    # Require TLS in production
+    if not settings.allow_insecure_transport:
+        if not settings.server_url.startswith("https://"):
+            raise ValueError(
+                "BasicAuth multi-user mode requires HTTPS. "
+                "Set ALLOW_INSECURE_TRANSPORT=true for testing only."
+            )
+
+    # Never log credentials
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    logger.warning(
+        "BasicAuth multi-user mode: credentials passed through to Nextcloud. "
+        "Consider OAuth mode for production deployments."
+    )
+```
+
+**Limitations:**
+- ⚠️ Credentials not audience-scoped (full NC access)
+- ⚠️ Credentials transmitted to MCP server (trust required)
+- ⚠️ No token refresh mechanism
+- ⚠️ Requires HTTPS for security
+
+#### Mode 3: OAuth (Production Multi-User)
+
+**Configuration:**
+```bash
+DEPLOYMENT_MODE=oauth
+OIDC_ISSUER=https://keycloak.example.com/realms/nextcloud
+NEXTCLOUD_HOST=https://nextcloud.example.com
+ENABLE_OFFLINE_ACCESS=true  # For background jobs
+```
+
+**Authentication Flows:**
+
+| Communication Path | Method |
+|-------------------|--------|
+| MCP Client → Server | OAuth Bearer token (PKCE flow) |
+| Astroglobe UI → Server | OAuth Bearer token (PKCE flow) |
+| Server → Nextcloud | Token exchange OR refresh token (Flow 2) |
+
+**Architecture:**
+
+```
+┌─────────────────────────────────────────────────────┐
+│  MCP Client / Astroglobe UI                         │
+└──────────────────────┬──────────────────────────────┘
+                       │ PKCE OAuth Flow
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│  Identity Provider (Keycloak/NextcloudOIDC)         │
+│  Issues: audience-scoped access token               │
+└──────────────────────┬──────────────────────────────┘
+                       │ Authorization: Bearer <token>
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│  MCP Server                                          │
+│  ├─ Validates token (UnifiedTokenVerifier)          │
+│  ├─ Checks audience (must match server URL)         │
+│  ├─ Exchanges token for NC token OR                 │
+│  └─ Uses refresh token (if Flow 2 completed)        │
+└──────────────────────┬──────────────────────────────┘
+                       │ Authorization: Bearer <nc_token>
+                       ▼
+                  Nextcloud APIs
+```
+
+**Use Cases:**
+- ✅ Production deployments
+- ✅ Security-sensitive environments
+- ✅ Background jobs requiring offline access
+- ✅ External MCP clients with advanced features
+- ✅ Token audience scoping required
+
+**Benefits:**
+- ✅ Short-lived access tokens
+- ✅ Token audience validation
+- ✅ Refresh tokens for background jobs
+- ✅ MCP sampling support
+- ✅ Credential separation (MCP server never sees user passwords)
+
+**Limitations:**
+- ⚠️ Requires OIDC infrastructure
+- ⚠️ More complex setup
+- ⚠️ Progressive consent flow needed for offline access
+
+See ADR-004 for complete OAuth architecture details.
+
+#### Deployment Mode Decision Matrix
+
+Choose deployment mode based on requirements:
+
+| Requirement | Basic Single | Basic Multi-User | OAuth |
+|-------------|--------------|------------------|-------|
+| **Multi-user support** | ❌ | ✅ | ✅ |
+| **Per-user identity** | ❌ | ✅ | ✅ |
+| **External MCP clients** | ⚠️ No auth | ✅ BasicAuth | ✅ OAuth |
+| **Astroglobe UI access** | ✅ | ✅ | ✅ |
+| **Background jobs** | ✅ | ✅ | ✅ |
+| **OIDC required** | ❌ | ❌ | ✅ |
+| **Token scoping** | ❌ | ❌ | ✅ |
+| **Setup complexity** | Low | Low | High |
+| **Security level** | Low | Medium | High |
+| **Production ready** | ❌ | ⚠️ Small teams | ✅ |
+
+**Recommendation:**
+- **Development**: Basic single-user
+- **Small teams, no OIDC**: Basic multi-user (with HTTPS required)
+- **Production**: OAuth mode with OIDC
+
 ### Phase 1: Add Management API to MCP Server
 
 Create new REST API endpoints alongside existing MCP protocol endpoints:
@@ -376,28 +706,54 @@ async def vector_search(request: Request) -> JSONResponse:
 
 **Authentication for Management API:**
 
-The management API uses the same OAuth token verification as MCP clients. The PHP app obtains tokens through PKCE flow with the same audience as MCP clients (the MCP server URL).
+The management API supports authentication methods corresponding to each deployment mode:
 
 ```python
 # nextcloud_mcp_server/api/management.py
 
-async def validate_token_and_get_user(request: Request) -> tuple[str, dict]:
-    """Validate OAuth bearer token and extract user ID.
+async def get_user_from_request(request: Request) -> tuple[str, dict]:
+    """Authenticate request using deployment-appropriate method.
+
+    Supports:
+    - OAuth Bearer tokens (OAuth mode)
+    - BasicAuth credentials (BasicAuth multi-user mode)
+    - No authentication (BasicAuth single-user mode)
+
+    Returns:
+        Tuple of (user_id, auth_info)
+    """
+    from nextcloud_mcp_server.config import get_deployment_mode, DeploymentMode
+
+    deployment_mode = get_deployment_mode()
+
+    if deployment_mode == DeploymentMode.OAUTH:
+        # OAuth mode: validate Bearer token
+        return await validate_oauth_token(request)
+
+    elif deployment_mode == DeploymentMode.BASIC_MULTIUSER:
+        # BasicAuth multi-user: validate credentials
+        return await validate_basic_auth(request)
+
+    elif deployment_mode == DeploymentMode.BASIC:
+        # Single-user: use env username
+        settings = get_settings()
+        return settings.nextcloud_username, {"type": "single_user"}
+
+    else:
+        raise ValueError(f"Unsupported deployment mode: {deployment_mode}")
+
+
+async def validate_oauth_token(request: Request) -> tuple[str, dict]:
+    """Validate OAuth bearer token (OAuth mode only).
 
     Uses the same UnifiedTokenVerifier as MCP client connections.
     Token audience must match the MCP server URL.
-
-    Returns:
-        Tuple of (user_id, token_info)
-
-    Raises:
-        ValueError: If token is invalid or missing
     """
     token = extract_bearer_token(request)
     if not token:
         raise ValueError("Missing Authorization header")
 
-    # Get token verifier from app state (set in starlette_lifespan)
+    # Get token verifier from app state
     token_verifier = request.app.state.oauth_context["token_verifier"]
 
     # Validate token - handles both JWT and opaque tokens
@@ -405,23 +761,67 @@ async def validate_token_and_get_user(request: Request) -> tuple[str, dict]:
     if not access_token:
         raise ValueError("Token validation failed")
 
-    # Extract user ID from token
     user_id = access_token.resource
     if not user_id:
         raise ValueError("Token missing user identifier")
 
     return user_id, {
-        "sub": user_id,
+        "type": "oauth",
         "client_id": access_token.client_id,
         "scopes": access_token.scopes,
     }
+
+
+async def validate_basic_auth(request: Request) -> tuple[str, str]:
+    """Validate BasicAuth credentials (BasicAuth multi-user mode only).
+
+    Validates credentials against Nextcloud to ensure they're valid.
+    Does NOT store credentials - they're used only for this request.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Basic "):
+        raise ValueError("Missing or invalid BasicAuth header")
+
+    try:
+        encoded = auth_header[6:]
+        decoded = base64.b64decode(encoded).decode('utf-8')
+        username, password = decoded.split(':', 1)
+    except Exception:
+        raise ValueError("Invalid BasicAuth encoding")
+
+    # Validate credentials against Nextcloud
+    settings = get_settings()
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{settings.nextcloud_host}/ocs/v2.php/cloud/user",
+            auth=(username, password),
+            headers={"OCS-APIRequest": "true"},
+        )
+
+        if response.status_code != 200:
+            raise ValueError("Invalid credentials")
+
+    return username, {"type": "basic", "password": password}
 ```
 
-**Key Design Points:**
-- **Same token verifier**: PHP app tokens validated by same `UnifiedTokenVerifier` as MCP clients
-- **Same audience**: PHP app OAuth client configured with `resource_url` matching MCP server URL
-- **Self-service only**: Users can only access/revoke their own sessions (token user_id must match path)
-- **No shared secrets**: No API keys needed - OAuth provides authentication and authorization
+**Key Design Points by Mode:**
+
+**OAuth Mode:**
+- ✅ Same token verifier as MCP clients (`UnifiedTokenVerifier`)
+- ✅ Same audience requirement (token must be for MCP server URL)
+- ✅ Self-service only (users access their own sessions)
+- ✅ No shared secrets needed
+
+**BasicAuth Multi-User:**
+- ✅ Credentials validated against Nextcloud on each request
+- ✅ Same credentials used by MCP clients
+- ✅ Per-user identity preserved
+- ⚠️ Requires HTTPS for security
+
+**BasicAuth Single-User:**
+- ✅ No authentication needed (single user assumed)
+- ✅ Uses environment credentials
+- ⚠️ Not suitable for multi-user deployments
 
 **Add routes to app.py:**
 
@@ -1180,7 +1580,65 @@ MANAGEMENT_API_ENABLED=true     # Required
 
 **Rejected Because:** Iframe embedding provides poor user experience and doesn't solve core problems.
 
-### Alternative 5: Nextcloud Frontend App (Vue.js SPA)
+### Alternative 5: MCP Protocol Proxy in PHP App
+
+**Description:** Implement MCP protocol (Streamable HTTP/SSE) directly in PHP app to proxy requests from external clients to the MCP container.
+
+**Proposed Architecture:**
+```
+External MCP Client → Astroglobe PHP App (SSE proxy) → MCP Container
+```
+
+**Pros:**
+- ✅ Single URL for all access
+- ✅ Nextcloud hostname for MCP endpoints
+- ✅ Centralized routing
+
+**Cons:**
+- ❌ **PHP SSE limitations** - Request-response model fights streaming
+  - Long-lived connections cause PHP-FPM timeout issues
+  - Memory leaks from buffering
+  - Requires custom FPM pool configuration
+- ❌ **Web server buffering** - Nginx/Apache buffer by default
+  - Defeats SSE real-time nature
+  - Requires server-specific config (`X-Accel-Buffering: no`)
+- ❌ **Complex implementation** - ~1000+ LOC SSE proxy logic
+  - Session management in PHP (MCP-Session-Id headers)
+  - SSE event stream parsing and forwarding
+  - Resumability handling (Last-Event-ID)
+  - Connection keep-alive management
+- ❌ **Duplicated logic** - Reimplements what container already does perfectly
+- ❌ **No additional value** - External clients still need same auth (OAuth/BasicAuth)
+  - PHP layer adds latency, not features
+  - Authentication still delegated to MCP server
+- ❌ **Maintenance burden** - Fighting PHP's architecture for streaming
+
+**Better Alternative:** Direct reverse proxy (nginx/Apache config):
+```nginx
+# 10 lines of nginx config vs 1000+ lines of PHP
+location /mcp/ {
+    proxy_pass http://mcp-container:8001/;
+    proxy_http_version 1.1;
+    proxy_set_header Connection '';
+    proxy_buffering off;
+    proxy_read_timeout 3600s;
+}
+```
+
+**Rejected Because:**
+- PHP is fundamentally ill-suited for SSE proxying (request-response vs streaming)
+- Reverse proxy at web server layer is simpler, more performant, and standard practice
+- No value added by PHP layer - authentication handled by container regardless
+- Rest API for Astroglobe UI is sufficient for internal NC integration
+
+**Note:** This alternative would have made sense if it enabled new use cases. However:
+1. **External MCP clients**: Work fine connecting directly to container (via reverse proxy)
+2. **Astroglobe UI**: Doesn't need MCP protocol - REST API sufficient
+3. **Authentication**: Solved by BasicAuth multi-user mode (pass-through) for non-OIDC deployments
+
+The REST API + BasicAuth multi-user architecture achieves the same goals (multi-user access without OIDC) without the complexity of SSE proxying.
+
+### Alternative 6: Nextcloud Frontend App (Vue.js SPA)
 
 **Description:** Build NC frontend app (JavaScript only), talk to management API.
 
@@ -2187,9 +2645,9 @@ class SemanticSearchProviderTest extends TestCase {
 
 ### To Update
 - `docs/installation.md` - Add NC PHP app installation section
-- `docs/configuration.md` - Document management API settings
-- `docs/authentication.md` - Clarify OAuth for MCP vs NC app access
-- `README.md` - Update architecture diagram
+- `docs/configuration.md` - Document management API settings and deployment modes
+- `docs/authentication.md` - Document all three deployment modes (basic, basic_multiuser, oauth)
+- `README.md` - Update architecture diagram with deployment mode decision tree
 
 ### To Create
 - `docs/management-api.md` - API reference for NC app developers
@@ -2210,6 +2668,7 @@ Creating a Nextcloud PHP app for settings and management UI provides the best of
 - Standalone server preserves sampling, elicitation, streaming
 - No ExApp limitations (ADR-011 findings)
 - External MCP clients work unchanged
+- All three deployment modes supported (basic, basic_multiuser, oauth)
 
 **✅ Native Nextcloud Integration:**
 - Settings in standard NC interface
@@ -2217,10 +2676,17 @@ Creating a Nextcloud PHP app for settings and management UI provides the best of
 - Familiar UX for NC users
 - Mobile and accessibility built-in
 
+**✅ Flexible Authentication Architecture:**
+- **Basic single-user**: Development and simple deployments
+- **Basic multi-user**: Multi-user deployments without OIDC infrastructure
+- **OAuth**: Production deployments with full security features
+
 **✅ Clean Architecture:**
 - Separation of concerns (protocol vs UI)
 - Single source of truth (MCP server owns logic)
 - Versioned API contract
 - Independent scaling and deployment
 
-This architecture solves the original goal: **Enable MCP sampling and advanced features while migrating the `/app` interface to a Nextcloud app**. The management API provides a clean integration point, and the gradual migration path ensures existing users aren't disrupted.
+This architecture solves the original goal: **Enable MCP sampling and advanced features while migrating the `/app` interface to a Nextcloud app**. The management API provides a clean integration point with authentication methods appropriate for each deployment scenario, and the gradual migration path ensures existing users aren't disrupted.
+
+**Key Architectural Decision:** Multi-user support without OIDC is achieved via **BasicAuth pass-through mode** (deployment mode 2), where the MCP server extracts credentials from client requests and forwards them to Nextcloud for validation. This eliminates the need for SSE proxying in PHP while providing per-user identity and access control.

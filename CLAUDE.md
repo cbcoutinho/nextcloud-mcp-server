@@ -506,6 +506,29 @@ docker compose exec app php occ user_oidc:provider keycloak
 **Nextcloud**: `docker compose exec app php occ ...` for occ commands
 **MariaDB**: `docker compose exec db mariadb -u [user] -p [password] [database]` for queries
 
+### Querying Nextcloud Application Logs
+
+**Use this pattern** to inspect Nextcloud application logs during debugging:
+
+```bash
+# View recent log entries
+docker compose exec app cat /var/www/html/data/nextcloud.log | jq | tail
+
+# Filter by app
+docker compose exec app cat /var/www/html/data/nextcloud.log | jq 'select(.app == "astroglobe")' | tail
+
+# Filter by log level (0=DEBUG, 1=INFO, 2=WARN, 3=ERROR, 4=FATAL)
+docker compose exec app cat /var/www/html/data/nextcloud.log | jq 'select(.level >= 3)' | tail
+
+# Search for specific messages
+docker compose exec app cat /var/www/html/data/nextcloud.log | jq 'select(.message | contains("OAuth"))' | tail -20
+
+# View full exception traces
+docker compose exec app cat /var/www/html/data/nextcloud.log | jq 'select(.exception != null)' | tail -5
+```
+
+**Log Structure**: Each entry is a JSON object with fields: `reqId`, `level`, `time`, `remoteAddr`, `user`, `app`, `method`, `url`, `message`, `userAgent`, `version`, `exception`
+
 **For detailed setup, see**:
 - `docs/installation.md` - Installation guide
 - `docs/configuration.md` - Configuration options
