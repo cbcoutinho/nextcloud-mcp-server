@@ -52,15 +52,28 @@ if php /var/www/html/occ oidc:list 2>/dev/null | grep -q "$MCP_CLIENT_ID"; then
 fi
 
 # Create OAuth client with correct resource_url for MCP server audience
-echo "Creating OAuth client with resource_url=$MCP_RESOURCE_URL"
-php /var/www/html/occ oidc:create \
+echo "Creating OAuth confidential client with resource_url=$MCP_RESOURCE_URL"
+CLIENT_OUTPUT=$(php /var/www/html/occ oidc:create \
     "Astroglobe" \
     "$MCP_REDIRECT_URI" \
     --client_id="$MCP_CLIENT_ID" \
-    --type=public \
+    --type=confidential \
     --flow=code \
     --token_type=jwt \
     --resource_url="$MCP_RESOURCE_URL" \
-    --allowed_scopes="openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write"
+    --allowed_scopes="openid profile email offline_access notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write")
+
+echo "$CLIENT_OUTPUT"
+
+# Extract client_secret from JSON output
+CLIENT_SECRET=$(echo "$CLIENT_OUTPUT" | php -r 'echo json_decode(file_get_contents("php://stdin"), true)["client_secret"] ?? "";')
+
+if [ -n "$CLIENT_SECRET" ]; then
+    echo "Configuring Astroglobe client secret in system config..."
+    php /var/www/html/occ config:system:set astroglobe_client_secret --value="$CLIENT_SECRET"
+    echo "✓ Client secret configured: ${CLIENT_SECRET:0:8}..."
+else
+    echo "⚠ Warning: Could not extract client_secret from OIDC client creation"
+fi
 
 echo "Astroglobe app installed and configured successfully"
