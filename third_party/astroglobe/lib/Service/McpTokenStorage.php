@@ -177,10 +177,11 @@ class McpTokenStorage {
 
 					if ($newTokenData && isset($newTokenData['access_token'])) {
 						// Store refreshed token
+						// Use new refresh token if provided (rotation), otherwise keep old one
 						$this->storeUserToken(
 							$userId,
 							$newTokenData['access_token'],
-							$token['refresh_token'], // Keep same refresh token
+							$newTokenData['refresh_token'] ?? $token['refresh_token'],
 							time() + ($newTokenData['expires_in'] ?? 3600)
 						);
 
