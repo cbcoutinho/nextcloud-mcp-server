@@ -490,6 +490,13 @@ export default {
 			return this.results.filter(r => (r.score || 0) >= threshold)
 		},
 	},
+	beforeDestroy() {
+		// Clean up Plotly event handlers to prevent memory leaks
+		const plotDiv = document.getElementById('viz-plot')
+		if (plotDiv && plotDiv.on) {
+			plotDiv.removeAllListeners('plotly_click')
+		}
+	},
 	methods: {
 		toggleDocType(docTypeId, checked) {
 			if (checked && !this.selectedDocTypes.includes(docTypeId)) {
@@ -733,6 +740,12 @@ export default {
 			}
 
 			Plotly.newPlot('viz-plot', traces, layout, config)
+
+			// Register click event handler for result points
+			const plotDiv = document.getElementById('viz-plot')
+			if (plotDiv) {
+				plotDiv.on('plotly_click', this.handlePlotClick)
+			}
 		},
 
 		updatePlot() {
@@ -751,6 +764,11 @@ export default {
 		},
 
 		async viewChunk(result) {
+			// Guard against concurrent loading
+			if (this.viewerLoading) {
+				return
+			}
+
 			this.showViewer = true
 			this.viewerLoading = true
 			this.viewerTitle = result.title || 'Chunk Viewer'
@@ -827,6 +845,35 @@ export default {
 		closeViewer() {
 			this.showViewer = false
 			this.pdfTotalPages = 0
+		},
+
+		handlePlotClick(eventData) {
+			// Only handle clicks on trace 0 (document results)
+			// Trace 1 is the query point - ignore clicks on it
+			if (!eventData.points || eventData.points.length === 0) {
+				return
+			}
+
+			const point = eventData.points[0]
+			const traceIndex = point.curveNumber // 0 = documents, 1 = query
+			const pointIndex = point.pointNumber // Index in trace data
+
+			// Ignore clicks on query point (trace 1)
+			if (traceIndex !== 0) {
+				return
+			}
+
+			// Access full result object using pointIndex
+			// Results array is 1:1 with coordinates array (guaranteed by API)
+			const result = this.results[pointIndex]
+
+			if (!result) {
+				console.warn('Click handler: result not found for index', pointIndex)
+				return
+			}
+
+			// Call existing viewChunk method
+			this.viewChunk(result)
 		},
 	},
 }
@@ -955,6 +1002,16 @@ export default {
 #viz-plot {
 	width: 100%;
 	height: 100%;
+
+	// Pointer cursor for clickable result points (trace 0)
+	:deep(.scatterlayer .trace:first-child .point) {
+		cursor: pointer !important;
+	}
+
+	// Default cursor for query point (trace 1)
+	:deep(.scatterlayer .trace:nth-child(2) .point) {
+		cursor: default !important;
+	}
 }
 
 // Results
