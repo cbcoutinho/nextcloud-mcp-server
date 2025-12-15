@@ -86,6 +86,17 @@ export default {
 			// Reload PDF if file path changes
 			this.loadPDF()
 		},
+		async loading(newLoading) {
+			// When loading completes, wait for canvas to be available and render
+			if (!newLoading && this.pdfDoc && !this.error) {
+				// Wait for Vue to update DOM
+				await this.$nextTick()
+				// Canvas should now be rendered (v-else condition)
+				if (this.$refs.canvas) {
+					await this.renderPage(this.pageNumber)
+				}
+			}
+		},
 	},
 	async mounted() {
 		await this.loadPDF()
@@ -121,16 +132,8 @@ export default {
 				this.totalPages = this.pdfDoc.numPages
 				this.$emit('loaded', { totalPages: this.totalPages })
 
-				// Wait for canvas to be in DOM
-				await this.$nextTick()
-
-				// Canvas should be available now (mounted lifecycle guarantees it)
-				if (!this.$refs.canvas) {
-					throw new Error('Canvas element not available after mount')
-				}
-
-				// Render the requested page
-				await this.renderPage(this.pageNumber)
+				// Set loading to false - the watcher will handle rendering
+				this.loading = false
 			} catch (err) {
 				console.error('PDF load error:', err)
 
@@ -148,7 +151,6 @@ export default {
 				}
 
 				this.$emit('error', err)
-			} finally {
 				this.loading = false
 			}
 		},

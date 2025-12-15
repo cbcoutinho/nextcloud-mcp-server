@@ -93,9 +93,9 @@
 									<NcCheckboxRadioSwitch
 										v-for="docType in docTypeOptions"
 										:key="docType.id"
-										:checked.sync="selectedDocTypes"
-										:value="docType.id"
-										type="checkbox">
+										:checked="selectedDocTypes.includes(docType.id)"
+										type="checkbox"
+										@update:checked="toggleDocType(docType.id, $event)">
 										{{ docType.label }}
 									</NcCheckboxRadioSwitch>
 								</div>
@@ -469,6 +469,17 @@ export default {
 		},
 	},
 	methods: {
+		toggleDocType(docTypeId, checked) {
+			if (checked && !this.selectedDocTypes.includes(docTypeId)) {
+				this.selectedDocTypes.push(docTypeId)
+			} else if (!checked) {
+				const index = this.selectedDocTypes.indexOf(docTypeId)
+				if (index > -1) {
+					this.selectedDocTypes.splice(index, 1)
+				}
+			}
+		},
+
 		async performSearch() {
 			const queryText = this.query.trim()
 			if (!queryText) {
