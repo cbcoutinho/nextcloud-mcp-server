@@ -351,4 +351,236 @@ class McpServerClient {
 	public function getPublicServerUrl(): string {
 		return $this->config->getSystemValue('mcp_server_public_url', $this->baseUrl);
 	}
+
+	/**
+	 * List all registered webhooks for a user.
+	 *
+	 * Requires OAuth bearer token for authentication.
+	 *
+	 * @param string $token OAuth bearer token
+	 * @return array{
+	 *   webhooks?: array<array{
+	 *     id?: int,
+	 *     event?: string,
+	 *     uri?: string,
+	 *     event_filter?: array,
+	 *     enabled?: bool
+	 *   }>,
+	 *   error?: string
+	 * }
+	 */
+	public function listWebhooks(string $token): array {
+		try {
+			$response = $this->httpClient->get(
+				$this->baseUrl . '/api/v1/webhooks',
+				[
+					'headers' => [
+						'Authorization' => 'Bearer ' . $token
+					]
+				]
+			);
+			$data = json_decode($response->getBody(), true);
+
+			if (json_last_error() !== JSON_ERROR_NONE) {
+				throw new \RuntimeException('Invalid JSON response from server');
+			}
+
+			return $data;
+		} catch (\Exception $e) {
+			$this->logger->error('Failed to list webhooks', [
+				'error' => $e->getMessage(),
+			]);
+			return ['error' => $e->getMessage()];
+		}
+	}
+
+	/**
+	 * Create a new webhook registration.
+	 *
+	 * Requires OAuth bearer token for authentication.
+	 *
+	 * @param string $event Event type (e.g., "\\OCA\\Files::postCreate")
+	 * @param string $uri Callback URI for webhook notifications
+	 * @param array|null $eventFilter Optional event filter parameters
+	 * @param string $token OAuth bearer token
+	 * @return array{
+	 *   id?: int,
+	 *   event?: string,
+	 *   uri?: string,
+	 *   event_filter?: array,
+	 *   enabled?: bool,
+	 *   error?: string
+	 * }
+	 */
+	public function createWebhook(
+		string $event,
+		string $uri,
+		?array $eventFilter,
+		string $token
+	): array {
+		try {
+			$requestBody = [
+				'event' => $event,
+				'uri' => $uri,
+			];
+
+			if ($eventFilter !== null) {
+				$requestBody['event_filter'] = $eventFilter;
+			}
+
+			$response = $this->httpClient->post(
+				$this->baseUrl . '/api/v1/webhooks',
+				[
+					'headers' => [
+						'Authorization' => 'Bearer ' . $token,
+						'Content-Type' => 'application/json',
+					],
+					'json' => $requestBody
+				]
+			);
+			$data = json_decode($response->getBody(), true);
+
+			if (json_last_error() !== JSON_ERROR_NONE) {
+				throw new \RuntimeException('Invalid JSON response from server');
+			}
+
+			return $data;
+		} catch (\Exception $e) {
+			$this->logger->error('Failed to create webhook', [
+				'error' => $e->getMessage(),
+				'event' => $event,
+			]);
+			return ['error' => $e->getMessage()];
+		}
+	}
+
+	/**
+	 * Delete a webhook registration.
+	 *
+	 * Requires OAuth bearer token for authentication.
+	 *
+	 * @param int $webhookId Webhook ID to delete
+	 * @param string $token OAuth bearer token
+	 * @return array{success?: bool, error?: string}
+	 */
+	public function deleteWebhook(int $webhookId, string $token): array {
+		try {
+			$response = $this->httpClient->delete(
+				$this->baseUrl . '/api/v1/webhooks/' . $webhookId,
+				[
+					'headers' => [
+						'Authorization' => 'Bearer ' . $token
+					]
+				]
+			);
+
+			// Successful DELETE may return 204 No Content
+			if ($response->getStatusCode() === 204) {
+				return ['success' => true];
+			}
+
+			$data = json_decode($response->getBody(), true);
+
+			if (json_last_error() !== JSON_ERROR_NONE) {
+				throw new \RuntimeException('Invalid JSON response from server');
+			}
+
+			return $data;
+		} catch (\Exception $e) {
+			$this->logger->error('Failed to delete webhook', [
+				'error' => $e->getMessage(),
+				'webhook_id' => $webhookId,
+			]);
+			return ['error' => $e->getMessage()];
+		}
+	}
+
+	/**
+	 * Get list of installed Nextcloud apps.
+	 *
+	 * Used to filter webhook presets based on available apps.
+	 * Requires OAuth bearer token for authentication.
+	 *
+	 * @param string $token OAuth bearer token
+	 * @return array{
+	 *   apps?: array<string>,
+	 *   error?: string
+	 * }
+	 */
+	public function getInstalledApps(string $token): array {
+		try {
+			$response = $this->httpClient->get(
+				$this->baseUrl . '/api/v1/apps',
+				[
+					'headers' => [
+						'Authorization' => 'Bearer ' . $token
+					]
+				]
+			);
+			$data = json_decode($response->getBody(), true);
+
+			if (json_last_error() !== JSON_ERROR_NONE) {
+				throw new \RuntimeException('Invalid JSON response from server');
+			}
+
+			return $data;
+		} catch (\Exception $e) {
+			$this->logger->error('Failed to get installed apps', [
+				'error' => $e->getMessage(),
+			]);
+			return ['error' => $e->getMessage()];
+		}
+	}
+
+	/**
+	 * Get chunk context (text, surrounding context, page image).
+	 *
+	 * Requires OAuth bearer token for authentication.
+	 *
+	 * @param string $docType Document type
+	 * @param string $docId Document ID
+	 * @param int $start Start offset
+	 * @param int $end End offset
+	 * @param string $token OAuth bearer token
+	 * @return array
+	 */
+	public function getChunkContext(
+		string $docType,
+		string $docId,
+		int $start,
+		int $end,
+		string $token
+	): array {
+		try {
+			$response = $this->httpClient->get(
+				$this->baseUrl . '/api/v1/chunk-context',
+				[
+					'headers' => [
+						'Authorization' => 'Bearer ' . $token
+					],
+					'query' => [
+						'doc_type' => $docType,
+						'doc_id' => $docId,
+						'start' => $start,
+						'end' => $end,
+						'context' => 500
+					]
+				]
+			);
+			$data = json_decode($response->getBody(), true);
+
+			if (json_last_error() !== JSON_ERROR_NONE) {
+				throw new \RuntimeException('Invalid JSON response from server');
+			}
+
+			return $data;
+		} catch (\Exception $e) {
+			$this->logger->error('Failed to get chunk context', [
+				'error' => $e->getMessage(),
+				'doc_type' => $docType,
+				'doc_id' => $docId,
+			]);
+			return ['error' => $e->getMessage()];
+		}
+	}
 }

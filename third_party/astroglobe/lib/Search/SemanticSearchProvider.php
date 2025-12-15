@@ -179,7 +179,7 @@ class SemanticSearchProvider implements IProvider {
 		$title = $result['title'] ?? $this->l10n->t('Untitled');
 		$excerpt = $result['excerpt'] ?? '';
 		$score = $result['score'] ?? 0;
-		$id = $result['id'] ?? null;
+		$id = isset($result['id']) ? (string)$result['id'] : null;
 		$mimeType = $result['mime_type'] ?? null;
 
 		// Build resource URL based on document type
@@ -188,12 +188,28 @@ class SemanticSearchProvider implements IProvider {
 		// Get icon and thumbnail based on document type
 		[$thumbnailUrl, $iconClass] = $this->getIconAndThumbnail($docType, $id, $mimeType);
 
-		// Subline shows full excerpt if available, otherwise document type and score
+		// Build metadata string with chunk and page info
+		$metadataParts = [];
+
+		// Chunk info (always available)
+		if (isset($result['chunk_index']) && isset($result['total_chunks'])) {
+			$chunkNum = $result['chunk_index'] + 1; // Convert 0-based to 1-based
+			$metadataParts[] = sprintf('Chunk %d/%d', $chunkNum, $result['total_chunks']);
+		}
+
+		// Page info for PDFs
+		if (!empty($result['page_number']) && !empty($result['page_count'])) {
+			$metadataParts[] = sprintf('Page %d/%d', $result['page_number'], $result['page_count']);
+		}
+
+		// Combine metadata parts
+		$metadata = !empty($metadataParts) ? implode(' · ', $metadataParts) : '';
+
+		// Subline shows metadata + excerpt (or just metadata if no excerpt)
 		if (!empty($excerpt)) {
-			// Show full chunk content - no truncation
-			$subline = $excerpt;
+			$subline = $metadata ? $metadata . "\n" . $excerpt : $excerpt;
 		} else {
-			$subline = sprintf(
+			$subline = $metadata ?: sprintf(
 				'%s · %d%% %s',
 				$this->getDocTypeLabel($docType),
 				(int)($score * 100),
@@ -227,12 +243,12 @@ class SemanticSearchProvider implements IProvider {
 				: $this->urlGenerator->linkToRoute('notes.page.index'),
 
 			'file' => $id
-				? $this->urlGenerator->linkToRouteAbsolute('files.view.index') . '/' . $id . '?openfile=true'
+				? $this->urlGenerator->linkToRouteAbsolute('files.view.index') . 'files/' . $id . '?dir=/&editing=false&openfile=true'
 				: $this->urlGenerator->linkToRouteAbsolute('files.view.index'),
 
-			'deck_card' => isset($result['board_id'], $result['card_id'])
+			'deck_card' => isset($result['board_id']) && $id
 				? $this->urlGenerator->linkToRoute('deck.page.index') .
-				  "/#!/board/{$result['board_id']}/card/{$result['card_id']}"
+				  "board/{$result['board_id']}/card/{$id}"
 				: $this->urlGenerator->linkToRoute('deck.page.index'),
 
 			'calendar', 'calendar_event' => $this->urlGenerator->linkToRoute('calendar.view.index'),
