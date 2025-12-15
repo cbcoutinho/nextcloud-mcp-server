@@ -11,27 +11,6 @@
 		<div v-else ref="container" class="pdf-canvas-container">
 			<canvas ref="canvas" />
 		</div>
-		<div v-if="!loading && !error && totalPages > 0" class="pdf-controls">
-			<NcButton
-				:disabled="pageNumber <= 1"
-				@click="$emit('prev-page')">
-				<template #icon>
-					<ChevronLeft :size="20" />
-				</template>
-				{{ t('astroglobe', 'Previous') }}
-			</NcButton>
-			<span class="page-info">
-				{{ t('astroglobe', 'Page {current} of {total}', { current: pageNumber, total: totalPages }) }}
-			</span>
-			<NcButton
-				:disabled="pageNumber >= totalPages"
-				@click="$emit('next-page')">
-				<template #icon>
-					<ChevronRight :size="20" />
-				</template>
-				{{ t('astroglobe', 'Next') }}
-			</NcButton>
-		</div>
 	</div>
 </template>
 
@@ -40,19 +19,13 @@ import * as pdfjsLib from 'pdfjs-dist'
 import { generateUrl } from '@nextcloud/router'
 import { translate as t } from '@nextcloud/l10n'
 import NcLoadingIcon from '@nextcloud/vue/dist/Components/NcLoadingIcon.js'
-import NcButton from '@nextcloud/vue/dist/Components/NcButton.js'
 import AlertCircle from 'vue-material-design-icons/AlertCircle.vue'
-import ChevronLeft from 'vue-material-design-icons/ChevronLeft.vue'
-import ChevronRight from 'vue-material-design-icons/ChevronRight.vue'
 
 export default {
 	name: 'PDFViewer',
 	components: {
 		NcLoadingIcon,
-		NcButton,
 		AlertCircle,
-		ChevronLeft,
-		ChevronRight,
 	},
 	props: {
 		filePath: {
@@ -247,34 +220,9 @@ export default {
 	}
 }
 
-.pdf-controls {
-	display: flex;
-	align-items: center;
-	gap: 16px;
-	padding: 8px;
-	background: var(--color-background-dark);
-	border-radius: var(--border-radius-large);
-
-	.page-info {
-		font-size: 14px;
-		color: var(--color-text-maxcontrast);
-		min-width: 120px;
-		text-align: center;
-	}
-}
-
 @media (max-width: 768px) {
 	.pdf-viewer {
 		padding: 8px;
-	}
-
-	.pdf-controls {
-		flex-direction: column;
-		gap: 8px;
-
-		.page-info {
-			order: -1;
-		}
 	}
 }
 </style>

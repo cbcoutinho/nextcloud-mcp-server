@@ -199,10 +199,6 @@
 									· {{ t('astroglobe', 'Page {page}/{total}', { page: result.page_number, total: result.page_count }) }}
 								</span>
 							</div>
-							<div
-								class="mcp-result-excerpt">
-								{{ result.excerpt }}
-							</div>
 						</div>
 					</div>
 				</div>
@@ -296,6 +292,7 @@
 		<!-- PDF/Chunk Viewer Modal -->
 		<div v-if="showViewer" class="mcp-modal-overlay" @click.self="closeViewer">
 			<div class="mcp-modal">
+				<!-- Fixed Header -->
 				<div class="mcp-modal-header">
 					<h3>{{ viewerTitle }}</h3>
 					<NcButton type="tertiary" @click="closeViewer">
@@ -304,6 +301,8 @@
 						</template>
 					</NcButton>
 				</div>
+
+				<!-- Scrollable Content -->
 				<div class="mcp-modal-body">
 					<!-- Loading State -->
 					<div v-if="viewerLoading" class="mcp-viewer-loading">
@@ -311,27 +310,43 @@
 						<span>{{ t('astroglobe', 'Loading content...') }}</span>
 					</div>
 
-					<!-- PDF Viewer -->
+					<!-- PDF Viewer (canvas only, controls in footer) -->
 					<PDFViewer
 						v-else-if="viewerType === 'pdf'"
 						:file-path="currentPdfPath"
 						:page-number="viewerPage"
 						@prev-page="viewerPage--"
 						@next-page="viewerPage++"
+						@loaded="handlePdfLoaded"
 						@error="handlePdfError" />
 
-					<!-- Text Viewer (for non-PDFs) -->
-					<div v-else class="mcp-text-viewer">
-						<div v-if="viewerContext.before" class="mcp-context-text">
-							{{ viewerContext.before }}
-						</div>
-						<div class="mcp-highlighted-chunk">
-							{{ viewerContext.chunk }}
-						</div>
-						<div v-if="viewerContext.after" class="mcp-context-text">
-							{{ viewerContext.after }}
-						</div>
-					</div>
+					<!-- Markdown Viewer (for non-PDFs) -->
+					<MarkdownViewer
+						v-else
+						:content="getMarkdownContent()" />
+				</div>
+
+				<!-- Fixed Footer (navigation controls) -->
+				<div v-if="!viewerLoading && viewerType === 'pdf' && pdfTotalPages > 0" class="mcp-modal-footer">
+					<NcButton
+						:disabled="viewerPage <= 1"
+						@click="viewerPage--">
+						<template #icon>
+							<ChevronLeft :size="20" />
+						</template>
+						{{ t('astroglobe', 'Previous') }}
+					</NcButton>
+					<span class="mcp-page-info">
+						{{ t('astroglobe', 'Page {current} of {total}', { current: viewerPage, total: pdfTotalPages }) }}
+					</span>
+					<NcButton
+						:disabled="viewerPage >= pdfTotalPages"
+						@click="viewerPage++">
+						<template #icon>
+							<ChevronRight :size="20" />
+						</template>
+						{{ t('astroglobe', 'Next') }}
+					</NcButton>
 				</div>
 			</div>
 		</div>
@@ -356,12 +371,15 @@ import ChartBox from 'vue-material-design-icons/ChartBox.vue'
 import Cog from 'vue-material-design-icons/Cog.vue'
 import ChevronDown from 'vue-material-design-icons/ChevronDown.vue'
 import ChevronUp from 'vue-material-design-icons/ChevronUp.vue'
+import ChevronLeft from 'vue-material-design-icons/ChevronLeft.vue'
+import ChevronRight from 'vue-material-design-icons/ChevronRight.vue'
 import Refresh from 'vue-material-design-icons/Refresh.vue'
 import OpenInNew from 'vue-material-design-icons/OpenInNew.vue'
 import Eye from 'vue-material-design-icons/Eye.vue'
 import Close from 'vue-material-design-icons/Close.vue'
 
 import PDFViewer from './components/PDFViewer.vue'
+import MarkdownViewer from './components/MarkdownViewer.vue'
 
 import axios from '@nextcloud/axios'
 import { generateUrl } from '@nextcloud/router'
@@ -394,11 +412,14 @@ export default {
 		NcEmptyContent,
 		NcCheckboxRadioSwitch,
 		PDFViewer,
+		MarkdownViewer,
 		Magnify,
 		ChartBox,
 		Cog,
 		ChevronDown,
 		ChevronUp,
+		ChevronLeft,
+		ChevronRight,
 		Refresh,
 		OpenInNew,
 		Eye,
@@ -434,6 +455,7 @@ export default {
 			viewerTitle: '',
 			viewerType: 'text',
 			viewerPage: 1,
+			pdfTotalPages: 0,
 			currentPdfPath: '',
 			viewerContext: {
 				chunk: '',
@@ -776,8 +798,35 @@ export default {
 			this.viewerType = 'text'
 		},
 
+		handlePdfLoaded(event) {
+			this.pdfTotalPages = event.totalPages || 0
+		},
+
+		getMarkdownContent() {
+			// Combine before/chunk/after context into single markdown string
+			let content = ''
+
+			if (this.viewerContext.before) {
+				content += this.viewerContext.before + '\n\n'
+			}
+
+			if (this.viewerContext.chunk) {
+				// Highlight the main chunk with a separator
+				content += '---\n\n'
+				content += this.viewerContext.chunk
+				content += '\n\n---'
+			}
+
+			if (this.viewerContext.after) {
+				content += '\n\n' + this.viewerContext.after
+			}
+
+			return content
+		},
+
 		closeViewer() {
 			this.showViewer = false
+			this.pdfTotalPages = 0
 		},
 	},
 }
@@ -1031,25 +1080,6 @@ a.mcp-result-title {
 	line-height: 1.4;
 }
 
-.mcp-result-excerpt {
-	font-size: 13px;
-	color: var(--color-text-maxcontrast);
-	line-height: 1.5;
-	white-space: pre-wrap;
-	word-wrap: break-word;
-
-	&--expanded {
-		display: block;
-		-webkit-line-clamp: unset;
-		background: var(--color-background-dark);
-		padding: 12px;
-		border-radius: var(--border-radius);
-		margin-top: 8px;
-		white-space: pre-wrap;
-		word-break: break-word;
-	}
-}
-
 .mcp-result-actions {
 	display: flex;
 	align-items: center;
@@ -1157,6 +1187,24 @@ a.mcp-result-title {
 	overflow: auto;
 	padding: 20px;
 	position: relative;
+}
+
+.mcp-modal-footer {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 16px;
+	padding: 16px 20px;
+	border-top: 1px solid var(--color-border);
+	background: var(--color-main-background);
+	flex-shrink: 0;
+
+	.mcp-page-info {
+		font-size: 14px;
+		color: var(--color-text-maxcontrast);
+		min-width: 150px;
+		text-align: center;
+	}
 }
 
 .mcp-viewer-loading {
