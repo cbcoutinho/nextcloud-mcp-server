@@ -353,6 +353,26 @@ class McpServerClient {
 	}
 
 	/**
+	 * Get the OAuth client ID from system config.
+	 *
+	 * The Astroglobe app has its own OAuth client (separate from MCP server's client).
+	 * Client ID must be configured in config.php for OAuth functionality to work.
+	 *
+	 * @return string OAuth client ID or empty string if not configured
+	 */
+	public function getClientId(): string {
+		$clientId = $this->config->getSystemValue('astroglobe_client_id', '');
+
+		if (empty($clientId)) {
+			$this->logger->warning('astroglobe_client_id is not configured in config.php - OAuth functionality will not work');
+			return '';
+		}
+
+		$this->logger->debug('Using client ID from system config: ' . substr($clientId, 0, 8) . '...');
+		return $clientId;
+	}
+
+	/**
 	 * List all registered webhooks for a user.
 	 *
 	 * Requires OAuth bearer token for authentication.

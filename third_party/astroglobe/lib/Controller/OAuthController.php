@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OCA\Astroglobe\Controller;
 
+use OCA\Astroglobe\Service\McpServerClient;
 use OCA\Astroglobe\Service\McpTokenStorage;
 use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http;
@@ -36,6 +37,7 @@ class OAuthController extends Controller {
 	private $logger;
 	private $l;
 	private $httpClient;
+	private $client;
 
 	public function __construct(
 		string $appName,
@@ -48,6 +50,7 @@ class OAuthController extends Controller {
 		LoggerInterface $logger,
 		IL10N $l,
 		IClientService $clientService,
+		McpServerClient $client,
 	) {
 		parent::__construct($appName, $request);
 		$this->config = $config;
@@ -58,6 +61,7 @@ class OAuthController extends Controller {
 		$this->logger = $logger;
 		$this->l = $l;
 		$this->httpClient = $clientService->newClient();
+		$this->client = $client;
 	}
 
 	/**
@@ -395,7 +399,7 @@ class OAuthController extends Controller {
 
 		// Build authorization URL parameters
 		$params = [
-			'client_id' => 'nextcloudMcpServerUIPublicClient',  // Client ID (32+ chars required by NC OIDC)
+			'client_id' => $this->client->getClientId(),
 			'redirect_uri' => $redirectUri,
 			'response_type' => 'code',
 			'scope' => 'openid profile email offline_access',  // Request MCP scopes
@@ -487,7 +491,7 @@ class OAuthController extends Controller {
 			'grant_type' => 'authorization_code',
 			'code' => $code,
 			'redirect_uri' => $redirectUri,
-			'client_id' => 'nextcloudMcpServerUIPublicClient',  // Client ID (32+ chars required by NC OIDC)
+			'client_id' => $this->client->getClientId(),
 		];
 
 		// Add client authentication based on client type

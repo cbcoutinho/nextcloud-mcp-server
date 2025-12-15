@@ -55,6 +55,22 @@ style('astroglobe', 'astroglobe-settings');
 				</td>
 			</tr>
 			<tr>
+				<td><strong><?php p($l->t('OAuth Client ID')); ?></strong></td>
+				<td>
+					<?php if ($_['clientIdConfigured']): ?>
+						<span class="badge badge-success">
+							<span class="icon icon-checkmark-white"></span>
+							<?php p($l->t('Configured')); ?>
+						</span>
+					<?php else: ?>
+						<span class="badge badge-warning">
+							<span class="icon icon-alert"></span>
+							<?php p($l->t('Not configured - OAuth will not work')); ?>
+						</span>
+					<?php endif; ?>
+				</td>
+			</tr>
+			<tr>
 				<td><strong><?php p($l->t('OAuth Client Secret')); ?></strong></td>
 				<td>
 					<?php if ($_['clientSecretConfigured']): ?>
@@ -71,12 +87,13 @@ style('astroglobe', 'astroglobe-settings');
 			</tr>
 		</table>
 
-		<?php if (empty($_['serverUrl']) || !$_['apiKeyConfigured']): ?>
+		<?php if (empty($_['serverUrl']) || !$_['apiKeyConfigured'] || !$_['clientIdConfigured']): ?>
 			<div class="notecard notecard-warning">
 				<p><strong><?php p($l->t('Configuration Required')); ?></strong></p>
 				<p><?php p($l->t('Add the following to your config.php:')); ?></p>
 				<pre><code>'mcp_server_url' => 'http://localhost:8000',
-'mcp_server_api_key' => 'your-secret-api-key',</code></pre>
+'mcp_server_api_key' => 'your-secret-api-key',
+'astroglobe_client_id' => 'your-oauth-client-id',</code></pre>
 				<p class="mcp-help-text">
 					<a href="https://github.com/cbcoutinho/nextcloud-mcp-server" target="_blank">
 						<?php p($l->t('See documentation for details')); ?>

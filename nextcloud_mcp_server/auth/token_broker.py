@@ -127,6 +127,10 @@ class TokenBrokerService:
         self.client_secret = client_secret
         self.cache = TokenCache(cache_ttl, cache_early_refresh)
         self._oidc_config = None
+
+        # Per-user locks for token refresh operations (prevents race conditions)
+        self._user_refresh_locks: dict[str, anyio.Lock] = {}
+        self._locks_lock = anyio.Lock()  # Protects the locks dict itself
         self._http_client = None
 
     async def _get_http_client(self) -> httpx.AsyncClient:
@@ -136,6 +140,24 @@ class TokenBrokerService:
                 timeout=httpx.Timeout(30.0), follow_redirects=True
             )
         return self._http_client
+
+    async def _get_user_refresh_lock(self, user_id: str) -> anyio.Lock:
+        """
+        Get or create a lock for a specific user's refresh operations.
+
+        This prevents race conditions when multiple concurrent requests
+        attempt to refresh the same user's token simultaneously.
+
+        Args:
+            user_id: User ID to get lock for
+
+        Returns:
+            anyio.Lock for this user's refresh operations
+        """
+        async with self._locks_lock:
+            if user_id not in self._user_refresh_locks:
+                self._user_refresh_locks[user_id] = anyio.Lock()
+            return self._user_refresh_locks[user_id]
 
     async def _get_oidc_config(self) -> dict:
         """Get OIDC configuration from discovery endpoint."""
@@ -303,38 +325,50 @@ class TokenBrokerService:
         if cached_token:
             return cached_token
 
-        # Get stored refresh token
-        refresh_data = await self.storage.get_refresh_token(user_id)
-        if not refresh_data:
-            logger.info(f"No refresh token found for user {user_id}")
-            return None
+        # Acquire per-user lock BEFORE refresh operation to prevent race conditions
+        refresh_lock = await self._get_user_refresh_lock(user_id)
+        async with refresh_lock:
+            # Double-check cache after acquiring lock
+            # (another thread may have refreshed while we waited)
+            cached_token = await self.cache.get(cache_key)
+            if cached_token:
+                logger.debug(
+                    f"Token found in cache after lock acquisition for user {user_id}"
+                )
+                return cached_token
 
-        try:
-            # storage.get_refresh_token() returns already-decrypted token
-            refresh_token = refresh_data["refresh_token"]
+            # Get stored refresh token
+            refresh_data = await self.storage.get_refresh_token(user_id)
+            if not refresh_data:
+                logger.info(f"No refresh token found for user {user_id}")
+                return None
 
-            # Get token with specific scopes for background operation
-            # Pass user_id to enable refresh token rotation storage
-            access_token, expires_in = await self._refresh_access_token_with_scopes(
-                refresh_token, required_scopes, user_id=user_id
-            )
+            try:
+                # storage.get_refresh_token() returns already-decrypted token
+                refresh_token = refresh_data["refresh_token"]
 
-            # Cache the background token
-            await self.cache.set(cache_key, access_token, expires_in)
+                # Get token with specific scopes for background operation
+                # Pass user_id to enable refresh token rotation storage
+                access_token, expires_in = await self._refresh_access_token_with_scopes(
+                    refresh_token, required_scopes, user_id=user_id
+                )
 
-            logger.info(
-                f"Generated background token for user {user_id} with scopes: {required_scopes}"
-            )
+                # Cache the background token
+                await self.cache.set(cache_key, access_token, expires_in)
 
-            return access_token
+                logger.info(
+                    f"Generated background token for user {user_id} with scopes: {required_scopes}"
+                )
 
-        except Exception as e:
-            logger.error(
-                f"Failed to get background token for user {user_id}: {e}",
-                exc_info=True,
-            )
-            await self.cache.invalidate(cache_key)
-            return None
+                return access_token
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to get background token for user {user_id}: {e}",
+                    exc_info=True,
+                )
+                await self.cache.invalidate(cache_key)
+                return None
 
     async def _refresh_access_token(
         self, refresh_token: str, user_id: str | None = None

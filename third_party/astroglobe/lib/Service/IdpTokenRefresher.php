@@ -21,15 +21,18 @@ class IdpTokenRefresher {
 	private $config;
 	private $httpClient;
 	private $logger;
+	private $mcpServerClient;
 
 	public function __construct(
 		IConfig $config,
 		IClientService $clientService,
 		LoggerInterface $logger,
+		McpServerClient $mcpServerClient,
 	) {
 		$this->config = $config;
 		$this->httpClient = $clientService->newClient();
 		$this->logger = $logger;
+		$this->mcpServerClient = $mcpServerClient;
 	}
 
 	/**
@@ -96,7 +99,7 @@ class IdpTokenRefresher {
 			$postData = [
 				'grant_type' => 'refresh_token',
 				'refresh_token' => $refreshToken,
-				'client_id' => 'nextcloudMcpServerUIPublicClient',
+				'client_id' => $this->mcpServerClient->getClientId(),
 				'client_secret' => $clientSecret,
 			];
 

@@ -76,4 +76,9 @@ else
     echo "⚠ Warning: Could not extract client_secret from OIDC client creation"
 fi
 
+# Configure OAuth client ID in system config
+echo "Configuring Astroglobe client ID in system config..."
+php /var/www/html/occ config:system:set astroglobe_client_id --value="$MCP_CLIENT_ID"
+echo "✓ Client ID configured: $MCP_CLIENT_ID"
+
 echo "Astroglobe app installed and configured successfully"

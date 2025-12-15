@@ -95,6 +95,27 @@ async def validate_token_and_get_user(
     return user_id, validated
 
 
+def _sanitize_error_for_client(error: Exception, context: str = "") -> str:
+    """
+    Return a safe, generic error message for clients.
+
+    Detailed error is logged internally but not exposed to clients to prevent
+    information leakage (database paths, API URLs, tokens, etc.).
+
+    Args:
+        error: The exception that occurred
+        context: Optional context for logging (e.g., "revoke_user_access")
+
+    Returns:
+        Generic error message safe for client consumption
+    """
+    # Log detailed error for debugging
+    logger.error(f"Error in {context}: {error}", exc_info=True)
+
+    # Return generic message
+    return "An internal error occurred. Please contact your administrator."
+
+
 async def get_server_status(request: Request) -> JSONResponse:
     """GET /api/v1/status - Server status and version.
 
@@ -221,9 +242,9 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
         )
 
     except Exception as e:
-        logger.error(f"Error getting vector sync status: {e}")
+        error_msg = _sanitize_error_for_client(e, "get_vector_sync_status")
         return JSONResponse(
-            {"error": "Internal error", "message": str(e)},
+            {"error": error_msg},
             status_code=500,
         )
 
@@ -242,9 +263,9 @@ async def get_user_session(request: Request) -> JSONResponse:
         # Validate OAuth token and extract user
         token_user_id, validated = await validate_token_and_get_user(request)
     except Exception as e:
-        logger.warning(f"Unauthorized access to /api/v1/users/{{user_id}}/session: {e}")
+        error_msg = _sanitize_error_for_client(e, "get_user_session_auth")
         return JSONResponse(
-            {"error": "Unauthorized", "message": str(e)},
+            {"error": error_msg},
             status_code=401,
         )
 
@@ -323,9 +344,9 @@ async def get_user_session(request: Request) -> JSONResponse:
         return JSONResponse(response_data)
 
     except Exception as e:
-        logger.error(f"Error getting user session for {token_user_id}: {e}")
+        error_msg = _sanitize_error_for_client(e, "get_user_session")
         return JSONResponse(
-            {"error": "Internal error", "message": str(e)},
+            {"error": error_msg},
             status_code=500,
         )
 
@@ -364,19 +385,33 @@ async def revoke_user_access(request: Request) -> JSONResponse:
             status_code=403,
         )
 
-    # Get refresh token storage from app state
-    storage = request.app.state.oauth_context.get("storage")
-    if not storage:
-        logger.error("Refresh token storage not available in app state")
+    # Get token broker from app state
+    oauth_context = request.app.state.oauth_context
+    if oauth_context is None:
+        logger.error("OAuth context not initialized")
         return JSONResponse(
-            {"error": "Storage not configured"},
+            {"error": "OAuth not enabled"},
+            status_code=500,
+        )
+
+    token_broker = oauth_context.get("token_broker")
+    if not token_broker:
+        logger.error("Token broker not available in app state")
+        return JSONResponse(
+            {"error": "Token broker not configured"},
             status_code=500,
         )
 
     try:
-        # Delete refresh token
-        await storage.delete_refresh_token(token_user_id)
-        logger.info(f"Revoked background access for user: {token_user_id}")
+        # Delete refresh token from storage
+        await token_broker.storage.delete_refresh_token(token_user_id)
+
+        # CRITICAL: Invalidate all cached tokens for this user
+        await token_broker.cache.invalidate(token_user_id)
+
+        logger.info(
+            f"Revoked background access for user {token_user_id} (cache and storage cleared)"
+        )
 
         return JSONResponse(
             {
@@ -386,9 +421,9 @@ async def revoke_user_access(request: Request) -> JSONResponse:
         )
 
     except Exception as e:
-        logger.error(f"Error revoking access for {token_user_id}: {e}")
+        error_msg = _sanitize_error_for_client(e, "revoke_user_access")
         return JSONResponse(
-            {"error": "Internal error", "message": str(e)},
+            {"success": False, "error": error_msg},
             status_code=500,
         )
 
@@ -1049,9 +1084,9 @@ async def vector_search(request: Request) -> JSONResponse:
         return JSONResponse(response_data)
 
     except Exception as e:
-        logger.error(f"Error executing vector search: {e}")
+        error_msg = _sanitize_error_for_client(e, "vector_search")
         return JSONResponse(
-            {"error": "Internal error", "message": str(e)},
+            {"error": error_msg},
             status_code=500,
         )
 
@@ -1221,8 +1256,8 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         return JSONResponse(response_data)
 
     except Exception as e:
-        logger.error(f"Error getting chunk context: {e}", exc_info=True)
+        error_msg = _sanitize_error_for_client(e, "get_chunk_context")
         return JSONResponse(
-            {"error": "Internal error", "message": str(e)},
+            {"error": error_msg},
             status_code=500,
         )
