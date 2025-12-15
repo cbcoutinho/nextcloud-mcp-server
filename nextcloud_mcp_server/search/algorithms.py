@@ -111,7 +111,7 @@ async def get_indexed_doc_types(user_id: str) -> set[str]:
         doc_types: set[str] = {
             str(point.payload.get("doc_type"))
             for point in scroll_results
-            if point.payload.get("doc_type")
+            if point.payload and point.payload.get("doc_type")
         }
 
         logger.debug(f"Found indexed document types for user {user_id}: {doc_types}")
@@ -138,6 +138,7 @@ class SearchResult:
         chunk_start_offset: Character position where chunk starts (None if not available)
         chunk_end_offset: Character position where chunk ends (None if not available)
         page_number: Page number for PDF documents (None for other doc types)
+        page_count: Total number of pages in PDF document (None for other doc types)
         chunk_index: Zero-based index of this chunk in the document
         total_chunks: Total number of chunks in the document
         point_id: Qdrant point ID for batch vector retrieval (None if not from Qdrant)
@@ -152,6 +153,7 @@ class SearchResult:
     chunk_start_offset: int | None = None
     chunk_end_offset: int | None = None
     page_number: int | None = None
+    page_count: int | None = None
     chunk_index: int = 0
     total_chunks: int = 1
     point_id: str | None = None
