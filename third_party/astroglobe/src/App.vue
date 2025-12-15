@@ -669,6 +669,14 @@ export default {
 					+ 'Raw Score: %{customdata.raw_score:.3f} (%{customdata.relative_score:.0%} relative)<br>'
 					+ '(x=%{customdata.x}, y=%{customdata.y}, z=%{customdata.z})'
 					+ '<extra></extra>',
+				hoverlabel: {
+					bgcolor: '#0082c9',
+					bordercolor: '#0082c9',
+					font: {
+						size: 15,
+						color: 'white',
+					},
+				},
 				marker: {
 					size: results.map(r => 4 + (Math.pow(r.score, 2) * 10)),
 					opacity: results.map(r => 0.3 + (r.score * 0.7)),
