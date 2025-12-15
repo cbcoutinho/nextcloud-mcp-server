@@ -54,6 +54,8 @@ class Admin implements ISettings {
 		// Get configuration from config.php
 		$serverUrl = $this->config->getSystemValue('mcp_server_url', '');
 		$apiKeyConfigured = !empty($this->config->getSystemValue('mcp_server_api_key', ''));
+		$clientSecret = $this->config->getSystemValue('astroglobe_client_secret', '');
+		$clientSecretConfigured = !empty($clientSecret);
 
 		// Check for server connection error
 		if (isset($serverStatus['error'])) {
@@ -110,6 +112,7 @@ class Admin implements ISettings {
 			'vectorSyncStatus' => $vectorSyncStatus,
 			'serverUrl' => $serverUrl,
 			'apiKeyConfigured' => $apiKeyConfigured,
+			'clientSecretConfigured' => $clientSecretConfigured,
 			'vectorSyncEnabled' => $serverStatus['vector_sync_enabled'] ?? false,
 			'searchSettings' => $searchSettings,
 		];

@@ -54,6 +54,21 @@ style('astroglobe', 'astroglobe-settings');
 					<?php endif; ?>
 				</td>
 			</tr>
+			<tr>
+				<td><strong><?php p($l->t('OAuth Client Secret')); ?></strong></td>
+				<td>
+					<?php if ($_['clientSecretConfigured']): ?>
+						<span class="badge badge-success">
+							<span class="icon icon-checkmark-white"></span>
+							<?php p($l->t('Configured')); ?>
+						</span>
+					<?php else: ?>
+						<span class="badge badge-info">
+							<?php p($l->t('Optional - Uses PKCE fallback')); ?>
+						</span>
+					<?php endif; ?>
+				</td>
+			</tr>
 		</table>
 
 		<?php if (empty($_['serverUrl']) || !$_['apiKeyConfigured']): ?>
@@ -66,6 +81,19 @@ style('astroglobe', 'astroglobe-settings');
 					<a href="https://github.com/cbcoutinho/nextcloud-mcp-server" target="_blank">
 						<?php p($l->t('See documentation for details')); ?>
 					</a>
+				</p>
+			</div>
+		<?php endif; ?>
+
+		<?php if (!$_['clientSecretConfigured']): ?>
+			<div class="notecard notecard-info">
+				<p><strong><?php p($l->t('Optional: Confidential OAuth Client')); ?></strong></p>
+				<p><?php p($l->t('To use refresh tokens for long-lived sessions, generate a client secret:')); ?></p>
+				<pre><code>openssl rand -hex 32</code></pre>
+				<p><?php p($l->t('Then add it to your config.php:')); ?></p>
+				<pre><code>'astroglobe_client_secret' => 'your-generated-secret',</code></pre>
+				<p class="mcp-help-text">
+					<?php p($l->t('Without a client secret, the system will use PKCE (public client) authentication. Both methods work, but confidential clients provide better security for long-lived sessions.')); ?>
 				</p>
 			</div>
 		<?php endif; ?>
@@ -257,6 +285,41 @@ style('astroglobe', 'astroglobe-settings');
 			</form>
 		</div>
 
+	<?php endif; ?>
+
+	<!-- Webhook Management -->
+	<?php if ($_['vectorSyncEnabled']): ?>
+		<div class="mcp-status-card" id="webhook-presets">
+			<h3><?php p($l->t('Webhook Management')); ?></h3>
+			<p class="mcp-settings-description">
+				<?php p($l->t('Configure real-time synchronization for Nextcloud apps using webhooks. Webhooks provide instant updates to the MCP server when content changes.')); ?>
+			</p>
+
+			<div id="webhook-presets-container">
+				<div class="mcp-loading">
+					<?php p($l->t('Loading webhook presets...')); ?>
+				</div>
+			</div>
+
+			<div class="notecard notecard-info">
+				<p><strong><?php p($l->t('How Webhooks Work')); ?></strong></p>
+				<ul>
+					<li><?php p($l->t('Enable a preset to register webhooks for that app with the MCP server')); ?></li>
+					<li><?php p($l->t('When content changes in Nextcloud, webhooks notify the MCP server instantly')); ?></li>
+					<li><?php p($l->t('The MCP server updates its vector index in real-time for semantic search')); ?></li>
+					<li><?php p($l->t('Disable a preset to stop receiving updates for that app')); ?></li>
+				</ul>
+			</div>
+
+			<div class="notecard notecard-warning">
+				<p><strong><?php p($l->t('Requirements')); ?></strong></p>
+				<ul>
+					<li><?php p($l->t('The webhook_listeners app must be installed and enabled in Nextcloud')); ?></li>
+					<li><?php p($l->t('The MCP server must be reachable from your Nextcloud instance')); ?></li>
+					<li><?php p($l->t('You must have authorized Astroglobe with the MCP server (see Personal Settings)')); ?></li>
+				</ul>
+			</div>
+		</div>
 	<?php endif; ?>
 
 	<!-- Capabilities -->
