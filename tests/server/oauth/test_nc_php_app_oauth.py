@@ -1,4 +1,4 @@
-"""Test OAuth authorization flow for Nextcloud PHP app (astroglobe).
+"""Test OAuth authorization flow for Nextcloud PHP app (astrolabe).
 
 Tests the complete PKCE OAuth flow from the NC PHP app perspective:
 1. User navigates to personal settings

@@ -1,0 +1,39 @@
+{
+  "name": "astrolabe",
+  "version": "1.0.0",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "node": "^22.0.0",
+    "npm": "^10.5.0"
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --mode development build",
+    "watch": "vite --mode development build --watch",
+    "lint": "eslint src",
+    "stylelint": "stylelint src/**/*.vue src/**/*.scss src/**/*.css"
+  },
+  "type": "module",
+  "browserslist": [
+    "extends @nextcloud/browserslist-config"
+  ],
+  "dependencies": {
+    "@nextcloud/axios": "^2.5.1",
+    "@nextcloud/l10n": "^3.1.0",
+    "@nextcloud/router": "^3.0.1",
+    "@nextcloud/vue": "^8.29.2",
+    "markdown-it": "^14.1.0",
+    "plotly.js-dist-min": "^2.35.3",
+    "pdfjs-dist": "^4.0.379",
+    "vue": "^2.7.16",
+    "vue-material-design-icons": "^5.3.1"
+  },
+  "devDependencies": {
+    "@nextcloud/browserslist-config": "^3.0.1",
+    "@nextcloud/eslint-config": "^8.4.2",
+    "@nextcloud/stylelint-config": "^3.1.0",
+    "@nextcloud/vite-config": "^1.5.2",
+    "terser": "^5.44.1",
+    "vite": "^7.1.3"
+  }
+}

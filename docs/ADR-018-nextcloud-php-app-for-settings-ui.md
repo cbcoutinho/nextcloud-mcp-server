@@ -201,7 +201,7 @@ Claude Desktop → MCP Server /mcp/sse endpoint
 The MCP server supports three deployment modes, each with different authentication requirements for the three critical communication paths:
 
 1. **External MCP Client → MCP Server** (e.g., Claude Desktop)
-2. **Astroglobe UI → MCP Server** (PHP app REST API calls)
+2. **Astrolabe UI → MCP Server** (PHP app REST API calls)
 3. **MCP Server → Nextcloud** (background jobs, vector sync)
 
 #### Mode 1: Basic Single-User (Development/Simple Deployments)
@@ -218,7 +218,7 @@ NEXTCLOUD_PASSWORD=admin_password
 | Communication Path | Method |
 |-------------------|--------|
 | MCP Client → Server | None (assumes single user) |
-| Astroglobe UI → Server | None (uses env credentials) |
+| Astrolabe UI → Server | None (uses env credentials) |
 | Server → Nextcloud | BasicAuth from environment |
 
 **Use Cases:**
@@ -244,7 +244,7 @@ DEPLOYMENT_MODE=basic_multiuser
 | Communication Path | Method |
 |-------------------|--------|
 | MCP Client → Server | BasicAuth with Nextcloud app password |
-| Astroglobe UI → Server | BasicAuth with Nextcloud app password |
+| Astrolabe UI → Server | BasicAuth with Nextcloud app password |
 | Server → Nextcloud | Pass-through client's credentials |
 
 **Architecture:**
@@ -360,7 +360,7 @@ Users generate app passwords in Nextcloud settings:
 }
 ```
 
-**Astroglobe UI in BasicAuth Multi-User:**
+**Astrolabe UI in BasicAuth Multi-User:**
 
 The PHP app prompts users to save their app password:
 
@@ -373,11 +373,11 @@ public function search(string $query, array $options = []): array {
 
     // Get user's app password from settings
     $appPassword = $this->config->getUserValue(
-        $userId, 'astroglobe', 'app_password', ''
+        $userId, 'astrolabe', 'app_password', ''
     );
 
     if (empty($appPassword)) {
-        return ['error' => 'Please configure app password in Astroglobe settings'];
+        return ['error' => 'Please configure app password in Astrolabe settings'];
     }
 
     $response = $this->httpClient->post(
@@ -453,14 +453,14 @@ ENABLE_OFFLINE_ACCESS=true  # For background jobs
 | Communication Path | Method |
 |-------------------|--------|
 | MCP Client → Server | OAuth Bearer token (PKCE flow) |
-| Astroglobe UI → Server | OAuth Bearer token (PKCE flow) |
+| Astrolabe UI → Server | OAuth Bearer token (PKCE flow) |
 | Server → Nextcloud | Token exchange OR refresh token (Flow 2) |
 
 **Architecture:**
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  MCP Client / Astroglobe UI                         │
+│  MCP Client / Astrolabe UI                         │
 └──────────────────────┬──────────────────────────────┘
                        │ PKCE OAuth Flow
                        ▼
@@ -512,7 +512,7 @@ Choose deployment mode based on requirements:
 | **Multi-user support** | ❌ | ✅ | ✅ |
 | **Per-user identity** | ❌ | ✅ | ✅ |
 | **External MCP clients** | ⚠️ No auth | ✅ BasicAuth | ✅ OAuth |
-| **Astroglobe UI access** | ✅ | ✅ | ✅ |
+| **Astrolabe UI access** | ✅ | ✅ | ✅ |
 | **Background jobs** | ✅ | ✅ | ✅ |
 | **OIDC required** | ❌ | ❌ | ✅ |
 | **Token scoping** | ❌ | ❌ | ✅ |
@@ -1586,7 +1586,7 @@ MANAGEMENT_API_ENABLED=true     # Required
 
 **Proposed Architecture:**
 ```
-External MCP Client → Astroglobe PHP App (SSE proxy) → MCP Container
+External MCP Client → Astrolabe PHP App (SSE proxy) → MCP Container
 ```
 
 **Pros:**
@@ -1629,11 +1629,11 @@ location /mcp/ {
 - PHP is fundamentally ill-suited for SSE proxying (request-response vs streaming)
 - Reverse proxy at web server layer is simpler, more performant, and standard practice
 - No value added by PHP layer - authentication handled by container regardless
-- Rest API for Astroglobe UI is sufficient for internal NC integration
+- Rest API for Astrolabe UI is sufficient for internal NC integration
 
 **Note:** This alternative would have made sense if it enabled new use cases. However:
 1. **External MCP clients**: Work fine connecting directly to container (via reverse proxy)
-2. **Astroglobe UI**: Doesn't need MCP protocol - REST API sufficient
+2. **Astrolabe UI**: Doesn't need MCP protocol - REST API sufficient
 3. **Authentication**: Solved by BasicAuth multi-user mode (pass-through) for non-OIDC deployments
 
 The REST API + BasicAuth multi-user architecture achieves the same goals (multi-user access without OIDC) without the complexity of SSE proxying.

@@ -52,7 +52,7 @@ async def test_capture_settings_page(browser):
             "Authorization Required",
             "MCP Server",
             "Sign In Again",
-            "astroglobe",
+            "astrolabe",
         ]
 
         for check in checks:

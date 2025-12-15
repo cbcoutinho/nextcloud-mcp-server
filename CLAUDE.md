@@ -515,7 +515,7 @@ docker compose exec app php occ user_oidc:provider keycloak
 docker compose exec app cat /var/www/html/data/nextcloud.log | jq | tail
 
 # Filter by app
-docker compose exec app cat /var/www/html/data/nextcloud.log | jq 'select(.app == "astroglobe")' | tail
+docker compose exec app cat /var/www/html/data/nextcloud.log | jq 'select(.app == "astrolabe")' | tail
 
 # Filter by log level (0=DEBUG, 1=INFO, 2=WARN, 3=ERROR, 4=FATAL)
 docker compose exec app cat /var/www/html/data/nextcloud.log | jq 'select(.level >= 3)' | tail
