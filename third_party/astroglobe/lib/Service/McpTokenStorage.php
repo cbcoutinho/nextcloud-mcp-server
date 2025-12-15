@@ -22,7 +22,7 @@ class McpTokenStorage {
 	public function __construct(
 		IConfig $config,
 		ICrypto $crypto,
-		LoggerInterface $logger
+		LoggerInterface $logger,
 	) {
 		$this->config = $config;
 		$this->crypto = $crypto;
@@ -43,7 +43,7 @@ class McpTokenStorage {
 		string $userId,
 		string $accessToken,
 		string $refreshToken,
-		int $expiresAt
+		int $expiresAt,
 	): void {
 		try {
 			$tokenData = [
@@ -158,7 +158,7 @@ class McpTokenStorage {
 	 *
 	 * @param string $userId User ID
 	 * @param callable|null $refreshCallback Callback to refresh token if expired
-	 *                                      Should accept (refreshToken) and return new token data
+	 *                                       Should accept (refreshToken) and return new token data
 	 * @return string|null Access token, or null if not available
 	 */
 	public function getAccessToken(string $userId, ?callable $refreshCallback = null): ?string {

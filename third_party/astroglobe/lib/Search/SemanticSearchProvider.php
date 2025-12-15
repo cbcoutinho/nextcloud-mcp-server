@@ -247,8 +247,8 @@ class SemanticSearchProvider implements IProvider {
 				: $this->urlGenerator->linkToRouteAbsolute('files.view.index'),
 
 			'deck_card' => isset($result['board_id']) && $id
-				? $this->urlGenerator->linkToRoute('deck.page.index') .
-				  "board/{$result['board_id']}/card/{$id}"
+				? $this->urlGenerator->linkToRoute('deck.page.index')
+				  . "board/{$result['board_id']}/card/{$id}"
 				: $this->urlGenerator->linkToRoute('deck.page.index'),
 
 			'calendar', 'calendar_event' => $this->urlGenerator->linkToRoute('calendar.view.index'),

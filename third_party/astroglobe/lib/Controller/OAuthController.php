@@ -47,7 +47,7 @@ class OAuthController extends Controller {
 		McpTokenStorage $tokenStorage,
 		LoggerInterface $logger,
 		IL10N $l,
-		IClientService $clientService
+		IClientService $clientService,
 	) {
 		parent::__construct($appName, $request);
 		$this->config = $config;
@@ -73,11 +73,11 @@ class OAuthController extends Controller {
 	#[NoAdminRequired]
 	#[NoCSRFRequired]
 	public function initiateOAuth() {
-		$this->logger->info("initiateOAuth called");
+		$this->logger->info('initiateOAuth called');
 
 		$user = $this->userSession->getUser();
 		if (!$user) {
-			$this->logger->error("initiateOAuth: User not authenticated");
+			$this->logger->error('initiateOAuth: User not authenticated');
 			return new TemplateResponse(
 				'astroglobe',
 				'settings/error',
@@ -85,7 +85,7 @@ class OAuthController extends Controller {
 			);
 		}
 
-		$this->logger->info("initiateOAuth: User authenticated: " . $user->getUID());
+		$this->logger->info('initiateOAuth: User authenticated: ' . $user->getUID());
 
 		try {
 			// Get MCP server configuration
@@ -107,9 +107,9 @@ class OAuthController extends Controller {
 				$codeVerifier = bin2hex(random_bytes(32));
 				$codeChallenge = $this->base64UrlEncode(hash('sha256', $codeVerifier, true));
 
-				$this->logger->info("Using public client mode with PKCE");
+				$this->logger->info('Using public client mode with PKCE');
 			} else {
-				$this->logger->info("Using confidential client mode with client secret");
+				$this->logger->info('Using confidential client mode with client secret');
 			}
 
 			// Generate state for CSRF protection
@@ -129,7 +129,7 @@ class OAuthController extends Controller {
 				$codeChallenge
 			);
 
-			$this->logger->info("Initiating OAuth flow for user: " . $user->getUID());
+			$this->logger->info('Initiating OAuth flow for user: ' . $user->getUID());
 
 			return new RedirectResponse($authUrl);
 		} catch (\Exception $e) {
@@ -163,7 +163,7 @@ class OAuthController extends Controller {
 		string $code = '',
 		string $state = '',
 		?string $error = null,
-		?string $error_description = null
+		?string $error_description = null,
 	): RedirectResponse {
 		try {
 			// Check for errors from IdP
@@ -292,7 +292,7 @@ class OAuthController extends Controller {
 	private function buildAuthorizationUrl(
 		string $mcpServerUrl,
 		string $state,
-		?string $codeChallenge
+		?string $codeChallenge,
 	): string {
 		// First, query MCP server to discover which IdP it's configured to use
 		$this->logger->info('buildAuthorizationUrl: Starting', [
@@ -430,7 +430,7 @@ class OAuthController extends Controller {
 	private function exchangeCodeForToken(
 		string $mcpServerUrl,
 		string $code,
-		?string $codeVerifier
+		?string $codeVerifier,
 	): array {
 		// Query MCP server to discover which IdP it's configured to use
 		try {
@@ -496,11 +496,11 @@ class OAuthController extends Controller {
 		if (!empty($clientSecret)) {
 			// Confidential client: use client secret for authentication
 			$postData['client_secret'] = $clientSecret;
-			$this->logger->info("Using client secret for token exchange");
+			$this->logger->info('Using client secret for token exchange');
 		} elseif ($codeVerifier !== null) {
 			// Public client: use PKCE proof for authentication
 			$postData['code_verifier'] = $codeVerifier;
-			$this->logger->info("Using PKCE code verifier for token exchange");
+			$this->logger->info('Using PKCE code verifier for token exchange');
 		} else {
 			throw new \Exception('Neither client_secret nor code_verifier available for token exchange');
 		}

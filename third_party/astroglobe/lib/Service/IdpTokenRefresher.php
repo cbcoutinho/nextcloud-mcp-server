@@ -25,7 +25,7 @@ class IdpTokenRefresher {
 	public function __construct(
 		IConfig $config,
 		IClientService $clientService,
-		LoggerInterface $logger
+		LoggerInterface $logger,
 	) {
 		$this->config = $config;
 		$this->httpClient = $clientService->newClient();

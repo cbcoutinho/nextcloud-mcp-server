@@ -36,7 +36,7 @@ class Admin implements ISettings {
 	public function __construct(
 		McpServerClient $client,
 		IConfig $config,
-		IInitialState $initialState
+		IInitialState $initialState,
 	) {
 		$this->client = $client;
 		$this->config = $config;

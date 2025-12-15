@@ -247,7 +247,7 @@ jobs:
       - name: Install OCP for static analysis
         run: |
           # Get first OCP version from matrix
-          OCP_VERSION=$(echo '${{ steps.ocp-versions.outputs.ocp-matrix }}' | jq -r '.[0]."ocp-version"')
+          OCP_VERSION=$(echo '${{ steps.ocp-versions.outputs.ocp-matrix }}' | jq -r '.include[0]."ocp-version"')
           composer require --dev "nextcloud/ocp:$OCP_VERSION" --ignore-platform-reqs --with-dependencies
 
       - name: Run Psalm

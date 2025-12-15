@@ -12,7 +12,6 @@ use OCA\Astroglobe\Settings\Admin as AdminSettings;
 use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
-use OCP\AppFramework\Http\Attribute\NoCSRFRequired;
 use OCP\AppFramework\Http\JSONResponse;
 use OCP\AppFramework\Http\RedirectResponse;
 use OCP\IConfig;
@@ -44,7 +43,7 @@ class ApiController extends Controller {
 		LoggerInterface $logger,
 		McpTokenStorage $tokenStorage,
 		IConfig $config,
-		IdpTokenRefresher $tokenRefresher
+		IdpTokenRefresher $tokenRefresher,
 	) {
 		parent::__construct($appName, $request);
 		$this->client = $client;
@@ -126,7 +125,7 @@ class ApiController extends Controller {
 		string $algorithm = 'hybrid',
 		int $limit = 10,
 		string $doc_types = '',
-		string $include_pca = 'true'
+		string $include_pca = 'true',
 	): JSONResponse {
 		if (empty($query)) {
 			return new JSONResponse([
@@ -185,7 +184,7 @@ class ApiController extends Controller {
 			$validDocTypes = ['note', 'file', 'deck_card', 'calendar', 'contact', 'news_item'];
 			$docTypesArray = array_filter(
 				explode(',', $doc_types),
-				fn($t) => in_array(trim($t), $validDocTypes)
+				fn ($t) => in_array(trim($t), $validDocTypes)
 			);
 			$docTypesArray = array_map('trim', $docTypesArray);
 			if (empty($docTypesArray)) {
@@ -678,7 +677,7 @@ class ApiController extends Controller {
 		string $doc_type,
 		string $doc_id,
 		int $start,
-		int $end
+		int $end,
 	): JSONResponse {
 		$user = $this->userSession->getUser();
 		if (!$user) {

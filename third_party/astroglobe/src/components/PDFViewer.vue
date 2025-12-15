@@ -8,8 +8,8 @@
 			<AlertCircle :size="48" />
 			<p>{{ error }}</p>
 		</div>
-		<div v-else class="pdf-canvas-container" ref="container">
-			<canvas ref="canvas"></canvas>
+		<div v-else ref="container" class="pdf-canvas-container">
+			<canvas ref="canvas" />
 		</div>
 		<div v-if="!loading && !error && totalPages > 0" class="pdf-controls">
 			<NcButton
@@ -178,7 +178,7 @@ export default {
 				// Render page to canvas
 				const renderContext = {
 					canvasContext: context,
-					viewport: viewport,
+					viewport,
 				}
 
 				await page.render(renderContext).promise

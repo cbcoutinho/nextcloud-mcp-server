@@ -118,7 +118,7 @@
 									min="0"
 									max="100"
 									step="5"
-									class="mcp-score-slider" />
+									class="mcp-score-slider">
 							</div>
 						</div>
 					</div>
@@ -248,29 +248,43 @@
 
 				<div v-else-if="vectorStatus" class="mcp-status-cards">
 					<div class="mcp-status-card">
-						<div class="mcp-status-label">{{ t('astroglobe', 'Sync Status') }}</div>
+						<div class="mcp-status-label">
+							{{ t('astroglobe', 'Sync Status') }}
+						</div>
 						<div class="mcp-status-value" :class="'status-' + vectorStatus.status">
 							{{ vectorStatus.status }}
 						</div>
 					</div>
 
 					<div class="mcp-status-card">
-						<div class="mcp-status-label">{{ t('astroglobe', 'Indexed Documents') }}</div>
-						<div class="mcp-status-value">{{ vectorStatus.indexed_documents || 0 }}</div>
+						<div class="mcp-status-label">
+							{{ t('astroglobe', 'Indexed Documents') }}
+						</div>
+						<div class="mcp-status-value">
+							{{ vectorStatus.indexed_documents || 0 }}
+						</div>
 					</div>
 
 					<div class="mcp-status-card">
-						<div class="mcp-status-label">{{ t('astroglobe', 'Pending Documents') }}</div>
-						<div class="mcp-status-value">{{ vectorStatus.pending_documents || 0 }}</div>
+						<div class="mcp-status-label">
+							{{ t('astroglobe', 'Pending Documents') }}
+						</div>
+						<div class="mcp-status-value">
+							{{ vectorStatus.pending_documents || 0 }}
+						</div>
 					</div>
 
 					<div v-if="vectorStatus.last_sync_time" class="mcp-status-card">
-						<div class="mcp-status-label">{{ t('astroglobe', 'Last Sync') }}</div>
-						<div class="mcp-status-value">{{ vectorStatus.last_sync_time }}</div>
+						<div class="mcp-status-label">
+							{{ t('astroglobe', 'Last Sync') }}
+						</div>
+						<div class="mcp-status-value">
+							{{ vectorStatus.last_sync_time }}
+						</div>
 					</div>
 				</div>
 
-				<NcButton type="secondary" @click="loadVectorStatus" :disabled="statusLoading">
+				<NcButton type="secondary" :disabled="statusLoading" @click="loadVectorStatus">
 					<template #icon>
 						<Refresh :size="20" />
 					</template>
@@ -308,9 +322,15 @@
 
 					<!-- Text Viewer (for non-PDFs) -->
 					<div v-else class="mcp-text-viewer">
-						<div v-if="viewerContext.before" class="mcp-context-text">{{ viewerContext.before }}</div>
-						<div class="mcp-highlighted-chunk">{{ viewerContext.chunk }}</div>
-						<div v-if="viewerContext.after" class="mcp-context-text">{{ viewerContext.after }}</div>
+						<div v-if="viewerContext.before" class="mcp-context-text">
+							{{ viewerContext.before }}
+						</div>
+						<div class="mcp-highlighted-chunk">
+							{{ viewerContext.chunk }}
+						</div>
+						<div v-if="viewerContext.after" class="mcp-context-text">
+							{{ viewerContext.after }}
+						</div>
 					</div>
 				</div>
 			</div>
@@ -337,8 +357,6 @@ import Cog from 'vue-material-design-icons/Cog.vue'
 import ChevronDown from 'vue-material-design-icons/ChevronDown.vue'
 import ChevronUp from 'vue-material-design-icons/ChevronUp.vue'
 import Refresh from 'vue-material-design-icons/Refresh.vue'
-import TextBoxOutline from 'vue-material-design-icons/TextBoxOutline.vue'
-import TextBoxRemoveOutline from 'vue-material-design-icons/TextBoxRemoveOutline.vue'
 import OpenInNew from 'vue-material-design-icons/OpenInNew.vue'
 import Eye from 'vue-material-design-icons/Eye.vue'
 import Close from 'vue-material-design-icons/Close.vue'
@@ -354,15 +372,12 @@ import * as pdfjsLib from 'pdfjs-dist'
 try {
 	pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 		'pdfjs-dist/build/pdf.worker.mjs',
-		import.meta.url
+		import.meta.url,
 	).toString()
 } catch (e) {
 	console.warn('Failed to set PDF.js worker, will use fallback', e)
 	// PDF.js will use fake worker automatically
 }
-
-// App name for translations
-const APP_NAME = 'astroglobe'
 
 export default {
 	name: 'App',
@@ -385,8 +400,6 @@ export default {
 		ChevronDown,
 		ChevronUp,
 		Refresh,
-		TextBoxOutline,
-		TextBoxRemoveOutline,
 		OpenInNew,
 		Eye,
 		Close,
@@ -754,7 +767,7 @@ export default {
 
 		closeViewer() {
 			this.showViewer = false
-		}
+		},
 	},
 }
 </script>
@@ -1177,7 +1190,7 @@ a.mcp-result-title {
 	.mcp-checkbox-grid {
 		grid-template-columns: 1fr;
 	}
-	
+
 	.mcp-modal {
 		width: 100%;
 		height: 100%;

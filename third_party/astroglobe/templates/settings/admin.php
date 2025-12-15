@@ -113,9 +113,9 @@ style('astroglobe', 'astroglobe-settings');
 					<?php if (isset($_['serverStatus']['uptime_seconds'])): ?>
 						<?php
 							$uptime = $_['serverStatus']['uptime_seconds'];
-							$hours = floor($uptime / 3600);
-							$minutes = floor(($uptime % 3600) / 60);
-							p(sprintf('%d hours, %d minutes', $hours, $minutes));
+						$hours = floor($uptime / 3600);
+						$minutes = floor(($uptime % 3600) / 60);
+						p(sprintf('%d hours, %d minutes', $hours, $minutes));
 						?>
 					<?php else: ?>
 						<?php p($l->t('Unknown')); ?>
@@ -150,8 +150,8 @@ style('astroglobe', 'astroglobe-settings');
 					<td>
 						<?php
 							$status = $_['vectorSyncStatus']['status'] ?? 'unknown';
-							$statusClass = $status === 'idle' ? 'success' : ($status === 'syncing' ? 'info' : 'neutral');
-						?>
+		$statusClass = $status === 'idle' ? 'success' : ($status === 'syncing' ? 'info' : 'neutral');
+		?>
 						<span class="badge badge-<?php p($statusClass); ?>">
 							<?php p(ucfirst($status)); ?>
 						</span>
@@ -177,8 +177,8 @@ style('astroglobe', 'astroglobe-settings');
 					<td><strong><?php p($l->t('Errors (24h)')); ?></strong></td>
 					<td>
 						<?php
-							$errors = $_['vectorSyncStatus']['errors_24h'] ?? 0;
-							if ($errors > 0): ?>
+			$errors = $_['vectorSyncStatus']['errors_24h'] ?? 0;
+		if ($errors > 0): ?>
 								<span class="error"><?php p($errors); ?></span>
 						<?php else: ?>
 								<?php p('0'); ?>
@@ -213,13 +213,19 @@ style('astroglobe', 'astroglobe-settings');
 				<div class="mcp-form-group">
 					<label for="search-algorithm"><?php p($l->t('Search Algorithm')); ?></label>
 					<select id="search-algorithm" name="algorithm" class="mcp-select">
-						<option value="hybrid" <?php if ($_['searchSettings']['algorithm'] === 'hybrid') echo 'selected'; ?>>
+						<option value="hybrid" <?php if ($_['searchSettings']['algorithm'] === 'hybrid') {
+							echo 'selected';
+						} ?>>
 							<?php p($l->t('Hybrid (Recommended)')); ?>
 						</option>
-						<option value="semantic" <?php if ($_['searchSettings']['algorithm'] === 'semantic') echo 'selected'; ?>>
+						<option value="semantic" <?php if ($_['searchSettings']['algorithm'] === 'semantic') {
+							echo 'selected';
+						} ?>>
 							<?php p($l->t('Semantic Only')); ?>
 						</option>
-						<option value="bm25" <?php if ($_['searchSettings']['algorithm'] === 'bm25') echo 'selected'; ?>>
+						<option value="bm25" <?php if ($_['searchSettings']['algorithm'] === 'bm25') {
+							echo 'selected';
+						} ?>>
 							<?php p($l->t('Keyword (BM25) Only')); ?>
 						</option>
 					</select>
@@ -231,10 +237,14 @@ style('astroglobe', 'astroglobe-settings');
 				<div class="mcp-form-group">
 					<label for="search-fusion"><?php p($l->t('Fusion Method')); ?></label>
 					<select id="search-fusion" name="fusion" class="mcp-select">
-						<option value="rrf" <?php if ($_['searchSettings']['fusion'] === 'rrf') echo 'selected'; ?>>
+						<option value="rrf" <?php if ($_['searchSettings']['fusion'] === 'rrf') {
+							echo 'selected';
+						} ?>>
 							<?php p($l->t('RRF - Reciprocal Rank Fusion (Recommended)')); ?>
 						</option>
-						<option value="dbsf" <?php if ($_['searchSettings']['fusion'] === 'dbsf') echo 'selected'; ?>>
+						<option value="dbsf" <?php if ($_['searchSettings']['fusion'] === 'dbsf') {
+							echo 'selected';
+						} ?>>
 							<?php p($l->t('DBSF - Distribution-Based Score Fusion')); ?>
 						</option>
 					</select>

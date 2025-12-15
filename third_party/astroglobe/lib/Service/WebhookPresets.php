@@ -12,24 +12,24 @@ namespace OCA\Astroglobe\Service;
  */
 class WebhookPresets {
 	// File/Notes webhook events
-	public const FILE_EVENT_CREATED = "OCP\\Files\\Events\\Node\\NodeCreatedEvent";
-	public const FILE_EVENT_WRITTEN = "OCP\\Files\\Events\\Node\\NodeWrittenEvent";
+	public const FILE_EVENT_CREATED = 'OCP\\Files\\Events\\Node\\NodeCreatedEvent';
+	public const FILE_EVENT_WRITTEN = 'OCP\\Files\\Events\\Node\\NodeWrittenEvent';
 	// Use BeforeNodeDeletedEvent instead of NodeDeletedEvent to get node.id
 	// See: https://github.com/nextcloud/server/issues/56371
-	public const FILE_EVENT_DELETED = "OCP\\Files\\Events\\Node\\BeforeNodeDeletedEvent";
+	public const FILE_EVENT_DELETED = 'OCP\\Files\\Events\\Node\\BeforeNodeDeletedEvent';
 
 	// Calendar webhook events
-	public const CALENDAR_EVENT_CREATED = "OCP\\Calendar\\Events\\CalendarObjectCreatedEvent";
-	public const CALENDAR_EVENT_UPDATED = "OCP\\Calendar\\Events\\CalendarObjectUpdatedEvent";
-	public const CALENDAR_EVENT_DELETED = "OCP\\Calendar\\Events\\CalendarObjectDeletedEvent";
+	public const CALENDAR_EVENT_CREATED = 'OCP\\Calendar\\Events\\CalendarObjectCreatedEvent';
+	public const CALENDAR_EVENT_UPDATED = 'OCP\\Calendar\\Events\\CalendarObjectUpdatedEvent';
+	public const CALENDAR_EVENT_DELETED = 'OCP\\Calendar\\Events\\CalendarObjectDeletedEvent';
 
 	// Tables webhook events (Nextcloud 30+)
-	public const TABLES_EVENT_ROW_ADDED = "OCA\\Tables\\Event\\RowAddedEvent";
-	public const TABLES_EVENT_ROW_UPDATED = "OCA\\Tables\\Event\\RowUpdatedEvent";
-	public const TABLES_EVENT_ROW_DELETED = "OCA\\Tables\\Event\\RowDeletedEvent";
+	public const TABLES_EVENT_ROW_ADDED = 'OCA\\Tables\\Event\\RowAddedEvent';
+	public const TABLES_EVENT_ROW_UPDATED = 'OCA\\Tables\\Event\\RowUpdatedEvent';
+	public const TABLES_EVENT_ROW_DELETED = 'OCA\\Tables\\Event\\RowDeletedEvent';
 
 	// Forms webhook events (Nextcloud 30+)
-	public const FORMS_EVENT_FORM_SUBMITTED = "OCA\\Forms\\Events\\FormSubmittedEvent";
+	public const FORMS_EVENT_FORM_SUBMITTED = 'OCA\\Forms\\Events\\FormSubmittedEvent';
 
 	// NOTE: Deck and Contacts do NOT support webhooks
 	// Their event classes do not implement IWebhookCompatibleEvent interface.
@@ -163,7 +163,7 @@ class WebhookPresets {
 		}
 
 		return array_map(
-			fn($eventConfig) => $eventConfig['event'],
+			fn ($eventConfig) => $eventConfig['event'],
 			$preset['events']
 		);
 	}

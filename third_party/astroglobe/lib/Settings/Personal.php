@@ -33,7 +33,7 @@ class Personal implements ISettings {
 		IUserSession $userSession,
 		IInitialState $initialState,
 		McpTokenStorage $tokenStorage,
-		IURLGenerator $urlGenerator
+		IURLGenerator $urlGenerator,
 	) {
 		$this->client = $client;
 		$this->userSession = $userSession;

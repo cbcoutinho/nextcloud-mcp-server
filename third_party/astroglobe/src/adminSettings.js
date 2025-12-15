@@ -59,7 +59,7 @@ function initSearchSettingsForm() {
 			const response = await axios.post(
 				generateUrl('/apps/astroglobe/api/admin/search-settings'),
 				data,
-				{ headers: { 'Content-Type': 'application/json' } }
+				{ headers: { 'Content-Type': 'application/json' } },
 			)
 
 			if (response.data.success) {
@@ -91,7 +91,7 @@ async function initWebhookManagement() {
 	try {
 		// Load webhook presets from API
 		const response = await axios.get(
-			generateUrl('/apps/astroglobe/api/admin/webhooks/presets')
+			generateUrl('/apps/astroglobe/api/admin/webhooks/presets'),
 		)
 
 		if (!response.data.success) {
@@ -115,7 +115,7 @@ async function initWebhookManagement() {
  * Render webhook preset cards.
  *
  * @param {HTMLElement} container Container element
- * @param {Object} presets Preset configurations
+ * @param {object} presets Preset configurations
  */
 function renderWebhookPresets(container, presets) {
 	const presetIds = Object.keys(presets)
@@ -147,7 +147,7 @@ function renderWebhookPresets(container, presets) {
  * Create a webhook preset card.
  *
  * @param {string} presetId Preset ID
- * @param {Object} preset Preset configuration
+ * @param {object} preset Preset configuration
  * @return {HTMLElement} Card element
  */
 function createPresetCard(presetId, preset) {
@@ -212,7 +212,6 @@ async function togglePreset(presetId, currentlyEnabled) {
 		}
 
 		// Reload presets to update UI
-		const container = document.getElementById('webhook-presets-container')
 		await initWebhookManagement()
 
 		// Show success notification
@@ -227,7 +226,7 @@ async function togglePreset(presetId, currentlyEnabled) {
 		// Show error notification
 		OC.Notification.showTemporary(
 			error.message || 'Failed to toggle webhook preset',
-			{ type: 'error' }
+			{ type: 'error' },
 		)
 	}
 }

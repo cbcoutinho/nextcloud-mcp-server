@@ -24,7 +24,7 @@ class McpServerClient {
 	public function __construct(
 		IClientService $clientService,
 		IConfig $config,
-		LoggerInterface $logger
+		LoggerInterface $logger,
 	) {
 		$this->httpClient = $clientService->newClient();
 		$this->config = $config;
@@ -85,7 +85,7 @@ class McpServerClient {
 	public function getUserSession(string $userId, string $token): array {
 		try {
 			$response = $this->httpClient->get(
-				$this->baseUrl . "/api/v1/users/" . urlencode($userId) . "/session",
+				$this->baseUrl . '/api/v1/users/' . urlencode($userId) . '/session',
 				[
 					'headers' => [
 						'Authorization' => 'Bearer ' . $token
@@ -120,7 +120,7 @@ class McpServerClient {
 	public function revokeUserAccess(string $userId, string $token): array {
 		try {
 			$response = $this->httpClient->post(
-				$this->baseUrl . "/api/v1/users/" . urlencode($userId) . "/revoke",
+				$this->baseUrl . '/api/v1/users/' . urlencode($userId) . '/revoke',
 				[
 					'headers' => [
 						'Authorization' => 'Bearer ' . $token
@@ -203,7 +203,7 @@ class McpServerClient {
 		int $limit = 10,
 		bool $includePca = true,
 		?array $docTypes = null,
-		?string $token = null
+		?string $token = null,
 	): array {
 		try {
 			$requestBody = [
@@ -284,7 +284,7 @@ class McpServerClient {
 		int $offset = 0,
 		string $algorithm = 'hybrid',
 		string $fusion = 'rrf',
-		float $scoreThreshold = 0.0
+		float $scoreThreshold = 0.0,
 	): array {
 		try {
 			$response = $this->httpClient->post(
@@ -416,7 +416,7 @@ class McpServerClient {
 		string $event,
 		string $uri,
 		?array $eventFilter,
-		string $token
+		string $token,
 	): array {
 		try {
 			$requestBody = [
@@ -549,7 +549,7 @@ class McpServerClient {
 		string $docId,
 		int $start,
 		int $end,
-		string $token
+		string $token,
 	): array {
 		try {
 			$response = $this->httpClient->get(
