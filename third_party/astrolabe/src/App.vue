@@ -294,7 +294,17 @@
 			<div class="mcp-modal">
 				<!-- Fixed Header -->
 				<div class="mcp-modal-header">
-					<h3>{{ viewerTitle }}</h3>
+					<h3>
+						<a
+							v-if="currentResult"
+							:href="getDocumentUrl(currentResult)"
+							class="mcp-modal-title-link"
+							@click.prevent="navigateToDocument(currentResult)">
+							{{ viewerTitle }}
+							<OpenInNew :size="16" class="mcp-modal-title-icon" />
+						</a>
+						<span v-else>{{ viewerTitle }}</span>
+					</h3>
 					<NcButton type="tertiary" @click="closeViewer">
 						<template #icon>
 							<Close :size="20" />
@@ -457,6 +467,7 @@ export default {
 			viewerPage: 1,
 			pdfTotalPages: 0,
 			currentPdfPath: '',
+			currentResult: null, // Store the current result for document linking
 			viewerContext: {
 				chunk: '',
 				before: '',
@@ -599,6 +610,7 @@ export default {
 		getDocumentUrl(result) {
 			const docType = result.doc_type || 'unknown'
 			const id = result.id || result.note_id
+			const metadata = result.metadata || {}
 
 			switch (docType) {
 			case 'note':
@@ -609,14 +621,18 @@ export default {
 				}
 				return generateUrl('/apps/files/')
 			case 'deck_card':
-				if (result.board_id && id) {
-					return generateUrl(`/apps/deck/board/${result.board_id}/card/${id}`)
+				if (metadata.board_id && id) {
+					return generateUrl(`/apps/deck/board/${metadata.board_id}/card/${id}`)
 				}
 				return generateUrl('/apps/deck/')
 			case 'calendar':
 			case 'calendar_event':
 				return generateUrl('/apps/calendar/')
 			case 'news_item':
+				// Use external article URL if available, otherwise fall back to News app
+				if (metadata.url) {
+					return metadata.url
+				}
 				return generateUrl('/apps/news/')
 			case 'contact':
 				return generateUrl('/apps/contacts/')
@@ -780,6 +796,7 @@ export default {
 			this.showViewer = true
 			this.viewerLoading = true
 			this.viewerTitle = result.title || 'Chunk Viewer'
+			this.currentResult = result // Store result for document linking
 
 			try {
 				// Fetch chunk context
@@ -853,6 +870,7 @@ export default {
 		closeViewer() {
 			this.showViewer = false
 			this.pdfTotalPages = 0
+			this.currentResult = null
 		},
 
 		handlePlotClick(eventData) {
@@ -1244,7 +1262,32 @@ a.mcp-result-title {
 		margin: 0;
 		font-size: 18px;
 		font-weight: 600;
+		flex: 1;
+		min-width: 0; // Allow text truncation if needed
 	}
+}
+
+.mcp-modal-title-link {
+	color: var(--color-main-text);
+	text-decoration: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	transition: color 0.15s;
+
+	&:hover {
+		color: var(--color-primary-element);
+
+		.mcp-modal-title-icon {
+			opacity: 1;
+		}
+	}
+}
+
+.mcp-modal-title-icon {
+	opacity: 0.5;
+	transition: opacity 0.15s;
+	flex-shrink: 0;
 }
 
 .mcp-modal-body {
