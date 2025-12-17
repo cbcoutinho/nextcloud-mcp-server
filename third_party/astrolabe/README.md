@@ -1,250 +1,223 @@
-# MCP Server UI
+# Astrolabe: The Intelligence Layer for Nextcloud
 
-Nextcloud app for managing the Nextcloud MCP (Model Context Protocol) Server.
+Your Nextcloud instance is more than just a bucket for files—it is a galaxy of ideas, projects, and knowledge. But until now, you've been navigating it in the dark, relying on exact filenames and rigid keywords.
 
-## Overview
+**It's time to turn the lights on.**
 
-This app provides a native Nextcloud interface for managing your MCP Server, eliminating the need for the separate `/app` endpoint. It integrates seamlessly with Nextcloud's settings interface and provides:
+Astrolabe is a fully integrated Nextcloud application that transforms your server into a semantic intelligence engine. It doesn't just store your data; it **maps it, understands it, and connects it** to the AI future.
 
-- **Personal Settings**: Session management, background access control
-- **Admin Settings**: Server status monitoring, vector sync metrics
-- **Vector Visualization**: Interactive semantic search (coming soon)
-- **Native Integration**: Uses Nextcloud sessions, design system, and UX patterns
+---
 
-## Architecture
+## What You Can Do
 
-Based on **ADR-018: Nextcloud PHP App for Settings UI**.
+### 🔍 Search That Actually Understands
 
-### OAuth PKCE Flow
+Forget clunky external tools. Astrolabe registers as a **native Nextcloud Search Provider**.
 
-The app uses **OAuth 2.0 Authorization Code flow with PKCE** (Proof Key for Code Exchange):
+- **Seamless**: Lives right in the standard Nextcloud search bar you already use
+- **Semantic**: Type "marketing strategy for the winter launch" and Astrolabe finds the relevant PDFs, chat logs, and text files—even if those exact words never appear in the document
+- **Intelligent**: It finds the **concept**, not just the string
 
-```
-User → NC Settings → OAuth Authorize → IdP Login → Callback
-    ↓
-NC stores encrypted per-user tokens
-    ↓
-NC PHP App → User's OAuth Token → MCP Server validates
-```
+### 🌌 Visualize Your Data Universe
 
-**Key Features**:
-- ✅ **No client secrets** - Uses PKCE (public client model)
-- ✅ **Per-user authorization** - Each user explicitly authorizes access
-- ✅ **Encrypted token storage** - Tokens stored encrypted in NC database
-- ✅ **Leverages existing validation** - MCP server uses UnifiedTokenVerifier
-- ✅ **User-revocable** - Users can disconnect at any time
+Data shouldn't just be a list; it should be a landscape. Astrolabe includes a dedicated dashboard that visualizes your document chunks as a **3D PCA Vector Plot**.
 
-### Architecture Benefits
+- **See the Connections**: View your data as a constellation of points in 3D space
+- **Explore Clusters**: Visually identify how your documents relate to one another
+- **True "Astroglobe" Experience**: Rotate, zoom, and fly through your semantic universe just like navigators once studied the stars
 
-- ✅ Preserves full MCP protocol support (sampling, elicitation, streaming)
-- ✅ Provides native Nextcloud integration
-- ✅ Maintains clear separation of concerns
-- ✅ Avoids ExApp limitations (see ADR-011)
-- ✅ No shared secrets between NC and MCP server
+### 🤖 Power Your AI Agents
 
-## Requirements
+Astrolabe isn't just for humans; it's for your AI agents, too. It acts as a bridge, running a **Model Context Protocol (MCP) Server** directly from your Nextcloud.
 
-1. **Nextcloud**: Version 30 or later
-2. **MCP Server**: Running in OAuth mode
-3. **Identity Provider**: OAuth provider supporting PKCE (Nextcloud OIDC or Keycloak)
-4. **Configuration**: Set in `config.php`:
+- **Bring Your Own Brain**: Connect external AI clients (like Claude Desktop or Cursor) to your private data
+- **Agentic Workflows**: Enable LLMs to "sample" your files, read content, and perform complex reasoning tasks using your Nextcloud data as the source of truth
+- **Private & Secure**: Your data never leaves your infrastructure
 
-```php
-'mcp_server_url' => 'http://localhost:8000',
-```
+---
 
 ## Installation
 
 ### From App Store (Recommended)
 
-1. Open Nextcloud Apps
-2. Search for "MCP Server UI"
-3. Click "Download and enable"
+1. Open **Apps** in your Nextcloud
+2. Search for **"Astrolabe"**
+3. Click **"Download and enable"**
 
 ### Manual Installation
 
-1. Clone or download this directory to `apps/astrolabe`
-2. Install dependencies: `composer install`
-3. Enable the app: `occ app:enable astrolabe`
+```bash
+# Clone into your Nextcloud apps directory
+cd /path/to/nextcloud/apps
+git clone https://github.com/cbcoutinho/nextcloud-mcp-server.git
+cd nextcloud-mcp-server/third_party/astrolabe
 
-## Configuration
+# Install dependencies
+composer install
 
-### 1. Configure Nextcloud
+# Enable the app
+php /path/to/nextcloud/occ app:enable astrolabe
+```
 
-Add to `config/config.php`:
+---
+
+## Quick Start
+
+### 1. Configure the MCP Server URL
+
+Add this to your Nextcloud `config/config.php`:
 
 ```php
 'mcp_server_url' => 'http://localhost:8000',
 ```
 
-### 2. Configure MCP Server
+### 2. Start the MCP Server
 
-Ensure MCP server is running in OAuth mode. Add to MCP server `.env`:
+The MCP server handles semantic search and AI agent connections. See the [MCP Server Installation Guide](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/installation.md) for details.
+
+Quick start with Docker:
 
 ```bash
-# Enable OAuth mode
-ENABLE_OAUTH=true
-
-# OAuth provider (Nextcloud or Keycloak)
-NEXTCLOUD_HOST=https://your-nextcloud.example.com
-# OR
-KEYCLOAK_SERVER_URL=https://keycloak.example.com
-KEYCLOAK_REALM=nextcloud-mcp
-
-# Optional: Disable legacy /app endpoint
-ENABLE_BROWSER_UI=false
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 ```
 
-### 3. User Authorization
+### 3. Authorize Access
 
-Each user must authorize the Nextcloud app to access the MCP server:
-
-1. Go to **Settings → Personal → MCP Server**
+1. Go to **Settings → Personal → Astrolabe**
 2. Click **"Authorize Access"**
 3. Sign in to your identity provider
 4. Approve the requested permissions
-5. You will be redirected back to Nextcloud
 
-The app uses **OAuth 2.0 with PKCE** (Public Client) - no client secrets are stored.
+That's it! You can now use semantic search and explore your data universe.
+
+---
 
 ## Features
 
 ### Personal Settings
 
-Located in: **Settings → Personal → MCP Server**
+Located in: **Settings → Personal → Astrolabe**
 
-- **OAuth Authorization**: Authorize Nextcloud to access MCP server on your behalf
-- **Session Information**: View user ID, auth mode, OAuth connection status
-- **Background Access**: Monitor whether MCP server has offline access enabled
-- **IdP Profile**: View identity provider profile details
-- **Connection Management**:
-  - Revoke background access (removes server-side refresh token)
-  - Disconnect from MCP server (removes local OAuth tokens)
-- **Vector Visualization**: Access interactive semantic search UI (if enabled)
+- **Semantic Search Dashboard**: Interactive 3D visualization of your document chunks
+- **OAuth Authorization**: Authorize Nextcloud to access the MCP server on your behalf
+- **Session Information**: View connection status and authentication details
+- **Connection Management**: Revoke access or disconnect when needed
 
 ### Admin Settings
 
-Located in: **Settings → Administration → MCP Server**
+Located in: **Settings → Administration → Astrolabe**
 
-- Server status and version info
-- Configuration validation (URL, API key)
-- Vector sync metrics (if enabled):
-  - Indexed documents count
-  - Pending queue size
-  - Processing rate (docs/sec)
-  - Error counts
-- Uptime monitoring
-- Feature availability
+- **Server Status**: Monitor MCP server health and version
+- **Vector Sync Metrics**: See how many documents are indexed, processing rates, and sync status
+- **Configuration Validation**: Verify server URL and connectivity
+- **Feature Availability**: Check which capabilities are enabled
 
-## Development
+### Unified Search Integration
 
-### Structure
+Astrolabe integrates directly with Nextcloud's **Unified Search**:
 
-```
-astrolabe/
-├── lib/
-│   ├── Controller/
-│   │   ├── ApiController.php      # Form handlers (revoke, etc.)
-│   │   └── PageController.php     # Main page routes
-│   ├── Service/
-│   │   └── McpServerClient.php    # HTTP client for MCP server API
-│   └── Settings/
-│       ├── Personal.php            # User settings panel
-│       ├── PersonalSection.php     # Settings section
-│       ├── Admin.php               # Admin settings panel
-│       └── AdminSection.php        # Admin section
-├── templates/
-│   └── settings/
-│       ├── personal.php            # Personal settings template
-│       ├── admin.php               # Admin settings template
-│       └── error.php               # Error template
-├── css/
-│   └── astrolabe-settings.css   # Settings styles
-└── js/
-    ├── astrolabe-personalSettings.js
-    └── astrolabe-adminSettings.js
-```
+- Available in the top search bar across all Nextcloud pages
+- Returns semantic matches ranked by relevance
+- Shows excerpts from matching documents
+- Links directly to source files in Nextcloud
 
-### Testing
+---
 
-1. Start MCP server with management API enabled
-2. Configure Nextcloud (config.php)
-3. Enable the app: `occ app:enable astrolabe`
-4. Navigate to settings panels
-5. Verify data loads from MCP server API
+## Use Cases
 
-### Debugging
+### For Individuals
 
-**Check logs:**
-```bash
-# Nextcloud logs
-tail -f data/nextcloud.log
+- **Research**: Find all notes related to a project, even if they use different terminology
+- **Organization**: Discover forgotten documents related to your current work
+- **Exploration**: Visualize how your knowledge connects and evolves over time
 
-# MCP server logs
-docker compose logs -f mcp
-```
+### For Teams
 
-**Common issues:**
+- **Knowledge Discovery**: Surface institutional knowledge that would otherwise stay buried
+- **Collaboration**: Find team members working on similar problems
+- **Documentation**: Locate relevant documentation without knowing exact titles
 
-1. **"Cannot connect to MCP server"**
-   - Verify `mcp_server_url` is correct in config.php
-   - Check MCP server is running and accessible
-   - Verify network connectivity
+### For Developers
 
-2. **"Authorization Required" shown on personal settings**
-   - User needs to click "Authorize Access" to complete OAuth flow
-   - Verify MCP server is running in OAuth mode (`ENABLE_OAUTH=true`)
-   - Check identity provider is accessible
+- **AI Integration**: Connect Claude Desktop, Cursor, or other MCP clients to Nextcloud
+- **RAG Workflows**: Build retrieval-augmented generation pipelines on your private data
+- **Custom Agents**: Use the MCP protocol to create specialized workflows
 
-3. **OAuth callback fails**
-   - Verify redirect URI is registered with IdP
-   - Check MCP server OAuth configuration
-   - Review browser console for errors
-   - Check nextcloud.log for PHP errors
+---
 
-4. **Settings panel blank**
-   - Check browser console for errors
-   - Verify templates exist in `templates/settings/`
-   - Check PHP errors in nextcloud.log
+## Requirements
 
-## Migration from /app Endpoint
+- **Nextcloud**: Version 30 or later
+- **MCP Server**: Running instance (Docker recommended)
+- **Identity Provider**: OAuth provider supporting PKCE (Nextcloud OIDC Login or Keycloak)
+- **Vector Sync**: Optional but recommended for semantic search (see [configuration guide](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/configuration.md))
 
-If you're currently using the MCP server's `/app` endpoint:
-
-1. **Phase 1** (v0.53+): Both UIs available
-   - Install this app
-   - Keep using `/app` or migrate to NC app
-   - Test functionality in NC app
-
-2. **Phase 2** (v0.54+): NC app recommended
-   - `/app` shows deprecation notice
-   - New features only in NC app
-   - Begin migration
-
-3. **Phase 3** (v0.56+): NC app only
-   - `/app` endpoint removed
-   - All users must use NC app
-
-See [ADR-018](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/ADR-018-nextcloud-php-app-for-settings-ui.md) for full migration plan.
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+---
 
 ## Documentation
 
-- [ADR-018: Nextcloud PHP App Architecture](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/ADR-018-nextcloud-php-app-for-settings-ui.md)
-- [MCP Server Configuration Guide](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/configuration.md)
+### User Guides
+
 - [MCP Server Installation](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/installation.md)
+- [Configuration Guide](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/configuration.md)
+- [OAuth Setup](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/oauth-setup.md)
+
+### Technical Details
+
+- [ADR-018: Nextcloud PHP App Architecture](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/ADR-018-nextcloud-php-app-for-settings-ui.md)
+- [OAuth PKCE Flow Details](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/ADR-004-progressive-consent.md)
+- [Vector Sync Architecture](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/ADR-002-vector-sync-authentication.md)
+
+### Troubleshooting
+
+**Cannot connect to MCP server:**
+- Verify `mcp_server_url` in `config.php`
+- Check MCP server is running: `curl http://localhost:8000/health`
+- Review logs: `tail -f data/nextcloud.log`
+
+**Authorization fails:**
+- Ensure MCP server is in OAuth mode
+- Verify identity provider is accessible
+- Check browser console for errors
+
+**Semantic search returns no results:**
+- Verify vector sync is enabled and running
+- Check indexing status in Admin settings
+- Allow time for initial indexing to complete
+
+For more help, see the [Troubleshooting Guide](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/docs/troubleshooting.md).
+
+---
+
+## Contributing
+
+We welcome contributions! Here's how to get started:
+
+1. Fork the [nextcloud-mcp-server repository](https://github.com/cbcoutinho/nextcloud-mcp-server)
+2. Create a feature branch: `git checkout -b feature/your-feature`
+3. Make your changes in `third_party/astrolabe/`
+4. Test thoroughly with a local Nextcloud instance
+5. Submit a pull request
+
+See [CONTRIBUTING.md](https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/CONTRIBUTING.md) for detailed guidelines.
+
+---
 
 ## License
 
 AGPL-3.0
 
-## Author
+---
 
-Chris Coutinho <chris@coutinho.io>
+## About
+
+**Astrolabe** is developed as part of the [Nextcloud MCP Server](https://github.com/cbcoutinho/nextcloud-mcp-server) project, bringing the power of semantic search and AI integration to Nextcloud.
+
+**Author**: Chris Coutinho <chris@coutinho.io>
+
+---
+
+**Your Data. Mapped. Visualized. Connected.**
+
+Install Astrolabe for Nextcloud.
