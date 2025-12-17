@@ -19,33 +19,39 @@ def get_alembic_config(database_path: str | Path | None = None) -> Config:
     """
     Get Alembic configuration for programmatic use.
 
+    Works in both development and installed (Docker) modes by using
+    package location instead of alembic.ini file.
+
     Args:
         database_path: Path to SQLite database file. If None, uses default
-                      from alembic.ini (/app/data/tokens.db)
+                      (/app/data/tokens.db for Docker)
 
     Returns:
         Alembic Config object configured for the specified database
     """
-    # Get path to alembic.ini (in project root)
-    project_root = Path(__file__).parent.parent
-    alembic_ini_path = project_root / "alembic.ini"
+    from nextcloud_mcp_server import alembic as alembic_package
 
-    if not alembic_ini_path.exists():
-        raise FileNotFoundError(
-            f"alembic.ini not found at {alembic_ini_path}. "
-            "Ensure Alembic is properly initialized."
-        )
+    # Use package location (works in both editable and installed modes)
+    if alembic_package.__file__ is None:
+        raise RuntimeError("alembic package __file__ is None")
+    script_location = Path(alembic_package.__file__).parent
 
-    # Create Alembic config
-    config = Config(str(alembic_ini_path))
+    # Create config programmatically (no alembic.ini needed at runtime)
+    config = Config()
+    config.set_main_option("script_location", str(script_location))
+    config.set_main_option("path_separator", "os")  # Suppress deprecation warning
 
-    # Override database URL if provided
+    # Set database URL
     if database_path:
         db_path = Path(database_path).resolve()
-        # Use sqlite+aiosqlite:// for async support
-        url = f"sqlite+aiosqlite:///{db_path}"
-        config.set_main_option("sqlalchemy.url", url)
-        logger.debug(f"Alembic configured with database: {db_path}")
+    else:
+        db_path = Path("/app/data/tokens.db")  # Default for Docker
+
+    url = f"sqlite+aiosqlite:///{db_path}"
+    config.set_main_option("sqlalchemy.url", url)
+
+    logger.debug(f"Alembic script location: {script_location}")
+    logger.debug(f"Database: {db_path}")
 
     return config
 

@@ -23,6 +23,11 @@ logger = logging.getLogger("alembic.env")
 # access to the values within the .ini file in use.
 config = context.config
 
+# Update script location to point to package location
+# This allows alembic to find migrations when installed in site-packages
+script_location = Path(__file__).parent
+config.set_main_option("script_location", str(script_location))
+
 # We don't use SQLAlchemy models, so target_metadata is None
 # Migrations will be written manually using op.execute() for raw SQL
 target_metadata = None
