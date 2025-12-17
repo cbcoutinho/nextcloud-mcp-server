@@ -501,6 +501,10 @@ export default {
 			return this.results.filter(r => (r.score || 0) >= threshold)
 		},
 	},
+	mounted() {
+		// Check for URL parameters to open chunk viewer
+		this.handleUrlParameters()
+	},
 	beforeDestroy() {
 		// Clean up Plotly event handlers to prevent memory leaks
 		const plotDiv = document.getElementById('viz-plot')
@@ -509,6 +513,51 @@ export default {
 		}
 	},
 	methods: {
+		handleUrlParameters() {
+			// Parse URL parameters
+			const urlParams = new URLSearchParams(window.location.search)
+			const docType = urlParams.get('doc_type')
+			const docId = urlParams.get('doc_id')
+			const chunkStart = urlParams.get('chunk_start')
+			const chunkEnd = urlParams.get('chunk_end')
+
+			// If we have chunk parameters, open the viewer
+			if (docType && docId && chunkStart !== null && chunkEnd !== null) {
+				// Construct a minimal result object
+				const result = {
+					doc_type: docType,
+					id: parseInt(docId, 10),
+					chunk_start_offset: parseInt(chunkStart, 10),
+					chunk_end_offset: parseInt(chunkEnd, 10),
+					title: urlParams.get('title') || this.t('astrolabe', 'Chunk Viewer'),
+					metadata: {},
+				}
+
+				// Add optional metadata
+				const path = urlParams.get('path')
+				if (path) {
+					result.metadata.path = path
+				}
+				const pageNumber = urlParams.get('page_number')
+				if (pageNumber) {
+					result.page_number = parseInt(pageNumber, 10)
+				}
+				const boardId = urlParams.get('board_id')
+				if (boardId) {
+					result.metadata.board_id = boardId
+				}
+
+				// Open the chunk viewer
+				this.$nextTick(() => {
+					this.viewChunk(result)
+				})
+
+				// Clear URL parameters to avoid reopening on navigation
+				const newUrl = window.location.pathname
+				window.history.replaceState({}, '', newUrl)
+			}
+		},
+
 		toggleDocType(docTypeId, checked) {
 			if (checked && !this.selectedDocTypes.includes(docTypeId)) {
 				this.selectedDocTypes.push(docTypeId)
@@ -616,6 +665,12 @@ export default {
 			case 'note':
 				return generateUrl(`/apps/notes/#/note/${id}`)
 			case 'file':
+				// For PDFs with page numbers, use the PDF viewer with page anchor
+				if (result.page_number && metadata.path) {
+					const pageParam = `#page=${result.page_number}`
+					return generateUrl(`/apps/files_pdfviewer/?file=${encodeURIComponent(metadata.path)}${pageParam}`)
+				}
+				// For other files, use the standard file viewer
 				if (id) {
 					return generateUrl(`/apps/files/files/${id}?dir=/&editing=false&openfile=true`)
 				}

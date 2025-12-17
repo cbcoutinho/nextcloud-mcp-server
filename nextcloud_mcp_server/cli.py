@@ -253,5 +253,195 @@ def run(
     )
 
 
+@click.group()
+def db():
+    """Database migration management commands."""
+    pass
+
+
+@db.command()
+@click.option(
+    "--database-path",
+    "-d",
+    envvar="TOKEN_STORAGE_DB",
+    default="/app/data/tokens.db",
+    show_default=True,
+    help="Path to token storage database (can also use TOKEN_STORAGE_DB env var)",
+)
+@click.option(
+    "--revision",
+    "-r",
+    default="head",
+    show_default=True,
+    help="Target revision (default: head for latest)",
+)
+def upgrade(database_path: str, revision: str):
+    """Upgrade database to a specific revision.
+
+    \b
+    Examples:
+      # Upgrade to latest version
+      $ nextcloud-mcp-server db upgrade
+
+      # Upgrade to specific revision
+      $ nextcloud-mcp-server db upgrade --revision 001
+
+      # Use custom database path
+      $ nextcloud-mcp-server db upgrade -d /path/to/tokens.db
+    """
+    from nextcloud_mcp_server.migrations import upgrade_database
+
+    try:
+        click.echo(f"Upgrading database to revision: {revision}")
+        upgrade_database(database_path, revision)
+        click.echo(click.style("✓ Database upgraded successfully", fg="green"))
+    except Exception as e:
+        click.echo(click.style(f"✗ Upgrade failed: {e}", fg="red"), err=True)
+        raise click.ClickException(str(e))
+
+
+@db.command()
+@click.option(
+    "--database-path",
+    "-d",
+    envvar="TOKEN_STORAGE_DB",
+    default="/app/data/tokens.db",
+    show_default=True,
+    help="Path to token storage database",
+)
+@click.option(
+    "--revision",
+    "-r",
+    default="-1",
+    show_default=True,
+    help="Target revision (default: -1 for previous version)",
+)
+@click.confirmation_option(
+    prompt="Are you sure you want to downgrade the database? This may result in data loss."
+)
+def downgrade(database_path: str, revision: str):
+    """Downgrade database to a specific revision.
+
+    WARNING: This may result in data loss! Use with caution.
+
+    \b
+    Examples:
+      # Downgrade by one version
+      $ nextcloud-mcp-server db downgrade
+
+      # Downgrade to specific revision
+      $ nextcloud-mcp-server db downgrade --revision 001
+
+      # Downgrade to base (empty database)
+      $ nextcloud-mcp-server db downgrade --revision base
+    """
+    from nextcloud_mcp_server.migrations import downgrade_database
+
+    try:
+        click.echo(f"Downgrading database to revision: {revision}")
+        downgrade_database(database_path, revision)
+        click.echo(click.style("✓ Database downgraded successfully", fg="green"))
+    except Exception as e:
+        click.echo(click.style(f"✗ Downgrade failed: {e}", fg="red"), err=True)
+        raise click.ClickException(str(e))
+
+
+@db.command()
+@click.option(
+    "--database-path",
+    "-d",
+    envvar="TOKEN_STORAGE_DB",
+    default="/app/data/tokens.db",
+    show_default=True,
+    help="Path to token storage database",
+)
+def current(database_path: str):
+    """Show current database revision.
+
+    \b
+    Example:
+      $ nextcloud-mcp-server db current
+    """
+    from nextcloud_mcp_server.migrations import get_current_revision
+
+    try:
+        revision = get_current_revision(database_path)
+        if revision:
+            click.echo(f"Current revision: {click.style(revision, fg='cyan')}")
+        else:
+            click.echo(
+                click.style(
+                    "Database is not versioned (no alembic_version table)", fg="yellow"
+                )
+            )
+    except Exception as e:
+        click.echo(
+            click.style(f"✗ Failed to get current revision: {e}", fg="red"), err=True
+        )
+        raise click.ClickException(str(e))
+
+
+@db.command()
+@click.option(
+    "--database-path",
+    "-d",
+    envvar="TOKEN_STORAGE_DB",
+    default="/app/data/tokens.db",
+    show_default=True,
+    help="Path to token storage database",
+)
+def history(database_path: str):
+    """Show migration history.
+
+    \b
+    Example:
+      $ nextcloud-mcp-server db history
+    """
+    from nextcloud_mcp_server.migrations import show_migration_history
+
+    try:
+        click.echo("Migration history:")
+        show_migration_history(database_path)
+    except Exception as e:
+        click.echo(click.style(f"✗ Failed to show history: {e}", fg="red"), err=True)
+        raise click.ClickException(str(e))
+
+
+@db.command()
+@click.argument("message")
+def migrate(message: str):
+    """Create a new migration script (developers only).
+
+    The MESSAGE argument describes the changes in this migration.
+
+    \b
+    Examples:
+      $ nextcloud-mcp-server db migrate "add user preferences table"
+      $ nextcloud-mcp-server db migrate "add index on refresh_tokens.user_id"
+
+    Note: You must manually edit the generated migration file to add SQL statements.
+    """
+    from nextcloud_mcp_server.migrations import create_migration
+
+    try:
+        click.echo(f"Creating new migration: {message}")
+        create_migration(message)
+        click.echo(click.style("✓ Migration created successfully", fg="green"))
+        click.echo(
+            "Edit the migration file in alembic/versions/ to add upgrade/downgrade SQL."
+        )
+    except Exception as e:
+        click.echo(
+            click.style(f"✗ Failed to create migration: {e}", fg="red"), err=True
+        )
+        raise click.ClickException(str(e))
+
+
+# Create CLI group with subcommands
+cli = click.Group()
+cli.add_command(run)
+cli.add_command(db)
+
+
 if __name__ == "__main__":
-    run()
+    cli()

@@ -12,6 +12,10 @@ RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
 
 WORKDIR /app
 
+COPY pyproject.toml uv.lock README.md .
+
+RUN uv sync --locked --no-dev --no-install-project --no-cache
+
 COPY . .
 
 RUN uv sync --locked --no-dev --no-editable --no-cache

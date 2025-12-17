@@ -376,16 +376,35 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
         user_id = f"user-{secrets.token_hex(8)}"
         username = "unknown"
 
+    # Calculate refresh token expiration from token response
+    refresh_expires_in = token_data.get("refresh_expires_in")
+    refresh_expires_at = None
+    if refresh_expires_in:
+        import time
+
+        refresh_expires_at = int(time.time()) + refresh_expires_in
+        logger.info(
+            f"Refresh token expires in {refresh_expires_in}s (at timestamp {refresh_expires_at})"
+        )
+
+    # Extract granted scopes
+    granted_scopes = (
+        token_data.get("scope", "").split() if token_data.get("scope") else None
+    )
+
     # Store refresh token (for background jobs ONLY)
     if refresh_token:
         logger.info(f"Storing refresh token for user_id: {user_id}")
         logger.info(f"  State parameter (provisioning_client_id): {state[:16]}...")
+        logger.info(f"  Granted scopes: {granted_scopes}")
+        logger.info(f"  Expires at: {refresh_expires_at}")
         await storage.store_refresh_token(
             user_id=user_id,
             refresh_token=refresh_token,
-            expires_at=None,
+            expires_at=refresh_expires_at,
             flow_type="browser",  # Browser-based login flow
             provisioning_client_id=state,  # Store state for unified session lookup
+            scopes=granted_scopes,
         )
         logger.info(f"✓ Refresh token stored successfully for user_id: {user_id}")
         logger.info(

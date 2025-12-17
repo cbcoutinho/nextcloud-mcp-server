@@ -223,39 +223,51 @@ class SemanticSearchProvider implements IProvider {
 	}
 
 	/**
-	 * Build URL to navigate to the original document.
+	 * Build URL to navigate to Astrolabe with chunk viewer.
 	 *
-	 * URL formats match App.vue's getDocumentUrl() implementation for consistency.
+	 * Links to Astrolabe app with query parameters that trigger the chunk modal,
+	 * allowing users to preview the chunk before navigating to the full document.
 	 */
 	private function buildResourceUrl(array $result): string {
+		// Build base URL to Astrolabe app
+		$baseUrl = $this->urlGenerator->linkToRoute(Application::APP_ID . '.page.index');
+
+		// Extract chunk parameters
 		$docType = $result['doc_type'] ?? 'unknown';
 		$id = $result['id'] ?? null;
-		$path = $result['path'] ?? null;
+		$chunkStart = $result['chunk_start_offset'] ?? null;
+		$chunkEnd = $result['chunk_end_offset'] ?? null;
 
-		return match ($docType) {
-			'note' => $id
-				? $this->urlGenerator->linkToRoute('notes.page.index') . '/#/note/' . $id
-				: $this->urlGenerator->linkToRoute('notes.page.index'),
+		// If we have chunk information, build URL with parameters
+		if ($id !== null && $chunkStart !== null && $chunkEnd !== null) {
+			$params = [
+				'doc_type' => $docType,
+				'doc_id' => $id,
+				'chunk_start' => $chunkStart,
+				'chunk_end' => $chunkEnd,
+			];
 
-			'file' => $id
-				? $this->urlGenerator->linkToRouteAbsolute('files.view.index') . 'files/' . $id . '?dir=/&editing=false&openfile=true'
-				: $this->urlGenerator->linkToRouteAbsolute('files.view.index'),
+			// Add optional metadata
+			if (isset($result['title'])) {
+				$params['title'] = $result['title'];
+			}
+			if (isset($result['path'])) {
+				$params['path'] = $result['path'];
+			}
+			if (isset($result['page_number'])) {
+				$params['page_number'] = $result['page_number'];
+			}
+			if (isset($result['board_id'])) {
+				$params['board_id'] = $result['board_id'];
+			}
 
-			'deck_card' => isset($result['board_id']) && $id
-				? $this->urlGenerator->linkToRoute('deck.page.index')
-				  . "board/{$result['board_id']}/card/{$id}"
-				: $this->urlGenerator->linkToRoute('deck.page.index'),
+			// Encode parameters for URL
+			$queryString = http_build_query($params);
+			return $baseUrl . '?' . $queryString;
+		}
 
-			'calendar', 'calendar_event' => $this->urlGenerator->linkToRoute('calendar.view.index'),
-
-			'news_item' => $id
-				? $this->urlGenerator->linkToRoute('news.page.index') . 'item/' . $id
-				: $this->urlGenerator->linkToRoute('news.page.index'),
-
-			'contact' => $this->urlGenerator->linkToRoute('contacts.page.index'),
-
-			default => $this->urlGenerator->linkToRoute(Application::APP_ID . '.page.index'),
-		};
+		// Fallback to base URL if no chunk information
+		return $baseUrl;
 	}
 
 	/**

@@ -1,0 +1,71 @@
+Database Migrations for nextcloud-mcp-server
+============================================
+
+This directory contains Alembic database migrations for the token storage database.
+
+Structure
+---------
+- env.py: Alembic environment configuration
+- script.py.mako: Template for generating new migration files
+- versions/: Directory containing migration scripts
+
+Usage
+-----
+Migrations are managed via the CLI:
+
+    # Upgrade database to latest version
+    uv run nextcloud-mcp-server db upgrade
+
+    # Show current database version
+    uv run nextcloud-mcp-server db current
+
+    # Show migration history
+    uv run nextcloud-mcp-server db history
+
+    # Create a new migration (developers only)
+    uv run nextcloud-mcp-server db migrate "description of changes"
+
+    # Downgrade database by one version (emergency use only)
+    uv run nextcloud-mcp-server db downgrade
+
+Direct Alembic Usage
+--------------------
+You can also use Alembic commands directly:
+
+    # Specify database URL via -x flag
+    uv run alembic -x database_url=sqlite+aiosqlite:////path/to/tokens.db upgrade head
+
+    # Or set in alembic.ini and run
+    uv run alembic upgrade head
+    uv run alembic current
+    uv run alembic history
+
+Writing Migrations
+------------------
+Since we don't use SQLAlchemy models, migrations are written with raw SQL:
+
+    def upgrade() -> None:
+        op.execute("""
+            ALTER TABLE refresh_tokens
+            ADD COLUMN new_field TEXT
+        """)
+
+    def downgrade() -> None:
+        # SQLite doesn't support DROP COLUMN, use table recreation
+        op.execute("""
+            CREATE TABLE refresh_tokens_new AS
+            SELECT user_id, encrypted_token, ... FROM refresh_tokens
+        """)
+        op.execute("DROP TABLE refresh_tokens")
+        op.execute("ALTER TABLE refresh_tokens_new RENAME TO refresh_tokens")
+
+Migration File Naming
+---------------------
+Format: YYYYMMDD_HHMM_<revision>_<slug>.py
+Example: 20251217_2200_001_initial_schema.py
+
+Notes
+-----
+- Migrations run automatically when RefreshTokenStorage.initialize() is called
+- Existing databases are automatically stamped with the initial version
+- SQLite has limited ALTER TABLE support - complex changes require table recreation

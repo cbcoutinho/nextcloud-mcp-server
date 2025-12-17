@@ -873,6 +873,12 @@ async def unified_search(request: Request) -> JSONResponse:
             result_data["chunk_index"] = result.chunk_index
             result_data["total_chunks"] = result.total_chunks
 
+            # Add chunk offsets for modal navigation
+            if result.chunk_start_offset is not None:
+                result_data["chunk_start_offset"] = result.chunk_start_offset
+            if result.chunk_end_offset is not None:
+                result_data["chunk_end_offset"] = result.chunk_end_offset
+
             formatted_results.append(result_data)
 
         response_data: dict[str, Any] = {
