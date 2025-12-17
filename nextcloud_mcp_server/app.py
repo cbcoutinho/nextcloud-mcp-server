@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, cast
 
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
@@ -1259,7 +1259,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # We need to find it in the mounted routes
             for route in app.routes:
                 if isinstance(route, Mount) and route.path == "/app":
-                    route.app.state.oauth_context = oauth_context_dict
+                    browser_app = cast(Starlette, route.app)
+                    browser_app.state.oauth_context = oauth_context_dict
                     logger.info(
                         "OAuth context shared with browser_app for session auth"
                     )
@@ -1280,7 +1281,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # Also share with browser_app for webhook routes
             for route in app.routes:
                 if isinstance(route, Mount) and route.path == "/app":
-                    route.app.state.storage = storage
+                    browser_app = cast(Starlette, route.app)
+                    browser_app.state.storage = storage
                     logger.info(
                         "Storage shared with browser_app for webhook management"
                     )
@@ -1348,10 +1350,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # Also share with browser_app for /app route
             for route in app.routes:
                 if isinstance(route, Mount) and route.path == "/app":
-                    route.app.state.document_send_stream = send_stream
-                    route.app.state.document_receive_stream = receive_stream
-                    route.app.state.shutdown_event = shutdown_event
-                    route.app.state.scanner_wake_event = scanner_wake_event
+                    browser_app = cast(Starlette, route.app)
+                    browser_app.state.document_send_stream = send_stream
+                    browser_app.state.document_receive_stream = receive_stream
+                    browser_app.state.shutdown_event = shutdown_event
+                    browser_app.state.scanner_wake_event = scanner_wake_event
                     logger.info("Vector sync state shared with browser_app for /app")
                     break
 
@@ -1481,10 +1484,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # Also share with browser_app for /app route
             for route in app.routes:
                 if isinstance(route, Mount) and route.path == "/app":
-                    route.app.state.document_send_stream = send_stream
-                    route.app.state.document_receive_stream = receive_stream
-                    route.app.state.shutdown_event = shutdown_event
-                    route.app.state.scanner_wake_event = scanner_wake_event
+                    browser_app = cast(Starlette, route.app)
+                    browser_app.state.document_send_stream = send_stream
+                    browser_app.state.document_receive_stream = receive_stream
+                    browser_app.state.shutdown_event = shutdown_event
+                    browser_app.state.scanner_wake_event = scanner_wake_event
                     logger.info("Vector sync state shared with browser_app for /app")
                     break
 

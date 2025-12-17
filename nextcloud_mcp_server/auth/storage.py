@@ -216,6 +216,8 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
+        # Type narrowing: cipher is set after initialize()
+        assert self.cipher is not None
         encrypted_token = self.cipher.encrypt(refresh_token.encode())
         now = int(time.time())
         scopes_json = json.dumps(scopes) if scopes else None
@@ -361,6 +363,9 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
+        # Type narrowing: cipher is set after initialize()
+        assert self.cipher is not None
+
         start_time = time.time()
         try:
             async with aiosqlite.connect(self.db_path) as db:
@@ -444,6 +449,9 @@ class RefreshTokenStorage:
         """
         if not self._initialized:
             await self.initialize()
+
+        # Type narrowing: cipher is set after initialize()
+        assert self.cipher is not None
 
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
@@ -616,6 +624,9 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
+        # Type narrowing: cipher is set after initialize()
+        assert self.cipher is not None
+
         # Encrypt sensitive data
         encrypted_secret = self.cipher.encrypt(client_secret.encode())
         encrypted_reg_token = (
@@ -685,6 +696,9 @@ class RefreshTokenStorage:
         """
         if not self._initialized:
             await self.initialize()
+
+        # Type narrowing: cipher is set after initialize()
+        assert self.cipher is not None
 
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(

@@ -379,6 +379,11 @@ async def _index_document(
                         f"Deck card {doc_task.doc_id} not found in any board/stack"
                     )
 
+            # Type narrowing: card, board, stack are all set if we reach here
+            assert card is not None
+            assert board is not None
+            assert stack is not None
+
             # Build content from card title and description
             content_parts = [card.title]
             if card.description:

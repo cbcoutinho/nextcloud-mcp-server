@@ -665,6 +665,9 @@ async def _fetch_document_text(
                     logger.warning(f"Deck card {doc_id} not found in any board/stack")
                     return None
 
+            # Type narrowing: card is set if we reach here
+            assert card is not None
+
             # Reconstruct full content as indexed: title + "\n\n" + description
             # This ensures chunk offsets align with indexed content structure
             content_parts = [card.title]

@@ -418,11 +418,12 @@ async def revoke_nextcloud_access(
         storage = RefreshTokenStorage.from_env()
         await storage.initialize()
 
-        encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
-        if not encryption_key:
+        # Get OAuth client credentials from storage
+        client_creds = await storage.get_oauth_client()
+        if not client_creds:
             return RevocationResult(
                 success=False,
-                message="Token encryption key not configured.",
+                message="OAuth client credentials not found in storage.",
             )
 
         broker = TokenBrokerService(
@@ -432,7 +433,8 @@ async def revoke_nextcloud_access(
                 f"{os.getenv('NEXTCLOUD_HOST')}/.well-known/openid-configuration",
             ),
             nextcloud_host=os.getenv("NEXTCLOUD_HOST"),  # type: ignore
-            encryption_key=encryption_key,
+            client_id=client_creds["client_id"],
+            client_secret=client_creds["client_secret"],
         )
 
         # Revoke access

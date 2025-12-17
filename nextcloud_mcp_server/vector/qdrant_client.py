@@ -89,6 +89,8 @@ async def get_qdrant_client() -> AsyncQdrantClient:
             if isinstance(vectors, dict):
                 actual_dimension = vectors["dense"].size
             else:
+                # Type narrowing: vectors must be VectorParams if not dict
+                assert isinstance(vectors, VectorParams)
                 actual_dimension = vectors.size
 
             # Validate dimension matches
