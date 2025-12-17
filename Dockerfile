@@ -25,4 +25,4 @@ ENV VIRTUAL_ENV=/app/.venv
 ENV PATH=/app/.vnev/bin:$PATH
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
-ENTRYPOINT ["/app/.venv/bin/nextcloud-mcp-server", "--host", "0.0.0.0"]
+ENTRYPOINT ["/app/.venv/bin/nextcloud-mcp-server", "run", "--host", "0.0.0.0"]
