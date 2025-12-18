@@ -24,9 +24,12 @@ use Psr\Log\LoggerInterface;
 /**
  * OAuth controller for MCP Server UI.
  *
- * Implements OAuth 2.0 Authorization Code flow with support for both:
- * - Confidential clients (with client_secret): Direct token refresh, no PKCE
- * - Public clients (without client_secret): PKCE-based flow for fallback
+ * Implements OAuth 2.0 Authorization Code flow with PKCE (RFC 9207).
+ * PKCE is always used for all clients (public and confidential) as recommended
+ * by modern OAuth 2.0 best practices.
+ *
+ * - Public clients: PKCE only
+ * - Confidential clients: PKCE + client_secret (defense in depth)
  */
 class OAuthController extends Controller {
 	private $config;
@@ -67,10 +70,8 @@ class OAuthController extends Controller {
 	/**
 	 * Initiate OAuth authorization flow.
 	 *
-	 * For confidential clients (with client_secret): Standard OAuth flow, no PKCE.
-	 * For public clients (without client_secret): Generates PKCE code verifier and challenge.
-	 *
-	 * Stores state in session, then redirects user to IdP authorization endpoint.
+	 * Always generates PKCE code verifier and challenge (RFC 9207).
+	 * Stores state and code verifier in session, then redirects user to IdP authorization endpoint.
 	 *
 	 * @return RedirectResponse|TemplateResponse
 	 */
@@ -98,31 +99,25 @@ class OAuthController extends Controller {
 				throw new \Exception('MCP server URL not configured');
 			}
 
-			// Check if confidential client secret is configured
+			// Always generate PKCE values (RFC 9207: PKCE recommended for all clients)
+			$codeVerifier = bin2hex(random_bytes(32));
+			$codeChallenge = $this->base64UrlEncode(hash('sha256', $codeVerifier, true));
+
+			// Check if confidential client secret is also configured
 			$clientSecret = $this->config->getSystemValue('astrolabe_client_secret', '');
 			$isConfidentialClient = !empty($clientSecret);
 
-			// Generate PKCE values only for public clients
-			$codeVerifier = null;
-			$codeChallenge = null;
-
-			if (!$isConfidentialClient) {
-				// Public client: use PKCE
-				$codeVerifier = bin2hex(random_bytes(32));
-				$codeChallenge = $this->base64UrlEncode(hash('sha256', $codeVerifier, true));
-
-				$this->logger->info('Using public client mode with PKCE');
+			if ($isConfidentialClient) {
+				$this->logger->info('Using confidential client mode with PKCE and client secret');
 			} else {
-				$this->logger->info('Using confidential client mode with client secret');
+				$this->logger->info('Using public client mode with PKCE only');
 			}
 
 			// Generate state for CSRF protection
 			$state = bin2hex(random_bytes(16));
 
 			// Store values in session
-			if ($codeVerifier) {
-				$this->session->set('mcp_oauth_code_verifier', $codeVerifier);
-			}
+			$this->session->set('mcp_oauth_code_verifier', $codeVerifier);
 			$this->session->set('mcp_oauth_state', $state);
 			$this->session->set('mcp_oauth_user_id', $user->getUID());
 
@@ -181,13 +176,10 @@ class OAuthController extends Controller {
 				throw new \Exception('Invalid state parameter (CSRF protection)');
 			}
 
-			// Get stored PKCE verifier (may be null for confidential clients)
+			// Get stored PKCE verifier (always required)
 			$codeVerifier = $this->session->get('mcp_oauth_code_verifier');
-
-			// Check if we have either client_secret or code_verifier
-			$clientSecret = $this->config->getSystemValue('astrolabe_client_secret', '');
-			if (empty($clientSecret) && empty($codeVerifier)) {
-				throw new \Exception('Neither client secret nor code verifier available for authentication');
+			if (empty($codeVerifier)) {
+				throw new \Exception('PKCE code verifier not found in session');
 			}
 
 			// Get user ID from session
@@ -287,16 +279,18 @@ class OAuthController extends Controller {
 	 * to find the authorization endpoint. Supports both Nextcloud OIDC and
 	 * external IdPs like Keycloak.
 	 *
+	 * Always uses PKCE (RFC 9207 recommends PKCE for all clients).
+	 *
 	 * @param string $mcpServerUrl Base URL of MCP server
 	 * @param string $state CSRF state parameter
-	 * @param string|null $codeChallenge PKCE code challenge (null for confidential clients)
+	 * @param string $codeChallenge PKCE code challenge
 	 * @return string Authorization URL
 	 * @throws \Exception if OIDC discovery fails
 	 */
 	private function buildAuthorizationUrl(
 		string $mcpServerUrl,
 		string $state,
-		?string $codeChallenge,
+		string $codeChallenge,
 	): string {
 		// First, query MCP server to discover which IdP it's configured to use
 		$this->logger->info('buildAuthorizationUrl: Starting', [
@@ -407,11 +401,9 @@ class OAuthController extends Controller {
 			'resource' => $mcpServerPublicUrl,  // RFC 8707 Resource Indicator - request token with MCP server audience
 		];
 
-		// Add PKCE parameters only for public clients
-		if ($codeChallenge !== null) {
-			$params['code_challenge'] = $codeChallenge;
-			$params['code_challenge_method'] = 'S256';
-		}
+		// Add PKCE parameters (always required per RFC 9207)
+		$params['code_challenge'] = $codeChallenge;
+		$params['code_challenge_method'] = 'S256';
 
 		return $authEndpoint . '?' . http_build_query($params);
 	}
@@ -419,22 +411,23 @@ class OAuthController extends Controller {
 	/**
 	 * Exchange authorization code for access token.
 	 *
-	 * For confidential clients: Uses client_secret for authentication.
-	 * For public clients: Uses PKCE code_verifier for authentication.
+	 * Always uses PKCE code_verifier (RFC 9207).
+	 * For confidential clients: Also includes client_secret for additional security.
+	 * For public clients: Uses PKCE code_verifier only.
 	 *
 	 * Queries MCP server for IdP configuration, then performs OIDC discovery
 	 * to find the token endpoint. Supports both Nextcloud OIDC and external IdPs.
 	 *
 	 * @param string $mcpServerUrl Base URL of MCP server
 	 * @param string $code Authorization code
-	 * @param string|null $codeVerifier PKCE code verifier (null for confidential clients)
+	 * @param string $codeVerifier PKCE code verifier
 	 * @return array Token data containing access_token, refresh_token, expires_in
 	 * @throws \Exception on HTTP or token error
 	 */
 	private function exchangeCodeForToken(
 		string $mcpServerUrl,
 		string $code,
-		?string $codeVerifier,
+		string $codeVerifier,
 	): array {
 		// Query MCP server to discover which IdP it's configured to use
 		try {
@@ -494,19 +487,16 @@ class OAuthController extends Controller {
 			'client_id' => $this->client->getClientId(),
 		];
 
-		// Add client authentication based on client type
-		$clientSecret = $this->config->getSystemValue('astrolabe_client_secret', '');
+		// Always include PKCE code verifier (RFC 9207)
+		$postData['code_verifier'] = $codeVerifier;
 
+		// Also include client secret if configured (defense in depth for confidential clients)
+		$clientSecret = $this->config->getSystemValue('astrolabe_client_secret', '');
 		if (!empty($clientSecret)) {
-			// Confidential client: use client secret for authentication
 			$postData['client_secret'] = $clientSecret;
-			$this->logger->info('Using client secret for token exchange');
-		} elseif ($codeVerifier !== null) {
-			// Public client: use PKCE proof for authentication
-			$postData['code_verifier'] = $codeVerifier;
-			$this->logger->info('Using PKCE code verifier for token exchange');
+			$this->logger->info('Using PKCE with client secret for token exchange');
 		} else {
-			throw new \Exception('Neither client_secret nor code_verifier available for token exchange');
+			$this->logger->info('Using PKCE only for token exchange');
 		}
 
 		// Use Nextcloud's HTTP client for token request

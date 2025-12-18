@@ -1445,6 +1445,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 client_secret=sync_client_secret,
             )
 
+            # Store token broker in oauth_context for management API (revoke endpoint)
+            if hasattr(app.state, "oauth_context"):
+                app.state.oauth_context["token_broker"] = token_broker
+                logger.info("Token broker added to oauth_context for management API")
+
             # Initialize Qdrant collection before starting background tasks
             logger.info("Initializing Qdrant collection...")
             from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
