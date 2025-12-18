@@ -665,12 +665,6 @@ export default {
 			case 'note':
 				return generateUrl(`/apps/notes/#/note/${id}`)
 			case 'file':
-				// For PDFs with page numbers, use the PDF viewer with page anchor
-				if (result.page_number && metadata.path) {
-					const pageParam = `#page=${result.page_number}`
-					return generateUrl(`/apps/files_pdfviewer/?file=${encodeURIComponent(metadata.path)}${pageParam}`)
-				}
-				// For other files, use the standard file viewer
 				if (id) {
 					return generateUrl(`/apps/files/files/${id}?dir=/&editing=false&openfile=true`)
 				}
