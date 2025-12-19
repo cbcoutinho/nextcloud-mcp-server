@@ -116,6 +116,54 @@ def _sanitize_error_for_client(error: Exception, context: str = "") -> str:
     return "An internal error occurred. Please contact your administrator."
 
 
+def _parse_int_param(
+    value: str | None,
+    default: int,
+    min_val: int,
+    max_val: int,
+    param_name: str,
+) -> int:
+    """Parse and validate integer parameter."""
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise ValueError(f"Invalid {param_name}: must be an integer")
+    if parsed < min_val or parsed > max_val:
+        raise ValueError(
+            f"Invalid {param_name}: must be between {min_val} and {max_val}"
+        )
+    return parsed
+
+
+def _parse_float_param(
+    value: Any,
+    default: float,
+    min_val: float,
+    max_val: float,
+    param_name: str,
+) -> float:
+    """Parse and validate float parameter."""
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except (ValueError, TypeError):
+        raise ValueError(f"Invalid {param_name}: must be a number")
+    if parsed < min_val or parsed > max_val:
+        raise ValueError(
+            f"Invalid {param_name}: must be between {min_val} and {max_val}"
+        )
+    return parsed
+
+
+def _validate_query_string(query: str, max_length: int = 10000) -> None:
+    """Validate query string length."""
+    if len(query) > max_length:
+        raise ValueError(f"Query too long: maximum {max_length} characters")
+
+
 async def get_server_status(request: Request) -> JSONResponse:
     """GET /api/v1/status - Server status and version.
 
@@ -365,7 +413,10 @@ async def revoke_user_access(request: Request) -> JSONResponse:
     except Exception as e:
         logger.warning(f"Unauthorized access to /api/v1/users/{{user_id}}/revoke: {e}")
         return JSONResponse(
-            {"error": "Unauthorized", "message": str(e)},
+            {
+                "error": "Unauthorized",
+                "message": _sanitize_error_for_client(e, "revoke_user_access"),
+            },
             status_code=401,
         )
 
@@ -441,7 +492,10 @@ async def get_installed_apps(request: Request) -> JSONResponse:
     except Exception as e:
         logger.warning(f"Unauthorized access to /api/v1/apps: {e}")
         return JSONResponse(
-            {"error": "Unauthorized", "message": str(e)},
+            {
+                "error": "Unauthorized",
+                "message": _sanitize_error_for_client(e, "get_installed_apps"),
+            },
             status_code=401,
         )
 
@@ -489,7 +543,10 @@ async def get_installed_apps(request: Request) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error getting installed apps for user {user_id}: {e}")
         return JSONResponse(
-            {"error": "Internal error", "message": str(e)},
+            {
+                "error": "Internal error",
+                "message": _sanitize_error_for_client(e, "get_installed_apps"),
+            },
             status_code=500,
         )
 
@@ -507,7 +564,10 @@ async def list_webhooks(request: Request) -> JSONResponse:
     except Exception as e:
         logger.warning(f"Unauthorized access to /api/v1/webhooks: {e}")
         return JSONResponse(
-            {"error": "Unauthorized", "message": str(e)},
+            {
+                "error": "Unauthorized",
+                "message": _sanitize_error_for_client(e, "list_webhooks"),
+            },
             status_code=401,
         )
 
@@ -543,7 +603,10 @@ async def list_webhooks(request: Request) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error listing webhooks for user {user_id}: {e}")
         return JSONResponse(
-            {"error": "Internal error", "message": str(e)},
+            {
+                "error": "Internal error",
+                "message": _sanitize_error_for_client(e, "list_webhooks"),
+            },
             status_code=500,
         )
 
@@ -568,7 +631,10 @@ async def create_webhook(request: Request) -> JSONResponse:
     except Exception as e:
         logger.warning(f"Unauthorized access to /api/v1/webhooks: {e}")
         return JSONResponse(
-            {"error": "Unauthorized", "message": str(e)},
+            {
+                "error": "Unauthorized",
+                "message": _sanitize_error_for_client(e, "create_webhook"),
+            },
             status_code=401,
         )
 
@@ -622,7 +688,10 @@ async def create_webhook(request: Request) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error creating webhook for user {user_id}: {e}")
         return JSONResponse(
-            {"error": "Internal error", "message": str(e)},
+            {
+                "error": "Internal error",
+                "message": _sanitize_error_for_client(e, "create_webhook"),
+            },
             status_code=500,
         )
 
@@ -640,7 +709,10 @@ async def delete_webhook(request: Request) -> JSONResponse:
     except Exception as e:
         logger.warning(f"Unauthorized access to /api/v1/webhooks: {e}")
         return JSONResponse(
-            {"error": "Unauthorized", "message": str(e)},
+            {
+                "error": "Unauthorized",
+                "message": _sanitize_error_for_client(e, "delete_webhook"),
+            },
             status_code=401,
         )
 
@@ -692,7 +764,10 @@ async def delete_webhook(request: Request) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error deleting webhook for user {user_id}: {e}")
         return JSONResponse(
-            {"error": "Internal error", "message": str(e)},
+            {
+                "error": "Internal error",
+                "message": _sanitize_error_for_client(e, "delete_webhook"),
+            },
             status_code=500,
         )
 
@@ -747,19 +822,50 @@ async def unified_search(request: Request) -> JSONResponse:
     except Exception as e:
         logger.warning(f"Unauthorized access to /api/v1/search: {e}")
         return JSONResponse(
-            {"error": "Unauthorized", "message": str(e)},
+            {
+                "error": "Unauthorized",
+                "message": _sanitize_error_for_client(e, "unified_search"),
+            },
             status_code=401,
         )
 
     try:
         # Parse request body
         body = await request.json()
-        query = body.get("query", "")
+
+        # Validate and parse parameters
+        try:
+            query = body.get("query", "")
+            _validate_query_string(query, max_length=10000)
+
+            limit = _parse_int_param(
+                str(body.get("limit")) if body.get("limit") is not None else None,
+                20,
+                1,
+                100,
+                "limit",
+            )
+
+            offset = _parse_int_param(
+                str(body.get("offset")) if body.get("offset") is not None else None,
+                0,
+                0,
+                1000000,
+                "offset",
+            )
+
+            score_threshold = _parse_float_param(
+                body.get("score_threshold"),
+                0.0,
+                0.0,
+                1.0,
+                "score_threshold",
+            )
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+
         algorithm = body.get("algorithm", "hybrid")
         fusion = body.get("fusion", "rrf")
-        score_threshold = body.get("score_threshold", 0.0)
-        limit = min(body.get("limit", 20), 100)  # Enforce max limit
-        offset = body.get("offset", 0)
         include_pca = body.get("include_pca", False)
         include_chunks = body.get("include_chunks", True)
         doc_types = body.get("doc_types")  # Optional filter
@@ -776,9 +882,6 @@ async def unified_search(request: Request) -> JSONResponse:
         valid_fusions = {"rrf", "dbsf"}
         if fusion not in valid_fusions:
             fusion = "rrf"
-
-        # Validate score threshold
-        score_threshold = max(0.0, min(1.0, float(score_threshold)))
 
         # Execute search using the appropriate algorithm
         from nextcloud_mcp_server.search import (
@@ -916,7 +1019,10 @@ async def unified_search(request: Request) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error in unified search: {e}")
         return JSONResponse(
-            {"error": "Internal error", "message": str(e)},
+            {
+                "error": "Internal error",
+                "message": _sanitize_error_for_client(e, "unified_search"),
+            },
             status_code=500,
         )
 
@@ -953,7 +1059,10 @@ async def vector_search(request: Request) -> JSONResponse:
     except Exception as e:
         logger.warning(f"Unauthorized access to /api/v1/vector-viz/search: {e}")
         return JSONResponse(
-            {"error": "Unauthorized", "message": str(e)},
+            {
+                "error": "Unauthorized",
+                "message": _sanitize_error_for_client(e, "vector_search"),
+            },
             status_code=401,
         )
 
@@ -1118,7 +1227,10 @@ async def get_chunk_context(request: Request) -> JSONResponse:
     except Exception as e:
         logger.warning(f"Unauthorized access to /api/v1/chunk-context: {e}")
         return JSONResponse(
-            {"error": "Unauthorized", "message": str(e)},
+            {
+                "error": "Unauthorized",
+                "message": _sanitize_error_for_client(e, "get_chunk_context"),
+            },
             status_code=401,
         )
 
@@ -1128,7 +1240,6 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         doc_id = request.query_params.get("doc_id")
         start_str = request.query_params.get("start")
         end_str = request.query_params.get("end")
-        context_chars = int(request.query_params.get("context", "500"))
 
         # Validate required parameters
         if not all([doc_type, doc_id, start_str, end_str]):
@@ -1146,8 +1257,21 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         assert doc_id is not None
         assert doc_type is not None
 
-        start = int(start_str)
-        end = int(end_str)
+        # Parse and validate integer parameters with bounds checking
+        try:
+            context_chars = _parse_int_param(
+                request.query_params.get("context"),
+                500,
+                0,
+                10000,
+                "context_chars",
+            )
+            start = _parse_int_param(start_str, 0, 0, 10000000, "start")
+            end = _parse_int_param(end_str, 0, 0, 10000000, "end")
+            if end <= start:
+                raise ValueError("end must be greater than start")
+        except ValueError as e:
+            return JSONResponse({"success": False, "error": str(e)}, status_code=400)
         # Convert doc_id to int if possible (most IDs are int)
         doc_id_val: str | int = int(doc_id) if doc_id.isdigit() else doc_id
 

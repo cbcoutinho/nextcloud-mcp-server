@@ -24,6 +24,26 @@ from nextcloud_mcp_server.auth.userinfo_routes import (
 logger = logging.getLogger(__name__)
 
 
+def _should_use_secure_cookies() -> bool:
+    """Determine if cookies should have secure flag.
+
+    Checks COOKIE_SECURE env var first, then auto-detects from NEXTCLOUD_HOST.
+
+    Returns:
+        True if cookies should be secure (HTTPS), False otherwise
+    """
+    # Explicit configuration takes precedence
+    explicit = os.getenv("COOKIE_SECURE", "").lower()
+    if explicit == "true":
+        return True
+    if explicit == "false":
+        return False
+
+    # Auto-detect from NEXTCLOUD_HOST protocol
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST", "")
+    return nextcloud_host.startswith("https://")
+
+
 async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
     """Browser OAuth login endpoint - redirects to IdP for authentication.
 
@@ -447,7 +467,7 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
         value=user_id,
         max_age=86400 * 30,  # 30 days
         httponly=True,
-        secure=False,  # Set to True in production with HTTPS
+        secure=_should_use_secure_cookies(),
         samesite="lax",
     )
 

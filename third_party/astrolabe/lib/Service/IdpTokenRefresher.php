@@ -36,6 +36,31 @@ class IdpTokenRefresher {
 	}
 
 	/**
+	 * Get Nextcloud base URL for constructing internal OIDC endpoint URLs.
+	 *
+	 * @return string Base URL (e.g., "https://nextcloud.example.com")
+	 */
+	private function getNextcloudBaseUrl(): string {
+		// Prefer explicit CLI URL override
+		$baseUrl = $this->config->getSystemValue('overwrite.cli.url', '');
+
+		if (!empty($baseUrl)) {
+			return rtrim($baseUrl, '/');
+		}
+
+		// Fallback to first trusted domain with protocol
+		$trustedDomains = $this->config->getSystemValue('trusted_domains', []);
+		if (!empty($trustedDomains)) {
+			$protocol = $this->config->getSystemValue('overwriteprotocol', 'https');
+			return $protocol . '://' . $trustedDomains[0];
+		}
+
+		// Last resort: localhost (log warning)
+		$this->logger->warning('IdpTokenRefresher: No Nextcloud URL configured, using localhost fallback');
+		return 'http://localhost';
+	}
+
+	/**
 	 * Refresh access token using refresh token.
 	 *
 	 * Calls IdP's token endpoint directly (NOT MCP server).
@@ -87,8 +112,8 @@ class IdpTokenRefresher {
 
 				$tokenEndpoint = $discovery['token_endpoint'];
 			} else {
-				// Nextcloud's OIDC app - use internal URL directly
-				$tokenEndpoint = 'http://localhost/apps/oidc/token';
+				// Nextcloud's OIDC app - use internal URL
+				$tokenEndpoint = $this->getNextcloudBaseUrl() . '/apps/oidc/token';
 
 				$this->logger->info('IdpTokenRefresher: Using Nextcloud OIDC app', [
 					'token_endpoint' => $tokenEndpoint,
@@ -117,6 +142,18 @@ class IdpTokenRefresher {
 
 			if (json_last_error() !== JSON_ERROR_NONE || !isset($tokenData['access_token'])) {
 				throw new \RuntimeException('Invalid token response from IdP');
+			}
+
+			// Validate refresh_token is present (required for token rotation)
+			if (!isset($tokenData['refresh_token'])) {
+				$this->logger->error(
+					'IdpTokenRefresher: No refresh token in response - token rotation will fail',
+					[
+						'has_access_token' => isset($tokenData['access_token']),
+						'response_keys' => array_keys($tokenData),
+					]
+				);
+				return null;
 			}
 
 			$this->logger->info('IdpTokenRefresher: Token refresh successful');

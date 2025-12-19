@@ -321,6 +321,8 @@ class TokenBrokerService:
         """
         # Check cache first (background tokens can be cached)
         cache_key = f"{user_id}:background:{','.join(sorted(required_scopes))}"
+        refresh_in_progress_key = f"{user_id}:refresh_in_progress"
+
         cached_token = await self.cache.get(cache_key)
         if cached_token:
             return cached_token
@@ -337,13 +339,28 @@ class TokenBrokerService:
                 )
                 return cached_token
 
-            # Get stored refresh token
-            refresh_data = await self.storage.get_refresh_token(user_id)
-            if not refresh_data:
-                logger.info(f"No refresh token found for user {user_id}")
-                return None
+            # Check if another thread is currently refreshing
+            if await self.cache.get(refresh_in_progress_key):
+                logger.debug(f"Refresh in progress for user {user_id}, waiting briefly")
+                await anyio.sleep(0.1)  # Brief wait for in-progress refresh
+                # Check cache one more time after wait
+                cached_token = await self.cache.get(cache_key)
+                if cached_token:
+                    logger.debug(
+                        f"Token refreshed by another thread for user {user_id}"
+                    )
+                    return cached_token
+
+            # Mark refresh as in-progress
+            await self.cache.set(refresh_in_progress_key, "true", expires_in=5)
 
             try:
+                # Get stored refresh token
+                refresh_data = await self.storage.get_refresh_token(user_id)
+                if not refresh_data:
+                    logger.info(f"No refresh token found for user {user_id}")
+                    return None
+
                 # storage.get_refresh_token() returns already-decrypted token
                 refresh_token = refresh_data["refresh_token"]
 
@@ -369,6 +386,10 @@ class TokenBrokerService:
                 )
                 await self.cache.invalidate(cache_key)
                 return None
+
+            finally:
+                # Always clear the in-progress marker
+                await self.cache.invalidate(refresh_in_progress_key)
 
     async def _refresh_access_token(
         self, refresh_token: str, user_id: str | None = None
