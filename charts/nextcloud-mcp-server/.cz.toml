@@ -1,0 +1,24 @@
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.53.0"
+tag_format = "nextcloud-mcp-server-$version"
+version_scheme = "pep440"
+update_changelog_on_bump = true
+major_version_zero = true
+
+# Update chart version only (NOT appVersion)
+version_files = [
+    "Chart.yaml:^version:"
+]
+
+# Ignore tags from other components
+ignored_tag_formats = [
+    "v*",              # MCP server tags
+    "astrolabe-v*",    # Astrolabe tags
+]
+
+# Filter commits by scope
+[tool.commitizen.customize]
+changelog_pattern = "^(feat|fix|docs|refactor|perf|test|build|ci|chore)\\(helm\\)(!)?:"
+schema_pattern = "^(feat|fix|docs|refactor|perf|test|build|ci|chore)\\(helm\\)(!)?:\\s.+"
+message_template = "{{change_type}}(helm): {{message}}"
