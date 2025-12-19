@@ -2,7 +2,7 @@
 name = "cz_conventional_commits"
 version = "0.53.0"
 tag_format = "nextcloud-mcp-server-$version"
-version_scheme = "pep440"
+version_scheme = "semver"
 update_changelog_on_bump = true
 major_version_zero = true
 
