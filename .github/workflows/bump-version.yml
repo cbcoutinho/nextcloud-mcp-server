@@ -125,7 +125,8 @@ jobs:
       - name: Push tags
         if: steps.bump.outputs.bumped == 'true'
         run: |
-          git push --follow-tags
+          git push
+          git push --tags
           echo "Pushed tags for components:${{ steps.bump.outputs.components }}"
 
       - name: Summary
