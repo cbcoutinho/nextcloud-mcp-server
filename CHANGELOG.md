@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.56.0 (2025-12-19)
+
+### Feat
+
+- **ci**: add --increment flag to bump scripts for manual version control
+
+### Fix
+
+- **astrolabe**: add contents:write permission to appstore workflow
+- **astrolabe**: update commitizen pattern to properly update info.xml version
+- **astrolabe**: prevent workflow failure when only helm/astrolabe commits exist
+- **astrolabe**: info.xml
+
 ## v0.55.1 (2025-12-19)
 
 ### Fix
