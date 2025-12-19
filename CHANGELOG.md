@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.54.0 (2025-12-19)
+
+### Feat
+
+- **astrolabe**: add Nextcloud App Store deployment automation
+- configure commitizen monorepo with independent versioning
+
+### Fix
+
+- **ci**: improve versioning and error handling
+- **ci**: address critical workflow and validation issues
+- **astrolabe**: address code review feedback
+
 ## v0.53.0 (2025-12-19)
 
 ### Feat
