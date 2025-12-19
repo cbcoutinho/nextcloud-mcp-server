@@ -89,13 +89,22 @@ version_scheme = "pep440"
 version_provider = "uv"
 update_changelog_on_bump = true
 major_version_zero = true
+
+# MCP server version files + Helm appVersion
 version_files = [
-    "charts/nextcloud-mcp-server/Chart.yaml:appVersion",
-    "charts/nextcloud-mcp-server/Chart.yaml:version"
+    "charts/nextcloud-mcp-server/Chart.yaml:^appVersion:",
 ]
+
+# Ignore tags from other components
 ignored_tag_formats = [
-    "nextcloud-mcp-server-*"
+    "nextcloud-mcp-server-*",  # Helm chart tags
+    "astrolabe-v*",            # Astrolabe tags
 ]
+
+# Filter commits by scope (mcp or unscoped)
+[tool.commitizen.customize]
+changelog_pattern = "^(feat|fix|docs|refactor|perf|test|build|ci|chore)(\\(mcp\\))?(!)?:"
+schema_pattern = "^(feat|fix|docs|refactor|perf|test|build|ci|chore)(\\(mcp\\))?(!)?:\\s.+"
 
 [tool.ruff.lint]
 extend-select = ["I"]
