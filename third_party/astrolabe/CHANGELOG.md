@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires external MCP server deployment
 - See documentation for setup: https://github.com/cbcoutinho/nextcloud-mcp-server
 
+## astrolabe-v0.3.2 (2025-12-19)
+
+### Fix
+
+- **astrolabe**: add contents:write permission to appstore workflow
+
 ## astrolabe-v0.3.1 (2025-12-19)
 
 ### Fix
