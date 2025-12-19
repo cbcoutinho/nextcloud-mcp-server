@@ -25,6 +25,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires external MCP server deployment
 - See documentation for setup: https://github.com/cbcoutinho/nextcloud-mcp-server
 
+## astrolabe-v0.3.0 (2025-12-19)
+
+### Fix
+
+- **astrolabe**: prevent workflow failure when only helm/astrolabe commits exist
+- **astrolabe**: info.xml
+
+## astrolabe-v0.2.1 (2025-12-19)
+
+### BREAKING CHANGE
+
+- MCP server now bumps for ANY conventional commit except
+those explicitly scoped to helm or astrolabe.
+
+### Fix
+
+- **ci**: push all tags explicitly in bump workflow
+- **ci**: make MCP server default bump target for all non-scoped commits
+- **ci**: restrict docker build to MCP server tags only
+- **ci**: correct appstore-push-action version to v1.0.4
+
 ## astrolabe-v0.2.0 (2025-12-19)
 
 ### BREAKING CHANGE
