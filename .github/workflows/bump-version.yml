@@ -85,7 +85,7 @@ jobs:
 
           # Count conventional commits that are NOT scoped to helm or astrolabe
           mcp_commit_count=$(git log "$commit_range" --oneline --grep="^(feat|fix|docs|refactor|perf|test|build|ci|chore)" -E | \
-            grep -v "(helm)" | grep -v "(astrolabe)" | wc -l)
+            { grep -v "(helm)" || true; } | { grep -v "(astrolabe)" || true; } | wc -l)
 
           if [ "$mcp_commit_count" -gt 0 ]; then
             echo "Found $mcp_commit_count commits for MCP server since $last_mcp_tag"
