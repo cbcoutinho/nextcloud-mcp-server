@@ -1,3 +1,42 @@
+## v0.53.0 (2025-12-19)
+
+### Feat
+
+- add Alembic database migration system
+- make chunk modal title clickable link to documents
+- add native Plotly hover styling for clickable points
+- add click interactivity to Plotly 3D scatter chart
+- improve chunk viewer with fixed navigation and markdown rendering
+- **astrolabe**: enable multi-select for document types and refactor PDF viewer
+- **auth**: implement refresh token rotation for Nextcloud OIDC
+- **astrolabe**: enhance unified search and add webhook management
+- **astrolabe**: add webhook management UI to admin settings
+- **astrolabe**: add OAuth token refresh and webhook presets
+- **search**: add file_path metadata and chunk offsets to search results
+- **astrolabe**: use proper icons and thumbnails in unified search
+- **astrolabe**: add admin search settings and enhanced UI
+- **astrolabe**: add unified search provider with clickable file links
+- **astrolabe**: add 3D PCA visualization for semantic search
+- **astrolabe**: add Nextcloud PHP app for MCP server management
+- **vector-sync**: enable background sync in OAuth mode
+
+### Fix
+
+- **security**: address critical security issues from PR #401 code review
+- **oauth**: enable PKCE for all clients and add token_broker to oauth_context
+- **astrolabe**: revert invalid files_pdfviewer URL for file links
+- resolve type checking warnings for CI
+- move Alembic to package submodule for Docker compatibility
+- update unified search results to match chunk viz display
+- **astrolabe**: handle OAuth refresh token rotation
+- address critical code review issues (4 fixes)
+- resolve CI linting issues for Astroglobe
+
+### Refactor
+
+- **astrolabe**: extract PDF viewer to dedicated component
+- **astrolabe**: reframe UI as semantic search service
+
 ## v0.52.1 (2025-12-13)
 
 ### Perf
