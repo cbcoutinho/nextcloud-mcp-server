@@ -8,7 +8,7 @@ major_version_zero = true
 
 # Update Astrolabe-specific files only
 version_files = [
-    "appinfo/info.xml:version",
+    "appinfo/info.xml:<version>",
     "package.json:version"
 ]
 
