@@ -36,9 +36,9 @@ See [documentation](https://github.com/cbcoutinho/nextcloud-mcp-server) for conf
 	<category>ai</category>
 	<bugs>https://github.com/cbcoutinho/nextcloud-mcp-server/issues</bugs>
 	<repository type="git">https://github.com/cbcoutinho/nextcloud-mcp-server</repository>
-	<screenshot>screenshots/02-semantic-search-with-plot.png</screenshot>
-	<screenshot>screenshots/01-unified-search-astrolabe.png</screenshot>
-	<screenshot>screenshots/03-chunk-viewer-open.png</screenshot>
+	<screenshot>https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/third_party/astrolabe/screenshots/02-semantic-search-with-plot.png</screenshot>
+	<screenshot>https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/third_party/astrolabe/screenshots/01-unified-search-astrolabe.png</screenshot>
+	<screenshot>https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/third_party/astrolabe/screenshots/03-chunk-viewer-open.png</screenshot>
 	<dependencies>
 		<nextcloud min-version="30" max-version="32"/>
 	</dependencies>
