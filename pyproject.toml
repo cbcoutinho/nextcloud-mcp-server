@@ -101,10 +101,10 @@ ignored_tag_formats = [
     "astrolabe-v*",            # Astrolabe tags
 ]
 
-# Filter commits by scope (mcp or unscoped)
+# Filter commits by scope (all scopes except helm and astrolabe)
 [tool.commitizen.customize]
-changelog_pattern = "^(feat|fix|docs|refactor|perf|test|build|ci|chore)(\\(mcp\\))?(!)?:"
-schema_pattern = "^(feat|fix|docs|refactor|perf|test|build|ci|chore)(\\(mcp\\))?(!)?:\\s.+"
+changelog_pattern = "^(feat|fix|docs|refactor|perf|test|build|ci|chore)(?!\\((?:helm|astrolabe)\\))(\\([^)]+\\))?(!)?:"
+schema_pattern = "^(feat|fix|docs|refactor|perf|test|build|ci|chore)(?!\\((?:helm|astrolabe)\\))(\\([^)]+\\))?(!)?:\\s.+"
 
 [tool.ruff.lint]
 extend-select = ["I"]

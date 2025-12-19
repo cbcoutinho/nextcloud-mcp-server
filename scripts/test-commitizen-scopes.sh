@@ -6,7 +6,7 @@ echo "Testing commitizen scope filtering patterns..."
 echo
 
 # Regex patterns from configs
-MCP_PATTERN='^(feat|fix|docs|refactor|perf|test|build|ci|chore)(\(mcp\))?(!)?:'
+MCP_PATTERN='^(feat|fix|docs|refactor|perf|test|build|ci|chore)(?!\((?:helm|astrolabe)\))(\([^)]+\))?(!)?:'
 HELM_PATTERN='^(feat|fix|docs|refactor|perf|test|build|ci|chore)\(helm\)(!)?:'
 ASTROLABE_PATTERN='^(feat|fix|docs|refactor|perf|test|build|ci|chore)\(astrolabe\)(!)?:'
 
@@ -14,7 +14,8 @@ test_pattern() {
     local message="$1"
     local pattern="$2"
 
-    if echo "$message" | grep -qE "$pattern"; then
+    # Use grep -P for Perl-compatible regex (supports negative lookahead)
+    if echo "$message" | grep -qP "$pattern"; then
         return 0
     else
         return 1
@@ -61,11 +62,14 @@ run_test() {
 failed=0
 passed=0
 
-# MCP server commits (scope=mcp or unscoped)
+# MCP server commits (any scope except helm/astrolabe)
 run_test "feat: add new feature" "mcp" && passed=$((passed+1)) || failed=$((failed+1))
 run_test "feat(mcp): add API endpoint" "mcp" && passed=$((passed+1)) || failed=$((failed+1))
 run_test "fix(mcp): resolve authentication bug" "mcp" && passed=$((passed+1)) || failed=$((failed+1))
 run_test "docs: update README" "mcp" && passed=$((passed+1)) || failed=$((failed+1))
+run_test "fix(ci): update workflow" "mcp" && passed=$((passed+1)) || failed=$((failed+1))
+run_test "feat(api): add endpoint" "mcp" && passed=$((passed+1)) || failed=$((failed+1))
+run_test "ci: configure GitHub Actions" "mcp" && passed=$((passed+1)) || failed=$((failed+1))
 
 # Helm chart commits
 run_test "feat(helm): add resource limits" "helm" && passed=$((passed+1)) || failed=$((failed+1))
@@ -82,10 +86,10 @@ run_test "feat(mcp)!: breaking API change" "mcp" && passed=$((passed+1)) || fail
 run_test "feat(helm)!: rename values" "helm" && passed=$((passed+1)) || failed=$((failed+1))
 run_test "feat(astrolabe)!: remove deprecated feature" "astrolabe" && passed=$((passed+1)) || failed=$((failed+1))
 
-# Invalid commits (should not match any)
-run_test "feat(invalid): test" "none" && passed=$((passed+1)) || failed=$((failed+1))
-run_test "random commit message" "none" && passed=$((passed+1)) || failed=$((failed+1))
-run_test "feat (mcp): space before scope" "none" && passed=$((passed+1)) || failed=$((failed+1))
+# Edge cases
+run_test "feat(invalid): test" "mcp" && passed=$((passed+1)) || failed=$((failed+1))  # Any scope except helm/astrolabe → MCP
+run_test "random commit message" "none" && passed=$((passed+1)) || failed=$((failed+1))  # Not conventional commit
+run_test "feat (mcp): space before scope" "none" && passed=$((passed+1)) || failed=$((failed+1))  # Invalid format
 
 # Summary
 echo
