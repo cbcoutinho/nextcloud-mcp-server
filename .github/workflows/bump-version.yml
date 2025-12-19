@@ -7,9 +7,9 @@ on:
 
 jobs:
   bump-version:
-    if: "!startsWith(github.event.head_commit.message, 'bump:')"
+    if: "!startsWith(github.event.head_commit.message, 'bump:') && !startsWith(github.event.head_commit.message, 'chore(release):')"
     runs-on: ubuntu-latest
-    name: "Bump version and create changelog with commitizen"
+    name: "Bump version and create changelog for monorepo components"
     permissions:
       contents: write
       packages: write
@@ -19,14 +19,122 @@ jobs:
         with:
           fetch-depth: 0
           token: "${{ secrets.PERSONAL_ACCESS_TOKEN }}"
-      - name: Create bump and changelog
-        uses: commitizen-tools/commitizen-action@bb4f1df6601e2a1a891506581b0c53acdc88e07d # 0.26.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-          changelog_increment_filename: body.md
-      - name: Release
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
-        with:
-          body_path: "body.md"
-          tag_name: v${{ env.REVISION }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          python-version: '3.11'
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Detect and bump component versions
+        id: bump
+        run: |
+          set -euo pipefail
+
+          # Track which components were bumped
+          BUMPED_COMPONENTS=""
+
+          # Helper function to check for commits with specific scope since last tag
+          has_commits_since_tag() {
+            local tag_pattern="$1"
+            local scope_pattern="$2"
+
+            # Get the most recent tag matching the pattern
+            local last_tag=$(git tag --sort=-creatordate | grep -E "^${tag_pattern}" | head -n 1 || echo "")
+
+            if [ -z "$last_tag" ]; then
+              # No previous tag, check all commits on master
+              local commit_range="master"
+            else
+              # Check commits since last tag
+              local commit_range="${last_tag}..HEAD"
+            fi
+
+            # Count commits matching the scope pattern
+            local commit_count=$(git log "$commit_range" --oneline --grep="^${scope_pattern}" -E | wc -l)
+
+            if [ "$commit_count" -gt 0 ]; then
+              echo "Found $commit_count commits for scope '$scope_pattern' since $last_tag"
+              return 0
+            else
+              echo "No commits found for scope '$scope_pattern' since $last_tag"
+              return 1
+            fi
+          }
+
+          # Bump MCP server (scope: mcp or unscoped)
+          echo "Checking MCP server for version bump..."
+          if has_commits_since_tag "v[0-9]" "(feat|fix|docs|refactor|perf|test|build|ci|chore)(\(mcp\))?(!)?:"; then
+            echo "Bumping MCP server version..."
+            ./scripts/bump-mcp.sh
+            BUMPED_COMPONENTS="$BUMPED_COMPONENTS mcp"
+          fi
+
+          # Bump Helm chart (scope: helm)
+          echo "Checking Helm chart for version bump..."
+          if has_commits_since_tag "nextcloud-mcp-server-" "(feat|fix|docs|refactor|perf|test|build|ci|chore)\(helm\)(!)?:"; then
+            echo "Bumping Helm chart version..."
+            ./scripts/bump-helm.sh
+            BUMPED_COMPONENTS="$BUMPED_COMPONENTS helm"
+          fi
+
+          # Bump Astrolabe (scope: astrolabe)
+          echo "Checking Astrolabe for version bump..."
+          if has_commits_since_tag "astrolabe-v" "(feat|fix|docs|refactor|perf|test|build|ci|chore)\(astrolabe\)(!)?:"; then
+            echo "Bumping Astrolabe version..."
+            ./scripts/bump-astrolabe.sh
+            BUMPED_COMPONENTS="$BUMPED_COMPONENTS astrolabe"
+          fi
+
+          # Output summary
+          if [ -z "$BUMPED_COMPONENTS" ]; then
+            echo "No components required version bumps"
+            echo "bumped=false" >> $GITHUB_OUTPUT
+          else
+            echo "Bumped components:$BUMPED_COMPONENTS"
+            echo "bumped=true" >> $GITHUB_OUTPUT
+            echo "components=$BUMPED_COMPONENTS" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push tags
+        if: steps.bump.outputs.bumped == 'true'
+        run: |
+          git push --follow-tags
+          echo "Pushed tags for components:${{ steps.bump.outputs.components }}"
+
+      - name: Summary
+        if: steps.bump.outputs.bumped == 'true'
+        run: |
+          echo "## Version Bump Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The following components were bumped:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          for component in ${{ steps.bump.outputs.components }}; do
+            case $component in
+              mcp)
+                tag=$(git tag --sort=-creatordate | grep -E '^v[0-9]' | head -n 1)
+                echo "- **MCP Server**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
+                ;;
+              helm)
+                tag=$(git tag --sort=-creatordate | grep -E '^nextcloud-mcp-server-' | head -n 1)
+                echo "- **Helm Chart**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
+                ;;
+              astrolabe)
+                tag=$(git tag --sort=-creatordate | grep -E '^astrolabe-v' | head -n 1)
+                echo "- **Astrolabe**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
+                ;;
+            esac
+          done
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Tags have been pushed and release workflows will trigger automatically." >> $GITHUB_STEP_SUMMARY
