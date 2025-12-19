@@ -11,6 +11,8 @@ env:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    # Only run on Astrolabe releases
+    if: startsWith(github.ref, 'refs/tags/astrolabe-v')
 
     steps:
       - name: Checkout code
@@ -19,7 +21,7 @@ jobs:
       - name: Get version from tag
         id: tag
         run: |
-          echo "TAG=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          echo "TAG=${GITHUB_REF#refs/tags/astrolabe-v}" >> $GITHUB_OUTPUT
 
       - name: Validate version in info.xml matches tag
         working-directory: ${{ env.APP_DIR }}

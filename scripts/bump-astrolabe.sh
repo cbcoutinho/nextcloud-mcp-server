@@ -2,6 +2,9 @@
 # Bump Astrolabe app version
 set -e
 
+# Validate dependencies
+command -v uv >/dev/null 2>&1 || { echo "Error: uv not found. Install from https://docs.astral.sh/uv/"; exit 1; }
+
 cd third_party/astrolabe
 
 echo "Bumping Astrolabe version..."
