@@ -117,7 +117,14 @@ class RefreshTokenStorage:
         return cls(db_path=db_path, encryption_key=encryption_key)
 
     async def initialize(self) -> None:
-        """Initialize database schema"""
+        """
+        Initialize database schema using Alembic migrations.
+
+        This method handles three scenarios:
+        1. New database: Run migrations from scratch
+        2. Pre-Alembic database: Stamp with initial revision (no changes)
+        3. Alembic-managed database: Upgrade to latest version
+        """
         if self._initialized:
             return
 
@@ -125,137 +132,59 @@ class RefreshTokenStorage:
         db_dir = Path(self.db_path).parent
         db_dir.mkdir(parents=True, exist_ok=True)
 
-        # Set restrictive permissions on database file
+        # Set restrictive permissions on database file if it exists
         if Path(self.db_path).exists():
             os.chmod(self.db_path, 0o600)
 
+        # Check database state and run appropriate migration strategy
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS refresh_tokens (
-                    user_id TEXT PRIMARY KEY,
-                    encrypted_token BLOB NOT NULL,
-                    expires_at INTEGER,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    -- ADR-004 Progressive Consent fields
-                    flow_type TEXT DEFAULT 'hybrid',  -- 'hybrid', 'flow1', 'flow2'
-                    token_audience TEXT DEFAULT 'nextcloud',  -- 'mcp-server' or 'nextcloud'
-                    provisioned_at INTEGER,  -- When Flow 2 was completed
-                    provisioning_client_id TEXT,  -- Which MCP client initiated Flow 1
-                    scopes TEXT,  -- JSON array of granted scopes
-                    -- Browser session profile cache
-                    user_profile TEXT,  -- JSON cache of IdP user profile (for browser UI only)
-                    profile_cached_at INTEGER  -- When profile was last cached
+            # Check if database is managed by Alembic
+            cursor = await db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'"
+            )
+            has_alembic = await cursor.fetchone() is not None
+
+            if not has_alembic:
+                # Check if this is a pre-Alembic database with existing schema
+                cursor = await db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='refresh_tokens'"
                 )
-                """
-            )
+                has_schema = await cursor.fetchone() is not None
 
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS audit_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp INTEGER NOT NULL,
-                    event TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    resource_type TEXT,
-                    resource_id TEXT,
-                    auth_method TEXT,
-                    hostname TEXT
+                if has_schema:
+                    logger.info(
+                        f"Detected pre-Alembic database at {self.db_path}, "
+                        "stamping with initial revision"
+                    )
+                else:
+                    logger.info(
+                        f"Initializing new database at {self.db_path} with migrations"
+                    )
+
+        # Run migrations in a worker thread using anyio.to_thread
+        # This allows Alembic to run its own async operations in a separate context
+        from anyio import to_thread
+
+        from nextcloud_mcp_server.migrations import stamp_database, upgrade_database
+
+        if not has_alembic:
+            if has_schema:
+                # Stamp existing database without running migrations
+                await to_thread.run_sync(stamp_database, self.db_path, "001")
+                logger.info(
+                    "Pre-Alembic database stamped successfully. "
+                    "Future schema changes will use migrations."
                 )
-                """
-            )
+            else:
+                # New database - run migrations
+                await to_thread.run_sync(upgrade_database, self.db_path, "head")
+                logger.info("Database initialized with migrations")
+        else:
+            # Alembic-managed database - upgrade to latest
+            await to_thread.run_sync(upgrade_database, self.db_path, "head")
+            logger.info("Database upgraded to latest version")
 
-            # Create index on audit logs for efficient queries
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_audit_user_timestamp "
-                "ON audit_logs(user_id, timestamp)"
-            )
-
-            # OAuth client credentials storage
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS oauth_clients (
-                    id INTEGER PRIMARY KEY,
-                    client_id TEXT UNIQUE NOT NULL,
-                    encrypted_client_secret BLOB NOT NULL,
-                    client_id_issued_at INTEGER NOT NULL,
-                    client_secret_expires_at INTEGER NOT NULL,
-                    redirect_uris TEXT NOT NULL,
-                    encrypted_registration_access_token BLOB,
-                    registration_client_uri TEXT,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
-                )
-                """
-            )
-
-            # OAuth flow sessions (ADR-004 Progressive Consent)
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS oauth_sessions (
-                    session_id TEXT PRIMARY KEY,
-                    client_id TEXT,
-                    client_redirect_uri TEXT NOT NULL,
-                    state TEXT,
-                    code_challenge TEXT,
-                    code_challenge_method TEXT,
-                    mcp_authorization_code TEXT UNIQUE,
-                    idp_access_token TEXT,
-                    idp_refresh_token TEXT,
-                    user_id TEXT,
-                    created_at INTEGER NOT NULL,
-                    expires_at INTEGER NOT NULL,
-                    -- ADR-004 Progressive Consent fields
-                    flow_type TEXT DEFAULT 'hybrid',  -- 'hybrid', 'flow1', 'flow2'
-                    requested_scopes TEXT,  -- JSON array of requested scopes
-                    granted_scopes TEXT,  -- JSON array of granted scopes
-                    is_provisioning BOOLEAN DEFAULT FALSE  -- True if this is a Flow 2 provisioning session
-                )
-                """
-            )
-
-            # Create index for MCP authorization code lookups
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_oauth_sessions_mcp_code "
-                "ON oauth_sessions(mcp_authorization_code)"
-            )
-
-            # Schema version tracking
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS schema_version (
-                    version INTEGER PRIMARY KEY,
-                    applied_at REAL NOT NULL
-                )
-                """
-            )
-
-            # Registered webhooks tracking (both BasicAuth and OAuth modes)
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS registered_webhooks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    webhook_id INTEGER NOT NULL UNIQUE,
-                    preset_id TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                )
-                """
-            )
-
-            # Create indexes for efficient webhook queries
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_webhooks_preset "
-                "ON registered_webhooks(preset_id)"
-            )
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_webhooks_created "
-                "ON registered_webhooks(created_at)"
-            )
-
-            await db.commit()
-
-        # Set restrictive permissions after creation
+        # Set restrictive permissions after initialization
         os.chmod(self.db_path, 0o600)
 
         self._initialized = True
@@ -287,6 +216,8 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
+        # Type narrowing: cipher is set after initialize()
+        assert self.cipher is not None
         encrypted_token = self.cipher.encrypt(refresh_token.encode())
         now = int(time.time())
         scopes_json = json.dumps(scopes) if scopes else None
@@ -432,6 +363,9 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
+        # Type narrowing: cipher is set after initialize()
+        assert self.cipher is not None
+
         start_time = time.time()
         try:
             async with aiosqlite.connect(self.db_path) as db:
@@ -515,6 +449,9 @@ class RefreshTokenStorage:
         """
         if not self._initialized:
             await self.initialize()
+
+        # Type narrowing: cipher is set after initialize()
+        assert self.cipher is not None
 
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
@@ -687,6 +624,9 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
+        # Type narrowing: cipher is set after initialize()
+        assert self.cipher is not None
+
         # Encrypt sensitive data
         encrypted_secret = self.cipher.encrypt(client_secret.encode())
         encrypted_reg_token = (
@@ -756,6 +696,9 @@ class RefreshTokenStorage:
         """
         if not self._initialized:
             await self.initialize()
+
+        # Type narrowing: cipher is set after initialize()
+        assert self.cipher is not None
 
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(

@@ -205,6 +205,7 @@ class Settings:
     vector_sync_scan_interval: int = 300  # seconds (5 minutes)
     vector_sync_processor_workers: int = 3
     vector_sync_queue_max_size: int = 10000
+    vector_sync_user_poll_interval: int = 60  # seconds - OAuth mode user discovery
 
     # Qdrant settings (mutually exclusive modes)
     qdrant_url: Optional[str] = None  # Network mode: http://qdrant:6333
@@ -390,6 +391,9 @@ def get_settings() -> Settings:
         ),
         vector_sync_queue_max_size=int(
             os.getenv("VECTOR_SYNC_QUEUE_MAX_SIZE", "10000")
+        ),
+        vector_sync_user_poll_interval=int(
+            os.getenv("VECTOR_SYNC_USER_POLL_INTERVAL", "60")
         ),
         # Qdrant settings
         qdrant_url=os.getenv("QDRANT_URL"),

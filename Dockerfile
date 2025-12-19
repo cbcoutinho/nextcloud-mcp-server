@@ -12,13 +12,17 @@ RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
 
 WORKDIR /app
 
+COPY pyproject.toml uv.lock README.md .
+
+RUN uv sync --locked --no-dev --no-install-project --no-cache
+
 COPY . .
 
 RUN uv sync --locked --no-dev --no-editable --no-cache
 
 ENV PYTHONUNBUFFERED=1
 ENV VIRTUAL_ENV=/app/.venv
-ENV PATH=/app/.vnev/bin:$PATH
+ENV PATH=/app/.venv/bin:$PATH
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
-ENTRYPOINT ["/app/.venv/bin/nextcloud-mcp-server", "--host", "0.0.0.0"]
+ENTRYPOINT ["/app/.venv/bin/nextcloud-mcp-server", "run", "--host", "0.0.0.0"]

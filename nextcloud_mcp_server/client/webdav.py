@@ -1180,9 +1180,11 @@ class WebDAVClient(BaseNextcloudClient):
                     "name": display_name_elem.text,
                     "userVisible": user_visible_elem.text.lower() == "true"
                     if user_visible_elem is not None
+                    and user_visible_elem.text is not None
                     else True,
                     "userAssignable": user_assignable_elem.text.lower() == "true"
                     if user_assignable_elem is not None
+                    and user_assignable_elem.text is not None
                     else True,
                 }
                 logger.debug(f"Found tag '{tag_name}' with ID {tag_info['id']}")

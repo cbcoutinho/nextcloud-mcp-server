@@ -226,6 +226,10 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                     "search_method": f"bm25_hybrid_{self.fusion_name}",
                 }
 
+                # Add file-specific metadata for PDF viewer
+                if doc_type == "file" and (path := result.payload.get("file_path")):
+                    metadata["path"] = path
+
                 # Add deck_card-specific metadata for frontend URL construction
                 if doc_type == "deck_card":
                     if board_id := result.payload.get("board_id"):
@@ -243,6 +247,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                         chunk_start_offset=result.payload.get("chunk_start_offset"),
                         chunk_end_offset=result.payload.get("chunk_end_offset"),
                         page_number=result.payload.get("page_number"),
+                        page_count=result.payload.get("page_count"),
                         chunk_index=result.payload.get("chunk_index", 0),
                         total_chunks=result.payload.get("total_chunks", 1),
                         point_id=str(result.id),  # Qdrant point ID for batch retrieval

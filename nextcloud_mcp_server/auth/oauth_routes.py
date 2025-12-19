@@ -517,12 +517,23 @@ async def oauth_callback_nextcloud(request: Request):
             token_data.get("scope", "").split() if token_data.get("scope") else None
         )
 
+        # Calculate refresh token expiration from token response
+        refresh_expires_in = token_data.get("refresh_expires_in")
+        refresh_expires_at = None
+        if refresh_expires_in:
+            import time
+
+            refresh_expires_at = int(time.time()) + refresh_expires_in
+            logger.info(f"  refresh_expires_in: {refresh_expires_in}s")
+            logger.info(f"  refresh_expires_at: {refresh_expires_at}")
+
         logger.info("Storing refresh token:")
         logger.info(f"  user_id: {user_id}")
         logger.info("  flow_type: flow2")
         logger.info("  token_audience: nextcloud")
         logger.info(f"  provisioning_client_id: {state[:16]}...")
         logger.info(f"  scopes: {granted_scopes}")
+        logger.info(f"  expires_at: {refresh_expires_at}")
 
         await storage.store_refresh_token(
             user_id=user_id,
@@ -531,7 +542,7 @@ async def oauth_callback_nextcloud(request: Request):
             token_audience="nextcloud",
             provisioning_client_id=state,  # Store which client initiated provisioning
             scopes=granted_scopes,
-            expires_at=None,  # Refresh tokens typically don't expire
+            expires_at=refresh_expires_at,
         )
         logger.info(f"✓ Stored Flow 2 master refresh token for user {user_id}")
         logger.info("=" * 60)

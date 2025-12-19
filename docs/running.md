@@ -14,100 +14,10 @@ Before running the server:
 
 ## Quick Start
 
-Load your environment variables and start the server:
+Start the server using Docker:
 
 ```bash
-# Load environment variables from .env
-export $(grep -v '^#' .env | xargs)
-
-# Start the server
-uv run nextcloud-mcp-server
-```
-
-The server will start on `http://127.0.0.1:8000` by default.
-
----
-
-## Running Locally
-
-### Method 1: Using nextcloud-mcp-server CLI (Recommended)
-
-The CLI provides a simple interface with built-in defaults:
-
-#### OAuth Mode
-
-```bash
-# Auto-detected when NEXTCLOUD_USERNAME/PASSWORD not set
-uv run nextcloud-mcp-server
-
-# Explicitly force OAuth mode
-uv run nextcloud-mcp-server --oauth
-
-# OAuth with custom host and port
-uv run nextcloud-mcp-server --oauth --host 0.0.0.0 --port 8080
-
-# OAuth with pre-configured client
-uv run nextcloud-mcp-server --oauth \
-  --oauth-client-id abc123 \
-  --oauth-client-secret xyz789
-
-# OAuth with specific apps only
-uv run nextcloud-mcp-server --oauth \
-  --enable-app notes \
-  --enable-app calendar
-```
-
-#### BasicAuth Mode (Legacy)
-
-```bash
-# Auto-detected when NEXTCLOUD_USERNAME/PASSWORD are set
-uv run nextcloud-mcp-server
-
-# Explicitly force BasicAuth mode
-uv run nextcloud-mcp-server --no-oauth
-
-# BasicAuth with specific apps
-uv run nextcloud-mcp-server --no-oauth \
-  --enable-app notes \
-  --enable-app webdav
-```
-
-### Method 2: Using uvicorn
-
-For more control over server options (workers, reload, etc.):
-
-```bash
-# Load environment variables
-export $(grep -v '^#' .env | xargs)
-
-# Run with uvicorn
-uv run uvicorn nextcloud_mcp_server.app:get_app \
-  --factory \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --reload  # Enable auto-reload for development
-```
-
-See all uvicorn options at [https://www.uvicorn.org/settings/](https://www.uvicorn.org/settings/)
-
-### Method 3: Using Python Module
-
-```bash
-# Load environment variables
-export $(grep -v '^#' .env | xargs)
-
-# Run as Python module
-python -m nextcloud_mcp_server.app --oauth --port 8000
-```
-
----
-
-## Running with Docker
-
-### Basic Docker Run
-
-```bash
-# OAuth mode
+# OAuth mode (recommended)
 docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 
@@ -116,11 +26,56 @@ docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
 ```
 
-### Docker with Persistent OAuth Storage
+The server will start on `http://127.0.0.1:8000` by default.
+
+---
+
+## Running with Docker
+
+### Basic Docker Run
+
+#### OAuth Mode (Recommended)
 
 ```bash
+# OAuth with auto-registration
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
+
+# OAuth with custom port
+docker run -p 127.0.0.1:8080:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
+
+# OAuth with pre-configured client
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  -e NEXTCLOUD_OIDC_CLIENT_ID=abc123 \
+  -e NEXTCLOUD_OIDC_CLIENT_SECRET=xyz789 \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
+
+# OAuth with specific apps only
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth \
+  --enable-app notes --enable-app calendar
+```
+
+#### BasicAuth Mode (Legacy)
+
+```bash
+# BasicAuth (requires NEXTCLOUD_USERNAME/PASSWORD in .env)
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
+
+# BasicAuth with specific apps
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest \
+  --enable-app notes --enable-app webdav
+```
+
+### Docker with Persistent Token Storage
+
+```bash
+# Mount volume for persistent OAuth token storage
 docker run -p 127.0.0.1:8000:8000 --env-file .env \
-  -v $(pwd)/.oauth:/app/.oauth \
+  -v $(pwd)/data:/app/data \
   --rm ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 ```
 
@@ -140,7 +95,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./oauth-storage:/app/.oauth
+      - ./data:/app/data  # Persistent token storage
     restart: unless-stopped
 ```
 
@@ -168,30 +123,39 @@ docker-compose down
 
 ```bash
 # Bind to all interfaces (accessible from network)
-uv run nextcloud-mcp-server --host 0.0.0.0 --port 8000
+docker run -p 0.0.0.0:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 
 # Bind to localhost only (default, more secure)
-uv run nextcloud-mcp-server --host 127.0.0.1 --port 8000
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 
-# Use a different port
-uv run nextcloud-mcp-server --port 8080
+# Use a different port (map host port 8080 to container port 8000)
+docker run -p 127.0.0.1:8080:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 ```
 
-**Security Note:** Using `--host 0.0.0.0` exposes the server to your network. Only use this if you understand the security implications.
+**Security Note:** Binding to `0.0.0.0` exposes the server to your network. Only use this if you understand the security implications.
 
 ### Transport Protocols
 
 The server supports multiple MCP transport protocols:
 
 ```bash
-# Streamable HTTP (recommended)
-uv run nextcloud-mcp-server --transport streamable-http
+# Streamable HTTP (default, recommended)
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth \
+  --transport streamable-http
 
-# SSE - Server-Sent Events (default, deprecated)
-uv run nextcloud-mcp-server --transport sse
+# SSE - Server-Sent Events (deprecated)
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth \
+  --transport sse
 
 # HTTP
-uv run nextcloud-mcp-server --transport http
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth \
+  --transport http
 ```
 
 > [!WARNING]
@@ -201,10 +165,14 @@ uv run nextcloud-mcp-server --transport http
 
 ```bash
 # Set log level (critical, error, warning, info, debug, trace)
-uv run nextcloud-mcp-server --log-level debug
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth \
+  --log-level debug
 
 # Production: use warning or error
-uv run nextcloud-mcp-server --log-level warning
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth \
+  --log-level warning
 ```
 
 ### Selective App Enablement
@@ -212,22 +180,26 @@ uv run nextcloud-mcp-server --log-level warning
 By default, all supported Nextcloud apps are enabled. You can enable specific apps only:
 
 ```bash
-# Available apps: notes, tables, webdav, calendar, contacts, deck
+# Available apps: notes, tables, webdav, calendar, contacts, cookbook, deck
 
 # Enable all apps (default)
-uv run nextcloud-mcp-server
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 
 # Enable only Notes
-uv run nextcloud-mcp-server --enable-app notes
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth \
+  --enable-app notes
 
 # Enable multiple apps
-uv run nextcloud-mcp-server \
-  --enable-app notes \
-  --enable-app calendar \
-  --enable-app contacts
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth \
+  --enable-app notes --enable-app calendar --enable-app contacts
 
 # Enable only WebDAV for file operations
-uv run nextcloud-mcp-server --enable-app webdav
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth \
+  --enable-app webdav
 ```
 
 **Use cases:**
@@ -240,23 +212,67 @@ uv run nextcloud-mcp-server --enable-app webdav
 
 ## Development Mode
 
-For active development with auto-reload:
+### Running for Development
+
+For active development with auto-reload, mount your source code as a volume:
 
 ```bash
-# Using uvicorn with reload
-uv run uvicorn nextcloud_mcp_server.app:get_app \
-  --factory \
-  --reload \
-  --host 127.0.0.1 \
-  --port 8000 \
+# Development mode with source code mounted
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  -v $(pwd):/app \
+  -v $(pwd)/data:/app/data \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth \
   --log-level debug
 ```
 
-Or use the CLI with reload flag:
+For local development without Docker:
 
 ```bash
-uv run nextcloud-mcp-server --reload --log-level debug
+# Load environment variables
+export $(grep -v '^#' .env | xargs)
+
+# Run the server with auto-reload
+uv run nextcloud-mcp-server run --oauth --log-level debug
 ```
+
+### CLI Subcommands
+
+The `nextcloud-mcp-server` CLI has two main subcommands:
+
+1. **`run`** - Start the MCP server (default command in Docker)
+   ```bash
+   uv run nextcloud-mcp-server run --oauth --host 0.0.0.0 --port 8000
+   ```
+
+2. **`db`** - Database migration management (Alembic)
+   ```bash
+   # Show current migration revision
+   uv run nextcloud-mcp-server db current
+
+   # Upgrade to latest migration
+   uv run nextcloud-mcp-server db upgrade
+
+   # Show migration history
+   uv run nextcloud-mcp-server db history
+
+   # Create new migration (developers only)
+   uv run nextcloud-mcp-server db migrate "description of changes"
+   ```
+
+### Database Migrations
+
+Token storage uses **Alembic** for schema management:
+
+- **Automatic migrations**: Database is upgraded automatically on server startup
+- **Backward compatibility**: Pre-Alembic databases are automatically stamped with the initial revision
+- **Migration files**: Located in `alembic/versions/`
+- **For developers**: When changing the schema:
+  1. Create a migration: `uv run nextcloud-mcp-server db migrate "add new column"`
+  2. Edit the generated file in `alembic/versions/` to add SQL statements
+  3. Test upgrade: `uv run nextcloud-mcp-server db upgrade`
+  4. Test downgrade: `uv run nextcloud-mcp-server db downgrade`
+
+See [Database Migrations Guide](database-migrations.md) for detailed information.
 
 ---
 
@@ -266,15 +282,15 @@ uv run nextcloud-mcp-server --reload --log-level debug
 
 MCP Inspector is a browser-based tool for testing MCP servers:
 
-```bash
-# Start MCP Inspector
-uv run mcp dev
-
-# In the browser:
-# 1. Enter server URL: http://localhost:8000
-# 2. Complete OAuth flow (if using OAuth)
-# 3. Explore tools and resources
-```
+1. Start your MCP server using Docker (see above)
+2. Start MCP Inspector:
+   ```bash
+   npx @modelcontextprotocol/inspector
+   ```
+3. In the browser:
+   - Enter server URL: `http://localhost:8000`
+   - Complete OAuth flow (if using OAuth)
+   - Explore tools and resources
 
 ### Using MCP Clients
 
@@ -322,48 +338,13 @@ INFO     Initializing Nextcloud client with BasicAuth
 
 ### Running as a Background Service
 
-#### Using systemd (Linux)
-
-Create `/etc/systemd/system/nextcloud-mcp.service`:
-
-```ini
-[Unit]
-Description=Nextcloud MCP Server
-After=network.target
-
-[Service]
-Type=simple
-User=your-user
-WorkingDirectory=/path/to/nextcloud-mcp-server
-EnvironmentFile=/path/to/.env
-ExecStart=/path/to/uv run nextcloud-mcp-server --oauth
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable nextcloud-mcp
-sudo systemctl start nextcloud-mcp
-sudo systemctl status nextcloud-mcp
-```
-
-#### Using Docker Compose
-
-See [Docker Compose section](#docker-compose) above - includes `restart: unless-stopped`.
+Use Docker Compose with `restart: unless-stopped` (see [Docker Compose section](#docker-compose) above).
 
 ### Monitoring Logs
 
 ```bash
-# Local installation with systemd
-sudo journalctl -u nextcloud-mcp -f
-
-# Docker
+# Docker (find container name first)
+docker ps
 docker logs -f <container-name>
 
 # Docker Compose
@@ -374,34 +355,37 @@ docker-compose logs -f mcp
 
 ## Performance Tuning
 
-### Multiple Workers
-
-For production deployments with higher load:
-
-```bash
-# Using CLI (if supported)
-uv run nextcloud-mcp-server --workers 4
-
-# Using uvicorn
-uv run uvicorn nextcloud_mcp_server.app:get_app \
-  --factory \
-  --workers 4 \
-  --host 0.0.0.0 \
-  --port 8000
-```
-
 ### Production Settings
 
-```bash
-# Recommended production configuration
-uv run nextcloud-mcp-server \
-  --oauth \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --log-level warning \
-  --transport streamable-http \
-  --workers 2
+For production deployments, use Docker Compose with the recommended settings:
+
+```yaml
+version: '3.8'
+
+services:
+  mcp:
+    image: ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
+    command: --oauth --log-level warning --transport streamable-http
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 ```
+
+### Scaling with Multiple Replicas
+
+For higher load, use Docker Swarm or Kubernetes. See the [Helm Chart](../helm/) for Kubernetes deployments.
 
 ---
 
@@ -411,12 +395,18 @@ uv run nextcloud-mcp-server \
 
 Check logs for errors:
 ```bash
-uv run nextcloud-mcp-server --log-level debug
+# View container logs
+docker logs <container-name>
+
+# Or run with debug logging
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth \
+  --log-level debug
 ```
 
 Common issues:
-- Environment variables not loaded - See [Configuration](configuration.md#loading-environment-variables)
-- Port already in use - Try a different port with `--port`
+- Environment variables not loaded - Check your `.env` file
+- Port already in use - Use a different host port (e.g., `-p 127.0.0.1:8080:8000`)
 - OAuth configuration errors - See [Troubleshooting](troubleshooting.md)
 
 ### Can't connect to server

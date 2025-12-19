@@ -53,10 +53,11 @@ def setup_tracing(
     global _tracer
 
     # Create resource with service name
+    pkg_name = __package__.split(".")[0] if __package__ else "nextcloud_mcp_server"
     resource = Resource.create(
         {
             "service.name": service_name,
-            "service.version": version(__package__.split(".")[0]),
+            "service.version": version(pkg_name),
         }
     )
 

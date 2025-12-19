@@ -38,6 +38,9 @@ class SemanticSearchResult(BaseModel):
     page_number: Optional[int] = Field(
         default=None, description="Page number for PDF documents"
     )
+    page_count: Optional[int] = Field(
+        default=None, description="Total number of pages in PDF document"
+    )
     # Context expansion fields (optional, populated when include_context=True)
     has_context_expansion: bool = Field(
         default=False, description="Whether context expansion was performed"

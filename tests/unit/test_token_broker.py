@@ -47,13 +47,14 @@ def mock_oidc_config():
 
 
 @pytest.fixture
-async def token_broker(mock_storage, encryption_key):
+async def token_broker(mock_storage):
     """Create TokenBrokerService instance."""
     broker = TokenBrokerService(
         storage=mock_storage,
         oidc_discovery_url="https://idp.example.com/.well-known/openid-configuration",
         nextcloud_host="https://nextcloud.example.com",
-        encryption_key=encryption_key,
+        client_id="test_client_id",
+        client_secret="test_client_secret",
         cache_ttl=300,
     )
     yield broker
@@ -143,14 +144,12 @@ class TestTokenBrokerService:
         token_broker.storage.get_refresh_token.assert_not_called()
 
     async def test_get_nextcloud_token_refresh(
-        self, token_broker, mock_storage, encryption_key, mock_oidc_config
+        self, token_broker, mock_storage, mock_oidc_config
     ):
         """Test getting token via refresh when not cached."""
-        # Setup encrypted refresh token in storage
-        fernet = Fernet(encryption_key.encode())
-        encrypted_token = fernet.encrypt(b"test_refresh_token").decode()
+        # Storage returns already-decrypted refresh token (encryption handled by storage layer)
         mock_storage.get_refresh_token.return_value = {
-            "refresh_token": encrypted_token,
+            "refresh_token": "test_refresh_token",
             "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
         }
 
@@ -187,14 +186,12 @@ class TestTokenBrokerService:
         assert token is None
 
     async def test_refresh_master_token(
-        self, token_broker, mock_storage, encryption_key, mock_oidc_config
+        self, token_broker, mock_storage, mock_oidc_config
     ):
         """Test master refresh token rotation."""
-        # Setup current refresh token
-        fernet = Fernet(encryption_key.encode())
-        encrypted_token = fernet.encrypt(b"current_refresh_token").decode()
+        # Storage returns already-decrypted refresh token
         mock_storage.get_refresh_token.return_value = {
-            "refresh_token": encrypted_token,
+            "refresh_token": "current_refresh_token",
             "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
         }
 
@@ -217,25 +214,19 @@ class TestTokenBrokerService:
                 success = await token_broker.refresh_master_token("user1")
 
                 assert success is True
-                # Verify new token was stored
+                # Verify new token was stored (storage handles encryption)
                 mock_storage.store_refresh_token.assert_called_once()
                 call_args = mock_storage.store_refresh_token.call_args[1]
                 assert call_args["user_id"] == "user1"
-                # Decrypt to verify it's the new token
-                stored_token = fernet.decrypt(
-                    call_args["refresh_token"].encode()
-                ).decode()
-                assert stored_token == "new_refresh_token"
+                assert call_args["refresh_token"] == "new_refresh_token"
 
     async def test_refresh_master_token_no_rotation(
-        self, token_broker, mock_storage, encryption_key, mock_oidc_config
+        self, token_broker, mock_storage, mock_oidc_config
     ):
         """Test when IdP returns same refresh token (no rotation)."""
-        # Setup current refresh token
-        fernet = Fernet(encryption_key.encode())
-        encrypted_token = fernet.encrypt(b"same_refresh_token").decode()
+        # Storage returns already-decrypted refresh token
         mock_storage.get_refresh_token.return_value = {
-            "refresh_token": encrypted_token,
+            "refresh_token": "same_refresh_token",
             "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
         }
 
@@ -261,14 +252,12 @@ class TestTokenBrokerService:
                 mock_storage.store_refresh_token.assert_not_called()
 
     async def test_revoke_nextcloud_access(
-        self, token_broker, mock_storage, encryption_key, mock_oidc_config
+        self, token_broker, mock_storage, mock_oidc_config
     ):
         """Test revoking Nextcloud access."""
-        # Setup refresh token for revocation
-        fernet = Fernet(encryption_key.encode())
-        encrypted_token = fernet.encrypt(b"token_to_revoke").decode()
+        # Storage returns already-decrypted refresh token
         mock_storage.get_refresh_token.return_value = {
-            "refresh_token": encrypted_token,
+            "refresh_token": "token_to_revoke",
             "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
         }
 
@@ -311,15 +300,11 @@ class TestTokenBrokerService:
         with pytest.raises(ValueError, match="doesn't include wrong-audience"):
             await token_broker._validate_token_audience(test_token, "wrong-audience")
 
-    async def test_token_refresh_with_network_error(
-        self, token_broker, mock_storage, encryption_key
-    ):
+    async def test_token_refresh_with_network_error(self, token_broker, mock_storage):
         """Test handling network errors during token refresh."""
-        # Setup encrypted refresh token
-        fernet = Fernet(encryption_key.encode())
-        encrypted_token = fernet.encrypt(b"test_refresh_token").decode()
+        # Storage returns already-decrypted refresh token
         mock_storage.get_refresh_token.return_value = {
-            "refresh_token": encrypted_token,
+            "refresh_token": "test_refresh_token",
             "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
         }
 
@@ -351,3 +336,135 @@ class TestTokenBrokerService:
         )
 
         assert results == ["token1", "token2", "token1", "token2"]
+
+
+class TestRefreshTokenRotation:
+    """Test refresh token rotation handling.
+
+    Nextcloud OIDC rotates refresh tokens on every use (one-time use).
+    These tests verify that the token broker stores rotated tokens.
+    """
+
+    async def test_refresh_access_token_stores_rotated_token(
+        self, mock_storage, mock_oidc_config
+    ):
+        """Verify that new refresh token is stored after successful refresh."""
+        broker = TokenBrokerService(
+            storage=mock_storage,
+            oidc_discovery_url="http://localhost:8080/.well-known/openid-configuration",
+            nextcloud_host="http://localhost:8080",
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+        )
+
+        # Mock HTTP response with rotated refresh token
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "access_token": "new_access_token_abc",
+            "refresh_token": "new_refresh_token_456",  # Rotated token
+            "expires_in": 900,
+            "token_type": "Bearer",
+        }
+
+        mock_http_client = AsyncMock()
+        mock_http_client.post.return_value = mock_response
+
+        with patch.object(broker, "_get_oidc_config", return_value=mock_oidc_config):
+            with patch.object(
+                broker, "_get_http_client", return_value=mock_http_client
+            ):
+                (
+                    access_token,
+                    expires_in,
+                ) = await broker._refresh_access_token_with_scopes(
+                    refresh_token="old_refresh_token_123",
+                    required_scopes=["notes:read"],
+                    user_id="admin",
+                )
+
+        assert access_token == "new_access_token_abc"
+        assert expires_in == 900
+
+        # CRITICAL: Verify the new refresh token was stored
+        mock_storage.store_refresh_token.assert_called_once()
+        call_args = mock_storage.store_refresh_token.call_args
+        assert call_args.kwargs["user_id"] == "admin"
+        assert call_args.kwargs["refresh_token"] == "new_refresh_token_456"
+
+        await broker.close()
+
+    async def test_no_storage_when_refresh_token_unchanged(
+        self, mock_storage, mock_oidc_config
+    ):
+        """Verify storage is NOT called when refresh token is unchanged."""
+        broker = TokenBrokerService(
+            storage=mock_storage,
+            oidc_discovery_url="http://localhost:8080/.well-known/openid-configuration",
+            nextcloud_host="http://localhost:8080",
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+        )
+
+        # Response returns SAME refresh token (no rotation)
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "access_token": "new_access_token_abc",
+            "refresh_token": "same_refresh_token",  # Same as input
+            "expires_in": 900,
+        }
+
+        mock_http_client = AsyncMock()
+        mock_http_client.post.return_value = mock_response
+
+        with patch.object(broker, "_get_oidc_config", return_value=mock_oidc_config):
+            with patch.object(
+                broker, "_get_http_client", return_value=mock_http_client
+            ):
+                await broker._refresh_access_token_with_scopes(
+                    refresh_token="same_refresh_token",
+                    required_scopes=["notes:read"],
+                    user_id="admin",
+                )
+
+        # Should NOT store since token didn't change
+        mock_storage.store_refresh_token.assert_not_called()
+
+        await broker.close()
+
+    async def test_no_storage_without_user_id(self, mock_storage, mock_oidc_config):
+        """Verify storage is NOT called when user_id is None."""
+        broker = TokenBrokerService(
+            storage=mock_storage,
+            oidc_discovery_url="http://localhost:8080/.well-known/openid-configuration",
+            nextcloud_host="http://localhost:8080",
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+        )
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "access_token": "new_access_token_abc",
+            "refresh_token": "new_refresh_token_456",
+            "expires_in": 900,
+        }
+
+        mock_http_client = AsyncMock()
+        mock_http_client.post.return_value = mock_response
+
+        with patch.object(broker, "_get_oidc_config", return_value=mock_oidc_config):
+            with patch.object(
+                broker, "_get_http_client", return_value=mock_http_client
+            ):
+                await broker._refresh_access_token_with_scopes(
+                    refresh_token="old_token",
+                    required_scopes=["notes:read"],
+                    user_id=None,  # No user_id
+                )
+
+        # Should NOT store since no user_id
+        mock_storage.store_refresh_token.assert_not_called()
+
+        await broker.close()

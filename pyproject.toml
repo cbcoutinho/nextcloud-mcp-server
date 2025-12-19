@@ -20,6 +20,7 @@ dependencies = [
     "caldav",
     "pyjwt[crypto]>=2.8.0",
     "aiosqlite>=0.20.0", # Async SQLite for refresh token storage
+    "alembic>=1.14.0", # Database migrations
     "authlib>=1.6.5",
     "qdrant-client>=1.7.0",
     "fastembed>=0.7.3", # BM25 sparse vector embeddings for hybrid search
@@ -128,7 +129,7 @@ dev = [
 ]
 
 [project.scripts]
-nextcloud-mcp-server = "nextcloud_mcp_server.cli:run"
+nextcloud-mcp-server = "nextcloud_mcp_server.cli:cli"
 smithery-main = "nextcloud_mcp_server.smithery_main:main"
 
 [[tool.uv.index]]
