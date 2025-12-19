@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires external MCP server deployment
 - See documentation for setup: https://github.com/cbcoutinho/nextcloud-mcp-server
 
+## astrolabe-v0.4.3 (2025-12-19)
+
+### Fix
+
+- **astrolabe**: screenshots in info.xml
+
 ## astrolabe-v0.4.2 (2025-12-19)
 
 ### Fix
