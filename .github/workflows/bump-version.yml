@@ -130,29 +130,36 @@ jobs:
           echo "Pushed tags for components:${{ steps.bump.outputs.components }}"
 
       - name: Summary
-        if: steps.bump.outputs.bumped == 'true'
         run: |
-          echo "## Version Bump Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "The following components were bumped:" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.bump.outputs.bumped }}" == "true" ]; then
+            echo "## Version Bump Summary" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "The following components were bumped:" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
 
-          for component in ${{ steps.bump.outputs.components }}; do
-            case $component in
-              mcp)
-                tag=$(git tag --sort=-creatordate | grep -E '^v[0-9]' | head -n 1)
-                echo "- **MCP Server**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
-                ;;
-              helm)
-                tag=$(git tag --sort=-creatordate | grep -E '^nextcloud-mcp-server-' | head -n 1)
-                echo "- **Helm Chart**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
-                ;;
-              astrolabe)
-                tag=$(git tag --sort=-creatordate | grep -E '^astrolabe-v' | head -n 1)
-                echo "- **Astrolabe**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
-                ;;
-            esac
-          done
+            for component in ${{ steps.bump.outputs.components }}; do
+              case $component in
+                mcp)
+                  tag=$(git tag --sort=-creatordate | grep -E '^v[0-9]' | head -n 1)
+                  echo "- **MCP Server**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
+                  ;;
+                helm)
+                  tag=$(git tag --sort=-creatordate | grep -E '^nextcloud-mcp-server-' | head -n 1)
+                  echo "- **Helm Chart**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
+                  ;;
+                astrolabe)
+                  tag=$(git tag --sort=-creatordate | grep -E '^astrolabe-v' | head -n 1)
+                  echo "- **Astrolabe**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
+                  ;;
+              esac
+            done
 
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Tags have been pushed and release workflows will trigger automatically." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Tags have been pushed and release workflows will trigger automatically." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Version Bump Summary" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ No version bumps required - no relevant commits found since last release." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "The workflow completed successfully with no changes." >> $GITHUB_STEP_SUMMARY
+          fi
