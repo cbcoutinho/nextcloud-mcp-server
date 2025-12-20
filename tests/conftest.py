@@ -114,6 +114,7 @@ async def create_mcp_client_session(
     client_name: str = "MCP",
     elicitation_callback: Any = None,
     sampling_callback: Any = None,
+    headers: dict[str, str] | None = None,
 ) -> AsyncGenerator[ClientSession, Any]:
     """
     Factory function to create an MCP client session with proper lifecycle management.
@@ -135,6 +136,8 @@ async def create_mcp_client_session(
             Should match signature: async def callback(context: RequestContext, params: ElicitRequestParams) -> ElicitResult | ErrorData
         sampling_callback: Optional callback for handling sampling (LLM generation) requests.
             Should match signature: async def callback(context: RequestContext, params: CreateMessageRequestParams) -> CreateMessageResult | ErrorData
+        headers: Optional custom headers (e.g., for BasicAuth). If both headers and token are provided,
+            custom headers take precedence.
 
     Yields:
         Initialized MCP ClientSession
@@ -147,8 +150,9 @@ async def create_mcp_client_session(
     """
     logger.info(f"Creating Streamable HTTP client for {client_name}")
 
-    # Prepare headers with OAuth token if provided
-    headers = {"Authorization": f"Bearer {token}"} if token else None
+    # Prepare headers - custom headers take precedence over token-based auth
+    if headers is None:
+        headers = {"Authorization": f"Bearer {token}"} if token else None
 
     # Use native async with - Python ensures LIFO cleanup
     # Cleanup order will be: ClientSession.__aexit__ -> streamablehttp_client.__aexit__
@@ -236,6 +240,32 @@ async def nc_mcp_oauth_client(
         url="http://localhost:8001/mcp",
         token=playwright_oauth_token,
         client_name="OAuth MCP (Playwright)",
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_basic_auth_client(
+    anyio_backend,
+) -> AsyncGenerator[ClientSession, Any]:
+    """
+    Fixture to create an MCP client session with BasicAuth credentials.
+    Connects to the multi-user BasicAuth MCP server on port 8003 with ENABLE_MULTI_USER_BASIC_AUTH=true.
+
+    Uses BasicAuth credentials for multi-user pass-through mode (ADR-020).
+    Credentials are passed in Authorization header and forwarded to Nextcloud APIs.
+
+    Uses anyio pytest plugin for proper async fixture handling.
+    """
+    import base64
+
+    credentials = base64.b64encode(b"admin:admin").decode("utf-8")
+    auth_header = f"Basic {credentials}"
+
+    async for session in create_mcp_client_session(
+        url="http://localhost:8003/mcp",
+        headers={"Authorization": auth_header},
+        client_name="BasicAuth MCP (Multi-User)",
     ):
         yield session
 
@@ -3187,3 +3217,199 @@ async def nc_mcp_keycloak_client_no_custom_scopes(
         client_name="Keycloak No Custom Scopes MCP",
     ):
         yield session
+
+
+# ========================================================================
+# Astrolabe Dynamic Configuration Fixtures
+# ========================================================================
+
+
+@pytest.fixture(scope="session")
+async def configure_astrolabe_for_mcp_server(nc_client):
+    """Configure Astrolabe app to connect to a specific MCP server.
+
+    This fixture dynamically configures the Astrolabe app's MCP server settings
+    and OAuth client, allowing tests to verify integration with different MCP
+    server deployments (mcp-oauth, mcp-keycloak, mcp-multi-user-basic, etc.).
+
+    Usage:
+        async def test_my_integration(configure_astrolabe_for_mcp_server):
+            await configure_astrolabe_for_mcp_server(
+                mcp_server_internal_url="http://mcp-oauth:8001",
+                mcp_server_public_url="http://localhost:8001"
+            )
+            # ... test Astrolabe integration ...
+
+    Args:
+        nc_client: NextcloudClient fixture for occ command execution
+
+    Returns:
+        Async function that accepts:
+            - mcp_server_internal_url: Internal Docker URL for PHP app to call MCP APIs
+            - mcp_server_public_url: Public URL for OAuth token audience validation
+            - client_id: Optional OAuth client ID (default: "nextcloudMcpServerUIPublicClient")
+    """
+    import json
+    import subprocess
+
+    async def _configure(
+        mcp_server_internal_url: str,
+        mcp_server_public_url: str,
+        client_id: str = "nextcloudMcpServerUIPublicClient",
+    ) -> dict[str, str]:
+        """Configure Astrolabe for the specified MCP server.
+
+        Returns:
+            Dict with client_id and client_secret
+        """
+        logger.info(
+            f"Configuring Astrolabe for MCP server: {mcp_server_internal_url} (public: {mcp_server_public_url})"
+        )
+
+        # Configure MCP server URLs in Nextcloud system config
+        subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "app",
+                "php",
+                "/var/www/html/occ",
+                "config:system:set",
+                "mcp_server_url",
+                "--value",
+                mcp_server_internal_url,
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+        subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "app",
+                "php",
+                "/var/www/html/occ",
+                "config:system:set",
+                "mcp_server_public_url",
+                "--value",
+                mcp_server_public_url,
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+        logger.info("✓ MCP server URLs configured")
+
+        # Remove existing OAuth client if it exists
+        try:
+            subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "exec",
+                    "-T",
+                    "app",
+                    "php",
+                    "/var/www/html/occ",
+                    "oidc:remove",
+                    client_id,
+                ],
+                check=False,  # Don't fail if client doesn't exist
+                capture_output=True,
+            )
+            logger.info(f"Removed existing OAuth client: {client_id}")
+        except Exception:
+            pass
+
+        # Create OAuth client for Astrolabe
+        redirect_uri = "http://localhost:8080/apps/astrolabe/oauth/callback"
+
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "app",
+                "php",
+                "/var/www/html/occ",
+                "oidc:create",
+                "Astrolabe",
+                redirect_uri,
+                "--client_id",
+                client_id,
+                "--type",
+                "confidential",
+                "--flow",
+                "code",
+                "--token_type",
+                "jwt",
+                "--resource_url",
+                mcp_server_public_url,
+                "--allowed_scopes",
+                "openid profile email offline_access notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Parse client_secret from JSON output
+        client_output = json.loads(result.stdout.strip())
+        client_secret = client_output.get("client_secret")
+
+        if not client_secret:
+            raise ValueError(
+                "Failed to extract client_secret from OAuth client creation"
+            )
+
+        logger.info(f"✓ OAuth client created: {client_id}")
+
+        # Store client credentials in Nextcloud system config
+        subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "app",
+                "php",
+                "/var/www/html/occ",
+                "config:system:set",
+                "astrolabe_client_id",
+                "--value",
+                client_id,
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+        subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "app",
+                "php",
+                "/var/www/html/occ",
+                "config:system:set",
+                "astrolabe_client_secret",
+                "--value",
+                client_secret,
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+        logger.info("✓ Client credentials stored in system config")
+        logger.info(f"Astrolabe configured for MCP server: {mcp_server_public_url}")
+
+        return {"client_id": client_id, "client_secret": client_secret}
+
+    return _configure

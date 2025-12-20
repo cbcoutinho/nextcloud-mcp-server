@@ -10,8 +10,14 @@ logger = logging.getLogger(__name__)
 pytestmark = [pytest.mark.integration, pytest.mark.oauth]
 
 
-async def test_capture_settings_page(browser):
+async def test_capture_settings_page(browser, configure_astrolabe_for_mcp_server):
     """Capture what's actually rendered on the personal settings page."""
+    # Configure Astrolabe for mcp-oauth server
+    await configure_astrolabe_for_mcp_server(
+        mcp_server_internal_url="http://mcp-oauth:8001",
+        mcp_server_public_url="http://localhost:8001",
+    )
+
     nextcloud_host = os.getenv("NEXTCLOUD_HOST", "http://localhost:8080")
     username = os.getenv("NEXTCLOUD_USERNAME", "admin")
     password = os.getenv("NEXTCLOUD_PASSWORD", "admin")
