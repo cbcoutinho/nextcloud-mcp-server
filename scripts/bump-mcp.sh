@@ -44,6 +44,14 @@ fi
 
 # Run commitizen bump and capture output
 if ! output=$($CZ_CMD 2>&1); then
+    # Check if this is the expected "no commits to bump" case
+    if echo "$output" | grep -q "\[NO_COMMITS_TO_BUMP\]"; then
+        echo "ℹ️  No commits eligible for version bump" >&2
+        echo "$output" >&2
+        exit 0
+    fi
+
+    # Otherwise, this is an actual error
     echo "❌ Error: Version bump failed" >&2
     echo "$output" >&2
     echo "" >&2
