@@ -25,6 +25,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires external MCP server deployment
 - See documentation for setup: https://github.com/cbcoutinho/nextcloud-mcp-server
 
+## astrolabe-v0.5.0 (2025-12-20)
+
+### Feat
+
+- **auth**: add multi-user BasicAuth pass-through mode
+- **astrolabe**: add dynamic MCP server configuration for testing
+
+### Fix
+
+- **config**: address reviewer feedback
+
+### Refactor
+
+- **config**: centralize configuration validation and simplify startup
+
 ## astrolabe-v0.4.4 (2025-12-20)
 
 ### Fix
