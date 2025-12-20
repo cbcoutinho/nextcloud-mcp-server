@@ -5,6 +5,21 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.57.0 (2025-12-20)
+
+### Feat
+
+- **auth**: add multi-user BasicAuth pass-through mode
+- **astrolabe**: add dynamic MCP server configuration for testing
+
+### Fix
+
+- **config**: address reviewer feedback
+
+### Refactor
+
+- **config**: centralize configuration validation and simplify startup
+
 ## v0.56.2 (2025-12-20)
 
 ### Fix
