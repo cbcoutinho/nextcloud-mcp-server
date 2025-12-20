@@ -5,7 +5,7 @@ This module provides:
 - Configuration validation with clear error messages
 - Single source of truth for deployment mode requirements
 
-See plan in /home/chris/.claude/plans/prancy-chasing-gizmo.md for architecture details.
+See ADR-020 for detailed architecture and deployment mode documentation.
 """
 
 import logging
