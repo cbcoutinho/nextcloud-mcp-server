@@ -101,6 +101,9 @@ class ProvisioningStatus(BaseModel):
     provisioned_at: Optional[str] = Field(
         None, description="ISO timestamp when provisioned"
     )
+    credential_type: Optional[str] = Field(
+        None, description="Type of credential ('refresh_token' or 'app_password')"
+    )
     client_id: Optional[str] = Field(
         None, description="Client ID that initiated the original Flow 1"
     )
@@ -114,8 +117,8 @@ class ProvisioningResult(BaseModel):
     """Result of provisioning attempt."""
 
     success: bool = Field(description="Whether provisioning was initiated")
-    authorization_url: Optional[str] = Field(
-        None, description="URL for user to complete OAuth authorization"
+    provisioning_url: Optional[str] = Field(
+        None, description="URL to Astrolabe settings for provisioning background sync"
     )
     message: str = Field(description="Status message for the user")
     already_provisioned: bool = Field(
@@ -143,8 +146,9 @@ async def get_provisioning_status(ctx: Context, user_id: str) -> ProvisioningSta
     """
     Check the provisioning status for Nextcloud access.
 
-    This checks whether the user has completed Flow 2 to provision
-    offline access to Nextcloud resources.
+    Checks for both credential types:
+    1. App password from Astrolabe (works today)
+    2. OAuth refresh token from storage (for future)
 
     Args:
         mcp: MCP context
@@ -153,6 +157,37 @@ async def get_provisioning_status(ctx: Context, user_id: str) -> ProvisioningSta
     Returns:
         ProvisioningStatus with current provisioning state
     """
+    from datetime import datetime, timezone
+
+    from nextcloud_mcp_server.auth.astrolabe_client import AstrolabeClient
+    from nextcloud_mcp_server.config import get_settings
+
+    settings = get_settings()
+
+    # Check for app password first (interim solution)
+    if settings.oidc_client_id and settings.oidc_client_secret:
+        try:
+            astrolabe = AstrolabeClient(
+                nextcloud_host=settings.nextcloud_host or "",
+                client_id=settings.oidc_client_id,
+                client_secret=settings.oidc_client_secret,
+            )
+            status = await astrolabe.get_background_sync_status(user_id)
+
+            if status.get("has_access"):
+                logger.info(
+                    f"  get_provisioning_status: ✓ App password FOUND for user_id={user_id}"
+                )
+                provisioned_at_str = status.get("provisioned_at")
+                return ProvisioningStatus(
+                    is_provisioned=True,
+                    provisioned_at=provisioned_at_str,
+                    credential_type="app_password",
+                )
+        except Exception as e:
+            logger.debug(f"  App password check failed for {user_id}: {e}")
+
+    # Check for OAuth refresh token (fallback)
     logger.info(
         f"  get_provisioning_status: Looking up refresh token for user_id={user_id}"
     )
@@ -163,7 +198,7 @@ async def get_provisioning_status(ctx: Context, user_id: str) -> ProvisioningSta
 
     if not token_data:
         logger.info(
-            f"  get_provisioning_status: ✗ No refresh token found for user_id={user_id}"
+            f"  get_provisioning_status: ✗ No credentials found for user_id={user_id}"
         )
         return ProvisioningStatus(is_provisioned=False)
 
@@ -178,14 +213,13 @@ async def get_provisioning_status(ctx: Context, user_id: str) -> ProvisioningSta
     # Convert timestamp to ISO format if present
     provisioned_at_str = None
     if token_data.get("provisioned_at"):
-        from datetime import datetime, timezone
-
         dt = datetime.fromtimestamp(token_data["provisioned_at"], tz=timezone.utc)
         provisioned_at_str = dt.isoformat()
 
     return ProvisioningStatus(
         is_provisioned=True,
         provisioned_at=provisioned_at_str,
+        credential_type="refresh_token",
         client_id=token_data.get("provisioning_client_id"),
         scopes=token_data.get("scopes"),
         flow_type=token_data.get("flow_type", "hybrid"),
@@ -239,36 +273,22 @@ async def provision_nextcloud_access(
     """
     MCP Tool: Provision offline access to Nextcloud resources.
 
-    This tool initiates Flow 2 of the Progressive Consent architecture,
-    allowing the MCP server to obtain delegated access to Nextcloud APIs.
-
-    The user must complete the OAuth flow in their browser to grant access.
+    Returns URL to Astrolabe settings page where users can provision background
+    sync access using either:
+    - App password (works today, interim solution)
+    - OAuth refresh token (future, when Nextcloud supports OAuth for app APIs)
 
     Args:
         ctx: MCP context with user's Flow 1 token
         user_id: Optional user identifier (extracted from token if not provided)
 
     Returns:
-        ProvisioningResult with authorization URL or status
+        ProvisioningResult with Astrolabe settings URL or status
     """
     try:
         # Extract user ID from the MCP access token (Flow 1 token)
         if not user_id:
-            # Get the authorization token from context
-            if hasattr(ctx, "authorization") and ctx.authorization:
-                token = ctx.authorization.token  # type: ignore
-                # Decode token to get user info
-                try:
-                    import jwt
-
-                    payload = jwt.decode(token, options={"verify_signature": False})
-                    user_id = payload.get("sub", "unknown")
-                    logger.info(f"Extracted user_id from Flow 1 token: {user_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to decode token: {e}")
-                    user_id = "default_user"
-            else:
-                user_id = "default_user"
+            user_id = await extract_user_id_from_token(ctx)
 
         # Check if already provisioned
         status = await get_provisioning_status(ctx, user_id)
@@ -277,7 +297,8 @@ async def provision_nextcloud_access(
                 success=True,
                 already_provisioned=True,
                 message=(
-                    f"Nextcloud access is already provisioned (since {status.provisioned_at}). "
+                    f"Nextcloud access is already provisioned (credential_type={status.credential_type}, "
+                    f"since {status.provisioned_at}). "
                     "Use 'revoke_nextcloud_access' if you want to re-provision."
                 ),
             )
@@ -295,83 +316,20 @@ async def provision_nextcloud_access(
                 ),
             )
 
-        # Get MCP server's OAuth client credentials
-        # Try environment variable first, then fall back to DCR client_id
-        server_client_id = os.getenv("MCP_SERVER_CLIENT_ID")
-        if not server_client_id:
-            # Try to get from lifespan context (DCR)
-            lifespan_ctx = ctx.request_context.lifespan_context
-            if hasattr(lifespan_ctx, "server_client_id"):
-                server_client_id = lifespan_ctx.server_client_id
-
-        if not server_client_id:
-            return ProvisioningResult(
-                success=False,
-                message=(
-                    "MCP server OAuth client not configured. "
-                    "Set MCP_SERVER_CLIENT_ID environment variable or use Dynamic Client Registration."
-                ),
-            )
-
-        # Generate OAuth URL for Flow 2
-        oidc_discovery_url = os.getenv(
-            "OIDC_DISCOVERY_URL",
-            f"{os.getenv('NEXTCLOUD_HOST')}/.well-known/openid-configuration",
-        )
-
-        # Generate secure state for CSRF protection
-        state = secrets.token_urlsafe(32)
-
-        # Store state in session for validation on callback
-        storage = RefreshTokenStorage.from_env()
-        await storage.initialize()
-
-        # Create OAuth session for Flow 2
-        session_id = f"flow2_{user_id}_{secrets.token_hex(8)}"
-        redirect_uri = f"{os.getenv('NEXTCLOUD_MCP_SERVER_URL', 'http://localhost:8000')}/oauth/callback"
-
-        await storage.store_oauth_session(
-            session_id=session_id,
-            client_redirect_uri="",  # No client redirect for Flow 2
-            state=state,
-            flow_type="flow2",
-            is_provisioning=True,
-            ttl_seconds=600,  # 10 minute TTL
-        )
-
-        # Define scopes for Nextcloud access
-        scopes = [
-            "openid",
-            "profile",
-            "email",
-            "offline_access",  # Critical for background operations
-            "notes:read",
-            "notes:write",
-            "calendar:read",
-            "calendar:write",
-            "contacts:read",
-            "contacts:write",
-            "files:read",
-            "files:write",
-        ]
-
-        # Generate authorization URL
-        auth_url = generate_oauth_url_for_flow2(
-            oidc_discovery_url=oidc_discovery_url,
-            server_client_id=server_client_id,
-            redirect_uri=redirect_uri,
-            state=state,
-            scopes=scopes,
-        )
+        # Return Astrolabe settings URL for background sync provisioning
+        nextcloud_host = os.getenv("NEXTCLOUD_HOST", "http://localhost:8080")
+        astrolabe_url = f"{nextcloud_host}/settings/user/astrolabe#background-sync"
 
         return ProvisioningResult(
             success=True,
-            authorization_url=auth_url,
+            provisioning_url=astrolabe_url,
             message=(
-                "Please visit the authorization URL to grant the MCP server "
-                "offline access to your Nextcloud resources. This is a one-time "
-                "setup that allows the server to access Nextcloud on your behalf "
-                "even when you're not actively connected."
+                "Visit Astrolabe settings to provision background sync access.\n\n"
+                "You can choose either:\n"
+                "- App password (works today, recommended for now)\n"
+                "- OAuth refresh token (future, when Nextcloud fully supports OAuth)\n\n"
+                "After provisioning, background sync will enable the MCP server to "
+                "access Nextcloud resources even when you're not actively connected."
             ),
         )
 

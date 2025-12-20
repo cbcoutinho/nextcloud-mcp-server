@@ -187,6 +187,11 @@ class Settings:
     enable_token_exchange: bool = False
     enable_offline_access: bool = False
 
+    # Multi-user BasicAuth pass-through mode (ADR-019 interim solution)
+    # When enabled, MCP server extracts BasicAuth credentials from request headers
+    # and passes them through to Nextcloud APIs (no storage, stateless)
+    enable_multi_user_basic_auth: bool = False
+
     # Token exchange cache settings
     token_exchange_cache_ttl: int = 300  # seconds (5 minutes default)
 
@@ -375,6 +380,10 @@ def get_settings() -> Settings:
         ),
         enable_offline_access=(
             os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() == "true"
+        ),
+        # Multi-user BasicAuth pass-through mode
+        enable_multi_user_basic_auth=(
+            os.getenv("ENABLE_MULTI_USER_BASIC_AUTH", "false").lower() == "true"
         ),
         # Token exchange cache settings
         token_exchange_cache_ttl=int(os.getenv("TOKEN_EXCHANGE_CACHE_TTL", "300")),

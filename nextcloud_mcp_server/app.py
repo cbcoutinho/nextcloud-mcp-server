@@ -41,9 +41,13 @@ from nextcloud_mcp_server.auth.unified_verifier import UnifiedTokenVerifier
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import (
     DeploymentMode,
-    get_deployment_mode,
     get_document_processor_config,
     get_settings,
+)
+from nextcloud_mcp_server.config_validators import (
+    AuthMode,
+    get_mode_summary,
+    validate_configuration,
 )
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.document_processors import get_registry
@@ -351,6 +355,52 @@ def get_smithery_session_config() -> dict | None:
     return _smithery_session_config.get()
 
 
+class BasicAuthMiddleware:
+    """Middleware to extract BasicAuth credentials from Authorization header.
+
+    For multi-user BasicAuth pass-through mode, this middleware extracts
+    username/password from the Authorization: Basic header and stores them
+    in the request state for use by the context layer.
+
+    The credentials are NOT stored persistently - they are passed through
+    directly to Nextcloud APIs for each request (stateless).
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(
+        self, scope: StarletteScope, receive: Receive, send: Send
+    ) -> None:
+        if scope["type"] == "http":
+            # Extract Authorization header
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(b"authorization", b"")
+
+            if auth_header.startswith(b"Basic "):
+                try:
+                    import base64
+
+                    # Decode base64(username:password)
+                    encoded = auth_header[6:]  # Skip "Basic "
+                    decoded = base64.b64decode(encoded).decode("utf-8")
+                    username, password = decoded.split(":", 1)
+
+                    # Store in request state
+                    scope.setdefault("state", {})
+                    scope["state"]["basic_auth"] = {
+                        "username": username,
+                        "password": password,
+                    }
+                    logger.debug(
+                        f"BasicAuth credentials extracted for user: {username}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to extract BasicAuth credentials: {e}")
+
+        await self.app(scope, receive, send)
+
+
 class SmitheryConfigMiddleware:
     """Middleware to extract Smithery config from URL query parameters.
 
@@ -421,41 +471,6 @@ async def app_lifespan_smithery(server: FastMCP) -> AsyncIterator[SmitheryAppCon
         yield SmitheryAppContext()
     finally:
         logger.info("Shutting down Smithery stateless mode")
-
-
-def is_oauth_mode() -> bool:
-    """
-    Determine if OAuth mode should be used.
-
-    OAuth mode is enabled when:
-    - NEXTCLOUD_USERNAME and NEXTCLOUD_PASSWORD are NOT set
-    - AND we are NOT in Smithery stateless mode
-    - Or explicitly enabled via configuration
-
-    Returns:
-        True if OAuth mode, False if BasicAuth mode
-    """
-    # ADR-016: Smithery stateless mode uses per-request BasicAuth from session config
-    # It's not OAuth mode even though env credentials aren't set
-    deployment_mode = get_deployment_mode()
-    if deployment_mode == DeploymentMode.SMITHERY_STATELESS:
-        logger.info(
-            "BasicAuth mode (Smithery stateless - credentials from session config)"
-        )
-        return False
-
-    username = os.getenv("NEXTCLOUD_USERNAME")
-    password = os.getenv("NEXTCLOUD_PASSWORD")
-
-    # If both username and password are set, use BasicAuth
-    if username and password:
-        logger.info(
-            "BasicAuth mode detected (NEXTCLOUD_USERNAME and NEXTCLOUD_PASSWORD set)"
-        )
-        return False
-
-    logger.info("OAuth mode detected (NEXTCLOUD_USERNAME/PASSWORD not set)")
-    return True
 
 
 async def load_oauth_client_credentials(
@@ -578,17 +593,31 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
     """
     Manage application lifecycle for BasicAuth mode (FastMCP session lifespan).
 
-    Creates a single Nextcloud client with basic authentication
+    For single-user mode: Creates a single Nextcloud client with basic authentication
     that is shared across all requests within a session.
+
+    For multi-user mode: No shared client - clients created per-request by BasicAuthMiddleware.
 
     Note: Background tasks (scanner, processor) are started at server level
     in starlette_lifespan, not here. This lifespan runs per-session.
     """
-    logger.info("Starting MCP session in BasicAuth mode")
-    logger.info("Creating Nextcloud client with BasicAuth")
+    settings = get_settings()
+    is_multi_user = settings.enable_multi_user_basic_auth
 
-    client = NextcloudClient.from_env()
-    logger.info("Client initialization complete")
+    logger.info(
+        f"Starting MCP session in {'multi-user' if is_multi_user else 'single-user'} BasicAuth mode"
+    )
+
+    # Only create shared client for single-user mode
+    client = None
+    if not is_multi_user:
+        logger.info("Creating shared Nextcloud client with BasicAuth")
+        client = NextcloudClient.from_env()
+        logger.info("Client initialization complete")
+    else:
+        logger.info(
+            "Multi-user mode - clients created per-request from BasicAuth headers"
+        )
 
     # Initialize persistent storage (for webhook tracking and future features)
     from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
@@ -604,7 +633,7 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
     # Include vector sync state from module singleton (set by starlette_lifespan)
     try:
         yield AppContext(
-            client=client,
+            client=client,  # type: ignore[arg-type]  # None in multi-user mode
             storage=storage,
             document_send_stream=_vector_sync_state.document_send_stream,
             document_receive_stream=_vector_sync_state.document_receive_stream,
@@ -613,7 +642,8 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
         )
     finally:
         logger.info("Shutting down BasicAuth session")
-        await client.close()
+        if client is not None:
+            await client.close()
 
 
 async def setup_oauth_config():
@@ -985,6 +1015,33 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # Initialize observability (logging will be configured by uvicorn)
     settings = get_settings()
 
+    # Validate configuration and detect deployment mode
+    mode, config_errors = validate_configuration(settings)
+
+    if config_errors:
+        error_msg = (
+            f"Configuration validation failed for {mode.value} mode:\n"
+            + "\n".join(f"  - {err}" for err in config_errors)
+            + "\n\n"
+            + get_mode_summary(mode)
+        )
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+
+    logger.info(f"✅ Configuration validated successfully for {mode.value} mode")
+    logger.debug(f"Mode details:\n{get_mode_summary(mode)}")
+
+    # Derive helper variables for backward compatibility with existing code
+    oauth_enabled = mode in (
+        AuthMode.OAUTH_SINGLE_AUDIENCE,
+        AuthMode.OAUTH_TOKEN_EXCHANGE,
+    )
+    deployment_mode = (
+        DeploymentMode.SMITHERY_STATELESS
+        if mode == AuthMode.SMITHERY_STATELESS
+        else DeploymentMode.SELF_HOSTED
+    )
+
     # Setup Prometheus metrics (always enabled by default)
     if settings.metrics_enabled:
         setup_metrics(port=settings.metrics_port)
@@ -1008,11 +1065,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             "OpenTelemetry tracing disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)"
         )
 
-    # Determine authentication mode and deployment mode
-    oauth_enabled = is_oauth_mode()
-    deployment_mode = get_deployment_mode()
-
-    if oauth_enabled:
+    # Create MCP server based on detected mode
+    if mode in (AuthMode.OAUTH_SINGLE_AUDIENCE, AuthMode.OAUTH_TOKEN_EXCHANGE):
         logger.info("Configuring MCP server for OAuth mode")
         # Asynchronously get the OAuth configuration
         import anyio
@@ -1075,33 +1129,32 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 enable_dns_rebinding_protection=False
             ),
         )
+    elif mode == AuthMode.SMITHERY_STATELESS:
+        logger.info("Configuring MCP server for Smithery stateless mode")
+        # json_response=True returns plain JSON-RPC instead of SSE format,
+        # required for Smithery scanner compatibility
+        mcp = FastMCP(
+            "Nextcloud MCP",
+            lifespan=app_lifespan_smithery,
+            json_response=True,
+            # Disable DNS rebinding protection for containerized deployments (k8s, Docker)
+            # MCP 1.23+ auto-enables this for localhost, breaking k8s service DNS names
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=False
+            ),
+        )
     else:
-        # ADR-016: Use Smithery lifespan for stateless mode, BasicAuth otherwise
-        if deployment_mode == DeploymentMode.SMITHERY_STATELESS:
-            logger.info("Configuring MCP server for Smithery stateless mode")
-            # json_response=True returns plain JSON-RPC instead of SSE format,
-            # required for Smithery scanner compatibility
-            mcp = FastMCP(
-                "Nextcloud MCP",
-                lifespan=app_lifespan_smithery,
-                json_response=True,
-                # Disable DNS rebinding protection for containerized deployments (k8s, Docker)
-                # MCP 1.23+ auto-enables this for localhost, breaking k8s service DNS names
-                transport_security=TransportSecuritySettings(
-                    enable_dns_rebinding_protection=False
-                ),
-            )
-        else:
-            logger.info("Configuring MCP server for BasicAuth mode")
-            mcp = FastMCP(
-                "Nextcloud MCP",
-                lifespan=app_lifespan_basic,
-                # Disable DNS rebinding protection for containerized deployments (k8s, Docker)
-                # MCP 1.23+ auto-enables this for localhost, breaking k8s service DNS names
-                transport_security=TransportSecuritySettings(
-                    enable_dns_rebinding_protection=False
-                ),
-            )
+        # BasicAuth modes (single-user or multi-user)
+        logger.info(f"Configuring MCP server for {mode.value} mode")
+        mcp = FastMCP(
+            "Nextcloud MCP",
+            lifespan=app_lifespan_basic,
+            # Disable DNS rebinding protection for containerized deployments (k8s, Docker)
+            # MCP 1.23+ auto-enables this for localhost, breaking k8s service DNS names
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=False
+            ),
+        )
 
     @mcp.resource("nc://capabilities")
     async def nc_get_capabilities():
@@ -1139,8 +1192,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
     # Register semantic search tools (cross-app feature)
     # ADR-016: Skip in Smithery stateless mode (no vector database)
-    settings = get_settings()
-    deployment_mode = get_deployment_mode()
     if deployment_mode == DeploymentMode.SMITHERY_STATELESS:
         logger.info("Skipping semantic search tools (Smithery stateless mode)")
     elif settings.vector_sync_enabled:
@@ -1227,13 +1278,20 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         # Set OAuth context for OAuth login routes (ADR-004)
         if oauth_enabled:
             # Prepare OAuth config from setup_oauth_config closure variables
+            # Get nextcloud_host from settings (it was validated as required)
+            nextcloud_host_for_context = settings.nextcloud_host
+            if not nextcloud_host_for_context:
+                raise ValueError("NEXTCLOUD_HOST is required for OAuth mode")
+
             mcp_server_url = os.getenv(
                 "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
             )
-            nextcloud_resource_uri = os.getenv("NEXTCLOUD_RESOURCE_URI", nextcloud_host)
+            nextcloud_resource_uri = os.getenv(
+                "NEXTCLOUD_RESOURCE_URI", nextcloud_host_for_context
+            )
             discovery_url = os.getenv(
                 "OIDC_DISCOVERY_URL",
-                f"{nextcloud_host}/.well-known/openid-configuration",
+                f"{nextcloud_host_for_context}/.well-known/openid-configuration",
             )
             scopes = os.getenv("NEXTCLOUD_OIDC_SCOPES", "")
 
@@ -1247,7 +1305,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     "client_id": client_id,  # From setup_oauth_config (DCR or static)
                     "client_secret": client_secret,  # From setup_oauth_config (DCR or static)
                     "scopes": scopes,
-                    "nextcloud_host": nextcloud_host,
+                    "nextcloud_host": nextcloud_host_for_context,
                     "nextcloud_resource_uri": nextcloud_resource_uri,
                     "oauth_provider": oauth_provider,
                 },
@@ -1273,16 +1331,16 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # BasicAuth mode - share storage with browser_app for webhook management
             from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
-            storage = RefreshTokenStorage.from_env()
-            await storage.initialize()
+            basic_auth_storage = RefreshTokenStorage.from_env()
+            await basic_auth_storage.initialize()
 
-            app.state.storage = storage
+            app.state.storage = basic_auth_storage
 
             # Also share with browser_app for webhook routes
             for route in app.routes:
                 if isinstance(route, Mount) and route.path == "/app":
                     browser_app = cast(Starlette, route.app)
-                    browser_app.state.storage = storage
+                    browser_app.state.storage = basic_auth_storage
                     logger.info(
                         "Storage shared with browser_app for webhook management"
                     )
@@ -1292,7 +1350,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         # Scanner runs at server-level (once), not per-session
         import anyio as anyio_module
 
-        settings = get_settings()
+        # Re-use settings from outer scope (already validated)
 
         # Check if vector sync is enabled and determine the mode
         enable_offline_access_for_sync = os.getenv(
@@ -1300,7 +1358,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         ).lower() in ("true", "1", "yes")
         encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
 
-        if settings.vector_sync_enabled and not oauth_enabled:
+        # Multi-user BasicAuth uses OAuth-style background sync (with app passwords)
+        # So skip single-user BasicAuth vector sync if in multi-user mode
+        if (
+            settings.vector_sync_enabled
+            and not oauth_enabled
+            and not settings.enable_multi_user_basic_auth
+        ):
             # BasicAuth mode - single user sync
             logger.info("Starting background vector sync tasks for BasicAuth mode")
 
@@ -1400,13 +1464,15 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
         elif (
             settings.vector_sync_enabled
-            and oauth_enabled
+            and (oauth_enabled or settings.enable_multi_user_basic_auth)
             and enable_offline_access_for_sync
             and refresh_token_storage
             and encryption_key
         ):
             # OAuth mode with offline access - multi-user sync
-            logger.info("Starting background vector sync tasks for OAuth mode")
+            # Also used for multi-user BasicAuth mode (client auth is BasicAuth, background sync uses app passwords)
+            mode_desc = "OAuth mode" if oauth_enabled else "Multi-user BasicAuth mode"
+            logger.info(f"Starting background vector sync tasks for {mode_desc}")
 
             from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
             from nextcloud_mcp_server.vector.oauth_sync import (
@@ -1414,10 +1480,15 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 user_manager_task,
             )
 
+            # Get nextcloud_host (from settings - already validated)
+            nextcloud_host_for_sync = settings.nextcloud_host
+            if not nextcloud_host_for_sync:
+                raise ValueError("NEXTCLOUD_HOST required for vector sync")
+
             # Get OIDC discovery URL (same as used for OAuth setup)
             discovery_url = os.getenv(
                 "OIDC_DISCOVERY_URL",
-                f"{nextcloud_host}/.well-known/openid-configuration",
+                f"{nextcloud_host_for_sync}/.well-known/openid-configuration",
             )
 
             # Get client credentials from oauth_context (set by setup_oauth_config)
@@ -1427,6 +1498,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             oauth_config = oauth_ctx.get("config", {})
             sync_client_id = oauth_config.get("client_id")
             sync_client_secret = oauth_config.get("client_secret")
+
+            # For multi-user BasicAuth mode, get OIDC credentials from environment
+            if not sync_client_id or not sync_client_secret:
+                sync_client_id = settings.oidc_client_id
+                sync_client_secret = settings.oidc_client_secret
 
             if not sync_client_id or not sync_client_secret:
                 logger.error(
@@ -2140,5 +2216,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     if deployment_mode == DeploymentMode.SMITHERY_STATELESS:
         app = SmitheryConfigMiddleware(app)
         logger.info("SmitheryConfigMiddleware enabled for query parameter config")
+
+    # Apply BasicAuthMiddleware for multi-user BasicAuth pass-through mode
+    if settings.enable_multi_user_basic_auth:
+        app = BasicAuthMiddleware(app)
+        logger.info(
+            "BasicAuthMiddleware enabled - multi-user BasicAuth pass-through mode active"
+        )
 
     return app

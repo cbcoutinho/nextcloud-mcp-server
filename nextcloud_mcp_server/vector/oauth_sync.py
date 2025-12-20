@@ -5,6 +5,10 @@ with ENABLE_OFFLINE_ACCESS=true:
 - User Manager: Monitors RefreshTokenStorage for user changes
 - Per-User Scanners: One scanner task per provisioned user
 - Shared Processor Pool: Processes documents from all users
+
+Supports dual credential types for background sync:
+- App passwords (interim solution, works today)
+- OAuth refresh tokens (future, when Nextcloud supports OAuth for app APIs)
 """
 
 import logging
@@ -18,7 +22,9 @@ from anyio.streams.memory import (
     MemoryObjectReceiveStream,
     MemoryObjectSendStream,
 )
+from httpx import BasicAuth
 
+from nextcloud_mcp_server.auth.astrolabe_client import AstrolabeClient
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector.scanner import DocumentTask, scan_user_documents
@@ -60,6 +66,10 @@ async def get_user_client(
 ) -> NextcloudClient:
     """Get an authenticated NextcloudClient for a user.
 
+    Supports dual credential types with priority:
+    1. App password from Astrolabe (works today with BasicAuth)
+    2. OAuth refresh token from storage (for future when OAuth fully supported)
+
     Args:
         user_id: User identifier
         token_broker: Token broker for obtaining access tokens
@@ -71,6 +81,36 @@ async def get_user_client(
     Raises:
         NotProvisionedError: If user has not provisioned offline access
     """
+    settings = get_settings()
+
+    # Try app password first (interim solution, works today)
+    if settings.oidc_client_id and settings.oidc_client_secret:
+        try:
+            astrolabe = AstrolabeClient(
+                nextcloud_host=nextcloud_host,
+                client_id=settings.oidc_client_id,
+                client_secret=settings.oidc_client_secret,
+            )
+            app_password = await astrolabe.get_user_app_password(user_id)
+
+            if app_password:
+                logger.info(
+                    f"Using app password for background sync: {user_id} "
+                    f"(credential_type=app_password)"
+                )
+                return NextcloudClient(
+                    base_url=nextcloud_host,
+                    username=user_id,
+                    auth=BasicAuth(user_id, app_password),
+                )
+        except Exception as e:
+            logger.debug(f"App password not available for {user_id}: {e}")
+
+    # Fall back to OAuth refresh token
+    logger.info(
+        f"Using OAuth refresh token for background sync: {user_id} "
+        f"(credential_type=refresh_token)"
+    )
     token = await token_broker.get_background_token(user_id, VECTOR_SYNC_SCOPES)
     if not token:
         raise NotProvisionedError(f"User {user_id} has not provisioned offline access")

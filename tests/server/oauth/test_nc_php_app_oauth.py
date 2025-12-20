@@ -44,14 +44,32 @@ async def nc_admin_http_client(nextcloud_credentials):
 
 
 @pytest.fixture(scope="module")
-async def authorized_nc_session(browser, nextcloud_credentials):
+async def configure_astrolabe_for_tests(configure_astrolabe_for_mcp_server):
+    """Configure Astrolabe to connect to mcp-oauth server before running tests.
+
+    This module-scoped fixture ensures Astrolabe is properly configured
+    for the mcp-oauth server (http://localhost:8001) before any tests run.
+    """
+    logger.info("Configuring Astrolabe for mcp-oauth server...")
+    await configure_astrolabe_for_mcp_server(
+        mcp_server_internal_url="http://mcp-oauth:8001",
+        mcp_server_public_url="http://localhost:8001",
+    )
+    logger.info("✓ Astrolabe configured for mcp-oauth server")
+
+
+@pytest.fixture(scope="module")
+async def authorized_nc_session(
+    browser, nextcloud_credentials, configure_astrolabe_for_tests
+):
     """Module-scoped fixture that logs in and authorizes the NC PHP app once.
 
     This fixture:
-    1. Creates a browser context
-    2. Logs in to Nextcloud
-    3. Authorizes the MCP Server UI app (if not already authorized)
-    4. Returns the page for use in all tests
+    1. Configures Astrolabe for mcp-oauth server (via configure_astrolabe_for_tests)
+    2. Creates a browser context
+    3. Logs in to Nextcloud
+    4. Authorizes the MCP Server UI app (if not already authorized)
+    5. Returns the page for use in all tests
 
     The authorization is done once and reused for all tests in this module.
     """
