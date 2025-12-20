@@ -67,6 +67,11 @@ async def get_client(ctx: Context) -> NextcloudClient:
         return _get_client_from_session_config(ctx)
 
     settings = get_settings()
+
+    # Multi-user BasicAuth pass-through mode - extract credentials from request
+    if settings.enable_multi_user_basic_auth:
+        return _get_client_from_basic_auth(ctx)
+
     lifespan_ctx = ctx.request_context.lifespan_context
 
     # BasicAuth mode - use shared client (no token exchange)
@@ -176,4 +181,68 @@ def _get_client_from_session_config(ctx: Context) -> NextcloudClient:
         base_url=nextcloud_url,
         username=username,
         auth=BasicAuth(username, app_password),
+    )
+
+
+def _get_client_from_basic_auth(ctx: Context) -> NextcloudClient:
+    """
+    Create NextcloudClient from BasicAuth credentials in request headers.
+
+    For multi-user BasicAuth pass-through mode, this function extracts
+    username/password from the Authorization: Basic header (stored by
+    BasicAuthMiddleware) and creates a client that passes these credentials
+    through to Nextcloud APIs.
+
+    The credentials are NOT stored persistently - they exist only for the
+    duration of this request (stateless).
+
+    Args:
+        ctx: MCP request context with basic_auth in request state
+
+    Returns:
+        NextcloudClient configured with BasicAuth credentials
+
+    Raises:
+        ValueError: If BasicAuth credentials not found in request or if
+                   NEXTCLOUD_HOST is not configured
+    """
+    settings = get_settings()
+
+    # Validate that NEXTCLOUD_HOST is configured
+    if not settings.nextcloud_host:
+        raise ValueError(
+            "NEXTCLOUD_HOST environment variable must be set for multi-user BasicAuth mode"
+        )
+
+    # Extract BasicAuth credentials from request state (set by BasicAuthMiddleware)
+    # Access scope through the request object
+    scope = getattr(ctx.request_context.request, "scope", None)
+    if scope is None:
+        raise ValueError("Request scope not available in context")
+
+    request_state = scope.get("state", {})
+    basic_auth = request_state.get("basic_auth")
+
+    if not basic_auth:
+        raise ValueError(
+            "BasicAuth credentials not found in request. "
+            "Ensure Authorization: Basic header is provided with valid credentials."
+        )
+
+    username = basic_auth.get("username")
+    password = basic_auth.get("password")
+
+    if not username or not password:
+        raise ValueError("Invalid BasicAuth credentials - missing username or password")
+
+    logger.debug(
+        f"Creating multi-user BasicAuth client for {settings.nextcloud_host} as {username}"
+    )
+
+    # Create client that passes BasicAuth credentials through to Nextcloud
+    # settings.nextcloud_host is guaranteed to be str after the check above
+    return NextcloudClient(
+        base_url=settings.nextcloud_host,
+        username=username,
+        auth=BasicAuth(username, password),
     )
