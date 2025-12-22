@@ -87,7 +87,7 @@ services:
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
 
       # Vector sync configuration (ADR-007)
-      - VECTOR_SYNC_ENABLED=true
+      #- VECTOR_SYNC_ENABLED=true
       - VECTOR_SYNC_SCAN_INTERVAL=60
       - VECTOR_SYNC_PROCESSOR_WORKERS=1
 
@@ -135,15 +135,24 @@ services:
     environment:
       # Multi-user BasicAuth pass-through mode (ADR-020)
       - NEXTCLOUD_HOST=http://app:80
+      - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8003
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
       - ENABLE_MULTI_USER_BASIC_AUTH=true
+      - ENABLE_OFFLINE_ACCESS=true
+      - ENABLE_BACKGROUND_OPERATIONS=true
 
       # Token storage (required for middleware initialization)
       - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
       - TOKEN_STORAGE_DB=/app/data/tokens.db
 
-      # Vector sync disabled (stateless pass-through mode)
-      - VECTOR_SYNC_ENABLED=false
+      - VECTOR_SYNC_ENABLED=true
+      - VECTOR_SYNC_SCAN_INTERVAL=60
+      - VECTOR_SYNC_PROCESSOR_WORKERS=1
+
+      # OAuth credentials for background sync (optional - uses DCR if not provided)
+      # Uncomment to avoid DCR:
+      # - NEXTCLOUD_OIDC_CLIENT_ID=your_client_id
+      # - NEXTCLOUD_OIDC_CLIENT_SECRET=your_client_secret
 
       # NO admin credentials - credentials come from client Authorization header
     volumes:

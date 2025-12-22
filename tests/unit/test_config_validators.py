@@ -281,7 +281,7 @@ class TestMultiUserBasicValidation:
         assert any("nextcloud_password" in err.lower() for err in errors)
 
     def test_offline_access_missing_oauth_credentials(self):
-        """Test error when offline access enabled but OAuth credentials missing."""
+        """Test that offline access works without OAuth credentials (will use DCR)."""
         settings = Settings(
             nextcloud_host="http://localhost",
             enable_multi_user_basic_auth=True,
@@ -293,7 +293,8 @@ class TestMultiUserBasicValidation:
         mode, errors = validate_configuration(settings)
 
         assert mode == AuthMode.MULTI_USER_BASIC
-        assert any("oidc_client_id" in err.lower() for err in errors)
+        # No errors - DCR will be used as fallback (consistent with OAuth modes)
+        assert len(errors) == 0
 
     def test_offline_access_missing_encryption_key(self):
         """Test error when offline access enabled but encryption key missing."""

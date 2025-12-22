@@ -105,8 +105,7 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
         ],
         conditional={
             "enable_offline_access": [
-                "oidc_client_id",
-                "oidc_client_secret",
+                # OAuth credentials validated separately (lines 397-406) with clearer error message
                 "token_encryption_key",
                 "token_storage_db",
             ],
@@ -395,14 +394,14 @@ def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
             )
 
     if mode == AuthMode.MULTI_USER_BASIC:
-        # Validate that if background operations enabled, we have OAuth credentials
+        # If background operations enabled, check for OAuth credentials (for app password retrieval)
+        # Allow DCR as fallback, just like OAuth modes
         if settings.enable_offline_access:
             if not settings.oidc_client_id or not settings.oidc_client_secret:
-                errors.append(
-                    f"[{mode.value}] NEXTCLOUD_OIDC_CLIENT_ID and "
-                    "NEXTCLOUD_OIDC_CLIENT_SECRET are required when "
-                    "ENABLE_BACKGROUND_OPERATIONS (or deprecated ENABLE_OFFLINE_ACCESS) "
-                    "is enabled (for app password retrieval)"
+                logger.info(
+                    f"[{mode.value}] OAuth credentials not configured. "
+                    "Will attempt Dynamic Client Registration (DCR) at startup "
+                    "(required for app password retrieval via Astrolabe)."
                 )
 
         # Note: Vector sync no longer requires explicit ENABLE_OFFLINE_ACCESS setting

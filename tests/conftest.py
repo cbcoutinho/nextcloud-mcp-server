@@ -2320,7 +2320,10 @@ async def test_users_setup(anyio_backend, nc_client: NextcloudClient):
         },
     }
 
-    logger.info("Creating test users for multi-user OAuth testing...")
+    logger.info("=" * 60)
+    logger.info("EXECUTING test_users_setup FIXTURE (session-scoped)")
+    logger.info(f"Creating test users: {list(test_user_configs.keys())}")
+    logger.info("=" * 60)
     created_users = []
 
     try:
@@ -3267,7 +3270,7 @@ async def configure_astrolabe_for_mcp_server(nc_client):
         )
 
         # Configure MCP server URLs in Nextcloud system config
-        subprocess.run(
+        result = subprocess.run(
             [
                 "docker",
                 "compose",
@@ -3281,11 +3284,45 @@ async def configure_astrolabe_for_mcp_server(nc_client):
                 "--value",
                 mcp_server_internal_url,
             ],
-            check=True,
             capture_output=True,
+            text=True,
         )
 
-        subprocess.run(
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to configure MCP server URL. "
+                f"Command failed with code {result.returncode}. "
+                f"stderr: {result.stderr}, stdout: {result.stdout}"
+            )
+
+        # Verify mcp_server_url was actually set
+        verify_result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "app",
+                "php",
+                "/var/www/html/occ",
+                "config:system:get",
+                "mcp_server_url",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        actual_url = verify_result.stdout.strip()
+        if actual_url != mcp_server_internal_url:
+            raise RuntimeError(
+                f"MCP server URL verification failed. "
+                f"Expected: {mcp_server_internal_url}, Got: {actual_url}"
+            )
+
+        logger.info(f"✓ MCP server URL configured and verified: {actual_url}")
+
+        # Configure public URL
+        result = subprocess.run(
             [
                 "docker",
                 "compose",
@@ -3299,11 +3336,18 @@ async def configure_astrolabe_for_mcp_server(nc_client):
                 "--value",
                 mcp_server_public_url,
             ],
-            check=True,
             capture_output=True,
+            text=True,
         )
 
-        logger.info("✓ MCP server URLs configured")
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to configure MCP server public URL. "
+                f"Command failed with code {result.returncode}. "
+                f"stderr: {result.stderr}, stdout: {result.stdout}"
+            )
+
+        logger.info(f"✓ MCP server public URL configured: {mcp_server_public_url}")
 
         # Remove existing OAuth client if it exists
         try:
