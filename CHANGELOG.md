@@ -5,6 +5,14 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.58.0 (2025-12-22)
+
+### Feat
+
+- **config**: enable DCR for multi-user BasicAuth with offline access
+- **astrolabe**: implement app password provisioning for multi-user background sync
+- **config**: consolidate configuration with smart dependency resolution (ADR-021)
+
 ## v0.57.0 (2025-12-20)
 
 ### Feat
