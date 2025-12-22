@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires external MCP server deployment
 - See documentation for setup: https://github.com/cbcoutinho/nextcloud-mcp-server
 
+## astrolabe-v0.6.0 (2025-12-22)
+
+### Feat
+
+- **config**: enable DCR for multi-user BasicAuth with offline access
+- **astrolabe**: implement app password provisioning for multi-user background sync
+- **config**: consolidate configuration with smart dependency resolution (ADR-021)
+
 ## astrolabe-v0.5.0 (2025-12-20)
 
 ### Feat
