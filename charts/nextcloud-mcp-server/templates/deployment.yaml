@@ -100,7 +100,7 @@ spec:
                   key: {{ .Values.auth.multiUserBasic.tokenEncryptionKeyKey }}
             - name: NEXTCLOUD_OIDC_SCOPES
               value: {{ .Values.auth.multiUserBasic.scopes | quote }}
-            {{- if .Values.auth.multiUserBasic.clientId }}
+            {{- if or .Values.auth.multiUserBasic.clientId .Values.auth.multiUserBasic.existingSecret }}
             # Static OAuth credentials (optional - uses DCR if not provided)
             - name: NEXTCLOUD_OIDC_CLIENT_ID
               valueFrom:
@@ -122,7 +122,7 @@ spec:
               value: {{ include "nextcloud-mcp-server.publicIssuerUrl" . | quote }}
             - name: NEXTCLOUD_OIDC_SCOPES
               value: {{ .Values.auth.oauth.scopes | quote }}
-            {{- if .Values.auth.oauth.clientId }}
+            {{- if or .Values.auth.oauth.clientId .Values.auth.oauth.existingSecret }}
             - name: NEXTCLOUD_OIDC_CLIENT_ID
               valueFrom:
                 secretKeyRef:
