@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.59.0 (2025-12-22)
+
+### Feat
+
+- **helm**: add support for multi-user BasicAuth mode
+
+### Fix
+
+- **helm**: address PR #447 reviewer feedback
+- **helm**: include MCP server version bumps in changelog pattern
+
 ## v0.58.0 (2025-12-22)
 
 ### Feat
