@@ -73,6 +73,28 @@ Create the name of the secret to use for basic auth
 {{- end }}
 
 {{/*
+Create the name of the secret to use for multi-user basic auth
+*/}}
+{{- define "nextcloud-mcp-server.multiUserBasicSecretName" -}}
+{{- if .Values.auth.multiUserBasic.existingSecret }}
+{{- .Values.auth.multiUserBasic.existingSecret }}
+{{- else }}
+{{- include "nextcloud-mcp-server.fullname" . }}-multi-user-basic
+{{- end }}
+{{- end }}
+
+{{/*
+Create the name of the PVC to use for multi-user basic token storage
+*/}}
+{{- define "nextcloud-mcp-server.multiUserBasicPvcName" -}}
+{{- if .Values.auth.multiUserBasic.persistence.existingClaim }}
+{{- .Values.auth.multiUserBasic.persistence.existingClaim }}
+{{- else }}
+{{- include "nextcloud-mcp-server.fullname" . }}-token-storage
+{{- end }}
+{{- end }}
+
+{{/*
 Create the name of the secret to use for OAuth
 */}}
 {{- define "nextcloud-mcp-server.oauthSecretName" -}}

@@ -68,7 +68,7 @@ spec:
             - name: NEXTCLOUD_HOST
               value: {{ .Values.nextcloud.host | quote }}
             {{- if eq .Values.auth.mode "basic" }}
-            # Basic auth mode
+            # Basic auth mode (single-user)
             - name: NEXTCLOUD_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -79,6 +79,41 @@ spec:
                 secretKeyRef:
                   name: {{ include "nextcloud-mcp-server.basicAuthSecretName" . }}
                   key: {{ .Values.auth.basic.passwordKey }}
+            {{- else if eq .Values.auth.mode "multi-user-basic" }}
+            # Multi-user BasicAuth mode (pass-through)
+            - name: ENABLE_MULTI_USER_BASIC_AUTH
+              value: "true"
+            - name: NEXTCLOUD_MCP_SERVER_URL
+              value: {{ include "nextcloud-mcp-server.mcpServerUrl" . | quote }}
+            - name: NEXTCLOUD_PUBLIC_ISSUER_URL
+              value: {{ include "nextcloud-mcp-server.publicIssuerUrl" . | quote }}
+            {{- if .Values.auth.multiUserBasic.enableOfflineAccess }}
+            # Background operations with app passwords
+            - name: ENABLE_OFFLINE_ACCESS
+              value: "true"
+            - name: TOKEN_STORAGE_DB
+              value: {{ .Values.auth.multiUserBasic.tokenStorageDb | quote }}
+            - name: TOKEN_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nextcloud-mcp-server.multiUserBasicSecretName" . }}
+                  key: {{ .Values.auth.multiUserBasic.tokenEncryptionKeyKey }}
+            - name: NEXTCLOUD_OIDC_SCOPES
+              value: {{ .Values.auth.multiUserBasic.scopes | quote }}
+            {{- if or .Values.auth.multiUserBasic.clientId .Values.auth.multiUserBasic.existingSecret }}
+            # Static OAuth credentials (optional - uses DCR if not provided)
+            - name: NEXTCLOUD_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nextcloud-mcp-server.multiUserBasicSecretName" . }}
+                  key: {{ .Values.auth.multiUserBasic.clientIdKey }}
+            - name: NEXTCLOUD_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nextcloud-mcp-server.multiUserBasicSecretName" . }}
+                  key: {{ .Values.auth.multiUserBasic.clientSecretKey }}
+            {{- end }}
+            {{- end }}
             {{- else if eq .Values.auth.mode "oauth" }}
             # OAuth mode
             - name: NEXTCLOUD_MCP_SERVER_URL
@@ -251,6 +286,10 @@ spec:
             - name: oauth-storage
               mountPath: /app/.oauth
             {{- end }}
+            {{- if and (eq .Values.auth.mode "multi-user-basic") .Values.auth.multiUserBasic.enableOfflineAccess .Values.auth.multiUserBasic.persistence.enabled }}
+            - name: token-storage
+              mountPath: /app/data
+            {{- end }}
             {{- if and (eq .Values.qdrant.mode "persistent") .Values.qdrant.localPersistence.enabled }}
             - name: qdrant-data
               mountPath: /app/data
@@ -265,6 +304,11 @@ spec:
         - name: oauth-storage
           persistentVolumeClaim:
             claimName: {{ include "nextcloud-mcp-server.oauthPvcName" . }}
+        {{- end }}
+        {{- if and (eq .Values.auth.mode "multi-user-basic") .Values.auth.multiUserBasic.enableOfflineAccess .Values.auth.multiUserBasic.persistence.enabled }}
+        - name: token-storage
+          persistentVolumeClaim:
+            claimName: {{ include "nextcloud-mcp-server.multiUserBasicPvcName" . }}
         {{- end }}
         {{- if and (eq .Values.qdrant.mode "persistent") .Values.qdrant.localPersistence.enabled }}
         - name: qdrant-data

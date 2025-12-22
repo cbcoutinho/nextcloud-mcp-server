@@ -16,6 +16,24 @@ spec:
       storage: {{ .Values.auth.oauth.persistence.size }}
 {{- end }}
 ---
+{{- if and (eq .Values.auth.mode "multi-user-basic") .Values.auth.multiUserBasic.enableOfflineAccess .Values.auth.multiUserBasic.persistence.enabled (not .Values.auth.multiUserBasic.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "nextcloud-mcp-server.fullname" . }}-token-storage
+  labels:
+    {{- include "nextcloud-mcp-server.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.auth.multiUserBasic.persistence.accessMode }}
+  {{- if .Values.auth.multiUserBasic.persistence.storageClass }}
+  storageClassName: {{ .Values.auth.multiUserBasic.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.auth.multiUserBasic.persistence.size }}
+{{- end }}
+---
 {{- if and (eq .Values.qdrant.mode "persistent") .Values.qdrant.localPersistence.enabled (not .Values.qdrant.localPersistence.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim

@@ -33,14 +33,15 @@ nextcloud:
   publicIssuerUrl: ""
 
 # Authentication configuration
-# Choose either basic auth OR oauth (not both)
+# Choose one mode: "basic", "multi-user-basic", or "oauth"
 auth:
-  # Authentication mode: "basic" or "oauth"
-  # basic: Uses username/password (recommended for most users)
+  # Authentication mode: "basic", "multi-user-basic", or "oauth"
+  # basic: Single-user with username/password (recommended for personal use)
+  # multi-user-basic: Multi-user with BasicAuth pass-through (credentials in request headers)
   # oauth: Uses OAuth2/OIDC (experimental, requires patches)
   mode: basic
 
-  # Basic authentication settings
+  # Basic authentication settings (single-user mode)
   basic:
     # Nextcloud username (ignored if existingSecret is set)
     username: ""
@@ -57,6 +58,47 @@ auth:
     # Keys in the existing secret
     usernameKey: "username"
     passwordKey: "password"
+
+  # Multi-user BasicAuth settings (pass-through mode)
+  # Users provide credentials in request headers (Authorization: Basic ...)
+  # Server optionally stores app passwords for background operations
+  multiUserBasic:
+    # Enable offline access (background operations using app passwords via Astrolabe)
+    # When enabled, requires token encryption key and OAuth client credentials
+    enableOfflineAccess: false
+    # Token encryption key (required if enableOfflineAccess: true, ignored if existingSecret is set)
+    # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    tokenEncryptionKey: ""
+    # Token storage database path
+    tokenStorageDb: "/app/data/tokens.db"
+    # OAuth client credentials (optional - uses Dynamic Client Registration if not provided)
+    # Only needed if enableOfflineAccess: true
+    clientId: ""
+    clientSecret: ""
+    # OAuth scopes to request (space-separated)
+    scopes: "openid profile email offline_access notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write"
+    # Use existing secret for multi-user basic auth credentials
+    # If set, tokenEncryptionKey, clientId, and clientSecret above are ignored
+    # Secret should contain keys specified in the *Key fields below
+    # Example:
+    #   kubectl create secret generic my-multiuser-creds \
+    #     --from-literal=token_encryption_key=ESF1BvEQ... \
+    #     --from-literal=client_id=my-client-id \
+    #     --from-literal=client_secret=my-client-secret
+    existingSecret: ""
+    # Keys in the existing secret
+    tokenEncryptionKeyKey: "token_encryption_key"
+    clientIdKey: "client_id"
+    clientSecretKey: "client_secret"
+    # Persistent storage for token database
+    persistence:
+      enabled: true
+      # Storage class (leave empty for default)
+      storageClass: ""
+      accessMode: ReadWriteOnce
+      size: 100Mi
+      # Use existing PVC
+      existingClaim: ""
 
   # OAuth2/OIDC settings (experimental)
   oauth:
