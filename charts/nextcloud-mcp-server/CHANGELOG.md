@@ -14,6 +14,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.55.0 (2025-12-22)
+
+### BREAKING CHANGE
+
+- MCP server now bumps for ANY conventional commit except
+those explicitly scoped to helm or astrolabe.
+
+### Feat
+
+- **helm**: add support for multi-user BasicAuth mode
+- **config**: enable DCR for multi-user BasicAuth with offline access
+- **astrolabe**: implement app password provisioning for multi-user background sync
+- **config**: consolidate configuration with smart dependency resolution (ADR-021)
+- **auth**: add multi-user BasicAuth pass-through mode
+- **astrolabe**: add dynamic MCP server configuration for testing
+- **ci**: add --increment flag to bump scripts for manual version control
+
+### Fix
+
+- **helm**: address PR #447 reviewer feedback
+- **helm**: include MCP server version bumps in changelog pattern
+- **config**: address reviewer feedback
+- **astrolabe**: screenshots in info.xml
+- **astrolabe**: screenshots in info.xml
+- **astrolabe**: Update screenshots
+- **ci**: skip existing Helm chart releases to prevent duplicate release errors
+- **astrolabe**: add contents:write permission to appstore workflow
+- **astrolabe**: update commitizen pattern to properly update info.xml version
+- **astrolabe**: prevent workflow failure when only helm/astrolabe commits exist
+- **astrolabe**: info.xml
+- **ci**: push all tags explicitly in bump workflow
+- **ci**: make MCP server default bump target for all non-scoped commits
+- **ci**: restrict docker build to MCP server tags only
+- **ci**: correct appstore-push-action version to v1.0.4
+
+### Refactor
+
+- **config**: centralize configuration validation and simplify startup
+
 ## nextcloud-mcp-server-0.54.0 (2025-12-19)
 
 ### Feat
