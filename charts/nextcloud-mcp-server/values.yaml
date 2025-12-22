@@ -64,7 +64,7 @@ auth:
   # Server optionally stores app passwords for background operations
   multiUserBasic:
     # Enable offline access (background operations using app passwords via Astrolabe)
-    # When enabled, requires token encryption key and OAuth client credentials
+    # When enabled, requires token encryption key. OAuth client credentials are optional (uses DCR if not provided)
     enableOfflineAccess: false
     # Token encryption key (required if enableOfflineAccess: true, ignored if existingSecret is set)
     # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"

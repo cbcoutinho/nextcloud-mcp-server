@@ -100,7 +100,7 @@ spec:
                   key: {{ .Values.auth.multiUserBasic.tokenEncryptionKeyKey }}
             - name: NEXTCLOUD_OIDC_SCOPES
               value: {{ .Values.auth.multiUserBasic.scopes | quote }}
-            {{- if or .Values.auth.multiUserBasic.clientId .Values.auth.multiUserBasic.existingSecret }}
+            {{- if .Values.auth.multiUserBasic.clientId }}
             # Static OAuth credentials (optional - uses DCR if not provided)
             - name: NEXTCLOUD_OIDC_CLIENT_ID
               valueFrom:
