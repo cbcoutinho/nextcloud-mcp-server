@@ -48,7 +48,7 @@
 				<div class="mcp-search-card">
 					<div class="mcp-search-row">
 						<NcTextField
-							:value.sync="query"
+							v-model:value="query"
 							:label="t('astrolabe', 'Search query')"
 							:placeholder="t('astrolabe', 'Enter your search query...')"
 							class="mcp-search-input"
@@ -104,7 +104,7 @@
 							<div class="mcp-option-group">
 								<label>{{ t('astrolabe', 'Result Limit') }}</label>
 								<NcTextField
-									:value.sync="limit"
+									v-model:value="limit"
 									type="number"
 									:min="1"
 									:max="100" />
@@ -152,7 +152,7 @@
 						<div class="mcp-viz-header">
 							<h3>{{ t('astrolabe', 'Vector Space Visualization') }}</h3>
 							<NcCheckboxRadioSwitch
-								:checked.sync="showQueryPoint"
+								v-model:checked="showQueryPoint"
 								type="switch"
 								@update:checked="updatePlot">
 								{{ t('astrolabe', 'Show query point') }}
@@ -364,17 +364,17 @@
 </template>
 
 <script>
-import NcContent from '@nextcloud/vue/dist/Components/NcContent.js'
-import NcAppNavigation from '@nextcloud/vue/dist/Components/NcAppNavigation.js'
-import NcAppNavigationItem from '@nextcloud/vue/dist/Components/NcAppNavigationItem.js'
-import NcAppContent from '@nextcloud/vue/dist/Components/NcAppContent.js'
-import NcButton from '@nextcloud/vue/dist/Components/NcButton.js'
-import NcTextField from '@nextcloud/vue/dist/Components/NcTextField.js'
-import NcSelect from '@nextcloud/vue/dist/Components/NcSelect.js'
-import NcLoadingIcon from '@nextcloud/vue/dist/Components/NcLoadingIcon.js'
-import NcNoteCard from '@nextcloud/vue/dist/Components/NcNoteCard.js'
-import NcEmptyContent from '@nextcloud/vue/dist/Components/NcEmptyContent.js'
-import NcCheckboxRadioSwitch from '@nextcloud/vue/dist/Components/NcCheckboxRadioSwitch.js'
+import NcContent from '@nextcloud/vue/components/NcContent'
+import NcAppNavigation from '@nextcloud/vue/components/NcAppNavigation'
+import NcAppNavigationItem from '@nextcloud/vue/components/NcAppNavigationItem'
+import NcAppContent from '@nextcloud/vue/components/NcAppContent'
+import NcButton from '@nextcloud/vue/components/NcButton'
+import NcTextField from '@nextcloud/vue/components/NcTextField'
+import NcSelect from '@nextcloud/vue/components/NcSelect'
+import NcLoadingIcon from '@nextcloud/vue/components/NcLoadingIcon'
+import NcNoteCard from '@nextcloud/vue/components/NcNoteCard'
+import NcEmptyContent from '@nextcloud/vue/components/NcEmptyContent'
+import NcCheckboxRadioSwitch from '@nextcloud/vue/components/NcCheckboxRadioSwitch'
 
 import Magnify from 'vue-material-design-icons/Magnify.vue'
 import ChartBox from 'vue-material-design-icons/ChartBox.vue'
@@ -505,7 +505,7 @@ export default {
 		// Check for URL parameters to open chunk viewer
 		this.handleUrlParameters()
 	},
-	beforeDestroy() {
+	beforeUnmount() {
 		// Clean up Plotly event handlers to prevent memory leaks
 		const plotDiv = document.getElementById('viz-plot')
 		if (plotDiv && plotDiv.on) {
@@ -648,7 +648,7 @@ export default {
 		},
 
 		toggleExcerpt(index) {
-			this.$set(this.expandedExcerpts, index, !this.expandedExcerpts[index])
+			this.expandedExcerpts[index] = !this.expandedExcerpts[index]
 		},
 
 		truncateExcerpt(text, maxLength = 150) {

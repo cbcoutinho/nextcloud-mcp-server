@@ -18,7 +18,7 @@
 import * as pdfjsLib from 'pdfjs-dist'
 import { generateUrl } from '@nextcloud/router'
 import { translate as t } from '@nextcloud/l10n'
-import NcLoadingIcon from '@nextcloud/vue/dist/Components/NcLoadingIcon.js'
+import NcLoadingIcon from '@nextcloud/vue/components/NcLoadingIcon'
 import AlertCircle from 'vue-material-design-icons/AlertCircle.vue'
 
 export default {

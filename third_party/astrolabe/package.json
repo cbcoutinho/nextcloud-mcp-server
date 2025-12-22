@@ -23,8 +23,8 @@
     "@nextcloud/router": "^3.0.1",
     "@nextcloud/vue": "^9.0.0",
     "markdown-it": "^14.1.0",
-    "plotly.js-dist-min": "^2.35.3",
     "pdfjs-dist": "^4.0.379",
+    "plotly.js-dist-min": "^2.35.3",
     "vue": "^3.0.0",
     "vue-material-design-icons": "^5.3.1"
   },
@@ -33,6 +33,7 @@
     "@nextcloud/eslint-config": "8.4.2",
     "@nextcloud/stylelint-config": "3.1.1",
     "@nextcloud/vite-config": "1.7.2",
+    "@vitejs/plugin-vue": "^6.0.3",
     "terser": "5.44.1",
     "vite": "7.2.7"
   }
