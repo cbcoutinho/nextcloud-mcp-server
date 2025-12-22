@@ -14,7 +14,7 @@
  */
 
 script('astrolabe', 'astrolabe-adminSettings');
-style('astrolabe', 'astrolabe-settings');
+style('astrolabe', 'astrolabe-adminSettings');
 ?>
 
 <div id="mcp-admin-settings" class="section">
@@ -22,98 +22,7 @@ style('astrolabe', 'astrolabe-settings');
 
 	<div class="mcp-settings-info">
 		<p><?php p($l->t('Monitor and configure the semantic search service for your Nextcloud instance.')); ?></p>
-	</div>
-
-	<!-- Configuration Status -->
-	<div class="mcp-status-card">
-		<h3><?php p($l->t('Configuration')); ?></h3>
-		<table class="mcp-info-table">
-			<tr>
-				<td><strong><?php p($l->t('Service URL')); ?></strong></td>
-				<td>
-					<?php if (!empty($_['serverUrl'])): ?>
-						<code><?php p($_['serverUrl']); ?></code>
-					<?php else: ?>
-						<span class="error"><?php p($l->t('Not configured')); ?></span>
-					<?php endif; ?>
-				</td>
-			</tr>
-			<tr>
-				<td><strong><?php p($l->t('API Key')); ?></strong></td>
-				<td>
-					<?php if ($_['apiKeyConfigured']): ?>
-						<span class="badge badge-success">
-							<span class="icon icon-checkmark-white"></span>
-							<?php p($l->t('Configured')); ?>
-						</span>
-					<?php else: ?>
-						<span class="badge badge-warning">
-							<span class="icon icon-alert"></span>
-							<?php p($l->t('Not configured')); ?>
-						</span>
-					<?php endif; ?>
-				</td>
-			</tr>
-			<tr>
-				<td><strong><?php p($l->t('OAuth Client ID')); ?></strong></td>
-				<td>
-					<?php if ($_['clientIdConfigured']): ?>
-						<span class="badge badge-success">
-							<span class="icon icon-checkmark-white"></span>
-							<?php p($l->t('Configured')); ?>
-						</span>
-					<?php else: ?>
-						<span class="badge badge-warning">
-							<span class="icon icon-alert"></span>
-							<?php p($l->t('Not configured - OAuth will not work')); ?>
-						</span>
-					<?php endif; ?>
-				</td>
-			</tr>
-			<tr>
-				<td><strong><?php p($l->t('OAuth Client Secret')); ?></strong></td>
-				<td>
-					<?php if ($_['clientSecretConfigured']): ?>
-						<span class="badge badge-success">
-							<span class="icon icon-checkmark-white"></span>
-							<?php p($l->t('Configured')); ?>
-						</span>
-					<?php else: ?>
-						<span class="badge badge-info">
-							<?php p($l->t('Optional - Uses PKCE fallback')); ?>
-						</span>
-					<?php endif; ?>
-				</td>
-			</tr>
-		</table>
-
-		<?php if (empty($_['serverUrl']) || !$_['apiKeyConfigured'] || !$_['clientIdConfigured']): ?>
-			<div class="notecard notecard-warning">
-				<p><strong><?php p($l->t('Configuration Required')); ?></strong></p>
-				<p><?php p($l->t('Add the following to your config.php:')); ?></p>
-				<pre><code>'mcp_server_url' => 'http://localhost:8000',
-'mcp_server_api_key' => 'your-secret-api-key',
-'astrolabe_client_id' => 'your-oauth-client-id',</code></pre>
-				<p class="mcp-help-text">
-					<a href="https://github.com/cbcoutinho/nextcloud-mcp-server" target="_blank">
-						<?php p($l->t('See documentation for details')); ?>
-					</a>
-				</p>
-			</div>
-		<?php endif; ?>
-
-		<?php if (!$_['clientSecretConfigured']): ?>
-			<div class="notecard notecard-info">
-				<p><strong><?php p($l->t('Optional: Confidential OAuth Client')); ?></strong></p>
-				<p><?php p($l->t('To use refresh tokens for long-lived sessions, generate a client secret:')); ?></p>
-				<pre><code>openssl rand -hex 32</code></pre>
-				<p><?php p($l->t('Then add it to your config.php:')); ?></p>
-				<pre><code>'astrolabe_client_secret' => 'your-generated-secret',</code></pre>
-				<p class="mcp-help-text">
-					<?php p($l->t('Without a client secret, the system will use PKCE (public client) authentication. Both methods work, but confidential clients provide better security for long-lived sessions.')); ?>
-				</p>
-			</div>
-		<?php endif; ?>
+		<p><?php p($l->t('Use the "MCP Server Configuration" section above to configure the connection settings.')); ?></p>
 	</div>
 
 	<!-- Service Status -->

@@ -163,6 +163,12 @@ def get_document_processor_config() -> dict[str, Any]:
 class Settings:
     """Application settings from environment variables."""
 
+    # Deployment mode (ADR-021: explicit mode selection)
+    # Optional: If not set, mode is auto-detected from other settings
+    # Valid values: single_user_basic, multi_user_basic, oauth_single_audience,
+    #               oauth_token_exchange, smithery
+    deployment_mode: Optional[str] = None
+
     # OAuth/OIDC settings
     oidc_discovery_url: Optional[str] = None
     oidc_client_id: Optional[str] = None
@@ -351,13 +357,131 @@ class Settings:
         return f"{deployment_id}-{model_name}"
 
 
+def _get_semantic_search_enabled() -> bool:
+    """Get semantic search enabled status, supporting both old and new variable names.
+
+    Supports:
+    - ENABLE_SEMANTIC_SEARCH (new, preferred)
+    - VECTOR_SYNC_ENABLED (old, deprecated)
+
+    Returns:
+        True if semantic search should be enabled
+    """
+    logger = logging.getLogger(__name__)
+
+    new_value = os.getenv("ENABLE_SEMANTIC_SEARCH", "").lower() == "true"
+    old_value = os.getenv("VECTOR_SYNC_ENABLED", "").lower() == "true"
+
+    if new_value and old_value:
+        logger.warning(
+            "Both ENABLE_SEMANTIC_SEARCH and VECTOR_SYNC_ENABLED are set. "
+            "Using ENABLE_SEMANTIC_SEARCH. "
+            "VECTOR_SYNC_ENABLED is deprecated and will be removed in v1.0.0."
+        )
+    elif old_value and not new_value:
+        logger.warning(
+            "VECTOR_SYNC_ENABLED is deprecated. "
+            "Please use ENABLE_SEMANTIC_SEARCH instead. "
+            "Support for VECTOR_SYNC_ENABLED will be removed in v1.0.0."
+        )
+
+    return new_value or old_value
+
+
+def _is_multi_user_mode() -> bool:
+    """Detect if this is a multi-user deployment mode.
+
+    Multi-user modes are:
+    - Multi-user BasicAuth (ENABLE_MULTI_USER_BASIC_AUTH=true)
+    - OAuth Single-Audience (no username/password set)
+    - OAuth Token Exchange (ENABLE_TOKEN_EXCHANGE=true)
+
+    Single-user modes are:
+    - Single-user BasicAuth (username and password both set)
+    - Smithery Stateless (SMITHERY_DEPLOYMENT=true)
+
+    Returns:
+        True if multi-user mode detected
+    """
+    # Smithery is always single-user (stateless)
+    if os.getenv("SMITHERY_DEPLOYMENT", "false").lower() == "true":
+        return False
+
+    # Multi-user BasicAuth explicitly enabled
+    if os.getenv("ENABLE_MULTI_USER_BASIC_AUTH", "false").lower() == "true":
+        return True
+
+    # Token exchange implies OAuth multi-user
+    if os.getenv("ENABLE_TOKEN_EXCHANGE", "false").lower() == "true":
+        return True
+
+    # If both username and password are set, it's single-user BasicAuth
+    has_username = bool(os.getenv("NEXTCLOUD_USERNAME"))
+    has_password = bool(os.getenv("NEXTCLOUD_PASSWORD"))
+    if has_username and has_password:
+        return False
+
+    # Otherwise, assume OAuth multi-user (default when no credentials provided)
+    return True
+
+
+def _get_background_operations_enabled() -> bool:
+    """Get background operations enabled status with auto-enablement for semantic search.
+
+    Supports:
+    - ENABLE_BACKGROUND_OPERATIONS (new, preferred)
+    - ENABLE_OFFLINE_ACCESS (old, deprecated)
+    - Auto-enabled if ENABLE_SEMANTIC_SEARCH=true in multi-user modes
+
+    Returns:
+        True if background operations should be enabled
+    """
+    logger = logging.getLogger(__name__)
+
+    # Check new and old variable names
+    explicit = os.getenv("ENABLE_BACKGROUND_OPERATIONS", "").lower() == "true"
+    legacy = os.getenv("ENABLE_OFFLINE_ACCESS", "").lower() == "true"
+
+    if explicit and legacy:
+        logger.warning(
+            "Both ENABLE_BACKGROUND_OPERATIONS and ENABLE_OFFLINE_ACCESS are set. "
+            "Using ENABLE_BACKGROUND_OPERATIONS. "
+            "ENABLE_OFFLINE_ACCESS is deprecated and will be removed in v1.0.0."
+        )
+    elif legacy and not explicit:
+        logger.warning(
+            "ENABLE_OFFLINE_ACCESS is deprecated. "
+            "Please use ENABLE_BACKGROUND_OPERATIONS instead. "
+            "Support for ENABLE_OFFLINE_ACCESS will be removed in v1.0.0."
+        )
+
+    # Auto-enable if semantic search is enabled in multi-user mode
+    semantic_search_enabled = _get_semantic_search_enabled()
+    is_multi_user = _is_multi_user_mode()
+    auto_enabled = semantic_search_enabled and is_multi_user
+
+    if auto_enabled and not (explicit or legacy):
+        logger.info(
+            "Automatically enabled background operations for semantic search in multi-user mode. "
+            "Set ENABLE_BACKGROUND_OPERATIONS=false to disable (this will also disable semantic search)."
+        )
+
+    return explicit or legacy or auto_enabled
+
+
 def get_settings() -> Settings:
     """Get application settings from environment variables.
 
     Returns:
         Settings object with configuration values
     """
+    # Get consolidated values with smart dependency resolution
+    enable_semantic_search = _get_semantic_search_enabled()
+    enable_background_operations = _get_background_operations_enabled()
+
     return Settings(
+        # Deployment mode (ADR-021)
+        deployment_mode=os.getenv("MCP_DEPLOYMENT_MODE"),
         # OAuth/OIDC settings
         oidc_discovery_url=os.getenv("OIDC_DISCOVERY_URL"),
         oidc_client_id=os.getenv("NEXTCLOUD_OIDC_CLIENT_ID"),
@@ -378,9 +502,7 @@ def get_settings() -> Settings:
         enable_token_exchange=(
             os.getenv("ENABLE_TOKEN_EXCHANGE", "false").lower() == "true"
         ),
-        enable_offline_access=(
-            os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() == "true"
-        ),
+        enable_offline_access=enable_background_operations,  # Smart dependency resolution
         # Multi-user BasicAuth pass-through mode
         enable_multi_user_basic_auth=(
             os.getenv("ENABLE_MULTI_USER_BASIC_AUTH", "false").lower() == "true"
@@ -391,9 +513,7 @@ def get_settings() -> Settings:
         token_encryption_key=os.getenv("TOKEN_ENCRYPTION_KEY"),
         token_storage_db=os.getenv("TOKEN_STORAGE_DB", "/tmp/tokens.db"),
         # Vector sync settings (ADR-007)
-        vector_sync_enabled=(
-            os.getenv("VECTOR_SYNC_ENABLED", "false").lower() == "true"
-        ),
+        vector_sync_enabled=enable_semantic_search,  # Smart dependency resolution
         vector_sync_scan_interval=int(os.getenv("VECTOR_SYNC_SCAN_INTERVAL", "300")),
         vector_sync_processor_workers=int(
             os.getenv("VECTOR_SYNC_PROCESSOR_WORKERS", "3")

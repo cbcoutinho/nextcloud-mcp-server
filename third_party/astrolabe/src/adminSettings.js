@@ -9,6 +9,7 @@
 
 import { generateUrl } from '@nextcloud/router'
 import axios from '@nextcloud/axios'
+import './styles/settings.css'
 
 document.addEventListener('DOMContentLoaded', () => {
 	// Initialize search settings form

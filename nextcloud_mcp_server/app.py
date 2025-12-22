@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import traceback
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
@@ -1065,6 +1066,75 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             "OpenTelemetry tracing disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)"
         )
 
+    # Initialize OAuth credentials for multi-user modes that need background operations
+    # This must happen BEFORE uvicorn starts (same lifecycle point as OAuth modes)
+    # to avoid async context issues
+    multi_user_basic_oauth_creds: tuple[str, str] | None = None
+
+    if (
+        mode == AuthMode.MULTI_USER_BASIC
+        and settings.vector_sync_enabled
+        and settings.enable_offline_access
+    ):
+        print(
+            f"DEBUG: Multi-user BasicAuth mode detected, vector_sync={settings.vector_sync_enabled}, offline_access={settings.enable_offline_access}"
+        )
+        logger.info(
+            "Multi-user BasicAuth with vector sync - checking for OAuth credentials"
+        )
+
+        # Check for static credentials first
+        static_client_id = os.getenv("NEXTCLOUD_OIDC_CLIENT_ID")
+        static_client_secret = os.getenv("NEXTCLOUD_OIDC_CLIENT_SECRET")
+
+        if static_client_id and static_client_secret:
+            print("DEBUG: Using static OAuth credentials")
+            logger.info("Using static OAuth credentials for background operations")
+            multi_user_basic_oauth_creds = (static_client_id, static_client_secret)
+        else:
+            # Perform DCR before uvicorn starts (same lifecycle as OAuth modes)
+            print("DEBUG: No static credentials, attempting DCR...")
+            logger.info(
+                "OAuth credentials not configured - attempting Dynamic Client Registration..."
+            )
+
+            import anyio
+
+            async def setup_multi_user_basic_dcr():
+                """Setup DCR for multi-user BasicAuth background operations."""
+                # Construct registration endpoint directly from nextcloud_host
+                # Standard RFC 7591 endpoint pattern for Nextcloud OIDC
+                # This avoids relying on discovery doc which may use public URLs unreachable from containers
+                registration_endpoint = f"{settings.nextcloud_host}/apps/oidc/register"
+                logger.info(
+                    f"Attempting Dynamic Client Registration at: {registration_endpoint}"
+                )
+
+                # Perform DCR
+                try:
+                    # Assert nextcloud_host is not None (required for multi-user mode)
+                    assert settings.nextcloud_host is not None, (
+                        "NEXTCLOUD_HOST is required"
+                    )
+
+                    client_id, client_secret = await load_oauth_client_credentials(
+                        nextcloud_host=settings.nextcloud_host,
+                        registration_endpoint=registration_endpoint,
+                    )
+                    logger.info(
+                        f"✓ Dynamic Client Registration successful for background operations "
+                        f"(client_id: {client_id[:16]}...)"
+                    )
+                    return (client_id, client_secret)
+                except Exception as e:
+                    logger.error(f"Dynamic Client Registration failed: {e}")
+                    logger.debug(f"Full traceback:\n{traceback.format_exc()}")
+                    logger.warning("Background vector sync will be disabled.")
+                    return None
+
+            # Run DCR synchronously before uvicorn starts
+            multi_user_basic_oauth_creds = anyio.run(setup_multi_user_basic_dcr)
+
     # Create MCP server based on detected mode
     if mode in (AuthMode.OAUTH_SINGLE_AUDIENCE, AuthMode.OAUTH_TOKEN_EXCHANGE):
         logger.info("Configuring MCP server for OAuth mode")
@@ -1328,19 +1398,66 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 f"OAuth context initialized for login routes (client_id={client_id[:16]}...)"
             )
         else:
-            # BasicAuth mode - share storage with browser_app for webhook management
+            # BasicAuth mode - initialize storage for webhook management
             from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
             basic_auth_storage = RefreshTokenStorage.from_env()
             await basic_auth_storage.initialize()
+            logger.info("Initialized refresh token storage for webhook management")
 
             app.state.storage = basic_auth_storage
+
+            # For multi-user BasicAuth with offline access, create oauth_context for management APIs
+            # This allows Astrolabe to use management APIs with OAuth bearer tokens
+            if settings.enable_multi_user_basic_auth and settings.enable_offline_access:
+                # Check if we have OAuth credentials from DCR
+                if multi_user_basic_oauth_creds:
+                    sync_client_id, sync_client_secret = multi_user_basic_oauth_creds
+
+                    # Create minimal oauth_context for management API authentication
+                    nextcloud_host_for_context = settings.nextcloud_host
+                    mcp_server_url = os.getenv(
+                        "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
+                    )
+                    discovery_url = os.getenv(
+                        "OIDC_DISCOVERY_URL",
+                        f"{nextcloud_host_for_context}/.well-known/openid-configuration",
+                    )
+
+                    oauth_context_dict = {
+                        "storage": basic_auth_storage,
+                        "oauth_client": None,  # Not needed for management APIs
+                        "token_verifier": None,  # Will be set when token broker is created
+                        "config": {
+                            "mcp_server_url": mcp_server_url,
+                            "discovery_url": discovery_url,
+                            "client_id": sync_client_id,
+                            "client_secret": sync_client_secret,
+                            "scopes": "",  # Background sync only
+                            "nextcloud_host": nextcloud_host_for_context,
+                            "nextcloud_resource_uri": nextcloud_host_for_context,
+                            "oauth_provider": "nextcloud",  # Always Nextcloud for multi-user BasicAuth
+                        },
+                    }
+                    app.state.oauth_context = oauth_context_dict
+                    logger.info(
+                        f"OAuth context initialized for management APIs (multi-user BasicAuth, client_id={sync_client_id[:16]}...)"
+                    )
 
             # Also share with browser_app for webhook routes
             for route in app.routes:
                 if isinstance(route, Mount) and route.path == "/app":
                     browser_app = cast(Starlette, route.app)
                     browser_app.state.storage = basic_auth_storage
+                    if (
+                        settings.enable_multi_user_basic_auth
+                        and settings.enable_offline_access
+                        and hasattr(app.state, "oauth_context")
+                    ):
+                        browser_app.state.oauth_context = app.state.oauth_context
+                        logger.info(
+                            "OAuth context shared with browser_app for management APIs"
+                        )
                     logger.info(
                         "Storage shared with browser_app for webhook management"
                     )
@@ -1351,12 +1468,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         import anyio as anyio_module
 
         # Re-use settings from outer scope (already validated)
-
-        # Check if vector sync is enabled and determine the mode
-        enable_offline_access_for_sync = os.getenv(
-            "ENABLE_OFFLINE_ACCESS", "false"
-        ).lower() in ("true", "1", "yes")
-        encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
+        # Note: enable_offline_access_for_sync, encryption_key, and refresh_token_storage
+        # are already defined in outer scope before mode split
 
         # Multi-user BasicAuth uses OAuth-style background sync (with app passwords)
         # So skip single-user BasicAuth vector sync if in multi-user mode
@@ -1465,9 +1578,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         elif (
             settings.vector_sync_enabled
             and (oauth_enabled or settings.enable_multi_user_basic_auth)
-            and enable_offline_access_for_sync
-            and refresh_token_storage
-            and encryption_key
+            and settings.enable_offline_access
         ):
             # OAuth mode with offline access - multi-user sync
             # Also used for multi-user BasicAuth mode (client auth is BasicAuth, background sync uses app passwords)
@@ -1491,137 +1602,167 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 f"{nextcloud_host_for_sync}/.well-known/openid-configuration",
             )
 
-            # Get client credentials from oauth_context (set by setup_oauth_config)
-            # This includes credentials from DCR if dynamic registration was used
-            # Use different variable names to avoid shadowing client_id/client_secret from outer scope
+            # Get client credentials - these were obtained before uvicorn started
+            # For OAuth modes: from setup_oauth_config()
+            # For multi-user BasicAuth: from setup_multi_user_basic_dcr()
             oauth_ctx = getattr(app.state, "oauth_context", {})
             oauth_config = oauth_ctx.get("config", {})
             sync_client_id = oauth_config.get("client_id")
             sync_client_secret = oauth_config.get("client_secret")
 
-            # For multi-user BasicAuth mode, get OIDC credentials from environment
+            # For multi-user BasicAuth mode, use pre-obtained credentials from outer scope
             if not sync_client_id or not sync_client_secret:
-                sync_client_id = settings.oidc_client_id
-                sync_client_secret = settings.oidc_client_secret
-
-            if not sync_client_id or not sync_client_secret:
-                logger.error(
-                    "Cannot start OAuth vector sync: client credentials not found in oauth_context"
-                )
-                raise ValueError("OAuth client credentials required for vector sync")
-
-            # Create token broker for background operations
-            # Note: storage handles encryption internally, no key needed here
-            # Client credentials are needed for token refresh operations
-            token_broker = TokenBrokerService(
-                storage=refresh_token_storage,
-                oidc_discovery_url=discovery_url,
-                nextcloud_host=nextcloud_host,
-                client_id=sync_client_id,
-                client_secret=sync_client_secret,
-            )
-
-            # Store token broker in oauth_context for management API (revoke endpoint)
-            if hasattr(app.state, "oauth_context"):
-                app.state.oauth_context["token_broker"] = token_broker
-                logger.info("Token broker added to oauth_context for management API")
-
-            # Initialize Qdrant collection before starting background tasks
-            logger.info("Initializing Qdrant collection...")
-            from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
-
-            try:
-                await get_qdrant_client()  # Triggers collection creation if needed
-                logger.info("Qdrant collection ready")
-            except Exception as e:
-                logger.error(f"Failed to initialize Qdrant collection: {e}")
-                raise RuntimeError(
-                    f"Cannot start vector sync - Qdrant initialization failed: {e}"
-                ) from e
-
-            # Initialize shared state
-            send_stream, receive_stream = anyio_module.create_memory_object_stream(
-                max_buffer_size=settings.vector_sync_queue_max_size
-            )
-            shutdown_event = anyio_module.Event()
-            scanner_wake_event = anyio_module.Event()
-
-            # User state tracking for user manager
-            user_states: dict = {}
-
-            # Store in app state for access from routes (ADR-007)
-            app.state.document_send_stream = send_stream
-            app.state.document_receive_stream = receive_stream
-            app.state.shutdown_event = shutdown_event
-            app.state.scanner_wake_event = scanner_wake_event
-
-            # Also store in module singleton for FastMCP session lifespans
-            _vector_sync_state.document_send_stream = send_stream
-            _vector_sync_state.document_receive_stream = receive_stream
-            _vector_sync_state.shutdown_event = shutdown_event
-            _vector_sync_state.scanner_wake_event = scanner_wake_event
-            logger.info("Vector sync state stored in module singleton")
-
-            # Also share with browser_app for /app route
-            for route in app.routes:
-                if isinstance(route, Mount) and route.path == "/app":
-                    browser_app = cast(Starlette, route.app)
-                    browser_app.state.document_send_stream = send_stream
-                    browser_app.state.document_receive_stream = receive_stream
-                    browser_app.state.shutdown_event = shutdown_event
-                    browser_app.state.scanner_wake_event = scanner_wake_event
-                    logger.info("Vector sync state shared with browser_app for /app")
-                    break
-
-            # Start background tasks using anyio TaskGroup
-            async with anyio_module.create_task_group() as tg:
-                # Start user manager task (supervises per-user scanners)
-                await tg.start(
-                    user_manager_task,
-                    send_stream,
-                    shutdown_event,
-                    scanner_wake_event,
-                    token_broker,
-                    refresh_token_storage,
-                    nextcloud_host,
-                    user_states,
-                    tg,
-                )
-
-                # Start processor pool (each gets a cloned receive stream)
-                for i in range(settings.vector_sync_processor_workers):
-                    await tg.start(
-                        oauth_processor_task,
-                        i,
-                        receive_stream.clone(),
-                        shutdown_event,
-                        token_broker,
-                        nextcloud_host,
+                if multi_user_basic_oauth_creds:
+                    sync_client_id, sync_client_secret = multi_user_basic_oauth_creds
+                    logger.info(
+                        "Using pre-obtained OAuth credentials for background sync"
+                    )
+                else:
+                    # No credentials available - DCR was attempted before uvicorn started but failed
+                    sync_client_id = None
+                    sync_client_secret = None
+                    logger.warning(
+                        "OAuth credentials not available for background sync "
+                        "(DCR was attempted during startup but failed)"
                     )
 
-                logger.info(
-                    f"Background sync tasks started: 1 user manager + "
-                    f"{settings.vector_sync_processor_workers} processors"
+            # Only start vector sync if credentials are available
+            if sync_client_id and sync_client_secret:
+                # Get storage - different for OAuth vs multi-user BasicAuth modes
+                # OAuth mode: refresh_token_storage (from setup_oauth_config)
+                # Multi-user BasicAuth: app.state.storage (basic_auth_storage)
+                token_storage = (
+                    refresh_token_storage if oauth_enabled else app.state.storage
                 )
 
-                # Run MCP session manager and yield
+                # Create token broker for background operations
+                # Note: storage handles encryption internally, no key needed here
+                # Client credentials are needed for token refresh operations
+                token_broker = TokenBrokerService(
+                    storage=token_storage,
+                    oidc_discovery_url=discovery_url,
+                    nextcloud_host=nextcloud_host_for_sync,
+                    client_id=sync_client_id,
+                    client_secret=sync_client_secret,
+                )
+
+                # Store token broker in oauth_context for management API (revoke endpoint)
+                if hasattr(app.state, "oauth_context"):
+                    app.state.oauth_context["token_broker"] = token_broker
+                    logger.info(
+                        "Token broker added to oauth_context for management API"
+                    )
+
+                # Initialize Qdrant collection before starting background tasks
+                logger.info("Initializing Qdrant collection...")
+                from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+                try:
+                    await get_qdrant_client()  # Triggers collection creation if needed
+                    logger.info("Qdrant collection ready")
+                except Exception as e:
+                    logger.error(f"Failed to initialize Qdrant collection: {e}")
+                    raise RuntimeError(
+                        f"Cannot start vector sync - Qdrant initialization failed: {e}"
+                    ) from e
+
+                # Initialize shared state
+                send_stream, receive_stream = anyio_module.create_memory_object_stream(
+                    max_buffer_size=settings.vector_sync_queue_max_size
+                )
+                shutdown_event = anyio_module.Event()
+                scanner_wake_event = anyio_module.Event()
+
+                # User state tracking for user manager
+                user_states: dict = {}
+
+                # Store in app state for access from routes (ADR-007)
+                app.state.document_send_stream = send_stream
+                app.state.document_receive_stream = receive_stream
+                app.state.shutdown_event = shutdown_event
+                app.state.scanner_wake_event = scanner_wake_event
+
+                # Also store in module singleton for FastMCP session lifespans
+                _vector_sync_state.document_send_stream = send_stream
+                _vector_sync_state.document_receive_stream = receive_stream
+                _vector_sync_state.shutdown_event = shutdown_event
+                _vector_sync_state.scanner_wake_event = scanner_wake_event
+                logger.info("Vector sync state stored in module singleton")
+
+                # Also share with browser_app for /app route
+                for route in app.routes:
+                    if isinstance(route, Mount) and route.path == "/app":
+                        browser_app = cast(Starlette, route.app)
+                        browser_app.state.document_send_stream = send_stream
+                        browser_app.state.document_receive_stream = receive_stream
+                        browser_app.state.shutdown_event = shutdown_event
+                        browser_app.state.scanner_wake_event = scanner_wake_event
+                        logger.info(
+                            "Vector sync state shared with browser_app for /app"
+                        )
+                        break
+
+                # Start background tasks using anyio TaskGroup
+                async with anyio_module.create_task_group() as tg:
+                    # Start user manager task (supervises per-user scanners)
+                    await tg.start(
+                        user_manager_task,
+                        send_stream,
+                        shutdown_event,
+                        scanner_wake_event,
+                        token_broker,
+                        token_storage,  # Use token_storage (works for both OAuth and multi-user BasicAuth)
+                        nextcloud_host_for_sync,
+                        user_states,
+                        tg,
+                    )
+
+                    # Start processor pool (each gets a cloned receive stream)
+                    for i in range(settings.vector_sync_processor_workers):
+                        await tg.start(
+                            oauth_processor_task,
+                            i,
+                            receive_stream.clone(),
+                            shutdown_event,
+                            token_broker,
+                            nextcloud_host_for_sync,
+                        )
+
+                    logger.info(
+                        f"Background sync tasks started: 1 user manager + "
+                        f"{settings.vector_sync_processor_workers} processors"
+                    )
+
+                    # Run MCP session manager and yield
+                    async with AsyncExitStack() as stack:
+                        await stack.enter_async_context(mcp.session_manager.run())
+                        try:
+                            yield
+                        finally:
+                            # Shutdown signal
+                            logger.info("Shutting down background sync tasks")
+                            shutdown_event.set()
+                            # Close token broker HTTP client
+                            if token_broker._http_client:
+                                await token_broker._http_client.aclose()
+                            # TaskGroup automatically cancels all tasks on exit
+            else:
+                # No OAuth credentials available for background sync
+                logger.warning(
+                    "Skipping background vector sync - OAuth credentials not available. "
+                    "Multi-user BasicAuth mode will run without semantic search background operations. "
+                    "To enable, set NEXTCLOUD_OIDC_CLIENT_ID and NEXTCLOUD_OIDC_CLIENT_SECRET."
+                )
+                # Just run MCP session manager without vector sync
                 async with AsyncExitStack() as stack:
                     await stack.enter_async_context(mcp.session_manager.run())
-                    try:
-                        yield
-                    finally:
-                        # Shutdown signal
-                        logger.info("Shutting down background sync tasks")
-                        shutdown_event.set()
-                        # Close token broker HTTP client
-                        if token_broker._http_client:
-                            await token_broker._http_client.aclose()
-                        # TaskGroup automatically cancels all tasks on exit
+                    yield
+
         else:
             # No vector sync - just run MCP session manager
             if settings.vector_sync_enabled:
                 # Log why vector sync is not starting
-                if oauth_enabled and not enable_offline_access_for_sync:
+                if oauth_enabled and not settings.enable_offline_access:
                     logger.warning(
                         "Vector sync enabled but ENABLE_OFFLINE_ACCESS=false - "
                         "vector sync requires offline access in OAuth mode"
@@ -1630,7 +1771,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     logger.warning(
                         "Vector sync enabled but refresh token storage not available"
                     )
-                elif oauth_enabled and not encryption_key:
+                elif oauth_enabled and not os.getenv("TOKEN_ENCRYPTION_KEY"):
                     logger.warning(
                         "Vector sync enabled but TOKEN_ENCRYPTION_KEY not set"
                     )
@@ -1693,12 +1834,20 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             is_ready = False
 
         # Check authentication configuration
-        if oauth_enabled:
-            # OAuth mode - just verify we got this far (token_verifier initialized in lifespan)
+        # Report the deployment mode, not just whether OAuth is enabled
+        # This helps clients (like Astrolabe) determine which auth flow to use
+        if (
+            mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+            or mode == AuthMode.OAUTH_TOKEN_EXCHANGE
+        ):
             checks["auth_mode"] = "oauth"
             checks["auth_configured"] = "ok"
-        else:
-            # BasicAuth mode - verify credentials are set
+        elif mode == AuthMode.MULTI_USER_BASIC:
+            checks["auth_mode"] = "multi_user_basic"
+            checks["auth_configured"] = "ok"
+            # Indicate if app passwords are supported (when offline_access enabled)
+            checks["supports_app_passwords"] = settings.enable_offline_access
+        elif mode == AuthMode.SINGLE_USER_BASIC:
             username = os.getenv("NEXTCLOUD_USERNAME")
             password = os.getenv("NEXTCLOUD_PASSWORD")
             if username and password:
@@ -1708,6 +1857,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 checks["auth_mode"] = "basic"
                 checks["auth_configured"] = "error: credentials not set"
                 is_ready = False
+        elif mode == AuthMode.SMITHERY_STATELESS:
+            checks["auth_mode"] = "smithery"
+            checks["auth_configured"] = "ok"
 
         # Check Qdrant status if using network mode (external Qdrant service)
         # In-memory and persistent modes use embedded Qdrant, no external service to check
@@ -1789,8 +1941,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     )
     logger.info("Test webhook endpoint enabled: /webhooks/nextcloud")
 
-    # Add management API endpoints for Nextcloud PHP app (OAuth mode only)
-    if oauth_enabled:
+    # Add management API endpoints for Nextcloud PHP app
+    # Available in: OAuth modes OR multi-user BasicAuth with offline access (for Astrolabe integration)
+    enable_management_apis = oauth_enabled or (
+        settings.enable_multi_user_basic_auth and settings.enable_offline_access
+    )
+    if enable_management_apis:
         from nextcloud_mcp_server.api.management import (
             create_webhook,
             delete_webhook,

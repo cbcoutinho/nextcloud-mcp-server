@@ -182,14 +182,23 @@ async def get_server_status(request: Request) -> JSONResponse:
     # Calculate uptime
     uptime_seconds = int(time.time() - _server_start_time)
 
-    # Determine auth mode
-    nextcloud_username = os.getenv("NEXTCLOUD_USERNAME")
-    nextcloud_password = os.getenv("NEXTCLOUD_PASSWORD")
+    # Determine auth mode using proper mode detection
+    from nextcloud_mcp_server.config_validators import AuthMode, detect_auth_mode
 
-    if nextcloud_username and nextcloud_password:
-        auth_mode = "basic"
-    else:
+    mode = detect_auth_mode(settings)
+
+    # Map deployment mode to auth_mode for API response
+    # This helps clients (like Astrolabe) determine which auth flow to use
+    if mode == AuthMode.OAUTH_SINGLE_AUDIENCE or mode == AuthMode.OAUTH_TOKEN_EXCHANGE:
         auth_mode = "oauth"
+    elif mode == AuthMode.MULTI_USER_BASIC:
+        auth_mode = "multi_user_basic"
+    elif mode == AuthMode.SINGLE_USER_BASIC:
+        auth_mode = "basic"
+    elif mode == AuthMode.SMITHERY_STATELESS:
+        auth_mode = "smithery"
+    else:
+        auth_mode = "unknown"
 
     response_data = {
         "version": __version__,
@@ -198,6 +207,10 @@ async def get_server_status(request: Request) -> JSONResponse:
         "uptime_seconds": uptime_seconds,
         "management_api_version": "1.0",
     }
+
+    # Add app password support indicator for multi-user BasicAuth mode
+    if mode == AuthMode.MULTI_USER_BASIC:
+        response_data["supports_app_passwords"] = settings.enable_offline_access
 
     # Include OIDC configuration if in OAuth mode
     if auth_mode == "oauth":

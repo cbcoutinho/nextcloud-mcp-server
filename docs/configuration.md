@@ -2,31 +2,91 @@
 
 The Nextcloud MCP server requires configuration to connect to your Nextcloud instance. Configuration is provided through environment variables, typically stored in a `.env` file.
 
+> **Note:** Configuration was significantly simplified in v0.58.0. If you're upgrading from v0.57.x, see the [Configuration Migration Guide](configuration-migration-v2.md).
+
 ## Quick Start
 
-Create a `.env` file based on `env.sample`:
+We provide mode-specific configuration templates for quick setup:
 
 ```bash
+# Choose a template based on your deployment mode:
+cp env.sample.single-user .env         # Simplest - one user, local dev
+cp env.sample.oauth-multi-user .env    # Recommended - multi-user OAuth
+cp env.sample.oauth-advanced .env      # Advanced - token exchange mode
+
+# Or start from the full example:
 cp env.sample .env
+
 # Edit .env with your Nextcloud details
 ```
 
-Then choose your authentication mode:
+Then choose your deployment mode:
 
-- [OAuth2/OIDC Configuration](#oauth2oidc-configuration) (Recommended)
-- [Basic Authentication Configuration](#basic-authentication-legacy)
+- [Single-User BasicAuth](#single-user-basicauth-mode) - Simplest for personal instances
+- [Multi-User OAuth](#multi-user-oauth-modes) - Recommended for production
+- [Deployment Mode Selection](#deployment-mode-selection) - Explicit mode declaration
 
 ---
 
-## OAuth2/OIDC Configuration
+## Deployment Mode Selection
 
-OAuth2/OIDC is the recommended authentication mode for production deployments.
+**New in v0.58.0:** You can explicitly declare your deployment mode to remove ambiguity and catch configuration errors early.
+
+```dotenv
+# Optional but recommended
+MCP_DEPLOYMENT_MODE=oauth_single_audience
+```
+
+**Valid values:**
+- `single_user_basic` - Single-user with username/password
+- `multi_user_basic` - Multi-user with BasicAuth pass-through
+- `oauth_single_audience` - Multi-user OAuth (recommended)
+- `oauth_token_exchange` - Multi-user OAuth with token exchange
+- `smithery` - Smithery platform deployment
+
+**Benefits:**
+- ✅ Clear which mode is active
+- ✅ Better validation error messages
+- ✅ Self-documenting configuration
+- ✅ Catches configuration mistakes early
+
+**Auto-detection:** If `MCP_DEPLOYMENT_MODE` is not set, the server auto-detects the mode based on other settings (existing behavior).
+
+See [Authentication Modes](authentication.md) for detailed comparison of deployment modes.
+
+---
+
+## Single-User BasicAuth Mode
+
+BasicAuth with a single user is the simplest deployment mode. Use for personal instances, local development, and testing.
+
+```dotenv
+# Minimal single-user configuration
+NEXTCLOUD_HOST=http://localhost:8080
+NEXTCLOUD_USERNAME=admin
+NEXTCLOUD_PASSWORD=password
+
+# Optional: Explicit mode declaration
+MCP_DEPLOYMENT_MODE=single_user_basic
+```
+
+> [!WARNING]
+> **Security Notice:** BasicAuth stores credentials in environment variables and is less secure than OAuth. Use OAuth for production multi-user deployments.
+
+---
+
+## Multi-User OAuth Modes
+
+OAuth2/OIDC is the recommended authentication mode for production multi-user deployments.
 
 ### Minimal Configuration (Auto-registration)
 
 ```dotenv
 # .env file for OAuth with auto-registration
 NEXTCLOUD_HOST=https://your.nextcloud.instance.com
+
+# Optional: Explicit mode declaration (recommended)
+MCP_DEPLOYMENT_MODE=oauth_single_audience
 
 # Leave these EMPTY for OAuth mode
 NEXTCLOUD_USERNAME=
@@ -40,6 +100,9 @@ This minimal configuration uses dynamic client registration to automatically reg
 ```dotenv
 # .env file for OAuth with pre-configured client
 NEXTCLOUD_HOST=https://your.nextcloud.instance.com
+
+# Optional: Explicit mode declaration (recommended)
+MCP_DEPLOYMENT_MODE=oauth_single_audience
 
 # OAuth Client Credentials (optional - auto-registers if not provided)
 NEXTCLOUD_OIDC_CLIENT_ID=your-client-id
@@ -110,7 +173,49 @@ NEXTCLOUD_PASSWORD=your_app_password_or_password
 
 ## Semantic Search Configuration (Optional)
 
+**New in v0.58.0:** Simplified semantic search configuration with automatic dependency resolution.
+
 The MCP server includes semantic search capabilities powered by vector embeddings. This feature requires a vector database (Qdrant) and an embedding service.
+
+### Quick Start
+
+**Single-User Mode:**
+```dotenv
+NEXTCLOUD_HOST=http://localhost:8080
+NEXTCLOUD_USERNAME=admin
+NEXTCLOUD_PASSWORD=password
+
+# Enable semantic search
+ENABLE_SEMANTIC_SEARCH=true
+
+# Vector database
+QDRANT_LOCATION=:memory:
+
+# Embedding provider
+OLLAMA_BASE_URL=http://ollama:11434
+```
+
+**Multi-User OAuth Mode:**
+```dotenv
+NEXTCLOUD_HOST=https://nextcloud.example.com
+MCP_DEPLOYMENT_MODE=oauth_single_audience
+
+# Enable semantic search
+# In multi-user modes, this AUTOMATICALLY enables background operations!
+ENABLE_SEMANTIC_SEARCH=true
+
+# Required for background operations (auto-enabled by semantic search)
+TOKEN_ENCRYPTION_KEY=your-key-here
+TOKEN_STORAGE_DB=/app/data/tokens.db
+
+# Vector database
+QDRANT_URL=http://qdrant:6333
+
+# Embedding provider
+OLLAMA_BASE_URL=http://ollama:11434
+```
+
+> **Note:** In multi-user modes (OAuth, Multi-User BasicAuth), enabling `ENABLE_SEMANTIC_SEARCH` automatically enables background operations and refresh token storage. You don't need to set `ENABLE_BACKGROUND_OPERATIONS` separately!
 
 ### Qdrant Vector Database Modes
 
@@ -126,7 +231,7 @@ No configuration needed! If neither `QDRANT_URL` nor `QDRANT_LOCATION` is set, t
 
 ```dotenv
 # No Qdrant configuration needed - defaults to :memory:
-VECTOR_SYNC_ENABLED=true
+ENABLE_SEMANTIC_SEARCH=true
 ```
 
 **Pros:**
@@ -145,7 +250,7 @@ For single-instance deployments that need persistence without a separate Qdrant 
 ```dotenv
 # Local persistent storage
 QDRANT_LOCATION=/app/data/qdrant  # Or any writable path
-VECTOR_SYNC_ENABLED=true
+ENABLE_SEMANTIC_SEARCH=true
 ```
 
 **Pros:**
@@ -166,7 +271,7 @@ For production deployments with a dedicated Qdrant service:
 QDRANT_URL=http://qdrant:6333
 QDRANT_API_KEY=your-secret-api-key  # Optional
 QDRANT_COLLECTION=nextcloud_content  # Optional
-VECTOR_SYNC_ENABLED=true
+ENABLE_SEMANTIC_SEARCH=true
 ```
 
 **Pros:**
@@ -283,13 +388,15 @@ Solutions:
 - Data corruption in Qdrant
 - Confusing error messages during indexing
 
-### Vector Sync Configuration
+### Background Indexing Configuration
 
 Control background indexing behavior:
 
 ```dotenv
-# Vector sync settings (ADR-007)
-VECTOR_SYNC_ENABLED=true              # Enable background indexing
+# Semantic search (ADR-007, ADR-021)
+ENABLE_SEMANTIC_SEARCH=true           # Enable background indexing
+
+# Tuning parameters (advanced - only modify if needed)
 VECTOR_SYNC_SCAN_INTERVAL=300         # Scan interval in seconds (default: 5 minutes)
 VECTOR_SYNC_PROCESSOR_WORKERS=3       # Concurrent indexing workers (default: 3)
 VECTOR_SYNC_QUEUE_MAX_SIZE=10000      # Max queued documents (default: 10000)
@@ -298,6 +405,8 @@ VECTOR_SYNC_QUEUE_MAX_SIZE=10000      # Max queued documents (default: 10000)
 DOCUMENT_CHUNK_SIZE=512               # Words per chunk (default: 512)
 DOCUMENT_CHUNK_OVERLAP=50             # Overlapping words between chunks (default: 50)
 ```
+
+> **Note:** The `VECTOR_SYNC_*` tuning parameters keep their names as they're implementation details. Only the user-facing feature flag was renamed to `ENABLE_SEMANTIC_SEARCH`.
 
 ### Embedding Service Configuration
 
@@ -369,11 +478,11 @@ DOCUMENT_CHUNK_OVERLAP=100
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
+| `ENABLE_SEMANTIC_SEARCH` | ⚠️ Optional | `false` | Enable semantic search with background indexing (replaces `VECTOR_SYNC_ENABLED`) |
 | `QDRANT_URL` | ⚠️ Optional | - | Qdrant service URL (network mode) - mutually exclusive with `QDRANT_LOCATION` |
 | `QDRANT_LOCATION` | ⚠️ Optional | `:memory:` | Local Qdrant path (`:memory:` or `/path/to/data`) - mutually exclusive with `QDRANT_URL` |
 | `QDRANT_API_KEY` | ⚠️ Optional | - | Qdrant API key (network mode only) |
-| `QDRANT_COLLECTION` | ⚠️ Optional | `nextcloud_content` | Qdrant collection name |
-| `VECTOR_SYNC_ENABLED` | ⚠️ Optional | `false` | Enable background vector indexing |
+| `QDRANT_COLLECTION` | ⚠️ Optional | Auto-generated | Qdrant collection name |
 | `VECTOR_SYNC_SCAN_INTERVAL` | ⚠️ Optional | `300` | Document scan interval (seconds) |
 | `VECTOR_SYNC_PROCESSOR_WORKERS` | ⚠️ Optional | `3` | Concurrent indexing workers |
 | `VECTOR_SYNC_QUEUE_MAX_SIZE` | ⚠️ Optional | `10000` | Max queued documents |
@@ -382,6 +491,9 @@ DOCUMENT_CHUNK_OVERLAP=100
 | `OLLAMA_VERIFY_SSL` | ⚠️ Optional | `true` | Verify SSL certificates |
 | `DOCUMENT_CHUNK_SIZE` | ⚠️ Optional | `512` | Words per chunk for document embedding |
 | `DOCUMENT_CHUNK_OVERLAP` | ⚠️ Optional | `50` | Overlapping words between chunks (must be < chunk size) |
+
+**Deprecated variables (still functional):**
+- `VECTOR_SYNC_ENABLED` - Use `ENABLE_SEMANTIC_SEARCH` instead (will be removed in v1.0.0)
 
 ### Docker Compose Example
 
@@ -392,7 +504,7 @@ services:
   mcp:
     environment:
       - QDRANT_URL=http://qdrant:6333
-      - VECTOR_SYNC_ENABLED=true
+      - ENABLE_SEMANTIC_SEARCH=true
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -545,6 +657,7 @@ uv run nextcloud-mcp-server --no-oauth \
 
 ## See Also
 
+- [Configuration Migration Guide v2](configuration-migration-v2.md) - **New in v0.58.0:** Migrate from old variable names
 - [OAuth Quick Start](quickstart-oauth.md) - 5-minute OAuth setup for development
 - [OAuth Setup Guide](oauth-setup.md) - Detailed OAuth configuration for production
 - [OAuth Architecture](oauth-architecture.md) - How OAuth works in the MCP server
@@ -553,3 +666,4 @@ uv run nextcloud-mcp-server --no-oauth \
 - [Running the Server](running.md) - Starting the server with different configurations
 - [Troubleshooting](troubleshooting.md) - Common configuration issues
 - [OAuth Troubleshooting](oauth-troubleshooting.md) - OAuth-specific troubleshooting
+- [ADR-021](ADR-021-configuration-consolidation.md) - Configuration consolidation architecture decision

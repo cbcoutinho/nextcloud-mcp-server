@@ -105,15 +105,13 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
         ],
         conditional={
             "enable_offline_access": [
-                "oidc_client_id",
-                "oidc_client_secret",
+                # OAuth credentials validated separately (lines 397-406) with clearer error message
                 "token_encryption_key",
                 "token_storage_db",
             ],
-            "vector_sync_enabled": [
-                # Requires offline access for background sync
-                "enable_offline_access",
-            ],
+            # Note: vector_sync_enabled (now ENABLE_SEMANTIC_SEARCH) automatically
+            # enables background operations in multi-user modes. No explicit
+            # enable_offline_access setting required.
         },
         description="Multi-user deployment with BasicAuth pass-through. "
         "Users provide credentials in request headers. "
@@ -152,9 +150,9 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
                 "token_encryption_key",
                 "token_storage_db",
             ],
-            "vector_sync_enabled": [
-                "enable_offline_access",  # Background sync requires refresh tokens
-            ],
+            # Note: vector_sync_enabled (now ENABLE_SEMANTIC_SEARCH) automatically
+            # enables background operations in multi-user modes. No explicit
+            # enable_offline_access setting required.
         },
         description="OAuth multi-user deployment with single-audience tokens. "
         "Tokens work for both MCP server and Nextcloud APIs (pass-through). "
@@ -192,9 +190,9 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
                 "token_encryption_key",
                 "token_storage_db",
             ],
-            "vector_sync_enabled": [
-                "enable_offline_access",
-            ],
+            # Note: vector_sync_enabled (now ENABLE_SEMANTIC_SEARCH) automatically
+            # enables background operations in multi-user modes. No explicit
+            # enable_offline_access setting required.
         },
         description="OAuth multi-user deployment with token exchange (RFC 8693). "
         "MCP tokens are separate from Nextcloud tokens. "
@@ -225,7 +223,8 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
 def detect_auth_mode(settings: Settings) -> AuthMode:
     """Detect authentication mode from configuration.
 
-    Mode detection priority (most specific to most general):
+    Mode detection priority (ADR-021):
+    0. Explicit MCP_DEPLOYMENT_MODE (if set) - NEW in ADR-021
     1. Smithery (explicit flag)
     2. Token exchange (most specific OAuth mode)
     3. Multi-user BasicAuth
@@ -237,12 +236,43 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
 
     Returns:
         Detected AuthMode
+
+    Raises:
+        ValueError: If explicit deployment_mode is invalid or conflicts with detected mode
     """
+    import logging
+    import os
+
+    logger = logging.getLogger(__name__)
+
+    # ADR-021: Check for explicit deployment mode first
+    if settings.deployment_mode:
+        mode_str = settings.deployment_mode.lower().strip()
+
+        # Map string to AuthMode enum
+        mode_map = {
+            "single_user_basic": AuthMode.SINGLE_USER_BASIC,
+            "multi_user_basic": AuthMode.MULTI_USER_BASIC,
+            "oauth_single_audience": AuthMode.OAUTH_SINGLE_AUDIENCE,
+            "oauth_token_exchange": AuthMode.OAUTH_TOKEN_EXCHANGE,
+            "smithery": AuthMode.SMITHERY_STATELESS,
+        }
+
+        if mode_str not in mode_map:
+            valid_modes = ", ".join(mode_map.keys())
+            raise ValueError(
+                f"Invalid MCP_DEPLOYMENT_MODE: '{settings.deployment_mode}'. "
+                f"Valid values: {valid_modes}"
+            )
+
+        explicit_mode = mode_map[mode_str]
+        logger.info(f"Using explicit deployment mode: {explicit_mode.value}")
+        return explicit_mode
+
+    # Auto-detection (existing behavior)
     # Check for Smithery mode (explicit environment variable)
     # Note: This checks the environment directly, not settings
     # because Smithery mode has no settings-based config
-    import os
-
     if os.getenv("SMITHERY_DEPLOYMENT", "false").lower() == "true":
         return AuthMode.SMITHERY_STATELESS
 
@@ -364,22 +394,20 @@ def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
             )
 
     if mode == AuthMode.MULTI_USER_BASIC:
-        # Validate that if offline access enabled, we have OAuth credentials
+        # If background operations enabled, check for OAuth credentials (for app password retrieval)
+        # Allow DCR as fallback, just like OAuth modes
         if settings.enable_offline_access:
             if not settings.oidc_client_id or not settings.oidc_client_secret:
-                errors.append(
-                    f"[{mode.value}] NEXTCLOUD_OIDC_CLIENT_ID and "
-                    "NEXTCLOUD_OIDC_CLIENT_SECRET are required when "
-                    "ENABLE_OFFLINE_ACCESS is enabled (for app password retrieval)"
+                logger.info(
+                    f"[{mode.value}] OAuth credentials not configured. "
+                    "Will attempt Dynamic Client Registration (DCR) at startup "
+                    "(required for app password retrieval via Astrolabe)."
                 )
 
-        # Validate vector sync requirements
-        if settings.vector_sync_enabled and not settings.enable_offline_access:
-            errors.append(
-                f"[{mode.value}] ENABLE_OFFLINE_ACCESS must be enabled when "
-                "VECTOR_SYNC_ENABLED is true (background sync requires "
-                "app passwords or refresh tokens)"
-            )
+        # Note: Vector sync no longer requires explicit ENABLE_OFFLINE_ACCESS setting
+        # ENABLE_SEMANTIC_SEARCH (formerly VECTOR_SYNC_ENABLED) automatically enables
+        # background operations in multi-user modes via smart dependency resolution
+        # in config.py
 
     # Note: Embedding provider validation removed - Simple provider is always
     # available as fallback (ADR-015). Users can optionally configure Ollama or OpenAI

@@ -127,7 +127,7 @@ This enables natural language queries and helps discover related content across 
 
 > [!NOTE]
 > **Semantic Search is experimental and opt-in:**
-> - Disabled by default (`VECTOR_SYNC_ENABLED=false`)
+> - Disabled by default (`ENABLE_SEMANTIC_SEARCH=false`)
 > - Currently supports Notes app only (multi-app support planned)
 > - Requires additional infrastructure: vector database + embedding service
 > - Answer generation (`nc_semantic_search_answer`) requires MCP client sampling support
