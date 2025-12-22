@@ -18,7 +18,8 @@ ignored_tag_formats = [
 ]
 
 # Filter commits by scope
+# Includes helm-scoped commits AND MCP server version bumps (which update appVersion)
 [tool.commitizen.customize]
-changelog_pattern = "^(feat|fix|docs|refactor|perf|test|build|ci|chore)\\(helm\\)(!)?:"
+changelog_pattern = "^((feat|fix|docs|refactor|perf|test|build|ci|chore)\\(helm\\)(!)?:|bump: version.*→.*)"
 schema_pattern = "^(feat|fix|docs|refactor|perf|test|build|ci|chore)\\(helm\\)(!)?:\\s.+"
 message_template = "{{change_type}}(helm): {{message}}"
