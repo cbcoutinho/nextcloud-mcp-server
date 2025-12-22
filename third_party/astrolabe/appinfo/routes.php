@@ -34,6 +34,28 @@ return [
 			'verb' => 'POST',
 		],
 
+		// Background sync credentials routes
+		[
+			'name' => 'credentials#storeAppPassword',
+			'url' => '/api/v1/background-sync/credentials',
+			'verb' => 'POST',
+		],
+		[
+			'name' => 'credentials#getCredentials',
+			'url' => '/api/v1/background-sync/credentials/{userId}',
+			'verb' => 'GET',
+		],
+		[
+			'name' => 'credentials#deleteCredentials',
+			'url' => '/api/v1/background-sync/credentials',
+			'verb' => 'DELETE',
+		],
+		[
+			'name' => 'credentials#getStatus',
+			'url' => '/api/v1/background-sync/status',
+			'verb' => 'GET',
+		],
+
 		// Vector search API routes
 		[
 			'name' => 'api#search',

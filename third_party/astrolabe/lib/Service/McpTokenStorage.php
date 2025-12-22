@@ -202,4 +202,176 @@ class McpTokenStorage {
 
 		return $token['access_token'];
 	}
+
+	/**
+	 * Store app password for background sync.
+	 *
+	 * App passwords are encrypted before storage and used as an alternative
+	 * to OAuth refresh tokens for background sync operations.
+	 *
+	 * @param string $userId User ID
+	 * @param string $appPassword Nextcloud app password
+	 */
+	public function storeBackgroundSyncPassword(
+		string $userId,
+		string $appPassword,
+	): void {
+		try {
+			// Encrypt app password before storage
+			$encrypted = $this->crypto->encrypt($appPassword);
+
+			// Store in user preferences
+			$this->config->setUserValue(
+				$userId,
+				'astrolabe',
+				'background_sync_password',
+				$encrypted
+			);
+
+			// Mark credential type
+			$this->config->setUserValue(
+				$userId,
+				'astrolabe',
+				'background_sync_type',
+				'app_password'
+			);
+
+			// Store provisioned timestamp
+			$this->config->setUserValue(
+				$userId,
+				'astrolabe',
+				'background_sync_provisioned_at',
+				(string)time()
+			);
+
+			$this->logger->info("Stored background sync app password for user: $userId");
+		} catch (\Exception $e) {
+			$this->logger->error("Failed to store app password for user $userId", [
+				'error' => $e->getMessage()
+			]);
+			throw $e;
+		}
+	}
+
+	/**
+	 * Get app password for background sync.
+	 *
+	 * @param string $userId User ID
+	 * @return string|null Decrypted app password, or null if not set
+	 */
+	public function getBackgroundSyncPassword(string $userId): ?string {
+		try {
+			$encrypted = $this->config->getUserValue(
+				$userId,
+				'astrolabe',
+				'background_sync_password',
+				''
+			);
+
+			if (empty($encrypted)) {
+				return null;
+			}
+
+			// Decrypt app password
+			return $this->crypto->decrypt($encrypted);
+		} catch (\Exception $e) {
+			$this->logger->error("Failed to retrieve app password for user $userId", [
+				'error' => $e->getMessage()
+			]);
+			return null;
+		}
+	}
+
+	/**
+	 * Delete background sync app password for a user.
+	 *
+	 * @param string $userId User ID
+	 */
+	public function deleteBackgroundSyncPassword(string $userId): void {
+		try {
+			$this->config->deleteUserValue(
+				$userId,
+				'astrolabe',
+				'background_sync_password'
+			);
+
+			$this->config->deleteUserValue(
+				$userId,
+				'astrolabe',
+				'background_sync_type'
+			);
+
+			$this->config->deleteUserValue(
+				$userId,
+				'astrolabe',
+				'background_sync_provisioned_at'
+			);
+
+			$this->logger->info("Deleted background sync app password for user: $userId");
+		} catch (\Exception $e) {
+			$this->logger->error("Failed to delete app password for user $userId", [
+				'error' => $e->getMessage()
+			]);
+			throw $e;
+		}
+	}
+
+	/**
+	 * Check if user has provisioned background sync access.
+	 *
+	 * Returns true if either OAuth tokens or app password is configured.
+	 *
+	 * @param string $userId User ID
+	 * @return bool True if background sync is provisioned
+	 */
+	public function hasBackgroundSyncAccess(string $userId): bool {
+		// Check for OAuth tokens
+		$oauthToken = $this->getUserToken($userId);
+		if ($oauthToken !== null) {
+			return true;
+		}
+
+		// Check for app password
+		$appPassword = $this->getBackgroundSyncPassword($userId);
+		return $appPassword !== null;
+	}
+
+	/**
+	 * Get background sync credential type for a user.
+	 *
+	 * @param string $userId User ID
+	 * @return string|null 'oauth' or 'app_password', or null if not provisioned
+	 */
+	public function getBackgroundSyncType(string $userId): ?string {
+		$type = $this->config->getUserValue(
+			$userId,
+			'astrolabe',
+			'background_sync_type',
+			''
+		);
+
+		// Fallback to OAuth if tokens exist but type not set
+		if (empty($type) && $this->getUserToken($userId) !== null) {
+			return 'oauth';
+		}
+
+		return empty($type) ? null : $type;
+	}
+
+	/**
+	 * Get background sync provisioned timestamp for a user.
+	 *
+	 * @param string $userId User ID
+	 * @return int|null Unix timestamp, or null if not provisioned
+	 */
+	public function getBackgroundSyncProvisionedAt(string $userId): ?int {
+		$timestamp = $this->config->getUserValue(
+			$userId,
+			'astrolabe',
+			'background_sync_provisioned_at',
+			''
+		);
+
+		return empty($timestamp) ? null : (int)$timestamp;
+	}
 }

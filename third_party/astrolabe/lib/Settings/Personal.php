@@ -55,11 +55,87 @@ class Personal implements ISettings {
 
 		$userId = $user->getUID();
 
+		// Fetch server status to determine auth mode
+		$serverStatus = $this->client->getStatus();
+
+		// Check for server connection error
+		if (isset($serverStatus['error'])) {
+			return new TemplateResponse(
+				Application::APP_ID,
+				'settings/error',
+				[
+					'error' => 'Cannot connect to MCP server',
+					'details' => $serverStatus['error'],
+					'server_url' => $this->client->getPublicServerUrl(),
+				],
+				TemplateResponse::RENDER_AS_BLANK
+			);
+		}
+
+		// Get auth mode from server (defaults to oauth if not specified)
+		$authMode = $serverStatus['auth_mode'] ?? 'oauth';
+		$supportsAppPasswords = $serverStatus['supports_app_passwords'] ?? false;
+
 		// Check if user has MCP OAuth token
 		$token = $this->tokenStorage->getUserToken($userId);
 
-		// If no token or token is expired, show OAuth authorization UI
-		if (!$token || $this->tokenStorage->isExpired($token)) {
+		// For multi_user_basic mode with app password support, check if user has app password
+		if ($authMode === 'multi_user_basic' && $supportsAppPasswords) {
+			// Check if user has already provided an app password
+			$hasBackgroundAccess = $this->tokenStorage->hasBackgroundSyncAccess($userId);
+
+			if (!$hasBackgroundAccess) {
+				// No app password yet - show app password entry form
+				return new TemplateResponse(
+					Application::APP_ID,
+					'settings/personal',
+					[
+						'serverUrl' => $this->client->getPublicServerUrl(), // Changed from server_url to serverUrl
+						'serverStatus' => $serverStatus,
+						'auth_mode' => $authMode,
+						'authMode' => $authMode, // Add camelCase version for template
+						'supports_app_passwords' => $supportsAppPasswords,
+						'supportsAppPasswords' => $supportsAppPasswords, // Add camelCase version
+						'session' => null, // No session yet
+						'hasBackgroundAccess' => false, // FIXED: Add missing parameter
+						'backgroundAccessGranted' => false, // FIXED: Add missing parameter
+						'vectorSyncEnabled' => $serverStatus['vector_sync_enabled'] ?? false,
+						'hasToken' => false, // No OAuth token in multi_user_basic mode
+						'requesttoken' => \OCP\Util::callRegister(),
+					],
+					TemplateResponse::RENDER_AS_BLANK
+				);
+			} else {
+				// User has app password - show active status
+				$backgroundSyncType = $this->tokenStorage->getBackgroundSyncType($userId);
+				$backgroundSyncProvisionedAt = $this->tokenStorage->getBackgroundSyncProvisionedAt($userId);
+
+				$parameters = [
+					'userId' => $userId,
+					'serverStatus' => $serverStatus,
+					'session' => null, // No user session for app passwords
+					'vectorSyncEnabled' => $serverStatus['vector_sync_enabled'] ?? false,
+					'backgroundAccessGranted' => true, // App password grants background access
+					'serverUrl' => $this->client->getPublicServerUrl(),
+					'hasToken' => false, // No OAuth token
+					'hasBackgroundAccess' => true,
+					'backgroundSyncType' => $backgroundSyncType,
+					'backgroundSyncProvisionedAt' => $backgroundSyncProvisionedAt,
+					'authMode' => $authMode,
+					'supportsAppPasswords' => $supportsAppPasswords,
+					'requesttoken' => \OCP\Util::callRegister(),
+				];
+
+				return new TemplateResponse(
+					Application::APP_ID,
+					'settings/personal',
+					$parameters,
+					TemplateResponse::RENDER_AS_BLANK
+				);
+			}
+		}
+		// For OAuth modes, if no token or token is expired, show OAuth authorization UI
+		elseif (!$token || $this->tokenStorage->isExpired($token)) {
 			$oauthUrl = $this->urlGenerator->linkToRoute('astrolabe.oauth.initiateOAuth');
 
 			return new TemplateResponse(
@@ -117,6 +193,11 @@ class Personal implements ISettings {
 			);
 		}
 
+		// Check background sync credential status
+		$hasBackgroundAccess = $this->tokenStorage->hasBackgroundSyncAccess($userId);
+		$backgroundSyncType = $this->tokenStorage->getBackgroundSyncType($userId);
+		$backgroundSyncProvisionedAt = $this->tokenStorage->getBackgroundSyncProvisionedAt($userId);
+
 		// Provide initial state for Vue.js frontend (if needed)
 		$this->initialState->provideInitialState('user-data', [
 			'userId' => $userId,
@@ -132,6 +213,9 @@ class Personal implements ISettings {
 			'backgroundAccessGranted' => $userSession['background_access_granted'] ?? false,
 			'serverUrl' => $this->client->getPublicServerUrl(),
 			'hasToken' => true,
+			'hasBackgroundAccess' => $hasBackgroundAccess,
+			'backgroundSyncType' => $backgroundSyncType,
+			'backgroundSyncProvisionedAt' => $backgroundSyncProvisionedAt,
 		];
 
 		return new TemplateResponse(

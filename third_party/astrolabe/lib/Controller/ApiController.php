@@ -97,6 +97,12 @@ class ApiController extends Controller {
 			// TODO: Add flash message/notification for user feedback
 		} else {
 			$this->logger->info("Successfully revoked background access for user $userId");
+
+			// Delete local OAuth tokens from Nextcloud config
+			// This ensures hasBackgroundAccess() returns false on next page load
+			$this->tokenStorage->deleteUserToken($userId);
+			$this->logger->debug("Deleted local OAuth tokens for user $userId");
+
 			// TODO: Add success flash message/notification
 		}
 

@@ -14,29 +14,23 @@
 
 use OCP\Util;
 
-Util::addStyle('astrolabe', 'astrolabe-settings');
+Util::addStyle('astrolabe', 'astrolabe-personalSettings');
 ?>
 
-<div id="mcp-personal-settings">
-	<div class="mcp-settings-info">
-		<p><?php p($l->t('AI-powered semantic search across your Nextcloud content.')); ?></p>
-	</div>
+<div class="section">
+	<h2><?php p($l->t('Astrolabe')); ?></h2>
+	<p><?php p($l->t('AI-powered semantic search across your Nextcloud content.')); ?></p>
+</div>
 
-	<?php if (isset($_['error_message'])): ?>
-		<div class="mcp-status-card mcp-error">
-			<h3>
-				<span class="icon icon-error"></span>
-				<?php p($l->t('Session Expired')); ?>
-			</h3>
-			<p><?php p($_['error_message']); ?></p>
-		</div>
-	<?php endif; ?>
+<?php if (isset($_['error_message'])): ?>
+<div class="section">
+	<h2><?php p($l->t('Session Expired')); ?></h2>
+	<p><?php p($_['error_message']); ?></p>
+</div>
+<?php endif; ?>
 
-	<div class="mcp-status-card">
-		<h3>
-			<span class="icon icon-search"></span>
-			<?php p($l->t('Enable Semantic Search')); ?>
-		</h3>
+<div class="section">
+	<h2><?php p($l->t('Enable Semantic Search')); ?></h2>
 
 		<?php if (isset($_['has_expired']) && $_['has_expired']): ?>
 			<p>
@@ -96,16 +90,13 @@ Util::addStyle('astrolabe', 'astrolabe-settings');
 			</a>
 		</div>
 
-		<p class="mcp-help-text" style="margin-top: 16px;">
+		<p>
 			<?php p($l->t('You can disable indexing at any time from this settings page.')); ?>
 		</p>
-	</div>
+</div>
 
-	<div class="mcp-status-card">
-		<h3>
-			<span class="icon icon-info"></span>
-			<?php p($l->t('About Astrolabe')); ?>
-		</h3>
+<div class="section">
+	<h2><?php p($l->t('About Astrolabe')); ?></h2>
 
 		<p>
 			<?php p($l->t('Astrolabe enables semantic search - finding content by meaning rather than exact keywords. Ask questions like "meeting notes from last week" or "recipes with chicken" to find relevant documents.')); ?>
@@ -123,5 +114,4 @@ Util::addStyle('astrolabe', 'astrolabe-settings');
 				</a>
 			</li>
 		</ul>
-	</div>
 </div>

@@ -10,8 +10,6 @@
  * @var string $_['server_url'] Configured server URL (optional)
  * @var string $_['help_text'] Additional help text (optional)
  */
-
-style('astrolabe', 'astrolabe-settings');
 ?>
 
 <div class="mcp-settings-error">
