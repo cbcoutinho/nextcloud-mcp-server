@@ -69,12 +69,12 @@ Your Nextcloud MCP Server has been deployed in {{ .Values.auth.mode }} authentic
    {{- end }}
 {{- end }}
 
-{{- if .Values.vectorSync.enabled }}
+{{- if .Values.semanticSearch.enabled }}
 
-5. Vector Search & Semantic Capabilities:
-   - Vector Sync: Enabled
-   - Scan Interval: {{ .Values.vectorSync.scanInterval }}s
-   - Processor Workers: {{ .Values.vectorSync.processorWorkers }}
+5. Semantic Search & Vector Capabilities:
+   - Semantic Search: Enabled
+   - Scan Interval: {{ .Values.semanticSearch.scanInterval }}s
+   - Processor Workers: {{ .Values.semanticSearch.processorWorkers }}
    {{- if .Values.qdrant.enabled }}
    - Qdrant: Deployed as subchart ({{ .Release.Name }}-qdrant:6333)
    {{- else }}

@@ -358,10 +358,11 @@ extraEnvFrom: []
 # - secretRef:
 #     name: my-secret
 
-# Vector Sync Configuration
-# Background synchronization of Nextcloud content into vector database for semantic search
-vectorSync:
-  # Enable background vector synchronization
+# Semantic Search Configuration
+# Enable semantic search with BM25 hybrid search and background synchronization
+# of Nextcloud content into vector database
+semanticSearch:
+  # Enable semantic search and background vector synchronization
   enabled: false
   # Scan interval in seconds (how often to check for changes)
   scanInterval: 3600
@@ -372,7 +373,7 @@ vectorSync:
 
 # Document Chunking Configuration
 # Controls how documents are split into chunks before embedding
-# Only relevant when vectorSync.enabled is true
+# Only relevant when semanticSearch.enabled is true
 documentChunking:
   # Number of words per chunk (default: 512)
   # Smaller chunks (256-384): Better for precise searches, more chunks to store

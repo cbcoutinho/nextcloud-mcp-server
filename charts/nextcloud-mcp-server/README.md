@@ -208,16 +208,16 @@ The application exposes HTTP health check endpoints:
 
 #### Vector Search & Semantic Capabilities (Optional)
 
-Enable semantic search capabilities by deploying a vector database (Qdrant) and embedding service (Ollama or OpenAI).
+Enable semantic search capabilities with BM25 hybrid search by deploying a vector database (Qdrant) and embedding service (Ollama or OpenAI).
 
-**Vector Sync Configuration:**
+**Semantic Search Configuration:**
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `vectorSync.enabled` | Enable background vector synchronization | `false` |
-| `vectorSync.scanInterval` | Scan interval in seconds | `3600` |
-| `vectorSync.processorWorkers` | Number of concurrent processor workers | `3` |
-| `vectorSync.queueMaxSize` | Maximum queue size for pending documents | `10000` |
+| `semanticSearch.enabled` | Enable semantic search and background vector synchronization | `false` |
+| `semanticSearch.scanInterval` | Scan interval in seconds | `3600` |
+| `semanticSearch.processorWorkers` | Number of concurrent processor workers | `3` |
+| `semanticSearch.queueMaxSize` | Maximum queue size for pending documents | `10000` |
 
 **Document Chunking Configuration:**
 
@@ -537,8 +537,8 @@ auth:
     username: admin
     password: secure-password
 
-# Enable vector sync
-vectorSync:
+# Enable semantic search
+semanticSearch:
   enabled: true
   scanInterval: 1800  # Scan every 30 minutes
   processorWorkers: 5
@@ -576,7 +576,7 @@ ollama:
 Or use an external Ollama instance:
 
 ```yaml
-vectorSync:
+semanticSearch:
   enabled: true
 
 qdrant:
@@ -592,7 +592,7 @@ ollama:
 Or use OpenAI for embeddings:
 
 ```yaml
-vectorSync:
+semanticSearch:
   enabled: true
 
 qdrant:
