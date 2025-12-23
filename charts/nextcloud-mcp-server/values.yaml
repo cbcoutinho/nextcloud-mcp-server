@@ -26,9 +26,16 @@ nextcloud:
   # Example: https://mcp.example.com
   mcpServerUrl: ""
 
-  # Public issuer URL for OAuth (OAuth mode only)
-  # If not specified, defaults to nextcloud.host
-  # Only set this if your Nextcloud is accessible at a different URL for OAuth
+  # Public issuer URL for browser-accessible OAuth authorization endpoints (OAuth mode only)
+  # ONLY used to make authorization endpoints accessible to users' browsers
+  # All server-to-server communication (token endpoint, JWKS, introspection, userinfo)
+  # uses URLs from OIDC discovery without any rewriting
+  #
+  # Use case: When MCP server accesses Nextcloud at one URL but browsers need a different
+  # public URL for OAuth login (e.g., server uses internal DNS, browsers use public domain)
+  #
+  # If not specified, defaults to nextcloud.host (works when MCP server and browsers
+  # both access Nextcloud at the same URL)
   # Example: https://cloud.example.com
   publicIssuerUrl: ""
 

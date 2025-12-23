@@ -8,9 +8,8 @@ provides CLI integration.
 import logging
 from pathlib import Path
 
-from alembic.config import Config
-
 from alembic import command
+from alembic.config import Config
 
 logger = logging.getLogger(__name__)
 

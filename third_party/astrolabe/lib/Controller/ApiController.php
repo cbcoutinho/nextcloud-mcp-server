@@ -265,6 +265,14 @@ class ApiController extends Controller {
 	public function serverStatus(): JSONResponse {
 		$status = $this->client->getStatus();
 
+		// Validate that status is an array before accessing
+		if (!is_array($status)) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => 'Invalid response from MCP server'
+			], Http::STATUS_INTERNAL_SERVER_ERROR);
+		}
+
 		if (isset($status['error'])) {
 			return new JSONResponse([
 				'success' => false,
@@ -288,6 +296,14 @@ class ApiController extends Controller {
 	 */
 	public function adminVectorStatus(): JSONResponse {
 		$status = $this->client->getVectorSyncStatus();
+
+		// Validate that status is an array before accessing
+		if (!is_array($status)) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => 'Invalid response from MCP server'
+			], Http::STATUS_INTERNAL_SERVER_ERROR);
+		}
 
 		if (isset($status['error'])) {
 			return new JSONResponse([

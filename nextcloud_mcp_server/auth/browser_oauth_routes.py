@@ -301,25 +301,6 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
                 discovery = response.json()
                 token_endpoint = discovery["token_endpoint"]
 
-            # Rewrite token_endpoint from public URL to internal Docker URL
-            # Discovery document returns public URLs (e.g., http://localhost:8080/...)
-            # but server-side requests must use internal Docker network (e.g., http://app:80/...)
-            public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
-            if public_issuer:
-                from urllib.parse import urlparse as parse_url
-
-                internal_host = oauth_config["nextcloud_host"]
-                internal_parsed = parse_url(internal_host)
-                token_parsed = parse_url(token_endpoint)
-                public_parsed = parse_url(public_issuer)
-
-                if token_parsed.hostname == public_parsed.hostname:
-                    # Replace public URL with internal Docker URL
-                    token_endpoint = f"{internal_parsed.scheme}://{internal_parsed.netloc}{token_parsed.path}"
-                    logger.info(
-                        f"Rewrote token endpoint to internal URL: {token_endpoint}"
-                    )
-
             token_params = {
                 "grant_type": "authorization_code",
                 "code": code,

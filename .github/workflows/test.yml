@@ -102,4 +102,5 @@ jobs:
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
         run: |
-          uv run pytest -v --log-cli-level=WARN -m unit -m smoke
+          # NOTE: Temporarily run all tests until merged
+          uv run pytest -v --log-cli-level=WARN #-m unit -m smoke

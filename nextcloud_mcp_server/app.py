@@ -9,6 +9,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, cast
+from urllib.parse import urlparse
 
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
@@ -703,36 +704,6 @@ async def setup_oauth_config():
     introspection_uri = discovery.get("introspection_endpoint")
     registration_endpoint = discovery.get("registration_endpoint")
 
-    # Allow overriding JWKS URI (useful when running in Docker with frontendUrl)
-    # Example: frontendUrl=http://localhost:8888 but MCP server needs http://keycloak:8080
-    jwks_uri_override = os.getenv("OIDC_JWKS_URI")
-    if jwks_uri_override:
-        logger.info(f"OIDC_JWKS_URI override: {jwks_uri} → {jwks_uri_override}")
-        jwks_uri = jwks_uri_override
-
-    # Rewrite discovered endpoint URLs from public issuer to internal host
-    # This is needed when OIDC discovery returns public URLs (e.g., http://localhost:8080)
-    # but the server needs to access them via internal docker network (e.g., http://app:80)
-    from urllib.parse import urlparse
-
-    issuer_parsed = urlparse(issuer)
-    nextcloud_parsed = urlparse(nextcloud_host)
-    issuer_base = f"{issuer_parsed.scheme}://{issuer_parsed.netloc}"
-    nextcloud_base = f"{nextcloud_parsed.scheme}://{nextcloud_parsed.netloc}"
-
-    if issuer_base != nextcloud_base:
-        logger.info(f"Rewriting OIDC endpoints: {issuer_base} → {nextcloud_base}")
-
-        def rewrite_url(url: str | None) -> str | None:
-            if url and url.startswith(issuer_base):
-                return url.replace(issuer_base, nextcloud_base, 1)
-            return url
-
-        userinfo_uri = rewrite_url(userinfo_uri) or userinfo_uri
-        jwks_uri = rewrite_url(jwks_uri)
-        introspection_uri = rewrite_url(introspection_uri)
-        registration_endpoint = rewrite_url(registration_endpoint)
-
     logger.info("OIDC endpoints discovered:")
     logger.info(f"  Issuer: {issuer}")
     logger.info(f"  Userinfo: {userinfo_uri}")
@@ -759,16 +730,8 @@ async def setup_oauth_config():
     issuer_normalized = normalize_url(issuer)
     nextcloud_normalized = normalize_url(nextcloud_host)
 
-    # Use NEXTCLOUD_PUBLIC_ISSUER_URL for IdP detection when set
-    # This handles the case where MCP server accesses Nextcloud via internal URL (http://app:80)
-    # but the issuer in OIDC discovery is the public URL (http://localhost:8080)
-    public_issuer_for_detection = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
-    if public_issuer_for_detection:
-        comparison_issuer = normalize_url(public_issuer_for_detection)
-    else:
-        comparison_issuer = nextcloud_normalized
-
-    is_external_idp = not issuer_normalized.startswith(comparison_issuer)
+    # Determine if this is an external IdP by comparing discovered issuer with Nextcloud host
+    is_external_idp = not issuer_normalized.startswith(nextcloud_normalized)
 
     if is_external_idp:
         oauth_provider = "external"  # Could be Keycloak, Auth0, Okta, etc.
@@ -779,28 +742,6 @@ async def setup_oauth_config():
     else:
         oauth_provider = "nextcloud"
         logger.info("✓ Detected integrated mode (Nextcloud OIDC app)")
-
-        # For integrated mode, rewrite OIDC endpoints to use internal URL
-        # The discovery document returns external URLs (http://localhost:8080)
-        # but the MCP server needs internal URLs (http://app:80) for backend requests
-        if jwks_uri and not os.getenv("OIDC_JWKS_URI"):
-            internal_jwks_uri = f"{nextcloud_host}/apps/oidc/jwks"
-            logger.info(
-                f"  Auto-rewriting JWKS URI for internal access: {jwks_uri} → {internal_jwks_uri}"
-            )
-            jwks_uri = internal_jwks_uri
-        if introspection_uri and not os.getenv("OIDC_INTROSPECTION_URI"):
-            internal_introspection_uri = f"{nextcloud_host}/apps/oidc/introspect"
-            logger.info(
-                f"  Auto-rewriting introspection URI for internal access: {introspection_uri} → {internal_introspection_uri}"
-            )
-            introspection_uri = internal_introspection_uri
-        if userinfo_uri:
-            internal_userinfo_uri = f"{nextcloud_host}/apps/oidc/userinfo"
-            logger.info(
-                f"  Auto-rewriting userinfo URI for internal access: {userinfo_uri} → {internal_userinfo_uri}"
-            )
-            userinfo_uri = internal_userinfo_uri
 
     # Check if offline access (refresh tokens) is enabled
     enable_offline_access = os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() in (
@@ -857,21 +798,9 @@ async def setup_oauth_config():
             f"Discovery URL: {discovery_url}"
         )
 
-    # Handle public issuer override (for clients accessing via different URL)
-    # When clients access Nextcloud via a public URL (e.g., http://127.0.0.1:8080),
-    # but the MCP server accesses via internal URL (e.g., http://app:80),
-    # we need to use the public URL for JWT validation and client configuration
-    public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
-    if public_issuer:
-        public_issuer = public_issuer.rstrip("/")
-        logger.info(
-            f"Using public issuer URL override for JWT validation: {public_issuer}"
-        )
-        client_issuer = public_issuer
-    else:
-        client_issuer = issuer
-
     # ADR-005: Unified Token Verifier with proper audience validation
+    # Use discovered issuer for JWT validation
+    client_issuer = issuer
     # Get MCP server URL for audience validation
     mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
     nextcloud_resource_uri = os.getenv("NEXTCLOUD_RESOURCE_URI", nextcloud_host)
@@ -1070,23 +999,11 @@ async def setup_oauth_config_for_multi_user_basic(
 
     logger.info("✓ OIDC discovery successful (multi-user BasicAuth)")
 
-    # Extract OIDC endpoints
+    # Extract OIDC endpoints from discovery
     issuer = discovery["issuer"]
     userinfo_uri = discovery["userinfo_endpoint"]
     jwks_uri = discovery.get("jwks_uri")
     introspection_uri = discovery.get("introspection_endpoint")
-
-    # For multi-user BasicAuth, always assume Nextcloud integrated mode
-    # and rewrite endpoints to use internal URL for backend access
-    if jwks_uri:
-        internal_jwks_uri = f"{nextcloud_host}/apps/oidc/jwks"
-        jwks_uri = internal_jwks_uri
-    if introspection_uri:
-        internal_introspection_uri = f"{nextcloud_host}/apps/oidc/introspect"
-        introspection_uri = internal_introspection_uri
-    if userinfo_uri:
-        internal_userinfo_uri = f"{nextcloud_host}/apps/oidc/userinfo"
-        userinfo_uri = internal_userinfo_uri
 
     logger.info("OIDC endpoints configured for management API:")
     logger.info(f"  Issuer: {issuer}")
@@ -1098,16 +1015,8 @@ async def setup_oauth_config_for_multi_user_basic(
     mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
     nextcloud_resource_uri = os.getenv("NEXTCLOUD_RESOURCE_URI", nextcloud_host)
 
-    # Handle public issuer override (for JWT validation)
-    public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
-    if public_issuer:
-        public_issuer = public_issuer.rstrip("/")
-        logger.info(
-            f"Using public issuer URL override for JWT validation: {public_issuer}"
-        )
-        client_issuer = public_issuer
-    else:
-        client_issuer = issuer
+    # Use discovered issuer for JWT validation
+    client_issuer = issuer
 
     # Update settings with discovered values for UnifiedTokenVerifier
     if not settings.oidc_client_id:
@@ -1242,13 +1151,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     if (
         mode == AuthMode.MULTI_USER_BASIC
         and settings.vector_sync_enabled
-        and settings.enable_offline_access
+        and settings.enable_background_operations
     ):
         print(
-            f"DEBUG: Multi-user BasicAuth mode detected, vector_sync={settings.vector_sync_enabled}, offline_access={settings.enable_offline_access}"
+            f"DEBUG: Multi-user BasicAuth mode detected, vector_sync={settings.vector_sync_enabled}, background_operations={settings.enable_background_operations}"
         )
         logger.info(
-            "Multi-user BasicAuth with vector sync - checking for OAuth credentials"
+            "Multi-user BasicAuth with vector sync - checking for OAuth/app password credentials"
         )
 
         # Check for static credentials first
@@ -1328,7 +1237,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 logger.info(
                     "✓ OAuth infrastructure setup complete for multi-user BasicAuth hybrid mode"
                 )
-            except Exception as e:
+            except (httpx.HTTPError, ValueError, KeyError) as e:
+                # Expected errors during OAuth infrastructure setup:
+                # - httpx.HTTPError: Network issues, OIDC discovery failures
+                # - ValueError: Missing required configuration (NEXTCLOUD_HOST)
+                # - KeyError: Missing required fields in OIDC discovery response
                 logger.error(f"Failed to setup OAuth infrastructure: {e}")
                 logger.debug(f"Full traceback:\n{traceback.format_exc()}")
                 logger.warning(
@@ -1338,6 +1251,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # Set to None to indicate failure
                 multi_user_token_verifier = None
                 multi_user_refresh_storage = None
+            except Exception as e:
+                # Unexpected error - this is a programming error, re-raise it
+                logger.error(
+                    f"Unexpected error during OAuth infrastructure setup: {e}. "
+                    "This is likely a programming error that should be fixed."
+                )
+                raise
 
     # Create MCP server based on detected mode
     if mode in (AuthMode.OAUTH_SINGLE_AUDIENCE, AuthMode.OAUTH_TOKEN_EXCHANGE):
@@ -1798,10 +1718,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         elif (
             settings.vector_sync_enabled
             and (oauth_enabled or settings.enable_multi_user_basic_auth)
-            and settings.enable_offline_access
+            and settings.enable_background_operations
         ):
-            # OAuth mode with offline access - multi-user sync
-            # Also used for multi-user BasicAuth mode (client auth is BasicAuth, background sync uses app passwords)
+            # OAuth mode with background operations - multi-user sync
+            # Also used for multi-user BasicAuth mode (client auth is BasicAuth, background sync uses app passwords or OAuth)
             mode_desc = "OAuth mode" if oauth_enabled else "Multi-user BasicAuth mode"
             logger.info(f"Starting background vector sync tasks for {mode_desc}")
 

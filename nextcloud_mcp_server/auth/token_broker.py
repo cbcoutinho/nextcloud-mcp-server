@@ -168,37 +168,6 @@ class TokenBrokerService:
             self._oidc_config = response.json()
         return self._oidc_config
 
-    def _rewrite_token_endpoint(self, token_endpoint: str) -> str:
-        """Rewrite token endpoint from public URL to internal Docker URL.
-
-        OIDC discovery documents return public URLs (e.g., http://localhost:8080/...)
-        but server-side requests must use internal Docker network (e.g., http://app:80/...).
-
-        Args:
-            token_endpoint: Token endpoint URL from discovery document
-
-        Returns:
-            Rewritten URL using internal Docker host
-        """
-        import os
-        from urllib.parse import urlparse
-
-        public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
-        if not public_issuer:
-            return token_endpoint
-
-        internal_parsed = urlparse(self.nextcloud_host)
-        token_parsed = urlparse(token_endpoint)
-        public_parsed = urlparse(public_issuer)
-
-        if token_parsed.hostname == public_parsed.hostname:
-            # Replace public URL with internal Docker URL
-            rewritten = f"{internal_parsed.scheme}://{internal_parsed.netloc}{token_parsed.path}"
-            logger.info(f"Rewrote token endpoint: {token_endpoint} -> {rewritten}")
-            return rewritten
-
-        return token_endpoint
-
     async def get_nextcloud_token(self, user_id: str) -> Optional[str]:
         """
         Get a valid Nextcloud access token for the user.
@@ -407,7 +376,7 @@ class TokenBrokerService:
             Tuple of (access_token, expires_in_seconds)
         """
         config = await self._get_oidc_config()
-        token_endpoint = self._rewrite_token_endpoint(config["token_endpoint"])
+        token_endpoint = config["token_endpoint"]
 
         client = await self._get_http_client()
 
@@ -477,7 +446,7 @@ class TokenBrokerService:
             Tuple of (access_token, expires_in_seconds)
         """
         config = await self._get_oidc_config()
-        token_endpoint = self._rewrite_token_endpoint(config["token_endpoint"])
+        token_endpoint = config["token_endpoint"]
 
         client = await self._get_http_client()
 

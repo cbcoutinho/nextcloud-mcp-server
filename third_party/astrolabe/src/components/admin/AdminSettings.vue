@@ -6,6 +6,12 @@
 			<p><strong>{{ t('astrolabe', 'Cannot connect to MCP server') }}</strong></p>
 			<p>{{ error }}</p>
 			<p class="help-text">{{ t('astrolabe', 'Ensure MCP server is running and accessible. Check config.php for correct mcp_server_url.') }}</p>
+			<NcButton type="primary" @click="retryConnection">
+				<template #icon>
+					<Refresh :size="20" />
+				</template>
+				{{ t('astrolabe', 'Retry Connection') }}
+			</NcButton>
 		</NcNoteCard>
 
 		<template v-else>
@@ -301,6 +307,13 @@ async function loadServerStatus() {
 async function refreshStatus() {
 	await loadServerStatus()
 	showSuccess(t('astrolabe', 'Status refreshed'))
+}
+
+async function retryConnection() {
+	// Clear error and retry loading server status
+	error.value = null
+	loading.value = true
+	await loadServerStatus()
 }
 
 async function saveSettings() {
