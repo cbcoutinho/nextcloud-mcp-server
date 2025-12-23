@@ -48,10 +48,11 @@
 				<div class="mcp-search-card">
 					<div class="mcp-search-row">
 						<NcTextField
-							v-model:value="query"
+							:value="query"
 							:label="t('astrolabe', 'Search query')"
 							:placeholder="t('astrolabe', 'Enter your search query...')"
 							class="mcp-search-input"
+							@update:value="query = $event"
 							@keyup.enter="performSearch" />
 
 						<NcSelect
@@ -104,10 +105,11 @@
 							<div class="mcp-option-group">
 								<label>{{ t('astrolabe', 'Result Limit') }}</label>
 								<NcTextField
-									v-model:value="limit"
+									:value="limit"
 									type="number"
 									:min="1"
-									:max="100" />
+									:max="100"
+									@update:value="limit = Number($event)" />
 							</div>
 
 							<div class="mcp-option-group">
@@ -152,9 +154,9 @@
 						<div class="mcp-viz-header">
 							<h3>{{ t('astrolabe', 'Vector Space Visualization') }}</h3>
 							<NcCheckboxRadioSwitch
-								v-model:checked="showQueryPoint"
+								:checked="showQueryPoint"
 								type="switch"
-								@update:checked="updatePlot">
+								@update:checked="showQueryPoint = $event; updatePlot()">
 								{{ t('astrolabe', 'Show query point') }}
 							</NcCheckboxRadioSwitch>
 						</div>

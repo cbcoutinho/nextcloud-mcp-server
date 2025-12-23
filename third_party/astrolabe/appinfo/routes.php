@@ -75,6 +75,16 @@ return [
 
 		// Admin settings routes
 		[
+			'name' => 'api#serverStatus',
+			'url' => '/api/admin/server-status',
+			'verb' => 'GET',
+		],
+		[
+			'name' => 'api#adminVectorStatus',
+			'url' => '/api/admin/vector-status',
+			'verb' => 'GET',
+		],
+		[
 			'name' => 'api#saveSearchSettings',
 			'url' => '/api/admin/search-settings',
 			'verb' => 'POST',

@@ -255,6 +255,54 @@ class ApiController extends Controller {
 	}
 
 	/**
+	 * Get MCP server status.
+	 *
+	 * Admin-only endpoint for admin settings page.
+	 * Returns server version, uptime, and vector sync availability.
+	 *
+	 * @return JSONResponse
+	 */
+	public function serverStatus(): JSONResponse {
+		$status = $this->client->getStatus();
+
+		if (isset($status['error'])) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => $status['error']
+			], Http::STATUS_INTERNAL_SERVER_ERROR);
+		}
+
+		return new JSONResponse([
+			'success' => true,
+			'status' => $status
+		]);
+	}
+
+	/**
+	 * Get vector sync status for admin.
+	 *
+	 * Admin-only endpoint for admin settings page.
+	 * Returns indexing metrics and sync status.
+	 *
+	 * @return JSONResponse
+	 */
+	public function adminVectorStatus(): JSONResponse {
+		$status = $this->client->getVectorSyncStatus();
+
+		if (isset($status['error'])) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => $status['error']
+			], Http::STATUS_INTERNAL_SERVER_ERROR);
+		}
+
+		return new JSONResponse([
+			'success' => true,
+			'status' => $status
+		]);
+	}
+
+	/**
 	 * Save admin search settings.
 	 *
 	 * Admin-only endpoint to configure AI Search provider parameters.

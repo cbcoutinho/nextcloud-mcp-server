@@ -5,7 +5,7 @@ import { resolve } from 'path'
 export default defineConfig({
   plugins: [vue()],
   build: {
-    outDir: 'js',
+    outDir: '.',
     emptyOutDir: false,
     rollupOptions: {
       input: {
@@ -14,9 +14,15 @@ export default defineConfig({
         'astrolabe-personalSettings': resolve(__dirname, 'src/personalSettings.js'),
       },
       output: {
-        entryFileNames: '[name].mjs',
-        chunkFileNames: '[name]-[hash].chunk.mjs',
-        assetFileNames: '[name][extname]',
+        entryFileNames: 'js/[name].mjs',
+        chunkFileNames: 'js/[name]-[hash].chunk.mjs',
+        assetFileNames: (assetInfo) => {
+          // Output CSS to css/ directory, JS/other assets to js/
+          if (assetInfo.name && assetInfo.name.endsWith('.css')) {
+            return 'css/[name][extname]';
+          }
+          return 'js/[name][extname]';
+        },
       },
     },
     sourcemap: true,

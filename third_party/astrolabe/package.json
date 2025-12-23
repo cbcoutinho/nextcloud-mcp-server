@@ -19,6 +19,8 @@
   ],
   "dependencies": {
     "@nextcloud/axios": "^2.5.1",
+    "@nextcloud/dialogs": "^7.2.0",
+    "@nextcloud/initial-state": "^3.0.0",
     "@nextcloud/l10n": "^3.1.0",
     "@nextcloud/router": "^3.0.1",
     "@nextcloud/vue": "^9.0.0",
@@ -32,8 +34,8 @@
     "@nextcloud/browserslist-config": "3.1.2",
     "@nextcloud/eslint-config": "8.4.2",
     "@nextcloud/stylelint-config": "3.1.1",
-    "@nextcloud/vite-config": "1.7.2",
     "@vitejs/plugin-vue": "^6.0.3",
+    "sass-embedded": "^1.97.1",
     "terser": "5.44.1",
     "vite": "7.2.7"
   }

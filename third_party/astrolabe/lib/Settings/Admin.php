@@ -47,32 +47,13 @@ class Admin implements ISettings {
 	 * @return TemplateResponse
 	 */
 	public function getForm(): TemplateResponse {
-		// Fetch data from MCP server
-		$serverStatus = $this->client->getStatus();
-		$vectorSyncStatus = $this->client->getVectorSyncStatus();
-
-		// Get configuration from config.php
+		// Get configuration from config.php (local, fast)
 		$serverUrl = $this->config->getSystemValue('mcp_server_url', '');
 		$apiKeyConfigured = !empty($this->config->getSystemValue('mcp_server_api_key', ''));
 		$clientId = $this->config->getSystemValue('astrolabe_client_id', '');
 		$clientIdConfigured = !empty($clientId);
 		$clientSecret = $this->config->getSystemValue('astrolabe_client_secret', '');
 		$clientSecretConfigured = !empty($clientSecret);
-
-		// Check for server connection error
-		if (isset($serverStatus['error'])) {
-			return new TemplateResponse(
-				Application::APP_ID,
-				'settings/error',
-				[
-					'error' => 'Cannot connect to MCP server',
-					'details' => $serverStatus['error'],
-					'server_url' => $serverUrl,
-					'help_text' => 'Ensure MCP server is running and accessible. Check config.php for correct mcp_server_url.',
-				],
-				TemplateResponse::RENDER_AS_BLANK
-			);
-		}
 
 		// Load search settings from app config
 		$searchSettings = [
@@ -98,27 +79,19 @@ class Admin implements ISettings {
 			),
 		];
 
-		// Provide initial state for Vue.js frontend (if needed)
-		$this->initialState->provideInitialState('server-data', [
-			'serverStatus' => $serverStatus,
-			'vectorSyncStatus' => $vectorSyncStatus,
+		// Provide initial state for Vue.js frontend
+		// MCP server data will be fetched asynchronously by Vue component
+		$this->initialState->provideInitialState('admin-config', [
 			'config' => [
 				'serverUrl' => $serverUrl,
 				'apiKeyConfigured' => $apiKeyConfigured,
+				'clientIdConfigured' => $clientIdConfigured,
+				'clientSecretConfigured' => $clientSecretConfigured,
 			],
 			'searchSettings' => $searchSettings,
 		]);
 
-		$parameters = [
-			'serverStatus' => $serverStatus,
-			'vectorSyncStatus' => $vectorSyncStatus,
-			'serverUrl' => $serverUrl,
-			'apiKeyConfigured' => $apiKeyConfigured,
-			'clientIdConfigured' => $clientIdConfigured,
-			'clientSecretConfigured' => $clientSecretConfigured,
-			'vectorSyncEnabled' => $serverStatus['vector_sync_enabled'] ?? false,
-			'searchSettings' => $searchSettings,
-		];
+		$parameters = [];
 
 		return new TemplateResponse(
 			Application::APP_ID,

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import os
 import time
@@ -42,6 +44,7 @@ from nextcloud_mcp_server.auth.unified_verifier import UnifiedTokenVerifier
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import (
     DeploymentMode,
+    Settings,
     get_document_processor_config,
     get_settings,
 )
@@ -1012,6 +1015,160 @@ async def setup_oauth_config():
     )
 
 
+async def setup_oauth_config_for_multi_user_basic(
+    settings: Settings,
+    client_id: str,
+    client_secret: str,
+) -> tuple[UnifiedTokenVerifier, RefreshTokenStorage | None, str, str]:
+    """
+    Setup minimal OAuth configuration for multi-user BasicAuth mode.
+
+    This is a lightweight version of setup_oauth_config() that:
+    - Performs OIDC discovery to get endpoints
+    - Creates UnifiedTokenVerifier for management API token validation
+    - Creates RefreshTokenStorage for webhook token storage
+    - Skips OAuth client creation (not needed for BasicAuth background sync)
+    - Skips AuthSettings creation (not needed for BasicAuth MCP operations)
+
+    This enables hybrid authentication mode where:
+    - MCP operations use BasicAuth (stateless, simple)
+    - Management APIs use OAuth bearer tokens (secure, per-user)
+    - Background operations use OAuth refresh tokens (webhook sync)
+
+    Args:
+        settings: Application settings
+        client_id: OAuth client ID (from DCR or static config)
+        client_secret: OAuth client secret
+
+    Returns:
+        Tuple of (token_verifier, refresh_token_storage, client_id, client_secret)
+
+    Raises:
+        ValueError: If NEXTCLOUD_HOST is not set
+        httpx.HTTPError: If OIDC discovery fails
+    """
+    nextcloud_host = settings.nextcloud_host
+    if not nextcloud_host:
+        raise ValueError("NEXTCLOUD_HOST is required for OAuth infrastructure setup")
+
+    nextcloud_host = nextcloud_host.rstrip("/")
+
+    # Get OIDC discovery URL (always Nextcloud integrated mode for multi-user BasicAuth)
+    discovery_url = os.getenv(
+        "OIDC_DISCOVERY_URL",
+        f"{nextcloud_host}/.well-known/openid-configuration",
+    )
+    logger.info(
+        f"Performing OIDC discovery for multi-user BasicAuth hybrid mode: {discovery_url}"
+    )
+
+    # Perform OIDC discovery
+    async with httpx.AsyncClient() as http_client:
+        response = await http_client.get(discovery_url)
+        response.raise_for_status()
+        discovery = response.json()
+
+    logger.info("✓ OIDC discovery successful (multi-user BasicAuth)")
+
+    # Extract OIDC endpoints
+    issuer = discovery["issuer"]
+    userinfo_uri = discovery["userinfo_endpoint"]
+    jwks_uri = discovery.get("jwks_uri")
+    introspection_uri = discovery.get("introspection_endpoint")
+
+    # For multi-user BasicAuth, always assume Nextcloud integrated mode
+    # and rewrite endpoints to use internal URL for backend access
+    if jwks_uri:
+        internal_jwks_uri = f"{nextcloud_host}/apps/oidc/jwks"
+        jwks_uri = internal_jwks_uri
+    if introspection_uri:
+        internal_introspection_uri = f"{nextcloud_host}/apps/oidc/introspect"
+        introspection_uri = internal_introspection_uri
+    if userinfo_uri:
+        internal_userinfo_uri = f"{nextcloud_host}/apps/oidc/userinfo"
+        userinfo_uri = internal_userinfo_uri
+
+    logger.info("OIDC endpoints configured for management API:")
+    logger.info(f"  Issuer: {issuer}")
+    logger.info(f"  Userinfo: {userinfo_uri}")
+    logger.info(f"  JWKS: {jwks_uri}")
+    logger.info(f"  Introspection: {introspection_uri}")
+
+    # Get MCP server URL for audience validation
+    mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+    nextcloud_resource_uri = os.getenv("NEXTCLOUD_RESOURCE_URI", nextcloud_host)
+
+    # Handle public issuer override (for JWT validation)
+    public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+    if public_issuer:
+        public_issuer = public_issuer.rstrip("/")
+        logger.info(
+            f"Using public issuer URL override for JWT validation: {public_issuer}"
+        )
+        client_issuer = public_issuer
+    else:
+        client_issuer = issuer
+
+    # Update settings with discovered values for UnifiedTokenVerifier
+    if not settings.oidc_client_id:
+        settings.oidc_client_id = client_id
+    if not settings.oidc_client_secret:
+        settings.oidc_client_secret = client_secret
+    if not settings.jwks_uri:
+        settings.jwks_uri = jwks_uri
+    if not settings.introspection_uri:
+        settings.introspection_uri = introspection_uri
+    if not settings.userinfo_uri:
+        settings.userinfo_uri = userinfo_uri
+    if not settings.oidc_issuer:
+        settings.oidc_issuer = client_issuer
+    if not settings.nextcloud_mcp_server_url:
+        settings.nextcloud_mcp_server_url = mcp_server_url
+    if not settings.nextcloud_resource_uri:
+        settings.nextcloud_resource_uri = nextcloud_resource_uri
+
+    # Create Unified Token Verifier for management API authentication
+    token_verifier = UnifiedTokenVerifier(settings)
+    logger.info("✓ Token verifier created for management API (hybrid mode)")
+
+    if introspection_uri:
+        logger.info("  Opaque token introspection enabled (RFC 7662)")
+    if jwks_uri:
+        logger.info("  JWT signature verification enabled (JWKS)")
+
+    # Initialize refresh token storage for background operations
+    refresh_token_storage = None
+    if settings.enable_offline_access:
+        try:
+            from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+
+            encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
+            if not encryption_key:
+                logger.warning(
+                    "ENABLE_OFFLINE_ACCESS=true but TOKEN_ENCRYPTION_KEY not set. "
+                    "Refresh tokens will NOT be stored. Generate a key with:\n"
+                    '  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
+                )
+            else:
+                refresh_token_storage = RefreshTokenStorage.from_env()
+                await refresh_token_storage.initialize()
+                logger.info(
+                    "✓ Refresh token storage initialized for background operations (hybrid mode)"
+                )
+        except Exception as e:
+            logger.error(f"Failed to initialize refresh token storage: {e}")
+            logger.debug(f"Full traceback:\n{traceback.format_exc()}")
+            logger.warning(
+                "Continuing without refresh token storage - webhook management may be limited"
+            )
+
+    logger.info(
+        "OAuth infrastructure setup complete for multi-user BasicAuth hybrid mode"
+    )
+
+    return (token_verifier, refresh_token_storage, client_id, client_secret)
+
+
 def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None = None):
     # Initialize observability (logging will be configured by uvicorn)
     settings = get_settings()
@@ -1043,6 +1200,15 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         else DeploymentMode.SELF_HOSTED
     )
 
+    # Log hybrid authentication status for multi-user BasicAuth with offline access
+    if mode == AuthMode.MULTI_USER_BASIC and settings.enable_offline_access:
+        logger.info(
+            "🔄 Hybrid authentication mode will be enabled:\n"
+            "  - MCP operations: BasicAuth (stateless, credentials per-request)\n"
+            "  - Management APIs: OAuth bearer tokens (secure, per-user)\n"
+            "  - Background operations: OAuth refresh tokens (webhook sync)"
+        )
+
     # Setup Prometheus metrics (always enabled by default)
     if settings.metrics_enabled:
         setup_metrics(port=settings.metrics_port)
@@ -1070,6 +1236,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # This must happen BEFORE uvicorn starts (same lifecycle point as OAuth modes)
     # to avoid async context issues
     multi_user_basic_oauth_creds: tuple[str, str] | None = None
+    multi_user_token_verifier: UnifiedTokenVerifier | None = None
+    multi_user_refresh_storage: RefreshTokenStorage | None = None
 
     if (
         mode == AuthMode.MULTI_USER_BASIC
@@ -1134,6 +1302,42 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
             # Run DCR synchronously before uvicorn starts
             multi_user_basic_oauth_creds = anyio.run(setup_multi_user_basic_dcr)
+
+        # Setup OAuth infrastructure for management APIs and background operations
+        # This creates the UnifiedTokenVerifier needed by management.py and
+        # RefreshTokenStorage for webhook token persistence
+        if multi_user_basic_oauth_creds:
+            sync_client_id, sync_client_secret = multi_user_basic_oauth_creds
+
+            logger.info(
+                "Setting up OAuth infrastructure for management APIs (hybrid mode)..."
+            )
+
+            try:
+                (
+                    multi_user_token_verifier,
+                    multi_user_refresh_storage,
+                    _,
+                    _,
+                ) = anyio.run(
+                    setup_oauth_config_for_multi_user_basic,
+                    settings,
+                    sync_client_id,
+                    sync_client_secret,
+                )
+                logger.info(
+                    "✓ OAuth infrastructure setup complete for multi-user BasicAuth hybrid mode"
+                )
+            except Exception as e:
+                logger.error(f"Failed to setup OAuth infrastructure: {e}")
+                logger.debug(f"Full traceback:\n{traceback.format_exc()}")
+                logger.warning(
+                    "Management API will be unavailable. "
+                    "Webhook management from Astrolabe admin UI will not work."
+                )
+                # Set to None to indicate failure
+                multi_user_token_verifier = None
+                multi_user_refresh_storage = None
 
     # Create MCP server based on detected mode
     if mode in (AuthMode.OAUTH_SINGLE_AUDIENCE, AuthMode.OAUTH_TOKEN_EXCHANGE):
@@ -1410,11 +1614,14 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # For multi-user BasicAuth with offline access, create oauth_context for management APIs
             # This allows Astrolabe to use management APIs with OAuth bearer tokens
             if settings.enable_multi_user_basic_auth and settings.enable_offline_access:
-                # Check if we have OAuth credentials from DCR
-                if multi_user_basic_oauth_creds:
+                # Check if we have OAuth credentials AND infrastructure from setup
+                if (
+                    multi_user_basic_oauth_creds
+                    and multi_user_token_verifier is not None
+                ):
                     sync_client_id, sync_client_secret = multi_user_basic_oauth_creds
 
-                    # Create minimal oauth_context for management API authentication
+                    # Create oauth_context for management API authentication
                     nextcloud_host_for_context = settings.nextcloud_host
                     mcp_server_url = os.getenv(
                         "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
@@ -1425,9 +1632,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     )
 
                     oauth_context_dict = {
-                        "storage": basic_auth_storage,
+                        # Use OAuth refresh token storage if available, fallback to basic_auth_storage
+                        "storage": multi_user_refresh_storage or basic_auth_storage,
                         "oauth_client": None,  # Not needed for management APIs
-                        "token_verifier": None,  # Will be set when token broker is created
+                        "token_verifier": multi_user_token_verifier,  # FIXED: Now has real verifier!
                         "config": {
                             "mcp_server_url": mcp_server_url,
                             "discovery_url": discovery_url,
@@ -1441,7 +1649,19 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     }
                     app.state.oauth_context = oauth_context_dict
                     logger.info(
-                        f"OAuth context initialized for management APIs (multi-user BasicAuth, client_id={sync_client_id[:16]}...)"
+                        f"✓ OAuth context initialized for management APIs (hybrid mode, client_id={sync_client_id[:16]}...)"
+                    )
+                elif multi_user_basic_oauth_creds and multi_user_token_verifier is None:
+                    logger.warning(
+                        "OAuth infrastructure setup failed - management API will be unavailable. "
+                        "This is expected if OIDC discovery failed or token verifier creation failed. "
+                        "Webhook management from Astrolabe admin UI will not work."
+                    )
+                else:
+                    logger.warning(
+                        "OAuth credentials not available - management API will be unavailable. "
+                        "This is expected if DCR failed or static credentials were not provided. "
+                        "Webhook management from Astrolabe admin UI will not work."
                     )
 
             # Also share with browser_app for webhook routes
@@ -2028,7 +2248,21 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # Note: Metrics endpoint is NOT exposed on main HTTP port for security reasons.
     # Metrics are served on dedicated port via setup_metrics() (default: 9090)
 
-    if oauth_enabled:
+    # Determine if OAuth provisioning is available
+    # This is true for:
+    # 1. OAuth modes (primary auth method for MCP operations)
+    # 2. Multi-user BasicAuth with offline access (hybrid mode)
+    oauth_provisioning_available = oauth_enabled or (
+        mode == AuthMode.MULTI_USER_BASIC
+        and settings.enable_offline_access
+        and multi_user_token_verifier is not None  # Ensure OAuth setup succeeded
+    )
+
+    if oauth_provisioning_available:
+        logger.info(
+            f"OAuth provisioning routes enabled for mode: {mode.value} "
+            f"(oauth_enabled={oauth_enabled}, hybrid_mode={not oauth_enabled})"
+        )
         # Import OAuth routes (ADR-004 Progressive Consent)
         from nextcloud_mcp_server.auth.oauth_routes import oauth_authorize
 
@@ -2091,10 +2325,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             "Protected Resource Metadata (PRM) endpoints enabled (path-based + root)"
         )
 
-        # Add OAuth login routes (ADR-004 Progressive Consent Flow 1)
-        routes.append(Route("/oauth/authorize", oauth_authorize, methods=["GET"]))
-        logger.info("OAuth login routes enabled: /oauth/authorize (Flow 1)")
-
         # Add unified OAuth callback endpoint supporting both flows
         from nextcloud_mcp_server.auth.oauth_routes import (
             oauth_authorize_nextcloud,
@@ -2124,8 +2354,16 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             )
         )
         logger.info(
-            "OAuth resource provisioning routes enabled: /oauth/authorize-nextcloud, /oauth/callback-nextcloud (Flow 2, legacy)"
+            "OAuth resource provisioning routes enabled: /oauth/authorize-nextcloud, /oauth/callback-nextcloud (Flow 2)"
         )
+
+    # Add OAuth Flow 1 routes (MCP client login) - ONLY for OAuth modes
+    # Multi-user BasicAuth uses hybrid mode with only Flow 2 (resource provisioning)
+    if oauth_enabled:
+        from nextcloud_mcp_server.auth.oauth_routes import oauth_authorize
+
+        routes.append(Route("/oauth/authorize", oauth_authorize, methods=["GET"]))
+        logger.info("OAuth login routes enabled: /oauth/authorize (Flow 1)")
 
     # Add browser OAuth login routes (OAuth mode only)
     if oauth_enabled:
