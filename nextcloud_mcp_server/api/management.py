@@ -54,6 +54,10 @@ async def validate_token_and_get_user(
 ) -> tuple[str, dict[str, Any]]:
     """Validate OAuth bearer token and extract user ID.
 
+    Uses verify_token_for_management_api which accepts any valid Nextcloud OIDC
+    token (not just MCP-audience tokens). This is needed because Astrolabe
+    (NC PHP app) uses its own OAuth client, separate from MCP server's client.
+
     Args:
         request: Starlette request with Authorization header
 
@@ -71,9 +75,10 @@ async def validate_token_and_get_user(
     # Note: This is set in app.py starlette_lifespan for OAuth mode
     token_verifier = request.app.state.oauth_context["token_verifier"]
 
-    # Validate token (handles both JWT and opaque tokens)
-    # verify_token returns AccessToken object or None
-    access_token = await token_verifier.verify_token(token)
+    # Validate token for management API (handles both JWT and opaque tokens)
+    # Uses verify_token_for_management_api which accepts any valid Nextcloud token
+    # without requiring MCP audience - needed for Astrolabe integration (ADR-018)
+    access_token = await token_verifier.verify_token_for_management_api(token)
 
     if not access_token:
         raise ValueError("Token validation failed")
