@@ -539,11 +539,10 @@ async def load_oauth_client_credentials(
         dcr_scopes = "openid profile email notes:read notes:write calendar:read calendar:write todo:read todo:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write news:read news:write"
 
         # Add offline_access scope if refresh tokens are enabled
-        enable_offline_access = os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() in (
-            "true",
-            "1",
-            "yes",
-        )
+        # Use settings.enable_offline_access which handles both ENABLE_BACKGROUND_OPERATIONS (new)
+        # and ENABLE_OFFLINE_ACCESS (deprecated) environment variables
+        dcr_settings = get_settings()
+        enable_offline_access = dcr_settings.enable_offline_access
         if enable_offline_access:
             dcr_scopes = f"{dcr_scopes} offline_access"
             logger.info("✓ offline_access scope enabled for refresh tokens")
@@ -672,6 +671,10 @@ async def setup_oauth_config():
     Returns:
         Tuple of (nextcloud_host, token_verifier, auth_settings, refresh_token_storage, oauth_client, oauth_provider, client_id, client_secret)
     """
+    # Get settings for enable_offline_access check (handles both ENABLE_BACKGROUND_OPERATIONS
+    # and ENABLE_OFFLINE_ACCESS environment variables)
+    settings = get_settings()
+
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     if not nextcloud_host:
         raise ValueError(
@@ -744,11 +747,9 @@ async def setup_oauth_config():
         logger.info("✓ Detected integrated mode (Nextcloud OIDC app)")
 
     # Check if offline access (refresh tokens) is enabled
-    enable_offline_access = os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
+    # Use settings.enable_offline_access which handles both ENABLE_BACKGROUND_OPERATIONS (new)
+    # and ENABLE_OFFLINE_ACCESS (deprecated) environment variables
+    enable_offline_access = settings.enable_offline_access
 
     # Initialize refresh token storage if enabled
     refresh_token_storage = None
@@ -799,8 +800,10 @@ async def setup_oauth_config():
         )
 
     # ADR-005: Unified Token Verifier with proper audience validation
-    # Use discovered issuer for JWT validation
-    client_issuer = issuer
+    # Use public issuer URL for JWT validation if set (handles Docker internal/external URL mismatch)
+    # Tokens are issued with the public URL, but OIDC discovery returns internal URL
+    public_issuer_url = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+    client_issuer = public_issuer_url if public_issuer_url else issuer
     # Get MCP server URL for audience validation
     mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
     nextcloud_resource_uri = os.getenv("NEXTCLOUD_RESOURCE_URI", nextcloud_host)
@@ -817,10 +820,8 @@ async def setup_oauth_config():
             "This should be set explicitly for proper audience validation."
         )
 
-    # Create settings for UnifiedTokenVerifier
-    from nextcloud_mcp_server.config import get_settings
-
-    settings = get_settings()
+    # Create settings for UnifiedTokenVerifier (use same settings instance from start of function)
+    # settings is already set at the start of setup_oauth_config()
     # Override with discovered values if not set in environment
     if not settings.oidc_client_id:
         settings.oidc_client_id = client_id
@@ -1015,8 +1016,10 @@ async def setup_oauth_config_for_multi_user_basic(
     mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
     nextcloud_resource_uri = os.getenv("NEXTCLOUD_RESOURCE_URI", nextcloud_host)
 
-    # Use discovered issuer for JWT validation
-    client_issuer = issuer
+    # Use public issuer URL for JWT validation if set (handles Docker internal/external URL mismatch)
+    # Tokens are issued with the public URL, but OIDC discovery returns internal URL
+    public_issuer_url = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+    client_issuer = public_issuer_url if public_issuer_url else issuer
 
     # Update settings with discovered values for UnifiedTokenVerifier
     if not settings.oidc_client_id:
@@ -1399,13 +1402,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     enable_token_exchange = (
         os.getenv("ENABLE_TOKEN_EXCHANGE", "false").lower() == "true"
     )
-    enable_offline_access_for_tools = os.getenv(
-        "ENABLE_OFFLINE_ACCESS", "false"
-    ).lower() in (
-        "true",
-        "1",
-        "yes",
-    )
+    # Use settings.enable_offline_access which handles both ENABLE_BACKGROUND_OPERATIONS (new)
+    # and ENABLE_OFFLINE_ACCESS (deprecated) environment variables
+    enable_offline_access_for_tools = settings.enable_offline_access
     if oauth_enabled and enable_offline_access_for_tools and not enable_token_exchange:
         logger.info("Registering OAuth provisioning tools for offline access")
         register_oauth_tools(mcp)

@@ -11,7 +11,6 @@ The PHP app obtains tokens through PKCE flow and uses them to access these endpo
 """
 
 import logging
-import os
 import time
 from importlib.metadata import version
 from typing import Any
@@ -347,11 +346,12 @@ async def get_user_session(request: Request) -> JSONResponse:
         )
 
     # Check if offline access is enabled
-    enable_offline_access = os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
+    # Use settings.enable_offline_access which handles both ENABLE_BACKGROUND_OPERATIONS (new)
+    # and ENABLE_OFFLINE_ACCESS (deprecated) environment variables
+    from nextcloud_mcp_server.config import get_settings
+
+    settings = get_settings()
+    enable_offline_access = settings.enable_offline_access
 
     if not enable_offline_access:
         # Offline access disabled - return minimal session info

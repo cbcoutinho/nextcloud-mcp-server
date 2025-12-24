@@ -1,7 +1,6 @@
 """Scope-based authorization for MCP tools."""
 
 import logging
-import os
 from functools import wraps
 from typing import Any, Callable
 
@@ -131,9 +130,12 @@ def require_scopes(*required_scopes: str):
             required_scopes_set = set(required_scopes)
 
             # Check if offline access is enabled
-            enable_offline_access = (
-                os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() == "true"
-            )
+            # Use settings.enable_offline_access which handles both ENABLE_BACKGROUND_OPERATIONS (new)
+            # and ENABLE_OFFLINE_ACCESS (deprecated) environment variables
+            from nextcloud_mcp_server.config import get_settings
+
+            settings = get_settings()
+            enable_offline_access = settings.enable_offline_access
 
             # In offline access mode, check if Nextcloud scopes require provisioning
             if enable_offline_access:
