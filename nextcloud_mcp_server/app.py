@@ -1841,6 +1841,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         )
                         break
 
+                # Determine authentication mode for background sync
+                # Multi-user BasicAuth: use app passwords via Astrolabe (NOT OAuth)
+                # OAuth mode: use OAuth refresh tokens (NOT app passwords)
+                use_basic_auth = not oauth_enabled
+
                 # Start background tasks using anyio TaskGroup
                 async with anyio_module.create_task_group() as tg:
                     # Start user manager task (supervises per-user scanners)
@@ -1849,11 +1854,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         send_stream,
                         shutdown_event,
                         scanner_wake_event,
-                        token_broker,
+                        token_broker if not use_basic_auth else None,
                         token_storage,  # Use token_storage (works for both OAuth and multi-user BasicAuth)
                         nextcloud_host_for_sync,
                         user_states,
                         tg,
+                        use_basic_auth,  # Pass as positional arg (before task_status)
                     )
 
                     # Start processor pool (each gets a cloned receive stream)
@@ -1863,8 +1869,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                             i,
                             receive_stream.clone(),
                             shutdown_event,
-                            token_broker,
+                            token_broker if not use_basic_auth else None,
                             nextcloud_host_for_sync,
+                            use_basic_auth,  # Pass as positional arg (before task_status)
                         )
 
                     logger.info(
