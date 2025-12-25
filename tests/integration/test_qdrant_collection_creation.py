@@ -10,10 +10,19 @@ These tests validate that:
 from unittest.mock import Mock
 
 import pytest
+from qdrant_client.models import VectorParams
 
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 pytestmark = pytest.mark.integration
+
+
+def get_vector_params(collection_info) -> VectorParams:
+    """Get vector params from collection info, handling named vectors format."""
+    vectors = collection_info.config.params.vectors
+    if isinstance(vectors, dict):
+        return vectors["dense"]
+    return vectors
 
 
 @pytest.fixture(autouse=True)
@@ -75,7 +84,7 @@ async def test_collection_auto_created_on_first_access(monkeypatch):
 
     # Verify collection has correct dimensions
     collection_info = await client.get_collection(collection_name)
-    assert collection_info.config.params.vectors.size == 384
+    assert get_vector_params(collection_info).size == 384
 
 
 @pytest.mark.integration
@@ -127,7 +136,7 @@ async def test_existing_collection_reused(monkeypatch):
 
     # Verify dimensions unchanged
     collection_info = await client2.get_collection(collection_name)
-    assert collection_info.config.params.vectors.size == 384
+    assert get_vector_params(collection_info).size == 384
 
 
 @pytest.mark.integration
@@ -164,7 +173,7 @@ async def test_dimension_mismatch_detected(monkeypatch, tmp_path):
 
     # Verify collection created
     collection_info = await client1.get_collection(collection_name)
-    assert collection_info.config.params.vectors.size == 384
+    assert get_vector_params(collection_info).size == 384
 
     # Close client1 to release file lock
     await client1.close()
@@ -248,11 +257,9 @@ async def test_collection_name_generation(monkeypatch):
     mock_settings = Settings(
         qdrant_location=":memory:",
         ollama_embedding_model="test-model",
+        otel_service_name="test-deployment",
         vector_sync_enabled=False,
     )
-
-    # Mock deployment ID
-    monkeypatch.setenv("MCP_DEPLOYMENT_ID", "test-deployment")
 
     monkeypatch.setattr(
         "nextcloud_mcp_server.vector.qdrant_client.get_settings", lambda: mock_settings
@@ -319,4 +326,4 @@ async def test_collection_uses_cosine_distance(monkeypatch):
 
     from qdrant_client.models import Distance
 
-    assert collection_info.config.params.vectors.distance == Distance.COSINE
+    assert get_vector_params(collection_info).distance == Distance.COSINE

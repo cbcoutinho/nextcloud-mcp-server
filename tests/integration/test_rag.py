@@ -51,6 +51,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_MANUAL_PATH = "Nextcloud Manual.pdf"
 
 
+async def require_vector_sync_tools(nc_mcp_client):
+    """Skip test if vector sync tools are not available."""
+    tools = await nc_mcp_client.list_tools()
+    tool_names = [t.name for t in tools.tools]
+    if "nc_get_vector_sync_status" not in tool_names:
+        pytest.skip("Vector sync tools not available (VECTOR_SYNC_ENABLED not set)")
+
+
 async def llm_judge(
     provider: Provider,
     ground_truth: str,
@@ -116,6 +124,8 @@ async def indexed_manual_pdf(nc_client, nc_mcp_client):
     Environment Variables:
         RAG_MANUAL_PATH: Path to manual PDF in Nextcloud (default: Nextcloud Manual.pdf)
     """
+    await require_vector_sync_tools(nc_mcp_client)
+
     manual_path = os.getenv("RAG_MANUAL_PATH", DEFAULT_MANUAL_PATH)
 
     logger.info(f"Setting up indexed manual PDF: {manual_path}")
@@ -152,7 +162,7 @@ async def indexed_manual_pdf(nc_client, nc_mcp_client):
             )
 
             if not result.isError:
-                content = result.structuredContent or {}
+                content = json.loads(result.content[0].text) if result.content else {}
                 indexed = content.get("indexed_count", 0)
                 pending = content.get("pending_count", 1)
 
@@ -248,7 +258,7 @@ async def test_semantic_search_retrieval(
     )
 
     assert result.isError is False, f"Tool call failed: {result}"
-    data = result.structuredContent
+    data = json.loads(result.content[0].text)
 
     # Verify we got results
     assert data["success"] is True
@@ -295,7 +305,7 @@ async def test_semantic_search_answer_with_sampling(
     )
 
     assert result.isError is False, f"Tool call failed: {result}"
-    data = result.structuredContent
+    data = json.loads(result.content[0].text)
 
     # Verify response structure
     assert data["success"] is True
@@ -369,7 +379,7 @@ async def test_retrieval_quality_all_queries(
     )
 
     assert result.isError is False
-    data = result.structuredContent
+    data = json.loads(result.content[0].text)
 
     assert data["total_found"] >= min_expected_results, (
         f"Query '{query}' returned {data['total_found']} results, "
@@ -393,7 +403,7 @@ async def test_no_results_for_unrelated_query(nc_mcp_client, indexed_manual_pdf)
     )
 
     assert result.isError is False
-    data = result.structuredContent
+    data = json.loads(result.content[0].text)
 
     # Should have few or no high-scoring results
     # Low score threshold means we might get some results, but they should be low quality
