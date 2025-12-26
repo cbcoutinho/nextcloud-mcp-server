@@ -8,165 +8,166 @@
 			<AlertCircle :size="48" />
 			<p>{{ error }}</p>
 		</div>
-		<div v-else ref="container" class="pdf-canvas-container">
-			<canvas ref="canvas" />
+		<div v-else ref="containerRef" class="pdf-canvas-container">
+			<canvas ref="canvasRef" />
 		</div>
 	</div>
 </template>
 
-<script>
+<script setup>
+import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as pdfjsLib from 'pdfjs-dist'
 import { generateUrl } from '@nextcloud/router'
 import { translate as t } from '@nextcloud/l10n'
-import NcLoadingIcon from '@nextcloud/vue/dist/Components/NcLoadingIcon.js'
+import { NcLoadingIcon } from '@nextcloud/vue'
 import AlertCircle from 'vue-material-design-icons/AlertCircle.vue'
 
-export default {
-	name: 'PDFViewer',
-	components: {
-		NcLoadingIcon,
-		AlertCircle,
+const props = defineProps({
+	filePath: {
+		type: String,
+		required: true,
 	},
-	props: {
-		filePath: {
-			type: String,
-			required: true,
-		},
-		pageNumber: {
-			type: Number,
-			default: 1,
-		},
-		scale: {
-			type: Number,
-			default: 1.5,
-		},
+	pageNumber: {
+		type: Number,
+		default: 1,
 	},
-	data() {
-		return {
-			pdfDoc: null,
-			loading: true,
-			error: null,
-			totalPages: 0,
+	scale: {
+		type: Number,
+		default: 1.5,
+	},
+})
+
+const emit = defineEmits(['loaded', 'error', 'page-rendered'])
+
+// Reactive state
+const pdfDoc = ref(null)
+const loading = ref(true)
+const error = ref(null)
+const totalPages = ref(0)
+const canvasRef = ref(null)
+const containerRef = ref(null)
+
+// Methods
+async function loadPDF() {
+	loading.value = true
+	error.value = null
+
+	try {
+		// Clean and encode the file path
+		const cleanPath = props.filePath.startsWith('/')
+			? props.filePath.substring(1)
+			: props.filePath
+		const encodedPath = cleanPath.split('/').map(encodeURIComponent).join('/')
+		const downloadUrl = generateUrl(`/remote.php/webdav/${encodedPath}`)
+
+		// Load PDF document
+		const loadingTask = pdfjsLib.getDocument({
+			url: downloadUrl,
+			withCredentials: true,
+			useWorkerFetch: false, // Disable worker fetch for CSP compliance
+			isEvalSupported: false, // Disable eval for CSP
+		})
+
+		pdfDoc.value = await loadingTask.promise
+		totalPages.value = pdfDoc.value.numPages
+		emit('loaded', { totalPages: totalPages.value })
+
+		// Set loading to false - the watcher will handle rendering
+		loading.value = false
+	} catch (err) {
+		console.error('PDF load error:', err)
+
+		// Provide user-friendly error messages
+		if (err.name === 'MissingPDFException') {
+			error.value = t('astrolabe', 'PDF file not found')
+		} else if (err.name === 'InvalidPDFException') {
+			error.value = t('astrolabe', 'Invalid or corrupted PDF file')
+		} else if (err.message?.includes('NetworkError') || err.message?.includes('Network')) {
+			error.value = t('astrolabe', 'Network error loading PDF')
+		} else if (err.message?.includes('404')) {
+			error.value = t('astrolabe', 'PDF file not found')
+		} else {
+			error.value = t('astrolabe', 'Unable to load PDF file')
 		}
-	},
-	watch: {
-		pageNumber(newPage) {
-			if (this.pdfDoc && newPage > 0 && newPage <= this.totalPages) {
-				this.renderPage(newPage)
-			}
-		},
-		filePath() {
-			// Reload PDF if file path changes
-			this.loadPDF()
-		},
-		async loading(newLoading) {
-			// When loading completes, wait for canvas to be available and render
-			if (!newLoading && this.pdfDoc && !this.error) {
-				// Wait for Vue to update DOM
-				await this.$nextTick()
-				// Canvas should now be rendered (v-else condition)
-				if (this.$refs.canvas) {
-					await this.renderPage(this.pageNumber)
-				}
-			}
-		},
-	},
-	async mounted() {
-		await this.loadPDF()
-	},
-	beforeUnmount() {
-		if (this.pdfDoc) {
-			this.pdfDoc.destroy()
-		}
-	},
-	methods: {
-		t,
-		async loadPDF() {
-			this.loading = true
-			this.error = null
 
-			try {
-				// Clean and encode the file path
-				const cleanPath = this.filePath.startsWith('/')
-					? this.filePath.substring(1)
-					: this.filePath
-				const encodedPath = cleanPath.split('/').map(encodeURIComponent).join('/')
-				const downloadUrl = generateUrl(`/remote.php/webdav/${encodedPath}`)
-
-				// Load PDF document
-				const loadingTask = pdfjsLib.getDocument({
-					url: downloadUrl,
-					withCredentials: true,
-					useWorkerFetch: false, // Disable worker fetch for CSP compliance
-					isEvalSupported: false, // Disable eval for CSP
-				})
-
-				this.pdfDoc = await loadingTask.promise
-				this.totalPages = this.pdfDoc.numPages
-				this.$emit('loaded', { totalPages: this.totalPages })
-
-				// Set loading to false - the watcher will handle rendering
-				this.loading = false
-			} catch (err) {
-				console.error('PDF load error:', err)
-
-				// Provide user-friendly error messages
-				if (err.name === 'MissingPDFException') {
-					this.error = t('astrolabe', 'PDF file not found')
-				} else if (err.name === 'InvalidPDFException') {
-					this.error = t('astrolabe', 'Invalid or corrupted PDF file')
-				} else if (err.message?.includes('NetworkError') || err.message?.includes('Network')) {
-					this.error = t('astrolabe', 'Network error loading PDF')
-				} else if (err.message?.includes('404')) {
-					this.error = t('astrolabe', 'PDF file not found')
-				} else {
-					this.error = t('astrolabe', 'Unable to load PDF file')
-				}
-
-				this.$emit('error', err)
-				this.loading = false
-			}
-		},
-		async renderPage(pageNum) {
-			if (!this.pdfDoc) {
-				return
-			}
-
-			try {
-				const page = await this.pdfDoc.getPage(pageNum)
-				const canvas = this.$refs.canvas
-
-				if (!canvas) {
-					console.error('PDF canvas ref not found')
-					this.error = t('astrolabe', 'Canvas element not available')
-					return
-				}
-
-				const context = canvas.getContext('2d')
-
-				// Use scale for better resolution on high-DPI screens
-				const viewport = page.getViewport({ scale: this.scale })
-
-				canvas.height = viewport.height
-				canvas.width = viewport.width
-
-				// Render page to canvas
-				const renderContext = {
-					canvasContext: context,
-					viewport,
-				}
-
-				await page.render(renderContext).promise
-
-				this.$emit('page-rendered', { pageNumber: pageNum })
-			} catch (err) {
-				console.error('PDF render error:', err)
-				this.error = t('astrolabe', 'Error rendering PDF page')
-				this.$emit('error', err)
-			}
-		},
-	},
+		emit('error', err)
+		loading.value = false
+	}
 }
+
+async function renderPage(pageNum) {
+	if (!pdfDoc.value) {
+		return
+	}
+
+	try {
+		const page = await pdfDoc.value.getPage(pageNum)
+		const canvas = canvasRef.value
+
+		if (!canvas) {
+			console.error('PDF canvas ref not found')
+			error.value = t('astrolabe', 'Canvas element not available')
+			return
+		}
+
+		const context = canvas.getContext('2d')
+
+		// Use scale for better resolution on high-DPI screens
+		const viewport = page.getViewport({ scale: props.scale })
+
+		canvas.height = viewport.height
+		canvas.width = viewport.width
+
+		// Render page to canvas
+		const renderContext = {
+			canvasContext: context,
+			viewport,
+		}
+
+		await page.render(renderContext).promise
+
+		emit('page-rendered', { pageNumber: pageNum })
+	} catch (err) {
+		console.error('PDF render error:', err)
+		error.value = t('astrolabe', 'Error rendering PDF page')
+		emit('error', err)
+	}
+}
+
+// Watchers
+watch(() => props.pageNumber, (newPage) => {
+	if (pdfDoc.value && newPage > 0 && newPage <= totalPages.value) {
+		renderPage(newPage)
+	}
+})
+
+watch(() => props.filePath, () => {
+	// Reload PDF if file path changes
+	loadPDF()
+})
+
+watch(loading, async (newLoading) => {
+	// When loading completes, wait for canvas to be available and render
+	if (!newLoading && pdfDoc.value && !error.value) {
+		// Wait for Vue to update DOM
+		await nextTick()
+		// Canvas should now be rendered (v-else condition)
+		if (canvasRef.value) {
+			await renderPage(props.pageNumber)
+		}
+	}
+})
+
+// Lifecycle hooks
+onMounted(() => {
+	loadPDF()
+})
+
+onBeforeUnmount(() => {
+	if (pdfDoc.value) {
+		pdfDoc.value.destroy()
+	}
+})
 </script>
 
 <style scoped lang="scss">

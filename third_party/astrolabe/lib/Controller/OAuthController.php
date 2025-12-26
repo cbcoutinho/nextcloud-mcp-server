@@ -335,9 +335,10 @@ class OAuthController extends Controller {
 			]);
 		} else {
 			// Fall back to Nextcloud's OIDC app
-			// Use internal localhost URL for HTTP request (always accessible from inside container)
-			// The OIDC discovery response will contain proper external URLs based on overwrite.cli.url
+			// Use internal localhost URL for HTTP request (accessible from inside container)
+			// We'll transform the returned URLs to external format after discovery
 			$discoveryUrl = 'http://localhost/.well-known/openid-configuration';
+			$internalBaseUrl = 'http://localhost';
 
 			$this->logger->info('Using Nextcloud OIDC app as IdP (internal request)', [
 				'discovery_url' => $discoveryUrl,
@@ -368,6 +369,16 @@ class OAuthController extends Controller {
 			}
 
 			$authEndpoint = $discovery['authorization_endpoint'];
+
+			// Transform internal URL to external URL if using Nextcloud OIDC app
+			// The discovery was done via internal http://localhost but browsers need
+			// the external URL (e.g., http://localhost:8080)
+			if (isset($internalBaseUrl)) {
+				$externalBaseUrl = $this->urlGenerator->getAbsoluteURL('/');
+				$externalBaseUrl = rtrim($externalBaseUrl, '/');
+				$authEndpoint = str_replace($internalBaseUrl, $externalBaseUrl, $authEndpoint);
+			}
+
 			$this->logger->info('buildAuthorizationUrl: OIDC discovery succeeded', [
 				'auth_endpoint' => $authEndpoint,
 				'token_endpoint' => $discovery['token_endpoint'] ?? 'not_set',

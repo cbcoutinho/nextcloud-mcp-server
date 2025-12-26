@@ -37,7 +37,7 @@ async def test_capture_settings_page(browser, configure_astrolabe_for_mcp_server
 
         # Navigate to settings
         logger.info("Navigating to personal MCP settings...")
-        await page.goto(f"{nextcloud_host}/settings/user/mcp")
+        await page.goto(f"{nextcloud_host}/settings/user/astrolabe")
         await page.wait_for_load_state("networkidle")
 
         # Capture page content
@@ -52,13 +52,13 @@ async def test_capture_settings_page(browser, configure_astrolabe_for_mcp_server
         logger.info(f"Page URL: {page.url}")
         logger.info(f"Page title: {await page.title()}")
 
-        # Check for key strings
+        # Check for key strings (Vue 3 UI)
         checks = [
-            "Authorize Access",
-            "Authorization Required",
-            "MCP Server",
-            "Sign In Again",
-            "astrolabe",
+            "Enable Semantic Search",  # oauth-required.php authorization button
+            "Service Status",  # personal.php when authorized
+            "Background Sync Access",  # personal.php when authorized
+            "What happens next?",  # oauth-required.php steps
+            "Astrolabe",  # Header
         ]
 
         for check in checks:
@@ -74,6 +74,15 @@ async def test_capture_settings_page(browser, configure_astrolabe_for_mcp_server
         logger.info(f"Found {len(links)} links on page")
         for i, link_text in enumerate(links[:10]):
             logger.info(f"  Link {i}: {link_text}")
+
+        # Check the Enable Semantic Search button href
+        try:
+            btn = page.locator('a:has-text("Enable Semantic Search")')
+            if await btn.count() > 0:
+                href = await btn.get_attribute("href")
+                logger.info(f"Enable Semantic Search button href: {href}")
+        except Exception as e:
+            logger.warning(f"Could not get button href: {e}")
 
         # Check for error messages
         if "error" in page_content.lower():

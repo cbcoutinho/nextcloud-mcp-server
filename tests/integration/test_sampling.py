@@ -13,12 +13,21 @@ Note: These tests require VECTOR_SYNC_ENABLED=true and a configured
 vector database with indexed test data.
 """
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
 from mcp.types import CreateMessageResult, TextContent
 
 pytestmark = pytest.mark.integration
+
+
+async def require_vector_sync_tools(nc_mcp_client):
+    """Skip test if vector sync tools are not available."""
+    tools = await nc_mcp_client.list_tools()
+    tool_names = [t.name for t in tools.tools]
+    if "nc_get_vector_sync_status" not in tool_names:
+        pytest.skip("Vector sync tools not available (VECTOR_SYNC_ENABLED not set)")
 
 
 @pytest.fixture
@@ -55,13 +64,15 @@ async def test_semantic_search_answer_successful_sampling(
     4. Mock ctx.session.create_message to return answer
     5. Verify response contains generated answer and sources
     """
+    await require_vector_sync_tools(nc_mcp_client)
+
     # Get initial indexed count before creating note
     import asyncio
 
     initial_sync = await nc_mcp_client.call_tool(
         "nc_get_vector_sync_status", arguments={}
     )
-    initial_indexed_count = initial_sync.structuredContent["indexed_count"]
+    initial_indexed_count = json.loads(initial_sync.content[0].text)["indexed_count"]
     print(f"Initial indexed count: {initial_indexed_count}")
 
     # Create a note with content about Python async
@@ -90,7 +101,7 @@ Avoid blocking operations in async code.""",
         sync_status = await nc_mcp_client.call_tool(
             "nc_get_vector_sync_status", arguments={}
         )
-        status_data = sync_status.structuredContent
+        status_data = json.loads(sync_status.content[0].text)
 
         print(
             f"Sync status at {waited}s: indexed={status_data['indexed_count']}, pending={status_data['pending_count']}, status={status_data['status']}"
@@ -135,7 +146,7 @@ Avoid blocking operations in async code.""",
     assert call_result.isError is False, (
         f"Tool call failed: {call_result.content[0].text if call_result.isError else ''}"
     )
-    result = call_result.structuredContent
+    result = json.loads(call_result.content[0].text)
 
     # Verify response structure
     assert result is not None
@@ -179,6 +190,8 @@ async def test_semantic_search_answer_no_results(nc_mcp_client):
     2. Verify response indicates no documents found
     3. Verify no sampling call was made (no sources to base answer on)
     """
+    await require_vector_sync_tools(nc_mcp_client)
+
     call_result = await nc_mcp_client.call_tool(
         "nc_semantic_search_answer",
         arguments={
@@ -192,7 +205,7 @@ async def test_semantic_search_answer_no_results(nc_mcp_client):
     assert call_result.isError is False, (
         f"Tool call failed: {call_result.content[0].text if call_result.isError else ''}"
     )
-    result = call_result.structuredContent
+    result = json.loads(call_result.content[0].text)
 
     # Should get "no documents found" message
     assert result is not None
@@ -214,6 +227,8 @@ async def test_semantic_search_answer_with_limit(nc_mcp_client, temporary_note_f
     3. Query with limit=2
     4. Verify at most 2 sources in response
     """
+    await require_vector_sync_tools(nc_mcp_client)
+
     # Create multiple related notes
     _note1 = await temporary_note_factory(
         title="Python Async Part 1",
@@ -242,7 +257,7 @@ async def test_semantic_search_answer_with_limit(nc_mcp_client, temporary_note_f
         sync_status = await nc_mcp_client.call_tool(
             "nc_get_vector_sync_status", arguments={}
         )
-        status_data = sync_status.structuredContent
+        status_data = json.loads(sync_status.content[0].text)
 
         if status_data["status"] == "idle" and status_data["pending_count"] == 0:
             break
@@ -265,7 +280,7 @@ async def test_semantic_search_answer_with_limit(nc_mcp_client, temporary_note_f
     assert call_result.isError is False, (
         f"Tool call failed: {call_result.content[0].text if call_result.isError else ''}"
     )
-    result = call_result.structuredContent
+    result = json.loads(call_result.content[0].text)
 
     # Should respect limit
     assert len(result["sources"]) <= 2
@@ -282,6 +297,8 @@ async def test_semantic_search_answer_score_threshold(
     3. Query with high threshold (0.9)
     4. Verify only high-scoring results returned
     """
+    await require_vector_sync_tools(nc_mcp_client)
+
     _note = await temporary_note_factory(
         title="Exact Match Test",
         content="This is a very specific test document about widget manufacturing",
@@ -299,7 +316,7 @@ async def test_semantic_search_answer_score_threshold(
         sync_status = await nc_mcp_client.call_tool(
             "nc_get_vector_sync_status", arguments={}
         )
-        status_data = sync_status.structuredContent
+        status_data = json.loads(sync_status.content[0].text)
 
         if status_data["status"] == "idle" and status_data["pending_count"] == 0:
             break
@@ -323,7 +340,7 @@ async def test_semantic_search_answer_score_threshold(
     assert call_result.isError is False, (
         f"Tool call failed: {call_result.content[0].text if call_result.isError else ''}"
     )
-    result = call_result.structuredContent
+    result = json.loads(call_result.content[0].text)
 
     # Note: Semantic search scores depend on embedding model
     # We just verify the tool accepts the parameter
@@ -345,6 +362,8 @@ async def test_semantic_search_answer_max_tokens(nc_mcp_client, temporary_note_f
     Note: Token limiting is enforced by the MCP client's LLM, not the server.
     This test just verifies the parameter is correctly passed.
     """
+    await require_vector_sync_tools(nc_mcp_client)
+
     _note = await temporary_note_factory(
         title="Long Document",
         content="This is a document with lots of content. " * 50,
@@ -362,7 +381,7 @@ async def test_semantic_search_answer_max_tokens(nc_mcp_client, temporary_note_f
         sync_status = await nc_mcp_client.call_tool(
             "nc_get_vector_sync_status", arguments={}
         )
-        status_data = sync_status.structuredContent
+        status_data = json.loads(sync_status.content[0].text)
 
         if status_data["status"] == "idle" and status_data["pending_count"] == 0:
             break
@@ -386,7 +405,7 @@ async def test_semantic_search_answer_max_tokens(nc_mcp_client, temporary_note_f
     assert call_result.isError is False, (
         f"Tool call failed: {call_result.content[0].text if call_result.isError else ''}"
     )
-    result = call_result.structuredContent
+    result = json.loads(call_result.content[0].text)
 
     # Should not error, even if sampling fails
     assert result is not None

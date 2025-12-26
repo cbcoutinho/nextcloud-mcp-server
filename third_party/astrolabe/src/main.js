@@ -1,8 +1,11 @@
-import Vue from 'vue'
+import { createApp } from 'vue'
 import { translate as t, translatePlural as n } from '@nextcloud/l10n'
 import App from './App.vue'
 
-Vue.mixin({ methods: { t, n } })
+const app = createApp(App)
 
-const View = Vue.extend(App)
-new View().$mount('#astrolabe')
+// Add translation methods globally
+app.config.globalProperties.t = t
+app.config.globalProperties.n = n
+
+app.mount('#astrolabe')

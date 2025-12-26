@@ -3,65 +3,52 @@
 	<div class="markdown-viewer" v-html="html" />
 </template>
 
-<script>
+<script setup>
+import { ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 
-export default {
-	name: 'MarkdownViewer',
-
-	props: {
-		content: {
-			type: String,
-			required: true,
-		},
+const props = defineProps({
+	content: {
+		type: String,
+		required: true,
 	},
+})
 
-	data() {
-		const md = new MarkdownIt({
-			html: false, // Disable HTML for security
-			linkify: true,
-			breaks: true,
-			typographer: true,
-		})
+const html = ref('')
 
-		return {
-			html: '',
-			md,
-		}
-	},
+// Initialize markdown renderer
+const md = new MarkdownIt({
+	html: false, // Disable HTML for security
+	linkify: true,
+	breaks: true,
+	typographer: true,
+})
 
-	watch: {
-		content: {
-			immediate: true,
-			handler(newContent) {
-				this.renderMarkdown(newContent)
-			},
-		},
-	},
+function renderMarkdown(text) {
+	if (!text) {
+		html.value = ''
+		return
+	}
 
-	methods: {
-		renderMarkdown(text) {
-			if (!text) {
-				this.html = ''
-				return
-			}
-
-			try {
-				this.html = this.md.render(text)
-			} catch (error) {
-				console.error('Markdown rendering error:', error)
-				// Fallback to escaped plain text
-				this.html = `<pre>${this.escapeHtml(text)}</pre>`
-			}
-		},
-
-		escapeHtml(text) {
-			const div = document.createElement('div')
-			div.textContent = text
-			return div.innerHTML
-		},
-	},
+	try {
+		html.value = md.render(text)
+	} catch (error) {
+		console.error('Markdown rendering error:', error)
+		// Fallback to escaped plain text
+		html.value = `<pre>${escapeHtml(text)}</pre>`
+	}
 }
+
+function escapeHtml(text) {
+	const div = document.createElement('div')
+	div.textContent = text
+	return div.innerHTML
+}
+
+// Watch for content changes
+watch(() => props.content, (newContent) => {
+	renderMarkdown(newContent)
+}, { immediate: true })
 </script>
 
 <style scoped lang="scss">

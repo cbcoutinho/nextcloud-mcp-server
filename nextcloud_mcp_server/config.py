@@ -356,6 +356,19 @@ class Settings:
 
         return f"{deployment_id}-{model_name}"
 
+    # ADR-021: Property aliases for new naming convention
+    # These provide the new names while maintaining backward compatibility with old field names
+
+    @property
+    def enable_semantic_search(self) -> bool:
+        """Semantic search enabled (ADR-021 alias for vector_sync_enabled)."""
+        return self.vector_sync_enabled
+
+    @property
+    def enable_background_operations(self) -> bool:
+        """Background operations enabled (ADR-021 alias for enable_offline_access)."""
+        return self.enable_offline_access
+
 
 def _get_semantic_search_enabled() -> bool:
     """Get semantic search enabled status, supporting both old and new variable names.

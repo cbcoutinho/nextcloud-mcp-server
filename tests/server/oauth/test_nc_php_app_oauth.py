@@ -105,21 +105,26 @@ async def authorized_nc_session(
 
         # Step 2: Navigate to personal MCP settings
         logger.info("Navigating to personal MCP settings...")
-        await page.goto(f"{host}/settings/user/mcp")
+        await page.goto(f"{host}/settings/user/astrolabe")
         await page.wait_for_load_state("networkidle")
 
         page_content = await page.content()
 
         # Step 3: Check if authorization is needed
-        if "Authorize Access" in page_content or "authorize" in page_content.lower():
+        # Vue 3 UI shows "Enable Semantic Search" when not authorized
+        if (
+            "Enable Semantic Search" in page_content
+            or "What happens next?" in page_content
+        ):
             logger.info("User not authorized yet - initiating OAuth flow...")
 
-            # Click "Authorize Access" button
+            # Click "Enable Semantic Search" button (Vue 3 template text)
             authorize_selectors = [
-                'button:has-text("Authorize")',
-                'a:has-text("Authorize")',
-                '[href*="oauth/authorize"]',
-                'button:has-text("Connect")',
+                'a:has-text("Enable Semantic Search")',
+                'button:has-text("Enable Semantic Search")',
+                'a:has-text("Sign In Again")',
+                "a.button.primary",
+                '[href*="oauth/login"]',
             ]
 
             clicked = False
@@ -142,9 +147,17 @@ async def authorized_nc_session(
             # Wait for page to load after clicking
             await page.wait_for_load_state("networkidle", timeout=10000)
             current_url = page.url
+            logger.info(f"After clicking authorize, current URL: {current_url}")
+
+            # Take screenshot for debugging
+            await page.screenshot(path="/tmp/nc-php-app-after-authorize-click.png")
+            logger.info("Screenshot saved to /tmp/nc-php-app-after-authorize-click.png")
 
             # Handle OAuth consent if needed
-            if "/apps/oidc/authorize" in current_url:
+            if (
+                "/apps/oidc/authorize" in current_url
+                or "/apps/oidc/consent" in current_url
+            ):
                 logger.info("On OIDC authorization page - granting consent...")
 
                 consent_selectors = [
@@ -163,7 +176,7 @@ async def authorized_nc_session(
                         continue
 
             # Wait for redirect back to settings
-            await page.wait_for_url(f"{host}/settings/user/mcp", timeout=15000)
+            await page.wait_for_url(f"{host}/settings/user/astrolabe", timeout=15000)
             await page.wait_for_load_state("networkidle")
             logger.info("✓ OAuth authorization completed")
 
@@ -197,28 +210,32 @@ class TestNcPhpAppOAuth:
         host = authorized_nc_session["host"]
 
         # Navigate to settings (may already be there)
-        await page.goto(f"{host}/settings/user/mcp")
+        await page.goto(f"{host}/settings/user/astrolabe")
         await page.wait_for_load_state("networkidle")
 
         page_content = await page.content()
 
-        # Look for indicators that authorization succeeded
+        # Look for indicators that authorization succeeded (Vue 3 personal.php template)
+        # These must be unique to the authorized state (not found in oauth-required.php)
         success_indicators = [
-            "Connected",
-            "Disconnect",
-            "Server Connection",
-            "Session Information",
-            "MCP Server",
+            "Service Status",
+            "Background Sync Access",
+            "Manage Connection",
+            "Revoke Access",
+            "Service URL",
         ]
 
-        has_success_indicator = any(
-            indicator in page_content for indicator in success_indicators
-        )
+        found_indicators = [ind for ind in success_indicators if ind in page_content]
+        has_success_indicator = len(found_indicators) > 0
+
+        # Always take screenshot for debugging
+        screenshot_path = "/tmp/nc-php-app-auth-check.png"
+        await page.screenshot(path=screenshot_path)
+        logger.info(f"Authorization check screenshot: {screenshot_path}")
+        logger.info(f"Found success indicators: {found_indicators}")
 
         if not has_success_indicator:
-            screenshot_path = "/tmp/nc-php-app-auth-check.png"
-            await page.screenshot(path=screenshot_path)
-            logger.error(f"Authorization check failed. Screenshot: {screenshot_path}")
+            logger.error("Authorization check failed.")
 
         assert has_success_indicator, "Settings page should show user is authorized"
         logger.info("✓ Authorization verification passed")
@@ -232,7 +249,7 @@ class TestNcPhpAppOAuth:
         page = authorized_nc_session["page"]
         host = authorized_nc_session["host"]
 
-        await page.goto(f"{host}/settings/user/mcp")
+        await page.goto(f"{host}/settings/user/astrolabe")
         await page.wait_for_load_state("networkidle")
 
         page_content = await page.content()
@@ -243,12 +260,12 @@ class TestNcPhpAppOAuth:
         logger.info(f"Screenshot saved: {screenshot_path}")
         logger.info(f"Page content excerpt: {page_content[:1000]}")
 
-        # Verify session information is visible - these are the actual labels from template
+        # Verify session information is visible (Vue 3 personal.php template)
         session_indicators = [
-            "Server Connection",
-            "Session Information",
-            "Connection Management",
-            "MCP Server",
+            "Service Status",
+            "Service URL",
+            "Version",
+            "Background Sync Access",
         ]
 
         found_indicators = [ind for ind in session_indicators if ind in page_content]
@@ -270,17 +287,17 @@ class TestNcPhpAppOAuth:
         host = authorized_nc_session["host"]
 
         # Check personal settings page shows server status
-        await page.goto(f"{host}/settings/user/mcp")
+        await page.goto(f"{host}/settings/user/astrolabe")
         await page.wait_for_load_state("networkidle")
 
         page_content = await page.content()
 
-        # Look for data that comes from management API or template structure
+        # Look for data that comes from management API or template structure (Vue 3)
         api_indicators = [
-            "Server Connection",  # Section header
-            "Server URL",  # Server info
-            "Connection Management",  # Connection section
-            "Vector Visualization",  # Vector sync section
+            "Service Status",  # Section header
+            "Service URL",  # Server info from API
+            "Version",  # Server version from management API
+            "Semantic Search",  # Vector sync status
         ]
 
         found_api_data = [ind for ind in api_indicators if ind in page_content]
@@ -298,23 +315,24 @@ class TestNcPhpAppOAuth:
         page = authorized_nc_session["page"]
         host = authorized_nc_session["host"]
 
-        await page.goto(f"{host}/settings/admin/mcp")
+        await page.goto(f"{host}/settings/admin/astrolabe")
         await page.wait_for_load_state("networkidle")
 
         page_content = await page.content()
 
-        # Admin page should show server status
+        # Admin page should show server status (Vue 3 AdminSettings.vue)
         admin_indicators = [
-            "MCP Server",
-            "Server Status",
+            "Astrolabe",
+            "Service Status",
             "Version",
+            "Semantic Search",
         ]
 
         found_indicators = [ind for ind in admin_indicators if ind in page_content]
 
-        # Admin page should at least show the MCP Server header
-        assert "MCP Server" in page_content or "mcp" in page_content.lower(), (
-            "Admin settings page should show MCP Server section"
+        # Admin page should at least show the Astrolabe header or Service Status
+        assert "Astrolabe" in page_content or "Service Status" in page_content, (
+            "Admin settings page should show Astrolabe section"
         )
 
         logger.info(f"✓ Admin settings page verified - found: {found_indicators}")
@@ -355,13 +373,13 @@ class TestNcPhpAppDisconnect:
             await page.wait_for_url(f"{host}/apps/dashboard/", timeout=10000)
 
             # Navigate to personal settings
-            await page.goto(f"{host}/settings/user/mcp")
+            await page.goto(f"{host}/settings/user/astrolabe")
             await page.wait_for_load_state("networkidle")
 
             page_content = await page.content()
 
-            # Check if user is authorized
-            if "Disconnect" not in page_content:
+            # Check if user is authorized (Vue 3 personal.php shows Disconnect/Revoke when authorized)
+            if "Disconnect" not in page_content and "Revoke Access" not in page_content:
                 pytest.skip("User not authorized - cannot test disconnect")
 
             # Click disconnect button
@@ -384,10 +402,10 @@ class TestNcPhpAppDisconnect:
             # Wait for page reload
             await page.wait_for_load_state("networkidle")
 
-            # Verify we're back to "Authorize Access" state
+            # Verify we're back to "Enable Semantic Search" state (Vue 3 oauth-required.php)
             page_content = await page.content()
-            assert "Authorize" in page_content, (
-                "Settings page should show 'Authorize Access' after disconnect"
+            assert "Enable Semantic Search" in page_content, (
+                "Settings page should show 'Enable Semantic Search' after disconnect"
             )
 
             logger.info("✓ Disconnect flow test passed")

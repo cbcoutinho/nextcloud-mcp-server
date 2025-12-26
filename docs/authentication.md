@@ -140,6 +140,93 @@ Basic Authentication uses username and password credentials directly.
 - [Configuration](configuration.md#basic-authentication-legacy) - BasicAuth environment variables
 - [Running the Server](running.md#basicauth-mode-legacy) - BasicAuth examples
 
+## Hybrid Authentication (Multi-User BasicAuth + OAuth)
+
+When running in multi-user BasicAuth mode with `ENABLE_OFFLINE_ACCESS=true`, the server operates in **hybrid authentication mode**. This provides the simplicity of BasicAuth for normal operations with the security of OAuth for administrative functions.
+
+### Authentication Domains
+
+**MCP Operations** (Tools, Resources):
+- **Auth Method**: BasicAuth (HTTP Basic username/password)
+- **Characteristics**:
+  - Stateless - no token storage
+  - Simple configuration
+  - Direct credential validation against Nextcloud
+  - Credentials passed per-request in Authorization header
+- **Used For**: MCP tool calls from Claude, MCP client operations
+
+**Management APIs** (Webhooks, Admin UI):
+- **Auth Method**: OAuth bearer tokens
+- **Characteristics**:
+  - Per-user authorization via OAuth consent flow
+  - Refresh tokens stored for background operations
+  - Token validation via UnifiedTokenVerifier
+  - Explicit user consent required
+- **Used For**: Astrolabe admin UI, webhook management, vector sync operations
+
+### Configuration
+
+```env
+# Enable multi-user BasicAuth
+ENABLE_MULTI_USER_BASIC_AUTH=true
+
+# Enable hybrid mode (OAuth provisioning for management APIs)
+ENABLE_OFFLINE_ACCESS=true
+
+# Enable background sync (required for hybrid mode currently)
+VECTOR_SYNC_ENABLED=true
+
+# Encryption key for refresh token storage
+TOKEN_ENCRYPTION_KEY=<base64-encoded-key>
+
+# Nextcloud connection
+NEXTCLOUD_HOST=https://cloud.example.com
+
+# OAuth credentials (optional - uses DCR if not set)
+NEXTCLOUD_OIDC_CLIENT_ID=<client-id>
+NEXTCLOUD_OIDC_CLIENT_SECRET=<client-secret>
+```
+
+### OAuth Provisioning Flow
+
+1. Admin opens Astrolabe admin settings in Nextcloud
+2. Clicks "Authorize" to enable webhook management
+3. Redirected to `/oauth/authorize-nextcloud` on MCP server
+4. MCP server redirects to Nextcloud OAuth consent page
+5. Admin grants OAuth consent (scopes: `openid`, `profile`, `offline_access`)
+6. Redirected back to `/oauth/callback` on MCP server
+7. MCP server stores refresh token (encrypted)
+8. Admin can now manage webhooks from Astrolabe UI
+
+### Benefits
+
+- **Simple MCP client setup**: Use BasicAuth (no OAuth complexity for end users)
+- **Secure background operations**: Webhooks use per-user OAuth tokens (no shared credentials)
+- **Explicit authorization**: Admins must explicitly grant OAuth consent for webhook operations
+- **Per-user isolation**: Each admin's webhook operations use their own refresh token
+
+### Trade-offs
+
+- **Two auth systems**: More complex server configuration than pure BasicAuth or OAuth
+- **OAuth setup required**: Admins must complete OAuth flow before managing webhooks
+- **Token storage**: Requires database and encryption key for refresh tokens
+
+### Comparison
+
+| Feature | Pure BasicAuth | Hybrid Mode | Pure OAuth |
+|---------|---------------|-------------|------------|
+| MCP Operations | BasicAuth | BasicAuth | OAuth Bearer Token |
+| Management API | N/A | OAuth Bearer Token | OAuth Bearer Token |
+| Webhook Operations | N/A | OAuth Refresh Token | OAuth Refresh Token |
+| MCP Client Setup | Simple | Simple | Complex (PKCE flow) |
+| Admin UI Auth | N/A | OAuth Consent | OAuth Login |
+| Token Storage | None | Refresh tokens only | All tokens |
+| Deployment Complexity | Low | Medium | High |
+
+### See Also
+- [OAuth Architecture](oauth-architecture.md) - Progressive Consent (Flow 2) details
+- [Configuration](configuration.md#enable_offline_access) - Hybrid mode configuration
+
 ## Mode Detection
 
 The server automatically detects the authentication mode:

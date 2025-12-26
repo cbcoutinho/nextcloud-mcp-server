@@ -303,16 +303,17 @@ async def provision_nextcloud_access(
                 ),
             )
 
-        # Get configuration
-        enable_offline_access = (
-            os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() == "true"
-        )
-        if not enable_offline_access:
+        # Get configuration using settings (handles both ENABLE_BACKGROUND_OPERATIONS
+        # and ENABLE_OFFLINE_ACCESS environment variables)
+        from nextcloud_mcp_server.config import get_settings
+
+        settings = get_settings()
+        if not settings.enable_offline_access:
             return ProvisioningResult(
                 success=False,
                 message=(
                     "Offline access is not enabled. "
-                    "Set ENABLE_OFFLINE_ACCESS=true to use this feature."
+                    "Set ENABLE_BACKGROUND_OPERATIONS=true to use this feature."
                 ),
             )
 
@@ -488,13 +489,14 @@ async def check_logged_in(ctx: Context, user_id: Optional[str] = None) -> str:
         logger.info("=" * 60)
 
         # Not logged in - generate OAuth URL for Flow 2
-        enable_offline_access = (
-            os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() == "true"
-        )
-        if not enable_offline_access:
+        # Use settings (handles both ENABLE_BACKGROUND_OPERATIONS and ENABLE_OFFLINE_ACCESS)
+        from nextcloud_mcp_server.config import get_settings
+
+        settings = get_settings()
+        if not settings.enable_offline_access:
             return (
                 "Not logged in. Offline access is not enabled. "
-                "Set ENABLE_OFFLINE_ACCESS=true to use this feature."
+                "Set ENABLE_BACKGROUND_OPERATIONS=true to use this feature."
             )
 
         # Get MCP server's OAuth client credentials

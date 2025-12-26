@@ -99,11 +99,11 @@ ingress:
 |-----------|-------------|---------|
 | `nextcloud.host` | URL of your Nextcloud instance (required) | `""` |
 | `nextcloud.mcpServerUrl` | MCP server URL for OAuth callbacks (OAuth only, optional) | Smart default* |
-| `nextcloud.publicIssuerUrl` | Public issuer URL for OAuth (OAuth only, optional) | Smart default** |
+| `nextcloud.publicIssuerUrl` | Public URL for browser-accessible OAuth authorization endpoint (OAuth only, optional) | Smart default** |
 
 **Smart Defaults:**
 - `*mcpServerUrl`: If not set, automatically uses ingress host (if enabled) or `http://localhost:8000` (for port-forward setups)
-- `**publicIssuerUrl`: If not set, automatically defaults to `nextcloud.host` (which works when both clients and MCP server access Nextcloud at the same URL)
+- `**publicIssuerUrl`: If not set, defaults to `nextcloud.host`. **Only used for authorization endpoints** that browsers must access. All server-to-server endpoints (token, JWKS, introspection, userinfo) use URLs from OIDC discovery without rewriting
 
 #### Authentication
 
@@ -208,16 +208,16 @@ The application exposes HTTP health check endpoints:
 
 #### Vector Search & Semantic Capabilities (Optional)
 
-Enable semantic search capabilities by deploying a vector database (Qdrant) and embedding service (Ollama or OpenAI).
+Enable semantic search capabilities with BM25 hybrid search by deploying a vector database (Qdrant) and embedding service (Ollama or OpenAI).
 
-**Vector Sync Configuration:**
+**Semantic Search Configuration:**
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `vectorSync.enabled` | Enable background vector synchronization | `false` |
-| `vectorSync.scanInterval` | Scan interval in seconds | `3600` |
-| `vectorSync.processorWorkers` | Number of concurrent processor workers | `3` |
-| `vectorSync.queueMaxSize` | Maximum queue size for pending documents | `10000` |
+| `semanticSearch.enabled` | Enable semantic search and background vector synchronization | `false` |
+| `semanticSearch.scanInterval` | Scan interval in seconds | `3600` |
+| `semanticSearch.processorWorkers` | Number of concurrent processor workers | `3` |
+| `semanticSearch.queueMaxSize` | Maximum queue size for pending documents | `10000` |
 
 **Document Chunking Configuration:**
 
@@ -427,7 +427,7 @@ nextcloud:
   host: https://cloud.example.com
   # mcpServerUrl and publicIssuerUrl are optional!
   # If not set, mcpServerUrl defaults to ingress host or localhost
-  # publicIssuerUrl defaults to nextcloud.host
+  # publicIssuerUrl defaults to nextcloud.host (only used for browser-accessible auth endpoint)
 
 auth:
   mode: oauth
@@ -459,7 +459,7 @@ This example shows OAuth without pre-registered credentials (using DCR) and opti
 nextcloud:
   host: https://cloud.example.com
   # mcpServerUrl will automatically use ingress host (https://mcp.example.com)
-  # publicIssuerUrl will automatically default to nextcloud.host
+  # publicIssuerUrl will automatically default to nextcloud.host (only used for browser-accessible auth endpoint)
 
 auth:
   mode: oauth
@@ -537,8 +537,8 @@ auth:
     username: admin
     password: secure-password
 
-# Enable vector sync
-vectorSync:
+# Enable semantic search
+semanticSearch:
   enabled: true
   scanInterval: 1800  # Scan every 30 minutes
   processorWorkers: 5
@@ -576,7 +576,7 @@ ollama:
 Or use an external Ollama instance:
 
 ```yaml
-vectorSync:
+semanticSearch:
   enabled: true
 
 qdrant:
@@ -592,7 +592,7 @@ ollama:
 Or use OpenAI for embeddings:
 
 ```yaml
-vectorSync:
+semanticSearch:
   enabled: true
 
 qdrant:
@@ -689,7 +689,9 @@ Readiness (returns 200 if ready, 503 if not ready):
 
 1. **Connection refused to Nextcloud**
    - Verify `nextcloud.host` is accessible from the Kubernetes cluster
+   - For OAuth mode: Ensure MCP server can reach OIDC discovery endpoints (token, JWKS, introspection, userinfo URLs)
    - Check network policies and firewall rules
+   - Note: Do not use internal Docker hostnames (like `http://app:80`) for `nextcloud.host` - use externally resolvable URLs
 
 2. **Authentication failures**
    - For basic auth: verify username/password are correct

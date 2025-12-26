@@ -11,7 +11,6 @@ The PHP app obtains tokens through PKCE flow and uses them to access these endpo
 """
 
 import logging
-import os
 import time
 from importlib.metadata import version
 from typing import Any
@@ -55,6 +54,22 @@ async def validate_token_and_get_user(
 ) -> tuple[str, dict[str, Any]]:
     """Validate OAuth bearer token and extract user ID.
 
+    Uses verify_token_for_management_api which accepts any valid Nextcloud OIDC
+    token (not just MCP-audience tokens). This is needed because Astrolabe
+    (NC PHP app) uses its own OAuth client, separate from MCP server's client.
+
+    Security Model:
+    ~~~~~~~~~~~~~~~
+    - **Authentication** (this function): Verifies token is cryptographically valid
+      and extracts user identity from the `sub` claim.
+    - **Authorization** (calling endpoints): Each endpoint MUST verify that the
+      authenticated user owns the requested resource. For example:
+      - GET /users/{user_id}/session: Checks token_user_id == path_user_id (403 if mismatch)
+      - POST /users/{user_id}/revoke: Checks token_user_id == path_user_id (403 if mismatch)
+
+    This separation ensures that even without audience validation, users can only
+    access their own resources. Cross-user access is blocked at the authorization layer.
+
     Args:
         request: Starlette request with Authorization header
 
@@ -72,9 +87,10 @@ async def validate_token_and_get_user(
     # Note: This is set in app.py starlette_lifespan for OAuth mode
     token_verifier = request.app.state.oauth_context["token_verifier"]
 
-    # Validate token (handles both JWT and opaque tokens)
-    # verify_token returns AccessToken object or None
-    access_token = await token_verifier.verify_token(token)
+    # Validate token for management API (handles both JWT and opaque tokens)
+    # Uses verify_token_for_management_api which accepts any valid Nextcloud token
+    # without requiring MCP audience - needed for Astrolabe integration (ADR-018)
+    access_token = await token_verifier.verify_token_for_management_api(token)
 
     if not access_token:
         raise ValueError("Token validation failed")
@@ -347,11 +363,12 @@ async def get_user_session(request: Request) -> JSONResponse:
         )
 
     # Check if offline access is enabled
-    enable_offline_access = os.getenv("ENABLE_OFFLINE_ACCESS", "false").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
+    # Use settings.enable_offline_access which handles both ENABLE_BACKGROUND_OPERATIONS (new)
+    # and ENABLE_OFFLINE_ACCESS (deprecated) environment variables
+    from nextcloud_mcp_server.config import get_settings
+
+    settings = get_settings()
+    enable_offline_access = settings.enable_offline_access
 
     if not enable_offline_access:
         # Offline access disabled - return minimal session info

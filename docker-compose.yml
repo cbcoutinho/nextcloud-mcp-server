@@ -138,7 +138,7 @@ services:
       - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8003
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
       - ENABLE_MULTI_USER_BASIC_AUTH=true
-      - ENABLE_OFFLINE_ACCESS=true
+      #- ENABLE_OFFLINE_ACCESS=true
       - ENABLE_BACKGROUND_OPERATIONS=true
 
       # Token storage (required for middleware initialization)
@@ -178,7 +178,8 @@ services:
       - NEXTCLOUD_OIDC_SCOPES=openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write
 
       # Refresh token storage (ADR-002 Tier 1)
-      - ENABLE_OFFLINE_ACCESS=true
+      #- ENABLE_OFFLINE_ACCESS=true
+      - ENABLE_BACKGROUND_OPERATIONS=true
       - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
       - TOKEN_STORAGE_DB=/app/data/tokens.db
 
@@ -187,7 +188,8 @@ services:
       # No token exchange needed - tokens work for both MCP auth and Nextcloud APIs
 
       # Vector sync configuration (ADR-007)
-      - VECTOR_SYNC_ENABLED=true
+      - ENABLE_SEMANTIC_SEARCH=true
+      #- VECTOR_SYNC_ENABLED=true
       - VECTOR_SYNC_SCAN_INTERVAL=60
       - VECTOR_SYNC_PROCESSOR_WORKERS=1
 
@@ -255,7 +257,8 @@ services:
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8888/realms/nextcloud-mcp
 
       # Refresh token storage (ADR-002 Tier 1 & 2)
-      - ENABLE_OFFLINE_ACCESS=true
+      #- ENABLE_OFFLINE_ACCESS=true
+      - ENABLE_BACKGROUND_OPERATIONS=true
       - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
       - TOKEN_STORAGE_DB=/app/data/tokens.db
 

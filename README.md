@@ -99,7 +99,7 @@ Want to see another Nextcloud app supported? [Open an issue](https://github.com/
 
 ### Authentication Modes
 
-The server supports two authentication modes:
+The server supports three authentication modes:
 
 **Single-User Mode (BasicAuth):**
 - One set of credentials shared by all MCP clients
@@ -112,6 +112,12 @@ The server supports two authentication modes:
 - Per-user scopes and permissions (clients only see tools they're authorized for)
 - More secure: tokens expire, credentials never shared with server
 - Best for: Teams, multi-user deployments, production environments with multiple users
+
+**Hybrid Mode (Multi-User BasicAuth + OAuth):**
+- MCP clients use BasicAuth (simple, stateless)
+- Admin operations use OAuth (webhooks, background sync)
+- Best for: Nextcloud deployments with admin-managed webhooks and semantic search
+- Requires: `ENABLE_MULTI_USER_BASIC_AUTH=true` + `ENABLE_OFFLINE_ACCESS=true`
 
 See [docs/authentication.md](docs/authentication.md) for detailed setup instructions.
 
