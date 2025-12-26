@@ -14,6 +14,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.56.0 (2025-12-26)
+
+### Feat
+
+- Remove URL rewriting in favor of proper nextcloud config
+- **helm**: migrate to new environment variable naming convention
+- Migrate to vue 3
+- **astrolabe**: upgrade to Vue 3 and @nextcloud/vue 9
+
+### Fix
+
+- **tests**: Add singleton reset fixture to prevent anyio.WouldBlock errors
+- **tests**: Fix integration test failures in qdrant, sampling, and rag tests
+- **auth**: Skip issuer validation for management API tokens
+- Use settings.enable_offline_access for env var consolidation
+- Add required config.py attributes
+- **docker**: remove overwritehost to fix container-to-container DCR
+- **deps**: update dependency @nextcloud/vue to v9
+- **deps**: update dependency vue to v3
+
+### Refactor
+
+- **auth**: Decouple BasicAuth and OAuth authentication strategies
+
 ## nextcloud-mcp-server-0.55.2 (2025-12-22)
 
 ### Fix
