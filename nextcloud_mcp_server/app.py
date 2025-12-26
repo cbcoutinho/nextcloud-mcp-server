@@ -993,10 +993,32 @@ async def setup_oauth_config_for_multi_user_basic(
     )
 
     # Perform OIDC discovery
-    async with httpx.AsyncClient() as http_client:
-        response = await http_client.get(discovery_url)
-        response.raise_for_status()
-        discovery = response.json()
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            response = await http_client.get(discovery_url)
+            response.raise_for_status()
+            discovery = response.json()
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"OIDC discovery failed: HTTP {e.response.status_code} from {discovery_url}"
+        )
+        raise ValueError(
+            f"OIDC discovery failed: HTTP {e.response.status_code} from {discovery_url}. "
+            "Ensure Nextcloud OIDC (user_oidc app) is installed and configured."
+        ) from e
+    except httpx.RequestError as e:
+        logger.error(f"OIDC discovery failed: {e}")
+        raise ValueError(
+            f"OIDC discovery failed: Cannot connect to {discovery_url}. Error: {e}"
+        ) from e
+    except (KeyError, ValueError) as e:
+        logger.error(
+            f"OIDC discovery failed: Invalid response from {discovery_url}: {e}"
+        )
+        raise ValueError(
+            f"OIDC discovery failed: Invalid response from {discovery_url}. "
+            "The endpoint did not return valid OIDC configuration."
+        ) from e
 
     logger.info("✓ OIDC discovery successful (multi-user BasicAuth)")
 

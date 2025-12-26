@@ -203,26 +203,55 @@ class TestSetupOAuthConfigForMultiUserBasic:
         # Verify issuer is used directly for JWT validation
         assert hybrid_auth_settings.oidc_issuer == oidc_discovery_response["issuer"]
 
-    async def test_oidc_discovery_failure(self, hybrid_auth_settings, mocker):
-        """Test handling of OIDC discovery failure."""
-        # Mock httpx.AsyncClient to raise an HTTP error
+    async def test_oidc_discovery_failure_http_error(
+        self, hybrid_auth_settings, mocker
+    ):
+        """Test handling of OIDC discovery HTTP errors."""
         import httpx
 
+        # Create a mock response with a status error
         mock_response = MagicMock()
-        mock_response.raise_for_status.side_effect = httpx.HTTPError(
-            "Connection failed"
+        mock_response.status_code = 404
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Not Found",
+            request=MagicMock(),
+            response=MagicMock(status_code=404),
         )
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
         mock_client.__aenter__.return_value = mock_client
-        mock_client.__aexit__.return_value = AsyncMock()
+        # Return None to propagate exceptions (not suppress them)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
 
         mocker.patch("httpx.AsyncClient", return_value=mock_client)
 
-        # Call function and expect exception (currently raises UnboundLocalError
-        # due to exception in async with block - this is a known issue)
-        with pytest.raises((httpx.HTTPError, UnboundLocalError)):
+        # Should raise ValueError with helpful message (not UnboundLocalError)
+        with pytest.raises(ValueError, match="OIDC discovery failed"):
+            await setup_oauth_config_for_multi_user_basic(
+                settings=hybrid_auth_settings,
+                client_id="test-client-id",
+                client_secret="test-client-secret",
+            )
+
+    async def test_oidc_discovery_failure_connection_error(
+        self, hybrid_auth_settings, mocker
+    ):
+        """Test handling of OIDC discovery connection errors."""
+        import httpx
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(
+            side_effect=httpx.ConnectError("Connection refused")
+        )
+        mock_client.__aenter__.return_value = mock_client
+        # Return None to propagate exceptions (not suppress them)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        mocker.patch("httpx.AsyncClient", return_value=mock_client)
+
+        # Should raise ValueError with helpful message
+        with pytest.raises(ValueError, match="Cannot connect to"):
             await setup_oauth_config_for_multi_user_basic(
                 settings=hybrid_auth_settings,
                 client_id="test-client-id",

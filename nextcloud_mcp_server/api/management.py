@@ -58,6 +58,18 @@ async def validate_token_and_get_user(
     token (not just MCP-audience tokens). This is needed because Astrolabe
     (NC PHP app) uses its own OAuth client, separate from MCP server's client.
 
+    Security Model:
+    ~~~~~~~~~~~~~~~
+    - **Authentication** (this function): Verifies token is cryptographically valid
+      and extracts user identity from the `sub` claim.
+    - **Authorization** (calling endpoints): Each endpoint MUST verify that the
+      authenticated user owns the requested resource. For example:
+      - GET /users/{user_id}/session: Checks token_user_id == path_user_id (403 if mismatch)
+      - POST /users/{user_id}/revoke: Checks token_user_id == path_user_id (403 if mismatch)
+
+    This separation ensures that even without audience validation, users can only
+    access their own resources. Cross-user access is blocked at the authorization layer.
+
     Args:
         request: Starlette request with Authorization header
 

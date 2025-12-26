@@ -121,15 +121,35 @@ class UnifiedTokenVerifier(TokenVerifier):
         """
         Verify token for management API access (ADR-018 NC PHP app integration).
 
-        This is a more lenient verification that accepts ANY valid Nextcloud OIDC
-        token, not just tokens with MCP server audience. This is needed because:
+        This verification accepts ANY valid Nextcloud OIDC token, not just tokens
+        with MCP server audience. This is needed because:
         - Astrolabe (NC PHP app) uses its own OAuth client with Nextcloud OIDC
         - Tokens from Astrolabe have Astrolabe's client_id as audience
         - MCP server's management API should accept these tokens
 
-        Security model:
-        - Authentication: Token is valid (issued by Nextcloud, not expired)
-        - Authorization: Token's user == requested resource (checked by management API)
+        Security Model:
+        ~~~~~~~~~~~~~~~~
+        This relaxed audience validation is secure because:
+
+        1. **Authentication layer** (this method):
+           - Verifies token signature against Nextcloud's JWKS (cryptographic proof)
+           - Verifies token is not expired
+           - Extracts user identity from validated token claims
+
+        2. **Authorization layer** (management API endpoints):
+           - EVERY endpoint verifies: token.sub == requested_resource_owner
+           - Example: GET /users/{user_id}/session checks token_user_id == path_user_id
+           - Users can ONLY access their own resources, never another user's
+
+        3. **Attack scenario analysis**:
+           - Attacker with stolen token for App A cannot access user B's data
+           - Token's `sub` claim is cryptographically bound to a specific user
+           - Authorization layer rejects cross-user access attempts (403 Forbidden)
+
+        4. **Why audience validation isn't needed here**:
+           - Audience validation prevents token confusion attacks across services
+           - But management API authorization already gates access per-user
+           - A token valid for "astrolabe" is still bound to user X, not user Y
 
         Args:
             token: Bearer token to verify
@@ -241,12 +261,19 @@ class UnifiedTokenVerifier(TokenVerifier):
         be accepted. These tokens are issued by Nextcloud OIDC to Astrolabe's
         OAuth client, not MCP server's client.
 
-        Security model:
-        - We skip audience check (token may have Astrolabe's audience, not MCP's)
-        - We skip issuer check (token may have internal Nextcloud URL as issuer)
-        - We still verify signature (token is authentically from Nextcloud OIDC)
-        - We still verify expiration (token is not expired)
-        - Authorization is checked by management API (user == requested resource)
+        What we verify:
+        - ✓ Token signature (cryptographic proof token is from Nextcloud OIDC)
+        - ✓ Token expiration (not expired)
+        - ✓ Token structure (valid JWT format)
+
+        What we skip:
+        - ✗ Audience check (token may have Astrolabe's audience, not MCP's)
+        - ✗ Issuer check (token may have internal Nextcloud URL as issuer)
+
+        Security guarantee:
+        - Authorization is enforced by management API endpoints
+        - Each endpoint verifies: token.sub == requested_resource_owner
+        - See verify_token_for_management_api() docstring for full security model
 
         Args:
             token: Bearer token to verify
