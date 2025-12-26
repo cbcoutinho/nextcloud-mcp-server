@@ -1,8 +1,15 @@
 """Base interfaces and data structures for search algorithms."""
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
+
+from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
+from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 
 @runtime_checkable
@@ -78,13 +85,6 @@ async def get_indexed_doc_types(user_id: str) -> set[str]:
         >>> if "note" in types:
         ...     # Search notes
     """
-    import logging
-
-    from qdrant_client.models import FieldCondition, Filter, MatchValue
-
-    from nextcloud_mcp_server.config import get_settings
-    from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
-    from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
     logger = logging.getLogger(__name__)
     settings = get_settings()

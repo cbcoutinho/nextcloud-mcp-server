@@ -10,6 +10,9 @@ varies between indexing and rendering.
 
 import logging
 import re
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Optional
 
 import pymupdf
@@ -77,8 +80,6 @@ class PDFHighlighter:
             Tuple of (full_text, page_boundaries) where page_boundaries is a list of:
             {"page": 1, "start_offset": 0, "end_offset": 1234}
         """
-        import tempfile
-        from pathlib import Path
 
         page_boundaries = []
         text_parts = []
@@ -110,7 +111,6 @@ class PDFHighlighter:
         full_text = "".join(text_parts)
 
         # Clean up temp directory and extracted images
-        import shutil
 
         try:
             shutil.rmtree(temp_dir)
@@ -590,8 +590,6 @@ class PDFHighlighter:
         Returns:
             Tuple of (png_bytes, page_number, highlight_count) or None if failed
         """
-        import tempfile
-        from pathlib import Path
 
         temp_pdf_path = None
         try:

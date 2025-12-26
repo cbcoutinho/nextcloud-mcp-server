@@ -8,6 +8,7 @@ APIs use OAuth.
 
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from nextcloud_mcp_server.app import setup_oauth_config_for_multi_user_basic
@@ -207,7 +208,6 @@ class TestSetupOAuthConfigForMultiUserBasic:
         self, hybrid_auth_settings, mocker
     ):
         """Test handling of OIDC discovery HTTP errors."""
-        import httpx
 
         # Create a mock response with a status error
         mock_response = MagicMock()

@@ -3,6 +3,7 @@
 import logging
 from dataclasses import dataclass
 
+import anyio
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,6 @@ class DocumentChunker:
         Returns:
             List of chunks with their character positions in the original content
         """
-        import anyio
 
         # Handle empty content - return single empty chunk for backward compatibility
         if not content:

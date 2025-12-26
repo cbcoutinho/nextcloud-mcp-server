@@ -3,6 +3,7 @@
 import logging
 from typing import Any
 
+import anyio
 from fastembed import SparseTextEmbedding
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,6 @@ class BM25SparseEmbeddingProvider:
         Returns:
             Dictionary with 'indices' and 'values' keys for Qdrant sparse vector
         """
-        import anyio
 
         # Run CPU-bound BM25 encoding in thread pool
         return await anyio.to_thread.run_sync(lambda: self.encode(text))  # type: ignore[attr-defined]
@@ -82,7 +82,6 @@ class BM25SparseEmbeddingProvider:
         Returns:
             List of dictionaries with 'indices' and 'values' for each text
         """
-        import anyio
 
         # Run CPU-bound BM25 encoding in thread pool to avoid blocking event loop
         sparse_embeddings = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]

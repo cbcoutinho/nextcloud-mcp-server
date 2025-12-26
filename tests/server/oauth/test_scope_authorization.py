@@ -11,13 +11,15 @@ Note: Tests use JWT OAuth tokens because scopes are embedded in the token payloa
 enabling efficient scope-based tool filtering without additional API calls.
 """
 
+import logging
+
+import httpx
 import pytest
 
 
 @pytest.mark.integration
 async def test_prm_endpoint():
     """Test that the Protected Resource Metadata endpoint returns correct data."""
-    import httpx
 
     # Test the PRM endpoint directly (RFC 9728 - path includes /mcp resource)
     async with httpx.AsyncClient() as client:
@@ -60,7 +62,6 @@ async def test_basicauth_shows_all_tools(nc_mcp_client):
 @pytest.mark.integration
 async def test_read_only_token_filters_write_tools(nc_mcp_oauth_client_read_only):
     """Test that a token with only read scopes filters out write tools."""
-    import logging
 
     logger = logging.getLogger(__name__)
 
@@ -109,7 +110,6 @@ async def test_read_only_token_filters_write_tools(nc_mcp_oauth_client_read_only
 @pytest.mark.integration
 async def test_write_only_token_filters_read_tools(nc_mcp_oauth_client_write_only):
     """Test that a token with only write scopes filters out read tools."""
-    import logging
 
     logger = logging.getLogger(__name__)
 
@@ -158,7 +158,6 @@ async def test_write_only_token_filters_read_tools(nc_mcp_oauth_client_write_onl
 @pytest.mark.integration
 async def test_full_access_token_shows_all_tools(nc_mcp_oauth_client_full_access):
     """Test that a token with both read and write scopes scopes can see all tools."""
-    import logging
 
     logger = logging.getLogger(__name__)
 
@@ -402,7 +401,6 @@ async def test_jwt_with_no_custom_scopes_returns_zero_tools(
     - OAuth provisioning tools (requiring only 'openid') remain visible
       so users can provision Nextcloud access after authentication
     """
-    import logging
 
     logger = logging.getLogger(__name__)
 
@@ -442,7 +440,6 @@ async def test_jwt_consent_scenarios_read_only(nc_mcp_oauth_client_read_only):
     Simulates user granting only read permission during OAuth consent.
     Expected: Should see read tools but not write tools.
     """
-    import logging
 
     logger = logging.getLogger(__name__)
 
@@ -480,7 +477,6 @@ async def test_jwt_consent_scenarios_write_only(nc_mcp_oauth_client_write_only):
     Simulates user granting only write permission during OAuth consent.
     Expected: Should see write tools but not read-only tools.
     """
-    import logging
 
     logger = logging.getLogger(__name__)
 
@@ -518,7 +514,6 @@ async def test_jwt_consent_scenarios_full_access(nc_mcp_oauth_client_full_access
     Simulates user granting both permissions during OAuth consent.
     Expected: Should see all 90+ tools (both read and write).
     """
-    import logging
 
     logger = logging.getLogger(__name__)
 

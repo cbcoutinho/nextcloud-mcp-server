@@ -23,6 +23,7 @@ import hashlib
 import logging
 import os
 import secrets
+import time
 from base64 import urlsafe_b64encode
 from urllib.parse import urlencode
 
@@ -521,8 +522,6 @@ async def oauth_callback_nextcloud(request: Request):
         refresh_expires_in = token_data.get("refresh_expires_in")
         refresh_expires_at = None
         if refresh_expires_in:
-            import time
-
             refresh_expires_at = int(time.time()) + refresh_expires_in
             logger.info(f"  refresh_expires_in: {refresh_expires_in}s")
             logger.info(f"  refresh_expires_at: {refresh_expires_at}")

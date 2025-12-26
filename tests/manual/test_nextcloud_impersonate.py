@@ -18,6 +18,7 @@ Usage:
 import asyncio
 import logging
 import os
+import re
 import sys
 
 # Add parent directory to path
@@ -127,7 +128,6 @@ async def main():
         )
 
         # Extract requesttoken from HTML
-        import re
 
         token_match = re.search(r'data-requesttoken="([^"]+)"', settings_response.text)
         if token_match:

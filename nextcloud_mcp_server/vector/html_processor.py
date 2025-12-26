@@ -1,6 +1,7 @@
 """HTML to Markdown conversion utilities for vector sync."""
 
 import logging
+import re
 
 from markdownify import markdownify as md
 
@@ -43,7 +44,6 @@ def html_to_markdown(html_content: str | None) -> str:
     except Exception as e:
         logger.warning(f"Failed to convert HTML to Markdown: {e}")
         # Fallback: strip all HTML tags as a last resort
-        import re
 
         text = re.sub(r"<[^>]+>", " ", html_content)
         return " ".join(text.split())  # Normalize whitespace

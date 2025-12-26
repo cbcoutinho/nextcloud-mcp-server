@@ -16,6 +16,7 @@ vector database with indexed test data.
 import json
 from unittest.mock import MagicMock
 
+import anyio
 import pytest
 from mcp.types import CreateMessageResult, TextContent
 
@@ -67,7 +68,6 @@ async def test_semantic_search_answer_successful_sampling(
     await require_vector_sync_tools(nc_mcp_client)
 
     # Get initial indexed count before creating note
-    import asyncio
 
     initial_sync = await nc_mcp_client.call_tool(
         "nc_get_vector_sync_status", arguments={}
@@ -118,7 +118,7 @@ Avoid blocking operations in async code.""",
             )
             break
 
-        await asyncio.sleep(wait_interval)
+        await anyio.sleep(wait_interval)
         waited += wait_interval
 
     # Verify sync completed
@@ -247,7 +247,6 @@ async def test_semantic_search_answer_with_limit(nc_mcp_client, temporary_note_f
     )
 
     # Wait for vector indexing to complete
-    import asyncio
 
     max_wait = 30
     wait_interval = 1
@@ -262,7 +261,7 @@ async def test_semantic_search_answer_with_limit(nc_mcp_client, temporary_note_f
         if status_data["status"] == "idle" and status_data["pending_count"] == 0:
             break
 
-        await asyncio.sleep(wait_interval)
+        await anyio.sleep(wait_interval)
         waited += wait_interval
 
     assert waited < max_wait, f"Vector sync did not complete within {max_wait} seconds"
@@ -306,7 +305,6 @@ async def test_semantic_search_answer_score_threshold(
     )
 
     # Wait for vector indexing to complete
-    import asyncio
 
     max_wait = 30
     wait_interval = 1
@@ -321,7 +319,7 @@ async def test_semantic_search_answer_score_threshold(
         if status_data["status"] == "idle" and status_data["pending_count"] == 0:
             break
 
-        await asyncio.sleep(wait_interval)
+        await anyio.sleep(wait_interval)
         waited += wait_interval
 
     assert waited < max_wait, f"Vector sync did not complete within {max_wait} seconds"
@@ -371,7 +369,6 @@ async def test_semantic_search_answer_max_tokens(nc_mcp_client, temporary_note_f
     )
 
     # Wait for vector indexing to complete
-    import asyncio
 
     max_wait = 30
     wait_interval = 1
@@ -386,7 +383,7 @@ async def test_semantic_search_answer_max_tokens(nc_mcp_client, temporary_note_f
         if status_data["status"] == "idle" and status_data["pending_count"] == 0:
             break
 
-        await asyncio.sleep(wait_interval)
+        await anyio.sleep(wait_interval)
         waited += wait_interval
 
     assert waited < max_wait, f"Vector sync did not complete within {max_wait} seconds"

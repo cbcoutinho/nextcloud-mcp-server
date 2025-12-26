@@ -1,3 +1,5 @@
+import json
+
 import httpx
 
 # ============================================================================
@@ -22,14 +24,13 @@ def create_mock_response(
     Returns:
         Mock httpx.Response object
     """
-    import json as json_module
 
     if headers is None:
         headers = {}
 
     # If json_data is provided, serialize it to content
     if json_data is not None:
-        content = json_module.dumps(json_data).encode("utf-8")
+        content = json.dumps(json_data).encode("utf-8")
         headers.setdefault("content-type", "application/json")
 
     if content is None:

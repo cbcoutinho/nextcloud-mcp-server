@@ -15,6 +15,7 @@ import logging
 import time
 from pathlib import Path
 
+import anyio
 import numpy as np
 from jinja2 import Environment, FileSystemLoader
 from starlette.authentication import requires
@@ -395,8 +396,6 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             pca = PCA(n_components=3)
             coords = pca.fit_transform(vectors)
             return coords, pca
-
-        import anyio
 
         with trace_operation(
             "vector_viz.pca_compute",

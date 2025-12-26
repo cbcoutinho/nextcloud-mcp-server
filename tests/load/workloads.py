@@ -4,6 +4,7 @@ Workload definitions for load testing the MCP server.
 Defines realistic operation mixes and individual operation functions.
 """
 
+import json
 import logging
 import random
 import time
@@ -91,8 +92,6 @@ class WorkloadOperations:
             if result and len(result.content) > 0:
                 content = result.content[0]
                 if hasattr(content, "text"):
-                    import json
-
                     note_data = json.loads(content.text)
                     note_id = note_data.get("id")
                     if note_id:
@@ -222,8 +221,6 @@ class MixedWorkload:
                         "nc_notes_get_note", {"note_id": note_id}
                     )
                     if get_result and len(get_result.content) > 0:
-                        import json
-
                         note_data = json.loads(get_result.content[0].text)
                         etag = note_data.get("etag", "")
                         self._warmup_note_ids.append((note_id, etag))

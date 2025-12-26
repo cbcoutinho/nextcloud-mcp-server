@@ -1,6 +1,7 @@
 import logging
 import logging.config
 import os
+import socket
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
@@ -337,7 +338,6 @@ class Settings:
         Returns:
             Collection name string
         """
-        import socket
 
         # Use explicit override if user configured non-default value
         if self.qdrant_collection != "nextcloud_content":

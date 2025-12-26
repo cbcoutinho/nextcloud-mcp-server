@@ -14,7 +14,9 @@ and resource usage. Metrics are organized by category:
 - External Dependency Health Metrics
 """
 
+import functools
 import logging
+import time
 
 from prometheus_client import (
     Counter,
@@ -423,8 +425,6 @@ def instrument_tool(func):
     Returns:
         Wrapped function with metrics and tracing instrumentation
     """
-    import functools
-    import time
 
     from nextcloud_mcp_server.observability.tracing import trace_operation
 

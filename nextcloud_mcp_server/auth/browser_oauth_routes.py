@@ -8,6 +8,7 @@ import hashlib
 import logging
 import os
 import secrets
+import time
 from base64 import urlsafe_b64encode
 from urllib.parse import urlencode
 
@@ -381,8 +382,6 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     refresh_expires_in = token_data.get("refresh_expires_in")
     refresh_expires_at = None
     if refresh_expires_in:
-        import time
-
         refresh_expires_at = int(time.time()) + refresh_expires_in
         logger.info(
             f"Refresh token expires in {refresh_expires_in}s (at timestamp {refresh_expires_at})"

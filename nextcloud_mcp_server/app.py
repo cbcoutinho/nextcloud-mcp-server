@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import os
 import time
@@ -11,13 +13,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, cast
 from urllib.parse import urlparse
 
+import anyio
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 if TYPE_CHECKING:
     from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
 
-import anyio
 import click
 import httpx
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
@@ -384,8 +386,6 @@ class BasicAuthMiddleware:
 
             if auth_header.startswith(b"Basic "):
                 try:
-                    import base64
-
                     # Decode base64(username:password)
                     encoded = auth_header[6:]  # Skip "Basic "
                     decoded = base64.b64decode(encoded).decode("utf-8")
@@ -1200,8 +1200,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 "OAuth credentials not configured - attempting Dynamic Client Registration..."
             )
 
-            import anyio
-
             async def setup_multi_user_basic_dcr():
                 """Setup DCR for multi-user BasicAuth background operations."""
                 # Construct registration endpoint directly from nextcloud_host
@@ -1288,7 +1286,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     if mode in (AuthMode.OAUTH_SINGLE_AUDIENCE, AuthMode.OAUTH_TOKEN_EXCHANGE):
         logger.info("Configuring MCP server for OAuth mode")
         # Asynchronously get the OAuth configuration
-        import anyio
 
         (
             nextcloud_host,
@@ -1626,7 +1623,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
         # Start background vector sync tasks (ADR-007)
         # Scanner runs at server-level (once), not per-session
-        import anyio as anyio_module
 
         # Re-use settings from outer scope (already validated)
         # Note: enable_offline_access_for_sync, encryption_key, and refresh_token_storage
@@ -1666,11 +1662,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 ) from e
 
             # Initialize shared state
-            send_stream, receive_stream = anyio_module.create_memory_object_stream(
+            send_stream, receive_stream = anyio.create_memory_object_stream(
                 max_buffer_size=settings.vector_sync_queue_max_size
             )
-            shutdown_event = anyio_module.Event()
-            scanner_wake_event = anyio_module.Event()
+            shutdown_event = anyio.Event()
+            scanner_wake_event = anyio.Event()
 
             # Store in app state for access from routes (ADR-007)
             app.state.document_send_stream = send_stream
@@ -1697,7 +1693,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     break
 
             # Start background tasks using anyio TaskGroup
-            async with anyio_module.create_task_group() as tg:
+            async with anyio.create_task_group() as tg:
                 # Start scanner task
                 await tg.start(
                     scanner_task,
@@ -1828,11 +1824,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     ) from e
 
                 # Initialize shared state
-                send_stream, receive_stream = anyio_module.create_memory_object_stream(
+                send_stream, receive_stream = anyio.create_memory_object_stream(
                     max_buffer_size=settings.vector_sync_queue_max_size
                 )
-                shutdown_event = anyio_module.Event()
-                scanner_wake_event = anyio_module.Event()
+                shutdown_event = anyio.Event()
+                scanner_wake_event = anyio.Event()
 
                 # User state tracking for user manager
                 user_states: dict = {}
@@ -1869,7 +1865,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 use_basic_auth = not oauth_enabled
 
                 # Start background tasks using anyio TaskGroup
-                async with anyio_module.create_task_group() as tg:
+                async with anyio.create_task_group() as tg:
                     # Start user manager task (supervises per-user scanners)
                     await tg.start(
                         user_manager_task,
@@ -2076,7 +2072,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         This is a temporary endpoint for testing webhook schemas and payloads.
         It logs the full payload and returns 200 OK immediately.
         """
-        import json
 
         try:
             payload = await request.json()
@@ -2467,8 +2462,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # Starlette caches the body internally, so it's safe to read here
                 body = await request.body()
                 try:
-                    import json
-
                     data = json.loads(body)
                     # Check if this is an initialize request
                     if data.get("method") == "initialize":

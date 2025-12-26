@@ -1,5 +1,6 @@
 """Tests for configuration validation."""
 
+import logging
 import os
 from unittest.mock import patch
 
@@ -48,7 +49,6 @@ class TestQdrantConfigValidation:
 
     def test_api_key_warning_in_local_mode(self, caplog):
         """Test that API key in local mode triggers warning."""
-        import logging
 
         caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
         Settings(
@@ -59,7 +59,6 @@ class TestQdrantConfigValidation:
 
     def test_api_key_no_warning_in_network_mode(self, caplog):
         """Test that API key in network mode doesn't trigger warning."""
-        import logging
 
         caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
         Settings(
@@ -206,7 +205,6 @@ class TestChunkConfigValidation:
 
     def test_small_chunk_size_warning(self, caplog):
         """Test that chunk size < 512 triggers warning."""
-        import logging
 
         caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
         Settings(
@@ -221,7 +219,6 @@ class TestChunkConfigValidation:
 
     def test_reasonable_chunk_size_no_warning(self, caplog):
         """Test that chunk size >= 512 doesn't trigger warning."""
-        import logging
 
         caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
         Settings(

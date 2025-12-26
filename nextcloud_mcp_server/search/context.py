@@ -7,6 +7,9 @@ position markers for better visualization and understanding of search results.
 import logging
 from dataclasses import dataclass
 
+import pymupdf
+import pymupdf4llm
+
 from nextcloud_mcp_server.client import NextcloudClient
 
 logger = logging.getLogger(__name__)
@@ -549,8 +552,6 @@ async def _fetch_document_text(
                     # Extract text from PDF using PyMuPDF
                     # IMPORTANT: Use pymupdf4llm.to_markdown() to match indexing extraction
                     # This ensures character offsets align between indexed chunks and retrieval
-                    import pymupdf
-                    import pymupdf4llm
 
                     logger.debug(f"Extracting text from PDF: {file_path}")
                     pdf_doc = pymupdf.open(stream=file_content, filetype="pdf")

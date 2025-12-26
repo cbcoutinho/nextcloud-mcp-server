@@ -9,6 +9,7 @@ import functools
 import logging
 from typing import Callable
 
+import jwt
 from mcp.server.fastmcp import Context
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData
@@ -78,8 +79,6 @@ def require_provisioning(func: Callable) -> Callable:
         user_id = None
         if hasattr(ctx, "authorization") and ctx.authorization:
             try:
-                import jwt
-
                 token = ctx.authorization.token
                 payload = jwt.decode(token, options={"verify_signature": False})
                 user_id = payload.get("sub")
@@ -163,8 +162,6 @@ def require_provisioning_or_suggest(func: Callable) -> Callable:
                 # Get user_id from authorization token
                 user_id = None
                 if hasattr(ctx, "authorization") and ctx.authorization:
-                    import jwt
-
                     token = ctx.authorization.token
                     payload = jwt.decode(token, options={"verify_signature": False})
                     user_id = payload.get("sub")

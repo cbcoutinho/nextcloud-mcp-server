@@ -1,6 +1,7 @@
 """Semantic search MCP tools using vector database."""
 
 import logging
+import os
 
 import anyio
 from httpx import RequestError
@@ -656,7 +657,6 @@ def configure_semantic_tools(mcp: FastMCP):
         This is useful for determining when vector indexing is complete
         after creating or updating content across all indexed apps.
         """
-        import os
 
         # Check if vector sync is enabled
         vector_sync_enabled = (

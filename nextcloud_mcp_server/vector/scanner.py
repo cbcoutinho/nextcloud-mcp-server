@@ -5,6 +5,7 @@ Periodically scans enabled users' content and queues changed documents for proce
 
 import logging
 import os
+import random
 import time
 from dataclasses import dataclass
 
@@ -167,7 +168,6 @@ async def scan_user_documents(
         nc_client: Authenticated Nextcloud client
         initial_sync: If True, send all documents (first-time sync)
     """
-    import random
 
     scan_id = random.randint(1000, 9999)
     logger.info(

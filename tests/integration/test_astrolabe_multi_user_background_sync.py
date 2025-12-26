@@ -13,6 +13,8 @@ app password entry → background sync activation → database verification.
 """
 
 import logging
+import re
+import subprocess
 
 import anyio
 import pytest
@@ -151,7 +153,6 @@ async def generate_app_password(
         )
 
     # Validate password format before returning
-    import re
 
     if not re.match(
         r"^[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}$",
@@ -350,7 +351,6 @@ async def verify_app_password_created(username: str) -> bool:
 
     # Query the database to check for background sync credentials
     # Astrolabe stores app passwords in oc_preferences, not oc_authtoken
-    import subprocess
 
     query = f"""
     SELECT userid, configkey, configvalue

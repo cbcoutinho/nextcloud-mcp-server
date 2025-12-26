@@ -12,6 +12,7 @@ from typing import Optional
 from urllib.parse import urlencode
 
 import httpx
+import jwt
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
 from mcp.server.fastmcp import Context
@@ -53,8 +54,6 @@ async def extract_user_id_from_token(ctx: Context) -> str:
     # Try JWT decode first
     if is_jwt:
         try:
-            import jwt
-
             payload = jwt.decode(token, options={"verify_signature": False})
             user_id = payload.get("sub", "unknown")
             logger.info(f"  ✓ JWT decode successful: user_id={user_id}")

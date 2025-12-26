@@ -3,6 +3,7 @@
 Processes documents from stream: fetches content, generates embeddings, stores in Qdrant.
 """
 
+import base64
 import logging
 import time
 import uuid
@@ -585,8 +586,6 @@ async def _index_document(
                 "vector_sync.pdf_size": len(content_bytes),
             },
         ):
-            import base64
-
             from nextcloud_mcp_server.search.pdf_highlighter import PDFHighlighter
 
             # Build chunk data for batch processing

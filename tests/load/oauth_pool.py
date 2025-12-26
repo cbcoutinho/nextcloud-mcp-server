@@ -5,8 +5,12 @@ Manages multiple OAuth-authenticated users for realistic multi-user load testing
 """
 
 import logging
+import secrets
+import string
+import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import anyio
 import httpx
@@ -333,8 +337,6 @@ class OAuthUserPool:
             TimeoutError: If callback not received within timeout
             ValueError: If token exchange fails
         """
-        import time
-        from urllib.parse import quote
 
         logger.info(f"Starting Playwright OAuth flow for {username}...")
         logger.debug(f"Using state: {state[:16]}...")
@@ -478,8 +480,6 @@ class UserSessionWrapper:
 
 def generate_secure_password(length: int = 20) -> str:
     """Generate a secure random password."""
-    import secrets
-    import string
 
     alphabet = string.ascii_letters + string.digits + "!@#$%^&*()"
     return "".join(secrets.choice(alphabet) for _ in range(length))

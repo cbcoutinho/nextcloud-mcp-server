@@ -1,5 +1,6 @@
 """Integration tests for Calendar VTODO (task) MCP tools."""
 
+import json
 import logging
 from datetime import datetime, timedelta
 
@@ -41,7 +42,6 @@ async def test_mcp_todo_complete_workflow(
 
         # Extract UID from the result
         result_data = create_result.content[0].text
-        import json
 
         result_json = json.loads(result_data)
         todo_uid = result_json["uid"]
@@ -156,7 +156,6 @@ async def test_mcp_list_todos_with_filters(
             {"calendar_name": calendar_name, "status": "NEEDS-ACTION"},
         )
         assert result.isError is False
-        import json
 
         data = json.loads(result.content[0].text)
         needs_action_todos = [t for t in data["todos"] if t["uid"] in created_uids]
@@ -252,8 +251,6 @@ async def test_mcp_search_todos_across_calendars(
             {},
         )
         assert search_result.isError is False
-
-        import json
 
         data = json.loads(search_result.content[0].text)
         assert "todos" in data
@@ -388,8 +385,6 @@ async def test_mcp_todo_with_dates(
         )
         assert create_result.isError is False
 
-        import json
-
         result_data = json.loads(create_result.content[0].text)
         todo_uid = result_data["uid"]
 
@@ -431,8 +426,6 @@ async def test_mcp_todo_categories(
             },
         )
         assert create_result.isError is False
-
-        import json
 
         result_data = json.loads(create_result.content[0].text)
         todo_uid = result_data["uid"]

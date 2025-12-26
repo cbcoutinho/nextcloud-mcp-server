@@ -8,6 +8,7 @@ Handles OAuth flows with Keycloak as the identity provider, including:
 - Integration with RefreshTokenStorage
 """
 
+import base64
 import hashlib
 import logging
 import os
@@ -155,7 +156,6 @@ class KeycloakOAuthClient:
         Returns:
             Tuple of (code_verifier, code_challenge)
         """
-        import base64
 
         # Generate code verifier (43-128 characters)
         code_verifier = secrets.token_urlsafe(32)

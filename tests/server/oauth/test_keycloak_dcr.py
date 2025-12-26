@@ -17,6 +17,7 @@ Architecture:
     MCP Client → Keycloak DCR → Keycloak OAuth → MCP Server → Nextcloud APIs
 """
 
+import json
 import logging
 import os
 import secrets
@@ -623,7 +624,6 @@ async def test_keycloak_dcr_architecture():
     }
 
     logger.info("Keycloak DCR Architecture:")
-    import json
 
     logger.info(json.dumps(architecture, indent=2))
 

@@ -1,3 +1,4 @@
+import base64
 import logging
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -120,7 +121,6 @@ def configure_webdav_tools(mcp: FastMCP):
                 pass
 
         # For binary files, return metadata and base64 encoded content
-        import base64
 
         return {
             "path": path,
@@ -156,8 +156,6 @@ def configure_webdav_tools(mcp: FastMCP):
 
         # Handle base64 encoded content
         if content_type and "base64" in content_type.lower():
-            import base64
-
             content_bytes = base64.b64decode(content)
             content_type = content_type.replace(";base64", "")
         else:

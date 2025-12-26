@@ -1,6 +1,7 @@
 """Integration tests for document processing with progress notifications."""
 
 import io
+import os
 
 import pytest
 from PIL import Image
@@ -13,7 +14,6 @@ class TestDocumentProcessingProgress:
 
     async def test_unstructured_processor_with_progress_callback(self, nc_client):
         """Test that UnstructuredProcessor calls progress callback during processing."""
-        import os
 
         # Skip if unstructured is not enabled
         if os.getenv("ENABLE_UNSTRUCTURED", "false").lower() != "true":
@@ -71,7 +71,6 @@ class TestDocumentProcessingProgress:
         self, nc_mcp_client, nc_client
     ):
         """Test that reading a document via WebDAV MCP tool sends progress notifications."""
-        import os
 
         # Skip if document processing is not enabled
         if os.getenv("ENABLE_DOCUMENT_PROCESSING", "false").lower() != "true":
@@ -110,7 +109,6 @@ class TestDocumentProcessingProgress:
 
     async def test_progress_callback_not_required(self, nc_client):
         """Test that processing works without progress callback (backward compatibility)."""
-        import os
 
         if os.getenv("ENABLE_UNSTRUCTURED", "false").lower() != "true":
             pytest.skip("Unstructured processor not enabled")

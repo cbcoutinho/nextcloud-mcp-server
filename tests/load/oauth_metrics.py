@@ -6,6 +6,7 @@ workflow completion rates, and cross-user operation latencies.
 """
 
 import statistics
+import time
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -44,13 +45,11 @@ class OAuthBenchmarkMetrics:
 
     def start(self):
         """Mark the start of the benchmark."""
-        import time
 
         self.start_time = time.time()
 
     def stop(self):
         """Mark the end of the benchmark."""
-        import time
 
         self.end_time = time.time()
 

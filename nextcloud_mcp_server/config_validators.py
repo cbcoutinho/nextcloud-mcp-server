@@ -9,6 +9,7 @@ See ADR-020 for detailed architecture and deployment mode documentation.
 """
 
 import logging
+import os
 from dataclasses import dataclass
 from enum import Enum
 
@@ -240,8 +241,6 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
     Raises:
         ValueError: If explicit deployment_mode is invalid or conflicts with detected mode
     """
-    import logging
-    import os
 
     logger = logging.getLogger(__name__)
 

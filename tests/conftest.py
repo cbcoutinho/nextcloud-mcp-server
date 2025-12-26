@@ -1,7 +1,17 @@
+import base64
+import hashlib
+import json
 import logging
 import os
+import re
+import secrets
+import subprocess
+import threading
+import time
 import uuid
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, AsyncGenerator
+from urllib.parse import parse_qs, quote, urlparse
 
 import anyio
 import httpx
@@ -257,7 +267,6 @@ async def nc_mcp_basic_auth_client(
 
     Uses anyio pytest plugin for proper async fixture handling.
     """
-    import base64
 
     credentials = base64.b64encode(b"admin:admin").decode("utf-8")
     auth_header = f"Basic {credentials}"
@@ -342,7 +351,6 @@ async def nc_mcp_oauth_client_with_elicitation(
         logger.info(f"  Schema: {params.schema}")
 
         # Extract OAuth URL from elicitation message
-        import re
 
         url_pattern = r"https?://[^\s]+"
         urls = re.findall(url_pattern, params.message)
@@ -1108,10 +1116,6 @@ def oauth_callback_server():
     # "OAuth tests with browser automation not supported in GitHub Actions CI"
     # )
 
-    import threading
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-    from urllib.parse import parse_qs, urlparse
-
     # Use a dict to store auth codes keyed by state parameter
     # This allows multiple concurrent OAuth flows
     auth_states = {}
@@ -1758,9 +1762,6 @@ async def playwright_oauth_token(
     - Browser fixture provided by pytest-playwright-asyncio
     - See: https://playwright.dev/python/docs/test-runners
     """
-    import secrets
-    import time
-    from urllib.parse import quote
 
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     username = os.getenv("NEXTCLOUD_USERNAME")
@@ -2047,9 +2048,6 @@ async def _get_oauth_token_with_scopes(
     Returns:
         OAuth access token string with requested scopes
     """
-    import secrets
-    import time
-    from urllib.parse import quote
 
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     username = os.getenv("NEXTCLOUD_USERNAME")
@@ -2417,9 +2415,6 @@ async def _get_oauth_token_for_user(
     Returns:
         OAuth access token string
     """
-    import secrets
-    import time
-    from urllib.parse import quote
 
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
 
@@ -2560,7 +2555,6 @@ async def all_oauth_tokens(
     Now uses the real callback server with state parameters for reliable
     concurrent token acquisition without race conditions.
     """
-    import time
 
     # Get auth_states dict from callback server
     auth_states, callback_url = oauth_callback_server
@@ -2711,7 +2705,6 @@ async def test_user(nc_client: NextcloudClient):
             user_config = test_user
             await nc_client.users.create_user(**user_config)
     """
-    import uuid
 
     # Generate unique user ID to avoid conflicts
     userid = f"testuser_{uuid.uuid4().hex[:8]}"
@@ -2747,7 +2740,6 @@ async def test_group(nc_client: NextcloudClient):
 
     Returns the group ID.
     """
-    import uuid
 
     # Generate unique group ID to avoid conflicts
     groupid = f"testgroup_{uuid.uuid4().hex[:8]}"
@@ -2882,11 +2874,6 @@ async def _get_keycloak_oauth_token(
     Returns:
         OAuth access token string from Keycloak
     """
-    import base64
-    import hashlib
-    import secrets
-    import time
-    from urllib.parse import quote
 
     # Get auth_states dict from callback server
     auth_states, _ = oauth_callback_server
@@ -3252,8 +3239,6 @@ async def configure_astrolabe_for_mcp_server(nc_client):
             - mcp_server_public_url: Public URL for OAuth token audience validation
             - client_id: Optional OAuth client ID (default: "nextcloudMcpServerUIPublicClient")
     """
-    import json
-    import subprocess
 
     async def _configure(
         mcp_server_internal_url: str,

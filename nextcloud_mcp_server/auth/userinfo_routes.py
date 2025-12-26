@@ -9,6 +9,7 @@ For OAuth mode: Requires browser-based OAuth login to establish session.
 
 import logging
 import os
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -385,8 +386,6 @@ async def _get_user_info(request: Request) -> dict[str, Any]:
         return user_context
 
     except Exception as e:
-        import traceback
-
         logger.error(f"Error retrieving user info: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         return {

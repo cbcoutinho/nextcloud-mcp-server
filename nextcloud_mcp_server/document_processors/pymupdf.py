@@ -6,6 +6,8 @@ import tempfile
 from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
+import anyio
+
 # NOTE: Do NOT call pymupdf.layout.activate() here!
 # It changes the behavior of pymupdf4llm.to_markdown() when page_chunks=True,
 # causing it to return a string instead of a list[dict].
@@ -95,7 +97,6 @@ class PyMuPDFProcessor(DocumentProcessor):
         Raises:
             ProcessorError: If PDF processing fails
         """
-        import anyio
 
         try:
             if progress_callback:

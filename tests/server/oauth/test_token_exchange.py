@@ -6,10 +6,12 @@ Tests the critical token exchange pattern that separates:
 """
 
 import os
+import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import jwt
 import pytest
+from cryptography.fernet import Fernet
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
@@ -21,9 +23,6 @@ pytestmark = pytest.mark.unit
 @pytest.fixture
 async def token_storage():
     """Create test token storage."""
-    import tempfile
-
-    from cryptography.fernet import Fernet
 
     # Generate valid Fernet key
     encryption_key = Fernet.generate_key()

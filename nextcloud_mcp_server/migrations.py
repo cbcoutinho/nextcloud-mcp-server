@@ -6,6 +6,7 @@ provides CLI integration.
 """
 
 import logging
+import sqlite3
 from pathlib import Path
 
 from alembic.config import Config
@@ -98,7 +99,6 @@ def get_current_revision(database_path: str | Path | None = None) -> str | None:
     Returns:
         Current revision ID or None if not versioned
     """
-    import sqlite3
 
     if database_path is None:
         database_path = "/app/data/tokens.db"

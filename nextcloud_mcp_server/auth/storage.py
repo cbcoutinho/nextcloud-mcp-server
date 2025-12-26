@@ -28,6 +28,7 @@ Sensitive data (tokens, secrets) is encrypted at rest using Fernet symmetric enc
 import json
 import logging
 import os
+import socket
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -830,7 +831,6 @@ class RefreshTokenStorage:
             resource_id: Resource identifier
             auth_method: Authentication method used
         """
-        import socket
 
         hostname = socket.gethostname()
         timestamp = int(time.time())

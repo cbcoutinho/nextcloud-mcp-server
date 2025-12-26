@@ -10,6 +10,7 @@ Uses SimpleEmbeddingProvider for deterministic, in-process embeddings
 without requiring external services like Ollama.
 """
 
+import math
 import tempfile
 from pathlib import Path
 
@@ -147,7 +148,6 @@ async def test_simple_embedding_provider_deterministic(simple_embedding_provider
     assert len(embedding1) == 384
 
     # Should be normalized (unit length)
-    import math
 
     norm = math.sqrt(sum(x * x for x in embedding1))
     assert abs(norm - 1.0) < 1e-6
@@ -340,7 +340,6 @@ async def test_batch_embedding(simple_embedding_provider: SimpleEmbeddingProvide
     assert all(len(emb) == 384 for emb in embeddings)
 
     # Each should be normalized
-    import math
 
     for emb in embeddings:
         norm = math.sqrt(sum(x * x for x in emb))

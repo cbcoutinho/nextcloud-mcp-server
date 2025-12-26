@@ -15,6 +15,7 @@ import time
 from importlib.metadata import version
 from typing import Any
 
+import httpx
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -530,8 +531,6 @@ async def get_installed_apps(request: Request) -> JSONResponse:
         )
 
     try:
-        import httpx
-
         # Get Bearer token from request
         token = extract_bearer_token(request)
         if not token:
@@ -602,8 +601,6 @@ async def list_webhooks(request: Request) -> JSONResponse:
         )
 
     try:
-        import httpx
-
         from nextcloud_mcp_server.client.webhooks import WebhooksClient
 
         # Get Bearer token from request
@@ -669,8 +666,6 @@ async def create_webhook(request: Request) -> JSONResponse:
         )
 
     try:
-        import httpx
-
         from nextcloud_mcp_server.client.webhooks import WebhooksClient
 
         # Parse request body
@@ -747,8 +742,6 @@ async def delete_webhook(request: Request) -> JSONResponse:
         )
 
     try:
-        import httpx
-
         from nextcloud_mcp_server.client.webhooks import WebhooksClient
 
         # Get webhook_id from path parameter
