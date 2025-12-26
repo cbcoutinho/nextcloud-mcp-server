@@ -5,6 +5,30 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.60.0 (2025-12-26)
+
+### Feat
+
+- Remove URL rewriting in favor of proper nextcloud config
+- **helm**: migrate to new environment variable naming convention
+- Migrate to vue 3
+- **astrolabe**: upgrade to Vue 3 and @nextcloud/vue 9
+
+### Fix
+
+- **tests**: Add singleton reset fixture to prevent anyio.WouldBlock errors
+- **tests**: Fix integration test failures in qdrant, sampling, and rag tests
+- **auth**: Skip issuer validation for management API tokens
+- Use settings.enable_offline_access for env var consolidation
+- Add required config.py attributes
+- **docker**: remove overwritehost to fix container-to-container DCR
+- **deps**: update dependency @nextcloud/vue to v9
+- **deps**: update dependency vue to v3
+
+### Refactor
+
+- **auth**: Decouple BasicAuth and OAuth authentication strategies
+
 ## v0.59.1 (2025-12-22)
 
 ### Fix
