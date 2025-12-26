@@ -25,6 +25,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires external MCP server deployment
 - See documentation for setup: https://github.com/cbcoutinho/nextcloud-mcp-server
 
+## astrolabe-v0.7.0 (2025-12-26)
+
+### Feat
+
+- Remove URL rewriting in favor of proper nextcloud config
+- **helm**: migrate to new environment variable naming convention
+- Migrate to vue 3
+- **astrolabe**: upgrade to Vue 3 and @nextcloud/vue 9
+- **helm**: add support for multi-user BasicAuth mode
+
+### Fix
+
+- **tests**: Add singleton reset fixture to prevent anyio.WouldBlock errors
+- **tests**: Fix integration test failures in qdrant, sampling, and rag tests
+- **auth**: Skip issuer validation for management API tokens
+- Use settings.enable_offline_access for env var consolidation
+- Add required config.py attributes
+- **docker**: remove overwritehost to fix container-to-container DCR
+- **deps**: update dependency @nextcloud/vue to v9
+- **deps**: update dependency vue to v3
+- **helm**: set OIDC client env vars when using existingSecret
+- **helm**: trigger chart release workflow on helm chart tags
+- **helm**: address PR #447 reviewer feedback
+- **helm**: include MCP server version bumps in changelog pattern
+
+### Refactor
+
+- **auth**: Decouple BasicAuth and OAuth authentication strategies
+
 ## astrolabe-v0.6.0 (2025-12-22)
 
 ### Feat
