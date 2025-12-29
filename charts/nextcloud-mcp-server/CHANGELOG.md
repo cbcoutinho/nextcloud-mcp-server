@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.56.2 (2025-12-29)
+
+### Fix
+
+- **oauth**: Enable browser OAuth routes for Management API in hybrid mode
+
 ## nextcloud-mcp-server-0.56.1 (2025-12-26)
 
 ### Fix
