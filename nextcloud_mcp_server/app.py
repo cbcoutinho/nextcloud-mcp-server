@@ -690,7 +690,7 @@ async def setup_oauth_config():
     logger.info(f"Performing OIDC discovery: {discovery_url}")
 
     # Perform OIDC discovery
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(follow_redirects=True) as client:
         response = await client.get(discovery_url)
         response.raise_for_status()
         discovery = response.json()
@@ -994,7 +994,9 @@ async def setup_oauth_config_for_multi_user_basic(
 
     # Perform OIDC discovery
     try:
-        async with httpx.AsyncClient(timeout=30.0) as http_client:
+        async with httpx.AsyncClient(
+            timeout=30.0, follow_redirects=True
+        ) as http_client:
             response = await http_client.get(discovery_url)
             response.raise_for_status()
             discovery = response.json()
@@ -2308,8 +2310,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         routes.append(Route("/oauth/authorize", oauth_authorize, methods=["GET"]))
         logger.info("OAuth login routes enabled: /oauth/authorize (Flow 1)")
 
-    # Add browser OAuth login routes (OAuth mode only)
-    if oauth_enabled:
+    # Add browser OAuth login routes for Management API access
+    # Available in OAuth modes AND multi-user BasicAuth with offline access
+    # (hybrid mode). Separate from MCP tool auth - Management API uses OAuth
+    if oauth_provisioning_available:
         from nextcloud_mcp_server.auth.browser_oauth_routes import (
             oauth_login,
             oauth_login_callback,
