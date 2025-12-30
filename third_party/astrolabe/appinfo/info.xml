@@ -29,7 +29,7 @@ Astrolabe connects to a semantic search service that understands the meaning of 
 
 See [documentation](https://github.com/cbcoutinho/nextcloud-mcp-server) for configuration details.
 	]]></description>
-	<version>0.7.1</version>
+	<version>0.7.2</version>
 	<licence>agpl</licence>
 	<author homepage="https://github.com/cbcoutinho">Chris Coutinho</author>
 	<namespace>Astrolabe</namespace>
