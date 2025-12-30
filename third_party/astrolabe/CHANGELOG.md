@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires external MCP server deployment
 - See documentation for setup: https://github.com/cbcoutinho/nextcloud-mcp-server
 
+## astrolabe-v0.7.1 (2025-12-30)
+
+### Fix
+
+- **astrolabe**: Fix revoke access button HTTP method mismatch
+- **oauth**: Enable browser OAuth routes for Management API in hybrid mode
+- **mcp**: Move all imports to the top of modules
+
 ## astrolabe-v0.7.0 (2025-12-26)
 
 ### Feat
