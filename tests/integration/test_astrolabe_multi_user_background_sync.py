@@ -559,3 +559,259 @@ async def test_multi_user_astrolabe_background_sync_enablement(
     logger.info(
         f"\n✓ All {len(test_users)} users successfully enabled background sync via app passwords!"
     )
+
+
+async def revoke_background_sync_access(page: Page, username: str) -> bool:
+    """Revoke background sync access by clicking the Revoke Access button.
+
+    Args:
+        page: Playwright page instance (must be authenticated)
+        username: Username (for logging)
+
+    Returns:
+        True if revocation was successful
+    """
+    logger.info(f"Revoking background sync access for {username}...")
+
+    nextcloud_url = "http://localhost:8080"
+
+    # Set up network request and console listeners
+    network_requests = []
+    network_responses = []
+    console_messages = []
+
+    def log_request(req):
+        network_requests.append(f"{req.method} {req.url}")
+
+    def log_response(resp):
+        response_info = f"{resp.status} {resp.url}"
+        network_responses.append(response_info)
+        logger.info(f"Response: {response_info}")
+
+    def log_console(msg):
+        console_messages.append(f"[{msg.type}] {msg.text}")
+
+    page.on("request", log_request)
+    page.on("response", log_response)
+    page.on("console", log_console)
+
+    # Navigate to Astrolabe settings
+    await page.goto(
+        f"{nextcloud_url}/settings/user/astrolabe", wait_until="networkidle"
+    )
+
+    # Wait for page to load
+    await anyio.sleep(1)
+
+    # Check if "Active" badge is visible (indicating background sync is enabled)
+    try:
+        active_text = page.get_by_text("Active", exact=True)
+        if not await active_text.is_visible(timeout=2000):
+            logger.warning(
+                f"Background sync not active for {username}, nothing to revoke"
+            )
+            return False
+    except Exception:
+        logger.warning(f"Could not find Active badge for {username}")
+        return False
+
+    # Find the "Revoke Access" button
+    revoke_button = page.get_by_role("button", name="Revoke Access")
+
+    try:
+        await revoke_button.wait_for(timeout=5000, state="visible")
+        logger.info("Found Revoke Access button")
+    except Exception:
+        screenshot_path = f"/tmp/astrolabe_no_revoke_button_{username}.png"
+        await page.screenshot(path=screenshot_path)
+        raise ValueError(
+            f"Could not find Revoke Access button for {username}. Screenshot: {screenshot_path}"
+        )
+
+    # Set up dialog handler for confirmation dialog
+    page.once("dialog", lambda dialog: dialog.accept())
+
+    # Click the Revoke Access button
+    await revoke_button.click()
+    logger.info("Clicked Revoke Access button")
+
+    # Wait for the request to complete and page to reload
+    await page.wait_for_load_state("networkidle", timeout=15000)
+    await anyio.sleep(2)
+
+    # Log network requests after clicking
+    logger.info(f"Network requests after Revoke for {username}:")
+    for req in network_requests[-10:]:
+        logger.info(f"  {req}")
+
+    # Log network responses
+    logger.info(f"Network responses after Revoke for {username}:")
+    for resp in network_responses[-10:]:
+        logger.info(f"  {resp}")
+
+    # Check specifically for the revoke POST response
+    revoke_responses = [r for r in network_responses if "credentials/revoke" in r]
+    if revoke_responses:
+        logger.info(f"Revoke endpoint response: {revoke_responses[-1]}")
+        if "200" not in revoke_responses[-1]:
+            logger.error(f"Revoke POST did not return 200 OK: {revoke_responses[-1]}")
+            return False
+    else:
+        logger.warning("No response found for credentials/revoke endpoint!")
+        # Take screenshot for debugging
+        screenshot_path = f"/tmp/astrolabe_revoke_no_response_{username}.png"
+        await page.screenshot(path=screenshot_path)
+        return False
+
+    # Log any console messages
+    if console_messages:
+        logger.info(f"Console messages for {username}:")
+        for msg in console_messages:
+            logger.info(f"  {msg}")
+
+    # Check for error notifications (toast messages)
+    try:
+        error_toast = page.locator(".toastify.toast-error, .toast-error")
+        if await error_toast.count() > 0:
+            error_text = await error_toast.first.text_content()
+            logger.error(f"Error notification for {username}: {error_text}")
+            return False
+    except Exception:
+        pass
+
+    # Verify "Active" badge is no longer visible
+    try:
+        active_text = page.get_by_text("Active", exact=True)
+        if await active_text.is_visible(timeout=2000):
+            logger.error(f"Active badge still visible for {username} after revoke!")
+            screenshot_path = f"/tmp/astrolabe_revoke_still_active_{username}.png"
+            await page.screenshot(path=screenshot_path)
+            return False
+    except Exception:
+        pass
+
+    logger.info(f"✓ Background sync access revoked for {username}")
+    return True
+
+
+async def verify_app_password_deleted(username: str) -> bool:
+    """Verify that background sync app password was deleted for the user.
+
+    Args:
+        username: Nextcloud username
+
+    Returns:
+        True if background sync credentials no longer exist
+    """
+    logger.info(f"Verifying background sync credentials deleted for {username}...")
+
+    query = f"""
+    SELECT userid, configkey, configvalue
+    FROM oc_preferences
+    WHERE userid = '{username}'
+    AND appid = 'astrolabe'
+    AND configkey IN ('background_sync_password', 'background_sync_type', 'background_sync_provisioned_at')
+    ORDER BY configkey;
+    """
+
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "db",
+                "mariadb",
+                "-u",
+                "root",
+                "-ppassword",
+                "nextcloud",
+                "-e",
+                query,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        output = result.stdout
+        logger.debug(f"Background sync credentials query result:\n{output}")
+
+        # After deletion, we should NOT see background_sync_password
+        if "background_sync_password" not in output:
+            logger.info(f"✓ Background sync credentials deleted for {username}")
+            return True
+        else:
+            logger.warning(f"Background sync credentials still exist for {username}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error checking background sync credentials for {username}: {e}")
+        return False
+
+
+@pytest.mark.integration
+@pytest.mark.oauth
+async def test_revoke_background_sync_access(
+    browser,
+    nc_client,
+    test_users_setup,
+    configure_astrolabe_for_mcp_server,
+):
+    """Test that users can revoke background sync access via the Revoke Access button.
+
+    This test verifies:
+    1. User enables background sync via app password
+    2. User clicks "Revoke Access" button
+    3. Confirmation dialog is handled
+    4. POST request is sent to /api/v1/background-sync/credentials/revoke
+    5. "Active" badge disappears from settings page
+    6. Background sync credentials are deleted from database
+
+    This tests the fix for the issue where POST requests to the revoke endpoint
+    were returning errors due to HTTP method mismatch (was DELETE, now POST).
+    """
+    # Configure Astrolabe to point to the mcp-multi-user-basic server
+    logger.info("Configuring Astrolabe for mcp-multi-user-basic server...")
+    await configure_astrolabe_for_mcp_server(
+        mcp_server_internal_url="http://mcp-multi-user-basic:8000",
+        mcp_server_public_url="http://localhost:8003",
+    )
+
+    # Test with a single user for this specific test
+    username = "alice"
+    user_config = test_users_setup[username]
+    password = user_config["password"]
+
+    # Create new browser context
+    context = await browser.new_context(ignore_https_errors=True)
+    page = await context.new_page()
+
+    try:
+        # Step 1: Login to Nextcloud
+        await login_to_nextcloud(page, username, password)
+
+        # Step 2: Generate app password and enable background sync
+        app_password = await generate_app_password(page, username)
+        await enable_background_sync_via_app_password(page, username, app_password)
+
+        # Step 3: Verify background sync is enabled
+        assert await verify_app_password_created(username), (
+            f"Background sync not enabled for {username}"
+        )
+
+        # Step 4: Revoke background sync access
+        revoke_success = await revoke_background_sync_access(page, username)
+        assert revoke_success, f"Failed to revoke background sync access for {username}"
+
+        # Step 5: Verify credentials are deleted from database
+        credentials_deleted = await verify_app_password_deleted(username)
+        assert credentials_deleted, (
+            f"Background sync credentials not deleted for {username}"
+        )
+
+        logger.info(f"\n✓ Successfully revoked background sync access for {username}!")
+
+    finally:
+        await context.close()

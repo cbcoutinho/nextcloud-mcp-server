@@ -8,6 +8,8 @@ services:
     command: --transaction-isolation=READ-COMMITTED
     volumes:
       - db:/var/lib/mysql
+    ports:
+      - 127.0.0.1:3306:3306
     environment:
       - MYSQL_ROOT_PASSWORD=password
       - MYSQL_PASSWORD=password
@@ -24,7 +26,7 @@ services:
     image: docker.io/library/nextcloud:32.0.3@sha256:53231a9fb9233af2c15bfe70fc03ebe639fd53243fa42a9369884b1e0008deae
     restart: always
     ports:
-      - 0.0.0.0:8080:80
+      - 127.0.0.1:8080:80
     depends_on:
       - redis
       - db

@@ -47,8 +47,8 @@ return [
 		],
 		[
 			'name' => 'credentials#deleteCredentials',
-			'url' => '/api/v1/background-sync/credentials',
-			'verb' => 'DELETE',
+			'url' => '/api/v1/background-sync/credentials/revoke',
+			'verb' => 'POST',
 		],
 		[
 			'name' => 'credentials#getStatus',
