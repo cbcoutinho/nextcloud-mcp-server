@@ -7,9 +7,10 @@ export default defineConfig({
   build: {
     outDir: '.',
     emptyOutDir: false,
+    cssCodeSplit: false,  // Bundle all CSS into entry points (Nextcloud doesn't load CSS chunks)
     rollupOptions: {
       input: {
-        main: resolve(__dirname, 'src/main.js'),
+        'astrolabe-main': resolve(__dirname, 'src/main.js'),
         'astrolabe-adminSettings': resolve(__dirname, 'src/adminSettings.js'),
         'astrolabe-personalSettings': resolve(__dirname, 'src/personalSettings.js'),
       },
@@ -17,9 +18,10 @@ export default defineConfig({
         entryFileNames: 'js/[name].mjs',
         chunkFileNames: 'js/[name]-[hash].chunk.mjs',
         assetFileNames: (assetInfo) => {
-          // Output CSS to css/ directory, JS/other assets to js/
+          // With cssCodeSplit:false, all CSS goes to a single file
+          // Name it astrolabe-main.css to match Nextcloud's Util::addStyle expectation
           if (assetInfo.name && assetInfo.name.endsWith('.css')) {
-            return 'css/[name][extname]';
+            return 'css/astrolabe-main.css';
           }
           return 'js/[name][extname]';
         },
