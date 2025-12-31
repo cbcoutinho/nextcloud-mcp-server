@@ -285,28 +285,23 @@ class DeckClient(BaseNextcloudClient):
         archived: Optional[bool] = None,
         done: Optional[str] = None,
     ) -> None:
-        # First, get the current card to use existing values for required fields
+        # Deck PUT API is a full replacement - all required fields must be sent.
+        # Fetch current card to preserve values for fields not being updated.
         current_card = await self.get_card(board_id, stack_id, card_id)
 
-        json_data = {}
-        if title is not None:
-            json_data["title"] = title
-        if description is not None:
-            json_data["description"] = description
-        # Type is required by the API, use provided or keep current
-        json_data["type"] = type if type is not None else current_card.type
-        # Owner is required by the API, use provided or keep current
-        json_data["owner"] = (
-            owner
-            if owner is not None
-            else (
-                current_card.owner
-                if isinstance(current_card.owner, str)
-                else current_card.owner.uid
-                if hasattr(current_card.owner, "uid")
-                else current_card.owner.primaryKey
-            )
-        )
+        # Build payload with required fields always included
+        json_data = {
+            # Title is required by the API
+            "title": title if title is not None else current_card.title,
+            # Type is required by the API
+            "type": type if type is not None else current_card.type,
+            # Owner is required by the API (model validator ensures it's a string)
+            "owner": owner if owner is not None else current_card.owner,
+            # Description must be sent to preserve it (PUT clears omitted fields)
+            "description": description
+            if description is not None
+            else (current_card.description or ""),
+        }
         if order is not None:
             json_data["order"] = order
         if duedate is not None:
