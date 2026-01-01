@@ -1,6 +1,6 @@
 {
     "require-dev": {
-        "phpunit/phpunit": "^10.5"
+        "phpunit/phpunit": "^12.0"
     },
 	"config": {
 		"platform": {
