@@ -54,7 +54,7 @@ services:
       retries: 30
 
   recipes:
-    image: docker.io/library/nginx:alpine@sha256:052b75ab72f690f33debaa51c7e08d9b969a0447a133eb2b99cc905d9188cb2b
+    image: docker.io/library/nginx:alpine@sha256:8491795299c8e739b7fcc6285d531d9812ce2666e07bd3dd8db00020ad132295
     restart: always
     volumes:
       - ./tests/fixtures/test_recipe.html:/usr/share/nginx/html/test_recipe.html:ro
