@@ -386,11 +386,17 @@ class DeckClient(BaseNextcloudClient):
         order: int,
         target_stack_id: int,
     ) -> None:
+        # Use the non-API route /cards/{cardId}/reorder which correctly reads
+        # stackId from the body. The API route /api/.../stacks/{stackId}/cards/...
+        # has a parameter conflict where URL stackId overrides body stackId.
+        # See: https://github.com/cbcoutinho/nextcloud-mcp-server/issues/469
         json_data = {"order": order, "stackId": target_stack_id}
+        headers = self._get_deck_headers()
         await self._make_request(
             "PUT",
-            f"/apps/deck/api/v1.0/boards/{board_id}/stacks/{stack_id}/cards/{card_id}/reorder",
+            f"/apps/deck/cards/{card_id}/reorder",
             json=json_data,
+            headers=headers,
         )
 
     # Labels
