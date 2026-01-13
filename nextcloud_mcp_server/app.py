@@ -2012,7 +2012,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             checks["auth_mode"] = "multi_user_basic"
             checks["auth_configured"] = "ok"
             # Indicate if app passwords are supported (when offline_access enabled)
-            checks["supports_app_passwords"] = settings.enable_offline_access
+            checks["supports_app_passwords"] = get_settings().enable_offline_access
         elif mode == AuthMode.SINGLE_USER_BASIC:
             username = os.getenv("NEXTCLOUD_USERNAME")
             password = os.getenv("NEXTCLOUD_PASSWORD")
@@ -2029,9 +2029,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
         # Check Qdrant status if using network mode (external Qdrant service)
         # In-memory and persistent modes use embedded Qdrant, no external service to check
-        vector_sync_enabled = (
-            os.getenv("VECTOR_SYNC_ENABLED", "false").lower() == "true"
-        )
+        # Note: get_settings() supports both ENABLE_SEMANTIC_SEARCH and VECTOR_SYNC_ENABLED
+        settings = get_settings()
+        vector_sync_enabled = settings.vector_sync_enabled
         qdrant_url = os.getenv("QDRANT_URL")  # Only set in network mode
 
         if vector_sync_enabled and qdrant_url:
@@ -2114,13 +2114,16 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     if enable_management_apis:
         from nextcloud_mcp_server.api.management import (
             create_webhook,
+            delete_app_password,
             delete_webhook,
+            get_app_password_status,
             get_chunk_context,
             get_installed_apps,
             get_server_status,
             get_user_session,
             get_vector_sync_status,
             list_webhooks,
+            provision_app_password,
             revoke_user_access,
             unified_search,
             vector_search,
@@ -2148,6 +2151,28 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 methods=["POST"],
             )
         )
+        # App password endpoints for multi-user BasicAuth mode
+        routes.append(
+            Route(
+                "/api/v1/users/{user_id}/app-password",
+                provision_app_password,
+                methods=["POST"],
+            )
+        )
+        routes.append(
+            Route(
+                "/api/v1/users/{user_id}/app-password",
+                get_app_password_status,
+                methods=["GET"],
+            )
+        )
+        routes.append(
+            Route(
+                "/api/v1/users/{user_id}/app-password",
+                delete_app_password,
+                methods=["DELETE"],
+            )
+        )
         routes.append(
             Route("/api/v1/vector-viz/search", vector_search, methods=["POST"])
         )
@@ -2166,6 +2191,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         logger.info(
             "Management API endpoints enabled: /api/v1/status, /api/v1/vector-sync/status, "
             "/api/v1/users/{user_id}/session, /api/v1/users/{user_id}/revoke, "
+            "/api/v1/users/{user_id}/app-password, "
             "/api/v1/vector-viz/search, /api/v1/search, /api/v1/apps, "
             "/api/v1/webhooks"
         )
