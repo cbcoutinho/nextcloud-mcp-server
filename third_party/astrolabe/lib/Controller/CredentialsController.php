@@ -115,6 +115,9 @@ class CredentialsController extends Controller {
 			$this->logger->warning("MCP server URL not configured, app password stored locally only");
 			return new JSONResponse([
 				'success' => true,
+				'partial_success' => true,
+				'local_storage' => true,
+				'mcp_sync' => false,
 				'message' => 'App password saved locally (MCP server not configured)'
 			], Http::STATUS_OK);
 		}
@@ -143,27 +146,36 @@ class CredentialsController extends Controller {
 				$this->logger->info("Successfully provisioned app password to MCP server for user: $userId");
 				return new JSONResponse([
 					'success' => true,
+					'partial_success' => false,
+					'local_storage' => true,
+					'mcp_sync' => true,
 					'message' => 'App password saved successfully'
 				], Http::STATUS_OK);
 			} else {
 				$error = $body['error'] ?? 'Unknown error';
 				$this->logger->error("MCP server rejected app password for user $userId: $error");
-				// Still return success since it was stored locally
+				// Return partial success since it was stored locally but MCP sync failed
 				return new JSONResponse([
 					'success' => true,
+					'partial_success' => true,
+					'local_storage' => true,
+					'mcp_sync' => false,
 					'message' => 'App password saved locally (MCP server sync failed)',
-					'warning' => $error
+					'mcp_error' => $error
 				], Http::STATUS_OK);
 			}
 		} catch (\Exception $e) {
 			$this->logger->error("Failed to send app password to MCP server for user $userId", [
 				'error' => $e->getMessage()
 			]);
-			// Still return success since it was stored locally
+			// Return partial success since it was stored locally but MCP was unreachable
 			return new JSONResponse([
 				'success' => true,
+				'partial_success' => true,
+				'local_storage' => true,
+				'mcp_sync' => false,
 				'message' => 'App password saved locally (MCP server unreachable)',
-				'warning' => $e->getMessage()
+				'mcp_error' => $e->getMessage()
 			], Http::STATUS_OK);
 		}
 	}

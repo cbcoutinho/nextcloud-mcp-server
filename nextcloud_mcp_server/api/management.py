@@ -13,9 +13,12 @@ The PHP app obtains tokens through PKCE flow and uses them to access these endpo
 import logging
 import time
 from importlib.metadata import version
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
+
+if TYPE_CHECKING:
+    from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -179,6 +182,31 @@ def _validate_query_string(query: str, max_length: int = 10000) -> None:
     """Validate query string length."""
     if len(query) > max_length:
         raise ValueError(f"Query too long: maximum {max_length} characters")
+
+
+async def _get_app_password_storage(request: Request) -> "RefreshTokenStorage":
+    """Get or initialize RefreshTokenStorage for app password operations.
+
+    Checks app.state.storage first, then falls back to creating from environment.
+    This helper avoids repeated storage initialization logic across endpoints.
+
+    Args:
+        request: Starlette request with app state
+
+    Returns:
+        Initialized RefreshTokenStorage instance
+    """
+    from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+
+    storage = getattr(request.app.state, "storage", None)
+
+    if not storage:
+        # Multi-user BasicAuth mode may not have oauth_context
+        # Initialize storage from environment
+        storage = RefreshTokenStorage.from_env()
+        await storage.initialize()
+
+    return storage
 
 
 async def get_server_status(request: Request) -> JSONResponse:
@@ -636,17 +664,7 @@ async def provision_app_password(request: Request) -> JSONResponse:
 
     # Store the validated app password
     try:
-        # Get storage from app state or create from env
-        storage = getattr(request.app.state, "storage", None)
-
-        if not storage:
-            # Multi-user BasicAuth mode may not have oauth_context
-            # Initialize storage from environment
-            from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
-
-            storage = RefreshTokenStorage.from_env()
-            await storage.initialize()
-
+        storage = await _get_app_password_storage(request)
         await storage.store_app_password(username, app_password)
 
         logger.info(f"Provisioned app password for user: {username}")
@@ -710,16 +728,7 @@ async def get_app_password_status(request: Request) -> JSONResponse:
         )
 
     try:
-        # Get storage
-        storage = getattr(request.app.state, "storage", None)
-
-        if not storage:
-            from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
-
-            storage = RefreshTokenStorage.from_env()
-            await storage.initialize()
-
-        # Check if app password exists
+        storage = await _get_app_password_storage(request)
         app_password = await storage.get_app_password(username)
 
         return JSONResponse(
@@ -810,16 +819,7 @@ async def delete_app_password(request: Request) -> JSONResponse:
         )
 
     try:
-        # Get storage
-        storage = getattr(request.app.state, "storage", None)
-
-        if not storage:
-            from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
-
-            storage = RefreshTokenStorage.from_env()
-            await storage.initialize()
-
-        # Delete app password
+        storage = await _get_app_password_storage(request)
         deleted = await storage.delete_app_password(username)
 
         if deleted:
