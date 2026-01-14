@@ -20,6 +20,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
 from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -106,9 +107,9 @@ async def _get_processing_status(request: Request) -> dict[str, Any] | None:
             "status": str,  # "syncing" or "idle"
         }
     """
-    # Check if vector sync is enabled
-    vector_sync_enabled = os.getenv("VECTOR_SYNC_ENABLED", "false").lower() == "true"
-    if not vector_sync_enabled:
+    # Check if vector sync is enabled (supports both old and new env var names)
+    settings = get_settings()
+    if not settings.vector_sync_enabled:
         return None
 
     try:
@@ -127,10 +128,8 @@ async def _get_processing_status(request: Request) -> dict[str, Any] | None:
         # Get Qdrant client and query indexed count
         indexed_count = 0
         try:
-            from nextcloud_mcp_server.config import get_settings
             from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
-            settings = get_settings()
             qdrant_client = await get_qdrant_client()
 
             # Count documents in collection
@@ -634,7 +633,9 @@ async def user_info_html(request: Request) -> HTMLResponse:
         """
 
     # Check if vector sync is enabled (needed for Welcome tab)
-    vector_sync_enabled = os.getenv("VECTOR_SYNC_ENABLED", "false").lower() == "true"
+    # Note: get_settings() supports both ENABLE_SEMANTIC_SEARCH and VECTOR_SYNC_ENABLED
+    settings = get_settings()
+    vector_sync_enabled = settings.vector_sync_enabled
 
     # Render template
     template = _jinja_env.get_template("user_info.html")

@@ -1240,6 +1240,180 @@ class RefreshTokenStorage:
 
         return deleted
 
+    # ============================================================================
+    # App Password Storage (multi-user BasicAuth mode)
+    # ============================================================================
+
+    async def store_app_password(
+        self,
+        user_id: str,
+        app_password: str,
+    ) -> None:
+        """
+        Store encrypted app password for background sync (multi-user BasicAuth mode).
+
+        Args:
+            user_id: Nextcloud user ID
+            app_password: Nextcloud app password to store
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        if not self.cipher:
+            raise RuntimeError(
+                "Encryption key not configured. "
+                "Set TOKEN_ENCRYPTION_KEY for app password storage."
+            )
+
+        encrypted_password = self.cipher.encrypt(app_password.encode())
+        now = int(time.time())
+
+        start_time = time.time()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    """
+                    INSERT OR REPLACE INTO app_passwords
+                    (user_id, encrypted_password, created_at, updated_at)
+                    VALUES (
+                        ?,
+                        ?,
+                        COALESCE((SELECT created_at FROM app_passwords WHERE user_id = ?), ?),
+                        ?
+                    )
+                    """,
+                    (user_id, encrypted_password, user_id, now, now),
+                )
+                await db.commit()
+
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "insert", duration, "success")
+            logger.info(f"Stored app password for user {user_id}")
+
+        except Exception:
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "insert", duration, "error")
+            raise
+
+        # Audit log
+        await self._audit_log(
+            event="store_app_password",
+            user_id=user_id,
+            auth_method="app_password",
+        )
+
+    async def get_app_password(self, user_id: str) -> Optional[str]:
+        """
+        Retrieve and decrypt app password for a user.
+
+        Args:
+            user_id: Nextcloud user ID
+
+        Returns:
+            Decrypted app password, or None if not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        if not self.cipher:
+            raise RuntimeError(
+                "Encryption key not configured. "
+                "Set TOKEN_ENCRYPTION_KEY for app password retrieval."
+            )
+
+        start_time = time.time()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute(
+                    "SELECT encrypted_password FROM app_passwords WHERE user_id = ?",
+                    (user_id,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+
+            if not row:
+                logger.debug(f"No app password found for user {user_id}")
+                duration = time.time() - start_time
+                record_db_operation("sqlite", "select", duration, "success")
+                return None
+
+            encrypted_password = row[0]
+            decrypted_password = self.cipher.decrypt(encrypted_password).decode()
+
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "select", duration, "success")
+            logger.debug(f"Retrieved app password for user {user_id}")
+
+            return decrypted_password
+
+        except Exception as e:
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "select", duration, "error")
+            logger.error(f"Failed to decrypt app password for user {user_id}: {e}")
+            return None
+
+    async def delete_app_password(self, user_id: str) -> bool:
+        """
+        Delete app password for a user.
+
+        Args:
+            user_id: Nextcloud user ID
+
+        Returns:
+            True if password was deleted, False if not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        start_time = time.time()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute(
+                    "DELETE FROM app_passwords WHERE user_id = ?",
+                    (user_id,),
+                )
+                await db.commit()
+                deleted = cursor.rowcount > 0
+
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "delete", duration, "success")
+
+            if deleted:
+                logger.info(f"Deleted app password for user {user_id}")
+                await self._audit_log(
+                    event="delete_app_password",
+                    user_id=user_id,
+                    auth_method="app_password",
+                )
+            else:
+                logger.debug(f"No app password to delete for user {user_id}")
+
+            return deleted
+
+        except Exception:
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "delete", duration, "error")
+            raise
+
+    async def get_all_app_password_user_ids(self) -> list[str]:
+        """
+        Get list of all user IDs with stored app passwords.
+
+        Returns:
+            List of user IDs
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT user_id FROM app_passwords ORDER BY updated_at DESC"
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+        user_ids = [row[0] for row in rows]
+        logger.debug(f"Found {len(user_ids)} users with app passwords")
+        return user_ids
+
 
 async def generate_encryption_key() -> str:
     """

@@ -8,8 +8,8 @@ Manages background vector sync for multi-user deployments:
 Authentication strategies are mutually exclusive by deployment mode:
 
 Multi-user BasicAuth mode (ENABLE_MULTI_USER_BASIC_AUTH=true):
-- Uses app passwords obtained via Astrolabe Management API
-- Users provision via Astrolabe personal settings
+- Uses app passwords stored locally in MCP server's database
+- Users provision via Astrolabe personal settings, which sends to MCP API
 - OAuth is NOT used
 
 OAuth mode (with external IdP like Keycloak):
@@ -33,7 +33,6 @@ from anyio.streams.memory import (
 )
 from httpx import BasicAuth
 
-from nextcloud_mcp_server.auth.astrolabe_client import AstrolabeClient
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector.scanner import DocumentTask, scan_user_documents
@@ -71,15 +70,18 @@ class UserSyncState:
 async def get_user_client_basic_auth(
     user_id: str,
     nextcloud_host: str,
+    storage: "RefreshTokenStorage | None" = None,
 ) -> NextcloudClient:
     """Get an authenticated NextcloudClient using app password (BasicAuth mode).
 
     For multi-user BasicAuth deployments where users provision app passwords
-    via Astrolabe personal settings. OAuth is NOT used in this mode.
+    via Astrolabe personal settings. The app password is stored locally in the
+    MCP server's database after being provisioned through the management API.
 
     Args:
         user_id: User identifier
         nextcloud_host: Nextcloud base URL
+        storage: Optional RefreshTokenStorage instance (created from env if not provided)
 
     Returns:
         Authenticated NextcloudClient with BasicAuth
@@ -87,21 +89,15 @@ async def get_user_client_basic_auth(
     Raises:
         NotProvisionedError: If user has not provisioned an app password
     """
-    settings = get_settings()
+    from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
-    if not settings.oidc_client_id or not settings.oidc_client_secret:
-        raise NotProvisionedError(
-            "Astrolabe client credentials not configured. "
-            "Set OIDC_CLIENT_ID and OIDC_CLIENT_SECRET for app password retrieval."
-        )
+    # Get or create storage instance
+    if storage is None:
+        storage = RefreshTokenStorage.from_env()
+        await storage.initialize()
 
-    astrolabe = AstrolabeClient(
-        nextcloud_host=nextcloud_host,
-        client_id=settings.oidc_client_id,
-        client_secret=settings.oidc_client_secret,
-    )
-
-    app_password = await astrolabe.get_user_app_password(user_id)
+    # Retrieve app password from local storage
+    app_password = await storage.get_app_password(user_id)
 
     if not app_password:
         raise NotProvisionedError(
@@ -419,8 +415,15 @@ async def user_manager_task(
 
     while not shutdown_event.is_set():
         try:
-            # Get current provisioned users
-            provisioned_users = set(await refresh_token_storage.get_all_user_ids())
+            # Get current provisioned users based on mode
+            if use_basic_auth:
+                # BasicAuth mode: query app_passwords table
+                provisioned_users = set(
+                    await refresh_token_storage.get_all_app_password_user_ids()
+                )
+            else:
+                # OAuth mode: query refresh_tokens table
+                provisioned_users = set(await refresh_token_storage.get_all_user_ids())
             active_users = set(user_states.keys())
 
             # Start scanners for new users

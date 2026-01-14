@@ -1,18 +1,21 @@
-"""Integration tests for app password provisioning via Astrolabe.
+"""Integration tests for app password provisioning via management API.
 
 Tests the complete flow for multi-user BasicAuth mode:
-1. User stores app password via Astrolabe API
-2. MCP server retrieves it via OAuth client credentials
-3. Background sync uses it to access Nextcloud (NOT OAuth refresh tokens)
+1. User stores app password via management API endpoint
+2. MCP server stores it locally (encrypted)
+3. Background sync uses locally stored password to access Nextcloud
 
 These tests verify that BasicAuth and OAuth are completely separate concerns
 with no fallback between them.
 """
 
-import pytest
+import tempfile
+from pathlib import Path
 
-from nextcloud_mcp_server.auth.astrolabe_client import AstrolabeClient
-from nextcloud_mcp_server.config import get_settings
+import pytest
+from cryptography.fernet import Fernet
+
+from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.vector.oauth_sync import (
     NotProvisionedError,
     get_user_client,
@@ -21,145 +24,92 @@ from nextcloud_mcp_server.vector.oauth_sync import (
 )
 
 
-@pytest.mark.integration
-async def test_astrolabe_client_initialization():
-    """Test AstrolabeClient can be instantiated."""
-    client = AstrolabeClient(
-        nextcloud_host="http://localhost:8080",
-        client_id="test-client",
-        client_secret="test-secret",
-    )
-
-    assert client is not None
-    assert client.nextcloud_host == "http://localhost:8080"
-    assert client.client_id == "test-client"
-    assert client.client_secret == "test-secret"
-    assert client._token_cache is None
+@pytest.fixture
+def encryption_key():
+    """Generate a test encryption key."""
+    return Fernet.generate_key().decode()
 
 
-@pytest.mark.integration
-async def test_astrolabe_client_get_access_token_requires_oidc():
-    """Test that getting access token requires OIDC discovery endpoint."""
-    client = AstrolabeClient(
-        nextcloud_host="http://localhost:8080",
-        client_id="test-client",
-        client_secret="test-secret",
-    )
-
-    # This will fail without proper OIDC setup, which is expected
-    # The test verifies the client follows the OAuth client credentials flow
-    try:
-        token = await client.get_access_token()
-        # If we get here, OIDC is configured
-        assert token is not None
-    except Exception as e:
-        # Expected if OIDC not fully configured for test client
-        # 400/401/403/404 all indicate the flow is working but credentials are invalid
-        assert any(code in str(e) for code in ["400", "401", "403", "404"])
+@pytest.fixture
+async def temp_storage(encryption_key):
+    """Create temporary storage instance with encryption for testing."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test_provisioning.db"
+        storage = RefreshTokenStorage(
+            db_path=str(db_path), encryption_key=encryption_key
+        )
+        await storage.initialize()
+        yield storage
 
 
 @pytest.mark.integration
-async def test_get_user_app_password_returns_none_for_unconfigured_user():
-    """Test that get_user_app_password returns None for users without app passwords."""
-    # This requires valid OAuth client credentials
-    settings = get_settings()
+async def test_basic_auth_mode_uses_local_storage(temp_storage, mocker):
+    """Test that BasicAuth mode uses locally stored app passwords.
 
-    if not settings.oidc_client_id or not settings.oidc_client_secret:
-        pytest.skip("OAuth client credentials not configured")
-
-    client = AstrolabeClient(
-        nextcloud_host=settings.nextcloud_host or "http://localhost:8080",
-        client_id=settings.oidc_client_id,
-        client_secret=settings.oidc_client_secret,
-    )
-
-    # Try to get app password for a user that hasn't provisioned one
-    try:
-        app_password = await client.get_user_app_password("nonexistent_user")
-        # Should return None for unconfigured user (404 response)
-        assert app_password is None
-    except Exception as e:
-        # May fail with auth error if OAuth not fully configured
-        assert any(code in str(e) for code in ["400", "401", "403", "404"])
-
-
-@pytest.mark.integration
-async def test_basic_auth_mode_uses_app_password_only(mocker):
-    """Test that BasicAuth mode uses ONLY app passwords, NOT OAuth tokens.
-
-    In multi-user BasicAuth mode, OAuth refresh tokens are NOT used.
-    This is a complete separation of concerns.
+    In multi-user BasicAuth mode, app passwords are stored locally
+    in the MCP server's database after being provisioned via the API.
     """
-    # Mock settings to have client credentials
-    mock_settings = mocker.MagicMock()
-    mock_settings.oidc_client_id = "test-client-id"
-    mock_settings.oidc_client_secret = "test-client-secret"
-    mocker.patch(
-        "nextcloud_mcp_server.vector.oauth_sync.get_settings",
-        return_value=mock_settings,
-    )
+    # Store an app password in local storage
+    await temp_storage.store_app_password("test_user", "JHWzB-ZYgLZ-3qBDj-ZQe5o-LdKpB")
 
-    # Mock AstrolabeClient to return an app password
-    mock_astrolabe = mocker.AsyncMock()
-    mock_astrolabe.get_user_app_password.return_value = "test-app-password-12345"
-
-    mocker.patch(
-        "nextcloud_mcp_server.vector.oauth_sync.AstrolabeClient",
-        return_value=mock_astrolabe,
-    )
-
-    # Call get_user_client in BasicAuth mode
-    _client = await get_user_client(
+    # Call get_user_client_basic_auth with local storage
+    client = await get_user_client_basic_auth(
         user_id="test_user",
-        token_broker=None,  # No token broker needed for BasicAuth mode
         nextcloud_host="http://localhost:8080",
-        use_basic_auth=True,
+        storage=temp_storage,
     )
 
-    # Verify app password was requested
-    mock_astrolabe.get_user_app_password.assert_called_once_with("test_user")
-
-    # Verify client was created successfully with correct username
-    assert _client is not None
-    assert _client.username == "test_user"
+    # Verify client was created with correct credentials
+    assert client is not None
+    assert client.username == "test_user"
 
 
 @pytest.mark.integration
-async def test_basic_auth_mode_raises_error_without_app_password(mocker):
+async def test_basic_auth_mode_raises_error_without_app_password(temp_storage):
     """Test that BasicAuth mode raises NotProvisionedError if no app password.
 
     There is NO fallback to OAuth - if no app password, user must provision one.
     """
-    # Mock settings to have client credentials
-    mock_settings = mocker.MagicMock()
-    mock_settings.oidc_client_id = "test-client-id"
-    mock_settings.oidc_client_secret = "test-client-secret"
-    mocker.patch(
-        "nextcloud_mcp_server.vector.oauth_sync.get_settings",
-        return_value=mock_settings,
-    )
+    # Don't store any app password
 
-    # Mock AstrolabeClient to return None (no app password)
-    mock_astrolabe = mocker.AsyncMock()
-    mock_astrolabe.get_user_app_password.return_value = None
-
-    mocker.patch(
-        "nextcloud_mcp_server.vector.oauth_sync.AstrolabeClient",
-        return_value=mock_astrolabe,
-    )
-
-    # Call get_user_client in BasicAuth mode - should raise NotProvisionedError
+    # Call get_user_client_basic_auth - should raise NotProvisionedError
     with pytest.raises(NotProvisionedError) as exc_info:
-        await get_user_client(
+        await get_user_client_basic_auth(
             user_id="test_user",
-            token_broker=None,
             nextcloud_host="http://localhost:8080",
-            use_basic_auth=True,
+            storage=temp_storage,
         )
 
     # Verify error message mentions app password provisioning
     assert "app password" in str(exc_info.value).lower()
     assert "test_user" in str(exc_info.value)
+
+
+@pytest.mark.integration
+async def test_get_user_client_dispatches_to_basic_auth(temp_storage, mocker):
+    """Test that get_user_client dispatches to BasicAuth mode correctly."""
+    # Store an app password
+    await temp_storage.store_app_password("alice", "aaaaa-bbbbb-ccccc-ddddd-eeeee")
+
+    # Mock RefreshTokenStorage.from_env at the source module
+    mocker.patch(
+        "nextcloud_mcp_server.auth.storage.RefreshTokenStorage.from_env",
+        return_value=temp_storage,
+    )
+    # Also mock initialize since from_env returns an uninitialized instance
+    mocker.patch.object(temp_storage, "initialize", return_value=None)
+
+    # Call get_user_client in BasicAuth mode
+    client = await get_user_client(
+        user_id="alice",
+        token_broker=None,  # No token broker needed for BasicAuth mode
+        nextcloud_host="http://localhost:8080",
+        use_basic_auth=True,
+    )
+
+    # Verify client was created successfully
+    assert client is not None
+    assert client.username == "alice"
 
 
 @pytest.mark.integration
@@ -183,7 +133,7 @@ async def test_oauth_mode_uses_refresh_token_only(mocker):
         use_basic_auth=False,  # OAuth mode
     )
 
-    # Verify token broker was called (NOT Astrolabe)
+    # Verify token broker was called
     mock_token_broker.get_background_token.assert_called_once()
 
 
@@ -211,38 +161,6 @@ async def test_oauth_mode_raises_error_without_token(mocker):
     # Verify error message mentions OAuth provisioning
     assert "oauth" in str(exc_info.value).lower()
     assert "test_user" in str(exc_info.value)
-
-
-@pytest.mark.integration
-async def test_get_user_client_basic_auth_function(mocker):
-    """Test the dedicated get_user_client_basic_auth function."""
-    # Mock settings to have client credentials
-    mock_settings = mocker.MagicMock()
-    mock_settings.oidc_client_id = "test-client-id"
-    mock_settings.oidc_client_secret = "test-client-secret"
-    mocker.patch(
-        "nextcloud_mcp_server.vector.oauth_sync.get_settings",
-        return_value=mock_settings,
-    )
-
-    # Mock AstrolabeClient
-    mock_astrolabe = mocker.AsyncMock()
-    mock_astrolabe.get_user_app_password.return_value = "xxxxx-xxxxx-xxxxx-xxxxx-xxxxx"
-
-    mocker.patch(
-        "nextcloud_mcp_server.vector.oauth_sync.AstrolabeClient",
-        return_value=mock_astrolabe,
-    )
-
-    # Call dedicated function
-    client = await get_user_client_basic_auth(
-        user_id="alice",
-        nextcloud_host="http://localhost:8080",
-    )
-
-    assert client is not None
-    assert client.username == "alice"
-    mock_astrolabe.get_user_app_password.assert_called_once_with("alice")
 
 
 @pytest.mark.integration
@@ -275,4 +193,70 @@ async def test_oauth_mode_requires_token_broker():
             token_broker=None,  # Missing token broker
             nextcloud_host="http://localhost:8080",
             use_basic_auth=False,  # OAuth mode
+        )
+
+
+@pytest.mark.integration
+async def test_multiple_users_basic_auth_mode(temp_storage, mocker):
+    """Test that multiple users can be provisioned independently."""
+    # Store app passwords for multiple users
+    users = {
+        "alice": "aaaaa-aaaaa-aaaaa-aaaaa-aaaaa",
+        "bob": "bbbbb-bbbbb-bbbbb-bbbbb-bbbbb",
+        "charlie": "ccccc-ccccc-ccccc-ccccc-ccccc",
+    }
+
+    for user_id, password in users.items():
+        await temp_storage.store_app_password(user_id, password)
+
+    # Verify each user can get a client
+    for user_id in users.keys():
+        client = await get_user_client_basic_auth(
+            user_id=user_id,
+            nextcloud_host="http://localhost:8080",
+            storage=temp_storage,
+        )
+        assert client is not None
+        assert client.username == user_id
+
+
+@pytest.mark.integration
+async def test_get_all_provisioned_users(temp_storage):
+    """Test that we can list all provisioned users for BasicAuth mode."""
+    # Store app passwords for multiple users
+    await temp_storage.store_app_password("alice", "aaaaa-aaaaa-aaaaa-aaaaa-aaaaa")
+    await temp_storage.store_app_password("bob", "bbbbb-bbbbb-bbbbb-bbbbb-bbbbb")
+
+    # Get all provisioned users
+    user_ids = await temp_storage.get_all_app_password_user_ids()
+
+    assert len(user_ids) == 2
+    assert "alice" in user_ids
+    assert "bob" in user_ids
+
+
+@pytest.mark.integration
+async def test_revoke_app_password(temp_storage):
+    """Test that deleting app password revokes background access."""
+    # Provision user
+    await temp_storage.store_app_password("alice", "aaaaa-aaaaa-aaaaa-aaaaa-aaaaa")
+
+    # Verify user is provisioned
+    user_ids = await temp_storage.get_all_app_password_user_ids()
+    assert "alice" in user_ids
+
+    # Revoke access
+    deleted = await temp_storage.delete_app_password("alice")
+    assert deleted is True
+
+    # Verify user is no longer provisioned
+    user_ids = await temp_storage.get_all_app_password_user_ids()
+    assert "alice" not in user_ids
+
+    # Verify get_user_client now raises NotProvisionedError
+    with pytest.raises(NotProvisionedError):
+        await get_user_client_basic_auth(
+            user_id="alice",
+            nextcloud_host="http://localhost:8080",
+            storage=temp_storage,
         )

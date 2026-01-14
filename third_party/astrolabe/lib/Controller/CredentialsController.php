@@ -94,23 +94,89 @@ class CredentialsController extends Controller {
 			], Http::STATUS_UNAUTHORIZED);
 		}
 
-		// Store encrypted app password
+		// Store encrypted app password locally in Nextcloud
 		try {
 			$this->tokenStorage->storeBackgroundSyncPassword($userId, $appPassword);
-			$this->logger->info("Successfully stored app password for user: $userId");
-
-			return new JSONResponse([
-				'success' => true,
-				'message' => 'App password saved successfully'
-			], Http::STATUS_OK);
+			$this->logger->info("Stored app password locally for user: $userId");
 		} catch (\Exception $e) {
-			$this->logger->error("Failed to store app password for user $userId", [
+			$this->logger->error("Failed to store app password locally for user $userId", [
 				'error' => $e->getMessage()
 			]);
 			return new JSONResponse([
 				'success' => false,
-				'error' => 'Failed to save app password'
+				'error' => 'Failed to save app password locally'
 			], Http::STATUS_INTERNAL_SERVER_ERROR);
+		}
+
+		// Send app password to MCP server for background sync
+		// Get MCP server URL from system config (set in config.php)
+		$mcpServerUrl = $this->config->getSystemValue('mcp_server_url', '');
+		if (empty($mcpServerUrl)) {
+			$this->logger->warning("MCP server URL not configured, app password stored locally only");
+			return new JSONResponse([
+				'success' => true,
+				'partial_success' => true,
+				'local_storage' => true,
+				'mcp_sync' => false,
+				'message' => 'App password saved locally (MCP server not configured)'
+			], Http::STATUS_OK);
+		}
+
+		try {
+			$httpClient = $this->httpClientService->newClient();
+
+			// Send to MCP server with BasicAuth (user proves ownership of password)
+			$mcpEndpoint = rtrim($mcpServerUrl, '/') . '/api/v1/users/' . urlencode($userId) . '/app-password';
+
+			$this->logger->debug("Sending app password to MCP server: $mcpEndpoint");
+
+			$response = $httpClient->post($mcpEndpoint, [
+				'auth' => [$userId, $appPassword],
+				'headers' => [
+					'Content-Type' => 'application/json',
+					'Accept' => 'application/json',
+				],
+				'timeout' => 10,
+			]);
+
+			$statusCode = $response->getStatusCode();
+			$body = json_decode($response->getBody(), true);
+
+			if ($statusCode === 200 && ($body['success'] ?? false)) {
+				$this->logger->info("Successfully provisioned app password to MCP server for user: $userId");
+				return new JSONResponse([
+					'success' => true,
+					'partial_success' => false,
+					'local_storage' => true,
+					'mcp_sync' => true,
+					'message' => 'App password saved successfully'
+				], Http::STATUS_OK);
+			} else {
+				$error = $body['error'] ?? 'Unknown error';
+				$this->logger->error("MCP server rejected app password for user $userId: $error");
+				// Return partial success since it was stored locally but MCP sync failed
+				return new JSONResponse([
+					'success' => true,
+					'partial_success' => true,
+					'local_storage' => true,
+					'mcp_sync' => false,
+					'message' => 'App password saved locally (MCP server sync failed)',
+					'mcp_error' => $error
+				], Http::STATUS_OK);
+			}
+		} catch (\Exception $e) {
+			$this->logger->error("Failed to send app password to MCP server for user $userId", [
+				'error' => $e->getMessage()
+			]);
+			// Return partial success since it was stored locally but MCP was unreachable
+			return new JSONResponse([
+				'success' => true,
+				'partial_success' => true,
+				'local_storage' => true,
+				'mcp_sync' => false,
+				'message' => 'App password saved locally (MCP server unreachable)',
+				'mcp_error' => $e->getMessage()
+			], Http::STATUS_OK);
 		}
 	}
 

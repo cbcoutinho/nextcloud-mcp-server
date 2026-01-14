@@ -637,7 +637,9 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Remove Label from Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
     )
     @require_scopes("deck:write")
     @instrument_tool
@@ -692,7 +694,9 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Unassign User from Deck Card",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
     )
     @require_scopes("deck:write")
     @instrument_tool

@@ -89,8 +89,13 @@ async def test_create_operations_not_idempotent(nc_mcp_client: ClientSession):
     """Verify create operations are marked as non-idempotent."""
     tools = await nc_mcp_client.list_tools()
 
+    # Exceptions: operations that are actually idempotent
+    # - calendar_create_meeting: creates or returns existing meeting
+    # - nc_webdav_create_directory: MKCOL returns 405 if exists (same end state)
+    idempotent_exceptions = {"calendar_create_meeting", "nc_webdav_create_directory"}
+
     for tool in tools.tools:
-        if "create" in tool.name.lower() and "calendar_create_meeting" not in tool.name:
+        if "create" in tool.name.lower() and tool.name not in idempotent_exceptions:
             assert tool.annotations is not None, f"Tool {tool.name} missing annotations"
             assert tool.annotations.idempotentHint is not True, (
                 f"Create tool {tool.name} should not be idempotent (creates new resources)"
