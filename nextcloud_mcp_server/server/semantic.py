@@ -1,7 +1,6 @@
 """Semantic search MCP tools using vector database."""
 
 import logging
-import os
 
 import anyio
 from httpx import RequestError
@@ -658,12 +657,11 @@ def configure_semantic_tools(mcp: FastMCP):
         after creating or updating content across all indexed apps.
         """
 
-        # Check if vector sync is enabled
-        vector_sync_enabled = (
-            os.getenv("VECTOR_SYNC_ENABLED", "false").lower() == "true"
-        )
+        # Check if vector sync is enabled (supports both old and new env var names)
+        from nextcloud_mcp_server.config import get_settings
 
-        if not vector_sync_enabled:
+        settings = get_settings()
+        if not settings.vector_sync_enabled:
             return VectorSyncStatusResponse(
                 indexed_count=0,
                 pending_count=0,
