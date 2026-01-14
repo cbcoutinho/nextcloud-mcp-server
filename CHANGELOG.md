@@ -5,6 +5,22 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.61.0 (2026-01-14)
+
+### Feat
+
+- Add rate limiting and extract helpers for app password endpoints
+
+### Fix
+
+- Add missing annotations for deck remove/unassign operations
+- **auth**: Store app passwords locally for multi-user BasicAuth background sync
+
+### Refactor
+
+- Use get_settings() for vector sync enabled check
+- Extract storage helper and improve PHP error handling
+
 ## v0.60.4 (2026-01-12)
 
 ### Fix
