@@ -48,19 +48,18 @@
 				<div class="mcp-search-card">
 					<div class="mcp-search-row">
 						<NcTextField
-							:value="query"
+							v-model="query"
 							:label="t('astrolabe', 'Search query')"
 							:placeholder="t('astrolabe', 'Enter your search query...')"
 							class="mcp-search-input"
-							@update:value="query = $event"
 							@keyup.enter="performSearch" />
 
 						<NcSelect
-							v-model="selectedAlgorithmOption"
+							:model-value="selectedAlgorithmOption"
 							:options="algorithmOptions"
 							:placeholder="t('astrolabe', 'Algorithm')"
 							class="mcp-algorithm-select"
-							@input="algorithm = $event ? $event.id : 'hybrid'" />
+							@update:model-value="algorithm = $event ? $event.id : 'hybrid'" />
 
 						<NcButton
 							type="primary"
@@ -105,11 +104,10 @@
 							<div class="mcp-option-group">
 								<label>{{ t('astrolabe', 'Result Limit') }}</label>
 								<NcTextField
-									:value="limit"
+									v-model="limit"
 									type="number"
 									:min="1"
-									:max="100"
-									@update:value="limit = Number($event)" />
+									:max="100" />
 							</div>
 
 							<div class="mcp-option-group">
@@ -445,7 +443,7 @@ export default {
 			algorithm: 'hybrid',
 			showAdvanced: false,
 			selectedDocTypes: [],
-			limit: '20',
+			limit: 20,
 			scoreThreshold: 0,
 			loading: false,
 			error: null,

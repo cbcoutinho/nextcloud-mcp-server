@@ -152,19 +152,21 @@
 
 				<div class="settings-form">
 					<NcSelect
-						v-model="settings.algorithm"
+						:model-value="selectedAlgorithmOption"
 						:options="algorithmOptions"
 						:label="t('astrolabe', 'Search Algorithm')"
-						class="form-field" />
+						class="form-field"
+						@update:model-value="settings.algorithm = $event ? $event.id : 'hybrid'" />
 					<p class="help-text">
 						{{ t('astrolabe', 'Hybrid combines semantic understanding with keyword matching. Semantic finds conceptually similar content. BM25 matches exact keywords.') }}
 					</p>
 
 					<NcSelect
-						v-model="settings.fusion"
+						:model-value="selectedFusionOption"
 						:options="fusionOptions"
 						:label="t('astrolabe', 'Fusion Method')"
-						class="form-field" />
+						class="form-field"
+						@update:model-value="settings.fusion = $event ? $event.id : 'rrf'" />
 					<p class="help-text">
 						{{ t('astrolabe', 'Only applies to hybrid search. RRF balances results well for most queries. DBSF may work better when keyword matches are over/under-weighted.') }}
 					</p>
@@ -184,14 +186,13 @@
 					</div>
 
 					<NcTextField
-						:value="settings.limit"
+						v-model="settings.limit"
 						:label="t('astrolabe', 'Maximum Results')"
 						type="number"
 						:min="5"
 						:max="100"
 						:step="5"
-						class="form-field"
-						@update:value="settings.limit = Number($event)" />
+						class="form-field" />
 					<p class="help-text">
 						{{ t('astrolabe', 'Maximum number of results to return per search query (5-100).') }}
 					</p>
@@ -275,6 +276,15 @@ const fusionOptions = computed(() => [
 	{ id: 'rrf', label: t('astrolabe', 'RRF - Reciprocal Rank Fusion (Recommended)') },
 	{ id: 'dbsf', label: t('astrolabe', 'DBSF - Distribution-Based Score Fusion') },
 ])
+
+// Computed properties for NcSelect (converts between stored ID and option object)
+const selectedAlgorithmOption = computed(() =>
+	algorithmOptions.value.find(opt => opt.id === settings.value.algorithm) || algorithmOptions.value[0],
+)
+
+const selectedFusionOption = computed(() =>
+	fusionOptions.value.find(opt => opt.id === settings.value.fusion) || fusionOptions.value[0],
+)
 
 // Methods
 async function loadServerStatus() {
