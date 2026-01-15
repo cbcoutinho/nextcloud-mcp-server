@@ -154,7 +154,7 @@
 					<NcSelect
 						:model-value="selectedAlgorithmOption"
 						:options="algorithmOptions"
-						:label="t('astrolabe', 'Search Algorithm')"
+						:input-label="t('astrolabe', 'Search Algorithm')"
 						class="form-field"
 						@update:model-value="settings.algorithm = $event ? $event.id : 'hybrid'" />
 					<p class="help-text">
@@ -164,7 +164,7 @@
 					<NcSelect
 						:model-value="selectedFusionOption"
 						:options="fusionOptions"
-						:label="t('astrolabe', 'Fusion Method')"
+						:input-label="t('astrolabe', 'Fusion Method')"
 						class="form-field"
 						@update:model-value="settings.fusion = $event ? $event.id : 'rrf'" />
 					<p class="help-text">

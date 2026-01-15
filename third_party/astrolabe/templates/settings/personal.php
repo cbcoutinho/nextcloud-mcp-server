@@ -18,7 +18,7 @@
 $urlGenerator = \OC::$server->getURLGenerator();
 
 script('astrolabe', 'astrolabe-personalSettings');
-style('astrolabe', 'astrolabe-personalSettings');
+style('astrolabe', 'astrolabe-main');  // All CSS bundled into main
 ?>
 
 <div class="section">
