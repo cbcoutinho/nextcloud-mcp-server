@@ -14,6 +14,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.57.0 (2026-01-15)
+
+### Feat
+
+- Add rate limiting and extract helpers for app password endpoints
+
+### Fix
+
+- Add missing annotations for deck remove/unassign operations
+- **auth**: Store app passwords locally for multi-user BasicAuth background sync
+- **deck**: use correct endpoint for reorder_card to fix cross-stack moves
+- **deck**: Always preserve fields in update_card for partial updates
+- **astrolabe**: Fix CSS loading for Nextcloud apps
+- **astrolabe**: Fix revoke access button HTTP method mismatch
+
+### Refactor
+
+- Use get_settings() for vector sync enabled check
+- Extract storage helper and improve PHP error handling
+
 ## nextcloud-mcp-server-0.56.2 (2025-12-29)
 
 ### Fix
