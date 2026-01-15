@@ -25,6 +25,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires external MCP server deployment
 - See documentation for setup: https://github.com/cbcoutinho/nextcloud-mcp-server
 
+## astrolabe-v0.8.0 (2026-01-15)
+
+### Feat
+
+- Add rate limiting and extract helpers for app password endpoints
+
+### Fix
+
+- **astrolabe**: define appName and appVersion for @nextcloud/vue
+- Add missing annotations for deck remove/unassign operations
+- **auth**: Store app passwords locally for multi-user BasicAuth background sync
+- **deck**: use correct endpoint for reorder_card to fix cross-stack moves
+- **deck**: Always preserve fields in update_card for partial updates
+
+### Refactor
+
+- Use get_settings() for vector sync enabled check
+- Extract storage helper and improve PHP error handling
+
 ## astrolabe-v0.7.2 (2025-12-30)
 
 ### Fix
