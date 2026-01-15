@@ -87,20 +87,31 @@ jobs:
           mcp_commit_count=$(git log "$commit_range" --oneline --grep="^(feat|fix|docs|refactor|perf|test|build|ci|chore)" -E | \
             { grep -v "(helm)" || true; } | { grep -v "(astrolabe)" || true; } | wc -l)
 
+          MCP_BUMPED=false
           if [ "$mcp_commit_count" -gt 0 ]; then
             echo "Found $mcp_commit_count commits for MCP server since $last_mcp_tag"
             echo "Bumping MCP server version..."
             ./scripts/bump-mcp.sh
             BUMPED_COMPONENTS="$BUMPED_COMPONENTS mcp"
+            MCP_BUMPED=true
           else
             echo "No commits found for MCP server since $last_mcp_tag"
           fi
 
-          # Bump Helm chart (scope: helm)
+          # Bump Helm chart (scope: helm OR when MCP appVersion changes)
           echo "Checking Helm chart for version bump..."
+          HELM_HAS_COMMITS=false
           if has_commits_since_tag "nextcloud-mcp-server-" "(feat|fix|docs|refactor|perf|test|build|ci|chore)\(helm\)(!)?:"; then
-            echo "Bumping Helm chart version..."
+            HELM_HAS_COMMITS=true
+          fi
+
+          if [ "$HELM_HAS_COMMITS" = true ]; then
+            echo "Bumping Helm chart version (helm-scoped commits)..."
             ./scripts/bump-helm.sh
+            BUMPED_COMPONENTS="$BUMPED_COMPONENTS helm"
+          elif [ "$MCP_BUMPED" = true ]; then
+            echo "Bumping Helm chart version (appVersion changed)..."
+            ./scripts/bump-helm.sh --increment PATCH
             BUMPED_COMPONENTS="$BUMPED_COMPONENTS helm"
           fi
 
