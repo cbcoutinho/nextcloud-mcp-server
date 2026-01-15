@@ -443,7 +443,7 @@ export default {
 			algorithm: 'hybrid',
 			showAdvanced: false,
 			selectedDocTypes: [],
-			limit: '20',
+			limit: 20,
 			scoreThreshold: 0,
 			loading: false,
 			error: null,
