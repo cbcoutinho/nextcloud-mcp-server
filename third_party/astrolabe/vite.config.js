@@ -1,9 +1,19 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
+import { readFileSync } from 'fs'
+
+// Read app info from info.xml for @nextcloud/vue
+const infoXml = readFileSync(resolve(__dirname, 'appinfo/info.xml'), 'utf-8')
+const appName = infoXml.match(/<id>([^<]+)<\/id>/)?.[1] || 'astrolabe'
+const appVersion = infoXml.match(/<version>([^<]+)<\/version>/)?.[1] || ''
 
 export default defineConfig({
   plugins: [vue()],
+  define: {
+    appName: JSON.stringify(appName),
+    appVersion: JSON.stringify(appVersion),
+  },
   build: {
     outDir: '.',
     emptyOutDir: false,
