@@ -5,6 +5,13 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.61.3 (2026-01-15)
+
+### Fix
+
+- **astrolabe**: address review feedback for Vue 3 bindings
+- **astrolabe**: update Vue component bindings for Vue 3 compatibility
+
 ## v0.61.2 (2026-01-15)
 
 ### Fix
