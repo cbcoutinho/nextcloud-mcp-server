@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires external MCP server deployment
 - See documentation for setup: https://github.com/cbcoutinho/nextcloud-mcp-server
 
+## astrolabe-v0.8.1 (2026-01-15)
+
+### Fix
+
+- **astrolabe**: address review feedback for Vue 3 bindings
+- **astrolabe**: update Vue component bindings for Vue 3 compatibility
+- **ci**: bump helm chart version when MCP appVersion changes
+
 ## astrolabe-v0.8.0 (2026-01-15)
 
 ### Feat
