@@ -38,25 +38,19 @@ class IdpTokenRefresher {
 	/**
 	 * Get Nextcloud base URL for constructing internal OIDC endpoint URLs.
 	 *
-	 * @return string Base URL (e.g., "https://nextcloud.example.com")
+	 * IMPORTANT: This method returns the INTERNAL URL for server-to-server
+	 * requests within the container. External URLs (like localhost:8080) won't
+	 * work from inside the container since localhost refers to the container itself.
+	 *
+	 * For internal requests, we always use http://localhost (port 80) since
+	 * Nextcloud's web server is accessible at that address inside the container.
+	 *
+	 * @return string Base URL for internal requests (e.g., "http://localhost")
 	 */
 	private function getNextcloudBaseUrl(): string {
-		// Prefer explicit CLI URL override
-		$baseUrl = $this->config->getSystemValue('overwrite.cli.url', '');
-
-		if (!empty($baseUrl)) {
-			return rtrim($baseUrl, '/');
-		}
-
-		// Fallback to first trusted domain with protocol
-		$trustedDomains = $this->config->getSystemValue('trusted_domains', []);
-		if (!empty($trustedDomains)) {
-			$protocol = $this->config->getSystemValue('overwriteprotocol', 'https');
-			return $protocol . '://' . $trustedDomains[0];
-		}
-
-		// Last resort: localhost (log warning)
-		$this->logger->warning('IdpTokenRefresher: No Nextcloud URL configured, using localhost fallback');
+		// For internal requests within the container, always use http://localhost
+		// The web server is accessible at port 80 inside the container.
+		// External URLs like http://localhost:8080 won't work from inside the container.
 		return 'http://localhost';
 	}
 

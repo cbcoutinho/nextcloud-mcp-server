@@ -43,7 +43,17 @@ style('astrolabe', 'astrolabe-personalSettings');
 <div class="section">
 	<h2><?php p($l->t('Background Sync Access')); ?></h2>
 
-		<?php if ($_['hasBackgroundAccess'] || $_['backgroundAccessGranted']): ?>
+		<?php
+		// In hybrid mode (multi_user_basic + app passwords), user needs BOTH OAuth AND app password
+		// to be "fully configured". Check both credentials in hybrid mode.
+		$isHybridMode = isset($_['authMode']) && $_['authMode'] === 'multi_user_basic' && !empty($_['supportsAppPasswords']);
+		$hasOAuthToken = !empty($_['hasOAuthToken']);
+		$hasBackgroundAccess = $_['hasBackgroundAccess'] || $_['backgroundAccessGranted'];
+
+		// In hybrid mode, both credentials required; otherwise just background access
+		$isFullyConfigured = $isHybridMode ? ($hasOAuthToken && $hasBackgroundAccess) : $hasBackgroundAccess;
+		?>
+		<?php if ($isFullyConfigured): ?>
 			<!-- Already configured -->
 			<div class="mcp-background-status">
 				<p>
@@ -110,54 +120,129 @@ style('astrolabe', 'astrolabe-personalSettings');
 			</div>
 		<?php else: ?>
 			<!-- Not configured - show provisioning options -->
-			<p class="mcp-help-text">
-				<?php p($l->t('Enable background sync to allow the MCP server to access your Nextcloud data for background operations like content indexing.')); ?>
-			</p>
-
-			<div class="mcp-grant-section">
-				<h4><?php p($l->t('Option 1: OAuth Refresh Token (Recommended for Future)')); ?></h4>
+			<?php if (isset($_['authMode']) && $_['authMode'] === 'multi_user_basic' && !empty($_['supportsAppPasswords'])): ?>
+				<!-- Hybrid mode: User needs BOTH OAuth AND app password -->
 				<p class="mcp-help-text">
-					<?php p($l->t('When Nextcloud fully supports OAuth for app APIs. Currently waiting for upstream PR to merge.')); ?>
-				</p>
-				<a href="<?php p($_['serverUrl']); ?>/oauth/login?next=<?php p(urlencode($urlGenerator->getAbsoluteURL($urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'astrolabe'])))); ?>" class="button">
-					<span class="icon icon-confirm"></span>
-					<?php p($l->t('Authorize via OAuth')); ?>
-				</a>
-			</div>
-
-			<div class="mcp-grant-section">
-				<h4><?php p($l->t('Option 2: App Password (Works Today - Recommended)')); ?></h4>
-				<p class="mcp-help-text">
-					<?php p($l->t('Generate an app password in Security settings and provide it below. This is the recommended interim solution.')); ?>
+					<?php p($l->t('To use semantic search, you need to complete two setup steps:')); ?>
 				</p>
 
-				<div class="mcp-app-password-steps">
-					<p><strong><?php p($l->t('Step 1:')); ?></strong>
-						<a href="<?php p($urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'security'])); ?>" target="_blank">
-							<?php p($l->t('Generate app password in Security settings')); ?>
+				<!-- Step 1: OAuth Authorization (for Astrolabe→MCP API calls) -->
+				<div class="mcp-grant-section">
+					<h4>
+						<?php if (!empty($_['hasOAuthToken'])): ?>
+							<span class="badge badge-success"><span class="icon icon-checkmark-white"></span> <?php p($l->t('Complete')); ?></span>
+						<?php else: ?>
+							<span class="badge badge-warning"><?php p($l->t('Required')); ?></span>
+						<?php endif; ?>
+						<?php p($l->t('Step 1: Authorize Search Access')); ?>
+					</h4>
+					<p class="mcp-help-text">
+						<?php p($l->t('Authorize Astrolabe to perform searches on your behalf.')); ?>
+					</p>
+					<?php if (empty($_['hasOAuthToken'])): ?>
+						<a href="<?php p($_['oauthUrl']); ?>" class="button primary">
+							<span class="icon icon-confirm"></span>
+							<?php p($l->t('Authorize')); ?>
 						</a>
+					<?php else: ?>
+						<p><span class="icon icon-checkmark"></span> <?php p($l->t('Search access authorized.')); ?></p>
+					<?php endif; ?>
+				</div>
+
+				<!-- Step 2: App Password (for MCP→Nextcloud background sync) -->
+				<div class="mcp-grant-section">
+					<h4>
+						<?php if (!empty($_['hasBackgroundAccess'])): ?>
+							<span class="badge badge-success"><span class="icon icon-checkmark-white"></span> <?php p($l->t('Complete')); ?></span>
+						<?php else: ?>
+							<span class="badge badge-warning"><?php p($l->t('Required')); ?></span>
+						<?php endif; ?>
+						<?php p($l->t('Step 2: Enable Background Indexing')); ?>
+					</h4>
+					<p class="mcp-help-text">
+						<?php p($l->t('Provide an app password to allow background indexing of your content.')); ?>
+					</p>
+					<?php if (empty($_['hasBackgroundAccess'])): ?>
+						<div class="mcp-app-password-steps">
+							<p>
+								<a href="<?php p($urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'security'])); ?>" target="_blank">
+									<?php p($l->t('Generate app password in Security settings')); ?>
+								</a>
+							</p>
+
+							<form method="post" action="<?php p($urlGenerator->linkToRoute('astrolabe.credentials.storeAppPassword')); ?>" id="mcp-app-password-form">
+								<input type="hidden" name="requesttoken" value="<?php p($_['requesttoken']); ?>">
+								<div class="mcp-input-group">
+									<input type="password" name="appPassword" id="mcp-app-password-input"
+										   placeholder="xxxxx-xxxxx-xxxxx-xxxxx-xxxxx"
+										   pattern="[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}"
+										   required>
+									<button type="submit" class="button primary" id="mcp-save-app-password-button">
+										<span class="icon icon-checkmark"></span>
+										<?php p($l->t('Save')); ?>
+									</button>
+								</div>
+								<p class="mcp-help-text">
+									<?php p($l->t('The app password will be validated and securely encrypted before storage.')); ?>
+								</p>
+							</form>
+						</div>
+					<?php else: ?>
+						<p><span class="icon icon-checkmark"></span> <?php p($l->t('Background indexing enabled.')); ?></p>
+					<?php endif; ?>
+				</div>
+
+			<?php else: ?>
+				<!-- Standard OAuth or BasicAuth mode -->
+				<p class="mcp-help-text">
+					<?php p($l->t('Enable background sync to allow the MCP server to access your Nextcloud data for background operations like content indexing.')); ?>
+				</p>
+
+				<div class="mcp-grant-section">
+					<h4><?php p($l->t('Option 1: OAuth Refresh Token (Recommended for Future)')); ?></h4>
+					<p class="mcp-help-text">
+						<?php p($l->t('When Nextcloud fully supports OAuth for app APIs. Currently waiting for upstream PR to merge.')); ?>
+					</p>
+					<a href="<?php p($_['oauthUrl'] ?? ($_['serverUrl'] . '/oauth/login?next=' . urlencode($urlGenerator->getAbsoluteURL($urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'astrolabe']))))); ?>" class="button">
+						<span class="icon icon-confirm"></span>
+						<?php p($l->t('Authorize via OAuth')); ?>
+					</a>
+				</div>
+
+				<div class="mcp-grant-section">
+					<h4><?php p($l->t('Option 2: App Password (Works Today - Recommended)')); ?></h4>
+					<p class="mcp-help-text">
+						<?php p($l->t('Generate an app password in Security settings and provide it below. This is the recommended interim solution.')); ?>
 					</p>
 
-					<p><strong><?php p($l->t('Step 2:')); ?></strong> <?php p($l->t('Enter the app password below:')); ?></p>
-
-					<form method="post" action="<?php p($urlGenerator->linkToRoute('astrolabe.credentials.storeAppPassword')); ?>" id="mcp-app-password-form">
-						<input type="hidden" name="requesttoken" value="<?php p($_['requesttoken']); ?>">
-						<div class="mcp-input-group">
-							<input type="password" name="appPassword" id="mcp-app-password-input"
-								   placeholder="xxxxx-xxxxx-xxxxx-xxxxx-xxxxx"
-								   pattern="[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}"
-								   required>
-							<button type="submit" class="button primary" id="mcp-save-app-password-button">
-								<span class="icon icon-checkmark"></span>
-								<?php p($l->t('Save')); ?>
-							</button>
-						</div>
-						<p class="mcp-help-text">
-							<?php p($l->t('The app password will be validated and securely encrypted before storage.')); ?>
+					<div class="mcp-app-password-steps">
+						<p><strong><?php p($l->t('Step 1:')); ?></strong>
+							<a href="<?php p($urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'security'])); ?>" target="_blank">
+								<?php p($l->t('Generate app password in Security settings')); ?>
+							</a>
 						</p>
-					</form>
+
+						<p><strong><?php p($l->t('Step 2:')); ?></strong> <?php p($l->t('Enter the app password below:')); ?></p>
+
+						<form method="post" action="<?php p($urlGenerator->linkToRoute('astrolabe.credentials.storeAppPassword')); ?>" id="mcp-app-password-form">
+							<input type="hidden" name="requesttoken" value="<?php p($_['requesttoken']); ?>">
+							<div class="mcp-input-group">
+								<input type="password" name="appPassword" id="mcp-app-password-input"
+									   placeholder="xxxxx-xxxxx-xxxxx-xxxxx-xxxxx"
+									   pattern="[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}"
+									   required>
+								<button type="submit" class="button primary" id="mcp-save-app-password-button">
+									<span class="icon icon-checkmark"></span>
+									<?php p($l->t('Save')); ?>
+								</button>
+							</div>
+							<p class="mcp-help-text">
+								<?php p($l->t('The app password will be validated and securely encrypted before storage.')); ?>
+							</p>
+						</form>
+					</div>
 				</div>
-			</div>
+			<?php endif; ?>
 		<?php endif; ?>
 </div>
 
