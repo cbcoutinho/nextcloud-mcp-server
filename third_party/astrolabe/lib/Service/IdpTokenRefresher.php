@@ -38,23 +38,30 @@ class IdpTokenRefresher {
 	/**
 	 * Get Nextcloud base URL for constructing internal OIDC endpoint URLs.
 	 *
-	 * Uses Nextcloud's CLI URL config if set (for non-containerized deployments),
-	 * otherwise defaults to http://localhost for container environments.
+	 * IMPORTANT: This is for INTERNAL server-to-server requests (PHP to local Apache),
+	 * NOT for external client URLs. We must use the internal container URL, not the
+	 * external URL that browsers see.
 	 *
 	 * Configuration priority:
-	 * 1. overwrite.cli.url - Official Nextcloud system config for CLI operations
+	 * 1. astrolabe_internal_url - Explicit internal URL (for custom container setups)
 	 * 2. http://localhost - Default for Docker containers (web server on port 80)
+	 *
+	 * NOTE: We intentionally DO NOT use overwrite.cli.url here because:
+	 * - overwrite.cli.url is the EXTERNAL URL (e.g., http://localhost:8080)
+	 * - External URLs are not accessible from inside the container
+	 * - This method is for internal HTTP requests to the local web server
 	 *
 	 * @return string Base URL for internal requests (e.g., "http://localhost")
 	 */
 	private function getNextcloudBaseUrl(): string {
-		// Check for overwrite.cli.url (used in non-containerized deployments)
-		$cliUrl = $this->config->getSystemValue('overwrite.cli.url', '');
-		if (!empty($cliUrl)) {
-			return rtrim($cliUrl, '/');
+		// Check for explicit internal URL config (for custom container setups)
+		$internalUrl = $this->config->getSystemValue('astrolabe_internal_url', '');
+		if (!empty($internalUrl)) {
+			return rtrim($internalUrl, '/');
 		}
 
 		// Default: container environment with web server on localhost:80
+		// This works because PHP runs inside the same container as Apache
 		return 'http://localhost';
 	}
 
