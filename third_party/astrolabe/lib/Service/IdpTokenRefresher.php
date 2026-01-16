@@ -38,25 +38,23 @@ class IdpTokenRefresher {
 	/**
 	 * Get Nextcloud base URL for constructing internal OIDC endpoint URLs.
 	 *
-	 * @return string Base URL (e.g., "https://nextcloud.example.com")
+	 * Uses Nextcloud's CLI URL config if set (for non-containerized deployments),
+	 * otherwise defaults to http://localhost for container environments.
+	 *
+	 * Configuration priority:
+	 * 1. overwrite.cli.url - Official Nextcloud system config for CLI operations
+	 * 2. http://localhost - Default for Docker containers (web server on port 80)
+	 *
+	 * @return string Base URL for internal requests (e.g., "http://localhost")
 	 */
 	private function getNextcloudBaseUrl(): string {
-		// Prefer explicit CLI URL override
-		$baseUrl = $this->config->getSystemValue('overwrite.cli.url', '');
-
-		if (!empty($baseUrl)) {
-			return rtrim($baseUrl, '/');
+		// Check for overwrite.cli.url (used in non-containerized deployments)
+		$cliUrl = $this->config->getSystemValue('overwrite.cli.url', '');
+		if (!empty($cliUrl)) {
+			return rtrim($cliUrl, '/');
 		}
 
-		// Fallback to first trusted domain with protocol
-		$trustedDomains = $this->config->getSystemValue('trusted_domains', []);
-		if (!empty($trustedDomains)) {
-			$protocol = $this->config->getSystemValue('overwriteprotocol', 'https');
-			return $protocol . '://' . $trustedDomains[0];
-		}
-
-		// Last resort: localhost (log warning)
-		$this->logger->warning('IdpTokenRefresher: No Nextcloud URL configured, using localhost fallback');
+		// Default: container environment with web server on localhost:80
 		return 'http://localhost';
 	}
 

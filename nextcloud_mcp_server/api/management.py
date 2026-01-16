@@ -387,8 +387,13 @@ async def get_server_status(request: Request) -> JSONResponse:
     if mode == AuthMode.MULTI_USER_BASIC:
         response_data["supports_app_passwords"] = settings.enable_offline_access
 
-    # Include OIDC configuration if in OAuth mode
-    if auth_mode == "oauth":
+    # Include OIDC configuration if OAuth is available
+    # This includes OAuth mode AND hybrid mode (multi_user_basic + offline_access)
+    # Astrolabe needs OIDC config to discover IdP for OAuth flow in hybrid mode
+    oauth_provisioning_available = auth_mode == "oauth" or (
+        mode == AuthMode.MULTI_USER_BASIC and settings.enable_offline_access
+    )
+    if oauth_provisioning_available:
         # Provide IdP discovery information for NC PHP app
         oidc_config = {}
 

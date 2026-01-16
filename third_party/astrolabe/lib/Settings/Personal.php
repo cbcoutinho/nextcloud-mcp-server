@@ -79,60 +79,46 @@ class Personal implements ISettings {
 		// Check if user has MCP OAuth token
 		$token = $this->tokenStorage->getUserToken($userId);
 
-		// For multi_user_basic mode with app password support, check if user has app password
+		// For multi_user_basic mode with app password support (hybrid mode)
+		// User needs BOTH:
+		// 1. OAuth token for Astrolabe→MCP API calls (stored in McpTokenStorage)
+		// 2. App password for MCP→Nextcloud background sync
 		if ($authMode === 'multi_user_basic' && $supportsAppPasswords) {
-			// Check if user has already provided an app password
-			$hasBackgroundAccess = $this->tokenStorage->hasBackgroundSyncAccess($userId);
+			// Check both credentials
+			$hasOAuthToken = ($token !== null && !$this->tokenStorage->isExpired($token));
+			$hasAppPassword = $this->tokenStorage->hasBackgroundSyncAccess($userId);
+			$backgroundSyncType = $this->tokenStorage->getBackgroundSyncType($userId);
+			$backgroundSyncProvisionedAt = $this->tokenStorage->getBackgroundSyncProvisionedAt($userId);
 
-			if (!$hasBackgroundAccess) {
-				// No app password yet - show app password entry form
-				return new TemplateResponse(
-					Application::APP_ID,
-					'settings/personal',
-					[
-						'serverUrl' => $this->client->getPublicServerUrl(), // Changed from server_url to serverUrl
-						'serverStatus' => $serverStatus,
-						'auth_mode' => $authMode,
-						'authMode' => $authMode, // Add camelCase version for template
-						'supports_app_passwords' => $supportsAppPasswords,
-						'supportsAppPasswords' => $supportsAppPasswords, // Add camelCase version
-						'session' => null, // No session yet
-						'hasBackgroundAccess' => false, // FIXED: Add missing parameter
-						'backgroundAccessGranted' => false, // FIXED: Add missing parameter
-						'vectorSyncEnabled' => $serverStatus['vector_sync_enabled'] ?? false,
-						'hasToken' => false, // No OAuth token in multi_user_basic mode
-						'requesttoken' => \OCP\Util::callRegister(),
-					],
-					TemplateResponse::RENDER_AS_BLANK
-				);
-			} else {
-				// User has app password - show active status
-				$backgroundSyncType = $this->tokenStorage->getBackgroundSyncType($userId);
-				$backgroundSyncProvisionedAt = $this->tokenStorage->getBackgroundSyncProvisionedAt($userId);
+			// OAuth URL for Astrolabe's own OAuth controller (NOT MCP server's browser OAuth)
+			$oauthUrl = $this->urlGenerator->linkToRoute('astrolabe.oauth.initiateOAuth');
 
-				$parameters = [
-					'userId' => $userId,
-					'serverStatus' => $serverStatus,
-					'session' => null, // No user session for app passwords
-					'vectorSyncEnabled' => $serverStatus['vector_sync_enabled'] ?? false,
-					'backgroundAccessGranted' => true, // App password grants background access
-					'serverUrl' => $this->client->getPublicServerUrl(),
-					'hasToken' => false, // No OAuth token
-					'hasBackgroundAccess' => true,
-					'backgroundSyncType' => $backgroundSyncType,
-					'backgroundSyncProvisionedAt' => $backgroundSyncProvisionedAt,
-					'authMode' => $authMode,
-					'supportsAppPasswords' => $supportsAppPasswords,
-					'requesttoken' => \OCP\Util::callRegister(),
-				];
+			// Consolidated template parameters (camelCase convention)
+			$parameters = [
+				'userId' => $userId,
+				'serverUrl' => $this->client->getPublicServerUrl(),
+				'serverStatus' => $serverStatus,
+				'authMode' => $authMode,
+				'supportsAppPasswords' => $supportsAppPasswords,
+				'session' => null, // No session in hybrid mode
+				'vectorSyncEnabled' => $serverStatus['vector_sync_enabled'] ?? false,
+				// OAuth token status (for Astrolabe→MCP API calls)
+				'hasOAuthToken' => $hasOAuthToken,
+				'oauthUrl' => $oauthUrl,
+				// App password status (for MCP→Nextcloud background sync)
+				'hasBackgroundAccess' => $hasAppPassword,
+				'backgroundAccessGranted' => $hasAppPassword, // Legacy alias
+				'backgroundSyncType' => $backgroundSyncType,
+				'backgroundSyncProvisionedAt' => $backgroundSyncProvisionedAt,
+				'requesttoken' => \OCP\Util::callRegister(),
+			];
 
-				return new TemplateResponse(
-					Application::APP_ID,
-					'settings/personal',
-					$parameters,
-					TemplateResponse::RENDER_AS_BLANK
-				);
-			}
+			return new TemplateResponse(
+				Application::APP_ID,
+				'settings/personal',
+				$parameters,
+				TemplateResponse::RENDER_AS_BLANK
+			);
 		}
 		// For OAuth modes, if no token or token is expired, show OAuth authorization UI
 		elseif (!$token || $this->tokenStorage->isExpired($token)) {
@@ -198,6 +184,9 @@ class Personal implements ISettings {
 		$backgroundSyncType = $this->tokenStorage->getBackgroundSyncType($userId);
 		$backgroundSyncProvisionedAt = $this->tokenStorage->getBackgroundSyncProvisionedAt($userId);
 
+		// OAuth URL for standard OAuth mode (in case user needs to re-authorize)
+		$oauthUrl = $this->urlGenerator->linkToRoute('astrolabe.oauth.initiateOAuth');
+
 		// Provide initial state for Vue.js frontend (if needed)
 		$this->initialState->provideInitialState('user-data', [
 			'userId' => $userId,
@@ -205,17 +194,22 @@ class Personal implements ISettings {
 			'session' => $userSession,
 		]);
 
+		// Consolidated template parameters (camelCase convention)
 		$parameters = [
 			'userId' => $userId,
+			'serverUrl' => $this->client->getPublicServerUrl(),
 			'serverStatus' => $serverStatus,
 			'session' => $userSession,
 			'vectorSyncEnabled' => $serverStatus['vector_sync_enabled'] ?? false,
-			'backgroundAccessGranted' => $userSession['background_access_granted'] ?? false,
-			'serverUrl' => $this->client->getPublicServerUrl(),
-			'hasToken' => true,
+			// OAuth status
+			'hasOAuthToken' => true,
+			'oauthUrl' => $oauthUrl,
+			// Background sync status
 			'hasBackgroundAccess' => $hasBackgroundAccess,
+			'backgroundAccessGranted' => $userSession['background_access_granted'] ?? false, // Legacy
 			'backgroundSyncType' => $backgroundSyncType,
 			'backgroundSyncProvisionedAt' => $backgroundSyncProvisionedAt,
+			'requesttoken' => \OCP\Util::callRegister(),
 		];
 
 		return new TemplateResponse(

@@ -40,7 +40,7 @@ See [documentation](https://github.com/cbcoutinho/nextcloud-mcp-server) for conf
 	<screenshot>https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/third_party/astrolabe/screenshots/01-unified-search-astrolabe.png?raw=1</screenshot>
 	<screenshot>https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/third_party/astrolabe/screenshots/03-chunk-viewer-open.png?raw=1</screenshot>
 	<dependencies>
-		<nextcloud min-version="30" max-version="32"/>
+		<nextcloud min-version="31" max-version="32"/>
 	</dependencies>
 	<settings>
 		<personal>OCA\Astrolabe\Settings\Personal</personal>
