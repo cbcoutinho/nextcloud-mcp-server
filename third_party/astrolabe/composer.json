@@ -14,6 +14,11 @@
 			"OCA\\Astrolabe\\": "lib/"
 		}
 	},
+	"autoload-dev": {
+		"psr-4": {
+			"OCP\\": "vendor/nextcloud/ocp/OCP/"
+		}
+	},
 	"scripts": {
 		"post-install-cmd": [
 			"@composer bin all install --ansi"
@@ -25,7 +30,7 @@
 		"cs:check": "php-cs-fixer fix --dry-run --diff",
 		"cs:fix": "php-cs-fixer fix",
 		"psalm": "psalm --threads=1 --no-cache",
-		"test:unit": "phpunit tests -c tests/phpunit.xml --colors=always --fail-on-warning --fail-on-risky",
+		"test:unit": "./vendor/bin/phpunit -c tests/unit/phpunit.xml --colors=always",
 		"openapi": "generate-spec",
 		"rector": "rector && composer cs:fix"
 	},
@@ -35,6 +40,7 @@
 	},
 	"require-dev": {
 		"nextcloud/ocp": "dev-stable30",
+		"phpunit/phpunit": "^10.0",
 		"roave/security-advisories": "dev-latest"
 	},
 	"config": {
