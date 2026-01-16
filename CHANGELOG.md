@@ -5,6 +5,15 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.61.4 (2026-01-16)
+
+### Fix
+
+- **astrolabe**: Address reviewer feedback for hybrid mode
+- **astrolabe**: Fix NcSelect options and CSS loading
+- **astrolabe**: fix OAuth flow and settings UI for hybrid mode
+- **api**: return OIDC config in hybrid mode for Astrolabe OAuth flow
+
 ## v0.61.3 (2026-01-15)
 
 ### Fix
