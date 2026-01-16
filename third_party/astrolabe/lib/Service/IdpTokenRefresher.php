@@ -38,19 +38,23 @@ class IdpTokenRefresher {
 	/**
 	 * Get Nextcloud base URL for constructing internal OIDC endpoint URLs.
 	 *
-	 * IMPORTANT: This method returns the INTERNAL URL for server-to-server
-	 * requests within the container. External URLs (like localhost:8080) won't
-	 * work from inside the container since localhost refers to the container itself.
+	 * Uses Nextcloud's CLI URL config if set (for non-containerized deployments),
+	 * otherwise defaults to http://localhost for container environments.
 	 *
-	 * For internal requests, we always use http://localhost (port 80) since
-	 * Nextcloud's web server is accessible at that address inside the container.
+	 * Configuration priority:
+	 * 1. overwrite.cli.url - Official Nextcloud system config for CLI operations
+	 * 2. http://localhost - Default for Docker containers (web server on port 80)
 	 *
 	 * @return string Base URL for internal requests (e.g., "http://localhost")
 	 */
 	private function getNextcloudBaseUrl(): string {
-		// For internal requests within the container, always use http://localhost
-		// The web server is accessible at port 80 inside the container.
-		// External URLs like http://localhost:8080 won't work from inside the container.
+		// Check for overwrite.cli.url (used in non-containerized deployments)
+		$cliUrl = $this->config->getSystemValue('overwrite.cli.url', '');
+		if (!empty($cliUrl)) {
+			return rtrim($cliUrl, '/');
+		}
+
+		// Default: container environment with web server on localhost:80
 		return 'http://localhost';
 	}
 

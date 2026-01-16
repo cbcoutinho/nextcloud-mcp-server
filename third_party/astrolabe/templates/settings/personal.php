@@ -44,13 +44,13 @@ style('astrolabe', 'astrolabe-main');  // All CSS bundled into main
 	<h2><?php p($l->t('Background Sync Access')); ?></h2>
 
 		<?php
-		// In hybrid mode (multi_user_basic + app passwords), user needs BOTH OAuth AND app password
-		// to be "fully configured". Check both credentials in hybrid mode.
-		$isHybridMode = isset($_['authMode']) && $_['authMode'] === 'multi_user_basic' && !empty($_['supportsAppPasswords']);
+		// Determine if hybrid mode (multi_user_basic + app passwords)
+		// In hybrid mode, user needs BOTH OAuth AND app password to be "fully configured"
+		$isHybridMode = ($_['authMode'] ?? '') === 'multi_user_basic' && !empty($_['supportsAppPasswords']);
 		$hasOAuthToken = !empty($_['hasOAuthToken']);
-		$hasBackgroundAccess = $_['hasBackgroundAccess'] || $_['backgroundAccessGranted'];
+		$hasBackgroundAccess = !empty($_['hasBackgroundAccess']) || !empty($_['backgroundAccessGranted']);
 
-		// In hybrid mode, both credentials required; otherwise just background access
+		// In hybrid mode: both credentials required; otherwise just background access
 		$isFullyConfigured = $isHybridMode ? ($hasOAuthToken && $hasBackgroundAccess) : $hasBackgroundAccess;
 		?>
 		<?php if ($isFullyConfigured): ?>
@@ -120,7 +120,7 @@ style('astrolabe', 'astrolabe-main');  // All CSS bundled into main
 			</div>
 		<?php else: ?>
 			<!-- Not configured - show provisioning options -->
-			<?php if (isset($_['authMode']) && $_['authMode'] === 'multi_user_basic' && !empty($_['supportsAppPasswords'])): ?>
+			<?php if ($isHybridMode): ?>
 				<!-- Hybrid mode: User needs BOTH OAuth AND app password -->
 				<p class="mcp-help-text">
 					<?php p($l->t('To use semantic search, you need to complete two setup steps:')); ?>
@@ -203,7 +203,7 @@ style('astrolabe', 'astrolabe-main');  // All CSS bundled into main
 					<p class="mcp-help-text">
 						<?php p($l->t('When Nextcloud fully supports OAuth for app APIs. Currently waiting for upstream PR to merge.')); ?>
 					</p>
-					<a href="<?php p($_['oauthUrl'] ?? ($_['serverUrl'] . '/oauth/login?next=' . urlencode($urlGenerator->getAbsoluteURL($urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'astrolabe']))))); ?>" class="button">
+					<a href="<?php p($_['oauthUrl']); ?>" class="button">
 						<span class="icon icon-confirm"></span>
 						<?php p($l->t('Authorize via OAuth')); ?>
 					</a>

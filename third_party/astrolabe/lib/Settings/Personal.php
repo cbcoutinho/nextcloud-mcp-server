@@ -93,23 +93,21 @@ class Personal implements ISettings {
 			// OAuth URL for Astrolabe's own OAuth controller (NOT MCP server's browser OAuth)
 			$oauthUrl = $this->urlGenerator->linkToRoute('astrolabe.oauth.initiateOAuth');
 
+			// Consolidated template parameters (camelCase convention)
 			$parameters = [
 				'userId' => $userId,
 				'serverUrl' => $this->client->getPublicServerUrl(),
 				'serverStatus' => $serverStatus,
-				'auth_mode' => $authMode,
 				'authMode' => $authMode,
-				'supports_app_passwords' => $supportsAppPasswords,
 				'supportsAppPasswords' => $supportsAppPasswords,
 				'session' => null, // No session in hybrid mode
 				'vectorSyncEnabled' => $serverStatus['vector_sync_enabled'] ?? false,
 				// OAuth token status (for Astrolabe→MCP API calls)
-				'hasToken' => $hasOAuthToken,
 				'hasOAuthToken' => $hasOAuthToken,
 				'oauthUrl' => $oauthUrl,
 				// App password status (for MCP→Nextcloud background sync)
 				'hasBackgroundAccess' => $hasAppPassword,
-				'backgroundAccessGranted' => $hasAppPassword,
+				'backgroundAccessGranted' => $hasAppPassword, // Legacy alias
 				'backgroundSyncType' => $backgroundSyncType,
 				'backgroundSyncProvisionedAt' => $backgroundSyncProvisionedAt,
 				'requesttoken' => \OCP\Util::callRegister(),
@@ -186,6 +184,9 @@ class Personal implements ISettings {
 		$backgroundSyncType = $this->tokenStorage->getBackgroundSyncType($userId);
 		$backgroundSyncProvisionedAt = $this->tokenStorage->getBackgroundSyncProvisionedAt($userId);
 
+		// OAuth URL for standard OAuth mode (in case user needs to re-authorize)
+		$oauthUrl = $this->urlGenerator->linkToRoute('astrolabe.oauth.initiateOAuth');
+
 		// Provide initial state for Vue.js frontend (if needed)
 		$this->initialState->provideInitialState('user-data', [
 			'userId' => $userId,
@@ -193,17 +194,22 @@ class Personal implements ISettings {
 			'session' => $userSession,
 		]);
 
+		// Consolidated template parameters (camelCase convention)
 		$parameters = [
 			'userId' => $userId,
+			'serverUrl' => $this->client->getPublicServerUrl(),
 			'serverStatus' => $serverStatus,
 			'session' => $userSession,
 			'vectorSyncEnabled' => $serverStatus['vector_sync_enabled'] ?? false,
-			'backgroundAccessGranted' => $userSession['background_access_granted'] ?? false,
-			'serverUrl' => $this->client->getPublicServerUrl(),
-			'hasToken' => true,
+			// OAuth status
+			'hasOAuthToken' => true,
+			'oauthUrl' => $oauthUrl,
+			// Background sync status
 			'hasBackgroundAccess' => $hasBackgroundAccess,
+			'backgroundAccessGranted' => $userSession['background_access_granted'] ?? false, // Legacy
 			'backgroundSyncType' => $backgroundSyncType,
 			'backgroundSyncProvisionedAt' => $backgroundSyncProvisionedAt,
+			'requesttoken' => \OCP\Util::callRegister(),
 		];
 
 		return new TemplateResponse(
