@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.57.4 (2026-01-16)
+
+### Fix
+
+- **astrolabe**: Address reviewer feedback for hybrid mode
+- **astrolabe**: Fix NcSelect options and CSS loading
+- **astrolabe**: fix OAuth flow and settings UI for hybrid mode
+- **api**: return OIDC config in hybrid mode for Astrolabe OAuth flow
+
 ## nextcloud-mcp-server-0.57.3 (2026-01-15)
 
 ## nextcloud-mcp-server-0.57.2 (2026-01-15)
