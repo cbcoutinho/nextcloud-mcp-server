@@ -57,6 +57,20 @@ class IdpTokenRefresher {
 		// Check for explicit internal URL config (for custom container setups)
 		$internalUrl = $this->config->getSystemValue('astrolabe_internal_url', '');
 		if (!empty($internalUrl)) {
+			// Validate URL format
+			if (!filter_var($internalUrl, FILTER_VALIDATE_URL)) {
+				$this->logger->warning('Invalid astrolabe_internal_url format, using default', [
+					'configured_url' => $internalUrl,
+				]);
+				return 'http://localhost';
+			}
+			// Warn if it looks like an external URL (common misconfiguration)
+			if (preg_match('/:\d{4,5}$/', $internalUrl)) {
+				$this->logger->warning('astrolabe_internal_url appears to use external port mapping', [
+					'configured_url' => $internalUrl,
+					'hint' => 'Internal URLs should use port 80, not mapped ports like :8080',
+				]);
+			}
 			return rtrim($internalUrl, '/');
 		}
 
@@ -104,7 +118,7 @@ class IdpTokenRefresher {
 				// External IdP configured - use OIDC discovery
 				$discoveryUrl = $statusData['oidc']['discovery_url'];
 
-				$this->logger->info('IdpTokenRefresher: Using external IdP', [
+				$this->logger->debug('IdpTokenRefresher: Using external IdP', [
 					'discovery_url' => $discoveryUrl,
 				]);
 
@@ -120,7 +134,7 @@ class IdpTokenRefresher {
 				// Nextcloud's OIDC app - use internal URL
 				$tokenEndpoint = $this->getNextcloudBaseUrl() . '/apps/oidc/token';
 
-				$this->logger->info('IdpTokenRefresher: Using Nextcloud OIDC app', [
+				$this->logger->debug('IdpTokenRefresher: Using Nextcloud OIDC app', [
 					'token_endpoint' => $tokenEndpoint,
 				]);
 			}
@@ -165,10 +179,37 @@ class IdpTokenRefresher {
 
 			return $tokenData;
 
-		} catch (\Exception $e) {
-			$this->logger->error('IdpTokenRefresher: Token refresh failed', [
+		} catch (\OCP\Http\Client\LocalServerException $e) {
+			// Network/connection error - may be transient
+			$this->logger->warning('IdpTokenRefresher: Network error during refresh', [
 				'error' => $e->getMessage(),
 			]);
+			return null;
+		} catch (\Exception $e) {
+			$statusCode = null;
+			if (method_exists($e, 'getCode')) {
+				$statusCode = $e->getCode();
+			}
+
+			// Log with appropriate level based on error type
+			if ($statusCode === 401 || $statusCode === 403) {
+				// Auth error - token is invalid, should be deleted
+				$this->logger->error('IdpTokenRefresher: Auth error - token invalid', [
+					'status_code' => $statusCode,
+					'error' => $e->getMessage(),
+				]);
+			} elseif ($statusCode >= 500) {
+				// Server error - may be transient
+				$this->logger->warning('IdpTokenRefresher: Server error during refresh', [
+					'status_code' => $statusCode,
+					'error' => $e->getMessage(),
+				]);
+			} else {
+				$this->logger->error('IdpTokenRefresher: Token refresh failed', [
+					'status_code' => $statusCode,
+					'error' => $e->getMessage(),
+				]);
+			}
 			return null;
 		}
 	}
