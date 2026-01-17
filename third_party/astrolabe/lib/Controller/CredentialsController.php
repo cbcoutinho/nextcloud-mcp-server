@@ -112,7 +112,7 @@ class CredentialsController extends Controller {
 		// Get MCP server URL from system config (set in config.php)
 		$mcpServerUrl = $this->config->getSystemValue('mcp_server_url', '');
 		if (empty($mcpServerUrl)) {
-			$this->logger->warning("MCP server URL not configured, app password stored locally only");
+			$this->logger->warning('MCP server URL not configured, app password stored locally only');
 			return new JSONResponse([
 				'success' => true,
 				'partial_success' => true,

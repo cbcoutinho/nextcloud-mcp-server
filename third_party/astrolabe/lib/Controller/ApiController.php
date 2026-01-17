@@ -26,13 +26,13 @@ use Psr\Log\LoggerInterface;
  * Handles form submissions and AJAX requests from settings panels.
  */
 class ApiController extends Controller {
-	private $client;
-	private $userSession;
-	private $urlGenerator;
-	private $logger;
-	private $tokenStorage;
-	private $config;
-	private $tokenRefresher;
+	private McpServerClient $client;
+	private IUserSession $userSession;
+	private IURLGenerator $urlGenerator;
+	private LoggerInterface $logger;
+	private McpTokenStorage $tokenStorage;
+	private IConfig $config;
+	private IdpTokenRefresher $tokenRefresher;
 
 	public function __construct(
 		string $appName,

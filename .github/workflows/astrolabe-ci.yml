@@ -1,24 +1,24 @@
-# Consolidated CI workflow for Astroglobe Nextcloud app
+# Consolidated CI workflow for Astrolabe Nextcloud app
 #
-# Runs on PRs that modify the astroglobe directory
+# Runs on PRs that modify the astrolabe directory
 # Based on Nextcloud app skeleton workflows
 #
 # SPDX-FileCopyrightText: 2025 Nextcloud MCP Server contributors
 # SPDX-License-Identifier: MIT
 
-name: Astroglobe CI
+name: Astrolabe CI
 
 on:
   pull_request:
     paths:
       - 'third_party/astrolabe/**'
-      - '.github/workflows/astroglobe-ci.yml'
+      - '.github/workflows/astrolabe-ci.yml'
 
 permissions:
   contents: read
 
 concurrency:
-  group: astroglobe-ci-${{ github.head_ref || github.run_id }}
+  group: astrolabe-ci-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -308,7 +308,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes, node-build, eslint, stylelint, php-cs, psalm, phpunit]
     if: always()
-    name: astroglobe-ci-summary
+    name: astrolabe-ci-summary
     steps:
       - name: Summary status
         run: |

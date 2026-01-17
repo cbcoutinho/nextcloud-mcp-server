@@ -8,6 +8,7 @@
     findUnusedBaselineEntry="true"
     findUnusedCode="true"
 	phpVersion="8.1"
+    errorBaseline="psalm-baseline.xml"
 >
     <projectFiles>
         <directory name="lib" />

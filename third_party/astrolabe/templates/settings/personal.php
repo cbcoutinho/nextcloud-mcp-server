@@ -47,12 +47,12 @@ style('astrolabe', 'astrolabe-main');  // All CSS bundled into main
 		// Determine if hybrid mode (multi_user_basic + app passwords)
 		// In hybrid mode, user needs BOTH OAuth AND app password to be "fully configured"
 		$isHybridMode = ($_['authMode'] ?? '') === 'multi_user_basic' && !empty($_['supportsAppPasswords']);
-		$hasOAuthToken = !empty($_['hasOAuthToken']);
-		$hasBackgroundAccess = !empty($_['hasBackgroundAccess']) || !empty($_['backgroundAccessGranted']);
+$hasOAuthToken = !empty($_['hasOAuthToken']);
+$hasBackgroundAccess = !empty($_['hasBackgroundAccess']) || !empty($_['backgroundAccessGranted']);
 
-		// In hybrid mode: both credentials required; otherwise just background access
-		$isFullyConfigured = $isHybridMode ? ($hasOAuthToken && $hasBackgroundAccess) : $hasBackgroundAccess;
-		?>
+// In hybrid mode: both credentials required; otherwise just background access
+$isFullyConfigured = $isHybridMode ? ($hasOAuthToken && $hasBackgroundAccess) : $hasBackgroundAccess;
+?>
 		<?php if ($isFullyConfigured): ?>
 			<!-- Already configured -->
 			<div class="mcp-background-status">
