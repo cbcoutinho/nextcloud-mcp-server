@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OCA\Astrolabe\Service;
 
+use OCP\Http\Client\IClient;
 use OCP\Http\Client\IClientService;
 use OCP\IConfig;
 use Psr\Log\LoggerInterface;
@@ -18,10 +19,10 @@ use Psr\Log\LoggerInterface;
  * Public clients without client_secret cannot refresh tokens.
  */
 class IdpTokenRefresher {
-	private $config;
-	private $httpClient;
-	private $logger;
-	private $mcpServerClient;
+	private IConfig $config;
+	private IClient $httpClient;
+	private LoggerInterface $logger;
+	private McpServerClient $mcpServerClient;
 
 	public function __construct(
 		IConfig $config,
@@ -38,23 +39,47 @@ class IdpTokenRefresher {
 	/**
 	 * Get Nextcloud base URL for constructing internal OIDC endpoint URLs.
 	 *
-	 * Uses Nextcloud's CLI URL config if set (for non-containerized deployments),
-	 * otherwise defaults to http://localhost for container environments.
+	 * IMPORTANT: This is for INTERNAL server-to-server requests (PHP to local Apache),
+	 * NOT for external client URLs. We must use the internal container URL, not the
+	 * external URL that browsers see.
 	 *
 	 * Configuration priority:
-	 * 1. overwrite.cli.url - Official Nextcloud system config for CLI operations
+	 * 1. astrolabe_internal_url - Explicit internal URL (for custom container setups)
 	 * 2. http://localhost - Default for Docker containers (web server on port 80)
+	 *
+	 * NOTE: We intentionally DO NOT use overwrite.cli.url here because:
+	 * - overwrite.cli.url is the EXTERNAL URL (e.g., http://localhost:8080)
+	 * - External URLs are not accessible from inside the container
+	 * - This method is for internal HTTP requests to the local web server
 	 *
 	 * @return string Base URL for internal requests (e.g., "http://localhost")
 	 */
 	private function getNextcloudBaseUrl(): string {
-		// Check for overwrite.cli.url (used in non-containerized deployments)
-		$cliUrl = $this->config->getSystemValue('overwrite.cli.url', '');
-		if (!empty($cliUrl)) {
-			return rtrim($cliUrl, '/');
+		// Check for explicit internal URL config (for custom container setups)
+		$internalUrl = $this->config->getSystemValue('astrolabe_internal_url', '');
+		if (!is_string($internalUrl)) {
+			$internalUrl = '';
+		}
+		if (!empty($internalUrl)) {
+			// Validate URL format
+			if (!filter_var($internalUrl, FILTER_VALIDATE_URL)) {
+				$this->logger->warning('Invalid astrolabe_internal_url format, using default', [
+					'configured_url' => $internalUrl,
+				]);
+				return 'http://localhost';
+			}
+			// Warn if it looks like an external URL (common misconfiguration)
+			if (preg_match('/:\d{4,5}$/', $internalUrl)) {
+				$this->logger->warning('astrolabe_internal_url appears to use external port mapping', [
+					'configured_url' => $internalUrl,
+					'hint' => 'Internal URLs should use port 80, not mapped ports like :8080',
+				]);
+			}
+			return rtrim($internalUrl, '/');
 		}
 
 		// Default: container environment with web server on localhost:80
+		// This works because PHP runs inside the same container as Apache
 		return 'http://localhost';
 	}
 
@@ -97,7 +122,7 @@ class IdpTokenRefresher {
 				// External IdP configured - use OIDC discovery
 				$discoveryUrl = $statusData['oidc']['discovery_url'];
 
-				$this->logger->info('IdpTokenRefresher: Using external IdP', [
+				$this->logger->debug('IdpTokenRefresher: Using external IdP', [
 					'discovery_url' => $discoveryUrl,
 				]);
 
@@ -113,7 +138,7 @@ class IdpTokenRefresher {
 				// Nextcloud's OIDC app - use internal URL
 				$tokenEndpoint = $this->getNextcloudBaseUrl() . '/apps/oidc/token';
 
-				$this->logger->info('IdpTokenRefresher: Using Nextcloud OIDC app', [
+				$this->logger->debug('IdpTokenRefresher: Using Nextcloud OIDC app', [
 					'token_endpoint' => $tokenEndpoint,
 				]);
 			}
@@ -158,10 +183,37 @@ class IdpTokenRefresher {
 
 			return $tokenData;
 
-		} catch (\Exception $e) {
-			$this->logger->error('IdpTokenRefresher: Token refresh failed', [
+		} catch (\OCP\Http\Client\LocalServerException $e) {
+			// Network/connection error - may be transient
+			$this->logger->warning('IdpTokenRefresher: Network error during refresh', [
 				'error' => $e->getMessage(),
 			]);
+			return null;
+		} catch (\Exception $e) {
+			$statusCode = null;
+			if (method_exists($e, 'getCode')) {
+				$statusCode = $e->getCode();
+			}
+
+			// Log with appropriate level based on error type
+			if ($statusCode === 401 || $statusCode === 403) {
+				// Auth error - token is invalid, should be deleted
+				$this->logger->error('IdpTokenRefresher: Auth error - token invalid', [
+					'status_code' => $statusCode,
+					'error' => $e->getMessage(),
+				]);
+			} elseif ($statusCode >= 500) {
+				// Server error - may be transient
+				$this->logger->warning('IdpTokenRefresher: Server error during refresh', [
+					'status_code' => $statusCode,
+					'error' => $e->getMessage(),
+				]);
+			} else {
+				$this->logger->error('IdpTokenRefresher: Token refresh failed', [
+					'status_code' => $statusCode,
+					'error' => $e->getMessage(),
+				]);
+			}
 			return null;
 		}
 	}

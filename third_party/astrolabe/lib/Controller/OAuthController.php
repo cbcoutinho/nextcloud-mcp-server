@@ -12,6 +12,7 @@ use OCP\AppFramework\Http\Attribute\NoAdminRequired;
 use OCP\AppFramework\Http\Attribute\NoCSRFRequired;
 use OCP\AppFramework\Http\RedirectResponse;
 use OCP\AppFramework\Http\TemplateResponse;
+use OCP\Http\Client\IClient;
 use OCP\Http\Client\IClientService;
 use OCP\IConfig;
 use OCP\IL10N;
@@ -32,15 +33,15 @@ use Psr\Log\LoggerInterface;
  * - Confidential clients: PKCE + client_secret (defense in depth)
  */
 class OAuthController extends Controller {
-	private $config;
-	private $session;
-	private $userSession;
-	private $urlGenerator;
-	private $tokenStorage;
-	private $logger;
-	private $l;
-	private $httpClient;
-	private $client;
+	private IConfig $config;
+	private ISession $session;
+	private IUserSession $userSession;
+	private IURLGenerator $urlGenerator;
+	private McpTokenStorage $tokenStorage;
+	private LoggerInterface $logger;
+	private IL10N $l;
+	private IClient $httpClient;
+	private McpServerClient $client;
 
 	public function __construct(
 		string $appName,

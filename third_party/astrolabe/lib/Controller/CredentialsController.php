@@ -23,13 +23,13 @@ use Psr\Log\LoggerInterface;
  * Handles storing and validating app passwords for multi-user BasicAuth mode.
  */
 class CredentialsController extends Controller {
-	private $tokenStorage;
-	private $userSession;
-	private $logger;
-	private $config;
-	private $client;
-	private $httpClientService;
-	private $urlGenerator;
+	private McpTokenStorage $tokenStorage;
+	private IUserSession $userSession;
+	private LoggerInterface $logger;
+	private IConfig $config;
+	private McpServerClient $client;
+	private IClientService $httpClientService;
+	private IURLGenerator $urlGenerator;
 
 	public function __construct(
 		string $appName,
@@ -112,7 +112,7 @@ class CredentialsController extends Controller {
 		// Get MCP server URL from system config (set in config.php)
 		$mcpServerUrl = $this->config->getSystemValue('mcp_server_url', '');
 		if (empty($mcpServerUrl)) {
-			$this->logger->warning("MCP server URL not configured, app password stored locally only");
+			$this->logger->warning('MCP server URL not configured, app password stored locally only');
 			return new JSONResponse([
 				'success' => true,
 				'partial_success' => true,

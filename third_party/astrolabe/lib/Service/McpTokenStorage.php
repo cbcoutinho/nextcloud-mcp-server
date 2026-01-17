@@ -15,6 +15,9 @@ use Psr\Log\LoggerInterface;
  * Handles token expiration checking and refresh logic.
  */
 class McpTokenStorage {
+	/** Buffer time in seconds before actual expiry to trigger refresh */
+	private const TOKEN_EXPIRY_BUFFER_SECONDS = 60;
+
 	private $config;
 	private $crypto;
 	private $logger;
@@ -112,7 +115,7 @@ class McpTokenStorage {
 	/**
 	 * Check if a token is expired or about to expire.
 	 *
-	 * Uses a 60-second buffer to refresh tokens before they actually expire.
+	 * Uses TOKEN_EXPIRY_BUFFER_SECONDS buffer to refresh tokens before they actually expire.
 	 *
 	 * @param array $token Token data array
 	 * @return bool True if expired or about to expire
@@ -122,8 +125,8 @@ class McpTokenStorage {
 			return true;
 		}
 
-		// Expire 60 seconds early to avoid race conditions
-		return time() >= ($token['expires_at'] - 60);
+		// Expire early to avoid race conditions
+		return time() >= ($token['expires_at'] - self::TOKEN_EXPIRY_BUFFER_SECONDS);
 	}
 
 	/**
@@ -191,11 +194,19 @@ class McpTokenStorage {
 					$this->logger->error("Failed to refresh token for user $userId", [
 						'error' => $e->getMessage()
 					]);
-					// Fall through to return null
+					// Delete stale token to prevent repeated refresh attempts
+					$this->deleteUserToken($userId);
+					return null;
 				}
+
+				// Refresh callback returned null or invalid data - delete stale token
+				$this->deleteUserToken($userId);
+				$this->logger->info("Deleted stale token for user $userId after refresh failure");
+				return null;
 			}
 
-			// Token expired and no refresh available
+			// Token expired and no refresh callback available - delete stale token
+			$this->deleteUserToken($userId);
 			$this->logger->info("Token expired for user $userId, no refresh available");
 			return null;
 		}
