@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OCA\Astrolabe\Service;
 
+use OCP\Http\Client\IClient;
 use OCP\Http\Client\IClientService;
 use OCP\IConfig;
 use Psr\Log\LoggerInterface;
@@ -16,10 +17,10 @@ use Psr\Log\LoggerInterface;
  * for all management operations.
  */
 class McpServerClient {
-	private $httpClient;
-	private $config;
-	private $logger;
-	private $baseUrl;
+	private IClient $httpClient;
+	private IConfig $config;
+	private LoggerInterface $logger;
+	private string $baseUrl;
 
 	public function __construct(
 		IClientService $clientService,
@@ -31,7 +32,8 @@ class McpServerClient {
 		$this->logger = $logger;
 
 		// Get MCP server configuration from Nextcloud config
-		$this->baseUrl = $this->config->getSystemValue('mcp_server_url', 'http://localhost:8000');
+		$baseUrl = $this->config->getSystemValue('mcp_server_url', 'http://localhost:8000');
+		$this->baseUrl = is_string($baseUrl) ? $baseUrl : 'http://localhost:8000';
 	}
 
 	/**

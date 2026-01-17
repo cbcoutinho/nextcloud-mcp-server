@@ -23,13 +23,13 @@ use Psr\Log\LoggerInterface;
  * Handles storing and validating app passwords for multi-user BasicAuth mode.
  */
 class CredentialsController extends Controller {
-	private $tokenStorage;
-	private $userSession;
-	private $logger;
-	private $config;
-	private $client;
-	private $httpClientService;
-	private $urlGenerator;
+	private McpTokenStorage $tokenStorage;
+	private IUserSession $userSession;
+	private LoggerInterface $logger;
+	private IConfig $config;
+	private McpServerClient $client;
+	private IClientService $httpClientService;
+	private IURLGenerator $urlGenerator;
 
 	public function __construct(
 		string $appName,

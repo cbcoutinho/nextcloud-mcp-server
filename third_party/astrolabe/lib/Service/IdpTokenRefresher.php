@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OCA\Astrolabe\Service;
 
+use OCP\Http\Client\IClient;
 use OCP\Http\Client\IClientService;
 use OCP\IConfig;
 use Psr\Log\LoggerInterface;
@@ -18,10 +19,10 @@ use Psr\Log\LoggerInterface;
  * Public clients without client_secret cannot refresh tokens.
  */
 class IdpTokenRefresher {
-	private $config;
-	private $httpClient;
-	private $logger;
-	private $mcpServerClient;
+	private IConfig $config;
+	private IClient $httpClient;
+	private LoggerInterface $logger;
+	private McpServerClient $mcpServerClient;
 
 	public function __construct(
 		IConfig $config,
@@ -56,6 +57,9 @@ class IdpTokenRefresher {
 	private function getNextcloudBaseUrl(): string {
 		// Check for explicit internal URL config (for custom container setups)
 		$internalUrl = $this->config->getSystemValue('astrolabe_internal_url', '');
+		if (!is_string($internalUrl)) {
+			$internalUrl = '';
+		}
 		if (!empty($internalUrl)) {
 			// Validate URL format
 			if (!filter_var($internalUrl, FILTER_VALIDATE_URL)) {

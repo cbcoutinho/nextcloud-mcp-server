@@ -84,19 +84,8 @@
     </UnusedClass>
   </file>
   <file src="lib/Controller/CredentialsController.php">
-    <MissingPropertyType>
-      <code><![CDATA[$client]]></code>
-      <code><![CDATA[$config]]></code>
-      <code><![CDATA[$httpClientService]]></code>
-      <code><![CDATA[$logger]]></code>
-      <code><![CDATA[$tokenStorage]]></code>
-      <code><![CDATA[$urlGenerator]]></code>
-      <code><![CDATA[$userSession]]></code>
-    </MissingPropertyType>
     <MixedArgument>
       <code><![CDATA[$mcpServerUrl]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
-      <code><![CDATA[$userId]]></code>
     </MixedArgument>
     <MixedArrayAccess>
       <code><![CDATA[$body['error']]]></code>
@@ -105,67 +94,11 @@
     <MixedAssignment>
       <code><![CDATA[$body]]></code>
       <code><![CDATA[$error]]></code>
-      <code><![CDATA[$hasAccess]]></code>
-      <code><![CDATA[$hasAccess]]></code>
-      <code><![CDATA[$httpClient]]></code>
-      <code><![CDATA[$httpClient]]></code>
       <code><![CDATA[$mcpServerUrl]]></code>
-      <code><![CDATA[$provisionedAt]]></code>
-      <code><![CDATA[$provisionedAt]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$statusCode]]></code>
-      <code><![CDATA[$statusCode]]></code>
-      <code><![CDATA[$syncType]]></code>
-      <code><![CDATA[$syncType]]></code>
-      <code><![CDATA[$user]]></code>
-      <code><![CDATA[$user]]></code>
-      <code><![CDATA[$user]]></code>
-      <code><![CDATA[$userId]]></code>
-      <code><![CDATA[$userId]]></code>
-      <code><![CDATA[$userId]]></code>
     </MixedAssignment>
-    <MixedMethodCall>
-      <code><![CDATA[debug]]></code>
-      <code><![CDATA[debug]]></code>
-      <code><![CDATA[debug]]></code>
-      <code><![CDATA[deleteBackgroundSyncPassword]]></code>
-      <code><![CDATA[deleteUserToken]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[getBackgroundSyncProvisionedAt]]></code>
-      <code><![CDATA[getBackgroundSyncProvisionedAt]]></code>
-      <code><![CDATA[getBackgroundSyncType]]></code>
-      <code><![CDATA[getBackgroundSyncType]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getStatusCode]]></code>
-      <code><![CDATA[getStatusCode]]></code>
-      <code><![CDATA[getSystemValue]]></code>
-      <code><![CDATA[getUID]]></code>
-      <code><![CDATA[getUID]]></code>
-      <code><![CDATA[getUID]]></code>
-      <code><![CDATA[getUser]]></code>
-      <code><![CDATA[getUser]]></code>
-      <code><![CDATA[getUser]]></code>
-      <code><![CDATA[hasBackgroundSyncAccess]]></code>
-      <code><![CDATA[hasBackgroundSyncAccess]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[newClient]]></code>
-      <code><![CDATA[newClient]]></code>
-      <code><![CDATA[post]]></code>
-      <code><![CDATA[storeBackgroundSyncPassword]]></code>
-      <code><![CDATA[warning]]></code>
-      <code><![CDATA[warning]]></code>
-      <code><![CDATA[warning]]></code>
-      <code><![CDATA[warning]]></code>
-    </MixedMethodCall>
+    <PossiblyInvalidArgument>
+      <code><![CDATA[$response->getBody()]]></code>
+    </PossiblyInvalidArgument>
     <RiskyTruthyFalsyComparison>
       <code><![CDATA[$body['success'] ?? false]]></code>
     </RiskyTruthyFalsyComparison>
@@ -174,36 +107,19 @@
     </UnusedClass>
   </file>
   <file src="lib/Controller/OAuthController.php">
-    <MissingPropertyType>
-      <code><![CDATA[$client]]></code>
-      <code><![CDATA[$config]]></code>
-      <code><![CDATA[$httpClient]]></code>
-      <code><![CDATA[$l]]></code>
-      <code><![CDATA[$logger]]></code>
-      <code><![CDATA[$session]]></code>
-      <code><![CDATA[$tokenStorage]]></code>
-      <code><![CDATA[$urlGenerator]]></code>
-      <code><![CDATA[$userSession]]></code>
-    </MissingPropertyType>
     <MixedArgument>
       <code><![CDATA[$authEndpoint]]></code>
       <code><![CDATA[$codeVerifier]]></code>
-      <code><![CDATA[$externalBaseUrl]]></code>
+      <code><![CDATA[$discoveryUrl]]></code>
+      <code><![CDATA[$discoveryUrl]]></code>
       <code><![CDATA[$internalBaseUrl]]></code>
       <code><![CDATA[$mcpServerUrl]]></code>
       <code><![CDATA[$mcpServerUrl]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
-      <code><![CDATA[$responseBody]]></code>
-      <code><![CDATA[$statusResponse->getBody()]]></code>
-      <code><![CDATA[$statusResponse->getBody()]]></code>
-      <code><![CDATA[$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', [
-					'section' => 'astrolabe',
-					'error' => urlencode($e->getMessage())
-				])]]></code>
-      <code><![CDATA[$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'astrolabe'])]]></code>
-      <code><![CDATA[$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'astrolabe'])]]></code>
-      <code><![CDATA[$this->urlGenerator->linkToRoute('settings.PersonalSettings.index', ['section' => 'astrolabe'])]]></code>
+      <code><![CDATA[$tokenData['access_token']]]></code>
+      <code><![CDATA[$tokenData['refresh_token'] ?? '']]></code>
+      <code><![CDATA[$tokenEndpoint]]></code>
+      <code><![CDATA[$userId]]></code>
+      <code><![CDATA[time() + ($tokenData['expires_in'] ?? 3600)]]></code>
     </MixedArgument>
     <MixedArrayAccess>
       <code><![CDATA[$discovery['authorization_endpoint']]]></code>
@@ -226,116 +142,35 @@
       <code><![CDATA[$discovery]]></code>
       <code><![CDATA[$discoveryUrl]]></code>
       <code><![CDATA[$discoveryUrl]]></code>
-      <code><![CDATA[$externalBaseUrl]]></code>
       <code><![CDATA[$mcpServerPublicUrl]]></code>
       <code><![CDATA[$mcpServerUrl]]></code>
       <code><![CDATA[$mcpServerUrl]]></code>
       <code><![CDATA[$postData['client_secret']]]></code>
-      <code><![CDATA[$redirectUri]]></code>
-      <code><![CDATA[$redirectUri]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$responseBody]]></code>
       <code><![CDATA[$statusData]]></code>
       <code><![CDATA[$statusData]]></code>
-      <code><![CDATA[$statusResponse]]></code>
-      <code><![CDATA[$statusResponse]]></code>
       <code><![CDATA[$storedState]]></code>
       <code><![CDATA[$tokenData]]></code>
       <code><![CDATA[$tokenEndpoint]]></code>
-      <code><![CDATA[$user]]></code>
-      <code><![CDATA[$user]]></code>
-      <code><![CDATA[$userId]]></code>
       <code><![CDATA[$userId]]></code>
     </MixedAssignment>
     <MixedInferredReturnType>
       <code><![CDATA[array]]></code>
     </MixedInferredReturnType>
-    <MixedMethodCall>
-      <code><![CDATA[deleteUserToken]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[getAbsoluteURL]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getClientId]]></code>
-      <code><![CDATA[getClientId]]></code>
-      <code><![CDATA[getStatusCode]]></code>
-      <code><![CDATA[getSystemValue]]></code>
-      <code><![CDATA[getSystemValue]]></code>
-      <code><![CDATA[getSystemValue]]></code>
-      <code><![CDATA[getSystemValue]]></code>
-      <code><![CDATA[getSystemValue]]></code>
-      <code><![CDATA[getUID]]></code>
-      <code><![CDATA[getUID]]></code>
-      <code><![CDATA[getUID]]></code>
-      <code><![CDATA[getUID]]></code>
-      <code><![CDATA[getUser]]></code>
-      <code><![CDATA[getUser]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[linkToRoute]]></code>
-      <code><![CDATA[linkToRoute]]></code>
-      <code><![CDATA[linkToRoute]]></code>
-      <code><![CDATA[linkToRoute]]></code>
-      <code><![CDATA[linkToRouteAbsolute]]></code>
-      <code><![CDATA[linkToRouteAbsolute]]></code>
-      <code><![CDATA[post]]></code>
-      <code><![CDATA[remove]]></code>
-      <code><![CDATA[remove]]></code>
-      <code><![CDATA[remove]]></code>
-      <code><![CDATA[remove]]></code>
-      <code><![CDATA[remove]]></code>
-      <code><![CDATA[remove]]></code>
-      <code><![CDATA[set]]></code>
-      <code><![CDATA[set]]></code>
-      <code><![CDATA[set]]></code>
-      <code><![CDATA[storeUserToken]]></code>
-      <code><![CDATA[t]]></code>
-      <code><![CDATA[t]]></code>
-    </MixedMethodCall>
     <MixedOperand>
       <code><![CDATA[$authEndpoint]]></code>
       <code><![CDATA[$tokenData['expires_in'] ?? 3600]]></code>
-      <code><![CDATA[$user->getUID()]]></code>
-      <code><![CDATA[$user->getUID()]]></code>
     </MixedOperand>
     <MixedReturnStatement>
       <code><![CDATA[$tokenData]]></code>
     </MixedReturnStatement>
+    <PossiblyInvalidArgument>
+      <code><![CDATA[$response->getBody()]]></code>
+      <code><![CDATA[$response->getBody()]]></code>
+      <code><![CDATA[$responseBody]]></code>
+      <code><![CDATA[$responseBody]]></code>
+      <code><![CDATA[$statusResponse->getBody()]]></code>
+      <code><![CDATA[$statusResponse->getBody()]]></code>
+    </PossiblyInvalidArgument>
     <RiskyTruthyFalsyComparison>
       <code><![CDATA[$error]]></code>
     </RiskyTruthyFalsyComparison>
@@ -400,18 +235,10 @@
     </RiskyTruthyFalsyComparison>
   </file>
   <file src="lib/Service/IdpTokenRefresher.php">
-    <MissingPropertyType>
-      <code><![CDATA[$config]]></code>
-      <code><![CDATA[$httpClient]]></code>
-      <code><![CDATA[$logger]]></code>
-      <code><![CDATA[$mcpServerClient]]></code>
-    </MissingPropertyType>
     <MixedArgument>
-      <code><![CDATA[$discoveryResponse->getBody()]]></code>
-      <code><![CDATA[$internalUrl]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
-      <code><![CDATA[$statusResponse->getBody()]]></code>
+      <code><![CDATA[$discoveryUrl]]></code>
       <code><![CDATA[$tokenData]]></code>
+      <code><![CDATA[$tokenEndpoint]]></code>
     </MixedArgument>
     <MixedArrayAccess>
       <code><![CDATA[$discovery['token_endpoint']]]></code>
@@ -421,70 +248,37 @@
     <MixedAssignment>
       <code><![CDATA[$clientSecret]]></code>
       <code><![CDATA[$discovery]]></code>
-      <code><![CDATA[$discoveryResponse]]></code>
       <code><![CDATA[$discoveryUrl]]></code>
       <code><![CDATA[$internalUrl]]></code>
       <code><![CDATA[$mcpServerUrl]]></code>
-      <code><![CDATA[$response]]></code>
       <code><![CDATA[$statusData]]></code>
-      <code><![CDATA[$statusResponse]]></code>
       <code><![CDATA[$tokenData]]></code>
       <code><![CDATA[$tokenEndpoint]]></code>
     </MixedAssignment>
     <MixedInferredReturnType>
       <code><![CDATA[array|null]]></code>
     </MixedInferredReturnType>
-    <MixedMethodCall>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getClientId]]></code>
-      <code><![CDATA[getSystemValue]]></code>
-      <code><![CDATA[getSystemValue]]></code>
-      <code><![CDATA[getSystemValue]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[info]]></code>
-      <code><![CDATA[post]]></code>
-      <code><![CDATA[warning]]></code>
-    </MixedMethodCall>
     <MixedOperand>
       <code><![CDATA[$mcpServerUrl]]></code>
     </MixedOperand>
     <MixedReturnStatement>
       <code><![CDATA[$tokenData]]></code>
     </MixedReturnStatement>
+    <PossiblyInvalidArgument>
+      <code><![CDATA[$discoveryResponse->getBody()]]></code>
+      <code><![CDATA[$response->getBody()]]></code>
+      <code><![CDATA[$statusResponse->getBody()]]></code>
+    </PossiblyInvalidArgument>
     <PossiblyUnusedMethod>
       <code><![CDATA[__construct]]></code>
     </PossiblyUnusedMethod>
   </file>
   <file src="lib/Service/McpServerClient.php">
-    <MissingPropertyType>
-      <code><![CDATA[$baseUrl]]></code>
-      <code><![CDATA[$config]]></code>
-      <code><![CDATA[$httpClient]]></code>
-      <code><![CDATA[$logger]]></code>
-    </MissingPropertyType>
     <MixedArgument>
       <code><![CDATA[$clientId]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
-      <code><![CDATA[$response->getBody()]]></code>
     </MixedArgument>
     <MixedAssignment>
+      <code><![CDATA[$baseUrl]]></code>
       <code><![CDATA[$clientId]]></code>
       <code><![CDATA[$data]]></code>
       <code><![CDATA[$data]]></code>
@@ -497,17 +291,6 @@
       <code><![CDATA[$data]]></code>
       <code><![CDATA[$data]]></code>
       <code><![CDATA[$data]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$response]]></code>
-      <code><![CDATA[$response]]></code>
     </MixedAssignment>
     <MixedInferredReturnType>
       <code><![CDATA[array]]></code>
@@ -582,61 +365,7 @@
       <code><![CDATA[array{success?: bool, error?: string}]]></code>
       <code><![CDATA[array{success?: bool, message?: string, error?: string}]]></code>
       <code><![CDATA[string]]></code>
-      <code><![CDATA[string]]></code>
     </MixedInferredReturnType>
-    <MixedMethodCall>
-      <code><![CDATA[debug]]></code>
-      <code><![CDATA[delete]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[error]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[get]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getBody]]></code>
-      <code><![CDATA[getStatusCode]]></code>
-      <code><![CDATA[getSystemValue]]></code>
-      <code><![CDATA[getSystemValue]]></code>
-      <code><![CDATA[post]]></code>
-      <code><![CDATA[post]]></code>
-      <code><![CDATA[post]]></code>
-      <code><![CDATA[post]]></code>
-      <code><![CDATA[warning]]></code>
-    </MixedMethodCall>
-    <MixedOperand>
-      <code><![CDATA[$this->baseUrl]]></code>
-      <code><![CDATA[$this->baseUrl]]></code>
-      <code><![CDATA[$this->baseUrl]]></code>
-      <code><![CDATA[$this->baseUrl]]></code>
-      <code><![CDATA[$this->baseUrl]]></code>
-      <code><![CDATA[$this->baseUrl]]></code>
-      <code><![CDATA[$this->baseUrl]]></code>
-      <code><![CDATA[$this->baseUrl]]></code>
-      <code><![CDATA[$this->baseUrl]]></code>
-      <code><![CDATA[$this->baseUrl]]></code>
-      <code><![CDATA[$this->baseUrl]]></code>
-    </MixedOperand>
     <MixedReturnStatement>
       <code><![CDATA[$data]]></code>
       <code><![CDATA[$data]]></code>
@@ -649,12 +378,23 @@
       <code><![CDATA[$data]]></code>
       <code><![CDATA[$data]]></code>
       <code><![CDATA[$data]]></code>
-      <code><![CDATA[$this->baseUrl]]></code>
       <code><![CDATA[$this->config->getSystemValue('mcp_server_public_url', $this->baseUrl)]]></code>
     </MixedReturnStatement>
+    <PossiblyInvalidArgument>
+      <code><![CDATA[$response->getBody()]]></code>
+      <code><![CDATA[$response->getBody()]]></code>
+      <code><![CDATA[$response->getBody()]]></code>
+      <code><![CDATA[$response->getBody()]]></code>
+      <code><![CDATA[$response->getBody()]]></code>
+      <code><![CDATA[$response->getBody()]]></code>
+      <code><![CDATA[$response->getBody()]]></code>
+      <code><![CDATA[$response->getBody()]]></code>
+      <code><![CDATA[$response->getBody()]]></code>
+      <code><![CDATA[$response->getBody()]]></code>
+      <code><![CDATA[$response->getBody()]]></code>
+    </PossiblyInvalidArgument>
     <PossiblyUnusedMethod>
       <code><![CDATA[__construct]]></code>
-      <code><![CDATA[getClientId]]></code>
       <code><![CDATA[isServerReachable]]></code>
     </PossiblyUnusedMethod>
   </file>
@@ -686,8 +426,6 @@
     </MixedReturnStatement>
     <PossiblyUnusedMethod>
       <code><![CDATA[__construct]]></code>
-      <code><![CDATA[deleteBackgroundSyncPassword]]></code>
-      <code><![CDATA[storeBackgroundSyncPassword]]></code>
     </PossiblyUnusedMethod>
     <RiskyTruthyFalsyComparison>
       <code><![CDATA[!$token]]></code>
