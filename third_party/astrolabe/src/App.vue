@@ -62,7 +62,7 @@
 							@update:model-value="algorithm = $event ? $event.id : 'hybrid'" />
 
 						<NcButton
-							type="primary"
+							variant="primary"
 							:disabled="!query.trim() || loading"
 							@click="performSearch">
 							<template #icon>
@@ -74,7 +74,7 @@
 
 					<!-- Advanced Options Toggle -->
 					<NcButton
-						type="tertiary"
+						variant="tertiary"
 						class="mcp-advanced-toggle"
 						@click="showAdvanced = !showAdvanced">
 						<template #icon>
@@ -93,9 +93,9 @@
 									<NcCheckboxRadioSwitch
 										v-for="docType in docTypeOptions"
 										:key="docType.id"
-										:checked="selectedDocTypes.includes(docType.id)"
+										:model-value="selectedDocTypes.includes(docType.id)"
 										type="checkbox"
-										@update:checked="toggleDocType(docType.id, $event)">
+										@update:model-value="toggleDocType(docType.id, $event)">
 										{{ docType.label }}
 									</NcCheckboxRadioSwitch>
 								</div>
@@ -152,9 +152,9 @@
 						<div class="mcp-viz-header">
 							<h3>{{ t('astrolabe', 'Vector Space Visualization') }}</h3>
 							<NcCheckboxRadioSwitch
-								:checked="showQueryPoint"
+								:model-value="showQueryPoint"
 								type="switch"
-								@update:checked="showQueryPoint = $event; updatePlot()">
+								@update:model-value="showQueryPoint = $event; updatePlot()">
 								{{ t('astrolabe', 'Show query point') }}
 							</NcCheckboxRadioSwitch>
 						</div>
@@ -173,7 +173,7 @@
 								<span class="mcp-result-type">{{ result.doc_type || 'unknown' }}</span>
 								<div class="mcp-result-actions">
 									<NcButton
-										type="tertiary"
+										variant="tertiary"
 										:aria-label="t('astrolabe', 'Show Chunk')"
 										@click="viewChunk(result)">
 										<template #icon>
@@ -280,7 +280,7 @@
 					</div>
 				</div>
 
-				<NcButton type="secondary" :disabled="statusLoading" @click="loadVectorStatus">
+				<NcButton variant="secondary" :disabled="statusLoading" @click="loadVectorStatus">
 					<template #icon>
 						<Refresh :size="20" />
 					</template>
@@ -305,7 +305,7 @@
 						</a>
 						<span v-else>{{ viewerTitle }}</span>
 					</h3>
-					<NcButton type="tertiary" @click="closeViewer">
+					<NcButton variant="tertiary" @click="closeViewer">
 						<template #icon>
 							<Close :size="20" />
 						</template>

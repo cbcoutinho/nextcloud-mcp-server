@@ -191,11 +191,19 @@ class McpTokenStorage {
 					$this->logger->error("Failed to refresh token for user $userId", [
 						'error' => $e->getMessage()
 					]);
-					// Fall through to return null
+					// Delete stale token to prevent repeated refresh attempts
+					$this->deleteUserToken($userId);
+					return null;
 				}
+
+				// Refresh callback returned null or invalid data - delete stale token
+				$this->deleteUserToken($userId);
+				$this->logger->info("Deleted stale token for user $userId after refresh failure");
+				return null;
 			}
 
-			// Token expired and no refresh available
+			// Token expired and no refresh callback available - delete stale token
+			$this->deleteUserToken($userId);
 			$this->logger->info("Token expired for user $userId, no refresh available");
 			return null;
 		}

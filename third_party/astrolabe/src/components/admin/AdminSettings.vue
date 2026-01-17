@@ -6,7 +6,7 @@
 			<p><strong>{{ t('astrolabe', 'Cannot connect to MCP server') }}</strong></p>
 			<p>{{ error }}</p>
 			<p class="help-text">{{ t('astrolabe', 'Ensure MCP server is running and accessible. Check config.php for correct mcp_server_url.') }}</p>
-			<NcButton type="primary" @click="retryConnection">
+			<NcButton variant="primary" @click="retryConnection">
 				<template #icon>
 					<Refresh :size="20" />
 				</template>
@@ -58,7 +58,7 @@
 						<div class="metric-value">{{ formatNumber(vectorSyncStatus.documents_per_second, 1) }} docs/sec</div>
 					</div>
 				</div>
-				<NcButton type="secondary" @click="refreshStatus">
+				<NcButton variant="secondary" @click="refreshStatus">
 					<template #icon>
 						<Refresh :size="20" />
 					</template>
@@ -85,7 +85,7 @@
 					</p>
 					<p v-else>{{ webhooksError }}</p>
 					<div class="webhook-auth-actions">
-						<NcButton type="primary" @click="openPersonalSettings">
+						<NcButton variant="primary" @click="openPersonalSettings">
 							{{ t('astrolabe', 'Go to Personal Settings') }}
 						</NcButton>
 					</div>
@@ -113,7 +113,7 @@
 							</div>
 							<div class="preset-actions">
 								<NcButton
-									:type="preset.enabled ? 'secondary' : 'primary'"
+									:variant="preset.enabled ? 'secondary' : 'primary'"
 									:disabled="preset.toggling"
 									@click="toggleWebhookPreset(preset)">
 									{{ preset.toggling ? t('astrolabe', 'Please wait...') : (preset.enabled ? t('astrolabe', 'Disable') : t('astrolabe', 'Enable')) }}
@@ -198,7 +198,7 @@
 					</p>
 
 					<div class="form-actions">
-						<NcButton type="primary" :disabled="saving" @click="saveSettings">
+						<NcButton variant="primary" :disabled="saving" @click="saveSettings">
 							{{ saving ? t('astrolabe', 'Saving...') : t('astrolabe', 'Save Settings') }}
 						</NcButton>
 					</div>

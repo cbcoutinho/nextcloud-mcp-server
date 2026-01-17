@@ -12,3 +12,4 @@ build/
 node_modules/
 js/
 css/
+.phpunit.cache/
