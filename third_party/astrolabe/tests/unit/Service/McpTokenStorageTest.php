@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Service;
+namespace OCA\Astrolabe\Tests\Unit\Service;
 
 use OCA\Astrolabe\Service\McpTokenStorage;
 use OCP\IConfig;
@@ -232,7 +232,7 @@ final class McpTokenStorageTest extends TestCase {
 		$this->assertEquals('new-access-token', $result);
 	}
 
-	public function testGetAccessTokenReturnsNullWhenRefreshFails(): void {
+	public function testGetAccessTokenReturnsNullWhenRefreshFailsAndDeletesToken(): void {
 		$userId = 'testuser';
 		$expiredTokenData = [
 			'access_token' => 'expired-access-token',
@@ -245,6 +245,11 @@ final class McpTokenStorageTest extends TestCase {
 
 		$this->crypto->method('decrypt')
 			->willReturn(json_encode($expiredTokenData));
+
+		// Expect stale token to be deleted when refresh fails
+		$this->config->expects($this->once())
+			->method('deleteUserValue')
+			->with($userId, 'astrolabe', 'oauth_tokens');
 
 		// Refresh callback returns null (failure)
 		$refreshCallback = fn (string $refreshToken) => null;
@@ -254,7 +259,7 @@ final class McpTokenStorageTest extends TestCase {
 		$this->assertNull($result);
 	}
 
-	public function testGetAccessTokenReturnsNullWhenExpiredAndNoCallback(): void {
+	public function testGetAccessTokenReturnsNullWhenExpiredAndNoCallbackAndDeletesToken(): void {
 		$userId = 'testuser';
 		$expiredTokenData = [
 			'access_token' => 'expired-access-token',
@@ -267,6 +272,11 @@ final class McpTokenStorageTest extends TestCase {
 
 		$this->crypto->method('decrypt')
 			->willReturn(json_encode($expiredTokenData));
+
+		// Expect stale token to be deleted when expired with no callback
+		$this->config->expects($this->once())
+			->method('deleteUserValue')
+			->with($userId, 'astrolabe', 'oauth_tokens');
 
 		// No refresh callback provided
 		$result = $this->storage->getAccessToken($userId, null);

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Service;
+namespace OCA\Astrolabe\Tests\Unit\Service;
 
 use OCA\Astrolabe\Service\IdpTokenRefresher;
 use OCA\Astrolabe\Service\McpServerClient;
