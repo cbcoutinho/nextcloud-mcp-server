@@ -14,6 +14,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.57.7 (2026-01-17)
+
+### Fix
+
+- **astrolabe**: improve token refresh error handling and validation
+- **astrolabe**: delete stale tokens when refresh fails
+- **astrolabe**: resolve CI failures for code quality checks
+- **astrolabe**: use internal URL for OAuth token refresh
+
+### Refactor
+
+- **astrolabe**: add PHP property types to fix Psalm errors
+- **astrolabe**: upgrade to @nextcloud/vue 9.3.3 API
+
 ## nextcloud-mcp-server-0.57.6 (2026-01-16)
 
 ## nextcloud-mcp-server-0.57.5 (2026-01-16)
