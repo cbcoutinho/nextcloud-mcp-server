@@ -749,7 +749,7 @@ export default {
 					colorscale: 'Viridis',
 					showscale: true,
 					colorbar: {
-						title: 'Relative Score',
+						title: { text: 'Relative Score' },
 						x: 1.02,
 						xanchor: 'left',
 						thickness: 20,
@@ -784,13 +784,13 @@ export default {
 			}
 
 			const layout = {
-				title: `Vector Space (PCA 3D) - ${results.length} results`,
+				title: { text: `Vector Space (PCA 3D) - ${results.length} results` },
 				width,
 				height,
 				scene: {
-					xaxis: { title: 'PC1' },
-					yaxis: { title: 'PC2' },
-					zaxis: { title: 'PC3' },
+					xaxis: { title: { text: 'PC1' } },
+					yaxis: { title: { text: 'PC2' } },
+					zaxis: { title: { text: 'PC3' } },
 					camera: {
 						eye: { x: 1.5, y: 1.5, z: 1.5 },
 					},
