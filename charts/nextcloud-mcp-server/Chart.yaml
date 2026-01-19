@@ -2,7 +2,7 @@ apiVersion: v2
 name: nextcloud-mcp-server
 description: A Helm chart for Nextcloud MCP Server - enables AI assistants to interact with Nextcloud
 type: application
-version: 0.57.9
+version: 0.57.10
 appVersion: "0.61.5"
 keywords:
   - nextcloud
