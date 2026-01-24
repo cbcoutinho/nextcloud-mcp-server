@@ -32,7 +32,7 @@ use Psr\Log\LoggerInterface;
  * - Public clients: PKCE only
  * - Confidential clients: PKCE + client_secret (defense in depth)
  */
-class OAuthController extends Controller {
+class OauthController extends Controller {
 	private IConfig $config;
 	private ISession $session;
 	private IUserSession $userSession;

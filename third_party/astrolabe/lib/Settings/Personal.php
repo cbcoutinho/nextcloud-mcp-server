@@ -86,7 +86,9 @@ class Personal implements ISettings {
 		if ($authMode === 'multi_user_basic' && $supportsAppPasswords) {
 			// Check both credentials
 			$hasOAuthToken = ($token !== null && !$this->tokenStorage->isExpired($token));
-			$hasAppPassword = $this->tokenStorage->hasBackgroundSyncAccess($userId);
+			// In hybrid mode, check specifically for app password (not general background access)
+			// because MCP server needs the app password for background sync
+			$hasAppPassword = ($this->tokenStorage->getBackgroundSyncPassword($userId) !== null);
 			$backgroundSyncType = $this->tokenStorage->getBackgroundSyncType($userId);
 			$backgroundSyncProvisionedAt = $this->tokenStorage->getBackgroundSyncProvisionedAt($userId);
 
