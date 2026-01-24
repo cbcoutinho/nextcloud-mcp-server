@@ -2351,32 +2351,41 @@ async def test_users_setup(anyio_backend, nc_client: NextcloudClient):
         except Exception as e:
             logger.warning(f"Error creating editors group (may already exist): {e}")
 
-        # Create each test user
+        # Create each test user (idempotent - check if exists first)
         for username, config in test_user_configs.items():
+            # Check if user already exists
+            user_exists = False
             try:
-                await nc_client.users.create_user(
-                    userid=username,
-                    password=config["password"],
-                    display_name=config["display_name"],
-                    email=config["email"],
-                )
-                logger.info(f"Created test user: {username}")
-                created_users.append(username)
+                await nc_client.users.get_user_details(username)
+                user_exists = True
+                logger.info(f"Test user {username} already exists, skipping creation")
+            except Exception:
+                # User doesn't exist, proceed with creation
+                pass
 
-                # Add user to groups if specified
-                for group in config["groups"]:
-                    try:
-                        await nc_client.users.add_user_to_group(username, group)
-                        logger.info(f"Added {username} to group {group}")
-                    except Exception as e:
-                        logger.warning(f"Error adding {username} to group {group}: {e}")
+            if not user_exists:
+                try:
+                    await nc_client.users.create_user(
+                        userid=username,
+                        password=config["password"],
+                        display_name=config["display_name"],
+                        email=config["email"],
+                    )
+                    logger.info(f"Created test user: {username}")
+                    created_users.append(username)  # Only track users WE created
 
-            except Exception as e:
-                # User might already exist, that's okay
-                logger.warning(
-                    f"Could not create user {username} (may already exist): {e}"
-                )
-                created_users.append(username)  # Add to list anyway for cleanup
+                    # Add user to groups if specified
+                    for group in config["groups"]:
+                        try:
+                            await nc_client.users.add_user_to_group(username, group)
+                            logger.info(f"Added {username} to group {group}")
+                        except Exception as e:
+                            logger.warning(
+                                f"Error adding {username} to group {group}: {e}"
+                            )
+
+                except Exception as e:
+                    logger.warning(f"Could not create user {username}: {e}")
 
         logger.info(f"Test users setup complete: {created_users}")
         yield test_user_configs
