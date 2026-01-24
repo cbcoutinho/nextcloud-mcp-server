@@ -239,6 +239,25 @@ uv run python -m tests.load.benchmark --output results.json --verbose
 
 **Credentials**: root/password, nextcloud/password, database: `nextcloud`
 
+### Quick Query Script (Recommended for Agents)
+
+Use `scripts/dbquery.py` for single SQL statements without requiring approval for each `docker compose exec`:
+
+```bash
+# Basic query
+./scripts/dbquery.py "SELECT COUNT(*) FROM oc_users"
+
+# Vertical output (one column per line) - useful for wide tables
+./scripts/dbquery.py -E "SELECT * FROM oc_oidc_clients LIMIT 1"
+
+# With different credentials
+./scripts/dbquery.py -u nextcloud -p nextcloud "SHOW TABLES"
+```
+
+### Direct Docker Access
+
+For interactive sessions or complex operations:
+
 ```bash
 # Connect to database
 docker compose exec db mariadb -u root -ppassword nextcloud
@@ -263,6 +282,40 @@ docker compose exec db mariadb -u root -ppassword nextcloud -e \
 - `oc_oidc_authorization_codes` - Authorization codes
 - `oc_oidc_registration_tokens` - RFC 7592 registration tokens
 - `oc_oidc_redirect_uris` - Redirect URIs
+
+### SQLite Databases (MCP Services)
+
+Use `scripts/sqlitequery.py` to query SQLite databases in MCP service containers:
+
+```bash
+# List tables
+./scripts/sqlitequery.py ".tables"
+
+# Query specific service
+./scripts/sqlitequery.py -s oauth "SELECT * FROM refresh_tokens"
+./scripts/sqlitequery.py -s keycloak "SELECT * FROM oauth_clients"
+./scripts/sqlitequery.py -s basic "SELECT * FROM app_passwords"
+
+# With column headers
+./scripts/sqlitequery.py --column "SELECT * FROM audit_logs LIMIT 5"
+
+# JSON output
+./scripts/sqlitequery.py --json "SELECT * FROM oauth_sessions"
+
+# View schema
+./scripts/sqlitequery.py -s oauth ".schema refresh_tokens"
+```
+
+**Services**: `mcp` (default), `oauth`, `keycloak`, `basic`
+
+**SQLite Tables**:
+- `refresh_tokens` - OAuth refresh tokens with user profiles
+- `audit_logs` - Security audit trail
+- `oauth_clients` - DCR OAuth client credentials
+- `oauth_sessions` - OAuth flow session state
+- `registered_webhooks` - Webhook registrations
+- `app_passwords` - Multi-user BasicAuth passwords
+- `alembic_version` - Migration tracking
 
 ## Architecture Quick Reference
 
