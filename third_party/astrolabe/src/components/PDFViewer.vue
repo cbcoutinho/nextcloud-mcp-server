@@ -15,11 +15,14 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import * as pdfjsLib from 'pdfjs-dist'
+import { ref, shallowRef, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { generateUrl } from '@nextcloud/router'
 import { translate as t } from '@nextcloud/l10n'
 import { NcLoadingIcon } from '@nextcloud/vue'
+
+// Use global pdfjsLib loaded by pdfjs-loader.mjs (external, not bundled)
+// This avoids Vite transforming ES private fields which breaks fake worker compatibility
+const pdfjsLib = window.pdfjsLib
 import AlertCircle from 'vue-material-design-icons/AlertCircle.vue'
 
 const props = defineProps({
@@ -40,7 +43,9 @@ const props = defineProps({
 const emit = defineEmits(['loaded', 'error', 'page-rendered'])
 
 // Reactive state
-const pdfDoc = ref(null)
+// Use shallowRef for pdfDoc because PDFDocumentProxy uses ES private fields
+// which can't be accessed through Vue's Proxy wrapper
+const pdfDoc = shallowRef(null)
 const loading = ref(true)
 const error = ref(null)
 const totalPages = ref(0)
@@ -59,6 +64,10 @@ async function loadPDF() {
 			: props.filePath
 		const encodedPath = cleanPath.split('/').map(encodeURIComponent).join('/')
 		const downloadUrl = generateUrl(`/remote.php/webdav/${encodedPath}`)
+
+		// Set worker source using OC.linkTo for correct app webroot path
+		// Must be done here (not at module load time) because _oc_appswebroots isn't populated until after page load
+		pdfjsLib.GlobalWorkerOptions.workerSrc = window.OC.linkTo('astrolabe', 'js/pdf.worker.mjs')
 
 		// Load PDF document
 		const loadingTask = pdfjsLib.getDocument({

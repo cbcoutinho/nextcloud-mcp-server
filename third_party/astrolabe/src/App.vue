@@ -394,18 +394,6 @@ import MarkdownViewer from './components/MarkdownViewer.vue'
 import axios from '@nextcloud/axios'
 import { generateUrl } from '@nextcloud/router'
 import Plotly from 'plotly.js-dist-min'
-import * as pdfjsLib from 'pdfjs-dist'
-
-// Set worker source with error handling
-try {
-	pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-		'pdfjs-dist/build/pdf.worker.mjs',
-		import.meta.url,
-	).toString()
-} catch (e) {
-	console.warn('Failed to set PDF.js worker, will use fallback', e)
-	// PDF.js will use fake worker automatically
-}
 
 export default {
 	name: 'App',
