@@ -106,7 +106,7 @@
       <code><![CDATA[CredentialsController]]></code>
     </UnusedClass>
   </file>
-  <file src="lib/Controller/OAuthController.php">
+  <file src="lib/Controller/OauthController.php">
     <MixedArgument>
       <code><![CDATA[$authEndpoint]]></code>
       <code><![CDATA[$codeVerifier]]></code>
@@ -175,7 +175,7 @@
       <code><![CDATA[$error]]></code>
     </RiskyTruthyFalsyComparison>
     <UnusedClass>
-      <code><![CDATA[OAuthController]]></code>
+      <code><![CDATA[OauthController]]></code>
     </UnusedClass>
   </file>
   <file src="lib/Listener/AstrolabeAdminSettingsListener.php">

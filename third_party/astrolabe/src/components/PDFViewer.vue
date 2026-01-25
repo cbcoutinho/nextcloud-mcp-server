@@ -15,15 +15,15 @@
 </template>
 
 <script setup>
-import { ref, shallowRef, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, shallowRef, markRaw, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { generateUrl } from '@nextcloud/router'
 import { translate as t } from '@nextcloud/l10n'
 import { NcLoadingIcon } from '@nextcloud/vue'
+import AlertCircle from 'vue-material-design-icons/AlertCircle.vue'
 
 // Use global pdfjsLib loaded by pdfjs-loader.mjs (external, not bundled)
 // This avoids Vite transforming ES private fields which breaks fake worker compatibility
 const pdfjsLib = window.pdfjsLib
-import AlertCircle from 'vue-material-design-icons/AlertCircle.vue'
 
 const props = defineProps({
 	filePath: {
@@ -77,7 +77,8 @@ async function loadPDF() {
 			isEvalSupported: false, // Disable eval for CSP
 		})
 
-		pdfDoc.value = await loadingTask.promise
+		// Use markRaw to prevent Vue from wrapping in Proxy (breaks private field access in Chromium)
+		pdfDoc.value = markRaw(await loadingTask.promise)
 		totalPages.value = pdfDoc.value.numPages
 		emit('loaded', { totalPages: totalPages.value })
 
@@ -110,7 +111,8 @@ async function renderPage(pageNum) {
 	}
 
 	try {
-		const page = await pdfDoc.value.getPage(pageNum)
+		// Use markRaw to prevent Vue from wrapping in Proxy (breaks private field access in Chromium)
+		const page = markRaw(await pdfDoc.value.getPage(pageNum))
 		const canvas = canvasRef.value
 
 		if (!canvas) {
