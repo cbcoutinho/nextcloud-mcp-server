@@ -1697,7 +1697,7 @@ wheels = [
 
 [[package]]
 name = "mcp"
-version = "1.23.2"
+version = "1.26.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1715,9 +1715,9 @@ dependencies = [
     { name = "typing-inspection" },
     { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/39/a9/0e95530946408747ae200e86553ceda0dbd851d4ae9bbe0d02a69cbd6ad5/mcp-1.23.2.tar.gz", hash = "sha256:df4e4b7273dca2aaf428f9cf7a25bbac0c9007528a65004854b246aef3d157bc", size = 599953, upload-time = "2025-12-08T15:51:02.432Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/6d/62e76bbb8144d6ed86e202b5edd8a4cb631e7c8130f3f4893c3f90262b10/mcp-1.26.0.tar.gz", hash = "sha256:db6e2ef491eecc1a0d93711a76f28dec2e05999f93afd48795da1c1137142c66", size = 608005, upload-time = "2026-01-24T19:40:32.468Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/6a/1a726905cf41a69d00989e8dfd9de7bd9b4a9f3c8723dac3077b0ba1a7b9/mcp-1.23.2-py3-none-any.whl", hash = "sha256:d8e4c6af0317ad954ea0a53dfb5e229dddea2d0a54568c080e82e8fae4a8264e", size = 231897, upload-time = "2025-12-08T15:51:01.023Z" },
+    { url = "https://files.pythonhosted.org/packages/fd/d9/eaa1f80170d2b7c5ba23f3b59f766f3a0bb41155fbc32a69adfa1adaaef9/mcp-1.26.0-py3-none-any.whl", hash = "sha256:904a21c33c25aa98ddbeb47273033c435e595bbacfdb177f4bd87f6dceebe1ca", size = 233615, upload-time = "2026-01-24T19:40:30.652Z" },
 ]
 
 [package.optional-dependencies]
@@ -2055,7 +2055,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "langchain-text-splitters", specifier = ">=1.0.0" },
     { name = "markdownify", specifier = ">=0.14.1" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.23,<1.24" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.26,<1.27" },
     { name = "openai", specifier = ">=2.8.1" },
     { name = "opentelemetry-api", specifier = ">=1.28.2" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.2" },
