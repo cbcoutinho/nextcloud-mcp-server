@@ -8,15 +8,28 @@
 			<AlertCircle :size="48" />
 			<p>{{ error }}</p>
 		</div>
-		<div v-else ref="containerRef" class="pdf-canvas-container">
-			<canvas ref="canvasRef" />
+		<div v-else class="pdf-image-container">
+			<img
+				:src="`data:image/png;base64,${imageData}`"
+				class="pdf-page-image"
+				alt="PDF page" />
 		</div>
 	</div>
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import * as pdfjsLib from 'pdfjs-dist'
+/**
+ * PDFViewer - Server-side PDF rendering component.
+ *
+ * Displays PDF pages as server-rendered PNG images, avoiding client-side
+ * PDF.js issues with CSP worker restrictions and ES private field access
+ * in Chromium browsers.
+ *
+ * The server uses PyMuPDF to render PDF pages to PNG images, which are
+ * returned as base64-encoded data.
+ */
+import { ref, watch, onMounted } from 'vue'
+import axios from '@nextcloud/axios'
 import { generateUrl } from '@nextcloud/router'
 import { translate as t } from '@nextcloud/l10n'
 import { NcLoadingIcon } from '@nextcloud/vue'
@@ -33,61 +46,68 @@ const props = defineProps({
 	},
 	scale: {
 		type: Number,
-		default: 1.5,
+		default: 2.0,
 	},
 })
 
 const emit = defineEmits(['loaded', 'error', 'page-rendered'])
 
 // Reactive state
-const pdfDoc = ref(null)
 const loading = ref(true)
 const error = ref(null)
+const imageData = ref(null)
 const totalPages = ref(0)
-const canvasRef = ref(null)
-const containerRef = ref(null)
 
-// Methods
-async function loadPDF() {
+/**
+ * Fetch a PDF page from the server as a PNG image.
+ */
+async function loadPage() {
 	loading.value = true
 	error.value = null
 
 	try {
-		// Clean and encode the file path
-		const cleanPath = props.filePath.startsWith('/')
-			? props.filePath.substring(1)
-			: props.filePath
-		const encodedPath = cleanPath.split('/').map(encodeURIComponent).join('/')
-		const downloadUrl = generateUrl(`/remote.php/webdav/${encodedPath}`)
+		// Build request URL
+		const url = generateUrl('/apps/astrolabe/api/pdf-preview')
+		const params = {
+			file_path: props.filePath,
+			page: props.pageNumber,
+			scale: props.scale,
+		}
 
-		// Load PDF document
-		const loadingTask = pdfjsLib.getDocument({
-			url: downloadUrl,
-			withCredentials: true,
-			useWorkerFetch: false, // Disable worker fetch for CSP compliance
-			isEvalSupported: false, // Disable eval for CSP
-		})
+		const response = await axios.get(url, { params })
 
-		pdfDoc.value = await loadingTask.promise
-		totalPages.value = pdfDoc.value.numPages
-		emit('loaded', { totalPages: totalPages.value })
+		if (!response.data.success) {
+			throw new Error(response.data.error || 'Failed to load PDF page')
+		}
 
-		// Set loading to false - the watcher will handle rendering
+		const data = response.data
+
+		// Update state
+		imageData.value = data.image
+		totalPages.value = data.total_pages
+
+		// Emit loaded event - App.vue uses this for navigation controls
+		emit('loaded', { totalPages: data.total_pages })
+		emit('page-rendered', { pageNumber: props.pageNumber })
+
 		loading.value = false
 	} catch (err) {
 		console.error('PDF load error:', err)
 
-		// Provide user-friendly error messages
-		if (err.name === 'MissingPDFException') {
+		// Provide user-friendly error messages based on axios error structure
+		const status = err.response?.status
+		const serverError = err.response?.data?.error
+
+		if (status === 404) {
 			error.value = t('astrolabe', 'PDF file not found')
-		} else if (err.name === 'InvalidPDFException') {
-			error.value = t('astrolabe', 'Invalid or corrupted PDF file')
-		} else if (err.message?.includes('NetworkError') || err.message?.includes('Network')) {
+		} else if (status === 401 || status === 403) {
+			error.value = serverError || t('astrolabe', 'Authorization required to view PDF')
+		} else if (err.code === 'ERR_NETWORK' || err.message?.includes('Network')) {
 			error.value = t('astrolabe', 'Network error loading PDF')
-		} else if (err.message?.includes('404')) {
-			error.value = t('astrolabe', 'PDF file not found')
+		} else if (serverError) {
+			error.value = serverError
 		} else {
-			error.value = t('astrolabe', 'Unable to load PDF file')
+			error.value = t('astrolabe', 'Unable to load PDF page')
 		}
 
 		emit('error', err)
@@ -95,78 +115,12 @@ async function loadPDF() {
 	}
 }
 
-async function renderPage(pageNum) {
-	if (!pdfDoc.value) {
-		return
-	}
+// Re-fetch when file path or page number changes
+watch(() => [props.filePath, props.pageNumber], loadPage)
 
-	try {
-		const page = await pdfDoc.value.getPage(pageNum)
-		const canvas = canvasRef.value
-
-		if (!canvas) {
-			console.error('PDF canvas ref not found')
-			error.value = t('astrolabe', 'Canvas element not available')
-			return
-		}
-
-		const context = canvas.getContext('2d')
-
-		// Use scale for better resolution on high-DPI screens
-		const viewport = page.getViewport({ scale: props.scale })
-
-		canvas.height = viewport.height
-		canvas.width = viewport.width
-
-		// Render page to canvas
-		const renderContext = {
-			canvasContext: context,
-			viewport,
-		}
-
-		await page.render(renderContext).promise
-
-		emit('page-rendered', { pageNumber: pageNum })
-	} catch (err) {
-		console.error('PDF render error:', err)
-		error.value = t('astrolabe', 'Error rendering PDF page')
-		emit('error', err)
-	}
-}
-
-// Watchers
-watch(() => props.pageNumber, (newPage) => {
-	if (pdfDoc.value && newPage > 0 && newPage <= totalPages.value) {
-		renderPage(newPage)
-	}
-})
-
-watch(() => props.filePath, () => {
-	// Reload PDF if file path changes
-	loadPDF()
-})
-
-watch(loading, async (newLoading) => {
-	// When loading completes, wait for canvas to be available and render
-	if (!newLoading && pdfDoc.value && !error.value) {
-		// Wait for Vue to update DOM
-		await nextTick()
-		// Canvas should now be rendered (v-else condition)
-		if (canvasRef.value) {
-			await renderPage(props.pageNumber)
-		}
-	}
-})
-
-// Lifecycle hooks
+// Initial load
 onMounted(() => {
-	loadPDF()
-})
-
-onBeforeUnmount(() => {
-	if (pdfDoc.value) {
-		pdfDoc.value.destroy()
-	}
+	loadPage()
 })
 </script>
 
@@ -206,19 +160,19 @@ onBeforeUnmount(() => {
 	}
 }
 
-.pdf-canvas-container {
+.pdf-image-container {
 	position: relative;
 	border: 1px solid var(--color-border);
 	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 	background: var(--color-main-background);
 	max-width: 100%;
 	overflow: auto;
+}
 
-	canvas {
-		display: block;
-		max-width: 100%;
-		height: auto;
-	}
+.pdf-page-image {
+	display: block;
+	max-width: 100%;
+	height: auto;
 }
 
 @media (max-width: 768px) {

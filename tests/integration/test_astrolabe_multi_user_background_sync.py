@@ -43,8 +43,19 @@ async def login_to_nextcloud(page: Page, username: str, password: str):
     await page.fill('input[name="user"]', username)
     await page.fill('input[name="password"]', password)
 
-    # Submit form
-    await page.click('button[type="submit"]')
+    # Submit form - use force=True to bypass stability check (CSS transitions)
+    submit_button = page.locator('button[type="submit"]')
+    try:
+        await submit_button.click(force=True, timeout=10000)
+    except Exception:
+        # Fallback: JavaScript click
+        logger.info("Using JavaScript click for login button...")
+        await page.evaluate(
+            """
+            const btn = document.querySelector('button[type="submit"]');
+            if (btn) btn.click();
+            """
+        )
     await page.wait_for_load_state("networkidle", timeout=30000)
 
     # Verify logged in (should redirect away from login page)
@@ -73,6 +84,289 @@ async def navigate_to_astrolabe_settings(page: Page):
         f"Failed to navigate to Astrolabe settings, current URL: {current_url}"
     )
     logger.info("✓ Successfully loaded Astrolabe settings page")
+
+
+async def authorize_search_access(page: Page, username: str) -> bool:
+    """Complete Step 1: OAuth Authorization for Astrolabe.
+
+    Handles the OAuth flow:
+    1. Check if already authorized (Step 1 shows "Complete")
+    2. Click "Authorize" link
+    3. Handle Nextcloud OIDC consent screen
+    4. Wait for redirect back to Astrolabe settings
+    5. Verify "Complete" badge appears on Step 1
+
+    Args:
+        page: Playwright page instance (must be on Astrolabe settings page)
+        username: Username for logging
+
+    Returns:
+        True if authorization completed successfully
+    """
+    nextcloud_url = "http://localhost:8080"
+
+    logger.info(f"Authorizing search access (Step 1) for {username}...")
+
+    # Check if already on Astrolabe settings page, if not navigate there
+    if "/settings/user/astrolabe" not in page.url:
+        await navigate_to_astrolabe_settings(page)
+
+    # Wait for page to fully render
+    await anyio.sleep(1)
+
+    # Check if already authorized (either "Active" badge or Step 1 "Complete" badge)
+    try:
+        # Check for "Active" badge (fully configured state)
+        active_badge = page.get_by_text("Active", exact=True)
+        if await active_badge.count() > 0 and await active_badge.is_visible():
+            logger.info(f"✓ Already fully authorized for {username} (Active badge)")
+            return True
+    except Exception:
+        pass
+
+    try:
+        step1_section = page.locator('h4:has-text("Step 1")')
+        if await step1_section.count() > 0:
+            # Look for "Complete" text in the Step 1 section's parent
+            step1_parent = step1_section.locator("..")
+            complete_badge = step1_parent.get_by_text("Complete", exact=True)
+            if await complete_badge.count() > 0 and await complete_badge.is_visible():
+                logger.info(f"✓ Step 1 already complete for {username}")
+                return True
+    except Exception:
+        pass
+
+    # Find and click the "Authorize" button
+    authorize_button = page.locator('a.button.primary:has-text("Authorize")')
+
+    try:
+        await authorize_button.wait_for(timeout=5000, state="visible")
+        logger.info(f"Found Authorize button for {username}")
+    except Exception:
+        # Take screenshot for debugging
+        screenshot_path = f"/tmp/astrolabe_no_authorize_button_{username}.png"
+        await page.screenshot(path=screenshot_path)
+        logger.error(
+            f"Could not find Authorize button for {username}. Screenshot: {screenshot_path}"
+        )
+        raise ValueError(f"Authorize button not found for {username}")
+
+    # Click the Authorize button - this will redirect to OAuth provider
+    # Use force=True to bypass stability check which can timeout due to CSS transitions
+    await authorize_button.click(force=True)
+    logger.info(f"Clicked Authorize button for {username}")
+
+    # Wait for OAuth redirect to complete
+    await page.wait_for_load_state("networkidle", timeout=30000)
+    logger.info(f"After networkidle, current URL: {page.url}")
+
+    # Take screenshot to see current state
+    await page.screenshot(path=f"/tmp/astrolabe_after_authorize_{username}.png")
+    logger.info(f"Screenshot saved: /tmp/astrolabe_after_authorize_{username}.png")
+
+    # Handle OIDC consent screen if present
+    consent_handled = await _handle_oauth_consent_screen(page, username)
+    if consent_handled:
+        logger.info(f"✓ OAuth consent granted for {username}")
+    else:
+        logger.info(
+            f"No consent screen required for {username} (may be previously authorized)"
+        )
+
+    # Wait for redirect back to Astrolabe settings
+    # The OAuth callback will redirect back to /settings/user/astrolabe
+    try:
+        await page.wait_for_url(
+            f"**{nextcloud_url}/settings/user/astrolabe**", timeout=30000
+        )
+        logger.info(f"Redirected back to Astrolabe settings for {username}")
+    except Exception:
+        # Check if we're already on settings page
+        if "/settings/user/astrolabe" not in page.url:
+            logger.warning(
+                f"Not redirected to Astrolabe settings, current URL: {page.url}"
+            )
+            # Navigate manually
+            await page.goto(
+                f"{nextcloud_url}/settings/user/astrolabe", wait_until="networkidle"
+            )
+
+    # Wait for page to reload and render
+    await anyio.sleep(2)
+
+    # Verify authorization completed - check for various success indicators
+    # When fully configured, shows "Active" badge; when only Step 1 done, shows "Complete"
+    try:
+        # First check if "Active" badge is shown (fully configured state)
+        active_badge = page.get_by_text("Active", exact=True)
+        if await active_badge.count() > 0 and await active_badge.is_visible():
+            logger.info(f"✓ OAuth authorization complete for {username} (Active badge)")
+            return True
+    except Exception:
+        pass
+
+    try:
+        # Check for Step 1 "Complete" badge (partial configuration)
+        step1_section = page.locator('h4:has-text("Step 1")')
+        if await step1_section.count() > 0:
+            step1_parent = step1_section.locator("..")
+            complete_badge = step1_parent.get_by_text("Complete", exact=True)
+            await complete_badge.wait_for(timeout=5000, state="visible")
+            logger.info(f"✓ Step 1 OAuth authorization complete for {username}")
+            return True
+    except Exception:
+        pass
+
+    # Neither badge found - authorization failed
+    screenshot_path = f"/tmp/astrolabe_step1_not_complete_{username}.png"
+    await page.screenshot(path=screenshot_path)
+    logger.error(
+        f"Authorization badge not visible for {username}. Screenshot: {screenshot_path}"
+    )
+    raise ValueError(f"OAuth authorization did not complete for {username}")
+
+
+async def _handle_oauth_consent_screen(page: Page, username: str) -> bool:
+    """Handle the OIDC consent screen during OAuth flow.
+
+    Reuses the proven pattern from tests/conftest.py.
+
+    Args:
+        page: Playwright page instance
+        username: Username for logging
+
+    Returns:
+        True if consent was handled, False if no consent screen was found
+    """
+    try:
+        logger.info(f"Checking for consent screen at URL: {page.url}")
+
+        # Check if consent screen is present - try multiple selectors
+        # The consent screen may be #oidc-consent or use a different format
+        consent_div = await page.query_selector("#oidc-consent")
+
+        if consent_div:
+            logger.info(f"Consent screen detected via #oidc-consent for {username}")
+            # Get consent screen data attributes for logging
+            client_name = await consent_div.get_attribute("data-client-name")
+            scopes_attr = await consent_div.get_attribute("data-scopes")
+            logger.info(f"  Client: {client_name}")
+            logger.info(f"  Requested scopes: {scopes_attr}")
+        else:
+            # Check for Allow button directly (different consent screen format)
+            allow_button = page.locator('button:has-text("Allow")')
+            if await allow_button.count() > 0:
+                logger.info(f"Consent screen detected via Allow button for {username}")
+            else:
+                logger.info(f"No consent screen found for {username} at {page.url}")
+                await page.screenshot(path=f"/tmp/no_consent_screen_{username}.png")
+                logger.info(f"Screenshot: /tmp/no_consent_screen_{username}.png")
+                return False
+
+        # Wait for Vue.js to render the Allow button
+        try:
+            await page.wait_for_selector('button:has-text("Allow")', timeout=10000)
+            logger.info("  Allow button rendered by Vue.js")
+        except Exception as e:
+            screenshot_path = f"/tmp/consent_no_allow_button_{username}.png"
+            await page.screenshot(path=screenshot_path)
+            logger.error(f"  Timeout waiting for Allow button: {e}")
+            raise
+
+        # Check all scope checkboxes
+        scope_checkboxes = await page.query_selector_all('input[type="checkbox"]')
+        if scope_checkboxes:
+            logger.info(f"  Found {len(scope_checkboxes)} scope checkboxes")
+            for i, checkbox in enumerate(scope_checkboxes):
+                is_checked = await checkbox.is_checked()
+                is_disabled = await checkbox.is_disabled()
+                if not is_checked and not is_disabled:
+                    await checkbox.check()
+                    logger.info(f"    ✓ Checked scope checkbox {i + 1}")
+
+        # Click the Allow button using JavaScript (handles viewport issues)
+        allow_button_locator = page.locator('button:has-text("Allow")')
+
+        # Debug: take screenshot before clicking Allow
+        await page.screenshot(path=f"/tmp/consent_before_allow_{username}.png")
+        logger.info(
+            f"  Screenshot before Allow: /tmp/consent_before_allow_{username}.png"
+        )
+
+        button_count = await allow_button_locator.count()
+        logger.info(f"  Found {button_count} Allow button(s)")
+
+        if button_count > 0:
+            current_url = page.url
+            logger.info(f"  Current URL: {current_url}")
+            logger.info(f"  Clicking Allow button for {username}...")
+
+            # Use JavaScript click to handle consent buttons (proven pattern from conftest.py)
+            # This is more reliable than Playwright's click for Vue.js rendered buttons
+            await page.evaluate(
+                """
+                const buttons = document.querySelectorAll('button');
+                for (const btn of buttons) {
+                    if (btn.textContent.trim() === 'Allow') {
+                        btn.click();
+                        break;
+                    }
+                }
+                """
+            )
+
+            # Wait for URL to change (Vue.js uses window.location.href after fetch)
+            # networkidle doesn't detect fetch-based redirects
+            try:
+                await page.wait_for_url(
+                    lambda url: url != current_url,
+                    timeout=30000,
+                )
+                logger.info(f"  URL changed to: {page.url}")
+            except Exception as wait_error:
+                # If URL didn't change, check console for errors
+                logger.warning(f"  URL didn't change after click: {wait_error}")
+                await page.screenshot(path=f"/tmp/consent_after_allow_{username}.png")
+
+                # Try alternative: manually POST consent and navigate
+                logger.info("  Trying manual consent submission...")
+                try:
+                    redirect_url = await page.evaluate(
+                        """
+                        async () => {
+                            const selectedScopes = Array.from(document.querySelectorAll('input[type="checkbox"]:checked'))
+                                .map(cb => cb.value).join(' ');
+
+                            const response = await fetch('/index.php/apps/oidc/consent/grant', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/x-www-form-urlencoded',
+                                    'requesttoken': OC.requestToken,
+                                },
+                                body: 'scopes=' + encodeURIComponent(selectedScopes),
+                                redirect: 'follow',
+                            });
+
+                            return response.url || '/index.php/apps/oidc/authorize';
+                        }
+                        """
+                    )
+                    logger.info(f"  Manual consent returned URL: {redirect_url}")
+                    await page.goto(redirect_url, wait_until="networkidle")
+                except Exception as manual_error:
+                    logger.error(f"  Manual consent also failed: {manual_error}")
+                    raise
+
+            await page.screenshot(path=f"/tmp/consent_after_allow_{username}.png")
+            logger.info(f"  Consent granted for {username}")
+            return True
+        else:
+            logger.error(f"  Allow button not found for {username}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error handling consent screen for {username}: {e}")
+        raise
 
 
 async def generate_app_password(
@@ -105,15 +399,31 @@ async def generate_app_password(
     await anyio.sleep(1.0)
     logger.info("Waited for Vue.js to process input and enable button")
 
-    # Click the create button
+    # Click the create button - use force=True to bypass stability check (CSS transitions)
     create_button = page.locator(
         'button[type="submit"]:has-text("Create new app password")'
     )
-    await create_button.click()
+    try:
+        await create_button.click(force=True, timeout=10000)
+    except Exception:
+        # Fallback: JavaScript click
+        logger.info("Using JavaScript click for create button...")
+        await page.evaluate(
+            """
+            const btn = document.querySelector('button[type="submit"]');
+            if (btn) btn.click();
+            """
+        )
     logger.info("Clicked create app password button")
 
     # Wait for app password to be generated and displayed in the dialog
     await anyio.sleep(3)  # Give it more time to generate and display
+
+    # Debug screenshot after clicking create
+    await page.screenshot(path=f"/tmp/app_password_after_create_{username}.png")
+    logger.info(
+        f"Screenshot after create: /tmp/app_password_after_create_{username}.png"
+    )
 
     # Find the Login input field which should have the username value
     # Then find the Password input field which is in the same form
@@ -172,11 +482,11 @@ async def generate_app_password(
         f"✓ Generated app password for {username}: {app_password[:10]}... (validated)"
     )
 
-    # Close the dialog by clicking the Close button
-    close_button = page.get_by_role("button", name="Close")
-    await close_button.click()
+    # Close dialog with Escape key (bypasses CSS layout issues with h2 intercepting clicks)
+    logger.info("Closing app password dialog with Escape key...")
+    await page.keyboard.press("Escape")
+    await anyio.sleep(0.5)  # Wait for dialog close animation
     logger.info("Closed app password dialog")
-    await anyio.sleep(0.5)
 
     return app_password
 
@@ -226,13 +536,25 @@ async def enable_background_sync_via_app_password(
     # Wait for page to load
     await anyio.sleep(1)
 
-    # Check if already active (look for "Active" text in the Background Sync Access section)
+    # Check if already complete (look for Step 2 "Complete" badge or overall "Active" state)
     try:
-        # The "Active" badge appears as a <span> with text "Active"
+        # First check for overall "Active" badge (both steps complete)
         active_text = page.get_by_text("Active", exact=True)
         if await active_text.is_visible(timeout=2000):
             logger.info(f"✓ Background sync already active for {username}")
             return True
+    except Exception:
+        pass
+
+    try:
+        # Check for Step 2 "Complete" badge (app password already set)
+        step2_section = page.locator('h4:has-text("Step 2")')
+        if await step2_section.count() > 0:
+            step2_parent = step2_section.locator("..")
+            complete_badge = step2_parent.get_by_text("Complete", exact=True)
+            if await complete_badge.count() > 0 and await complete_badge.is_visible():
+                logger.info(f"✓ Step 2 (app password) already complete for {username}")
+                return True
     except Exception:
         pass
 
@@ -319,20 +641,119 @@ async def enable_background_sync_via_app_password(
     except Exception:
         pass
 
-    # Verify "Active" text appears after reload
+    # Verify Step 2 "Complete" badge or overall "Active" badge appears after reload
+    try:
+        # First try to find "Active" badge (both steps complete)
+        active_text = page.get_by_text("Active", exact=True)
+        if await active_text.count() > 0:
+            await active_text.wait_for(timeout=5000, state="visible")
+            logger.info(
+                f"✓ Background sync enabled for {username} - Active badge visible"
+            )
+            return True
+    except Exception:
+        pass
+
+    try:
+        # Check for Step 2 "Complete" badge
+        step2_section = page.locator('h4:has-text("Step 2")')
+        if await step2_section.count() > 0:
+            step2_parent = step2_section.locator("..")
+            complete_badge = step2_parent.get_by_text("Complete", exact=True)
+            await complete_badge.wait_for(timeout=5000, state="visible")
+            logger.info(
+                f"✓ Step 2 (app password) enabled for {username} - Complete badge visible"
+            )
+            return True
+    except Exception:
+        pass
+
+    # If neither badge found, raise error
+    screenshot_path = f"/tmp/astrolabe_after_password_{username}.png"
+    await page.screenshot(path=screenshot_path)
+    logger.error(
+        f"Neither Active nor Complete badge appeared for {username}. "
+        f"Screenshot: {screenshot_path}"
+    )
+    raise ValueError(f"Background sync setup did not complete for {username}")
+
+
+async def complete_astrolabe_authorization(
+    page: Page, username: str, password: str
+) -> dict:
+    """Complete full Astrolabe two-step authorization.
+
+    Performs the complete authorization flow:
+    1. Navigate to Astrolabe settings
+    2. OAuth authorization (Step 1) if needed
+    3. Generate app password in Security settings
+    4. App password entry (Step 2) if needed
+
+    Args:
+        page: Playwright page instance (must be logged in)
+        username: Nextcloud username
+        password: Nextcloud password (for reference, not used directly)
+
+    Returns:
+        Dict with {"step1": bool, "step2": bool, "app_password": str | None}
+    """
+    logger.info(f"Starting full Astrolabe authorization for {username}...")
+
+    result = {"step1": False, "step2": False, "app_password": None}
+
+    # Navigate to Astrolabe settings
+    await navigate_to_astrolabe_settings(page)
+
+    # Step 1: OAuth authorization
+    try:
+        result["step1"] = await authorize_search_access(page, username)
+        logger.info(f"✓ Step 1 complete for {username}")
+    except Exception as e:
+        logger.error(f"Step 1 failed for {username}: {e}")
+        raise
+
+    # Navigate back to settings if needed (OAuth might have redirected elsewhere)
+    if "/settings/user/astrolabe" not in page.url:
+        await navigate_to_astrolabe_settings(page)
+
+    # Check if Step 2 is already complete
+    try:
+        step2_section = page.locator('h4:has-text("Step 2")')
+        if await step2_section.count() > 0:
+            step2_parent = step2_section.locator("..")
+            complete_badge = step2_parent.get_by_text("Complete", exact=True)
+            if await complete_badge.count() > 0 and await complete_badge.is_visible():
+                logger.info(f"✓ Step 2 already complete for {username}")
+                result["step2"] = True
+                return result
+    except Exception:
+        pass
+
+    # Also check for overall "Active" badge
     try:
         active_text = page.get_by_text("Active", exact=True)
-        await active_text.wait_for(timeout=5000, state="visible")
-        logger.info(f"✓ Background sync enabled for {username} - Active badge visible")
-        return True
+        if await active_text.count() > 0 and await active_text.is_visible():
+            logger.info(f"✓ Authorization already fully active for {username}")
+            result["step2"] = True
+            return result
     except Exception:
-        # Take screenshot for debugging
-        screenshot_path = f"/tmp/astrolabe_after_password_{username}.png"
-        await page.screenshot(path=screenshot_path)
-        logger.error(
-            f"Active badge did not appear for {username}. Screenshot: {screenshot_path}"
+        pass
+
+    # Step 2: Generate app password and enter it
+    app_password = await generate_app_password(page, username)
+    result["app_password"] = app_password
+
+    try:
+        result["step2"] = await enable_background_sync_via_app_password(
+            page, username, app_password
         )
+        logger.info(f"✓ Step 2 complete for {username}")
+    except Exception as e:
+        logger.error(f"Step 2 failed for {username}: {e}")
         raise
+
+    logger.info(f"✓ Full Astrolabe authorization complete for {username}")
+    return result
 
 
 async def verify_app_password_created(username: str) -> bool:

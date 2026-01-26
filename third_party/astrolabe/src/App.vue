@@ -394,18 +394,6 @@ import MarkdownViewer from './components/MarkdownViewer.vue'
 import axios from '@nextcloud/axios'
 import { generateUrl } from '@nextcloud/router'
 import Plotly from 'plotly.js-dist-min'
-import * as pdfjsLib from 'pdfjs-dist'
-
-// Set worker source with error handling
-try {
-	pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-		'pdfjs-dist/build/pdf.worker.mjs',
-		import.meta.url,
-	).toString()
-} catch (e) {
-	console.warn('Failed to set PDF.js worker, will use fallback', e)
-	// PDF.js will use fake worker automatically
-}
 
 export default {
 	name: 'App',
@@ -615,7 +603,20 @@ export default {
 				}
 			} catch (err) {
 				console.error('Search error:', err)
-				this.error = this.t('astrolabe', 'Network error. Please try again.')
+				// Check if this is an HTTP error with a response
+				if (err.response && err.response.data && err.response.data.error) {
+					// Use the specific error message from the backend
+					this.error = err.response.data.error
+				} else if (err.response && err.response.status === 401) {
+					// Unauthorized - user needs to authorize the app
+					this.error = this.t('astrolabe', 'Authorization required. Please complete Step 1 in Settings → Astrolabe.')
+				} else if (err.response && err.response.status === 503) {
+					// Service unavailable - MCP server not reachable
+					this.error = this.t('astrolabe', 'Search service unavailable. Please try again later.')
+				} else {
+					// Actual network error or unknown error
+					this.error = this.t('astrolabe', 'Network error. Please try again.')
+				}
 				this.results = []
 			} finally {
 				this.loading = false
@@ -637,7 +638,14 @@ export default {
 				}
 			} catch (err) {
 				console.error('Status error:', err)
-				this.statusError = this.t('astrolabe', 'Network error. Please try again.')
+				// Extract error message from response if available
+				if (err.response && err.response.data && err.response.data.error) {
+					this.statusError = err.response.data.error
+				} else if (err.response && err.response.status === 401) {
+					this.statusError = this.t('astrolabe', 'Authorization required. Please complete Step 1 in Settings → Astrolabe.')
+				} else {
+					this.statusError = this.t('astrolabe', 'Network error. Please try again.')
+				}
 			} finally {
 				this.statusLoading = false
 			}
@@ -749,7 +757,7 @@ export default {
 					colorscale: 'Viridis',
 					showscale: true,
 					colorbar: {
-						title: 'Relative Score',
+						title: { text: 'Relative Score' },
 						x: 1.02,
 						xanchor: 'left',
 						thickness: 20,
@@ -784,13 +792,13 @@ export default {
 			}
 
 			const layout = {
-				title: `Vector Space (PCA 3D) - ${results.length} results`,
+				title: { text: `Vector Space (PCA 3D) - ${results.length} results` },
 				width,
 				height,
 				scene: {
-					xaxis: { title: 'PC1' },
-					yaxis: { title: 'PC2' },
-					zaxis: { title: 'PC3' },
+					xaxis: { title: { text: 'PC1' } },
+					yaxis: { title: { text: 'PC2' } },
+					zaxis: { title: { text: 'PC3' } },
 					camera: {
 						eye: { x: 1.5, y: 1.5, z: 1.5 },
 					},

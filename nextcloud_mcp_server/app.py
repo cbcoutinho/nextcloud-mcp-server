@@ -2112,13 +2112,14 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         settings.enable_multi_user_basic_auth and settings.enable_offline_access
     )
     if enable_management_apis:
-        from nextcloud_mcp_server.api.management import (
+        from nextcloud_mcp_server.api import (
             create_webhook,
             delete_app_password,
             delete_webhook,
             get_app_password_status,
             get_chunk_context,
             get_installed_apps,
+            get_pdf_preview,
             get_server_status,
             get_user_session,
             get_vector_sync_status,
@@ -2179,6 +2180,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         routes.append(
             Route("/api/v1/chunk-context", get_chunk_context, methods=["GET"])
         )
+        # PDF preview endpoint for Astrolabe (server-side rendering)
+        routes.append(Route("/api/v1/pdf-preview", get_pdf_preview, methods=["GET"]))
         # ADR-018: Unified search endpoint for Nextcloud PHP app integration
         routes.append(Route("/api/v1/search", unified_search, methods=["POST"]))
         routes.append(Route("/api/v1/apps", get_installed_apps, methods=["GET"]))
@@ -2193,7 +2196,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             "/api/v1/users/{user_id}/session, /api/v1/users/{user_id}/revoke, "
             "/api/v1/users/{user_id}/app-password, "
             "/api/v1/vector-viz/search, /api/v1/search, /api/v1/apps, "
-            "/api/v1/webhooks"
+            "/api/v1/webhooks, /api/v1/pdf-preview"
         )
 
     # ADR-016: Add Smithery well-known config endpoint for container runtime discovery

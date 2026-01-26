@@ -2,10 +2,11 @@
 
 declare(strict_types=1);
 
+use OCA\Astrolabe\AppInfo\Application;
 use OCP\Util;
 
-Util::addScript(OCA\Astrolabe\AppInfo\Application::APP_ID, OCA\Astrolabe\AppInfo\Application::APP_ID . '-main');
-Util::addStyle(OCA\Astrolabe\AppInfo\Application::APP_ID, OCA\Astrolabe\AppInfo\Application::APP_ID . '-main');
+Util::addScript(Application::APP_ID, Application::APP_ID . '-main');
+Util::addStyle(Application::APP_ID, Application::APP_ID . '-main');
 
 ?>
 

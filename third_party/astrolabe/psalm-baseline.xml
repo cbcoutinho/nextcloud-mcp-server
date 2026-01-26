@@ -13,13 +13,6 @@
       <code><![CDATA[$result['query_coords']]]></code>
       <code><![CDATA[$webhook['eventFilter']]]></code>
     </InvalidArrayOffset>
-    <MissingClosureReturnType>
-      <code><![CDATA[function (string $refreshToken) {]]></code>
-      <code><![CDATA[function (string $refreshToken) {]]></code>
-      <code><![CDATA[function (string $refreshToken) {]]></code>
-      <code><![CDATA[function (string $refreshToken) {]]></code>
-      <code><![CDATA[function (string $refreshToken) {]]></code>
-    </MissingClosureReturnType>
     <MixedArgument>
       <code><![CDATA[!empty($eventConfig['filter']) ? $eventConfig['filter'] : null]]></code>
       <code><![CDATA[$accessToken]]></code>
@@ -62,16 +55,6 @@
       <code><![CDATA[$webhook['id']]]></code>
     </PossiblyUndefinedArrayOffset>
     <RiskyTruthyFalsyComparison>
-      <code><![CDATA[!$accessToken]]></code>
-      <code><![CDATA[!$accessToken]]></code>
-      <code><![CDATA[!$accessToken]]></code>
-      <code><![CDATA[!$accessToken]]></code>
-      <code><![CDATA[!$accessToken]]></code>
-      <code><![CDATA[!$newTokenData]]></code>
-      <code><![CDATA[!$newTokenData]]></code>
-      <code><![CDATA[!$newTokenData]]></code>
-      <code><![CDATA[!$newTokenData]]></code>
-      <code><![CDATA[!$newTokenData]]></code>
       <code><![CDATA[!$token]]></code>
       <code><![CDATA[empty($webhook['eventFilter'])]]></code>
     </RiskyTruthyFalsyComparison>
@@ -106,7 +89,7 @@
       <code><![CDATA[CredentialsController]]></code>
     </UnusedClass>
   </file>
-  <file src="lib/Controller/OAuthController.php">
+  <file src="lib/Controller/OauthController.php">
     <MixedArgument>
       <code><![CDATA[$authEndpoint]]></code>
       <code><![CDATA[$codeVerifier]]></code>
@@ -175,7 +158,7 @@
       <code><![CDATA[$error]]></code>
     </RiskyTruthyFalsyComparison>
     <UnusedClass>
-      <code><![CDATA[OAuthController]]></code>
+      <code><![CDATA[OauthController]]></code>
     </UnusedClass>
   </file>
   <file src="lib/Listener/AstrolabeAdminSettingsListener.php">
