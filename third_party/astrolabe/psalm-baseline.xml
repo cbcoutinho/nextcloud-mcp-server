@@ -13,13 +13,6 @@
       <code><![CDATA[$result['query_coords']]]></code>
       <code><![CDATA[$webhook['eventFilter']]]></code>
     </InvalidArrayOffset>
-    <MissingClosureReturnType>
-      <code><![CDATA[function (string $refreshToken) {]]></code>
-      <code><![CDATA[function (string $refreshToken) {]]></code>
-      <code><![CDATA[function (string $refreshToken) {]]></code>
-      <code><![CDATA[function (string $refreshToken) {]]></code>
-      <code><![CDATA[function (string $refreshToken) {]]></code>
-    </MissingClosureReturnType>
     <MixedArgument>
       <code><![CDATA[!empty($eventConfig['filter']) ? $eventConfig['filter'] : null]]></code>
       <code><![CDATA[$accessToken]]></code>
@@ -62,16 +55,6 @@
       <code><![CDATA[$webhook['id']]]></code>
     </PossiblyUndefinedArrayOffset>
     <RiskyTruthyFalsyComparison>
-      <code><![CDATA[!$accessToken]]></code>
-      <code><![CDATA[!$accessToken]]></code>
-      <code><![CDATA[!$accessToken]]></code>
-      <code><![CDATA[!$accessToken]]></code>
-      <code><![CDATA[!$accessToken]]></code>
-      <code><![CDATA[!$newTokenData]]></code>
-      <code><![CDATA[!$newTokenData]]></code>
-      <code><![CDATA[!$newTokenData]]></code>
-      <code><![CDATA[!$newTokenData]]></code>
-      <code><![CDATA[!$newTokenData]]></code>
       <code><![CDATA[!$token]]></code>
       <code><![CDATA[empty($webhook['eventFilter'])]]></code>
     </RiskyTruthyFalsyComparison>

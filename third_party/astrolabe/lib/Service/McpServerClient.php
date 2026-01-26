@@ -646,7 +646,8 @@ class McpServerClient {
 					]
 				]
 			);
-			$data = json_decode($response->getBody(), true);
+			/** @var array{success?: bool, image?: string, page_number?: int, total_pages?: int, error?: string} $data */
+			$data = json_decode((string)$response->getBody(), true);
 
 			if (json_last_error() !== JSON_ERROR_NONE) {
 				throw new \RuntimeException('Invalid JSON response from server');

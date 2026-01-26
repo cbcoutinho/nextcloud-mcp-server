@@ -152,10 +152,11 @@ class ApiController extends Controller {
 		$userId = $user->getUID();
 
 		// Create refresh callback that calls IdP directly
-		$refreshCallback = function (string $refreshToken) {
+		/** @return array{access_token: string, refresh_token: string, expires_in: int}|null */
+		$refreshCallback = function (string $refreshToken): ?array {
 			$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
 
-			if (!$newTokenData) {
+			if ($newTokenData === null) {
 				return null;
 			}
 
@@ -168,7 +169,7 @@ class ApiController extends Controller {
 
 		// Get user's OAuth token for MCP server with automatic refresh
 		$accessToken = $this->tokenStorage->getAccessToken($userId, $refreshCallback);
-		if (!$accessToken) {
+		if ($accessToken === null) {
 			return new JSONResponse([
 				'success' => false,
 				'error' => 'MCP server authorization required. Please authorize the app first.'
@@ -417,10 +418,11 @@ class ApiController extends Controller {
 		$userId = $user->getUID();
 
 		// Create refresh callback
-		$refreshCallback = function (string $refreshToken) {
+		/** @return array{access_token: string, refresh_token: string, expires_in: int}|null */
+		$refreshCallback = function (string $refreshToken): ?array {
 			$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
 
-			if (!$newTokenData) {
+			if ($newTokenData === null) {
 				return null;
 			}
 
@@ -433,7 +435,7 @@ class ApiController extends Controller {
 
 		// Get access token with automatic refresh
 		$accessToken = $this->tokenStorage->getAccessToken($userId, $refreshCallback);
-		if (!$accessToken) {
+		if ($accessToken === null) {
 			return new JSONResponse([
 				'success' => false,
 				'error' => 'MCP server authorization required'
@@ -529,10 +531,11 @@ class ApiController extends Controller {
 		$userId = $user->getUID();
 
 		// Create refresh callback
-		$refreshCallback = function (string $refreshToken) {
+		/** @return array{access_token: string, refresh_token: string, expires_in: int}|null */
+		$refreshCallback = function (string $refreshToken): ?array {
 			$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
 
-			if (!$newTokenData) {
+			if ($newTokenData === null) {
 				return null;
 			}
 
@@ -545,7 +548,7 @@ class ApiController extends Controller {
 
 		// Get access token with automatic refresh
 		$accessToken = $this->tokenStorage->getAccessToken($userId, $refreshCallback);
-		if (!$accessToken) {
+		if ($accessToken === null) {
 			return new JSONResponse([
 				'success' => false,
 				'error' => 'MCP server authorization required'
@@ -628,10 +631,11 @@ class ApiController extends Controller {
 		$userId = $user->getUID();
 
 		// Create refresh callback
-		$refreshCallback = function (string $refreshToken) {
+		/** @return array{access_token: string, refresh_token: string, expires_in: int}|null */
+		$refreshCallback = function (string $refreshToken): ?array {
 			$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
 
-			if (!$newTokenData) {
+			if ($newTokenData === null) {
 				return null;
 			}
 
@@ -644,7 +648,7 @@ class ApiController extends Controller {
 
 		// Get access token with automatic refresh
 		$accessToken = $this->tokenStorage->getAccessToken($userId, $refreshCallback);
-		if (!$accessToken) {
+		if ($accessToken === null) {
 			return new JSONResponse([
 				'success' => false,
 				'error' => 'MCP server authorization required'
@@ -757,10 +761,11 @@ class ApiController extends Controller {
 		$userId = $user->getUID();
 
 		// Create refresh callback
-		$refreshCallback = function (string $refreshToken) {
+		/** @return array{access_token: string, refresh_token: string, expires_in: int}|null */
+		$refreshCallback = function (string $refreshToken): ?array {
 			$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
 
-			if (!$newTokenData) {
+			if ($newTokenData === null) {
 				return null;
 			}
 
@@ -773,7 +778,7 @@ class ApiController extends Controller {
 
 		// Get user's OAuth token for MCP server with automatic refresh
 		$accessToken = $this->tokenStorage->getAccessToken($userId, $refreshCallback);
-		if (!$accessToken) {
+		if ($accessToken === null) {
 			return new JSONResponse([
 				'success' => false,
 				'error' => 'MCP server authorization required.'
@@ -814,10 +819,11 @@ class ApiController extends Controller {
 		$userId = $user->getUID();
 
 		// Create refresh callback
-		$refreshCallback = function (string $refreshToken) {
+		/** @return array{access_token: string, refresh_token: string, expires_in: int}|null */
+		$refreshCallback = function (string $refreshToken): ?array {
 			$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
 
-			if (!$newTokenData) {
+			if ($newTokenData === null) {
 				return null;
 			}
 
@@ -830,7 +836,7 @@ class ApiController extends Controller {
 
 		// Get user's OAuth token for MCP server with automatic refresh
 		$accessToken = $this->tokenStorage->getAccessToken($userId, $refreshCallback);
-		if (!$accessToken) {
+		if ($accessToken === null) {
 			return new JSONResponse([
 				'success' => false,
 				'error' => 'MCP server authorization required.'
