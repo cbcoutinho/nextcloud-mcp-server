@@ -25,6 +25,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires external MCP server deployment
 - See documentation for setup: https://github.com/cbcoutinho/nextcloud-mcp-server
 
+## astrolabe-v0.9.0 (2026-01-26)
+
+### Feat
+
+- **scripts**: add database query helpers for development
+
+### Fix
+
+- **astrolabe**: resolve Psalm type errors in PDF preview code
+- **astrolabe**: fix Psalm baseline and ESLint import order
+- **astrolabe**: load pdfjs-dist externally to fix PDF viewer
+- **astrolabe**: improve error messages for authorization issues
+- **astrolabe**: rename OAuthController and fix app password check
+- **tests**: improve Astrolabe integration test reliability
+- **astrolabe**: update Plotly title attributes for v3 compatibility
+- **deps**: update dependency plotly.js-dist-min to v3
+
+### Refactor
+
+- **api**: split management.py into domain-focused modules
+- **astrolabe**: replace client-side PDF.js with server-side PyMuPDF rendering
+
 ## astrolabe-v0.8.3 (2026-01-17)
 
 ### Fix
