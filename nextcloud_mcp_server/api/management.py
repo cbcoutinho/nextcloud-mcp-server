@@ -19,6 +19,7 @@ from importlib.metadata import version
 from typing import TYPE_CHECKING, Any
 
 import httpx
+import pymupdf
 
 if TYPE_CHECKING:
     from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
@@ -1878,6 +1879,13 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
                 status_code=400,
             )
 
+        # Validate no path traversal sequences
+        if ".." in file_path:
+            return JSONResponse(
+                {"success": False, "error": "Invalid file path"},
+                status_code=400,
+            )
+
         try:
             page_num = _parse_int_param(
                 request.query_params.get("page"), 1, 1, 10000, "page"
@@ -1908,28 +1916,38 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
         ) as nc_client:
             pdf_bytes, _ = await nc_client.webdav.read_file(file_path)
 
-        # Render page with PyMuPDF
-        import pymupdf
-
-        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-        total_pages = doc.page_count
-
-        # Validate page number
-        if page_num > total_pages:
-            doc.close()
+        # Check file size limit (50 MB)
+        max_pdf_size = 50 * 1024 * 1024
+        if len(pdf_bytes) > max_pdf_size:
             return JSONResponse(
                 {
                     "success": False,
-                    "error": f"Page {page_num} does not exist (document has {total_pages} pages)",
+                    "error": f"PDF file exceeds maximum size limit ({max_pdf_size // (1024 * 1024)} MB)",
                 },
-                status_code=400,
+                status_code=413,
             )
 
-        page = doc[page_num - 1]  # 0-indexed
-        mat = pymupdf.Matrix(scale, scale)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-        png_bytes = pix.tobytes("png")
-        doc.close()
+        # Render page with PyMuPDF
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            total_pages = doc.page_count
+
+            # Validate page number
+            if page_num > total_pages:
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "error": f"Page {page_num} does not exist (document has {total_pages} pages)",
+                    },
+                    status_code=400,
+                )
+
+            page = doc[page_num - 1]  # 0-indexed
+            mat = pymupdf.Matrix(scale, scale)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            png_bytes = pix.tobytes("png")
+        finally:
+            doc.close()
 
         # Encode as base64
         image_b64 = base64.b64encode(png_bytes).decode("ascii")
@@ -1953,6 +1971,12 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
         return JSONResponse(
             {"success": False, "error": "PDF file not found"},
             status_code=404,
+        )
+    except (pymupdf.FileDataError, pymupdf.EmptyFileError):
+        logger.warning(f"Invalid or corrupted PDF file: {file_path_param}")
+        return JSONResponse(
+            {"success": False, "error": "Invalid or corrupted PDF file"},
+            status_code=400,
         )
     except Exception as e:
         logger.error(f"PDF preview error: {e}", exc_info=True)

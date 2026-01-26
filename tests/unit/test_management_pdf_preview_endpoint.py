@@ -461,8 +461,8 @@ class TestPdfPreviewEdgeCases:
             data = response.json()
             assert data["success"] is False
 
-    def test_corrupted_pdf_returns_500(self):
-        """Test that corrupted PDF data returns 500."""
+    def test_corrupted_pdf_returns_400(self):
+        """Test that corrupted PDF data returns 400 with specific error."""
         mock_webdav = AsyncMock()
         # Return invalid PDF bytes
         mock_webdav.read_file = AsyncMock(
@@ -496,9 +496,13 @@ class TestPdfPreviewEdgeCases:
                 headers={"Authorization": "Bearer test-token"},
             )
 
-            assert response.status_code == 500
+            assert response.status_code == 400
             data = response.json()
             assert data["success"] is False
+            assert (
+                "corrupted" in data["error"].lower()
+                or "invalid" in data["error"].lower()
+            )
 
     def test_boundary_scale_values(self):
         """Test boundary scale values (min and max)."""
@@ -543,3 +547,170 @@ class TestPdfPreviewEdgeCases:
                 headers={"Authorization": "Bearer test-token"},
             )
             assert response.status_code == 200
+
+
+class TestPdfPreviewSecurityValidation:
+    """Tests for security validations in PDF preview endpoint."""
+
+    def test_path_traversal_returns_400(self):
+        """Test that path traversal attempts are blocked with 400."""
+        with (
+            patch(
+                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                new_callable=AsyncMock,
+                return_value=("testuser", True),
+            ),
+            patch(
+                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                return_value="test-token",
+            ),
+        ):
+            app = create_test_app()
+            client = TestClient(app)
+
+            # Test various path traversal patterns
+            traversal_paths = [
+                "/Documents/../../../etc/passwd",
+                "/../secret.pdf",
+                "/folder/..%2F..%2Fetc/passwd",  # URL-encoded
+                "/test/../secret.pdf",
+            ]
+
+            for path in traversal_paths:
+                response = client.get(
+                    f"/api/v1/pdf-preview?file_path={path}",
+                    headers={"Authorization": "Bearer test-token"},
+                )
+                assert response.status_code == 400, (
+                    f"Path traversal not blocked: {path}"
+                )
+                data = response.json()
+                assert data["success"] is False
+                assert "invalid file path" in data["error"].lower()
+
+    def test_file_size_limit_exceeded_returns_413(self):
+        """Test that files exceeding 50MB limit return 413."""
+        # Create bytes larger than 50MB limit
+        large_pdf_bytes = b"x" * (51 * 1024 * 1024)  # 51 MB
+
+        mock_webdav = AsyncMock()
+        mock_webdav.read_file = AsyncMock(
+            return_value=(large_pdf_bytes, "application/pdf")
+        )
+
+        mock_nc_client = MagicMock()
+        mock_nc_client.webdav = mock_webdav
+        mock_nc_client.__aenter__ = AsyncMock(return_value=mock_nc_client)
+        mock_nc_client.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch(
+                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                new_callable=AsyncMock,
+                return_value=("testuser", True),
+            ),
+            patch(
+                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                return_value="test-token",
+            ),
+            patch(
+                "nextcloud_mcp_server.client.NextcloudClient.from_token",
+                return_value=mock_nc_client,
+            ),
+        ):
+            app = create_test_app()
+            client = TestClient(app)
+            response = client.get(
+                "/api/v1/pdf-preview?file_path=/large.pdf",
+                headers={"Authorization": "Bearer test-token"},
+            )
+
+            assert response.status_code == 413
+            data = response.json()
+            assert data["success"] is False
+            assert "size limit" in data["error"].lower()
+
+    def test_corrupted_pdf_returns_400(self):
+        """Test that corrupted PDF returns 400 with specific error message."""
+        # Invalid PDF content that PyMuPDF cannot parse
+        corrupted_pdf_bytes = b"not a valid PDF file content"
+
+        mock_webdav = AsyncMock()
+        mock_webdav.read_file = AsyncMock(
+            return_value=(corrupted_pdf_bytes, "application/pdf")
+        )
+
+        mock_nc_client = MagicMock()
+        mock_nc_client.webdav = mock_webdav
+        mock_nc_client.__aenter__ = AsyncMock(return_value=mock_nc_client)
+        mock_nc_client.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch(
+                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                new_callable=AsyncMock,
+                return_value=("testuser", True),
+            ),
+            patch(
+                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                return_value="test-token",
+            ),
+            patch(
+                "nextcloud_mcp_server.client.NextcloudClient.from_token",
+                return_value=mock_nc_client,
+            ),
+        ):
+            app = create_test_app()
+            client = TestClient(app)
+            response = client.get(
+                "/api/v1/pdf-preview?file_path=/corrupted.pdf",
+                headers={"Authorization": "Bearer test-token"},
+            )
+
+            assert response.status_code == 400
+            data = response.json()
+            assert data["success"] is False
+            assert (
+                "corrupted" in data["error"].lower()
+                or "invalid" in data["error"].lower()
+            )
+
+    def test_empty_pdf_returns_400(self):
+        """Test that empty PDF file returns 400."""
+        empty_pdf_bytes = b""
+
+        mock_webdav = AsyncMock()
+        mock_webdav.read_file = AsyncMock(
+            return_value=(empty_pdf_bytes, "application/pdf")
+        )
+
+        mock_nc_client = MagicMock()
+        mock_nc_client.webdav = mock_webdav
+        mock_nc_client.__aenter__ = AsyncMock(return_value=mock_nc_client)
+        mock_nc_client.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch(
+                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                new_callable=AsyncMock,
+                return_value=("testuser", True),
+            ),
+            patch(
+                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                return_value="test-token",
+            ),
+            patch(
+                "nextcloud_mcp_server.client.NextcloudClient.from_token",
+                return_value=mock_nc_client,
+            ),
+        ):
+            app = create_test_app()
+            client = TestClient(app)
+            response = client.get(
+                "/api/v1/pdf-preview?file_path=/empty.pdf",
+                headers={"Authorization": "Bearer test-token"},
+            )
+
+            assert response.status_code == 400
+            data = response.json()
+            assert data["success"] is False
