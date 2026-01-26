@@ -5,6 +5,28 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.62.0 (2026-01-26)
+
+### Feat
+
+- **scripts**: add database query helpers for development
+
+### Fix
+
+- **astrolabe**: resolve Psalm type errors in PDF preview code
+- **astrolabe**: fix Psalm baseline and ESLint import order
+- **astrolabe**: load pdfjs-dist externally to fix PDF viewer
+- **astrolabe**: improve error messages for authorization issues
+- **astrolabe**: rename OAuthController and fix app password check
+- **tests**: improve Astrolabe integration test reliability
+- **astrolabe**: update Plotly title attributes for v3 compatibility
+- **deps**: update dependency plotly.js-dist-min to v3
+
+### Refactor
+
+- **api**: split management.py into domain-focused modules
+- **astrolabe**: replace client-side PDF.js with server-side PyMuPDF rendering
+
 ## v0.61.5 (2026-01-17)
 
 ### Fix
