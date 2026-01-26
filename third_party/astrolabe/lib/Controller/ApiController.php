@@ -788,4 +788,61 @@ class ApiController extends Controller {
 
 		return new JSONResponse($result);
 	}
+
+	/**
+	 * Get PDF page preview (server-side rendered).
+	 *
+	 * AJAX endpoint for PDF viewer in semantic search UI.
+	 * Uses server-side PyMuPDF rendering to avoid CSP/worker issues.
+	 *
+	 * @param string $file_path WebDAV path to PDF file
+	 * @param int $page Page number (1-indexed, default: 1)
+	 * @param float $scale Zoom factor (default: 2.0)
+	 * @return JSONResponse
+	 */
+	#[NoAdminRequired]
+	public function pdfPreview(
+		string $file_path,
+		int $page = 1,
+		float $scale = 2.0,
+	): JSONResponse {
+		$user = $this->userSession->getUser();
+		if (!$user) {
+			return new JSONResponse(['success' => false, 'error' => 'User not authenticated'], Http::STATUS_UNAUTHORIZED);
+		}
+
+		$userId = $user->getUID();
+
+		// Create refresh callback
+		$refreshCallback = function (string $refreshToken) {
+			$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
+
+			if (!$newTokenData) {
+				return null;
+			}
+
+			return [
+				'access_token' => $newTokenData['access_token'],
+				'refresh_token' => $newTokenData['refresh_token'] ?? $refreshToken,
+				'expires_in' => $newTokenData['expires_in'] ?? 3600,
+			];
+		};
+
+		// Get user's OAuth token for MCP server with automatic refresh
+		$accessToken = $this->tokenStorage->getAccessToken($userId, $refreshCallback);
+		if (!$accessToken) {
+			return new JSONResponse([
+				'success' => false,
+				'error' => 'MCP server authorization required.'
+			], Http::STATUS_UNAUTHORIZED);
+		}
+
+		$result = $this->client->getPdfPreview($file_path, $page, $scale, $accessToken);
+
+		if (isset($result['error'])) {
+			return new JSONResponse(['success' => false, 'error' => $result['error']], Http::STATUS_INTERNAL_SERVER_ERROR);
+		}
+
+		return new JSONResponse($result);
+	}
 }

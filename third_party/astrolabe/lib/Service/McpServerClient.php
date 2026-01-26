@@ -605,4 +605,61 @@ class McpServerClient {
 			return ['error' => $e->getMessage()];
 		}
 	}
+
+	/**
+	 * Get PDF page preview (server-side rendered).
+	 *
+	 * Renders a PDF page to PNG using PyMuPDF on the server.
+	 * This avoids client-side PDF.js issues with CSP and ES private fields.
+	 *
+	 * Requires OAuth bearer token for authentication.
+	 *
+	 * @param string $filePath WebDAV path to PDF file
+	 * @param int $page Page number (1-indexed)
+	 * @param float $scale Zoom factor (default: 2.0)
+	 * @param string $token OAuth bearer token
+	 * @return array{
+	 *   success?: bool,
+	 *   image?: string,
+	 *   page_number?: int,
+	 *   total_pages?: int,
+	 *   error?: string
+	 * }
+	 */
+	public function getPdfPreview(
+		string $filePath,
+		int $page,
+		float $scale,
+		string $token,
+	): array {
+		try {
+			$response = $this->httpClient->get(
+				$this->baseUrl . '/api/v1/pdf-preview',
+				[
+					'headers' => [
+						'Authorization' => 'Bearer ' . $token
+					],
+					'query' => [
+						'file_path' => $filePath,
+						'page' => $page,
+						'scale' => $scale,
+					]
+				]
+			);
+			$data = json_decode($response->getBody(), true);
+
+			if (json_last_error() !== JSON_ERROR_NONE) {
+				throw new \RuntimeException('Invalid JSON response from server');
+			}
+
+			return $data;
+		} catch (\Exception $e) {
+			$this->logger->error('Failed to get PDF preview', [
+				'error' => $e->getMessage(),
+				'file_path' => $filePath,
+				'page' => $page,
+			]);
+			return ['error' => $e->getMessage()];
+		}
+	}
 }

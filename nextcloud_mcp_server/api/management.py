@@ -1825,3 +1825,139 @@ async def get_chunk_context(request: Request) -> JSONResponse:
             {"error": error_msg},
             status_code=500,
         )
+
+
+async def get_pdf_preview(request: Request) -> JSONResponse:
+    """GET /api/v1/pdf-preview - Render PDF page to PNG image.
+
+    Server-side PDF rendering using PyMuPDF. This endpoint allows Astrolabe
+    to display PDF pages without requiring client-side PDF.js, avoiding CSP
+    worker restrictions and ES private field issues in Chromium.
+
+    Query parameters:
+        file_path: WebDAV path to PDF file (e.g., "/Documents/report.pdf")
+        page: Page number (1-indexed, default: 1)
+        scale: Zoom factor for rendering (default: 2.0 = 144 DPI)
+
+    Returns:
+        {
+            "success": true,
+            "image": "<base64-encoded-png>",
+            "page_number": 1,
+            "total_pages": 10
+        }
+
+    Requires OAuth bearer token for authentication.
+    """
+    # Log incoming request
+    file_path_param = request.query_params.get("file_path", "<not provided>")
+    page_param = request.query_params.get("page", "1")
+    logger.info(f"PDF preview request: file_path={file_path_param}, page={page_param}")
+
+    try:
+        # Validate OAuth token and extract user
+        user_id, validated = await validate_token_and_get_user(request)
+        logger.info(f"PDF preview authenticated for user: {user_id}")
+    except Exception as e:
+        logger.warning(f"Unauthorized access to /api/v1/pdf-preview: {e}")
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "Unauthorized",
+                "message": _sanitize_error_for_client(e, "get_pdf_preview"),
+            },
+            status_code=401,
+        )
+
+    try:
+        # Parse and validate parameters
+        file_path = request.query_params.get("file_path")
+        if not file_path:
+            return JSONResponse(
+                {"success": False, "error": "Missing required parameter: file_path"},
+                status_code=400,
+            )
+
+        try:
+            page_num = _parse_int_param(
+                request.query_params.get("page"), 1, 1, 10000, "page"
+            )
+            scale = _parse_float_param(
+                request.query_params.get("scale"), 2.0, 0.5, 5.0, "scale"
+            )
+        except ValueError as e:
+            return JSONResponse({"success": False, "error": str(e)}, status_code=400)
+
+        # Get bearer token for WebDAV authentication
+        token = extract_bearer_token(request)
+        if not token:
+            raise ValueError("Missing token")
+
+        # Get Nextcloud host from OAuth context
+        oauth_ctx = request.app.state.oauth_context
+        nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
+
+        if not nextcloud_host:
+            raise ValueError("Nextcloud host not configured")
+
+        # Download PDF via WebDAV using user's token
+        from nextcloud_mcp_server.client import NextcloudClient
+
+        async with NextcloudClient.from_token(
+            base_url=nextcloud_host, token=token, username=user_id
+        ) as nc_client:
+            pdf_bytes, _ = await nc_client.webdav.read_file(file_path)
+
+        # Render page with PyMuPDF
+        import pymupdf
+
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+        total_pages = doc.page_count
+
+        # Validate page number
+        if page_num > total_pages:
+            doc.close()
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": f"Page {page_num} does not exist (document has {total_pages} pages)",
+                },
+                status_code=400,
+            )
+
+        page = doc[page_num - 1]  # 0-indexed
+        mat = pymupdf.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        png_bytes = pix.tobytes("png")
+        doc.close()
+
+        # Encode as base64
+        image_b64 = base64.b64encode(png_bytes).decode("ascii")
+
+        logger.info(
+            f"Rendered PDF preview: {file_path} page {page_num}/{total_pages}, "
+            f"{len(png_bytes):,} bytes"
+        )
+
+        return JSONResponse(
+            {
+                "success": True,
+                "image": image_b64,
+                "page_number": page_num,
+                "total_pages": total_pages,
+            }
+        )
+
+    except FileNotFoundError:
+        logger.warning(f"PDF file not found: {file_path_param}")
+        return JSONResponse(
+            {"success": False, "error": "PDF file not found"},
+            status_code=404,
+        )
+    except Exception as e:
+        logger.error(f"PDF preview error: {e}", exc_info=True)
+        error_msg = _sanitize_error_for_client(e, "get_pdf_preview")
+        return JSONResponse(
+            {"success": False, "error": error_msg},
+            status_code=500,
+        )

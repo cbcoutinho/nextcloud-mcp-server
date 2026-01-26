@@ -72,6 +72,11 @@ return [
 			'url' => '/api/chunk-context',
 			'verb' => 'GET',
 		],
+		[
+			'name' => 'api#pdfPreview',
+			'url' => '/api/pdf-preview',
+			'verb' => 'GET',
+		],
 
 		// Admin settings routes
 		[
