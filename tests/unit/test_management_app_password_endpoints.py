@@ -18,8 +18,8 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from nextcloud_mcp_server.api import management
-from nextcloud_mcp_server.api.management import (
+from nextcloud_mcp_server.api import passwords
+from nextcloud_mcp_server.api.passwords import (
     delete_app_password,
     get_app_password_status,
     provision_app_password,
@@ -32,9 +32,9 @@ pytestmark = pytest.mark.unit
 @pytest.fixture(autouse=True)
 def clear_rate_limit():
     """Clear rate limit state before each test."""
-    management._rate_limit_attempts.clear()
+    passwords._rate_limit_attempts.clear()
     yield
-    management._rate_limit_attempts.clear()
+    passwords._rate_limit_attempts.clear()
 
 
 @pytest.fixture
@@ -199,7 +199,7 @@ async def test_provision_app_password_success(temp_storage, mocker):
     mock_client.__aexit__ = AsyncMock()
 
     mocker.patch(
-        "nextcloud_mcp_server.api.management.httpx.AsyncClient",
+        "nextcloud_mcp_server.api.passwords.httpx.AsyncClient",
         return_value=mock_client,
     )
 
@@ -243,7 +243,7 @@ async def test_provision_app_password_nextcloud_validation_fails(mocker):
     mock_client.__aexit__ = AsyncMock()
 
     mocker.patch(
-        "nextcloud_mcp_server.api.management.httpx.AsyncClient",
+        "nextcloud_mcp_server.api.passwords.httpx.AsyncClient",
         return_value=mock_client,
     )
 
@@ -362,7 +362,7 @@ async def test_delete_app_password_success(temp_storage, mocker):
     mock_client.__aexit__ = AsyncMock()
 
     mocker.patch(
-        "nextcloud_mcp_server.api.management.httpx.AsyncClient",
+        "nextcloud_mcp_server.api.passwords.httpx.AsyncClient",
         return_value=mock_client,
     )
 
@@ -406,7 +406,7 @@ async def test_delete_app_password_not_found(temp_storage, mocker):
     mock_client.__aexit__ = AsyncMock()
 
     mocker.patch(
-        "nextcloud_mcp_server.api.management.httpx.AsyncClient",
+        "nextcloud_mcp_server.api.passwords.httpx.AsyncClient",
         return_value=mock_client,
     )
 
@@ -445,7 +445,7 @@ async def test_delete_app_password_invalid_credentials(mocker):
     mock_client.__aexit__ = AsyncMock()
 
     mocker.patch(
-        "nextcloud_mcp_server.api.management.httpx.AsyncClient",
+        "nextcloud_mcp_server.api.passwords.httpx.AsyncClient",
         return_value=mock_client,
     )
 
@@ -515,7 +515,7 @@ async def test_provision_app_password_rate_limiting(mocker):
     mock_client.__aexit__ = AsyncMock()
 
     mocker.patch(
-        "nextcloud_mcp_server.api.management.httpx.AsyncClient",
+        "nextcloud_mcp_server.api.passwords.httpx.AsyncClient",
         return_value=mock_client,
     )
 
@@ -574,7 +574,7 @@ async def test_rate_limiting_is_per_user(mocker):
     mock_client.__aexit__ = AsyncMock()
 
     mocker.patch(
-        "nextcloud_mcp_server.api.management.httpx.AsyncClient",
+        "nextcloud_mcp_server.api.passwords.httpx.AsyncClient",
         return_value=mock_client,
     )
 

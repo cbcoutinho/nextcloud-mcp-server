@@ -2112,7 +2112,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         settings.enable_multi_user_basic_auth and settings.enable_offline_access
     )
     if enable_management_apis:
-        from nextcloud_mcp_server.api.management import (
+        from nextcloud_mcp_server.api import (
             create_webhook,
             delete_app_password,
             delete_webhook,

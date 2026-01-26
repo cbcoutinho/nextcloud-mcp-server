@@ -16,7 +16,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from nextcloud_mcp_server.api.management import get_pdf_preview
+from nextcloud_mcp_server.api.visualization import get_pdf_preview
 
 pytestmark = pytest.mark.unit
 
@@ -68,12 +68,12 @@ class TestPdfPreviewParameterValidation:
         """Test that missing file_path parameter returns 400."""
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
         ):
@@ -93,12 +93,12 @@ class TestPdfPreviewParameterValidation:
         """Test that invalid page number (0 or negative) returns 400."""
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
         ):
@@ -126,12 +126,12 @@ class TestPdfPreviewParameterValidation:
         """Test that scale outside valid range returns 400."""
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
         ):
@@ -159,12 +159,12 @@ class TestPdfPreviewParameterValidation:
         """Test that non-numeric page parameter returns 400."""
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
         ):
@@ -186,7 +186,7 @@ class TestPdfPreviewAuthentication:
     def test_unauthorized_without_token_returns_401(self):
         """Test that request without token returns 401."""
         with patch(
-            "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+            "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
             new_callable=AsyncMock,
             side_effect=Exception("Invalid token"),
         ):
@@ -201,7 +201,7 @@ class TestPdfPreviewAuthentication:
     def test_unauthorized_with_invalid_token_returns_401(self):
         """Test that request with invalid token returns 401."""
         with patch(
-            "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+            "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
             new_callable=AsyncMock,
             side_effect=Exception("Token expired"),
         ):
@@ -235,12 +235,12 @@ class TestPdfPreviewRendering:
 
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
             patch(
@@ -284,12 +284,12 @@ class TestPdfPreviewRendering:
 
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
             patch(
@@ -324,12 +324,12 @@ class TestPdfPreviewRendering:
 
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
             patch(
@@ -363,12 +363,12 @@ class TestPdfPreviewRendering:
 
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
             patch(
@@ -407,12 +407,12 @@ class TestPdfPreviewEdgeCases:
 
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
             patch(
@@ -438,12 +438,12 @@ class TestPdfPreviewEdgeCases:
         """Test handling when Nextcloud host is not configured."""
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
         ):
@@ -476,12 +476,12 @@ class TestPdfPreviewEdgeCases:
 
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
             patch(
@@ -518,12 +518,12 @@ class TestPdfPreviewEdgeCases:
 
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
             patch(
@@ -556,12 +556,12 @@ class TestPdfPreviewSecurityValidation:
         """Test that path traversal attempts are blocked with 400."""
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
         ):
@@ -605,12 +605,12 @@ class TestPdfPreviewSecurityValidation:
 
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
             patch(
@@ -647,12 +647,12 @@ class TestPdfPreviewSecurityValidation:
 
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
             patch(
@@ -691,12 +691,12 @@ class TestPdfPreviewSecurityValidation:
 
         with (
             patch(
-                "nextcloud_mcp_server.api.management.validate_token_and_get_user",
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.management.extract_bearer_token",
+                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
                 return_value="test-token",
             ),
             patch(
