@@ -217,14 +217,22 @@ class McpTokenStorage {
 					if ($newTokenData && isset($newTokenData['access_token'])) {
 						// Store refreshed token
 						// Use new refresh token if provided (rotation), otherwise keep old one
+						$now = time();
+						/** @var string $accessToken */
+						$accessToken = $newTokenData['access_token'];
+						/** @var string $refreshToken */
+						$refreshToken = $newTokenData['refresh_token'] ?? $token['refresh_token'];
+						$expiresIn = (int)($newTokenData['expires_in'] ?? 3600);
+
 						$this->storeUserToken(
 							$userId,
-							$newTokenData['access_token'],
-							$newTokenData['refresh_token'] ?? $token['refresh_token'],
-							time() + ($newTokenData['expires_in'] ?? 3600)
+							$accessToken,
+							$refreshToken,
+							$now + $expiresIn,
+							$now  // issued_at for accurate lifetime calculation
 						);
 
-						return $newTokenData['access_token'];
+						return $accessToken;
 					}
 				} catch (\Exception $e) {
 					$this->logger->error("Failed to refresh token for user $userId", [
