@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace OCA\Astrolabe\Search;
 
 use OCA\Astrolabe\AppInfo\Application;
+use OCA\Astrolabe\Service\IdpTokenRefresher;
 use OCA\Astrolabe\Service\McpServerClient;
 use OCA\Astrolabe\Service\McpTokenStorage;
 use OCA\Astrolabe\Settings\Admin as AdminSettings;
@@ -35,6 +36,7 @@ class SemanticSearchProvider implements IProvider {
 	public function __construct(
 		private McpServerClient $client,
 		private McpTokenStorage $tokenStorage,
+		private IdpTokenRefresher $tokenRefresher,
 		private IConfig $config,
 		private IL10N $l10n,
 		private IURLGenerator $urlGenerator,
@@ -85,12 +87,30 @@ class SemanticSearchProvider implements IProvider {
 			return SearchResult::complete($this->getName(), []);
 		}
 
-		// Get OAuth token for user
-		$accessToken = $this->tokenStorage->getAccessToken($user->getUID());
+		$userId = $user->getUID();
+
+		// Create refresh callback matching ApiController pattern
+		/** @return array{access_token: string, refresh_token: string, expires_in: int}|null */
+		$refreshCallback = function (string $refreshToken): ?array {
+			$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
+
+			if ($newTokenData === null) {
+				return null;
+			}
+
+			return [
+				'access_token' => $newTokenData['access_token'],
+				'refresh_token' => $newTokenData['refresh_token'] ?? $refreshToken,
+				'expires_in' => $newTokenData['expires_in'] ?? 3600,
+			];
+		};
+
+		// Get OAuth token for user with automatic refresh
+		$accessToken = $this->tokenStorage->getAccessToken($userId, $refreshCallback);
 		if ($accessToken === null) {
 			// User hasn't authorized the app yet - return empty results
 			$this->logger->debug('No OAuth token for user in semantic search', [
-				'user_id' => $user->getUID(),
+				'user_id' => $userId,
 			]);
 			return SearchResult::complete($this->getName(), []);
 		}

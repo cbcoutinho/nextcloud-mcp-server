@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace OCA\Astrolabe\Service;
 
 use OCP\IConfig;
+use OCP\IDBConnection;
 use OCP\Security\ICrypto;
 use Psr\Log\LoggerInterface;
 
@@ -20,15 +21,18 @@ class McpTokenStorage {
 
 	private $config;
 	private $crypto;
+	private $db;
 	private $logger;
 
 	public function __construct(
 		IConfig $config,
 		ICrypto $crypto,
+		IDBConnection $db,
 		LoggerInterface $logger,
 	) {
 		$this->config = $config;
 		$this->crypto = $crypto;
+		$this->db = $db;
 		$this->logger = $logger;
 	}
 
@@ -41,18 +45,21 @@ class McpTokenStorage {
 	 * @param string $accessToken OAuth access token
 	 * @param string $refreshToken OAuth refresh token
 	 * @param int $expiresAt Unix timestamp when token expires
+	 * @param int|null $issuedAt Unix timestamp when token was issued (for lifetime calculation)
 	 */
 	public function storeUserToken(
 		string $userId,
 		string $accessToken,
 		string $refreshToken,
 		int $expiresAt,
+		?int $issuedAt = null,
 	): void {
 		try {
 			$tokenData = [
 				'access_token' => $accessToken,
 				'refresh_token' => $refreshToken,
 				'expires_at' => $expiresAt,
+				'issued_at' => $issuedAt ?? time(),
 			];
 
 			// Encrypt token data before storage
@@ -151,6 +158,35 @@ class McpTokenStorage {
 			]);
 			throw $e;
 		}
+	}
+
+	/**
+	 * Get all user IDs that have OAuth tokens stored.
+	 *
+	 * Queries oc_preferences directly since IConfig doesn't support
+	 * listing all users with a specific key set.
+	 *
+	 * @return list<string> Array of user IDs
+	 */
+	public function getAllUsersWithTokens(): array {
+		$qb = $this->db->getQueryBuilder();
+		$qb->select('userid')
+			->from('preferences')
+			->where($qb->expr()->eq('appid', $qb->createNamedParameter('astrolabe')))
+			->andWhere($qb->expr()->eq('configkey', $qb->createNamedParameter('oauth_tokens')));
+
+		$result = $qb->executeQuery();
+		/** @var list<string> $userIds */
+		$userIds = [];
+		/** @psalm-suppress MixedAssignment - IResult::fetch() returns mixed */
+		while (($row = $result->fetch()) !== false) {
+			if (is_array($row) && isset($row['userid']) && is_string($row['userid'])) {
+				$userIds[] = $row['userid'];
+			}
+		}
+		$result->closeCursor();
+
+		return $userIds;
 	}
 
 	/**
