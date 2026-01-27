@@ -8,6 +8,7 @@ use OCA\Astrolabe\BackgroundJob\RefreshUserTokens;
 use OCA\Astrolabe\Service\IdpTokenRefresher;
 use OCA\Astrolabe\Service\McpTokenStorage;
 use OCP\AppFramework\Utility\ITimeFactory;
+use OCP\Lock\LockedException;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
@@ -38,6 +39,15 @@ final class RefreshUserTokensTest extends TestCase {
 			$this->tokenRefresher,
 			$this->logger
 		);
+	}
+
+	/**
+	 * Set up default withTokenLock behavior that executes the callback.
+	 * Call this in tests that need the lock to succeed.
+	 */
+	private function setupDefaultLockBehavior(): void {
+		$this->tokenStorage->method('withTokenLock')
+			->willReturnCallback(fn ($userId, $callback) => $callback());
 	}
 
 	// =========================================================================
@@ -82,6 +92,8 @@ final class RefreshUserTokensTest extends TestCase {
 	}
 
 	public function testRunWithMultipleUsersAndMixedResults(): void {
+		$this->setupDefaultLockBehavior();
+
 		$this->tokenStorage->method('getAllUsersWithTokens')
 			->willReturn(['alice', 'bob', 'charlie']);
 
@@ -170,6 +182,8 @@ final class RefreshUserTokensTest extends TestCase {
 	}
 
 	public function testRefreshTriggeredWhenTokenNearExpiry(): void {
+		$this->setupDefaultLockBehavior();
+
 		$now = time();
 		$this->tokenStorage->method('getUserToken')
 			->with('testuser')
@@ -198,6 +212,8 @@ final class RefreshUserTokensTest extends TestCase {
 	}
 
 	public function testRefreshFailsWhenNoRefreshToken(): void {
+		$this->setupDefaultLockBehavior();
+
 		$now = time();
 		$this->tokenStorage->method('getUserToken')
 			->with('testuser')
@@ -221,6 +237,8 @@ final class RefreshUserTokensTest extends TestCase {
 	}
 
 	public function testRefreshFailsWhenRefresherReturnsNull(): void {
+		$this->setupDefaultLockBehavior();
+
 		$now = time();
 		$this->tokenStorage->method('getUserToken')
 			->with('testuser')
@@ -250,6 +268,8 @@ final class RefreshUserTokensTest extends TestCase {
 	}
 
 	public function testRefreshUsesIssuedAtForLifetimeCalculation(): void {
+		$this->setupDefaultLockBehavior();
+
 		$now = time();
 		// Token with custom lifetime: issued 50 min ago, expires in 10 min (total 60 min)
 		// 10/60 = 16.7% remaining, which is < 50%, so should refresh
@@ -276,6 +296,8 @@ final class RefreshUserTokensTest extends TestCase {
 	}
 
 	public function testRefreshUsesDefaultLifetimeWhenNoIssuedAt(): void {
+		$this->setupDefaultLockBehavior();
+
 		$now = time();
 		// Token without issued_at, uses default 3600s lifetime
 		// 300s remaining / 3600s = 8.3% remaining, which is < 50%, so should refresh
@@ -302,6 +324,8 @@ final class RefreshUserTokensTest extends TestCase {
 	}
 
 	public function testRefreshStoresNewTokenWithIssuedAt(): void {
+		$this->setupDefaultLockBehavior();
+
 		$now = time();
 		$this->tokenStorage->method('getUserToken')
 			->with('testuser')
@@ -337,6 +361,8 @@ final class RefreshUserTokensTest extends TestCase {
 	}
 
 	public function testRefreshKeepsOldRefreshTokenIfNotRotated(): void {
+		$this->setupDefaultLockBehavior();
+
 		$now = time();
 		$this->tokenStorage->method('getUserToken')
 			->with('testuser')
@@ -373,6 +399,8 @@ final class RefreshUserTokensTest extends TestCase {
 	}
 
 	public function testRefreshHandlesException(): void {
+		$this->setupDefaultLockBehavior();
+
 		$now = time();
 		$this->tokenStorage->method('getUserToken')
 			->with('testuser')
@@ -403,6 +431,123 @@ final class RefreshUserTokensTest extends TestCase {
 
 		$this->tokenRefresher->expects($this->never())
 			->method('refreshAccessToken');
+
+		$result = $this->invokeRefreshUserTokenIfNeeded('testuser');
+
+		$this->assertEquals('skipped', $result);
+	}
+
+	// =========================================================================
+	// Locking Tests
+	// =========================================================================
+
+	public function testRefreshSkippedWhenLockCannotBeAcquired(): void {
+		$now = time();
+		$this->tokenStorage->method('getUserToken')
+			->with('testuser')
+			->willReturn([
+				'access_token' => 'expiring-token',
+				'refresh_token' => 'refresh-token',
+				'expires_at' => $now + 100, // ~100s remaining (< 50% of default)
+				'issued_at' => $now - 3500,
+			]);
+
+		// Lock acquisition fails (on-demand refresh is holding it)
+		$this->tokenStorage->expects($this->once())
+			->method('withTokenLock')
+			->willThrowException(new LockedException('astrolabe/oauth/tokens/testuser'));
+
+		// Token refresher should NOT be called when lock fails
+		$this->tokenRefresher->expects($this->never())
+			->method('refreshAccessToken');
+
+		$this->logger->expects($this->once())
+			->method('debug')
+			->with($this->stringContains('Lock held for user testuser'));
+
+		$result = $this->invokeRefreshUserTokenIfNeeded('testuser');
+
+		$this->assertEquals('skipped', $result);
+	}
+
+	public function testRefreshUsesLockForTokenRefresh(): void {
+		$now = time();
+		$this->tokenStorage->method('getUserToken')
+			->with('testuser')
+			->willReturn([
+				'access_token' => 'expiring-token',
+				'refresh_token' => 'refresh-token',
+				'expires_at' => $now + 100,
+				'issued_at' => $now - 3500,
+			]);
+
+		// withTokenLock is called and executes the callback
+		$this->tokenStorage->expects($this->once())
+			->method('withTokenLock')
+			->with('testuser', $this->isInstanceOf(\Closure::class))
+			->willReturnCallback(function ($userId, $callback) {
+				return $callback();
+			});
+
+		$this->tokenRefresher->expects($this->once())
+			->method('refreshAccessToken')
+			->with('refresh-token')
+			->willReturn([
+				'access_token' => 'new-token',
+				'refresh_token' => 'new-refresh-token',
+				'expires_in' => 3600,
+			]);
+
+		$this->tokenStorage->expects($this->once())
+			->method('storeUserToken');
+
+		$result = $this->invokeRefreshUserTokenIfNeeded('testuser');
+
+		$this->assertEquals('refreshed', $result);
+	}
+
+	public function testRefreshSkippedWhenTokenAlreadyRefreshedWhileWaitingForLock(): void {
+		$now = time();
+
+		// First call (before lock): token is expiring
+		// Calls inside lock callback: token is now fresh
+		$callCount = 0;
+		$this->tokenStorage->method('getUserToken')
+			->with('testuser')
+			->willReturnCallback(function () use (&$callCount, $now) {
+				$callCount++;
+				if ($callCount === 1) {
+					// First check: token is expiring
+					return [
+						'access_token' => 'expiring-token',
+						'refresh_token' => 'refresh-token',
+						'expires_at' => $now + 100,
+						'issued_at' => $now - 3500,
+					];
+				}
+				// Inside lock: token was already refreshed
+				return [
+					'access_token' => 'already-refreshed-token',
+					'refresh_token' => 'new-refresh-token',
+					'expires_at' => $now + 3600, // Fresh token
+					'issued_at' => $now,
+				];
+			});
+
+		// withTokenLock is called and executes the callback
+		$this->tokenStorage->expects($this->once())
+			->method('withTokenLock')
+			->willReturnCallback(function ($userId, $callback) {
+				return $callback();
+			});
+
+		// Token refresher should NOT be called since token is already fresh
+		$this->tokenRefresher->expects($this->never())
+			->method('refreshAccessToken');
+
+		$this->logger->expects($this->once())
+			->method('debug')
+			->with($this->stringContains('already refreshed'));
 
 		$result = $this->invokeRefreshUserTokenIfNeeded('testuser');
 

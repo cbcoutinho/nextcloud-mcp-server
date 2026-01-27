@@ -9,6 +9,7 @@ use OCA\Astrolabe\Service\McpTokenStorage;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\BackgroundJob\IJob;
 use OCP\BackgroundJob\TimedJob;
+use OCP\Lock\LockedException;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -76,6 +77,10 @@ class RefreshUserTokens extends TimedJob {
 	 * Calculates the refresh threshold based on the token's actual lifetime,
 	 * refreshing when less than 50% of the lifetime remains.
 	 *
+	 * Uses locking to prevent race conditions with on-demand refresh in
+	 * getAccessToken(). If lock cannot be acquired, skips this user since
+	 * on-demand refresh is already handling it.
+	 *
 	 * @return string 'refreshed', 'failed', or 'skipped'
 	 */
 	private function refreshUserTokenIfNeeded(string $userId): string {
@@ -108,45 +113,81 @@ class RefreshUserTokens extends TimedJob {
 			return 'skipped';
 		}
 
-		// Token is expiring soon, attempt refresh
-		if (!isset($token['refresh_token'])) {
-			$this->logger->warning("RefreshUserTokens: User $userId has no refresh token");
-			return 'failed';
-		}
-
-		$this->logger->debug("RefreshUserTokens: Refreshing token for user $userId (remaining={$timeRemaining}s, threshold={$threshold}s)");
-
+		// Token is expiring soon, attempt refresh with lock
 		try {
-			/** @var string $refreshToken */
-			$refreshToken = $token['refresh_token'];
-			$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
+			return $this->tokenStorage->withTokenLock($userId, function () use ($userId) {
+				// Re-check token after acquiring lock (double-check pattern)
+				// Another process may have refreshed while we waited for lock
+				$currentToken = $this->tokenStorage->getUserToken($userId);
 
-			if ($newTokenData === null) {
-				$this->logger->warning("RefreshUserTokens: Refresh returned null for user $userId");
-				// Don't delete token here - let on-demand refresh handle cleanup
-				return 'failed';
-			}
+				if ($currentToken === null) {
+					return 'skipped';
+				}
 
-			// Calculate new expiration and store issued_at for future calculations
-			$expiresIn = (int)($newTokenData['expires_in'] ?? self::DEFAULT_TOKEN_LIFETIME_SECONDS);
-			$now = time();
+				// Recalculate threshold with current token data
+				$currentExpiresAt = (int)($currentToken['expires_at'] ?? 0);
+				$currentIssuedAt = isset($currentToken['issued_at']) ? (int)$currentToken['issued_at'] : null;
+				$currentTimeRemaining = $currentExpiresAt - time();
 
-			/** @var string $accessToken */
-			$accessToken = $newTokenData['access_token'];
-			/** @var string $newRefreshToken */
-			$newRefreshToken = $newTokenData['refresh_token'] ?? $refreshToken;
+				if ($currentIssuedAt !== null) {
+					$currentTokenLifetime = $currentExpiresAt - $currentIssuedAt;
+				} else {
+					$currentTokenLifetime = self::DEFAULT_TOKEN_LIFETIME_SECONDS;
+				}
 
-			$this->tokenStorage->storeUserToken(
-				$userId,
-				$accessToken,
-				$newRefreshToken,
-				$now + $expiresIn,
-				$now  // issued_at
-			);
+				$currentThreshold = max(
+					(int)($currentTokenLifetime * self::REFRESH_AT_REMAINING_PERCENT),
+					self::MIN_THRESHOLD_SECONDS
+				);
 
-			$this->logger->debug("RefreshUserTokens: Successfully refreshed token for user $userId");
-			return 'refreshed';
+				if ($currentTimeRemaining > $currentThreshold) {
+					// Token was refreshed by another process while we waited
+					$this->logger->debug("RefreshUserTokens: Token already refreshed for user $userId while waiting for lock");
+					return 'skipped';
+				}
 
+				// Still needs refresh, proceed
+				if (!isset($currentToken['refresh_token'])) {
+					$this->logger->warning("RefreshUserTokens: User $userId has no refresh token");
+					return 'failed';
+				}
+
+				$this->logger->debug("RefreshUserTokens: Refreshing token for user $userId (remaining={$currentTimeRemaining}s, threshold={$currentThreshold}s)");
+
+				/** @var string $refreshToken */
+				$refreshToken = $currentToken['refresh_token'];
+				$newTokenData = $this->tokenRefresher->refreshAccessToken($refreshToken);
+
+				if ($newTokenData === null) {
+					$this->logger->warning("RefreshUserTokens: Refresh returned null for user $userId");
+					// Don't delete token here - let on-demand refresh handle cleanup
+					return 'failed';
+				}
+
+				// Calculate new expiration and store issued_at for future calculations
+				$expiresIn = (int)($newTokenData['expires_in'] ?? self::DEFAULT_TOKEN_LIFETIME_SECONDS);
+				$now = time();
+
+				/** @var string $accessToken */
+				$accessToken = $newTokenData['access_token'];
+				/** @var string $newRefreshToken */
+				$newRefreshToken = $newTokenData['refresh_token'] ?? $refreshToken;
+
+				$this->tokenStorage->storeUserToken(
+					$userId,
+					$accessToken,
+					$newRefreshToken,
+					$now + $expiresIn,
+					$now  // issued_at
+				);
+
+				$this->logger->debug("RefreshUserTokens: Successfully refreshed token for user $userId");
+				return 'refreshed';
+			});
+		} catch (LockedException $e) {
+			// Lock held by on-demand refresh - expected, not an error
+			$this->logger->debug("RefreshUserTokens: Lock held for user $userId, skipping");
+			return 'skipped';
 		} catch (\Exception $e) {
 			$this->logger->error("RefreshUserTokens: Failed to refresh for user $userId: " . $e->getMessage());
 			return 'failed';

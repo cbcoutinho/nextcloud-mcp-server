@@ -10,6 +10,8 @@ use OCP\DB\QueryBuilder\IExpressionBuilder;
 use OCP\DB\QueryBuilder\IQueryBuilder;
 use OCP\IConfig;
 use OCP\IDBConnection;
+use OCP\Lock\ILockingProvider;
+use OCP\Lock\LockedException;
 use OCP\Security\ICrypto;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
@@ -25,6 +27,7 @@ final class McpTokenStorageTest extends TestCase {
 	private ICrypto&MockObject $crypto;
 	private IDBConnection&MockObject $db;
 	private LoggerInterface&MockObject $logger;
+	private ILockingProvider&MockObject $lockingProvider;
 	private McpTokenStorage $storage;
 
 	protected function setUp(): void {
@@ -34,12 +37,14 @@ final class McpTokenStorageTest extends TestCase {
 		$this->crypto = $this->createMock(ICrypto::class);
 		$this->db = $this->createMock(IDBConnection::class);
 		$this->logger = $this->createMock(LoggerInterface::class);
+		$this->lockingProvider = $this->createMock(ILockingProvider::class);
 
 		$this->storage = new McpTokenStorage(
 			$this->config,
 			$this->crypto,
 			$this->db,
-			$this->logger
+			$this->logger,
+			$this->lockingProvider
 		);
 	}
 
@@ -289,6 +294,155 @@ final class McpTokenStorageTest extends TestCase {
 		$result = $this->storage->getAccessToken($userId, null);
 
 		$this->assertNull($result);
+	}
+
+	// =========================================================================
+	// Token Refresh Locking Tests
+	// =========================================================================
+
+	public function testGetAccessTokenAcquiresLockWhenRefreshing(): void {
+		$userId = 'testuser';
+		$expiredTokenData = [
+			'access_token' => 'expired-access-token',
+			'refresh_token' => 'old-refresh-token',
+			'expires_at' => time() - 100, // Expired
+		];
+
+		$newTokenData = [
+			'access_token' => 'new-access-token',
+			'refresh_token' => 'new-refresh-token',
+			'expires_in' => 3600,
+		];
+
+		$this->config->method('getUserValue')
+			->willReturn('encrypted-data');
+
+		$this->crypto->method('decrypt')
+			->willReturn(json_encode($expiredTokenData));
+
+		$this->crypto->method('encrypt')
+			->willReturn('new-encrypted-data');
+
+		// Verify lock is acquired and released
+		$this->lockingProvider->expects($this->once())
+			->method('acquireLock')
+			->with('astrolabe/oauth/tokens/testuser', ILockingProvider::LOCK_EXCLUSIVE);
+
+		$this->lockingProvider->expects($this->once())
+			->method('releaseLock')
+			->with('astrolabe/oauth/tokens/testuser', ILockingProvider::LOCK_EXCLUSIVE);
+
+		$refreshCallback = fn (string $refreshToken) => $newTokenData;
+
+		$result = $this->storage->getAccessToken($userId, $refreshCallback);
+
+		$this->assertEquals('new-access-token', $result);
+	}
+
+	public function testGetAccessTokenReturnsStaleTokenOnLockedException(): void {
+		$userId = 'testuser';
+		$expiredTokenData = [
+			'access_token' => 'expired-access-token',
+			'refresh_token' => 'old-refresh-token',
+			'expires_at' => time() - 100, // Expired
+		];
+
+		$this->config->method('getUserValue')
+			->willReturn('encrypted-data');
+
+		$this->crypto->method('decrypt')
+			->willReturn(json_encode($expiredTokenData));
+
+		// Lock acquisition fails
+		$this->lockingProvider->expects($this->once())
+			->method('acquireLock')
+			->willThrowException(new LockedException('astrolabe/oauth/tokens/testuser'));
+
+		// Refresh callback should NOT be called when lock fails
+		$refreshCallbackCalled = false;
+		$refreshCallback = function (string $refreshToken) use (&$refreshCallbackCalled) {
+			$refreshCallbackCalled = true;
+			return ['access_token' => 'new-token', 'expires_in' => 3600];
+		};
+
+		$result = $this->storage->getAccessToken($userId, $refreshCallback);
+
+		// Should return stale token instead of failing
+		$this->assertEquals('expired-access-token', $result);
+		$this->assertFalse($refreshCallbackCalled);
+	}
+
+	public function testGetAccessTokenSkipsRefreshWhenTokenAlreadyRefreshedWhileWaitingForLock(): void {
+		$userId = 'testuser';
+		$expiredTokenData = [
+			'access_token' => 'expired-access-token',
+			'refresh_token' => 'old-refresh-token',
+			'expires_at' => time() - 100, // Expired
+		];
+
+		// After lock is acquired, token appears fresh (another process refreshed it)
+		$freshTokenData = [
+			'access_token' => 'fresh-access-token',
+			'refresh_token' => 'fresh-refresh-token',
+			'expires_at' => time() + 3600, // Valid for 1 hour
+		];
+
+		$callCount = 0;
+		$this->config->method('getUserValue')
+			->willReturn('encrypted-data');
+
+		// First call returns expired, subsequent calls return fresh
+		$this->crypto->method('decrypt')
+			->willReturnCallback(function () use (&$callCount, $expiredTokenData, $freshTokenData) {
+				$callCount++;
+				return $callCount === 1
+					? json_encode($expiredTokenData)
+					: json_encode($freshTokenData);
+			});
+
+		$this->lockingProvider->expects($this->once())
+			->method('acquireLock');
+
+		$this->lockingProvider->expects($this->once())
+			->method('releaseLock');
+
+		// Refresh callback should NOT be called since token is already fresh
+		$refreshCallbackCalled = false;
+		$refreshCallback = function (string $refreshToken) use (&$refreshCallbackCalled) {
+			$refreshCallbackCalled = true;
+			return ['access_token' => 'new-token', 'expires_in' => 3600];
+		};
+
+		$result = $this->storage->getAccessToken($userId, $refreshCallback);
+
+		$this->assertEquals('fresh-access-token', $result);
+		$this->assertFalse($refreshCallbackCalled);
+	}
+
+	public function testGetAccessTokenNoLockRequiredWhenNotExpired(): void {
+		$userId = 'testuser';
+		$validTokenData = [
+			'access_token' => 'valid-access-token',
+			'refresh_token' => 'refresh-token',
+			'expires_at' => time() + 3600, // Valid for 1 hour
+		];
+
+		$this->config->method('getUserValue')
+			->willReturn('encrypted-data');
+
+		$this->crypto->method('decrypt')
+			->willReturn(json_encode($validTokenData));
+
+		// Lock should NOT be acquired for valid tokens
+		$this->lockingProvider->expects($this->never())
+			->method('acquireLock');
+
+		$this->lockingProvider->expects($this->never())
+			->method('releaseLock');
+
+		$result = $this->storage->getAccessToken($userId);
+
+		$this->assertEquals('valid-access-token', $result);
 	}
 
 	// =========================================================================
