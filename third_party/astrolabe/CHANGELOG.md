@@ -25,6 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires external MCP server deployment
 - See documentation for setup: https://github.com/cbcoutinho/nextcloud-mcp-server
 
+## astrolabe-v0.10.0 (2026-01-28)
+
+### Feat
+
+- **astrolabe**: add background token refresh job
+
+### Fix
+
+- **astrolabe**: add pagination and psalm fixes for token refresh
+- **astrolabe**: add locking to prevent token refresh race condition
+- **astrolabe**: add issued_at to on-demand token refresh
+
 ## astrolabe-v0.9.0 (2026-01-26)
 
 ### Feat
