@@ -14,6 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.57.16 (2026-01-28)
+
+### Feat
+
+- **astrolabe**: add background token refresh job
+
+### Fix
+
+- **astrolabe**: add pagination and psalm fixes for token refresh
+- **astrolabe**: add locking to prevent token refresh race condition
+- **astrolabe**: add issued_at to on-demand token refresh
+
 ## nextcloud-mcp-server-0.57.15 (2026-01-26)
 
 ### Feat
