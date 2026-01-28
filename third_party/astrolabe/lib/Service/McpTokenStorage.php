@@ -156,6 +156,10 @@ class McpTokenStorage {
 	 *
 	 * Prevents race conditions between background job and on-demand token refresh.
 	 *
+	 * Note: Lock TTL is configured at the Nextcloud server level (default: 3600s).
+	 * If a process crashes while holding the lock, it will auto-expire after the TTL.
+	 * The ILockingProvider interface does not support per-call timeouts.
+	 *
 	 * @template T
 	 * @param string $userId User ID
 	 * @param callable(): T $callback
@@ -198,19 +202,28 @@ class McpTokenStorage {
 	}
 
 	/**
-	 * Get all user IDs that have OAuth tokens stored.
+	 * Get user IDs that have OAuth tokens stored.
 	 *
 	 * Queries oc_preferences directly since IConfig doesn't support
 	 * listing all users with a specific key set.
 	 *
+	 * @param int $limit Maximum users to return (0 = no limit, for backward compatibility)
+	 * @param int $offset Starting offset for pagination
 	 * @return list<string> Array of user IDs
 	 */
-	public function getAllUsersWithTokens(): array {
+	public function getAllUsersWithTokens(int $limit = 0, int $offset = 0): array {
 		$qb = $this->db->getQueryBuilder();
 		$qb->select('userid')
 			->from('preferences')
 			->where($qb->expr()->eq('appid', $qb->createNamedParameter('astrolabe')))
 			->andWhere($qb->expr()->eq('configkey', $qb->createNamedParameter('oauth_tokens')));
+
+		if ($limit > 0) {
+			$qb->setMaxResults($limit);
+		}
+		if ($offset > 0) {
+			$qb->setFirstResult($offset);
+		}
 
 		$result = $qb->executeQuery();
 		/** @var list<string> $userIds */
@@ -255,19 +268,23 @@ class McpTokenStorage {
 
 		// Token expired - acquire lock for refresh
 		try {
-			/** @var string|null */
+			/**
+			 * @return string|null
+			 * @psalm-suppress MixedInferredReturnType
+			 */
 			return $this->withTokenLock($userId, function () use ($userId, $refreshCallback): ?string {
 				// Re-check after acquiring lock (double-check pattern)
 				// Another process may have refreshed while we waited for the lock
 				$currentToken = $this->getUserToken($userId);
 
-				if (!$currentToken) {
+				if ($currentToken === null) {
 					return null;
 				}
 
 				// Check if another process already refreshed the token
 				if (!$this->isExpired($currentToken)) {
 					$this->logger->debug("Token already refreshed for user $userId while waiting for lock");
+					/** @var string */
 					return $currentToken['access_token'];
 				}
 
@@ -322,7 +339,9 @@ class McpTokenStorage {
 			// Could not acquire lock - another process is refreshing
 			// Return stale token rather than failing - caller can retry if needed
 			$this->logger->warning("Could not acquire token lock for user $userId, returning stale token");
-			return $token['access_token'] ?? null;
+			/** @var string|null $staleToken */
+			$staleToken = $token['access_token'] ?? null;
+			return $staleToken;
 		}
 	}
 

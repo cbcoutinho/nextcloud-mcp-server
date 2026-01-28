@@ -38,6 +38,9 @@ class RefreshUserTokens extends TimedJob {
 	/** Default assumed token lifetime if we can't determine it (1 hour) */
 	private const DEFAULT_TOKEN_LIFETIME_SECONDS = 3600;
 
+	/** Batch size for processing users (prevents memory issues on large installations) */
+	private const BATCH_SIZE = 100;
+
 	public function __construct(
 		ITimeFactory $time,
 		private McpTokenStorage $tokenStorage,
@@ -52,23 +55,31 @@ class RefreshUserTokens extends TimedJob {
 	protected function run(mixed $argument): void {
 		$this->logger->info('RefreshUserTokens: Starting background token refresh');
 
-		$userIds = $this->tokenStorage->getAllUsersWithTokens();
-		$this->logger->debug('RefreshUserTokens: Found ' . count($userIds) . ' users with tokens');
-
 		$refreshed = 0;
 		$failed = 0;
 		$skipped = 0;
+		$offset = 0;
+		$totalUsers = 0;
 
-		foreach ($userIds as $userId) {
-			$result = $this->refreshUserTokenIfNeeded($userId);
-			match ($result) {
-				'refreshed' => $refreshed++,
-				'failed' => $failed++,
-				'skipped' => $skipped++,
-			};
-		}
+		// Process users in batches to prevent memory issues on large installations
+		do {
+			$userIds = $this->tokenStorage->getAllUsersWithTokens(self::BATCH_SIZE, $offset);
+			$batchCount = count($userIds);
+			$totalUsers += $batchCount;
 
-		$this->logger->info("RefreshUserTokens: Complete - refreshed=$refreshed, failed=$failed, skipped=$skipped");
+			foreach ($userIds as $userId) {
+				$result = $this->refreshUserTokenIfNeeded($userId);
+				match ($result) {
+					'refreshed' => $refreshed++,
+					'failed' => $failed++,
+					'skipped' => $skipped++,
+				};
+			}
+
+			$offset += self::BATCH_SIZE;
+		} while ($batchCount === self::BATCH_SIZE);
+
+		$this->logger->info("RefreshUserTokens: Complete - total=$totalUsers, refreshed=$refreshed, failed=$failed, skipped=$skipped");
 	}
 
 	/**

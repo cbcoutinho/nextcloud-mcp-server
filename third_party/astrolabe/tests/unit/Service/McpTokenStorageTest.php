@@ -750,4 +750,80 @@ final class McpTokenStorageTest extends TestCase {
 
 		$this->assertEquals([], $userIds);
 	}
+
+	public function testGetAllUsersWithTokensWithLimitAndOffset(): void {
+		$qb = $this->createMock(IQueryBuilder::class);
+		$expr = $this->createMock(IExpressionBuilder::class);
+		$result = $this->createMock(IResult::class);
+
+		// Chain builder methods
+		$qb->method('select')->willReturnSelf();
+		$qb->method('from')->willReturnSelf();
+		$qb->method('where')->willReturnSelf();
+		$qb->method('andWhere')->willReturnSelf();
+		$qb->method('expr')->willReturn($expr);
+		$qb->method('createNamedParameter')->willReturnArgument(0);
+		$qb->method('executeQuery')->willReturn($result);
+
+		// Verify setMaxResults and setFirstResult are called with correct values
+		$qb->expects($this->once())
+			->method('setMaxResults')
+			->with(50)
+			->willReturnSelf();
+		$qb->expects($this->once())
+			->method('setFirstResult')
+			->with(100)
+			->willReturnSelf();
+
+		// Mock expression builder
+		$expr->method('eq')->willReturn('mocked_condition');
+
+		// Mock result set
+		$result->method('fetch')->willReturnOnConsecutiveCalls(
+			['userid' => 'user1'],
+			['userid' => 'user2'],
+			false
+		);
+		$result->expects($this->once())->method('closeCursor');
+
+		$this->db->method('getQueryBuilder')->willReturn($qb);
+
+		$userIds = $this->storage->getAllUsersWithTokens(50, 100);
+
+		$this->assertEquals(['user1', 'user2'], $userIds);
+	}
+
+	public function testGetAllUsersWithTokensWithZeroLimitDoesNotSetMaxResults(): void {
+		$qb = $this->createMock(IQueryBuilder::class);
+		$expr = $this->createMock(IExpressionBuilder::class);
+		$result = $this->createMock(IResult::class);
+
+		// Chain builder methods
+		$qb->method('select')->willReturnSelf();
+		$qb->method('from')->willReturnSelf();
+		$qb->method('where')->willReturnSelf();
+		$qb->method('andWhere')->willReturnSelf();
+		$qb->method('expr')->willReturn($expr);
+		$qb->method('createNamedParameter')->willReturnArgument(0);
+		$qb->method('executeQuery')->willReturn($result);
+
+		// setMaxResults should NOT be called when limit is 0
+		$qb->expects($this->never())
+			->method('setMaxResults');
+
+		// setFirstResult should NOT be called when offset is 0
+		$qb->expects($this->never())
+			->method('setFirstResult');
+
+		// Mock expression builder
+		$expr->method('eq')->willReturn('mocked_condition');
+
+		// Mock result set
+		$result->method('fetch')->willReturn(false);
+		$result->expects($this->once())->method('closeCursor');
+
+		$this->db->method('getQueryBuilder')->willReturn($qb);
+
+		$this->storage->getAllUsersWithTokens(0, 0);
+	}
 }

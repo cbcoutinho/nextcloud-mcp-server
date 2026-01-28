@@ -79,13 +79,10 @@ final class RefreshUserTokensTest extends TestCase {
 				if ($callCount === 1) {
 					$this->assertStringContainsString('Starting', $message);
 				} else {
+					$this->assertStringContainsString('total=0', $message);
 					$this->assertStringContainsString('refreshed=0, failed=0, skipped=0', $message);
 				}
 			});
-
-		$this->logger->expects($this->once())
-			->method('debug')
-			->with($this->stringContains('Found 0 users'));
 
 		// Call run() via reflection since it's protected
 		$this->invokeRun();
@@ -151,11 +148,69 @@ final class RefreshUserTokensTest extends TestCase {
 				static $callCount = 0;
 				$callCount++;
 				if ($callCount === 2) {
+					$this->assertStringContainsString('total=3', $message);
 					$this->assertStringContainsString('refreshed=1, failed=1, skipped=1', $message);
 				}
 			});
 
 		$this->invokeRun();
+	}
+
+	public function testRunProcessesUsersInBatches(): void {
+		$this->setupDefaultLockBehavior();
+
+		// Simulate 150 users processed in 2 batches (100 + 50)
+		$batch1 = array_map(fn ($i) => "user{$i}", range(1, 100));
+		$batch2 = array_map(fn ($i) => "user{$i}", range(101, 150));
+
+		$callCount = 0;
+		$this->tokenStorage->method('getAllUsersWithTokens')
+			->willReturnCallback(function (int $limit, int $offset) use (&$callCount, $batch1, $batch2) {
+				$callCount++;
+				// First call: offset 0, return 100 users (full batch)
+				if ($offset === 0) {
+					$this->assertEquals(100, $limit);
+					return $batch1;
+				}
+				// Second call: offset 100, return 50 users (partial batch = last)
+				if ($offset === 100) {
+					$this->assertEquals(100, $limit);
+					return $batch2;
+				}
+				// Should not be called again
+				$this->fail("Unexpected getAllUsersWithTokens call with offset $offset");
+			});
+
+		// All tokens have plenty of time (all skipped)
+		$this->tokenStorage->method('getUserToken')
+			->willReturnCallback(function (string $userId) {
+				$now = time();
+				return [
+					'access_token' => "{$userId}-token",
+					'refresh_token' => "{$userId}-refresh",
+					'expires_at' => $now + 3600,
+					'issued_at' => $now,
+				];
+			});
+
+		$this->tokenRefresher->expects($this->never())
+			->method('refreshAccessToken');
+
+		$this->logger->expects($this->exactly(2))
+			->method('info')
+			->willReturnCallback(function (string $message) {
+				static $infoCallCount = 0;
+				$infoCallCount++;
+				if ($infoCallCount === 2) {
+					$this->assertStringContainsString('total=150', $message);
+					$this->assertStringContainsString('refreshed=0, failed=0, skipped=150', $message);
+				}
+			});
+
+		$this->invokeRun();
+
+		// Verify getAllUsersWithTokens was called exactly twice (2 batches)
+		$this->assertEquals(2, $callCount);
 	}
 
 	// =========================================================================
