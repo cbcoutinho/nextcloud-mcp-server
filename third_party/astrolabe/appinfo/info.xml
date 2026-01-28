@@ -57,4 +57,7 @@ See [documentation](https://github.com/cbcoutinho/nextcloud-mcp-server) for conf
 			<type>link</type>
 		</navigation>
 	</navigations>
+	<background-jobs>
+		<job>OCA\Astrolabe\BackgroundJob\RefreshUserTokens</job>
+	</background-jobs>
 </info>

@@ -388,11 +388,6 @@
     <InvalidReturnType>
       <code><![CDATA[array|null]]></code>
     </InvalidReturnType>
-    <MixedArgument>
-      <code><![CDATA[$newTokenData['access_token']]]></code>
-      <code><![CDATA[$newTokenData['refresh_token'] ?? $token['refresh_token']]]></code>
-      <code><![CDATA[time() + ($newTokenData['expires_in'] ?? 3600)]]></code>
-    </MixedArgument>
     <MixedAssignment>
       <code><![CDATA[$newTokenData]]></code>
     </MixedAssignment>
@@ -400,11 +395,9 @@
       <code><![CDATA[string|null]]></code>
     </MixedInferredReturnType>
     <MixedOperand>
-      <code><![CDATA[$newTokenData['expires_in'] ?? 3600]]></code>
       <code><![CDATA[$token['expires_at']]]></code>
     </MixedOperand>
     <MixedReturnStatement>
-      <code><![CDATA[$newTokenData['access_token']]]></code>
       <code><![CDATA[$token['access_token']]]></code>
     </MixedReturnStatement>
     <PossiblyUnusedMethod>

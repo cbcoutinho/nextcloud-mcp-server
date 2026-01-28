@@ -5,7 +5,13 @@ declare(strict_types=1);
 namespace OCA\Astrolabe\Tests\Unit\Service;
 
 use OCA\Astrolabe\Service\McpTokenStorage;
+use OCP\DB\IResult;
+use OCP\DB\QueryBuilder\IExpressionBuilder;
+use OCP\DB\QueryBuilder\IQueryBuilder;
 use OCP\IConfig;
+use OCP\IDBConnection;
+use OCP\Lock\ILockingProvider;
+use OCP\Lock\LockedException;
 use OCP\Security\ICrypto;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
@@ -19,7 +25,9 @@ use Psr\Log\LoggerInterface;
 final class McpTokenStorageTest extends TestCase {
 	private IConfig&MockObject $config;
 	private ICrypto&MockObject $crypto;
+	private IDBConnection&MockObject $db;
 	private LoggerInterface&MockObject $logger;
+	private ILockingProvider&MockObject $lockingProvider;
 	private McpTokenStorage $storage;
 
 	protected function setUp(): void {
@@ -27,12 +35,16 @@ final class McpTokenStorageTest extends TestCase {
 
 		$this->config = $this->createMock(IConfig::class);
 		$this->crypto = $this->createMock(ICrypto::class);
+		$this->db = $this->createMock(IDBConnection::class);
 		$this->logger = $this->createMock(LoggerInterface::class);
+		$this->lockingProvider = $this->createMock(ILockingProvider::class);
 
 		$this->storage = new McpTokenStorage(
 			$this->config,
 			$this->crypto,
-			$this->logger
+			$this->db,
+			$this->logger,
+			$this->lockingProvider
 		);
 	}
 
@@ -46,15 +58,15 @@ final class McpTokenStorageTest extends TestCase {
 		$refreshToken = 'refresh-token-456';
 		$expiresAt = time() + 3600;
 
-		$expectedTokenData = [
-			'access_token' => $accessToken,
-			'refresh_token' => $refreshToken,
-			'expires_at' => $expiresAt,
-		];
-
 		$this->crypto->expects($this->once())
 			->method('encrypt')
-			->with(json_encode($expectedTokenData))
+			->with($this->callback(function (string $json) use ($accessToken, $refreshToken, $expiresAt) {
+				$data = json_decode($json, true);
+				return $data['access_token'] === $accessToken
+					&& $data['refresh_token'] === $refreshToken
+					&& $data['expires_at'] === $expiresAt
+					&& isset($data['issued_at']); // issued_at should be set (defaults to time())
+			}))
 			->willReturn('encrypted-data');
 
 		$this->config->expects($this->once())
@@ -282,6 +294,155 @@ final class McpTokenStorageTest extends TestCase {
 		$result = $this->storage->getAccessToken($userId, null);
 
 		$this->assertNull($result);
+	}
+
+	// =========================================================================
+	// Token Refresh Locking Tests
+	// =========================================================================
+
+	public function testGetAccessTokenAcquiresLockWhenRefreshing(): void {
+		$userId = 'testuser';
+		$expiredTokenData = [
+			'access_token' => 'expired-access-token',
+			'refresh_token' => 'old-refresh-token',
+			'expires_at' => time() - 100, // Expired
+		];
+
+		$newTokenData = [
+			'access_token' => 'new-access-token',
+			'refresh_token' => 'new-refresh-token',
+			'expires_in' => 3600,
+		];
+
+		$this->config->method('getUserValue')
+			->willReturn('encrypted-data');
+
+		$this->crypto->method('decrypt')
+			->willReturn(json_encode($expiredTokenData));
+
+		$this->crypto->method('encrypt')
+			->willReturn('new-encrypted-data');
+
+		// Verify lock is acquired and released
+		$this->lockingProvider->expects($this->once())
+			->method('acquireLock')
+			->with('astrolabe/oauth/tokens/testuser', ILockingProvider::LOCK_EXCLUSIVE);
+
+		$this->lockingProvider->expects($this->once())
+			->method('releaseLock')
+			->with('astrolabe/oauth/tokens/testuser', ILockingProvider::LOCK_EXCLUSIVE);
+
+		$refreshCallback = fn (string $refreshToken) => $newTokenData;
+
+		$result = $this->storage->getAccessToken($userId, $refreshCallback);
+
+		$this->assertEquals('new-access-token', $result);
+	}
+
+	public function testGetAccessTokenReturnsStaleTokenOnLockedException(): void {
+		$userId = 'testuser';
+		$expiredTokenData = [
+			'access_token' => 'expired-access-token',
+			'refresh_token' => 'old-refresh-token',
+			'expires_at' => time() - 100, // Expired
+		];
+
+		$this->config->method('getUserValue')
+			->willReturn('encrypted-data');
+
+		$this->crypto->method('decrypt')
+			->willReturn(json_encode($expiredTokenData));
+
+		// Lock acquisition fails
+		$this->lockingProvider->expects($this->once())
+			->method('acquireLock')
+			->willThrowException(new LockedException('astrolabe/oauth/tokens/testuser'));
+
+		// Refresh callback should NOT be called when lock fails
+		$refreshCallbackCalled = false;
+		$refreshCallback = function (string $refreshToken) use (&$refreshCallbackCalled) {
+			$refreshCallbackCalled = true;
+			return ['access_token' => 'new-token', 'expires_in' => 3600];
+		};
+
+		$result = $this->storage->getAccessToken($userId, $refreshCallback);
+
+		// Should return stale token instead of failing
+		$this->assertEquals('expired-access-token', $result);
+		$this->assertFalse($refreshCallbackCalled);
+	}
+
+	public function testGetAccessTokenSkipsRefreshWhenTokenAlreadyRefreshedWhileWaitingForLock(): void {
+		$userId = 'testuser';
+		$expiredTokenData = [
+			'access_token' => 'expired-access-token',
+			'refresh_token' => 'old-refresh-token',
+			'expires_at' => time() - 100, // Expired
+		];
+
+		// After lock is acquired, token appears fresh (another process refreshed it)
+		$freshTokenData = [
+			'access_token' => 'fresh-access-token',
+			'refresh_token' => 'fresh-refresh-token',
+			'expires_at' => time() + 3600, // Valid for 1 hour
+		];
+
+		$callCount = 0;
+		$this->config->method('getUserValue')
+			->willReturn('encrypted-data');
+
+		// First call returns expired, subsequent calls return fresh
+		$this->crypto->method('decrypt')
+			->willReturnCallback(function () use (&$callCount, $expiredTokenData, $freshTokenData) {
+				$callCount++;
+				return $callCount === 1
+					? json_encode($expiredTokenData)
+					: json_encode($freshTokenData);
+			});
+
+		$this->lockingProvider->expects($this->once())
+			->method('acquireLock');
+
+		$this->lockingProvider->expects($this->once())
+			->method('releaseLock');
+
+		// Refresh callback should NOT be called since token is already fresh
+		$refreshCallbackCalled = false;
+		$refreshCallback = function (string $refreshToken) use (&$refreshCallbackCalled) {
+			$refreshCallbackCalled = true;
+			return ['access_token' => 'new-token', 'expires_in' => 3600];
+		};
+
+		$result = $this->storage->getAccessToken($userId, $refreshCallback);
+
+		$this->assertEquals('fresh-access-token', $result);
+		$this->assertFalse($refreshCallbackCalled);
+	}
+
+	public function testGetAccessTokenNoLockRequiredWhenNotExpired(): void {
+		$userId = 'testuser';
+		$validTokenData = [
+			'access_token' => 'valid-access-token',
+			'refresh_token' => 'refresh-token',
+			'expires_at' => time() + 3600, // Valid for 1 hour
+		];
+
+		$this->config->method('getUserValue')
+			->willReturn('encrypted-data');
+
+		$this->crypto->method('decrypt')
+			->willReturn(json_encode($validTokenData));
+
+		// Lock should NOT be acquired for valid tokens
+		$this->lockingProvider->expects($this->never())
+			->method('acquireLock');
+
+		$this->lockingProvider->expects($this->never())
+			->method('releaseLock');
+
+		$result = $this->storage->getAccessToken($userId);
+
+		$this->assertEquals('valid-access-token', $result);
 	}
 
 	// =========================================================================
@@ -523,5 +684,146 @@ final class McpTokenStorageTest extends TestCase {
 		$result = $this->storage->getBackgroundSyncProvisionedAt($userId);
 
 		$this->assertNull($result);
+	}
+
+	// =========================================================================
+	// getAllUsersWithTokens Tests
+	// =========================================================================
+
+	public function testGetAllUsersWithTokensReturnsUserIds(): void {
+		$qb = $this->createMock(IQueryBuilder::class);
+		$expr = $this->createMock(IExpressionBuilder::class);
+		$result = $this->createMock(IResult::class);
+
+		// Chain builder methods
+		$qb->method('select')->willReturnSelf();
+		$qb->method('from')->willReturnSelf();
+		$qb->method('where')->willReturnSelf();
+		$qb->method('andWhere')->willReturnSelf();
+		$qb->method('expr')->willReturn($expr);
+		$qb->method('createNamedParameter')->willReturnArgument(0);
+		$qb->method('executeQuery')->willReturn($result);
+
+		// Mock expression builder
+		$expr->method('eq')->willReturn('mocked_condition');
+
+		// Mock result set with multiple users
+		$result->method('fetch')->willReturnOnConsecutiveCalls(
+			['userid' => 'admin'],
+			['userid' => 'alice'],
+			['userid' => 'bob'],
+			false  // End of results
+		);
+		$result->expects($this->once())->method('closeCursor');
+
+		$this->db->method('getQueryBuilder')->willReturn($qb);
+
+		$userIds = $this->storage->getAllUsersWithTokens();
+
+		$this->assertEquals(['admin', 'alice', 'bob'], $userIds);
+	}
+
+	public function testGetAllUsersWithTokensReturnsEmptyArrayWhenNoTokens(): void {
+		$qb = $this->createMock(IQueryBuilder::class);
+		$expr = $this->createMock(IExpressionBuilder::class);
+		$result = $this->createMock(IResult::class);
+
+		// Chain builder methods
+		$qb->method('select')->willReturnSelf();
+		$qb->method('from')->willReturnSelf();
+		$qb->method('where')->willReturnSelf();
+		$qb->method('andWhere')->willReturnSelf();
+		$qb->method('expr')->willReturn($expr);
+		$qb->method('createNamedParameter')->willReturnArgument(0);
+		$qb->method('executeQuery')->willReturn($result);
+
+		// Mock expression builder
+		$expr->method('eq')->willReturn('mocked_condition');
+
+		// Mock empty result set
+		$result->method('fetch')->willReturn(false);
+		$result->expects($this->once())->method('closeCursor');
+
+		$this->db->method('getQueryBuilder')->willReturn($qb);
+
+		$userIds = $this->storage->getAllUsersWithTokens();
+
+		$this->assertEquals([], $userIds);
+	}
+
+	public function testGetAllUsersWithTokensWithLimitAndOffset(): void {
+		$qb = $this->createMock(IQueryBuilder::class);
+		$expr = $this->createMock(IExpressionBuilder::class);
+		$result = $this->createMock(IResult::class);
+
+		// Chain builder methods
+		$qb->method('select')->willReturnSelf();
+		$qb->method('from')->willReturnSelf();
+		$qb->method('where')->willReturnSelf();
+		$qb->method('andWhere')->willReturnSelf();
+		$qb->method('expr')->willReturn($expr);
+		$qb->method('createNamedParameter')->willReturnArgument(0);
+		$qb->method('executeQuery')->willReturn($result);
+
+		// Verify setMaxResults and setFirstResult are called with correct values
+		$qb->expects($this->once())
+			->method('setMaxResults')
+			->with(50)
+			->willReturnSelf();
+		$qb->expects($this->once())
+			->method('setFirstResult')
+			->with(100)
+			->willReturnSelf();
+
+		// Mock expression builder
+		$expr->method('eq')->willReturn('mocked_condition');
+
+		// Mock result set
+		$result->method('fetch')->willReturnOnConsecutiveCalls(
+			['userid' => 'user1'],
+			['userid' => 'user2'],
+			false
+		);
+		$result->expects($this->once())->method('closeCursor');
+
+		$this->db->method('getQueryBuilder')->willReturn($qb);
+
+		$userIds = $this->storage->getAllUsersWithTokens(50, 100);
+
+		$this->assertEquals(['user1', 'user2'], $userIds);
+	}
+
+	public function testGetAllUsersWithTokensWithZeroLimitDoesNotSetMaxResults(): void {
+		$qb = $this->createMock(IQueryBuilder::class);
+		$expr = $this->createMock(IExpressionBuilder::class);
+		$result = $this->createMock(IResult::class);
+
+		// Chain builder methods
+		$qb->method('select')->willReturnSelf();
+		$qb->method('from')->willReturnSelf();
+		$qb->method('where')->willReturnSelf();
+		$qb->method('andWhere')->willReturnSelf();
+		$qb->method('expr')->willReturn($expr);
+		$qb->method('createNamedParameter')->willReturnArgument(0);
+		$qb->method('executeQuery')->willReturn($result);
+
+		// setMaxResults should NOT be called when limit is 0
+		$qb->expects($this->never())
+			->method('setMaxResults');
+
+		// setFirstResult should NOT be called when offset is 0
+		$qb->expects($this->never())
+			->method('setFirstResult');
+
+		// Mock expression builder
+		$expr->method('eq')->willReturn('mocked_condition');
+
+		// Mock result set
+		$result->method('fetch')->willReturn(false);
+		$result->expects($this->once())->method('closeCursor');
+
+		$this->db->method('getQueryBuilder')->willReturn($qb);
+
+		$this->storage->getAllUsersWithTokens(0, 0);
 	}
 }
