@@ -48,6 +48,28 @@ Nextcloud's app password system provides a simple, native mechanism for delegate
 
 **However**, app passwords have **no native scope support** - they grant full API access equivalent to the user's permissions. This is a critical security consideration that requires application-level mitigation.
 
+### Nextcloud Platform Limitation
+
+> **Important**: Nextcloud does not support scoped app passwords, and OAuth bearer token support varies by endpoint type. This is a platform limitation, not an MCP server design choice.
+>
+> **OAuth Bearer Token Support by Endpoint:**
+> | Endpoint Type | OAuth Bearer Supported | Scoped Access |
+> |---------------|------------------------|---------------|
+> | OCS API | ✅ Yes | ❌ No |
+> | WebDAV | ✅ Yes | ❌ No |
+> | CalDAV/CardDAV | ❌ No | ❌ No |
+> | Notes API | ❌ No | ❌ No |
+> | Other App APIs | ❌ No | ❌ No |
+>
+> **Implications:**
+> - App passwords grant full API access to any Nextcloud API the user can access
+> - Even where OAuth tokens are accepted, scopes are not enforced by Nextcloud
+> - There are no upstream plans to add scoped OAuth support to App APIs
+>
+> **Our approach:** The MCP server implements application-level scope enforcement as a defense-in-depth measure. This provides audit logging, user transparency, and protection against accidental misuse, but administrators must understand that scope enforcement occurs at the MCP server layer, not the Nextcloud layer.
+>
+> If Nextcloud adds scoped OAuth support for App APIs in the future, this architecture will be revisited to leverage native scope enforcement.
+
 ## Decision
 
 Consolidate deployment modes into **two simplified modes**:
@@ -304,17 +326,46 @@ async def nc_auth_check_status(ctx: Context) -> ProvisionStatusResponse:
 
 ### MCP Elicitation for Login Flow v2
 
-The MCP protocol supports **elicitation** - a mechanism for servers to request that clients prompt users for input or actions. We use URL elicitation to initiate Login Flow v2 without requiring explicit tool calls.
+The MCP protocol supports **elicitation** - a mechanism for servers to request that clients prompt users for input or actions. The MCP specification (2025-11-25) defines two elicitation modes:
 
-**How it works:**
+- **Form mode**: Structured data collection through the MCP client
+- **URL mode**: Out-of-band interactions via external URLs (e.g., OAuth flows)
 
-When a user attempts to access a Nextcloud resource without a provisioned app password, the server returns an elicitation response requesting URL navigation:
+#### Capability Negotiation
+
+Clients declare elicitation support during session initialization:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {
+      "elicitation": {
+        "form": {},
+        "url": {}
+      }
+    }
+  }
+}
+```
+
+**Important**: URL mode elicitation (`elicitation.url`) is **not widely supported** by MCP clients as of early 2026. The MCP server MUST gracefully handle clients that:
+- Declare no elicitation capability
+- Declare only `form` mode support
+- Declare `url` mode but fail to open URLs
+
+#### Implementation with Graceful Fallback
+
+The server checks client capabilities and falls back to a message-based approach when URL elicitation is unavailable:
 
 ```python
 from mcp.types import ElicitResult, ElicitRequest
 
-async def handle_nextcloud_access(ctx: Context, user_id: str) -> ElicitResult | None:
-    """Check if user needs to provision access, return elicitation if needed."""
+async def handle_nextcloud_access(ctx: Context, user_id: str) -> ElicitResult | ProvisioningRequiredError:
+    """Check if user needs to provision access, return elicitation or error with URL."""
 
     app_password = await storage.get_app_password_with_scopes(user_id)
     if app_password is not None:
@@ -326,6 +377,7 @@ async def handle_nextcloud_access(ctx: Context, user_id: str) -> ElicitResult | 
         headers={"User-Agent": f"Nextcloud MCP Server (user:{user_id})"},
     )
     data = response.json()
+    login_url = data["login"]
 
     # Store session for polling
     await storage.store_login_flow_session(
@@ -336,38 +388,81 @@ async def handle_nextcloud_access(ctx: Context, user_id: str) -> ElicitResult | 
         expires_at=int(time.time()) + 600,
     )
 
-    # Return URL elicitation
-    return ElicitResult(
-        action="open_url",
-        url=data["login"],
-        message=(
-            "To access Nextcloud resources, please authorize this application. "
-            "Click the link to open Nextcloud in your browser and complete authentication."
-        ),
-        # Server will poll automatically; client retries after user completes
+    # Check client capabilities for URL elicitation
+    client_capabilities = get_client_capabilities(ctx)
+    supports_url_elicitation = (
+        client_capabilities.get("elicitation", {}).get("url") is not None
     )
+
+    if supports_url_elicitation:
+        # Preferred: Use URL elicitation for seamless UX
+        return ElicitResult(
+            mode="url",
+            elicitationId=str(uuid.uuid4()),
+            url=login_url,
+            message=(
+                "To access Nextcloud resources, please authorize this application. "
+                "Click the link to open Nextcloud in your browser and complete authentication."
+            ),
+        )
+    else:
+        # Fallback: Return error with URL in message for manual copy/paste
+        raise ProvisioningRequiredError(
+            f"Nextcloud access not provisioned. Please visit the following URL to authorize:\n\n"
+            f"    {login_url}\n\n"
+            f"After completing authentication in your browser, retry your request."
+        )
 ```
 
-**MCP Client Behavior:**
+#### Client Behavior Expectations
 
-1. Client receives elicitation response with `action: "open_url"`
-2. Client presents URL to user (clickable link, button, or automatic browser open)
-3. User completes authentication in browser
-4. Client retries the original request
-5. Server detects completed Login Flow (via polling) and proceeds
+| Client Capability | Server Behavior | User Experience |
+|-------------------|-----------------|-----------------|
+| `elicitation.url` supported | Returns URL elicitation | Client opens URL automatically or presents clickable link |
+| `elicitation.form` only | Returns error with URL in message | User copies URL and pastes in browser |
+| No elicitation support | Returns error with URL in message | User copies URL and pastes in browser |
 
-**Benefits of Elicitation over Explicit Tools:**
+**Fallback UX**: Even without URL elicitation support, users can complete the Login Flow by copying the URL from the error message. This ensures the feature works with any MCP client, though with slightly degraded UX.
 
-| Approach | User Experience |
-|----------|-----------------|
-| Explicit tools (`nc_auth_provision_access`) | User must know to call provisioning tool first |
-| **Elicitation (recommended)** | Seamless - user just tries to use Nextcloud, prompted automatically |
+#### Retry Behavior
+
+After the user completes authentication in their browser:
+1. User retries the original MCP request
+2. Server polls Login Flow v2 endpoint and detects completion
+3. Server stores app password with requested scopes
+4. Original request proceeds normally
 
 ### Re-Authentication for Scope Updates
 
-Users may need to update their authorized scopes after initial provisioning (e.g., initially authorized `notes:read` but now needs `notes:write`). The system supports **re-authentication** to add scopes.
+Users may need to update their authorized scopes after initial provisioning. The system supports **re-authentication** with scope merging.
 
-**Re-auth Tool:**
+#### Re-auth Scenarios
+
+| Scenario | Trigger | User Action Required |
+|----------|---------|----------------------|
+| **Initial provisioning** | User has no app password | Complete Login Flow v2 |
+| **Scope expansion** | Tool requires scope user hasn't authorized | Re-authenticate to add scopes |
+| **Scope reduction** | User wants to revoke specific scopes | Revoke and re-provision with fewer scopes |
+| **Token rotation** | Admin policy or user preference | Re-authenticate (new app password issued) |
+
+#### Scope Merging Behavior
+
+When a user re-authenticates to add scopes:
+
+1. **Existing scopes are preserved**: New scopes are merged with existing scopes
+2. **Old app password is revoked**: Nextcloud revokes the previous app password
+3. **New app password issued**: User authenticates via Login Flow v2
+4. **Merged scopes stored**: Both old and new scopes associated with new password
+
+```
+Initial:    [notes:read]
+Request:    [calendar:read, calendar:write]
+Result:     [notes:read, calendar:read, calendar:write]
+```
+
+**Note**: Scope reduction requires explicit revocation. Users cannot "downgrade" scopes without fully revoking and re-provisioning.
+
+#### Re-auth Tool Implementation
 
 ```python
 @mcp.tool(
@@ -442,25 +537,28 @@ async def nc_auth_update_scopes(
     )
 ```
 
-**Automatic Re-auth via Elicitation:**
+#### Automatic Re-auth Prompting
 
-When a tool requires a scope the user hasn't authorized, the server can automatically trigger re-auth:
+When a tool requires a scope the user hasn't authorized, the `@require_scopes` decorator returns an error with re-auth instructions:
 
 ```python
 # In @require_scopes decorator, when scopes are missing:
 if missing:
-    # Instead of just raising error, offer re-auth via elicitation
-    return ElicitResult(
-        action="confirm",
-        title="Additional Permissions Required",
+    # Return error with clear instructions for scope upgrade
+    raise InsufficientScopeError(
+        missing_scopes=list(missing),
         message=(
-            f"This action requires additional permissions: {', '.join(missing)}. "
-            f"Would you like to authorize these scopes?"
+            f"This action requires additional permissions: {', '.join(missing)}.\n\n"
+            f"To authorize these scopes, call nc_auth_update_scopes with:\n"
+            f"  additional_scopes={list(missing)}"
         ),
-        confirm_action="reauth",
-        confirm_data={"scopes": list(missing)},
     )
 ```
+
+**Design Choice**: We use explicit tool calls for re-auth rather than automatic elicitation because:
+1. Users should consciously decide to expand access
+2. Scope changes are auditable events
+3. Avoids unexpected browser redirects during normal operation
 
 ### Astrolabe Front-End Integration
 
@@ -860,23 +958,50 @@ Include this warning in deployment documentation and server startup logs:
 
 ### Rate Limiting
 
-Implement rate limiting on Login Flow v2 operations to prevent abuse:
+Rate limiting is **configurable** and should be tuned based on deployment size and usage patterns. The MCP server is an external client to Nextcloud and should not require special Nextcloud configuration to function.
+
+**Configuration Variables:**
+
+```bash
+# Login Flow v2 rate limits (environment variables)
+LOGIN_FLOW_INITIATE_LIMIT=5      # Max initiations per user per window (default: 5)
+LOGIN_FLOW_INITIATE_WINDOW=3600  # Window in seconds (default: 1 hour)
+LOGIN_FLOW_POLL_INTERVAL=10      # Seconds between poll attempts (default: 10)
+LOGIN_FLOW_POLL_TIMEOUT=600      # Max seconds to poll before timeout (default: 10 min)
+```
+
+**Implementation:**
 
 ```python
-# Rate limits
-LOGIN_FLOW_INITIATE_LIMIT = 5  # initiations per user per hour
-LOGIN_FLOW_POLL_LIMIT = 60     # poll attempts per session (10 min at 10s intervals)
-
 async def nc_auth_provision_access(ctx: Context, ...) -> ProvisionAccessResponse:
     user_id = extract_user_from_mcp_token(ctx)
+    settings = get_settings()
 
-    # Rate limit check for initiation
-    if await is_rate_limited(user_id, "login_flow_initiate", limit=5, window=3600):
+    # Rate limit check for initiation (configurable)
+    if await is_rate_limited(
+        user_id,
+        "login_flow_initiate",
+        limit=settings.login_flow_initiate_limit,
+        window=settings.login_flow_initiate_window,
+    ):
         raise RateLimitError("Too many provisioning attempts. Try again later.")
 
     await record_rate_limit_hit(user_id, "login_flow_initiate")
     # ... rest of implementation
 ```
+
+**Administrator Guidance:**
+
+| Deployment Size | Recommended Initiate Limit | Notes |
+|-----------------|---------------------------|-------|
+| Personal (1-5 users) | 10/hour | Higher limit acceptable |
+| Small team (5-50 users) | 5/hour | Default is appropriate |
+| Enterprise (50+ users) | 3/hour | Consider integration with external rate limiting |
+
+Rate limiting at the MCP server level is defense-in-depth. Administrators should also consider:
+- Nextcloud's built-in brute force protection
+- Reverse proxy rate limiting (nginx, Traefik)
+- Network-level controls for multi-user deployments
 
 ### Audit Logging
 
@@ -905,8 +1030,8 @@ AUDIT_EVENTS = [
 | Single-User BasicAuth | Mode 1 (Single-User) | Renamed only (`NEXTCLOUD_PASSWORD` → `NEXTCLOUD_APP_PASSWORD`) |
 | Multi-User BasicAuth | Mode 2 (Multi-User) | Credential pass-through is a security anti-pattern |
 | OAuth Single-Audience | Mode 2 (Multi-User) | Requires upstream Nextcloud patches not planned for adoption |
-| OAuth Token Exchange | Mode 2 (Multi-User) | **Not required until Nextcloud supports OAuth bearer tokens (not planned)** |
-| **Smithery Stateless** | **DROPPED** | **Smithery platform removed free tier; stateless model incompatible with Login Flow v2** |
+| OAuth Token Exchange | Mode 2 (Multi-User) | Complex IdP configuration, limited adoption |
+| Smithery Stateless | **DROPPED** | Third-party hosting conflicts with privacy goals; use self-hosted alternatives |
 
 ### Phase 1: Add Login Flow v2 Support (v0.65)
 
@@ -986,11 +1111,11 @@ def detect_deployment_mode() -> AuthMode:
 
 ### Negative
 
-1. **Scope Enforcement at Application Level**: Not enforced by Nextcloud itself
+1. **Scope Enforcement at Application Level**: Not enforced by Nextcloud itself (platform limitation)
 2. **Trust in MCP Server**: Administrators must trust server to enforce scopes correctly
 3. **Migration Effort**: Existing OAuth deployments need users to re-provision
 4. **No Fine-Grained Nextcloud Permissions**: App passwords grant full user-level access
-5. **Smithery Users Affected**: Stateless mode no longer supported
+5. **No Third-Party Hosted Option**: Users requiring managed hosting must self-host
 
 ### Neutral
 
@@ -1026,39 +1151,40 @@ def detect_deployment_mode() -> AuthMode:
 - Doesn't solve immediate consolidation needs
 - Can be pursued in parallel without blocking this ADR
 
-### Alternative 5: Keep Smithery Mode
+### Alternative 5: Keep Smithery/Third-Party Hosted Mode
 
-**Rejected**: Two factors make Smithery mode untenable:
+**Rejected**: The MCP server prioritizes privacy and user data control. Third-party hosted deployments introduce trust and data residency concerns that conflict with these goals.
 
-1. **Platform Change**: Smithery has removed their free tier, significantly reducing the user base for this deployment mode. The maintenance burden no longer justifies the limited adoption.
+**Recommendation for users:**
+- **Individual users**: Use Single-User mode with self-hosted deployment
+- **Organizations**: Use Multi-User mode with organizational infrastructure
 
-2. **Architectural Incompatibility**: Smithery's stateless model (credentials in session URL parameters) is fundamentally incompatible with Login Flow v2 which requires persistent storage for:
-   - Poll sessions during authorization
-   - App passwords after authorization
-   - Scope enforcement data
-
-Users previously deploying to Smithery must either:
-- Self-host with persistent storage
-- Use an alternative MCP hosting platform
-- Use external storage (Redis, external PostgreSQL) with custom configuration
+Users who require managed hosting should evaluate the privacy implications and consider self-hosting alternatives (Docker, Kubernetes, VM-based deployments).
 
 ### Alternative 6: Wait for Nextcloud OAuth Bearer Token Support
 
-**Rejected**: Nextcloud does not currently support OAuth bearer token validation on non-OCS API endpoints (Notes, Calendar/CalDAV, WebDAV, etc.). There are no upstream plans to add this support. The token exchange mode (RFC 8693) was designed as a workaround, but:
-- Requires complex IdP configuration
-- Still needs upstream patches to `user_oidc`
-- Adds significant complexity without widespread adoption
+**Rejected for now, with future revisit planned**: Nextcloud does not currently support scoped OAuth bearer token validation on most App APIs. The current OAuth implementation validates tokens but does not enforce scopes at the API level.
 
-Login Flow v2 with app passwords provides equivalent functionality using native Nextcloud mechanisms.
+**Current state:**
+- WebDAV and OCS endpoints accept OAuth bearer tokens (but without scope enforcement)
+- CalDAV, CardDAV, Notes API, and other App APIs do not accept OAuth bearer tokens
+- No upstream plans announced to add scoped OAuth support
+
+**Our approach:**
+- Keep the implementation simple using Login Flow v2 and app passwords
+- Application-level scope enforcement provides defense-in-depth
+- If Nextcloud adds scoped OAuth support for App APIs in the future, we will revisit this architecture to leverage native scope enforcement
+
+This approach prioritizes simplicity and compatibility over waiting for uncertain upstream changes.
 
 ## References
 
 - [Nextcloud Login Flow Documentation](https://docs.nextcloud.com/server/latest/developer_manual/client_apis/LoginFlow/index.html)
+- [MCP Specification - Elicitation](https://spec.modelcontextprotocol.io/specification/2025-11-25/server/elicitation/) (revision 2025-11-25)
 - [ADR-020: Deployment Modes and Configuration Validation](ADR-020-deployment-modes-and-configuration-validation.md)
 - [ADR-021: Configuration Consolidation](ADR-021-configuration-consolidation.md)
 - [ADR-004: Progressive Consent OAuth Architecture](ADR-004-mcp-application-oauth.md)
 - [GitHub Issue #521: Login Flow v2 Support](https://github.com/cbcoutinho/nextcloud-mcp-server/issues/521)
-- [RFC 9728: OAuth 2.0 Protected Resource Metadata](https://datatracker.ietf.org/doc/html/rfc9728)
 
 ## Implementation Checklist
 
@@ -1094,25 +1220,75 @@ Login Flow v2 with app passwords provides equivalent functionality using native 
 | `PATCH /api/v1/users/{user_id}/scopes` | `nextcloud_mcp_server/api/access.py` | Update scopes (trigger re-auth) |
 | `GET /api/v1/scopes` | `nextcloud_mcp_server/api/access.py` | List supported scopes with descriptions |
 
-### Phase 4: Documentation
+### Phase 4: Documentation (Required)
 
 | File | Changes |
 |------|---------|
+| `README.md` | Add security notice about Nextcloud scope limitation (see below) |
 | `docs/authentication.md` | Rewrite for 2-mode architecture |
-| `docs/configuration.md` | Simplify configuration docs |
+| `docs/configuration.md` | Simplify configuration docs, add rate limiting guidance |
 | `docs/astrolabe-integration.md` | New: Astrolabe setup guide |
 | `docs/security-posture.md` | New: Security model documentation for admins |
 
-### Verification Steps
+**Required README Addition:**
 
-1. **Unit tests**: `@require_scopes` decorator with app password scopes (no OAuth token)
-2. **Unit tests**: MCP elicitation response generation
-3. **Integration tests**: Login Flow v2 initiation, polling, and completion
-4. **Integration tests**: Re-auth flow for scope updates
-5. **Scope tests**: Verify scope enforcement denies unauthorized access
-6. **Scope tests**: Verify scope merging on re-auth
-7. **End-to-end (MCP)**: MCP client → elicitation → Login Flow v2 → Nextcloud API
-8. **End-to-end (Astrolabe)**: Astrolabe UI → Login Flow v2 → MCP server storage
-9. **Migration test**: Existing OAuth deployment transitions to new mode
-10. **Security audit**: Verify scope enforcement cannot be bypassed
-11. **Security audit**: Verify app password encryption and storage
+```markdown
+## Security Notice: Scope Enforcement
+
+> **Important**: Nextcloud does not support scoped app passwords or OAuth scopes for
+> most App APIs. This is a Nextcloud platform limitation, not an MCP server limitation.
+>
+> The MCP server implements **application-level scope enforcement** as a defense-in-depth
+> measure. When users authorize scopes like `notes:read`, the MCP server records and
+> enforces these scopes before executing tools. However, the underlying app password
+> can access any Nextcloud API the user has permission to access.
+>
+> **Administrators should understand:**
+> - Scope enforcement occurs at the MCP server layer, not the Nextcloud layer
+> - A compromised MCP server could bypass scope restrictions
+> - Users can revoke access via Nextcloud Settings > Security > Devices & Sessions
+>
+> If Nextcloud adds scoped OAuth support for App APIs in the future, this architecture
+> will be revisited to leverage native scope enforcement.
+```
+
+### Phase 5: Recommended Nextcloud Configuration
+
+Document recommended Nextcloud settings for optimal MCP server operation:
+
+| Setting | Recommendation | Purpose |
+|---------|---------------|---------|
+| `'auth.bruteforce.protection.enabled'` | `true` (default) | Protects Login Flow v2 from abuse |
+| `'ratelimit.protection.enabled'` | `true` (default) | General API rate limiting |
+| `'trusted_proxies'` | Configure if behind reverse proxy | Accurate IP detection for rate limiting |
+
+**Note**: The MCP server is designed to work with a standard Nextcloud deployment without special configuration. These are recommendations for production deployments.
+
+### Verification Steps (Required for Implementation)
+
+All tests must pass before the feature is considered complete.
+
+**Unit Tests:**
+1. `@require_scopes` decorator with app password scopes (no OAuth token)
+2. MCP elicitation response generation with capability detection
+3. Elicitation fallback when URL mode not supported
+4. Scope merging logic for re-authentication
+5. Rate limiting configuration validation
+
+**Integration Tests:**
+6. Login Flow v2 initiation, polling, and completion
+7. Re-auth flow for scope updates
+8. Scope enforcement denies unauthorized access
+9. Scope merging preserves existing scopes on re-auth
+
+**End-to-End Tests:**
+10. MCP client → provisioning → Login Flow v2 → Nextcloud API call
+11. Astrolabe UI → Login Flow v2 → MCP server storage
+
+**Migration Tests:**
+12. Existing OAuth deployment transitions to new mode with deprecation warnings
+
+**Security Tests:**
+13. Verify scope enforcement cannot be bypassed via direct API calls
+14. Verify app password encryption and secure storage
+15. Verify rate limiting prevents abuse
