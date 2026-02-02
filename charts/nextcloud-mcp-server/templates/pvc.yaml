@@ -16,38 +16,20 @@ spec:
       storage: {{ .Values.auth.oauth.persistence.size }}
 {{- end }}
 ---
-{{- if and (eq .Values.auth.mode "multi-user-basic") .Values.auth.multiUserBasic.enableOfflineAccess .Values.auth.multiUserBasic.persistence.enabled (not .Values.auth.multiUserBasic.persistence.existingClaim) }}
+{{- if and .Values.dataStorage.enabled (not .Values.dataStorage.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "nextcloud-mcp-server.fullname" . }}-token-storage
+  name: {{ include "nextcloud-mcp-server.fullname" . }}-data-storage
   labels:
     {{- include "nextcloud-mcp-server.labels" . | nindent 4 }}
 spec:
   accessModes:
-    - {{ .Values.auth.multiUserBasic.persistence.accessMode }}
-  {{- if .Values.auth.multiUserBasic.persistence.storageClass }}
-  storageClassName: {{ .Values.auth.multiUserBasic.persistence.storageClass }}
+    - {{ .Values.dataStorage.accessMode }}
+  {{- if .Values.dataStorage.storageClass }}
+  storageClassName: {{ .Values.dataStorage.storageClass }}
   {{- end }}
   resources:
     requests:
-      storage: {{ .Values.auth.multiUserBasic.persistence.size }}
-{{- end }}
----
-{{- if and (eq .Values.qdrant.mode "persistent") .Values.qdrant.localPersistence.enabled (not .Values.qdrant.localPersistence.existingClaim) }}
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ include "nextcloud-mcp-server.fullname" . }}-qdrant-data
-  labels:
-    {{- include "nextcloud-mcp-server.labels" . | nindent 4 }}
-spec:
-  accessModes:
-    - {{ .Values.qdrant.localPersistence.accessMode }}
-  {{- if .Values.qdrant.localPersistence.storageClass }}
-  storageClassName: {{ .Values.qdrant.localPersistence.storageClass }}
-  {{- end }}
-  resources:
-    requests:
-      storage: {{ .Values.qdrant.localPersistence.size }}
+      storage: {{ .Values.dataStorage.size }}
 {{- end }}

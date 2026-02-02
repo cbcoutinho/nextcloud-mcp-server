@@ -118,6 +118,25 @@ ingress:
 | `auth.oauth.persistence.enabled` | Enable persistent storage for OAuth | `true` |
 | `auth.oauth.persistence.size` | Size of OAuth storage PVC | `100Mi` |
 
+#### Data Storage
+
+The `/app/data` directory is used for application data (token databases, Qdrant persistent storage, etc.). It is always mounted as writable to support the read-only root filesystem security context.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `dataStorage.enabled` | Enable persistent storage for `/app/data` | `false` |
+| `dataStorage.size` | Size of data storage PVC | `1Gi` |
+| `dataStorage.storageClass` | Storage class (leave empty for default) | `""` |
+| `dataStorage.accessMode` | Access mode | `ReadWriteOnce` |
+| `dataStorage.existingClaim` | Use existing PVC | `""` |
+
+**When to enable persistence:**
+- Multi-user basic auth with offline access (stores `tokens.db`)
+- Qdrant persistent mode (stores vector database)
+- Any feature requiring persistent app data
+
+**When persistence is disabled:** Uses `emptyDir` (non-persistent, data lost on pod restart, but directory remains writable).
+
 #### MCP Server Configuration
 
 | Parameter | Description | Default |

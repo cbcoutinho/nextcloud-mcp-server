@@ -128,6 +128,17 @@ Create the name of the PVC to use for Qdrant local persistent storage
 {{- end }}
 
 {{/*
+Create the name of the PVC to use for /app/data storage
+*/}}
+{{- define "nextcloud-mcp-server.dataStoragePvcName" -}}
+{{- if .Values.dataStorage.existingClaim }}
+{{- .Values.dataStorage.existingClaim }}
+{{- else }}
+{{- include "nextcloud-mcp-server.fullname" . }}-data-storage
+{{- end }}
+{{- end }}
+
+{{/*
 Return the MCP server port
 */}}
 {{- define "nextcloud-mcp-server.port" -}}
