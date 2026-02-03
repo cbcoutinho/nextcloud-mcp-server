@@ -16,7 +16,21 @@ spec:
       storage: {{ .Values.auth.oauth.persistence.size }}
 {{- end }}
 ---
-{{- if and .Values.dataStorage.enabled (not .Values.dataStorage.existingClaim) }}
+{{- if and (eq (include "nextcloud-mcp-server.dataStorageEnabled" .) "true") (not .Values.dataStorage.existingClaim) }}
+{{- $legacyMultiUserBasic := eq (include "nextcloud-mcp-server.legacyMultiUserBasicPersistence" .) "true" }}
+{{- $legacyQdrant := eq (include "nextcloud-mcp-server.legacyQdrantPersistence" .) "true" }}
+{{- $accessMode := .Values.dataStorage.accessMode }}
+{{- $storageClass := .Values.dataStorage.storageClass }}
+{{- $size := .Values.dataStorage.size }}
+{{- if $legacyMultiUserBasic }}
+{{- $accessMode = .Values.auth.multiUserBasic.persistence.accessMode }}
+{{- $storageClass = .Values.auth.multiUserBasic.persistence.storageClass }}
+{{- $size = .Values.auth.multiUserBasic.persistence.size }}
+{{- else if $legacyQdrant }}
+{{- $accessMode = .Values.qdrant.localPersistence.accessMode }}
+{{- $storageClass = .Values.qdrant.localPersistence.storageClass }}
+{{- $size = .Values.qdrant.localPersistence.size }}
+{{- end }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -25,11 +39,11 @@ metadata:
     {{- include "nextcloud-mcp-server.labels" . | nindent 4 }}
 spec:
   accessModes:
-    - {{ .Values.dataStorage.accessMode }}
-  {{- if .Values.dataStorage.storageClass }}
-  storageClassName: {{ .Values.dataStorage.storageClass }}
+    - {{ $accessMode }}
+  {{- if $storageClass }}
+  storageClassName: {{ $storageClass }}
   {{- end }}
   resources:
     requests:
-      storage: {{ .Values.dataStorage.size }}
+      storage: {{ $size }}
 {{- end }}

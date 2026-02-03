@@ -300,7 +300,7 @@ spec:
             claimName: {{ include "nextcloud-mcp-server.oauthPvcName" . }}
         {{- end }}
         - name: data-storage
-        {{- if .Values.dataStorage.enabled }}
+        {{- if eq (include "nextcloud-mcp-server.dataStorageEnabled" .) "true" }}
           persistentVolumeClaim:
             claimName: {{ include "nextcloud-mcp-server.dataStoragePvcName" . }}
         {{- else }}

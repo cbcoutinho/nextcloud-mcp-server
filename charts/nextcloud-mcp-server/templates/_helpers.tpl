@@ -139,6 +139,44 @@ Create the name of the PVC to use for /app/data storage
 {{- end }}
 
 {{/*
+Determine if data storage PVC should be enabled (backward compatible)
+Checks new dataStorage.enabled OR legacy persistence configs
+*/}}
+{{- define "nextcloud-mcp-server.dataStorageEnabled" -}}
+{{- if .Values.dataStorage.enabled -}}
+true
+{{- else if and (eq .Values.auth.mode "multi-user-basic") .Values.auth.multiUserBasic.enableOfflineAccess .Values.auth.multiUserBasic.persistence.enabled -}}
+true
+{{- else if and (eq .Values.qdrant.mode "persistent") .Values.qdrant.localPersistence.enabled -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end }}
+
+{{/*
+Check if legacy multi-user-basic persistence config is being used
+*/}}
+{{- define "nextcloud-mcp-server.legacyMultiUserBasicPersistence" -}}
+{{- if and (eq .Values.auth.mode "multi-user-basic") .Values.auth.multiUserBasic.enableOfflineAccess .Values.auth.multiUserBasic.persistence.enabled (not .Values.dataStorage.enabled) -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end }}
+
+{{/*
+Check if legacy qdrant persistence config is being used
+*/}}
+{{- define "nextcloud-mcp-server.legacyQdrantPersistence" -}}
+{{- if and (eq .Values.qdrant.mode "persistent") .Values.qdrant.localPersistence.enabled (not .Values.dataStorage.enabled) -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end }}
+
+{{/*
 Return the MCP server port
 */}}
 {{- define "nextcloud-mcp-server.port" -}}

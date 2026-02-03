@@ -120,6 +120,55 @@ Your Nextcloud MCP Server has been deployed in {{ .Values.auth.mode }} authentic
    The dashboard JSON is available in the chart at charts/nextcloud-mcp-server/dashboards/nextcloud-mcp-server.json
 {{- end }}
 
+{{- $legacyMultiUserBasic := eq (include "nextcloud-mcp-server.legacyMultiUserBasicPersistence" .) "true" }}
+{{- $legacyQdrant := eq (include "nextcloud-mcp-server.legacyQdrantPersistence" .) "true" }}
+{{- if or $legacyMultiUserBasic $legacyQdrant }}
+
+================================================================================
+                         DEPRECATION WARNING
+================================================================================
+
+You are using deprecated persistence configuration that will be removed in a
+future release. Your deployment will continue to work, but please migrate to
+the new unified dataStorage configuration.
+
+Deprecated settings detected:
+{{- if $legacyMultiUserBasic }}
+  - auth.multiUserBasic.persistence.* (currently enabled)
+{{- end }}
+{{- if $legacyQdrant }}
+  - qdrant.localPersistence.* (currently enabled)
+{{- end }}
+
+To migrate, update your values.yaml:
+
+  dataStorage:
+    enabled: true
+{{- if $legacyMultiUserBasic }}
+    size: {{ .Values.auth.multiUserBasic.persistence.size }}
+{{- else if $legacyQdrant }}
+    size: {{ .Values.qdrant.localPersistence.size }}
+{{- end }}
+    # storageClass: ""  # Optional: specify storage class
+    # existingClaim: "" # Optional: use existing PVC to preserve data
+
+After migrating, remove the deprecated settings:
+{{- if $legacyMultiUserBasic }}
+  - auth.multiUserBasic.persistence.enabled
+  - auth.multiUserBasic.persistence.size
+  - auth.multiUserBasic.persistence.storageClass
+  - auth.multiUserBasic.persistence.accessMode
+{{- end }}
+{{- if $legacyQdrant }}
+  - qdrant.localPersistence.enabled
+  - qdrant.localPersistence.size
+  - qdrant.localPersistence.storageClass
+  - qdrant.localPersistence.accessMode
+{{- end }}
+
+================================================================================
+{{- end }}
+
 For more information and documentation:
 - GitHub: https://github.com/cbcoutinho/nextcloud-mcp-server
 - Documentation: https://github.com/cbcoutinho/nextcloud-mcp-server#readme
