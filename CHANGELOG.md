@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.63.1 (2026-02-03)
+
+### Fix
+
+- **helm**: add backward compatibility for legacy persistence configs
+
 ## v0.63.0 (2026-01-28)
 
 ### Feat
