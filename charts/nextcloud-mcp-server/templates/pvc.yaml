@@ -16,38 +16,34 @@ spec:
       storage: {{ .Values.auth.oauth.persistence.size }}
 {{- end }}
 ---
-{{- if and (eq .Values.auth.mode "multi-user-basic") .Values.auth.multiUserBasic.enableOfflineAccess .Values.auth.multiUserBasic.persistence.enabled (not .Values.auth.multiUserBasic.persistence.existingClaim) }}
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ include "nextcloud-mcp-server.fullname" . }}-token-storage
-  labels:
-    {{- include "nextcloud-mcp-server.labels" . | nindent 4 }}
-spec:
-  accessModes:
-    - {{ .Values.auth.multiUserBasic.persistence.accessMode }}
-  {{- if .Values.auth.multiUserBasic.persistence.storageClass }}
-  storageClassName: {{ .Values.auth.multiUserBasic.persistence.storageClass }}
-  {{- end }}
-  resources:
-    requests:
-      storage: {{ .Values.auth.multiUserBasic.persistence.size }}
+{{- if and (eq (include "nextcloud-mcp-server.dataStorageEnabled" .) "true") (not .Values.dataStorage.existingClaim) }}
+{{- $legacyMultiUserBasic := eq (include "nextcloud-mcp-server.legacyMultiUserBasicPersistence" .) "true" }}
+{{- $legacyQdrant := eq (include "nextcloud-mcp-server.legacyQdrantPersistence" .) "true" }}
+{{- $accessMode := .Values.dataStorage.accessMode }}
+{{- $storageClass := .Values.dataStorage.storageClass }}
+{{- $size := .Values.dataStorage.size }}
+{{- if $legacyMultiUserBasic }}
+{{- $accessMode = .Values.auth.multiUserBasic.persistence.accessMode }}
+{{- $storageClass = .Values.auth.multiUserBasic.persistence.storageClass }}
+{{- $size = .Values.auth.multiUserBasic.persistence.size }}
+{{- else if $legacyQdrant }}
+{{- $accessMode = .Values.qdrant.localPersistence.accessMode }}
+{{- $storageClass = .Values.qdrant.localPersistence.storageClass }}
+{{- $size = .Values.qdrant.localPersistence.size }}
 {{- end }}
----
-{{- if and (eq .Values.qdrant.mode "persistent") .Values.qdrant.localPersistence.enabled (not .Values.qdrant.localPersistence.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "nextcloud-mcp-server.fullname" . }}-qdrant-data
+  name: {{ include "nextcloud-mcp-server.fullname" . }}-data-storage
   labels:
     {{- include "nextcloud-mcp-server.labels" . | nindent 4 }}
 spec:
   accessModes:
-    - {{ .Values.qdrant.localPersistence.accessMode }}
-  {{- if .Values.qdrant.localPersistence.storageClass }}
-  storageClassName: {{ .Values.qdrant.localPersistence.storageClass }}
+    - {{ $accessMode }}
+  {{- if $storageClass }}
+  storageClassName: {{ $storageClass }}
   {{- end }}
   resources:
     requests:
-      storage: {{ .Values.qdrant.localPersistence.size }}
+      storage: {{ $size }}
 {{- end }}

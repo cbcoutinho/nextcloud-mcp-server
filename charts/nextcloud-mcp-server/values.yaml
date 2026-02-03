@@ -139,6 +139,27 @@ auth:
       # Use existing PVC
       existingClaim: ""
 
+# Data Storage Configuration
+# Persistent volume for /app/data directory
+# Used for: token databases, qdrant persistent storage, and any app data
+# When disabled, uses emptyDir (non-persistent, but still writable)
+dataStorage:
+  # Enable persistent storage for /app/data
+  # Set to true when using:
+  # - Multi-user basic auth with offline access (stores tokens.db)
+  # - Qdrant persistent mode (stores vector database)
+  # - Any feature requiring persistent app data
+  # Set to false for basic auth without persistence (uses emptyDir)
+  enabled: false
+  # Storage class (leave empty for default)
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  # Size for data storage (should accommodate tokens.db and/or qdrant data)
+  # Recommended: 1Gi minimum, 5Gi for production with qdrant
+  size: 1Gi
+  # Use existing PVC
+  existingClaim: ""
+
 # MCP server configuration
 mcp:
   # Transport mode (default: streamable-http for SSE)

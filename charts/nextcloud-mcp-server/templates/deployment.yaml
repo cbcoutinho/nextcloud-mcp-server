@@ -286,14 +286,8 @@ spec:
             - name: oauth-storage
               mountPath: /app/.oauth
             {{- end }}
-            {{- if and (eq .Values.auth.mode "multi-user-basic") .Values.auth.multiUserBasic.enableOfflineAccess .Values.auth.multiUserBasic.persistence.enabled }}
-            - name: token-storage
+            - name: data-storage
               mountPath: /app/data
-            {{- end }}
-            {{- if and (eq .Values.qdrant.mode "persistent") .Values.qdrant.localPersistence.enabled }}
-            - name: qdrant-data
-              mountPath: /app/data
-            {{- end }}
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -305,15 +299,12 @@ spec:
           persistentVolumeClaim:
             claimName: {{ include "nextcloud-mcp-server.oauthPvcName" . }}
         {{- end }}
-        {{- if and (eq .Values.auth.mode "multi-user-basic") .Values.auth.multiUserBasic.enableOfflineAccess .Values.auth.multiUserBasic.persistence.enabled }}
-        - name: token-storage
+        - name: data-storage
+        {{- if eq (include "nextcloud-mcp-server.dataStorageEnabled" .) "true" }}
           persistentVolumeClaim:
-            claimName: {{ include "nextcloud-mcp-server.multiUserBasicPvcName" . }}
-        {{- end }}
-        {{- if and (eq .Values.qdrant.mode "persistent") .Values.qdrant.localPersistence.enabled }}
-        - name: qdrant-data
-          persistentVolumeClaim:
-            claimName: {{ include "nextcloud-mcp-server.qdrantPvcName" . }}
+            claimName: {{ include "nextcloud-mcp-server.dataStoragePvcName" . }}
+        {{- else }}
+          emptyDir: {}
         {{- end }}
         {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
