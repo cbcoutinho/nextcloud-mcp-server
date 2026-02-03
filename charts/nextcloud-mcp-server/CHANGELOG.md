@@ -14,17 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
-## [Unreleased]
+## nextcloud-mcp-server-0.57.27 (2026-02-03)
 
-### Fixed
-- **volumes**: Fix /app/data not writable in basic auth mode due to readOnlyRootFilesystem security context
-  - Always mount /app/data (uses emptyDir by default, PVC when dataStorage.enabled=true)
-  - Resolves conflict where multi-user-basic and qdrant tried to mount different PVCs to same path
-  - Unified dataStorage configuration for all /app/data persistence needs
+### Fix
 
-### Changed
-- **volumes**: Deprecated separate token-storage and qdrant-data PVCs in favor of unified data-storage PVC
-- **volumes**: /app/data now always writable regardless of auth mode or features enabled
+- **helm**: add backward compatibility for legacy persistence configs
 
 ## nextcloud-mcp-server-0.57.26 (2026-01-31)
 
