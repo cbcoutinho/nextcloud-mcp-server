@@ -23,7 +23,7 @@ services:
     restart: always
 
   app:
-    image: docker.io/library/nextcloud:32.0.5@sha256:11a3a4f63bad8813c7455b4a3c473ccd1c41e2c48f55decb51718f15691e7568
+    image: docker.io/library/nextcloud:32.0.5@sha256:4b66e9bd8cb2c8af5457c1e2606c9937af2fcccbe4f6338956bc5990caec8968
     restart: always
     ports:
       - 127.0.0.1:8080:80
