@@ -380,6 +380,86 @@ async def test_event_with_url_and_categories(
         raise
 
 
+async def test_list_events_date_range_filtering(
+    nc_client: NextcloudClient, temporary_calendar: str
+):
+    """Test that date range filtering actually excludes events outside the range.
+
+    Reproduces GH-538: get_calendar_events() accepted date range parameters
+    but returned events from the entire calendar history, ignoring date filters.
+    """
+    calendar_name = temporary_calendar
+    past_uid = None
+    future_uid = None
+
+    try:
+        # Create Event A: 30 days in the past
+        past_date = datetime.now() - timedelta(days=30)
+        past_event_data = {
+            "title": f"Past Event {uuid.uuid4().hex[:8]}",
+            "start_datetime": past_date.strftime("%Y-%m-%dT10:00:00"),
+            "end_datetime": past_date.strftime("%Y-%m-%dT11:00:00"),
+            "description": "Event in the past for date range test",
+        }
+        result_past = await nc_client.calendar.create_event(
+            calendar_name, past_event_data
+        )
+        past_uid = result_past["uid"]
+        logger.info(f"Created past event: {past_uid}")
+
+        # Create Event B: 1 day in the future
+        future_date = datetime.now() + timedelta(days=1)
+        future_event_data = {
+            "title": f"Future Event {uuid.uuid4().hex[:8]}",
+            "start_datetime": future_date.strftime("%Y-%m-%dT14:00:00"),
+            "end_datetime": future_date.strftime("%Y-%m-%dT15:00:00"),
+            "description": "Event in the future for date range test",
+        }
+        result_future = await nc_client.calendar.create_event(
+            calendar_name, future_event_data
+        )
+        future_uid = result_future["uid"]
+        logger.info(f"Created future event: {future_uid}")
+
+        # Query with date range: today → 7 days ahead
+        now = datetime.now()
+        week_ahead = now + timedelta(days=7)
+
+        events = await nc_client.calendar.get_calendar_events(
+            calendar_name=calendar_name,
+            start_datetime=now,
+            end_datetime=week_ahead,
+            limit=50,
+        )
+
+        event_uids = [e["uid"] for e in events]
+
+        # Future event (tomorrow) SHOULD be in results
+        assert future_uid in event_uids, (
+            f"Future event {future_uid} should be in date-filtered results"
+        )
+
+        # Past event (30 days ago) should NOT be in results
+        assert past_uid not in event_uids, (
+            f"Past event {past_uid} should be excluded by date range filter "
+            f"(GH-538: date range was being ignored)"
+        )
+
+        logger.info(
+            f"Date range filtering works: {len(events)} events returned, "
+            f"past event correctly excluded"
+        )
+
+    finally:
+        # Cleanup both events
+        for uid in [past_uid, future_uid]:
+            if uid:
+                try:
+                    await nc_client.calendar.delete_event(calendar_name, uid)
+                except Exception as e:
+                    logger.warning(f"Cleanup failed for event {uid}: {e}")
+
+
 async def test_calendar_operations_error_handling(
     nc_client: NextcloudClient,
 ):
