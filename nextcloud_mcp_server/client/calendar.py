@@ -255,8 +255,14 @@ class CalendarClient:
         """List events in a calendar within date range."""
         calendar = self._get_calendar(calendar_name)
 
-        # Get all events using caldav library (now with proper filter)
-        events = await calendar.events()
+        if start_datetime or end_datetime:
+            # Build CalDAV REPORT with time-range filter for server-side filtering
+            events = await self._search_events_by_date(
+                calendar, start_datetime, end_datetime
+            )
+        else:
+            # No date filter — fetch all events
+            events = await calendar.events()
 
         result = []
         for event in events:
@@ -273,6 +279,52 @@ class CalendarClient:
 
         logger.debug(f"Found {len(result)} events")
         return result
+
+    async def _search_events_by_date(
+        self,
+        calendar: AsyncCalendar,
+        start_datetime: Optional[dt.datetime] = None,
+        end_datetime: Optional[dt.datetime] = None,
+    ) -> list:
+        """Execute a CalDAV REPORT with time-range filter."""
+        from caldav.async_collection import AsyncEvent
+        from caldav.elements import cdav, dav
+        from lxml import etree  # type: ignore[import-untyped]
+
+        # Ensure naive datetimes are treated as UTC
+        if start_datetime and start_datetime.tzinfo is None:
+            start_datetime = start_datetime.replace(tzinfo=dt.UTC)
+        if end_datetime and end_datetime.tzinfo is None:
+            end_datetime = end_datetime.replace(tzinfo=dt.UTC)
+
+        # Build comp-filter with time-range (mirrors sync Calendar.build_search_xml_query)
+        inner_comp_filter = cdav.CompFilter(name="VEVENT")
+        inner_comp_filter += cdav.TimeRange(start_datetime, end_datetime)
+        outer_comp_filter = cdav.CompFilter(name="VCALENDAR") + inner_comp_filter
+        filter_element = cdav.Filter() + outer_comp_filter
+
+        query = (
+            cdav.CalendarQuery() + [dav.Prop() + cdav.CalendarData()] + filter_element
+        )
+
+        body = etree.tostring(
+            query.xmlelement(), encoding="utf-8", xml_declaration=True
+        )
+        assert calendar.client is not None
+        response = await calendar.client.report(str(calendar.url), body, depth=1)
+
+        # Parse response (same pattern as AsyncCalendar.search)
+        objects = []
+        response_data = response.expand_simple_props([cdav.CalendarData()])
+        for href, props in response_data.items():
+            if href == str(calendar.url):
+                continue
+            cal_data = props.get(cdav.CalendarData.tag)
+            if cal_data:
+                obj = AsyncEvent(client=calendar.client, data=cal_data, parent=calendar)
+                objects.append(obj)
+
+        return objects
 
     async def create_event(
         self, calendar_name: str, event_data: Dict[str, Any]
