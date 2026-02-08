@@ -273,6 +273,86 @@ async def test_update_event(nc_client: NextcloudClient, temporary_event: dict):
         raise
 
 
+async def test_update_event_extended_fields(
+    nc_client: NextcloudClient, temporary_calendar: str
+):
+    """Test updating categories, recurrence_rule, attendees, and reminder_minutes."""
+    calendar_name = temporary_calendar
+
+    tomorrow = datetime.now() + timedelta(days=1)
+    event_data = {
+        "title": "Extended Fields Update Test",
+        "start_datetime": tomorrow.strftime("%Y-%m-%dT10:00:00"),
+        "end_datetime": tomorrow.strftime("%Y-%m-%dT11:00:00"),
+        "description": "Base event for extended-field update test",
+    }
+
+    event_uid = None
+    try:
+        result = await nc_client.calendar.create_event(calendar_name, event_data)
+        event_uid = result["uid"]
+        logger.info(f"Created base event for extended fields test: {event_uid}")
+
+        # --- Phase 1: Set all four extended fields ---
+        updated_data = {
+            "categories": "work,meeting",
+            "recurrence_rule": "FREQ=WEEKLY;COUNT=4",
+            "attendees": "alice@example.com,bob@example.com",
+            "reminder_minutes": 15,
+        }
+        await nc_client.calendar.update_event(calendar_name, event_uid, updated_data)
+
+        retrieved, _ = await nc_client.calendar.get_event(calendar_name, event_uid)
+
+        # Verify categories
+        assert "work" in retrieved.get("categories", "")
+        assert "meeting" in retrieved.get("categories", "")
+
+        # Verify recurrence rule
+        assert retrieved.get("recurring") is True
+        assert "WEEKLY" in retrieved.get("recurrence_rule", "")
+
+        # Verify attendees
+        attendees = retrieved.get("attendees", "")
+        assert "alice@example.com" in attendees
+        assert "bob@example.com" in attendees
+
+        logger.info("Phase 1 passed: all extended fields set correctly")
+
+        # --- Phase 2: Clear all four extended fields ---
+        cleared_data = {
+            "categories": "",
+            "recurrence_rule": "",
+            "attendees": "",
+            "reminder_minutes": 0,
+        }
+        await nc_client.calendar.update_event(calendar_name, event_uid, cleared_data)
+
+        cleared, _ = await nc_client.calendar.get_event(calendar_name, event_uid)
+
+        # Verify categories cleared
+        assert not cleared.get("categories")
+
+        # Verify recurrence cleared
+        assert cleared.get("recurring") is not True
+        assert not cleared.get("recurrence_rule")
+
+        # Verify attendees cleared
+        assert not cleared.get("attendees")
+
+        logger.info("Phase 2 passed: all extended fields cleared correctly")
+
+    except Exception as e:
+        logger.error(f"Extended fields update test failed: {e}")
+        raise
+    finally:
+        if event_uid:
+            try:
+                await nc_client.calendar.delete_event(calendar_name, event_uid)
+            except Exception:
+                pass
+
+
 async def test_create_event_with_attendees(
     nc_client: NextcloudClient, temporary_calendar: str
 ):

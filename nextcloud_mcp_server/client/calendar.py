@@ -812,6 +812,48 @@ class CalendarClient:
                     if "url" in event_data:
                         component["URL"] = event_data["url"]
 
+                    # Handle categories
+                    if "categories" in event_data:
+                        categories_str = event_data["categories"]
+                        if categories_str:
+                            component["CATEGORIES"] = categories_str.split(",")
+                        elif "CATEGORIES" in component:
+                            del component["CATEGORIES"]
+
+                    # Handle recurrence rule
+                    if "recurrence_rule" in event_data:
+                        rrule_str = event_data["recurrence_rule"]
+                        if rrule_str:
+                            component["RRULE"] = vRecur.from_ical(rrule_str)
+                        elif "RRULE" in component:
+                            del component["RRULE"]
+
+                    # Handle attendees
+                    if "attendees" in event_data:
+                        attendees_str = event_data["attendees"]
+                        # Remove all existing attendees first
+                        while "ATTENDEE" in component:
+                            del component["ATTENDEE"]
+                        if attendees_str:
+                            for email in attendees_str.split(","):
+                                if email.strip():
+                                    component.add("attendee", f"mailto:{email.strip()}")
+
+                    # Handle reminder (VALARM)
+                    if "reminder_minutes" in event_data:
+                        component.subcomponents = [
+                            sub
+                            for sub in component.subcomponents
+                            if sub.name != "VALARM"
+                        ]
+                        minutes = event_data["reminder_minutes"]
+                        if minutes > 0:
+                            alarm = Alarm()
+                            alarm.add("action", "DISPLAY")
+                            alarm.add("description", "Event reminder")
+                            alarm.add("trigger", dt.timedelta(minutes=-minutes))
+                            component.add_component(alarm)
+
                     # Handle dates
                     if "start_datetime" in event_data:
                         start_str = event_data["start_datetime"]
