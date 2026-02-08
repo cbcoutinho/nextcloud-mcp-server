@@ -460,6 +460,97 @@ async def test_list_events_date_range_filtering(
                     logger.warning(f"Cleanup failed for event {uid}: {e}")
 
 
+async def test_recurring_event_date_range_expansion(
+    nc_client: NextcloudClient, temporary_calendar: str
+):
+    """Test that recurring events are expanded into individual occurrences.
+
+    When querying with a date range, a recurring event should return one
+    event dict per occurrence within the range, each with the correct
+    start_datetime for that occurrence (not the original master event date).
+
+    This is a follow-up to GH-538: the time-range filter correctly selected
+    recurring events, but returned the master event with its original DTSTART
+    instead of expanding occurrences.
+    """
+    calendar_name = temporary_calendar
+    event_uid = None
+
+    try:
+        # Create a daily recurring event starting 7 days ago
+        start = datetime.now() - timedelta(days=7)
+        event_data = {
+            "title": f"Daily Recurrence {uuid.uuid4().hex[:8]}",
+            "start_datetime": start.strftime("%Y-%m-%dT09:00:00"),
+            "end_datetime": start.strftime("%Y-%m-%dT10:00:00"),
+            "description": "Daily recurring event for expansion test",
+            "recurring": True,
+            "recurrence_rule": "FREQ=DAILY",
+        }
+        result = await nc_client.calendar.create_event(calendar_name, event_data)
+        event_uid = result["uid"]
+        logger.info(f"Created daily recurring event: {event_uid}")
+
+        # Query with date range: today → 3 days ahead
+        query_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        query_end = query_start + timedelta(days=3)
+
+        events = await nc_client.calendar.get_calendar_events(
+            calendar_name=calendar_name,
+            start_datetime=query_start,
+            end_datetime=query_end,
+            limit=50,
+        )
+
+        # Filter to only our recurring event (calendar may have others)
+        our_events = [e for e in events if e["uid"] == event_uid]
+
+        # Should have multiple occurrences (one per day in the range)
+        assert len(our_events) >= 2, (
+            f"Expected multiple expanded occurrences, got {len(our_events)}. "
+            f"Expansion may not be working."
+        )
+
+        # Each occurrence should have a different start_datetime
+        start_dates = [e["start_datetime"] for e in our_events]
+        assert len(set(start_dates)) == len(our_events), (
+            f"Each occurrence should have a unique start_datetime, got: {start_dates}"
+        )
+
+        # No start_datetime should fall outside the queried range
+        for e in our_events:
+            event_start = datetime.fromisoformat(e["start_datetime"])
+            # Remove timezone info for comparison if present
+            if event_start.tzinfo is not None:
+                event_start = event_start.replace(tzinfo=None)
+            assert event_start >= query_start - timedelta(hours=1), (
+                f"Occurrence {e['start_datetime']} is before query start {query_start}"
+            )
+            assert event_start < query_end + timedelta(hours=1), (
+                f"Occurrence {e['start_datetime']} is after query end {query_end}"
+            )
+
+        # Expanded occurrences should NOT have recurrence rules
+        # (server strips RRULE when expanding)
+        for e in our_events:
+            assert not e.get("recurring"), (
+                "Expanded occurrence should not have recurring=True, "
+                "RRULE should be stripped by server-side expansion"
+            )
+
+        logger.info(
+            f"Recurring event expansion works: {len(our_events)} occurrences "
+            f"returned with unique start dates"
+        )
+
+    finally:
+        if event_uid:
+            try:
+                await nc_client.calendar.delete_event(calendar_name, event_uid)
+            except Exception as e:
+                logger.warning(f"Cleanup failed for recurring event {event_uid}: {e}")
+
+
 async def test_calendar_operations_error_handling(
     nc_client: NextcloudClient,
 ):
