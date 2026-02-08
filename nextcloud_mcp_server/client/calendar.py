@@ -651,7 +651,7 @@ class CalendarClient:
         # Add categories
         categories = event_data.get("categories", "")
         if categories:
-            event.add("categories", categories.split(","))
+            event.add("categories", [c.strip() for c in categories.split(",")])
 
         # Add priority and status
         priority = event_data.get("priority", 5)
@@ -816,7 +816,9 @@ class CalendarClient:
                     if "categories" in event_data:
                         categories_str = event_data["categories"]
                         if categories_str:
-                            component["CATEGORIES"] = categories_str.split(",")
+                            component["CATEGORIES"] = [
+                                c.strip() for c in categories_str.split(",")
+                            ]
                         elif "CATEGORIES" in component:
                             del component["CATEGORIES"]
 
@@ -1087,7 +1089,9 @@ class CalendarClient:
                     if "categories" in todo_data:
                         categories_str = todo_data["categories"]
                         if categories_str:
-                            component["CATEGORIES"] = categories_str.split(",")
+                            component["CATEGORIES"] = [
+                                c.strip() for c in categories_str.split(",")
+                            ]
                             logger.debug(f"Set CATEGORIES to {categories_str}")
 
                     # Update timestamps
