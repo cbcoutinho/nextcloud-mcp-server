@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.57.41 (2026-02-08)
+
+### Fix
+
+- expand recurring events in date-range queries
+
 ## nextcloud-mcp-server-0.57.40 (2026-02-07)
 
 ### Fix
