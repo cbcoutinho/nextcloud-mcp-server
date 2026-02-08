@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.57.42 (2026-02-08)
+
+### Fix
+
+- strip whitespace from category names when splitting
+- handle categories, recurrence_rule, attendees, and reminder_minutes in update_event
+
 ## nextcloud-mcp-server-0.57.41 (2026-02-08)
 
 ### Fix
