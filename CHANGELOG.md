@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.63.3 (2026-02-08)
+
+### Fix
+
+- expand recurring events in date-range queries
+
 ## v0.63.2 (2026-02-07)
 
 ### Fix
