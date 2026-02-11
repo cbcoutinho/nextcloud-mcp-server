@@ -2,7 +2,7 @@
 
 ## Version Management
 
-This monorepo uses commitizen for version management with **independent versioning** for three components:
+This monorepo uses commitizen for version management with **independent versioning** for two components:
 
 ### Components
 
@@ -10,7 +10,8 @@ This monorepo uses commitizen for version management with **independent versioni
 |-----------|-------|--------------|-------------|
 | MCP Server | `mcp` or none | `./scripts/bump-mcp.sh` | `v0.54.0` |
 | Helm Chart | `helm` | `./scripts/bump-helm.sh` | `nextcloud-mcp-server-0.54.0` |
-| Astrolabe App | `astrolabe` | `./scripts/bump-astrolabe.sh` | `astrolabe-v0.2.0` |
+
+> **Note:** The Astrolabe Nextcloud app has been moved to its own repository at [cbcoutinho/astrolabe](https://github.com/cbcoutinho/astrolabe).
 
 ### Commit Message Format
 
@@ -24,10 +25,6 @@ fix(mcp): resolve authentication bug
 # Helm chart changes
 feat(helm): add resource limits
 docs(helm): update values documentation
-
-# Astrolabe app changes
-feat(astrolabe): add dark mode toggle
-fix(astrolabe): resolve search UI bug
 ```
 
 **Unscoped commits** default to the MCP server:
@@ -40,7 +37,6 @@ feat: add new feature  # → MCP server (v0.54.0)
 #### 1. Make Changes with Scoped Commits
 
 ```bash
-git commit -m "feat(astrolabe): add dark mode toggle"
 git commit -m "feat(helm): add ingress annotations"
 git commit -m "feat(mcp): add calendar sync"
 ```
@@ -58,10 +54,6 @@ git commit -m "feat(mcp): add calendar sync"
 # → Creates tag: nextcloud-mcp-server-0.54.0
 # → Updates: Chart.yaml:version
 
-# Bump Astrolabe (reads commits with scope=astrolabe)
-./scripts/bump-astrolabe.sh
-# → Creates tag: astrolabe-v0.2.0
-# → Updates: info.xml, package.json
 ```
 
 #### 3. Push Tags
@@ -76,7 +68,6 @@ Each component maintains its own `CHANGELOG.md`:
 
 - **MCP Server**: `CHANGELOG.md` (root) - includes `feat(mcp):` and unscoped commits
 - **Helm Chart**: `charts/nextcloud-mcp-server/CHANGELOG.md` - includes `feat(helm):` only
-- **Astrolabe**: `third_party/astrolabe/CHANGELOG.md` - includes `feat(astrolabe):` only
 
 ### Manual Version Bumps
 
@@ -101,7 +92,6 @@ uv run cz --config .cz.toml bump --increment MINOR
 
 - **MCP Server**: Follows PEP 440, `major_version_zero = true` (0.x.x for pre-1.0)
 - **Helm Chart**: Follows PEP 440, starts at 0.53.0 (continues from current)
-- **Astrolabe**: Follows PEP 440, `major_version_zero = true` (0.x.x for alpha/beta)
 
 ### Chart.yaml Version vs appVersion
 

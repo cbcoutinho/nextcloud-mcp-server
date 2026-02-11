@@ -48,23 +48,6 @@ jobs:
       ###### Required to build OIDC App ######
 
 
-      ###### Required to build Astrolabe App ######
-
-      - name: Set up Node.js for Astrolabe
-        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
-        with:
-          node-version: '20'
-
-      - name: Build Astrolabe app
-        run: |
-          cd third_party/astrolabe
-          composer install --no-dev --optimize-autoloader
-          npm ci
-          npm run build
-
-      ###### Required to build Astrolabe App ######
-
-
       - name: Run docker compose
         uses: hoverkraft-tech/compose-action@4894d2492015c1774ee5a13a95b1072093087ec3 # v2.5.0
         with:
