@@ -71,7 +71,7 @@ jobs:
             fi
           }
 
-          # Bump MCP server (default - all commits except helm/astrolabe scopes)
+          # Bump MCP server (default - all commits except helm scope)
           echo "Checking MCP server for version bump..."
 
           # Get the most recent MCP tag

@@ -11,7 +11,7 @@ This guide explains how to enable and disable webhooks for vector sync in each M
 Before enabling webhooks, ensure:
 
 1. **Nextcloud 30+** with `webhook_listeners` app enabled
-2. **Astrolabe app** installed in Nextcloud (provides settings UI and credentials API)
+2. **[Astrolabe app](https://github.com/cbcoutinho/astrolabe)** installed in Nextcloud (provides settings UI and credentials API)
 3. **MCP server** accessible from Nextcloud via HTTP(S)
 4. **Vector sync enabled** on the MCP server
 
@@ -261,24 +261,6 @@ php occ webhook_listeners:add --event "OCA\Tables\Event\RowUpdatedEvent" --uri "
 php occ webhook_listeners:add --event "OCA\Tables\Event\RowDeletedEvent" --uri "$MCP_URL/webhooks/nextcloud"
 ```
 
-## Webhook Presets (via Astrolabe UI)
-
-The Astrolabe app provides preset webhook configurations that can be enabled/disabled via the Admin settings UI:
-
-| Preset | Events Covered |
-|--------|----------------|
-| `notes_sync` | File create/update/delete for .md files |
-| `calendar_sync` | Calendar object events |
-| `tables_sync` | Tables row events |
-| `forms_sync` | Forms submission events |
-| `files_sync` | All file events (optional, high volume) |
-
-**Enable Presets:**
-1. Navigate to **Nextcloud Settings → Astrolabe** (Admin settings)
-2. Toggle desired presets in "Webhook Configuration"
-
-**Note:** Presets require the MCP server's management API to be accessible. The API uses OAuth bearer tokens from the user's session.
-
 ## Security Considerations
 
 ### Webhook Authentication
@@ -327,7 +309,7 @@ SELECT * FROM oc_webhook_listeners;
 -- Check OAuth clients
 SELECT id, name, token_type FROM oc_oidc_clients WHERE dcr = 1;
 
--- Check user credentials in Astrolabe
+-- Check user credentials stored by Astrolabe app
 SELECT userid, configkey FROM oc_preferences WHERE appid = 'astrolabe';
 ```
 

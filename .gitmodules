@@ -6,4 +6,4 @@
 	url = https://github.com/cbcoutinho/notes
 [submodule "third_party/astrolabe"]
 	path = third_party/astrolabe
-	url = git@github.com:cbcoutinho/astrolabe.git
+	url = https://github.com/cbcoutinho/astrolabe
