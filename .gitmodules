@@ -4,3 +4,6 @@
 [submodule "third_party/notes"]
 	path = third_party/notes
 	url = https://github.com/cbcoutinho/notes
+[submodule "third_party/astrolabe"]
+	path = third_party/astrolabe
+	url = https://github.com/cbcoutinho/astrolabe

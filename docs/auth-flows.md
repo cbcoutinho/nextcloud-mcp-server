@@ -356,45 +356,6 @@ Not applicable. Smithery deployments don't integrate with Astrolabe.
 
 ---
 
-## Astrolabe Background Token Refresh
-
-The Astrolabe Nextcloud app includes a background job that proactively refreshes OAuth tokens before expiration.
-
-```
-Nextcloud Cron                Astrolabe                    MCP Server IdP
-    │                             │                            │
-    │── Run RefreshUserTokens ───▶│                            │
-    │   (every 15 minutes)        │                            │
-    │                             │── Get all user tokens ────▶│
-    │                             │   (from preferences)       │
-    │                             │                            │
-    │   [For each user]           │                            │
-    │                             │── Check expiry ───────────▶│
-    │                             │   refresh if <50% lifetime │
-    │                             │                            │
-    │                             │── Acquire user lock ──────▶│
-    │                             │   (prevent race condition) │
-    │                             │                            │
-    │                             │── Token refresh request ──▶│
-    │                             │   grant_type=refresh_token │
-    │                             │◀── New tokens ─────────────│
-    │                             │                            │
-    │                             │── Store new tokens ───────▶│
-    │                             │   (with issued_at)         │
-    │◀── Job complete ────────────│                            │
-```
-
-**Key characteristics:**
-- Runs every 15 minutes via Nextcloud cron
-- Refreshes when <50% of token lifetime remains
-- Uses locking to prevent race conditions with on-demand refresh
-- Stores `issued_at` timestamp for accurate lifetime calculation
-- Batch processing (100 users at a time) for memory efficiency
-
-**Implementation:** `third_party/astrolabe/lib/BackgroundJob/RefreshUserTokens.php`
-
----
-
 ## Configuration Quick Reference
 
 ### Single-User BasicAuth

@@ -71,7 +71,7 @@ jobs:
             fi
           }
 
-          # Bump MCP server (default - all commits except helm/astrolabe scopes)
+          # Bump MCP server (default - all commits except helm scope)
           echo "Checking MCP server for version bump..."
 
           # Get the most recent MCP tag
@@ -83,9 +83,9 @@ jobs:
             commit_range="${last_mcp_tag}..HEAD"
           fi
 
-          # Count conventional commits that are NOT scoped to helm or astrolabe
+          # Count conventional commits that are NOT scoped to helm
           mcp_commit_count=$(git log "$commit_range" --oneline --grep="^(feat|fix|docs|refactor|perf|test|build|ci|chore)" -E | \
-            { grep -v "(helm)" || true; } | { grep -v "(astrolabe)" || true; } | wc -l)
+            { grep -v "(helm)" || true; } | wc -l)
 
           MCP_BUMPED=false
           if [ "$mcp_commit_count" -gt 0 ]; then
@@ -113,14 +113,6 @@ jobs:
             echo "Bumping Helm chart version (appVersion changed)..."
             ./scripts/bump-helm.sh --increment PATCH
             BUMPED_COMPONENTS="$BUMPED_COMPONENTS helm"
-          fi
-
-          # Bump Astrolabe (scope: astrolabe)
-          echo "Checking Astrolabe for version bump..."
-          if has_commits_since_tag "astrolabe-v" "(feat|fix|docs|refactor|perf|test|build|ci|chore)\(astrolabe\)(!)?:"; then
-            echo "Bumping Astrolabe version..."
-            ./scripts/bump-astrolabe.sh
-            BUMPED_COMPONENTS="$BUMPED_COMPONENTS astrolabe"
           fi
 
           # Output summary
@@ -157,10 +149,6 @@ jobs:
                 helm)
                   tag=$(git tag --sort=-creatordate | grep -E '^nextcloud-mcp-server-' | head -n 1)
                   echo "- **Helm Chart**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
-                  ;;
-                astrolabe)
-                  tag=$(git tag --sort=-creatordate | grep -E '^astrolabe-v' | head -n 1)
-                  echo "- **Astrolabe**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
                   ;;
               esac
             done
