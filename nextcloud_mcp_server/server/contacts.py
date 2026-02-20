@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
@@ -15,6 +16,34 @@ from nextcloud_mcp_server.models.contacts import (
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _raw_contact_to_model(raw: dict) -> Contact:
+    """Convert a raw contact dict from the contacts client to a Contact model."""
+    contact_info = raw.get("contact", {})
+
+    # Convert email field (str, list, or None) to list[ContactField]
+    raw_email = contact_info.get("email")
+    emails: list[ContactField] = []
+    if isinstance(raw_email, list):
+        emails = [ContactField(type="email", value=e) for e in raw_email if e]
+    elif isinstance(raw_email, str) and raw_email:
+        emails = [ContactField(type="email", value=raw_email)]
+
+    # Nickname goes into custom_fields (no dedicated model field)
+    custom_fields: dict[str, Any] = {}
+    nickname = contact_info.get("nickname")
+    if nickname:
+        custom_fields["nickname"] = nickname
+
+    return Contact(
+        uid=raw["vcard_id"],
+        fn=contact_info.get("fullname", ""),
+        etag=raw.get("getetag"),
+        birthday=contact_info.get("birthday"),
+        emails=emails,
+        custom_fields=custom_fields,
+    )
 
 
 def configure_contacts_tools(mcp: FastMCP):
@@ -53,34 +82,7 @@ def configure_contacts_tools(mcp: FastMCP):
         """List all contacts in the specified addressbook."""
         client = await get_client(ctx)
         contacts_data = await client.contacts.list_contacts(addressbook=addressbook)
-        contacts = []
-        for c in contacts_data:
-            contact_info = c.get("contact", {})
-
-            # Convert email field (str, list, or None) to list[ContactField]
-            raw_email = contact_info.get("email")
-            emails: list[ContactField] = []
-            if isinstance(raw_email, list):
-                emails = [ContactField(type="email", value=e) for e in raw_email if e]
-            elif isinstance(raw_email, str) and raw_email:
-                emails = [ContactField(type="email", value=raw_email)]
-
-            # Nickname goes into custom_fields (no dedicated model field)
-            custom_fields: dict[str, str] = {}
-            nickname = contact_info.get("nickname")
-            if nickname:
-                custom_fields["nickname"] = nickname
-
-            contacts.append(
-                Contact(
-                    uid=c["vcard_id"],
-                    fn=contact_info.get("fullname", ""),
-                    etag=c.get("getetag"),
-                    birthday=contact_info.get("birthday"),
-                    emails=emails,
-                    custom_fields=custom_fields,
-                )
-            )
+        contacts = [_raw_contact_to_model(c) for c in contacts_data]
         return ListContactsResponse(
             contacts=contacts, addressbook=addressbook, total_count=len(contacts)
         )

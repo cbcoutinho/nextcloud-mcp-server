@@ -4,7 +4,6 @@ import pytest
 
 from nextcloud_mcp_server.models.contacts import (
     Contact,
-    ContactField,
     ListContactsResponse,
 )
 from nextcloud_mcp_server.models.notes import (
@@ -17,6 +16,8 @@ from nextcloud_mcp_server.models.semantic import (
     SamplingSearchResponse,
     SemanticSearchResult,
 )
+from nextcloud_mcp_server.server.calendar import _event_dict_to_summary
+from nextcloud_mcp_server.server.contacts import _raw_contact_to_model
 
 
 @pytest.mark.unit
@@ -275,29 +276,8 @@ def test_sampling_search_response_serialization():
 
 
 def _map_contact(raw: dict) -> Contact:
-    """Replicate the mapping logic from server/contacts.py for testing."""
-    contact_info = raw.get("contact", {})
-
-    raw_email = contact_info.get("email")
-    emails: list[ContactField] = []
-    if isinstance(raw_email, list):
-        emails = [ContactField(type="email", value=e) for e in raw_email if e]
-    elif isinstance(raw_email, str) and raw_email:
-        emails = [ContactField(type="email", value=raw_email)]
-
-    custom_fields: dict[str, str] = {}
-    nickname = contact_info.get("nickname")
-    if nickname:
-        custom_fields["nickname"] = nickname
-
-    return Contact(
-        uid=raw["vcard_id"],
-        fn=contact_info.get("fullname", ""),
-        etag=raw.get("getetag"),
-        birthday=contact_info.get("birthday"),
-        emails=emails,
-        custom_fields=custom_fields,
-    )
+    """Thin wrapper around the production mapping function for test readability."""
+    return _raw_contact_to_model(raw)
 
 
 @pytest.mark.unit
@@ -394,3 +374,117 @@ def test_list_contacts_response_wraps_contacts():
     assert c["birthday"] == "2000-01-01"
     assert c["emails"][0]["value"] == "alice@test.com"
     assert c["custom_fields"]["nickname"] == "Ali"
+
+
+# ============= _event_dict_to_summary tests =============
+
+
+@pytest.mark.unit
+def test_event_dict_to_summary_basic():
+    """Test basic mapping with all fields populated."""
+    event = {
+        "uid": "evt-001",
+        "title": "Team Standup",
+        "start_datetime": "2025-07-28T09:00:00",
+        "end_datetime": "2025-07-28T09:30:00",
+        "all_day": False,
+        "location": "Room 42",
+        "description": "Daily sync",
+        "categories": ["work", "meeting"],
+        "status": "CONFIRMED",
+        "calendar_name": "office",
+        "calendar_display_name": "Office Calendar",
+    }
+
+    summary = _event_dict_to_summary(event)
+
+    assert summary.uid == "evt-001"
+    assert summary.summary == "Team Standup"
+    assert summary.start == "2025-07-28T09:00:00"
+    assert summary.end == "2025-07-28T09:30:00"
+    assert summary.all_day is False
+    assert summary.location == "Room 42"
+    assert summary.description == "Daily sync"
+    assert summary.categories == ["work", "meeting"]
+    assert summary.status == "CONFIRMED"
+    assert summary.calendar_name == "office"
+    assert summary.calendar_display_name == "Office Calendar"
+
+
+@pytest.mark.unit
+def test_event_dict_to_summary_categories_string():
+    """Test that comma-separated category string is split into a list."""
+    event = {
+        "uid": "evt-002",
+        "title": "Review",
+        "categories": "work, meeting, important",
+    }
+
+    summary = _event_dict_to_summary(event)
+
+    assert summary.categories == ["work", "meeting", "important"]
+
+
+@pytest.mark.unit
+def test_event_dict_to_summary_categories_list_passthrough():
+    """Test that a list of categories passes through unchanged."""
+    event = {
+        "uid": "evt-003",
+        "title": "Review",
+        "categories": ["personal", "health"],
+    }
+
+    summary = _event_dict_to_summary(event)
+
+    assert summary.categories == ["personal", "health"]
+
+
+@pytest.mark.unit
+def test_event_dict_to_summary_falsy_location_description():
+    """Test that empty/falsy location and description are coerced to None."""
+    event = {
+        "uid": "evt-004",
+        "title": "Quick Chat",
+        "location": "",
+        "description": "",
+    }
+
+    summary = _event_dict_to_summary(event)
+
+    assert summary.location is None
+    assert summary.description is None
+
+
+@pytest.mark.unit
+def test_event_dict_to_summary_missing_optional_fields():
+    """Test mapping with only required fields present."""
+    event = {"uid": "evt-005", "title": "Minimal Event"}
+
+    summary = _event_dict_to_summary(event)
+
+    assert summary.uid == "evt-005"
+    assert summary.summary == "Minimal Event"
+    assert summary.start == ""
+    assert summary.end is None
+    assert summary.all_day is False
+    assert summary.location is None
+    assert summary.description is None
+    assert summary.categories == []
+    assert summary.status is None
+    assert summary.calendar_name is None
+    assert summary.calendar_display_name is None
+
+
+@pytest.mark.unit
+def test_event_dict_to_summary_calendar_name_without_display_name():
+    """Test single-calendar path: calendar_name set, display_name absent."""
+    event = {
+        "uid": "evt-006",
+        "title": "Personal Errand",
+        "calendar_name": "personal",
+    }
+
+    summary = _event_dict_to_summary(event)
+
+    assert summary.calendar_name == "personal"
+    assert summary.calendar_display_name is None

@@ -240,6 +240,10 @@ def configure_calendar_tools(mcp: FastMCP):
                 limit=limit,
             )
 
+            # Enrich events with calendar context for per-event mapping
+            for event in events:
+                event["calendar_name"] = calendar_name
+
             # Apply filters if provided
             if filters:
                 events = client.calendar._apply_event_filters(events, filters)
@@ -459,6 +463,8 @@ def configure_calendar_tools(mcp: FastMCP):
                 end_datetime=end_datetime,
                 limit=limit,
             )
+            for event in events:
+                event["calendar_name"] = calendar_name
         else:
             # Get events from all calendars
             all_calendars = await client.calendar.list_calendars()
