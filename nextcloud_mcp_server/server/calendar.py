@@ -39,6 +39,8 @@ def _event_dict_to_summary(event: dict) -> CalendarEventSummary:
         description=event.get("description") or None,
         categories=categories,
         status=event.get("status"),
+        calendar_name=event.get("calendar_name"),
+        calendar_display_name=event.get("calendar_display_name"),
     )
 
 
@@ -470,6 +472,9 @@ def configure_calendar_tools(mcp: FastMCP):
                         end_datetime=end_datetime,
                         limit=limit,
                     )
+                    for event in cal_events:
+                        event["calendar_name"] = calendar["name"]
+                        event["calendar_display_name"] = calendar["display_name"]
                     all_events.extend(cal_events)
                 except Exception as e:
                     logger.warning(

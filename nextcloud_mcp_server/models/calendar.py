@@ -34,6 +34,12 @@ class CalendarEventSummary(BaseModel):
     status: Optional[str] = Field(
         None, description="Event status (CONFIRMED, TENTATIVE, CANCELLED)"
     )
+    calendar_name: Optional[str] = Field(
+        None, description="Calendar containing this event"
+    )
+    calendar_display_name: Optional[str] = Field(
+        None, description="Display name of calendar containing this event"
+    )
 
 
 class CalendarEvent(CalendarEventSummary):

@@ -79,12 +79,9 @@ async def test_deck_board_view_permissions(
         if not result.isError:
             response_data = json.loads(result.content[0].text)
             # Response is a ListBoardsResponse with a "boards" field
-            if isinstance(response_data, dict) and "boards" in response_data:
-                response_data = response_data["boards"]
-            elif not isinstance(response_data, list):
-                response_data = [response_data] if response_data else []
-            board_ids = [b["id"] for b in response_data]
-            logger.info(f"Bob can see {len(response_data)} boards: {board_ids}")
+            board_list = response_data.get("boards", [])
+            board_ids = [b["id"] for b in board_list]
+            logger.info(f"Bob can see {len(board_list)} boards: {board_ids}")
 
             # Bob should see the shared board
             if board_id in board_ids:
@@ -101,12 +98,9 @@ async def test_deck_board_view_permissions(
         if not result.isError:
             response_data = json.loads(result.content[0].text)
             # Response is a ListBoardsResponse with a "boards" field
-            if isinstance(response_data, dict) and "boards" in response_data:
-                response_data = response_data["boards"]
-            elif not isinstance(response_data, list):
-                response_data = [response_data] if response_data else []
-            board_ids = [b["id"] for b in response_data]
-            logger.info(f"Diana can see {len(response_data)} boards")
+            board_list = response_data.get("boards", [])
+            board_ids = [b["id"] for b in board_list]
+            logger.info(f"Diana can see {len(board_list)} boards")
 
             # Diana should NOT see the board
             assert board_id not in board_ids, "Diana should not see board without ACL"
@@ -318,11 +312,8 @@ async def test_deck_user_isolation(nc_client, alice_mcp_client, bob_mcp_client):
         if not result.isError:
             response_data = json.loads(result.content[0].text)
             # Response is a ListBoardsResponse with a "boards" field
-            if isinstance(response_data, dict) and "boards" in response_data:
-                response_data = response_data["boards"]
-            elif not isinstance(response_data, list):
-                response_data = [response_data] if response_data else []
-            board_ids = [b["id"] for b in response_data]
+            board_list = response_data.get("boards", [])
+            board_ids = [b["id"] for b in board_list]
             logger.info(f"Alice can see boards: {board_ids}")
 
             # Alice should NOT see Bob's board
@@ -339,11 +330,8 @@ async def test_deck_user_isolation(nc_client, alice_mcp_client, bob_mcp_client):
         if not result.isError:
             response_data = json.loads(result.content[0].text)
             # Response is a ListBoardsResponse with a "boards" field
-            if isinstance(response_data, dict) and "boards" in response_data:
-                response_data = response_data["boards"]
-            elif not isinstance(response_data, list):
-                response_data = [response_data] if response_data else []
-            board_ids = [b["id"] for b in response_data]
+            board_list = response_data.get("boards", [])
+            board_ids = [b["id"] for b in board_list]
             logger.info(f"Bob can see boards: {board_ids}")
 
             # Bob should NOT see Alice's board

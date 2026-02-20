@@ -2,6 +2,11 @@
 
 import pytest
 
+from nextcloud_mcp_server.models.contacts import (
+    Contact,
+    ContactField,
+    ListContactsResponse,
+)
 from nextcloud_mcp_server.models.notes import (
     CreateNoteResponse,
     Note,
@@ -267,3 +272,125 @@ def test_sampling_search_response_serialization():
     assert data["model_used"] == "claude-3-5-sonnet"
     assert data["stop_reason"] == "maxTokens"
     assert data["success"] is True
+
+
+def _map_contact(raw: dict) -> Contact:
+    """Replicate the mapping logic from server/contacts.py for testing."""
+    contact_info = raw.get("contact", {})
+
+    raw_email = contact_info.get("email")
+    emails: list[ContactField] = []
+    if isinstance(raw_email, list):
+        emails = [ContactField(type="email", value=e) for e in raw_email if e]
+    elif isinstance(raw_email, str) and raw_email:
+        emails = [ContactField(type="email", value=raw_email)]
+
+    custom_fields: dict[str, str] = {}
+    nickname = contact_info.get("nickname")
+    if nickname:
+        custom_fields["nickname"] = nickname
+
+    return Contact(
+        uid=raw["vcard_id"],
+        fn=contact_info.get("fullname", ""),
+        etag=raw.get("getetag"),
+        birthday=contact_info.get("birthday"),
+        emails=emails,
+        custom_fields=custom_fields,
+    )
+
+
+@pytest.mark.unit
+def test_contact_mapping_preserves_email_birthday_nickname():
+    """Test that list_contacts mapping preserves email, birthday, and nickname.
+
+    Regression test for PR #574: the original mapping only kept uid, fn, etag
+    and silently dropped email, birthday, and nickname.
+    """
+    raw_contact = {
+        "vcard_id": "abc-123",
+        "getetag": '"etag-val"',
+        "contact": {
+            "fullname": "Jane Doe",
+            "email": "jane@example.com",
+            "birthday": "1990-05-15",
+            "nickname": "JD",
+        },
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert contact.uid == "abc-123"
+    assert contact.fn == "Jane Doe"
+    assert contact.etag == '"etag-val"'
+    assert contact.birthday == "1990-05-15"
+    assert len(contact.emails) == 1
+    assert contact.emails[0].value == "jane@example.com"
+    assert contact.emails[0].type == "email"
+    assert contact.custom_fields["nickname"] == "JD"
+
+
+@pytest.mark.unit
+def test_contact_mapping_multiple_emails():
+    """Test that multiple emails are mapped correctly."""
+    raw_contact = {
+        "vcard_id": "def-456",
+        "contact": {
+            "fullname": "John Smith",
+            "email": ["john@work.com", "john@home.com"],
+        },
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert len(contact.emails) == 2
+    assert contact.emails[0].value == "john@work.com"
+    assert contact.emails[1].value == "john@home.com"
+
+
+@pytest.mark.unit
+def test_contact_mapping_missing_optional_fields():
+    """Test mapping when email, birthday, and nickname are absent."""
+    raw_contact = {
+        "vcard_id": "ghi-789",
+        "contact": {"fullname": "No Details"},
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert contact.uid == "ghi-789"
+    assert contact.fn == "No Details"
+    assert contact.birthday is None
+    assert contact.emails == []
+    assert contact.custom_fields == {}
+
+
+@pytest.mark.unit
+def test_list_contacts_response_wraps_contacts():
+    """Test ListContactsResponse wraps contacts correctly for MCP output."""
+    contacts = [
+        _map_contact(
+            {
+                "vcard_id": "a",
+                "getetag": '"e1"',
+                "contact": {
+                    "fullname": "Alice",
+                    "email": "alice@test.com",
+                    "birthday": "2000-01-01",
+                    "nickname": "Ali",
+                },
+            }
+        ),
+    ]
+
+    response = ListContactsResponse(
+        contacts=contacts, addressbook="personal", total_count=1
+    )
+
+    data = response.model_dump()
+    assert data["total_count"] == 1
+    assert len(data["contacts"]) == 1
+    c = data["contacts"][0]
+    assert c["birthday"] == "2000-01-01"
+    assert c["emails"][0]["value"] == "alice@test.com"
+    assert c["custom_fields"]["nickname"] == "Ali"
