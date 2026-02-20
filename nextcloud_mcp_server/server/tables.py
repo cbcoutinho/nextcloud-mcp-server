@@ -5,6 +5,7 @@ from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.models.tables import ListTablesResponse, Table
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
@@ -18,10 +19,12 @@ def configure_tables_tools(mcp: FastMCP):
     )
     @require_scopes("tables:read")
     @instrument_tool
-    async def nc_tables_list_tables(ctx: Context):
+    async def nc_tables_list_tables(ctx: Context) -> ListTablesResponse:
         """List all tables available to the user"""
         client = await get_client(ctx)
-        return await client.tables.list_tables()
+        tables_data = await client.tables.list_tables()
+        tables = [Table(**t) for t in tables_data]
+        return ListTablesResponse(tables=tables, total_count=len(tables))
 
     @mcp.tool(
         title="Get Table Schema",

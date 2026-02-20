@@ -5,6 +5,12 @@ from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.models.contacts import (
+    AddressBook,
+    Contact,
+    ListAddressBooksResponse,
+    ListContactsResponse,
+)
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
@@ -18,10 +24,21 @@ def configure_contacts_tools(mcp: FastMCP):
     )
     @require_scopes("contacts:read")
     @instrument_tool
-    async def nc_contacts_list_addressbooks(ctx: Context):
+    async def nc_contacts_list_addressbooks(ctx: Context) -> ListAddressBooksResponse:
         """List all addressbooks for the user."""
         client = await get_client(ctx)
-        return await client.contacts.list_addressbooks()
+        addressbooks_data = await client.contacts.list_addressbooks()
+        addressbooks = [
+            AddressBook(
+                uri=ab["name"],
+                displayname=ab.get("display_name", ab["name"]),
+                ctag=ab.get("getctag"),
+            )
+            for ab in addressbooks_data
+        ]
+        return ListAddressBooksResponse(
+            addressbooks=addressbooks, total_count=len(addressbooks)
+        )
 
     @mcp.tool(
         title="List Contacts",
@@ -29,10 +46,23 @@ def configure_contacts_tools(mcp: FastMCP):
     )
     @require_scopes("contacts:read")
     @instrument_tool
-    async def nc_contacts_list_contacts(ctx: Context, *, addressbook: str):
+    async def nc_contacts_list_contacts(
+        ctx: Context, *, addressbook: str
+    ) -> ListContactsResponse:
         """List all contacts in the specified addressbook."""
         client = await get_client(ctx)
-        return await client.contacts.list_contacts(addressbook=addressbook)
+        contacts_data = await client.contacts.list_contacts(addressbook=addressbook)
+        contacts = [
+            Contact(
+                uid=c["vcard_id"],
+                fn=c.get("contact", {}).get("fullname", ""),
+                etag=c.get("getetag"),
+            )
+            for c in contacts_data
+        ]
+        return ListContactsResponse(
+            contacts=contacts, addressbook=addressbook, total_count=len(contacts)
+        )
 
     @mcp.tool(
         title="Create Address Book",

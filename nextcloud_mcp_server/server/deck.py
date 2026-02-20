@@ -17,6 +17,10 @@ from nextcloud_mcp_server.models.deck import (
     DeckLabel,
     DeckStack,
     LabelOperationResponse,
+    ListBoardsResponse,
+    ListCardsResponse,
+    ListLabelsResponse,
+    ListStacksResponse,
     StackOperationResponse,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
@@ -124,11 +128,11 @@ def configure_deck_tools(mcp: FastMCP):
     )
     @require_scopes("deck:read")
     @instrument_tool
-    async def deck_get_boards(ctx: Context) -> list[DeckBoard]:
+    async def deck_get_boards(ctx: Context) -> ListBoardsResponse:
         """Get all Nextcloud Deck boards"""
         client = await get_client(ctx)
         boards = await client.deck.get_boards()
-        return boards
+        return ListBoardsResponse(boards=boards, total=len(boards))
 
     @mcp.tool(
         title="Get Deck Board",
@@ -148,11 +152,11 @@ def configure_deck_tools(mcp: FastMCP):
     )
     @require_scopes("deck:read")
     @instrument_tool
-    async def deck_get_stacks(ctx: Context, board_id: int) -> list[DeckStack]:
+    async def deck_get_stacks(ctx: Context, board_id: int) -> ListStacksResponse:
         """Get all stacks in a Nextcloud Deck board"""
         client = await get_client(ctx)
         stacks = await client.deck.get_stacks(board_id)
-        return stacks
+        return ListStacksResponse(stacks=stacks, total=len(stacks))
 
     @mcp.tool(
         title="Get Deck Stack",
@@ -174,13 +178,12 @@ def configure_deck_tools(mcp: FastMCP):
     @instrument_tool
     async def deck_get_cards(
         ctx: Context, board_id: int, stack_id: int
-    ) -> list[DeckCard]:
+    ) -> ListCardsResponse:
         """Get all cards in a Nextcloud Deck stack"""
         client = await get_client(ctx)
         stack = await client.deck.get_stack(board_id, stack_id)
-        if stack.cards:
-            return stack.cards
-        return []
+        cards = stack.cards or []
+        return ListCardsResponse(cards=cards, total=len(cards))
 
     @mcp.tool(
         title="Get Deck Card",
@@ -202,11 +205,11 @@ def configure_deck_tools(mcp: FastMCP):
     )
     @require_scopes("deck:read")
     @instrument_tool
-    async def deck_get_labels(ctx: Context, board_id: int) -> list[DeckLabel]:
+    async def deck_get_labels(ctx: Context, board_id: int) -> ListLabelsResponse:
         """Get all labels in a Nextcloud Deck board"""
         client = await get_client(ctx)
         board = await client.deck.get_board(board_id)
-        return board.labels
+        return ListLabelsResponse(labels=board.labels, total=len(board.labels))
 
     @mcp.tool(
         title="Get Deck Label",

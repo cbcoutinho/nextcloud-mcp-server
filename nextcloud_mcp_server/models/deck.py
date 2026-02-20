@@ -261,6 +261,20 @@ class CreateLabelResponse(BaseResponse):
     color: str = Field(description="The created label color")
 
 
+class ListCardsResponse(BaseResponse):
+    """Response model for listing deck cards."""
+
+    cards: List[DeckCard] = Field(description="List of deck cards")
+    total: int = Field(description="Total number of cards")
+
+
+class ListLabelsResponse(BaseResponse):
+    """Response model for listing deck labels."""
+
+    labels: List[DeckLabel] = Field(description="List of deck labels")
+    total: int = Field(description="Total number of labels")
+
+
 class LabelOperationResponse(StatusResponse):
     """Response model for label operations like update/delete."""
 

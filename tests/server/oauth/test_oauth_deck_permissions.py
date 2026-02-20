@@ -78,8 +78,10 @@ async def test_deck_board_view_permissions(
 
         if not result.isError:
             response_data = json.loads(result.content[0].text)
-            # The response is directly a list of boards
-            if not isinstance(response_data, list):
+            # Response is a ListBoardsResponse with a "boards" field
+            if isinstance(response_data, dict) and "boards" in response_data:
+                response_data = response_data["boards"]
+            elif not isinstance(response_data, list):
                 response_data = [response_data] if response_data else []
             board_ids = [b["id"] for b in response_data]
             logger.info(f"Bob can see {len(response_data)} boards: {board_ids}")
@@ -98,8 +100,10 @@ async def test_deck_board_view_permissions(
 
         if not result.isError:
             response_data = json.loads(result.content[0].text)
-            # The response is directly a list of boards
-            if not isinstance(response_data, list):
+            # Response is a ListBoardsResponse with a "boards" field
+            if isinstance(response_data, dict) and "boards" in response_data:
+                response_data = response_data["boards"]
+            elif not isinstance(response_data, list):
                 response_data = [response_data] if response_data else []
             board_ids = [b["id"] for b in response_data]
             logger.info(f"Diana can see {len(response_data)} boards")
@@ -313,8 +317,10 @@ async def test_deck_user_isolation(nc_client, alice_mcp_client, bob_mcp_client):
 
         if not result.isError:
             response_data = json.loads(result.content[0].text)
-            # The response is directly a list of boards
-            if not isinstance(response_data, list):
+            # Response is a ListBoardsResponse with a "boards" field
+            if isinstance(response_data, dict) and "boards" in response_data:
+                response_data = response_data["boards"]
+            elif not isinstance(response_data, list):
                 response_data = [response_data] if response_data else []
             board_ids = [b["id"] for b in response_data]
             logger.info(f"Alice can see boards: {board_ids}")
@@ -332,8 +338,10 @@ async def test_deck_user_isolation(nc_client, alice_mcp_client, bob_mcp_client):
 
         if not result.isError:
             response_data = json.loads(result.content[0].text)
-            # The response is directly a list of boards
-            if not isinstance(response_data, list):
+            # Response is a ListBoardsResponse with a "boards" field
+            if isinstance(response_data, dict) and "boards" in response_data:
+                response_data = response_data["boards"]
+            elif not isinstance(response_data, list):
                 response_data = [response_data] if response_data else []
             board_ids = [b["id"] for b in response_data]
             logger.info(f"Bob can see boards: {board_ids}")
