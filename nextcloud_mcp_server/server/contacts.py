@@ -19,7 +19,13 @@ logger = logging.getLogger(__name__)
 
 
 def _raw_contact_to_model(raw: dict) -> Contact:
-    """Convert a raw contact dict from the contacts client to a Contact model."""
+    """Convert a raw contact dict from the contacts client to a Contact model.
+
+    Only maps fields the client's list_contacts() currently returns:
+    fullname, nickname, birthday, and email. Additional Contact model fields
+    (phones, addresses, organization, etc.) require expanding the client's
+    vCard parsing in ContactsClient.list_contacts().
+    """
     contact_info = raw.get("contact", {})
 
     # Convert email field (str, list, or None) to list[ContactField]

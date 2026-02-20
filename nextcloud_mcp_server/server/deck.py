@@ -107,7 +107,7 @@ def configure_deck_tools(mcp: FastMCP):
         )
         client = await get_client(ctx)
         board = await client.deck.get_board(board_id)
-        return [label.model_dump() for label in board.labels]
+        return [label.model_dump() for label in (board.labels or [])]
 
     @mcp.resource("nc://Deck/boards/{board_id}/labels/{label_id}")
     async def deck_label_resource(board_id: int, label_id: int):
@@ -209,7 +209,8 @@ def configure_deck_tools(mcp: FastMCP):
         """Get all labels in a Nextcloud Deck board"""
         client = await get_client(ctx)
         board = await client.deck.get_board(board_id)
-        return ListLabelsResponse(labels=board.labels, total=len(board.labels))
+        labels = board.labels or []
+        return ListLabelsResponse(labels=labels, total=len(labels))
 
     @mcp.tool(
         title="Get Deck Label",

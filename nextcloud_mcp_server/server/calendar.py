@@ -29,10 +29,14 @@ def _event_dict_to_summary(event: dict) -> CalendarEventSummary:
     else:
         categories = raw_categories
 
+    start = event.get("start_datetime", "")
+    if not start:
+        logger.debug("Event %s has no start_datetime", event.get("uid", "unknown"))
+
     return CalendarEventSummary(
         uid=event.get("uid", ""),
         summary=event.get("title", ""),
-        start=event.get("start_datetime", ""),
+        start=start,
         end=event.get("end_datetime"),
         all_day=event.get("all_day", False),
         location=event.get("location") or None,
@@ -240,7 +244,10 @@ def configure_calendar_tools(mcp: FastMCP):
                 limit=limit,
             )
 
-            # Enrich events with calendar context for per-event mapping
+            # Enrich events with calendar context for per-event mapping.
+            # Note: calendar_display_name is not available here without an
+            # extra list_calendars() call; the response-level calendar_name
+            # already identifies the calendar for single-calendar queries.
             for event in events:
                 event["calendar_name"] = calendar_name
 
@@ -463,6 +470,7 @@ def configure_calendar_tools(mcp: FastMCP):
                 end_datetime=end_datetime,
                 limit=limit,
             )
+            # calendar_display_name not available without extra API call
             for event in events:
                 event["calendar_name"] = calendar_name
         else:
