@@ -9,13 +9,44 @@ from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.calendar import (
     Calendar,
+    CalendarEventSummary,
     ListCalendarsResponse,
+    ListEventsResponse,
     ListTodosResponse,
     Todo,
+    UpcomingEventsResponse,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _event_dict_to_summary(event: dict) -> CalendarEventSummary:
+    """Convert a raw event dict from the calendar client to a CalendarEventSummary."""
+    raw_categories = event.get("categories", [])
+    if isinstance(raw_categories, str):
+        categories = [c.strip() for c in raw_categories.split(",") if c.strip()]
+    else:
+        categories = raw_categories
+
+    start = event.get("start_datetime", "")
+    if not start:
+        logger.debug("Event %s has no start_datetime", event.get("uid", "unknown"))
+
+    return CalendarEventSummary(
+        uid=event.get("uid", ""),
+        summary=event.get("title", ""),
+        start=start,
+        end=event.get("end_datetime"),
+        all_day=event.get("all_day", False),
+        location=event.get("location") or None,
+        description=event.get("description") or None,
+        categories=categories,
+        status=event.get("status"),
+        calendar_name=event.get("calendar_name"),
+        calendar_display_name=event.get("calendar_display_name")
+        or event.get("calendar_name"),
+    )
 
 
 def configure_calendar_tools(mcp: FastMCP):
@@ -204,7 +235,7 @@ def configure_calendar_tools(mcp: FastMCP):
                 end_datetime=end_datetime,
                 filters=filters if filters else None,
             )
-            return events[:limit]
+            events = events[:limit]
         else:
             # Search in specific calendar
             events = await client.calendar.get_calendar_events(
@@ -214,11 +245,25 @@ def configure_calendar_tools(mcp: FastMCP):
                 limit=limit,
             )
 
+            # Enrich events with calendar context for per-event mapping.
+            # Note: calendar_display_name is not available here without an
+            # extra list_calendars() call; the response-level calendar_name
+            # already identifies the calendar for single-calendar queries.
+            for event in events:
+                event["calendar_name"] = calendar_name
+
             # Apply filters if provided
             if filters:
                 events = client.calendar._apply_event_filters(events, filters)
 
-            return events
+        summaries = [_event_dict_to_summary(e) for e in events]
+        return ListEventsResponse(
+            events=summaries,
+            calendar_name=None if search_all_calendars else calendar_name,
+            start_date=start_date or None,
+            end_date=end_date or None,
+            total_found=len(summaries),
+        )
 
     @mcp.tool(
         title="Get Calendar Event",
@@ -420,12 +465,15 @@ def configure_calendar_tools(mcp: FastMCP):
 
         if calendar_name:
             # Get events from specific calendar
-            return await client.calendar.get_calendar_events(
+            events = await client.calendar.get_calendar_events(
                 calendar_name=calendar_name,
                 start_datetime=now,
                 end_datetime=end_datetime,
                 limit=limit,
             )
+            # calendar_display_name not available without extra API call
+            for event in events:
+                event["calendar_name"] = calendar_name
         else:
             # Get events from all calendars
             all_calendars = await client.calendar.list_calendars()
@@ -433,17 +481,16 @@ def configure_calendar_tools(mcp: FastMCP):
 
             for calendar in all_calendars:
                 try:
-                    events = await client.calendar.get_calendar_events(
+                    cal_events = await client.calendar.get_calendar_events(
                         calendar_name=calendar["name"],
                         start_datetime=now,
                         end_datetime=end_datetime,
                         limit=limit,
                     )
-                    # Add calendar info to each event
-                    for event in events:
+                    for event in cal_events:
                         event["calendar_name"] = calendar["name"]
                         event["calendar_display_name"] = calendar["display_name"]
-                    all_events.extend(events)
+                    all_events.extend(cal_events)
                 except Exception as e:
                     logger.warning(
                         f"Error getting events from calendar {calendar['name']}: {e}"
@@ -452,7 +499,14 @@ def configure_calendar_tools(mcp: FastMCP):
 
             # Sort by start time and limit
             all_events.sort(key=lambda x: x.get("start_datetime", ""))
-            return all_events[:limit]
+            events = all_events[:limit]
+
+        summaries = [_event_dict_to_summary(e) for e in events]
+        return UpcomingEventsResponse(
+            events=summaries,
+            days_ahead=days_ahead,
+            calendar_name=calendar_name or None,
+        )
 
     @mcp.tool(
         title="Find Availability",

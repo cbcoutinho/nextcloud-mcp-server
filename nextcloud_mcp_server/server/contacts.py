@@ -1,13 +1,55 @@
 import logging
+from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.models.contacts import (
+    AddressBook,
+    Contact,
+    ContactField,
+    ListAddressBooksResponse,
+    ListContactsResponse,
+)
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _raw_contact_to_model(raw: dict) -> Contact:
+    """Convert a raw contact dict from the contacts client to a Contact model.
+
+    Only maps fields the client's list_contacts() currently returns:
+    fullname, nickname, birthday, and email. Additional Contact model fields
+    (phones, addresses, organization, etc.) require expanding the client's
+    vCard parsing in ContactsClient.list_contacts().
+    """
+    contact_info = raw.get("contact", {})
+
+    # Convert email field (str, list, or None) to list[ContactField]
+    raw_email = contact_info.get("email")
+    emails: list[ContactField] = []
+    if isinstance(raw_email, list):
+        emails = [ContactField(type="email", value=e) for e in raw_email if e]
+    elif isinstance(raw_email, str) and raw_email:
+        emails = [ContactField(type="email", value=raw_email)]
+
+    # Nickname goes into custom_fields (no dedicated model field)
+    custom_fields: dict[str, Any] = {}
+    nickname = contact_info.get("nickname")
+    if nickname:
+        custom_fields["nickname"] = nickname
+
+    return Contact(
+        uid=raw["vcard_id"],
+        fn=contact_info.get("fullname", ""),
+        etag=raw.get("getetag"),
+        birthday=contact_info.get("birthday"),
+        emails=emails,
+        custom_fields=custom_fields,
+    )
 
 
 def configure_contacts_tools(mcp: FastMCP):
@@ -18,10 +60,23 @@ def configure_contacts_tools(mcp: FastMCP):
     )
     @require_scopes("contacts:read")
     @instrument_tool
-    async def nc_contacts_list_addressbooks(ctx: Context):
+    async def nc_contacts_list_addressbooks(ctx: Context) -> ListAddressBooksResponse:
         """List all addressbooks for the user."""
         client = await get_client(ctx)
-        return await client.contacts.list_addressbooks()
+        addressbooks_data = await client.contacts.list_addressbooks()
+        addressbooks = [
+            AddressBook(
+                # ab["name"] is a short slug like "contacts", not a full CardDAV URI;
+                # all tools use it as a path segment: f"{carddav_path}/{name}/"
+                uri=ab["name"],
+                displayname=ab.get("display_name", ab["name"]),
+                ctag=ab.get("getctag"),
+            )
+            for ab in addressbooks_data
+        ]
+        return ListAddressBooksResponse(
+            addressbooks=addressbooks, total_count=len(addressbooks)
+        )
 
     @mcp.tool(
         title="List Contacts",
@@ -29,10 +84,16 @@ def configure_contacts_tools(mcp: FastMCP):
     )
     @require_scopes("contacts:read")
     @instrument_tool
-    async def nc_contacts_list_contacts(ctx: Context, *, addressbook: str):
+    async def nc_contacts_list_contacts(
+        ctx: Context, *, addressbook: str
+    ) -> ListContactsResponse:
         """List all contacts in the specified addressbook."""
         client = await get_client(ctx)
-        return await client.contacts.list_contacts(addressbook=addressbook)
+        contacts_data = await client.contacts.list_contacts(addressbook=addressbook)
+        contacts = [_raw_contact_to_model(c) for c in contacts_data]
+        return ListContactsResponse(
+            contacts=contacts, addressbook=addressbook, total_count=len(contacts)
+        )
 
     @mcp.tool(
         title="Create Address Book",

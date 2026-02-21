@@ -683,17 +683,15 @@ async def test_mcp_calendar_workflow(
             f"MCP list events failed: {list_result.content}"
         )
 
-        events_data = json.loads(list_result.content[0].text)
+        events_response = json.loads(list_result.content[0].text)
 
         # Debug output to understand what nc_calendar_list_events returns
-        logger.info(f"list_events result type: {type(events_data)}")
-        logger.info(f"list_events result content: {events_data}")
+        logger.info(f"list_events result type: {type(events_response)}")
+        logger.info(f"list_events result content: {events_response}")
 
-        # Handle single event returned as dict instead of list (same fix as calendars)
-        if isinstance(events_data, dict):
-            # Single event returned as dict instead of list
-            events_data = [events_data]
-
+        # Response is now a ListEventsResponse with an "events" field
+        assert isinstance(events_response, dict), "Expected response dict"
+        events_data = events_response.get("events", [])
         assert isinstance(events_data, list), "Expected events list"
 
         # Our created event should be in the list
@@ -706,7 +704,7 @@ async def test_mcp_calendar_workflow(
         assert found_event is not None, (
             f"Created event {event_uid} not found in events list"
         )
-        assert found_event["title"] == test_event_title
+        assert found_event["summary"] == test_event_title
 
         # 6. Test list events across all calendars
         logger.info("Testing nc_calendar_list_events across all calendars")
@@ -727,13 +725,11 @@ async def test_mcp_calendar_workflow(
             f"MCP list all events failed: {all_list_result.content}"
         )
 
-        all_events_data = json.loads(all_list_result.content[0].text)
+        all_events_response = json.loads(all_list_result.content[0].text)
 
-        # Handle single event returned as dict instead of list (same fix as calendars)
-        if isinstance(all_events_data, dict):
-            # Single event returned as dict instead of list
-            all_events_data = [all_events_data]
-
+        # Response is now a ListEventsResponse with an "events" field
+        assert isinstance(all_events_response, dict), "Expected response dict"
+        all_events_data = all_events_response.get("events", [])
         assert isinstance(all_events_data, list), "Expected events list"
 
         # Our event should still be found when searching all calendars
@@ -780,13 +776,11 @@ async def test_mcp_calendar_workflow(
             f"MCP upcoming events failed: {upcoming_result.content}"
         )
 
-        upcoming_events = json.loads(upcoming_result.content[0].text)
+        upcoming_response = json.loads(upcoming_result.content[0].text)
 
-        # Handle single event returned as dict instead of list (same fix as other tools)
-        if isinstance(upcoming_events, dict):
-            # Single event returned as dict instead of list
-            upcoming_events = [upcoming_events]
-
+        # Response is now an UpcomingEventsResponse with an "events" field
+        assert isinstance(upcoming_response, dict), "Expected response dict"
+        upcoming_events = upcoming_response.get("events", [])
         assert isinstance(upcoming_events, list), "Expected upcoming events list"
 
         # 10. Delete event via MCP
