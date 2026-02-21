@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.64.3 (2026-02-21)
+
+### Fix
+
+- address PR #574 fourth review round
+- address PR #574 third review round
+- address PR #574 second review round
+- address PR #574 review comments
+- wrap raw list returns in response models to produce single TextContent block
+
 ## v0.64.2 (2026-02-20)
 
 ### Fix
