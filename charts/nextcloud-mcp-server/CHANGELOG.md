@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.57.73 (2026-02-21)
+
+### Fix
+
+- address PR #574 fourth review round
+- address PR #574 third review round
+- address PR #574 second review round
+- address PR #574 review comments
+- wrap raw list returns in response models to produce single TextContent block
+
 ## nextcloud-mcp-server-0.57.72 (2026-02-20)
 
 ## nextcloud-mcp-server-0.57.71 (2026-02-20)
