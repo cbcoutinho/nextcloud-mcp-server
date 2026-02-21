@@ -44,7 +44,8 @@ def _event_dict_to_summary(event: dict) -> CalendarEventSummary:
         categories=categories,
         status=event.get("status"),
         calendar_name=event.get("calendar_name"),
-        calendar_display_name=event.get("calendar_display_name"),
+        calendar_display_name=event.get("calendar_display_name")
+        or event.get("calendar_name"),
     )
 
 

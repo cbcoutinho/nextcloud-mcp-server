@@ -264,14 +264,14 @@ class CreateLabelResponse(BaseResponse):
 class ListCardsResponse(BaseResponse):
     """Response model for listing deck cards."""
 
-    cards: List[DeckCard] = Field(description="List of deck cards")
+    cards: list[DeckCard] = Field(description="List of deck cards")
     total: int = Field(description="Total number of cards")
 
 
 class ListLabelsResponse(BaseResponse):
     """Response model for listing deck labels."""
 
-    labels: List[DeckLabel] = Field(description="List of deck labels")
+    labels: list[DeckLabel] = Field(description="List of deck labels")
     total: int = Field(description="Total number of labels")
 
 

@@ -477,7 +477,7 @@ def test_event_dict_to_summary_missing_optional_fields():
 
 @pytest.mark.unit
 def test_event_dict_to_summary_calendar_name_without_display_name():
-    """Test single-calendar path: calendar_name set, display_name absent."""
+    """Test single-calendar path: calendar_name set, display_name absent falls back."""
     event = {
         "uid": "evt-006",
         "title": "Personal Errand",
@@ -487,4 +487,4 @@ def test_event_dict_to_summary_calendar_name_without_display_name():
     summary = _event_dict_to_summary(event)
 
     assert summary.calendar_name == "personal"
-    assert summary.calendar_display_name is None
+    assert summary.calendar_display_name == "personal"

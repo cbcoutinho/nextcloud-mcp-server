@@ -66,6 +66,8 @@ def configure_contacts_tools(mcp: FastMCP):
         addressbooks_data = await client.contacts.list_addressbooks()
         addressbooks = [
             AddressBook(
+                # ab["name"] is a short slug like "contacts", not a full CardDAV URI;
+                # all tools use it as a path segment: f"{carddav_path}/{name}/"
                 uri=ab["name"],
                 displayname=ab.get("display_name", ab["name"]),
                 ctag=ab.get("getctag"),
