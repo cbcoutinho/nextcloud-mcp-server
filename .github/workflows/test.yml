@@ -1,4 +1,4 @@
-name: Docker Compose Action
+name: Tests
 
 on:
   pull_request:
@@ -13,76 +13,133 @@ jobs:
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
       - name: Check format
-        run: |
-          uv run --frozen ruff format --diff
+        run: uv run --frozen ruff format --diff
       - name: Linting
-        run: |
-          uv run --frozen ruff check
-      - name: Linting
-        run: |
-          uv run --frozen ty check -- nextcloud_mcp_server
+        run: uv run --frozen ruff check
+      - name: Type check
+        run: uv run --frozen ty check -- nextcloud_mcp_server
 
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+      - name: Run unit tests
+        run: uv run pytest -v -m unit -o "addopts=-p no:asyncio"
 
   integration-test:
     runs-on: ubuntu-latest
+    needs: [linting, unit-test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: single-user
+            profile: single-user
+            markers: "smoke or (integration and not oauth and not keycloak and not login_flow)"
+            wait-port: 8000
+            needs-oidc: false
+            needs-playwright: false
+
+          - mode: oauth
+            profile: oauth
+            markers: "oauth and not keycloak"
+            wait-port: 8001
+            needs-oidc: true
+            needs-playwright: true
+
+          - mode: login-flow
+            profile: login-flow
+            markers: "login_flow"
+            wait-port: 8004
+            needs-oidc: true
+            needs-playwright: true
+
+    name: integration (${{ matrix.mode }})
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          submodules: 'true'
+          submodules: ${{ matrix.needs-oidc && 'true' || 'false' }}
 
-
-      ###### Required to build OIDC App ######
-
-      - name: Set up php 8.4
+      # Build OIDC app (required for OAuth and Login Flow modes)
+      - name: Set up PHP 8.4
+        if: matrix.needs-oidc
         uses: shivammathur/setup-php@44454db4f0199b8b9685a5d763dc37cbf79108e1 # 2.36.0
         with:
           php-version: 8.4
           coverage: none
 
       - name: Install OIDC app composer dependencies
+        if: matrix.needs-oidc
         run: |
           cd third_party/oidc
           composer install --no-dev
 
-      ###### Required to build OIDC App ######
-
-
+      # Start services with the appropriate profile
       - name: Run docker compose
         uses: hoverkraft-tech/compose-action@4894d2492015c1774ee5a13a95b1072093087ec3 # v2.5.0
         with:
           compose-file: "./docker-compose.yml"
-          #compose-flags: "--profile qdrant"
+          compose-flags: "--profile ${{ matrix.profile }}"
           up-flags: "--build"
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
 
-      - name: Install Playwright dependencies
-        run: |
-          uv run playwright install chromium --with-deps
+      - name: Install Playwright
+        if: matrix.needs-playwright
+        run: uv run playwright install chromium --with-deps
 
-      - name: Wait for service to be ready
+      # Wait for Nextcloud to be healthy
+      - name: Wait for Nextcloud
         run: |
-          echo "Waiting for service at http://localhost:8080/ocs/v2.php/apps/serverinfo/api/v1/info to return 401..."
+          echo "Waiting for Nextcloud at http://localhost:8080..."
           max_attempts=60
           attempt=0
           until curl -o /dev/null -s -w "%{http_code}\n" http://localhost:8080/ocs/v2.php/apps/serverinfo/api/v1/info | grep -q "401"; do
             attempt=$((attempt + 1))
             if [ $attempt -ge $max_attempts ]; then
-              echo "Service did not become ready in time."
+              echo "Nextcloud did not become ready in time."
+              docker compose logs app
               exit 1
             fi
-            echo "Attempt $attempt/$max_attempts: Service not ready, sleeping for 5 seconds..."
+            echo "Attempt $attempt/$max_attempts: Not ready, sleeping 5s..."
             sleep 5
           done
-          echo "Service is ready (returned 401)."
+          echo "Nextcloud is ready."
 
-      # Add subsequent steps here, e.g., running tests
-      - name: Run tests
+      # Wait for the MCP service to be healthy
+      - name: Wait for MCP service (${{ matrix.mode }})
+        run: |
+          echo "Waiting for MCP service on port ${{ matrix.wait-port }}..."
+          max_attempts=30
+          attempt=0
+          until curl -o /dev/null -s -w "%{http_code}\n" http://localhost:${{ matrix.wait-port }}/health 2>/dev/null | grep -qE "200|404|405"; do
+            attempt=$((attempt + 1))
+            if [ $attempt -ge $max_attempts ]; then
+              echo "MCP service did not become ready in time."
+              docker compose --profile ${{ matrix.profile }} logs
+              exit 1
+            fi
+            echo "Attempt $attempt/$max_attempts: Not ready, sleeping 5s..."
+            sleep 5
+          done
+          echo "MCP service is ready on port ${{ matrix.wait-port }}."
+
+      - name: Run tests (${{ matrix.mode }})
         env:
           NEXTCLOUD_HOST: "http://localhost:8080"
           NEXTCLOUD_USERNAME: "admin"
           NEXTCLOUD_PASSWORD: "admin"
         run: |
-          uv run pytest -v --log-cli-level=WARN -m unit -m smoke
+          uv run pytest -v \
+            --log-cli-level=WARN \
+            -m '${{ matrix.markers }}' \
+            -o "addopts=-p no:asyncio" \
+            --timeout=300
+
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose --profile ${{ matrix.profile }} logs --tail=100
