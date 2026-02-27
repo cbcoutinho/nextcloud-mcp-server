@@ -70,10 +70,11 @@ class TestStatusEndpointOidcConfig:
         # get_settings and detect_auth_mode are imported inside the function
         with (
             patch(
-                "nextcloud_mcp_server.config.get_settings", return_value=mock_settings
+                "nextcloud_mcp_server.api.management.get_settings",
+                return_value=mock_settings,
             ),
             patch(
-                "nextcloud_mcp_server.config_validators.detect_auth_mode",
+                "nextcloud_mcp_server.api.management.detect_auth_mode",
                 return_value=AuthMode.MULTI_USER_BASIC,
             ),
         ):
@@ -107,10 +108,11 @@ class TestStatusEndpointOidcConfig:
 
         with (
             patch(
-                "nextcloud_mcp_server.config.get_settings", return_value=mock_settings
+                "nextcloud_mcp_server.api.management.get_settings",
+                return_value=mock_settings,
             ),
             patch(
-                "nextcloud_mcp_server.config_validators.detect_auth_mode",
+                "nextcloud_mcp_server.api.management.detect_auth_mode",
                 return_value=AuthMode.MULTI_USER_BASIC,
             ),
         ):
@@ -135,10 +137,11 @@ class TestStatusEndpointOidcConfig:
 
         with (
             patch(
-                "nextcloud_mcp_server.config.get_settings", return_value=mock_settings
+                "nextcloud_mcp_server.api.management.get_settings",
+                return_value=mock_settings,
             ),
             patch(
-                "nextcloud_mcp_server.config_validators.detect_auth_mode",
+                "nextcloud_mcp_server.api.management.detect_auth_mode",
                 return_value=AuthMode.MULTI_USER_BASIC,
             ),
         ):
@@ -167,10 +170,11 @@ class TestStatusEndpointOidcConfig:
 
         with (
             patch(
-                "nextcloud_mcp_server.config.get_settings", return_value=mock_settings
+                "nextcloud_mcp_server.api.management.get_settings",
+                return_value=mock_settings,
             ),
             patch(
-                "nextcloud_mcp_server.config_validators.detect_auth_mode",
+                "nextcloud_mcp_server.api.management.detect_auth_mode",
                 return_value=AuthMode.OAUTH_SINGLE_AUDIENCE,
             ),
         ):
@@ -202,10 +206,11 @@ class TestStatusEndpointOidcConfig:
 
         with (
             patch(
-                "nextcloud_mcp_server.config.get_settings", return_value=mock_settings
+                "nextcloud_mcp_server.api.management.get_settings",
+                return_value=mock_settings,
             ),
             patch(
-                "nextcloud_mcp_server.config_validators.detect_auth_mode",
+                "nextcloud_mcp_server.api.management.detect_auth_mode",
                 return_value=AuthMode.SINGLE_USER_BASIC,
             ),
         ):
@@ -235,10 +240,11 @@ class TestStatusEndpointOidcConfig:
 
         with (
             patch(
-                "nextcloud_mcp_server.config.get_settings", return_value=mock_settings
+                "nextcloud_mcp_server.api.management.get_settings",
+                return_value=mock_settings,
             ),
             patch(
-                "nextcloud_mcp_server.config_validators.detect_auth_mode",
+                "nextcloud_mcp_server.api.management.detect_auth_mode",
                 return_value=AuthMode.MULTI_USER_BASIC,
             ),
         ):
@@ -267,10 +273,11 @@ class TestStatusEndpointOidcConfig:
 
         with (
             patch(
-                "nextcloud_mcp_server.config.get_settings", return_value=mock_settings
+                "nextcloud_mcp_server.api.management.get_settings",
+                return_value=mock_settings,
             ),
             patch(
-                "nextcloud_mcp_server.config_validators.detect_auth_mode",
+                "nextcloud_mcp_server.api.management.detect_auth_mode",
                 return_value=AuthMode.MULTI_USER_BASIC,
             ),
         ):
@@ -295,10 +302,11 @@ class TestStatusEndpointBasicResponse:
 
         with (
             patch(
-                "nextcloud_mcp_server.config.get_settings", return_value=mock_settings
+                "nextcloud_mcp_server.api.management.get_settings",
+                return_value=mock_settings,
             ),
             patch(
-                "nextcloud_mcp_server.config_validators.detect_auth_mode",
+                "nextcloud_mcp_server.api.management.detect_auth_mode",
                 return_value=AuthMode.SINGLE_USER_BASIC,
             ),
         ):
@@ -320,10 +328,11 @@ class TestStatusEndpointBasicResponse:
 
         with (
             patch(
-                "nextcloud_mcp_server.config.get_settings", return_value=mock_settings
+                "nextcloud_mcp_server.api.management.get_settings",
+                return_value=mock_settings,
             ),
             patch(
-                "nextcloud_mcp_server.config_validators.detect_auth_mode",
+                "nextcloud_mcp_server.api.management.detect_auth_mode",
                 return_value=AuthMode.SINGLE_USER_BASIC,
             ),
         ):

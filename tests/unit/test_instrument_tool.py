@@ -32,7 +32,7 @@ def mock_metrics():
 def mock_tracer():
     """Mock OpenTelemetry tracer."""
     with patch(
-        "nextcloud_mcp_server.observability.tracing.trace_operation"
+        "nextcloud_mcp_server.observability.metrics.trace_operation"
     ) as mock_trace:
         # Configure mock to act as a context manager that allows exceptions to propagate
         mock_trace.return_value.__enter__ = MagicMock(return_value=None)

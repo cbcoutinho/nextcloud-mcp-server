@@ -72,6 +72,18 @@ jobs:
           cd third_party/oidc
           composer install --no-dev
 
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Build Astrolabe app
+        run: |
+          cd third_party/astrolabe
+          composer install --no-dev --optimize-autoloader
+          npm ci
+          npm run build
+
       # Start services with the appropriate profile
       - name: Run docker compose
         uses: hoverkraft-tech/compose-action@4894d2492015c1774ee5a13a95b1072093087ec3 # v2.5.0
