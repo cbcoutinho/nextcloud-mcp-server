@@ -78,10 +78,11 @@ jobs:
           composer install --no-dev
 
       # Start services with the appropriate profile
+      # OIDC modes need the override file to mount third_party into Nextcloud
       - name: Run docker compose
         uses: hoverkraft-tech/compose-action@4894d2492015c1774ee5a13a95b1072093087ec3 # v2.5.0
         with:
-          compose-file: "./docker-compose.yml"
+          compose-file: ${{ matrix.needs-oidc && './docker-compose.yml\n./docker-compose.oidc.yml' || './docker-compose.yml' }}
           compose-flags: "--profile ${{ matrix.profile }}"
           up-flags: "--build"
 
