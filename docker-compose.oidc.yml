@@ -1,7 +1,0 @@
-# Override to mount the OIDC app into Nextcloud.
-# Use with: docker compose -f docker-compose.yml -f docker-compose.oidc.yml --profile <profile> up
-# Required for OAuth, Keycloak, and Login Flow profiles.
-services:
-  app:
-    volumes:
-      - ./third_party:/opt/apps:ro

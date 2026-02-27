@@ -39,21 +39,18 @@ jobs:
             profile: single-user
             markers: "smoke or (integration and not oauth and not keycloak and not login_flow)"
             wait-port: 8000
-            needs-oidc: false
             needs-playwright: false
 
           - mode: oauth
             profile: oauth
             markers: "oauth and not keycloak"
             wait-port: 8001
-            needs-oidc: true
             needs-playwright: true
 
           - mode: login-flow
             profile: login-flow
             markers: "login_flow"
             wait-port: 8004
-            needs-oidc: true
             needs-playwright: true
 
     name: integration (${{ matrix.mode }})
@@ -61,28 +58,25 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          submodules: ${{ matrix.needs-oidc && 'true' || 'false' }}
+          submodules: 'true'
 
-      # Build OIDC app (required for OAuth and Login Flow modes)
+      # Build OIDC app (third_party is always mounted into the app container)
       - name: Set up PHP 8.4
-        if: matrix.needs-oidc
         uses: shivammathur/setup-php@44454db4f0199b8b9685a5d763dc37cbf79108e1 # 2.36.0
         with:
           php-version: 8.4
           coverage: none
 
       - name: Install OIDC app composer dependencies
-        if: matrix.needs-oidc
         run: |
           cd third_party/oidc
           composer install --no-dev
 
       # Start services with the appropriate profile
-      # OIDC modes need the override file to mount third_party into Nextcloud
       - name: Run docker compose
         uses: hoverkraft-tech/compose-action@4894d2492015c1774ee5a13a95b1072093087ec3 # v2.5.0
         with:
-          compose-file: ${{ matrix.needs-oidc && './docker-compose.yml\n./docker-compose.oidc.yml' || './docker-compose.yml' }}
+          compose-file: "./docker-compose.yml"
           compose-flags: "--profile ${{ matrix.profile }}"
           up-flags: "--build"
 
