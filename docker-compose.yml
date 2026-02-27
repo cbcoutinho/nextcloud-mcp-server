@@ -30,13 +30,12 @@ services:
     depends_on:
       - redis
       - db
-      - keycloak
     volumes:
       - nextcloud:/var/www/html
       - ./app-hooks:/docker-entrypoint-hooks.d:ro
       # Mount OIDC development directory outside /var/www/html to avoid rsync conflicts
       # The post-installation hook will register /opt/apps as an additional app directory
-      #- ./third_party:/opt/apps:ro
+      - ./third_party:/opt/apps:ro
     environment:
       - NEXTCLOUD_TRUSTED_DOMAINS=app
       - NEXTCLOUD_ADMIN_USER=admin
@@ -123,6 +122,8 @@ services:
       # Tune these based on your embedding model and content type
       # - DOCUMENT_CHUNK_SIZE=512      # Words per chunk (default: 512)
       # - DOCUMENT_CHUNK_OVERLAP=50    # Overlapping words (default: 50, recommended: 10-20% of chunk size)
+    profiles:
+      - single-user
 
   mcp-multi-user-basic:
     build: .
@@ -157,6 +158,8 @@ services:
       # NO admin credentials - credentials come from client Authorization header
     volumes:
       - multi-user-basic-data:/app/data
+    profiles:
+      - multi-user-basic
 
   mcp-oauth:
     build: .
@@ -205,6 +208,8 @@ services:
     volumes:
       - oauth-client-storage:/app/.oauth
       - oauth-tokens:/app/data
+    profiles:
+      - oauth
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.5.4@sha256:ae8efb0d218d8921334b03a2dbee7069a0b868240691c50a3ffc9f42fabba8b4
@@ -227,6 +232,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 30
+    profiles:
+      - keycloak
 
   mcp-keycloak:
     build: .
@@ -272,6 +279,41 @@ services:
     volumes:
       - keycloak-tokens:/app/data
       - keycloak-oauth-storage:/app/.oauth
+    profiles:
+      - keycloak
+
+  # Login Flow v2 mode (ADR-022)
+  # Test with: docker compose --profile login-flow up --build -d
+  mcp-login-flow:
+    build: .
+    restart: always
+    command: ["--transport", "streamable-http", "--oauth", "--port", "8004"]
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:8004:8004
+    environment:
+      - NEXTCLOUD_HOST=http://app:80
+      - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8004
+      - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
+
+      # Login Flow v2 (ADR-022)
+      - ENABLE_LOGIN_FLOW=true
+
+      # Token storage (required for app password + session persistence)
+      - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
+      - TOKEN_STORAGE_DB=/app/data/tokens.db
+
+      # Semantic search
+      - ENABLE_SEMANTIC_SEARCH=true
+      - VECTOR_SYNC_SCAN_INTERVAL=60
+      - VECTOR_SYNC_PROCESSOR_WORKERS=1
+    volumes:
+      - login-flow-data:/app/data
+      - login-flow-oauth-storage:/app/.oauth
+    profiles:
+      - login-flow
 
   # Smithery stateless deployment mode (ADR-016)
   # Test with: docker compose --profile smithery up smithery
@@ -318,6 +360,8 @@ volumes:
   oauth-tokens:
   keycloak-tokens:
   keycloak-oauth-storage:
+  login-flow-data:
+  login-flow-oauth-storage:
   qdrant-data:
   mcp-data:
   multi-user-basic-data:

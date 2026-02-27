@@ -40,12 +40,15 @@ from nextcloud_mcp_server.api import (
     get_installed_apps,
     get_pdf_preview,
     get_server_status,
+    get_user_access,
     get_user_session,
     get_vector_sync_status,
+    list_supported_scopes,
     list_webhooks,
     provision_app_password,
     revoke_user_access,
     unified_search,
+    update_user_scopes,
     vector_search,
 )
 from nextcloud_mcp_server.auth import (
@@ -123,6 +126,7 @@ from nextcloud_mcp_server.server import (
     configure_tables_tools,
     configure_webdav_tools,
 )
+from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
 from nextcloud_mcp_server.vector import processor_task, scanner_task
 from nextcloud_mcp_server.vector.oauth_sync import (
@@ -1468,6 +1472,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             "Skipping provisioning tools registration (offline access not enabled)"
         )
 
+    # Register Login Flow v2 auth tools (ADR-022)
+    if settings.enable_login_flow:
+        logger.info("Registering Login Flow v2 auth tools")
+        register_auth_tools(mcp)
+
     # Override list_tools to filter based on user's token scopes (OAuth mode only)
     if oauth_enabled:
         original_list_tools = mcp._tool_manager.list_tools
@@ -2208,10 +2217,27 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         routes.append(
             Route("/api/v1/webhooks/{webhook_id}", delete_webhook, methods=["DELETE"])
         )
+        # Access and scope management endpoints (ADR-022)
+        routes.append(
+            Route(
+                "/api/v1/users/{user_id}/access",
+                get_user_access,
+                methods=["GET"],
+            )
+        )
+        routes.append(
+            Route(
+                "/api/v1/users/{user_id}/scopes",
+                update_user_scopes,
+                methods=["PATCH"],
+            )
+        )
+        routes.append(Route("/api/v1/scopes", list_supported_scopes, methods=["GET"]))
         logger.info(
             "Management API endpoints enabled: /api/v1/status, /api/v1/vector-sync/status, "
             "/api/v1/users/{user_id}/session, /api/v1/users/{user_id}/revoke, "
-            "/api/v1/users/{user_id}/app-password, "
+            "/api/v1/users/{user_id}/app-password, /api/v1/users/{user_id}/access, "
+            "/api/v1/users/{user_id}/scopes, /api/v1/scopes, "
             "/api/v1/vector-viz/search, /api/v1/search, /api/v1/apps, "
             "/api/v1/webhooks, /api/v1/pdf-preview"
         )

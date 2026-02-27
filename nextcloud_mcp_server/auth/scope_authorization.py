@@ -1,6 +1,7 @@
 """Scope-based authorization for MCP tools."""
 
 import logging
+import os
 from functools import wraps
 from typing import Any, Callable
 
@@ -120,12 +121,69 @@ def require_scopes(*required_scopes: str):
             )
 
             if access_token is None:
+                # Check if single-user BasicAuth mode (env var app password)
+                # If NEXTCLOUD_APP_PASSWORD or NEXTCLOUD_PASSWORD is set, bypass scope checks
+                if os.getenv("NEXTCLOUD_APP_PASSWORD") or os.getenv(
+                    "NEXTCLOUD_PASSWORD"
+                ):
+                    logger.debug(
+                        f"No access token for {func_name} - allowing (env var app password)"
+                    )
+                    return await func(*args, **kwargs)
+
                 # Not in OAuth mode (BasicAuth or no auth)
                 # In BasicAuth mode, all operations are allowed
                 logger.debug(
                     f"No access token present for {func_name} - allowing (BasicAuth mode)"
                 )
                 return await func(*args, **kwargs)
+
+            # ── Login Flow v2: Check stored app password scopes ──
+            # In Login Flow v2 multi-user mode, OAuth tokens provide MCP session
+            # identity only. Nextcloud API access uses stored app passwords.
+            # Check if the user has a stored app password with appropriate scopes.
+            if _is_login_flow_mode():
+                from nextcloud_mcp_server.server.oauth_tools import (  # noqa: PLC0415
+                    extract_user_id_from_token,
+                )
+
+                user_id = await extract_user_id_from_token(ctx)
+                if user_id and user_id != "default_user":
+                    stored_scopes = await _get_stored_scopes(user_id)
+
+                    if stored_scopes is None:
+                        # No stored app password → require provisioning
+                        error_msg = (
+                            f"Access denied to {func_name}: "
+                            f"Nextcloud access not provisioned. "
+                            f"Please call 'nc_auth_provision_access' first."
+                        )
+                        logger.warning(error_msg)
+                        raise ProvisioningRequiredError(error_msg)
+
+                    if stored_scopes == "all":
+                        # NULL scopes in DB = legacy app password = all allowed
+                        logger.debug(
+                            f"Stored app password scope check passed for {func_name}: all scopes"
+                        )
+                        return await func(*args, **kwargs)
+
+                    # Check stored scopes against required
+                    stored_set = set(stored_scopes)
+                    missing = set(required_scopes) - stored_set
+                    if missing:
+                        error_msg = (
+                            f"Access denied to {func_name}: "
+                            f"Missing scopes: {', '.join(sorted(missing))}. "
+                            f"Call 'nc_auth_update_scopes' to add permissions."
+                        )
+                        logger.warning(error_msg)
+                        raise InsufficientScopeError(list(missing), error_msg)
+
+                    logger.debug(
+                        f"Stored app password scope check passed for {func_name}"
+                    )
+                    return await func(*args, **kwargs)
 
             # Extract scopes from access token
             token_scopes = set(access_token.scopes or [])
@@ -416,3 +474,46 @@ def discover_all_scopes(mcp) -> list[str]:
 
     # Return sorted list of unique scopes
     return sorted(all_scopes)
+
+
+# ── Login Flow v2 helpers ────────────────────────────────────────────────
+
+
+def _is_login_flow_mode() -> bool:
+    """Check if server is configured for Login Flow v2 multi-user mode.
+
+    Login Flow v2 mode is active when:
+    - ENABLE_LOGIN_FLOW=true is set, OR
+    - Multi-user BasicAuth with offline access (uses stored app passwords)
+
+    Returns:
+        True if Login Flow v2 enforcement should be active
+    """
+    if os.getenv("ENABLE_LOGIN_FLOW", "false").lower() == "true":
+        return True
+    return False
+
+
+async def _get_stored_scopes(user_id: str) -> list[str] | str | None:
+    """Look up stored app password scopes for a user.
+
+    Returns:
+        - list[str]: Specific scopes granted
+        - "all": NULL scopes in DB (legacy = all allowed)
+        - None: No stored app password (provisioning required)
+    """
+    from nextcloud_mcp_server.auth.storage import RefreshTokenStorage  # noqa: PLC0415
+
+    try:
+        storage = RefreshTokenStorage.from_env()
+        await storage.initialize()
+
+        data = await storage.get_app_password_with_scopes(user_id)
+        if data is None:
+            return None
+        if data["scopes"] is None:
+            return "all"
+        return data["scopes"]
+    except Exception as e:
+        logger.error(f"Failed to check stored scopes for {user_id}: {e}")
+        return None

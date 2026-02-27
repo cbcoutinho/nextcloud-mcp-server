@@ -1,6 +1,7 @@
 """Helper functions for accessing context in MCP tools."""
 
 import logging
+import os
 
 from httpx import BasicAuth
 from mcp.server.fastmcp import Context
@@ -9,6 +10,7 @@ from nextcloud_mcp_server.auth.context_helper import (
     get_client_from_context,
     get_session_client_from_context,
 )
+from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import (
     DeploymentMode,
@@ -77,6 +79,11 @@ async def get_client(ctx: Context) -> NextcloudClient:
         return _get_client_from_basic_auth(ctx)
 
     lifespan_ctx = ctx.request_context.lifespan_context
+
+    # Login Flow v2 multi-user mode: app password is REQUIRED for NC API access
+    # OAuth token is only used for MCP session identity, not NC API calls
+    if hasattr(lifespan_ctx, "nextcloud_host") and _is_login_flow_mode():
+        return await _get_client_from_login_flow(ctx, lifespan_ctx.nextcloud_host)
 
     # BasicAuth mode - use shared client (no token exchange)
     if hasattr(lifespan_ctx, "client"):
@@ -244,4 +251,59 @@ def _get_client_from_basic_auth(ctx: Context) -> NextcloudClient:
         base_url=settings.nextcloud_host,
         username=username,
         auth=BasicAuth(username, password),
+    )
+
+
+def _is_login_flow_mode() -> bool:
+    """Check if Login Flow v2 multi-user mode is active."""
+    return os.getenv("ENABLE_LOGIN_FLOW", "false").lower() == "true"
+
+
+async def _get_client_from_login_flow(
+    ctx: Context, nextcloud_host: str
+) -> NextcloudClient:
+    """Create NextcloudClient from stored Login Flow v2 app password.
+
+    In Login Flow v2 mode, the OAuth token only provides MCP session identity.
+    Nextcloud API calls always use the stored app password obtained via Login Flow v2.
+
+    Args:
+        ctx: MCP context (used to extract user identity)
+        nextcloud_host: Nextcloud instance URL
+
+    Returns:
+        NextcloudClient with stored app password credentials
+
+    Raises:
+        ProvisioningRequiredError: If no stored app password exists
+    """
+    from nextcloud_mcp_server.auth.storage import RefreshTokenStorage  # noqa: PLC0415
+    from nextcloud_mcp_server.server.oauth_tools import (  # noqa: PLC0415
+        extract_user_id_from_token,
+    )
+
+    user_id = await extract_user_id_from_token(ctx)
+    if not user_id or user_id == "default_user":
+        raise ProvisioningRequiredError(
+            "Cannot determine user identity from MCP token."
+        )
+
+    storage = RefreshTokenStorage.from_env()
+    await storage.initialize()
+
+    app_data = await storage.get_app_password_with_scopes(user_id)
+    if not app_data:
+        raise ProvisioningRequiredError(
+            "Nextcloud access not provisioned. "
+            "Call nc_auth_provision_access to complete Login Flow."
+        )
+
+    username = app_data.get("username") or user_id
+
+    logger.debug(f"Creating Login Flow v2 client for {nextcloud_host} as {username}")
+
+    return NextcloudClient(
+        base_url=nextcloud_host,
+        username=username,
+        auth=BasicAuth(username, app_data["app_password"]),
     )

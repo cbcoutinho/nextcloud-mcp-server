@@ -64,7 +64,7 @@ Changelog = "https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/CHAN
 
 [tool.pytest.ini_options]
 anyio_mode = "auto"
-addopts = "-p no:asyncio"  # Disable pytest-asyncio plugin, use only anyio
+addopts = "--headed -p no:asyncio"  # Disable pytest-asyncio plugin, use only anyio
 log_cli = 1
 log_cli_level = "ERROR"
 log_level = "ERROR"
@@ -74,6 +74,7 @@ markers = [
     "oauth: OAuth tests requiring Playwright (slowest)",
     "smoke: Critical path smoke tests for quick validation",
     "keycloak: OAuth tests that utilize keycloak external identity provider",
+    "login_flow: Login Flow v2 integration tests (ADR-022)",
 ]
 testpaths = [
     "tests",

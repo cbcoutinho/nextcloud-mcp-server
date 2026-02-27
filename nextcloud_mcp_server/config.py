@@ -181,6 +181,7 @@ class Settings:
     nextcloud_host: Optional[str] = None
     nextcloud_username: Optional[str] = None
     nextcloud_password: Optional[str] = None
+    nextcloud_app_password: Optional[str] = None  # Preferred over nextcloud_password
 
     # Nextcloud SSL/TLS settings
     nextcloud_verify_ssl: bool = True
@@ -203,6 +204,13 @@ class Settings:
     # When enabled, MCP server extracts BasicAuth credentials from request headers
     # and passes them through to Nextcloud APIs (no storage, stateless)
     enable_multi_user_basic_auth: bool = False
+
+    # Login Flow v2 settings (ADR-022)
+    enable_login_flow: bool = False
+    login_flow_poll_interval: int = 2  # seconds between polls
+    login_flow_poll_timeout: int = 300  # max seconds to wait for completion
+    login_flow_cleanup_interval: int = 3600  # seconds between expired session cleanup
+    app_password_max_age_days: int = 0  # 0 = no expiration
 
     # Token exchange cache settings
     token_exchange_cache_ttl: int = 300  # seconds (5 minutes default)
@@ -259,6 +267,14 @@ class Settings:
     def __post_init__(self):
         """Validate configuration and set defaults."""
         logger = logging.getLogger(__name__)
+
+        # Deprecation warning: NEXTCLOUD_PASSWORD without NEXTCLOUD_APP_PASSWORD
+        if self.nextcloud_password and not self.nextcloud_app_password:
+            logger.warning(
+                "NEXTCLOUD_PASSWORD is deprecated for app password usage. "
+                "Please use NEXTCLOUD_APP_PASSWORD instead. "
+                "Support for NEXTCLOUD_PASSWORD as app password will be removed in v1.0.0."
+            )
 
         # Validate SSL/TLS configuration
         if not self.nextcloud_verify_ssl:
@@ -523,6 +539,7 @@ def get_settings() -> Settings:
         nextcloud_host=os.getenv("NEXTCLOUD_HOST"),
         nextcloud_username=os.getenv("NEXTCLOUD_USERNAME"),
         nextcloud_password=os.getenv("NEXTCLOUD_PASSWORD"),
+        nextcloud_app_password=os.getenv("NEXTCLOUD_APP_PASSWORD"),
         # Nextcloud SSL/TLS settings
         nextcloud_verify_ssl=(
             os.getenv("NEXTCLOUD_VERIFY_SSL", "true").lower() == "true"
@@ -544,6 +561,14 @@ def get_settings() -> Settings:
         enable_multi_user_basic_auth=(
             os.getenv("ENABLE_MULTI_USER_BASIC_AUTH", "false").lower() == "true"
         ),
+        # Login Flow v2 settings (ADR-022)
+        enable_login_flow=(os.getenv("ENABLE_LOGIN_FLOW", "false").lower() == "true"),
+        login_flow_poll_interval=int(os.getenv("LOGIN_FLOW_POLL_INTERVAL", "2")),
+        login_flow_poll_timeout=int(os.getenv("LOGIN_FLOW_POLL_TIMEOUT", "300")),
+        login_flow_cleanup_interval=int(
+            os.getenv("LOGIN_FLOW_CLEANUP_INTERVAL", "3600")
+        ),
+        app_password_max_age_days=int(os.getenv("APP_PASSWORD_MAX_AGE_DAYS", "0")),
         # Token exchange cache settings
         token_exchange_cache_ttl=int(os.getenv("TOKEN_EXCHANGE_CACHE_TTL", "300")),
         # Token and webhook storage settings (encryption key optional for webhook-only usage)

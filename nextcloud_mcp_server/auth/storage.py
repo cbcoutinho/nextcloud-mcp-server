@@ -1477,6 +1477,339 @@ class RefreshTokenStorage:
 
         return removed
 
+    # ── Login Flow v2: Scoped App Passwords ──────────────────────────────
+
+    async def store_app_password_with_scopes(
+        self,
+        user_id: str,
+        app_password: str,
+        scopes: list[str] | None = None,
+        username: str | None = None,
+    ) -> None:
+        """Store encrypted app password with optional scopes and Nextcloud username.
+
+        Args:
+            user_id: MCP user ID (identity from OAuth token or session)
+            app_password: Nextcloud app password to encrypt and store
+            scopes: List of granted scopes (None = all scopes allowed)
+            username: Nextcloud loginName from Login Flow v2 response
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        if not self.cipher:
+            raise RuntimeError(
+                "Encryption key not configured. "
+                "Set TOKEN_ENCRYPTION_KEY for app password storage."
+            )
+
+        encrypted_password = self.cipher.encrypt(app_password.encode())
+        scopes_json = json.dumps(scopes) if scopes is not None else None
+        now = int(time.time())
+
+        start_time = time.time()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    """
+                    INSERT OR REPLACE INTO app_passwords
+                    (user_id, encrypted_password, created_at, updated_at, scopes, username)
+                    VALUES (
+                        ?,
+                        ?,
+                        COALESCE((SELECT created_at FROM app_passwords WHERE user_id = ?), ?),
+                        ?,
+                        ?,
+                        ?
+                    )
+                    """,
+                    (
+                        user_id,
+                        encrypted_password,
+                        user_id,
+                        now,
+                        now,
+                        scopes_json,
+                        username,
+                    ),
+                )
+                await db.commit()
+
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "insert", duration, "success")
+            logger.info(
+                f"Stored scoped app password for user {user_id} "
+                f"(scopes={'all' if scopes is None else len(scopes)}, "
+                f"username={username or 'N/A'})"
+            )
+
+        except Exception:
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "insert", duration, "error")
+            raise
+
+        await self._audit_log(
+            event="store_app_password_with_scopes",
+            user_id=user_id,
+            auth_method="app_password",
+        )
+
+    async def get_app_password_with_scopes(self, user_id: str) -> dict[str, Any] | None:
+        """Retrieve app password with scopes and metadata.
+
+        Args:
+            user_id: MCP user ID
+
+        Returns:
+            Dict with keys: app_password, scopes, username, created_at, updated_at
+            or None if not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        if not self.cipher:
+            raise RuntimeError(
+                "Encryption key not configured. "
+                "Set TOKEN_ENCRYPTION_KEY for app password retrieval."
+            )
+
+        start_time = time.time()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute(
+                    """
+                    SELECT encrypted_password, scopes, username, created_at, updated_at
+                    FROM app_passwords WHERE user_id = ?
+                    """,
+                    (user_id,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+
+            if not row:
+                logger.debug(f"No app password found for user {user_id}")
+                duration = time.time() - start_time
+                record_db_operation("sqlite", "select", duration, "success")
+                return None
+
+            encrypted_password, scopes_json, username, created_at, updated_at = row
+            decrypted_password = self.cipher.decrypt(encrypted_password).decode()
+            scopes = json.loads(scopes_json) if scopes_json else None
+
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "select", duration, "success")
+
+            return {
+                "app_password": decrypted_password,
+                "scopes": scopes,
+                "username": username,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+
+        except Exception as e:
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "select", duration, "error")
+            logger.error(
+                f"Failed to retrieve scoped app password for user {user_id}: {e}"
+            )
+            return None
+
+    # ── Login Flow v2: Session Tracking ──────────────────────────────────
+
+    async def store_login_flow_session(
+        self,
+        user_id: str,
+        poll_token: str,
+        poll_endpoint: str,
+        requested_scopes: list[str] | None = None,
+        expires_at: int | None = None,
+    ) -> None:
+        """Store a Login Flow v2 polling session.
+
+        Args:
+            user_id: MCP user ID
+            poll_token: Token for polling (will be encrypted)
+            poll_endpoint: URL to poll for completion
+            requested_scopes: Scopes requested in this flow
+            expires_at: Expiration timestamp (defaults to 20 minutes from now)
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        if not self.cipher:
+            raise RuntimeError(
+                "Encryption key not configured. "
+                "Set TOKEN_ENCRYPTION_KEY for login flow session storage."
+            )
+
+        encrypted_token = self.cipher.encrypt(poll_token.encode())
+        scopes_json = json.dumps(requested_scopes) if requested_scopes else None
+        now = int(time.time())
+        if expires_at is None:
+            expires_at = now + 1200  # 20 minutes default
+
+        start_time = time.time()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    """
+                    INSERT OR REPLACE INTO login_flow_sessions
+                    (user_id, encrypted_poll_token, poll_endpoint, requested_scopes,
+                     created_at, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        encrypted_token,
+                        poll_endpoint,
+                        scopes_json,
+                        now,
+                        expires_at,
+                    ),
+                )
+                await db.commit()
+
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "insert", duration, "success")
+            logger.info(f"Stored login flow session for user {user_id}")
+
+        except Exception:
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "insert", duration, "error")
+            raise
+
+    async def get_login_flow_session(self, user_id: str) -> dict[str, Any] | None:
+        """Retrieve a pending Login Flow v2 session.
+
+        Returns None if session doesn't exist or has expired.
+
+        Args:
+            user_id: MCP user ID
+
+        Returns:
+            Dict with keys: poll_token, poll_endpoint, requested_scopes, created_at, expires_at
+            or None if not found/expired
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        if not self.cipher:
+            raise RuntimeError(
+                "Encryption key not configured. "
+                "Set TOKEN_ENCRYPTION_KEY for login flow session retrieval."
+            )
+
+        now = int(time.time())
+        start_time = time.time()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute(
+                    """
+                    SELECT encrypted_poll_token, poll_endpoint, requested_scopes,
+                           created_at, expires_at
+                    FROM login_flow_sessions
+                    WHERE user_id = ? AND expires_at > ?
+                    """,
+                    (user_id, now),
+                ) as cursor:
+                    row = await cursor.fetchone()
+
+            if not row:
+                duration = time.time() - start_time
+                record_db_operation("sqlite", "select", duration, "success")
+                return None
+
+            encrypted_token, poll_endpoint, scopes_json, created_at, expires_at = row
+            poll_token = self.cipher.decrypt(encrypted_token).decode()
+            requested_scopes = json.loads(scopes_json) if scopes_json else None
+
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "select", duration, "success")
+
+            return {
+                "poll_token": poll_token,
+                "poll_endpoint": poll_endpoint,
+                "requested_scopes": requested_scopes,
+                "created_at": created_at,
+                "expires_at": expires_at,
+            }
+
+        except Exception as e:
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "select", duration, "error")
+            logger.error(
+                f"Failed to retrieve login flow session for user {user_id}: {e}"
+            )
+            return None
+
+    async def delete_login_flow_session(self, user_id: str) -> bool:
+        """Delete a Login Flow v2 session.
+
+        Args:
+            user_id: MCP user ID
+
+        Returns:
+            True if session was deleted, False if not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        start_time = time.time()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute(
+                    "DELETE FROM login_flow_sessions WHERE user_id = ?",
+                    (user_id,),
+                )
+                await db.commit()
+                deleted = cursor.rowcount > 0
+
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "delete", duration, "success")
+
+            if deleted:
+                logger.info(f"Deleted login flow session for user {user_id}")
+
+            return deleted
+
+        except Exception:
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "delete", duration, "error")
+            raise
+
+    async def delete_expired_login_flow_sessions(self) -> int:
+        """Delete all expired Login Flow v2 sessions.
+
+        Returns:
+            Number of sessions deleted
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        now = int(time.time())
+        start_time = time.time()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute(
+                    "DELETE FROM login_flow_sessions WHERE expires_at <= ?",
+                    (now,),
+                )
+                await db.commit()
+                count = cursor.rowcount
+
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "delete", duration, "success")
+
+            if count > 0:
+                logger.info(f"Cleaned up {count} expired login flow sessions")
+
+            return count
+
+        except Exception:
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "delete", duration, "error")
+            raise
+
 
 async def generate_encryption_key() -> str:
     """
