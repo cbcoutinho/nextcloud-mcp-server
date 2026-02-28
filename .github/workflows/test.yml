@@ -45,6 +45,8 @@ jobs:
               --ignore=tests/integration/test_qdrant_collection_creation.py
               --ignore=tests/rag_evaluation/
 
+          # NOTE: Playwright browser tests are skipped in CI (no browser grant flow).
+          # These entries still run non-Playwright tests marked with the same markers.
           - mode: oauth
             profile: oauth
             markers: "oauth and not keycloak"
@@ -66,14 +68,16 @@ jobs:
         with:
           submodules: 'true'
 
-      # Build OIDC app (third_party is always mounted into the app container)
+      # Build OIDC app (only needed for oauth/login-flow modes)
       - name: Set up PHP 8.4
+        if: matrix.needs-playwright
         uses: shivammathur/setup-php@44454db4f0199b8b9685a5d763dc37cbf79108e1 # 2.36.0
         with:
           php-version: 8.4
           coverage: none
 
       - name: Install OIDC app composer dependencies
+        if: matrix.needs-playwright
         run: |
           cd third_party/oidc
           composer install --no-dev
@@ -161,6 +165,15 @@ jobs:
             -o "addopts=-p no:asyncio" \
             --timeout=300 \
             ${{ matrix.extra-args }}
+
+      - name: Report skipped Playwright tests
+        if: matrix.needs-playwright
+        run: |
+          echo "::notice::Playwright browser tests are skipped in CI. Run locally with: uv run pytest -m '${{ matrix.markers }}' --browser firefox"
+          uv run pytest --collect-only -q \
+            -m '${{ matrix.markers }}' \
+            ${{ matrix.extra-args }} 2>/dev/null \
+            | tail -1 || true
 
       - name: Show service logs on failure
         if: failure()

@@ -145,6 +145,8 @@ services:
       - ENABLE_BACKGROUND_OPERATIONS=true
 
       # Token storage (required for middleware initialization)
+      # DEVELOPMENT ONLY - generate a fresh key for production:
+      # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
       - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
       - TOKEN_STORAGE_DB=/app/data/tokens.db
 

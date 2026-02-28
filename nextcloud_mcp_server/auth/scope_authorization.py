@@ -1,7 +1,6 @@
 """Scope-based authorization for MCP tools."""
 
 import logging
-import os
 from functools import wraps
 from typing import Any, Callable
 
@@ -10,6 +9,7 @@ from mcp.server.auth.provider import AccessToken
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.utilities.context_injection import find_context_parameter
 
+from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -123,9 +123,8 @@ def require_scopes(*required_scopes: str):
             if access_token is None:
                 # Check if single-user BasicAuth mode (env var app password)
                 # If NEXTCLOUD_APP_PASSWORD or NEXTCLOUD_PASSWORD is set, bypass scope checks
-                if os.getenv("NEXTCLOUD_APP_PASSWORD") or os.getenv(
-                    "NEXTCLOUD_PASSWORD"
-                ):
+                settings = get_settings()
+                if settings.nextcloud_app_password or settings.nextcloud_password:
                     logger.debug(
                         f"No access token for {func_name} - allowing (env var app password)"
                     )
@@ -142,7 +141,7 @@ def require_scopes(*required_scopes: str):
             # In Login Flow v2 multi-user mode, OAuth tokens provide MCP session
             # identity only. Nextcloud API access uses stored app passwords.
             # Check if the user has a stored app password with appropriate scopes.
-            if _is_login_flow_mode():
+            if get_settings().enable_login_flow:
                 from nextcloud_mcp_server.server.oauth_tools import (  # noqa: PLC0415
                     extract_user_id_from_token,
                 )
@@ -479,19 +478,16 @@ def discover_all_scopes(mcp) -> list[str]:
 # ── Login Flow v2 helpers ────────────────────────────────────────────────
 
 
-def _is_login_flow_mode() -> bool:
-    """Check if server is configured for Login Flow v2 multi-user mode.
+_scope_storage_instance = None
 
-    Login Flow v2 mode is active when:
-    - ENABLE_LOGIN_FLOW=true is set, OR
-    - Multi-user BasicAuth with offline access (uses stored app passwords)
 
-    Returns:
-        True if Login Flow v2 enforcement should be active
-    """
-    if os.getenv("ENABLE_LOGIN_FLOW", "false").lower() == "true":
-        return True
-    return False
+async def _get_scope_storage():
+    """Get initialized storage instance for scope checks (lazy singleton)."""
+    global _scope_storage_instance
+    if _scope_storage_instance is None:
+        _scope_storage_instance = RefreshTokenStorage.from_env()
+        await _scope_storage_instance.initialize()
+    return _scope_storage_instance
 
 
 async def _get_stored_scopes(user_id: str) -> list[str] | str | None:
@@ -502,11 +498,8 @@ async def _get_stored_scopes(user_id: str) -> list[str] | str | None:
         - "all": NULL scopes in DB (legacy = all allowed)
         - None: No stored app password (provisioning required)
     """
-    from nextcloud_mcp_server.auth.storage import RefreshTokenStorage  # noqa: PLC0415
-
     try:
-        storage = RefreshTokenStorage.from_env()
-        await storage.initialize()
+        storage = await _get_scope_storage()
 
         data = await storage.get_app_password_with_scopes(user_id)
         if data is None:

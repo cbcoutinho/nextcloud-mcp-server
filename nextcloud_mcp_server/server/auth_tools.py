@@ -28,11 +28,16 @@ from nextcloud_mcp_server.server.oauth_tools import extract_user_id_from_token
 logger = logging.getLogger(__name__)
 
 
+_storage_instance: RefreshTokenStorage | None = None
+
+
 async def _get_storage() -> RefreshTokenStorage:
-    """Get initialized storage instance."""
-    storage = RefreshTokenStorage.from_env()
-    await storage.initialize()
-    return storage
+    """Get initialized storage instance (lazy singleton)."""
+    global _storage_instance
+    if _storage_instance is None:
+        _storage_instance = RefreshTokenStorage.from_env()
+        await _storage_instance.initialize()
+    return _storage_instance
 
 
 def register_auth_tools(mcp) -> None:
@@ -241,7 +246,12 @@ def register_auth_tools(mcp) -> None:
 
         if poll_result.status == "completed":
             # Store the app password with scopes
-            assert poll_result.app_password is not None
+            if poll_result.app_password is None:
+                return ProvisionStatusResponse(
+                    status="error",
+                    message="Login Flow completed but no app password was returned.",
+                    success=False,
+                )
             await storage.store_app_password_with_scopes(
                 user_id=user_id,
                 app_password=poll_result.app_password,
@@ -287,8 +297,8 @@ def register_auth_tools(mcp) -> None:
         title="Update Nextcloud Access Scopes",
         description=(
             "Update the scopes for your Nextcloud access. "
-            "This revokes the current app password and starts a new Login Flow "
-            "with the combined scope set."
+            "This starts a new Login Flow with the combined scope set. "
+            "The current app password remains valid until the new one is obtained."
         ),
         annotations=ToolAnnotations(
             idempotentHint=False,
@@ -357,11 +367,10 @@ def register_auth_tools(mcp) -> None:
                 success=False,
             )
 
-        # Delete existing app password from storage (user must revoke in NC Security settings)
-        if existing:
-            await storage.delete_app_password(user_id)
-
         # Initiate new Login Flow v2
+        # Note: existing app password stays valid until the new flow completes.
+        # store_app_password_with_scopes() does an upsert, so the old password
+        # is replaced atomically when nc_auth_check_status stores the new one.
         settings = get_settings()
         nextcloud_host = settings.nextcloud_host
         if not nextcloud_host:
