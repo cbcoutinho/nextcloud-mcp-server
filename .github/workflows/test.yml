@@ -37,13 +37,19 @@ jobs:
         include:
           - mode: single-user
             profile: single-user
-            markers: "(smoke and not oauth and not keycloak and not login_flow) or (integration and not oauth and not keycloak and not login_flow)"
+            markers: "(smoke and not oauth and not keycloak and not login_flow and not multi_user_basic) or (integration and not oauth and not keycloak and not login_flow and not multi_user_basic)"
             wait-port: 8000
             needs-playwright: false
             extra-args: >-
-              --ignore=tests/integration/test_multi_user_basic_auth.py
               --ignore=tests/integration/test_qdrant_collection_creation.py
               --ignore=tests/rag_evaluation/
+
+          - mode: multi-user-basic
+            profile: multi-user-basic
+            markers: "multi_user_basic"
+            wait-port: 8003
+            needs-playwright: false
+            extra-args: ""
 
           # NOTE: Playwright browser tests are skipped in CI (no browser grant flow).
           # These entries still run non-Playwright tests marked with the same markers.
@@ -68,14 +74,13 @@ jobs:
         with:
           submodules: 'true'
 
-      # Build OIDC app (only needed for oauth/login-flow modes)
       - name: Set up PHP 8.4
-        if: matrix.needs-playwright
         uses: shivammathur/setup-php@44454db4f0199b8b9685a5d763dc37cbf79108e1 # 2.36.0
         with:
           php-version: 8.4
           coverage: none
 
+      # OIDC app only needed for oauth/login-flow modes
       - name: Install OIDC app composer dependencies
         if: matrix.needs-playwright
         run: |
@@ -175,6 +180,17 @@ jobs:
             ${{ matrix.extra-args }} 2>/dev/null \
             | tail -1 || true
 
-      - name: Show service logs on failure
+      - name: Collect service logs on failure
         if: failure()
-        run: docker compose --profile ${{ matrix.profile }} logs --tail=100
+        run: docker compose --profile ${{ matrix.profile }} logs --tail=500 > /tmp/docker-compose-logs.txt 2>&1
+
+      - name: Upload debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: debug-${{ matrix.mode }}
+          path: |
+            /tmp/*.png
+            /tmp/docker-compose-logs.txt
+          retention-days: 7
+          if-no-files-found: ignore

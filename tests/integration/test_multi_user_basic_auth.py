@@ -10,6 +10,7 @@ import pytest
 
 
 @pytest.mark.integration
+@pytest.mark.multi_user_basic
 async def test_basic_auth_pass_through_notes_search(nc_mcp_basic_auth_client):
     """Test BasicAuth pass-through with notes search tool."""
     # Call tool - BasicAuth header is set at connection level by fixture
@@ -27,6 +28,7 @@ async def test_basic_auth_pass_through_notes_search(nc_mcp_basic_auth_client):
 
 
 @pytest.mark.integration
+@pytest.mark.multi_user_basic
 async def test_basic_auth_pass_through_notes_create(nc_mcp_basic_auth_client):
     """Test BasicAuth pass-through with notes create tool."""
     # Create a note using BasicAuth
@@ -47,6 +49,7 @@ async def test_basic_auth_pass_through_notes_create(nc_mcp_basic_auth_client):
 
 
 @pytest.mark.integration
+@pytest.mark.multi_user_basic
 async def test_basic_auth_pass_through_get_note(nc_mcp_basic_auth_client):
     """Test BasicAuth pass-through with get note tool."""
     # First create a note to get

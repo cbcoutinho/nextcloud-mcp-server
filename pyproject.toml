@@ -75,6 +75,7 @@ markers = [
     "smoke: Critical path smoke tests for quick validation",
     "keycloak: OAuth tests that utilize keycloak external identity provider",
     "login_flow: Login Flow v2 integration tests (ADR-022)",
+    "multi_user_basic: Multi-user BasicAuth pass-through tests (ADR-020)",
 ]
 testpaths = [
     "tests",
