@@ -27,6 +27,8 @@ from ...conftest import _handle_oauth_consent_screen
 
 logger = logging.getLogger(__name__)
 
+pytestmark = [pytest.mark.integration, pytest.mark.oauth]
+
 
 @pytest.fixture(scope="module")
 def nextcloud_host() -> str:
@@ -114,7 +116,6 @@ async def test_oauth_clients(
     logger.info("Test OAuth clients fixture complete")
 
 
-@pytest.mark.integration
 async def test_introspection_requires_client_authentication(
     oidc_endpoints: dict[str, str],
 ):
@@ -284,7 +285,6 @@ async def _obtain_token_for_client(
         return access_token
 
 
-@pytest.mark.integration
 async def test_client_cannot_introspect_other_clients_tokens(
     playwright_oauth_token: str,
     shared_oauth_client_credentials: tuple,
@@ -344,7 +344,6 @@ async def test_client_cannot_introspect_other_clients_tokens(
         )
 
 
-@pytest.mark.integration
 async def test_introspection_with_resource_parameter(
     browser,
     oauth_callback_server,
@@ -440,7 +439,6 @@ async def test_introspection_with_resource_parameter(
         )
 
 
-@pytest.mark.integration
 async def test_introspection_returns_inactive_for_invalid_token(
     test_oauth_clients: dict[str, tuple[str, str]],
     oidc_endpoints: dict[str, str],

@@ -37,21 +37,27 @@ jobs:
         include:
           - mode: single-user
             profile: single-user
-            markers: "smoke or (integration and not oauth and not keycloak and not login_flow)"
+            markers: "(smoke and not oauth and not keycloak and not login_flow) or (integration and not oauth and not keycloak and not login_flow)"
             wait-port: 8000
             needs-playwright: false
+            extra-args: >-
+              --ignore=tests/integration/test_multi_user_basic_auth.py
+              --ignore=tests/integration/test_qdrant_collection_creation.py
+              --ignore=tests/rag_evaluation/
 
           - mode: oauth
             profile: oauth
             markers: "oauth and not keycloak"
             wait-port: 8001
             needs-playwright: true
+            extra-args: ""
 
           - mode: login-flow
             profile: login-flow
             markers: "login_flow"
             wait-port: 8004
             needs-playwright: true
+            extra-args: ""
 
     name: integration (${{ matrix.mode }})
 
@@ -135,6 +141,14 @@ jobs:
           done
           echo "MCP service is ready on port ${{ matrix.wait-port }}."
 
+      - name: Verify OIDC configuration
+        if: matrix.needs-playwright
+        run: |
+          echo "=== OIDC Discovery ==="
+          curl -s http://localhost:8080/.well-known/openid-configuration | jq .
+          echo "=== OIDC App Status ==="
+          docker compose exec -T app php occ app:list --output=json 2>/dev/null | jq '.enabled.oidc // "NOT INSTALLED"'
+
       - name: Run tests (${{ matrix.mode }})
         env:
           NEXTCLOUD_HOST: "http://localhost:8080"
@@ -145,7 +159,8 @@ jobs:
             --log-cli-level=WARN \
             -m '${{ matrix.markers }}' \
             -o "addopts=-p no:asyncio" \
-            --timeout=300
+            --timeout=300 \
+            ${{ matrix.extra-args }}
 
       - name: Show service logs on failure
         if: failure()

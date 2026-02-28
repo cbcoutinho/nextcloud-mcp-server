@@ -18,6 +18,7 @@ import pytest
 
 
 @pytest.mark.integration
+@pytest.mark.oauth
 async def test_prm_endpoint():
     """Test that the Protected Resource Metadata endpoint returns correct data."""
 
@@ -60,6 +61,7 @@ async def test_basicauth_shows_all_tools(nc_mcp_client):
 
 
 @pytest.mark.integration
+@pytest.mark.oauth
 async def test_read_only_token_filters_write_tools(nc_mcp_oauth_client_read_only):
     """Test that a token with only read scopes filters out write tools."""
 
@@ -108,6 +110,7 @@ async def test_read_only_token_filters_write_tools(nc_mcp_oauth_client_read_only
 
 
 @pytest.mark.integration
+@pytest.mark.oauth
 async def test_write_only_token_filters_read_tools(nc_mcp_oauth_client_write_only):
     """Test that a token with only write scopes filters out read tools."""
 
@@ -156,6 +159,7 @@ async def test_write_only_token_filters_read_tools(nc_mcp_oauth_client_write_onl
 
 
 @pytest.mark.integration
+@pytest.mark.oauth
 async def test_full_access_token_shows_all_tools(nc_mcp_oauth_client_full_access):
     """Test that a token with both read and write scopes scopes can see all tools."""
 
@@ -389,6 +393,7 @@ async def test_scope_metadata_coverage(nc_mcp_client):
 
 
 @pytest.mark.integration
+@pytest.mark.oauth
 async def test_jwt_with_no_custom_scopes_returns_zero_tools(
     nc_mcp_oauth_client_no_custom_scopes,
 ):
@@ -433,6 +438,7 @@ async def test_jwt_with_no_custom_scopes_returns_zero_tools(
 
 
 @pytest.mark.integration
+@pytest.mark.oauth
 async def test_jwt_consent_scenarios_read_only(nc_mcp_oauth_client_read_only):
     """
     Test JWT with only nc:read scope consented.
@@ -470,6 +476,7 @@ async def test_jwt_consent_scenarios_read_only(nc_mcp_oauth_client_read_only):
 
 
 @pytest.mark.integration
+@pytest.mark.oauth
 async def test_jwt_consent_scenarios_write_only(nc_mcp_oauth_client_write_only):
     """
     Test JWT with only nc:write scope consented.
@@ -507,6 +514,7 @@ async def test_jwt_consent_scenarios_write_only(nc_mcp_oauth_client_write_only):
 
 
 @pytest.mark.integration
+@pytest.mark.oauth
 async def test_jwt_consent_scenarios_full_access(nc_mcp_oauth_client_full_access):
     """
     Test JWT with both nc:read and nc:write scopes consented.
