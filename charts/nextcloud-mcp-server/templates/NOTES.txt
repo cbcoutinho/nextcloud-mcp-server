@@ -57,6 +57,28 @@ Your Nextcloud MCP Server has been deployed in {{ .Values.auth.mode }} authentic
 
    IMPORTANT: OAuth mode is experimental and requires patches to the user_oidc app.
    See: https://github.com/cbcoutinho/nextcloud-mcp-server#authentication
+{{- else if eq .Values.auth.mode "multi-user-basic" }}
+
+3. Multi-User BasicAuth Mode (Pass-Through):
+   - Users provide credentials via Authorization header
+   - Connected to: {{ .Values.nextcloud.host }}
+   {{- if .Values.auth.multiUserBasic.enableOfflineAccess }}
+   - Offline access: Enabled (background operations with app passwords)
+   - Token storage: {{ .Values.auth.multiUserBasic.tokenStorageDb }}
+   {{- else }}
+   - Offline access: Disabled (stateless pass-through)
+   {{- end }}
+{{- else if eq .Values.auth.mode "login-flow" }}
+
+3. Login Flow v2 Mode (Experimental, ADR-022):
+   - Server URL: {{ include "nextcloud-mcp-server.mcpServerUrl" . }}
+   - Connected to: {{ .Values.nextcloud.host }}
+   - Token storage: {{ .Values.auth.loginFlow.tokenStorageDb }}
+
+   Users authenticate via Nextcloud's native Login Flow v2 — no OAuth patches required.
+   Each user gets a per-device app password managed by the MCP server.
+
+   IMPORTANT: Login Flow v2 is experimental. See ADR-022 for details.
 {{- end }}
 
 {{- if .Values.documentProcessing.enabled }}
@@ -168,6 +190,12 @@ After migrating, remove the deprecated settings:
 
 ================================================================================
 {{- end }}
+
+Deployed version:
+  - Chart: {{ .Chart.Version }}
+  - App: {{ .Chart.AppVersion }}
+
+Full changelog: https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/charts/nextcloud-mcp-server/CHANGELOG.md
 
 For more information and documentation:
 - GitHub: https://github.com/cbcoutinho/nextcloud-mcp-server

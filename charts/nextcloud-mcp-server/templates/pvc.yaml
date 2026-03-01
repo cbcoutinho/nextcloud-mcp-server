@@ -16,6 +16,21 @@ spec:
       storage: {{ .Values.auth.oauth.persistence.size }}
 {{- end }}
 ---
+{{- if eq .Values.auth.mode "login-flow" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "nextcloud-mcp-server.fullname" . }}-oauth-storage
+  labels:
+    {{- include "nextcloud-mcp-server.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Mi
+{{- end }}
+---
 {{- if and (eq (include "nextcloud-mcp-server.dataStorageEnabled" .) "true") (not .Values.dataStorage.existingClaim) }}
 {{- $legacyMultiUserBasic := eq (include "nextcloud-mcp-server.legacyMultiUserBasicPersistence" .) "true" }}
 {{- $legacyQdrant := eq (include "nextcloud-mcp-server.legacyQdrantPersistence" .) "true" }}
