@@ -1606,13 +1606,10 @@ class RefreshTokenStorage:
                 "updated_at": updated_at,
             }
 
-        except Exception as e:
+        except Exception:
             duration = time.time() - start_time
             record_db_operation("sqlite", "select", duration, "error")
-            logger.error(
-                f"Failed to retrieve scoped app password for user {user_id}: {e}"
-            )
-            return None
+            raise
 
     async def update_app_password_scopes(self, user_id: str, scopes: list[str]) -> bool:
         """Update only the scopes for an existing app password (no decrypt/re-encrypt).
@@ -1641,6 +1638,14 @@ class RefreshTokenStorage:
 
             duration = time.time() - start_time
             record_db_operation("sqlite", "update", duration, "success")
+
+            if updated:
+                await self._audit_log(
+                    event="update_app_password_scopes",
+                    user_id=user_id,
+                    auth_method="app_password",
+                )
+
             return updated
 
         except Exception:
@@ -1803,6 +1808,11 @@ class RefreshTokenStorage:
 
             if deleted:
                 logger.info(f"Deleted login flow session for user {user_id}")
+                await self._audit_log(
+                    event="delete_login_flow_session",
+                    user_id=user_id,
+                    auth_method="login_flow",
+                )
 
             return deleted
 
@@ -1836,6 +1846,11 @@ class RefreshTokenStorage:
 
             if count > 0:
                 logger.info(f"Cleaned up {count} expired login flow sessions")
+                await self._audit_log(
+                    event="delete_expired_login_flow_sessions",
+                    user_id="system",
+                    auth_method="login_flow",
+                )
 
             return count
 

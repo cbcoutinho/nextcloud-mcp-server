@@ -9,7 +9,7 @@ tools during the migration period.
 
 import logging
 
-from mcp.server.fastmcp import Context
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth.elicitation import present_login_url
@@ -28,7 +28,7 @@ from nextcloud_mcp_server.server.oauth_tools import extract_user_id_from_token
 logger = logging.getLogger(__name__)
 
 
-def register_auth_tools(mcp) -> None:
+def register_auth_tools(mcp: FastMCP) -> None:
     """Register Login Flow v2 auth tools with the MCP server."""
 
     @mcp.tool(
@@ -381,7 +381,9 @@ def register_auth_tools(mcp) -> None:
             )
 
         # No-op detection: skip Login Flow if scopes are unchanged
-        previous_scopes_set = set(previous_scopes) if previous_scopes else set()
+        previous_scopes_set = (
+            set(previous_scopes) if previous_scopes else set(ALL_SUPPORTED_SCOPES)
+        )
         if set(new_scopes) == previous_scopes_set:
             return UpdateScopesResponse(
                 status="unchanged",

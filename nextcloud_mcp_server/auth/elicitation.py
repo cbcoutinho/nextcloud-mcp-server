@@ -56,6 +56,11 @@ async def present_login_url(
         )
 
         if result.action == "accept":
+            if hasattr(result, "data") and not result.data.acknowledged:  # type: ignore[union-attr]
+                logger.warning(
+                    "User accepted login flow without checking the acknowledged box — "
+                    "login completion will be verified via polling"
+                )
             logger.info("User acknowledged login flow completion")
             return "accepted"
         elif result.action == "decline":

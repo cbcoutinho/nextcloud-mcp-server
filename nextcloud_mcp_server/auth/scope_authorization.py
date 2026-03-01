@@ -14,6 +14,13 @@ from nextcloud_mcp_server.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Scopes that only assert identity (OIDC standard claims).
+# Tools requiring *only* these scopes (e.g. auth provisioning tools) must
+# bypass the Login Flow v2 "is the user provisioned?" check — otherwise the
+# very tools that *create* app passwords would be blocked for unprovisioned
+# users, creating a circular dependency.
+IDENTITY_ONLY_SCOPES: frozenset[str] = frozenset({"openid", "profile", "email"})
+
 
 class ScopeAuthorizationError(Exception):
     """Raised when a request lacks required scopes."""
@@ -141,7 +148,9 @@ def require_scopes(*required_scopes: str):
             # In Login Flow v2 multi-user mode, OAuth tokens provide MCP session
             # identity only. Nextcloud API access uses stored app passwords.
             # Check if the user has a stored app password with appropriate scopes.
-            if get_settings().enable_login_flow:
+            if get_settings().enable_login_flow and not set(required_scopes).issubset(
+                IDENTITY_ONLY_SCOPES
+            ):
                 from nextcloud_mcp_server.server.oauth_tools import (  # noqa: PLC0415
                     extract_user_id_from_token,
                 )
