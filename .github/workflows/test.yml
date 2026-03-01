@@ -51,7 +51,7 @@ jobs:
             markers: "multi_user_basic"
             wait-port: 8003
             mcp-internal-url: "http://mcp-multi-user-basic:8000"
-            needs-playwright: false
+            needs-playwright: true
             extra-args: ""
 
           # NOTE: Playwright browser tests are skipped in CI (no browser grant flow).
