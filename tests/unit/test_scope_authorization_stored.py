@@ -27,7 +27,7 @@ async def test_get_stored_scopes_with_scopes():
     }
 
     with patch(
-        "nextcloud_mcp_server.auth.scope_authorization._get_scope_storage",
+        "nextcloud_mcp_server.auth.scope_authorization.get_shared_storage",
         return_value=mock_storage,
     ):
         result = await _get_stored_scopes("alice")
@@ -47,7 +47,7 @@ async def test_get_stored_scopes_null_scopes():
     }
 
     with patch(
-        "nextcloud_mcp_server.auth.scope_authorization._get_scope_storage",
+        "nextcloud_mcp_server.auth.scope_authorization.get_shared_storage",
         return_value=mock_storage,
     ):
         result = await _get_stored_scopes("bob")
@@ -61,7 +61,7 @@ async def test_get_stored_scopes_no_password():
     mock_storage.get_app_password_with_scopes.return_value = None
 
     with patch(
-        "nextcloud_mcp_server.auth.scope_authorization._get_scope_storage",
+        "nextcloud_mcp_server.auth.scope_authorization.get_shared_storage",
         return_value=mock_storage,
     ):
         result = await _get_stored_scopes("nobody")
@@ -70,14 +70,15 @@ async def test_get_stored_scopes_no_password():
 
 
 async def test_get_stored_scopes_storage_error():
-    """Test that storage errors return None (fail-closed)."""
+    """Test that storage errors propagate to the caller."""
     mock_storage = AsyncMock()
     mock_storage.get_app_password_with_scopes.side_effect = RuntimeError("DB error")
 
-    with patch(
-        "nextcloud_mcp_server.auth.scope_authorization._get_scope_storage",
-        return_value=mock_storage,
+    with (
+        patch(
+            "nextcloud_mcp_server.auth.scope_authorization.get_shared_storage",
+            return_value=mock_storage,
+        ),
+        pytest.raises(RuntimeError, match="DB error"),
     ):
-        result = await _get_stored_scopes("alice")
-
-    assert result is None
+        await _get_stored_scopes("alice")

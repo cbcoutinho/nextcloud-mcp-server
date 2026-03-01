@@ -443,35 +443,59 @@ class TestLoginFlowDeck:
 
     async def test_deck_board_workflow(self, nc_mcp_login_flow_client: ClientSession):
         """Create board → list boards → get board details."""
+        import os
+
+        import httpx
+
         suffix = uuid.uuid4().hex[:8]
         board_title = f"LoginFlow Board {suffix}"
+        board_id = None
 
-        # Create board (requires title and color)
-        create_result = await nc_mcp_login_flow_client.call_tool(
-            "deck_create_board", {"title": board_title, "color": "0076D1"}
-        )
-        assert create_result.isError is False, (
-            f"Create board failed: {create_result.content[0].text}"
-        )
-        board_data = json.loads(create_result.content[0].text)
-        board_id = board_data.get("id") or board_data.get("board_id")
-        logger.info(f"Created board: {board_id}")
+        try:
+            # Create board (requires title and color)
+            create_result = await nc_mcp_login_flow_client.call_tool(
+                "deck_create_board", {"title": board_title, "color": "0076D1"}
+            )
+            assert create_result.isError is False, (
+                f"Create board failed: {create_result.content[0].text}"
+            )
+            board_data = json.loads(create_result.content[0].text)
+            board_id = board_data.get("id") or board_data.get("board_id")
+            logger.info(f"Created board: {board_id}")
 
-        # List boards (tool name is deck_get_boards)
-        list_result = await nc_mcp_login_flow_client.call_tool("deck_get_boards", {})
-        assert list_result.isError is False
-        boards_data = json.loads(list_result.content[0].text)
-        boards = boards_data.get("boards", [])
-        board_ids = [b.get("id") for b in boards]
-        assert board_id in board_ids
+            # List boards (tool name is deck_get_boards)
+            list_result = await nc_mcp_login_flow_client.call_tool(
+                "deck_get_boards", {}
+            )
+            assert list_result.isError is False
+            boards_data = json.loads(list_result.content[0].text)
+            boards = boards_data.get("boards", [])
+            board_ids = [b.get("id") for b in boards]
+            assert board_id in board_ids
 
-        # Get board details
-        detail_result = await nc_mcp_login_flow_client.call_tool(
-            "deck_get_board", {"board_id": board_id}
-        )
-        assert detail_result.isError is False
-
-        # Note: no deck_delete_board tool exists, board cleanup is manual
+            # Get board details
+            detail_result = await nc_mcp_login_flow_client.call_tool(
+                "deck_get_board", {"board_id": board_id}
+            )
+            assert detail_result.isError is False
+        finally:
+            # Clean up board via Deck REST API (no MCP delete_board tool exists)
+            if board_id is not None:
+                nc_host = os.getenv("NEXTCLOUD_HOST", "http://localhost:8080")
+                nc_user = os.getenv("NEXTCLOUD_USERNAME", "admin")
+                nc_pass = os.getenv("NEXTCLOUD_PASSWORD", "admin")
+                try:
+                    async with httpx.AsyncClient(
+                        base_url=nc_host,
+                        auth=httpx.BasicAuth(nc_user, nc_pass),
+                        headers={"OCS-APIREQUEST": "true"},
+                    ) as client:
+                        resp = await client.delete(
+                            f"/apps/deck/api/v1.0/boards/{board_id}"
+                        )
+                        logger.info(f"Board cleanup: {board_id} → {resp.status_code}")
+                except Exception as e:
+                    logger.warning(f"Board cleanup failed: {e}")
 
 
 # ---------------------------------------------------------------------------

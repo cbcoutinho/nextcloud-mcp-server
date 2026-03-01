@@ -15,7 +15,7 @@ from mcp.types import ToolAnnotations
 from nextcloud_mcp_server.auth.elicitation import present_login_url
 from nextcloud_mcp_server.auth.login_flow import LoginFlowV2Client
 from nextcloud_mcp_server.auth.scope_authorization import require_scopes
-from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.config import get_nextcloud_ssl_verify, get_settings
 from nextcloud_mcp_server.models.auth import (
     ALL_SUPPORTED_SCOPES,
@@ -26,18 +26,6 @@ from nextcloud_mcp_server.models.auth import (
 from nextcloud_mcp_server.server.oauth_tools import extract_user_id_from_token
 
 logger = logging.getLogger(__name__)
-
-
-_storage_instance: RefreshTokenStorage | None = None
-
-
-async def _get_storage() -> RefreshTokenStorage:
-    """Get initialized storage instance (lazy singleton)."""
-    global _storage_instance
-    if _storage_instance is None:
-        _storage_instance = RefreshTokenStorage.from_env()
-        await _storage_instance.initialize()
-    return _storage_instance
 
 
 def register_auth_tools(mcp) -> None:
@@ -79,7 +67,7 @@ def register_auth_tools(mcp) -> None:
                 success=False,
             )
 
-        storage = await _get_storage()
+        storage = await get_shared_storage()
 
         # Check if already provisioned
         existing = await storage.get_app_password_with_scopes(user_id)
@@ -143,6 +131,24 @@ def register_auth_tools(mcp) -> None:
         # Present login URL to user via elicitation
         elicitation_result = await present_login_url(ctx, init_response.login_url)
 
+        if elicitation_result == "declined":
+            await storage.delete_login_flow_session(user_id)
+            return ProvisionAccessResponse(
+                status="declined",
+                message="Login flow declined. Call nc_auth_provision_access again to retry.",
+                user_id=user_id,
+                success=False,
+            )
+
+        if elicitation_result == "cancelled":
+            await storage.delete_login_flow_session(user_id)
+            return ProvisionAccessResponse(
+                status="cancelled",
+                message="Login flow cancelled. Call nc_auth_provision_access again to retry.",
+                user_id=user_id,
+                success=False,
+            )
+
         message = (
             f"Please open this URL in your browser to log in to Nextcloud:\n\n"
             f"{init_response.login_url}\n\n"
@@ -192,7 +198,7 @@ def register_auth_tools(mcp) -> None:
                 success=False,
             )
 
-        storage = await _get_storage()
+        storage = await get_shared_storage()
 
         # Check for existing app password
         existing = await storage.get_app_password_with_scopes(user_id)
@@ -336,11 +342,18 @@ def register_auth_tools(mcp) -> None:
                 success=False,
             )
 
-        storage = await _get_storage()
+        storage = await get_shared_storage()
 
-        # Get current state
+        # Get current state - require existing provisioning
         existing = await storage.get_app_password_with_scopes(user_id)
-        previous_scopes = existing["scopes"] if existing else None
+        if existing is None:
+            return UpdateScopesResponse(
+                status="error",
+                message="Not provisioned. Call nc_auth_provision_access first.",
+                success=False,
+            )
+
+        previous_scopes = existing["scopes"]
 
         # Compute new scope set
         current_set = (
@@ -365,6 +378,16 @@ def register_auth_tools(mcp) -> None:
                 status="error",
                 message="Cannot remove all scopes. At least one scope must remain.",
                 success=False,
+            )
+
+        # No-op detection: skip Login Flow if scopes are unchanged
+        previous_scopes_set = set(previous_scopes) if previous_scopes else set()
+        if set(new_scopes) == previous_scopes_set:
+            return UpdateScopesResponse(
+                status="unchanged",
+                message="Requested scopes match current scopes. No changes needed.",
+                previous_scopes=previous_scopes,
+                new_scopes=new_scopes,
             )
 
         # Initiate new Login Flow v2
@@ -404,6 +427,26 @@ def register_auth_tools(mcp) -> None:
 
         # Present login URL
         elicitation_result = await present_login_url(ctx, init_response.login_url)
+
+        if elicitation_result == "declined":
+            await storage.delete_login_flow_session(user_id)
+            return UpdateScopesResponse(
+                status="declined",
+                message="Scope update declined. Call nc_auth_update_scopes again to retry.",
+                previous_scopes=previous_scopes if previous_scopes else None,
+                new_scopes=new_scopes,
+                success=False,
+            )
+
+        if elicitation_result == "cancelled":
+            await storage.delete_login_flow_session(user_id)
+            return UpdateScopesResponse(
+                status="cancelled",
+                message="Scope update cancelled. Call nc_auth_update_scopes again to retry.",
+                previous_scopes=previous_scopes if previous_scopes else None,
+                new_scopes=new_scopes,
+                success=False,
+            )
 
         message = (
             f"Scope update requires re-authentication.\n\n"

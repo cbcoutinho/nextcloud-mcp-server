@@ -27,7 +27,7 @@ from playwright.async_api import Page
 
 logger = logging.getLogger(__name__)
 
-pytestmark = [pytest.mark.integration, pytest.mark.oauth]
+pytestmark = [pytest.mark.integration, pytest.mark.multi_user_basic]
 
 
 async def login_to_nextcloud(page: Page, username: str, password: str):
@@ -899,7 +899,7 @@ def clear_stale_test_state(clear_preferences: bool = False) -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.oauth
+@pytest.mark.multi_user_basic
 async def test_multi_user_astrolabe_background_sync_enablement(
     browser,
     nc_client,
@@ -1246,7 +1246,7 @@ async def verify_app_password_deleted(username: str) -> bool:
 
 
 @pytest.mark.integration
-@pytest.mark.oauth
+@pytest.mark.multi_user_basic
 async def test_revoke_background_sync_access(
     browser,
     nc_client,

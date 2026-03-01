@@ -10,7 +10,7 @@ from nextcloud_mcp_server.auth.context_helper import (
     get_session_client_from_context,
 )
 from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
-from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import (
     DeploymentMode,
@@ -254,18 +254,6 @@ def _get_client_from_basic_auth(ctx: Context) -> NextcloudClient:
     )
 
 
-_login_flow_storage_instance = None
-
-
-async def _get_login_flow_storage():
-    """Get initialized storage instance for login flow (lazy singleton)."""
-    global _login_flow_storage_instance
-    if _login_flow_storage_instance is None:
-        _login_flow_storage_instance = RefreshTokenStorage.from_env()
-        await _login_flow_storage_instance.initialize()
-    return _login_flow_storage_instance
-
-
 async def _get_client_from_login_flow(
     ctx: Context, nextcloud_host: str
 ) -> NextcloudClient:
@@ -294,7 +282,7 @@ async def _get_client_from_login_flow(
             "Cannot determine user identity from MCP token."
         )
 
-    storage = await _get_login_flow_storage()
+    storage = await get_shared_storage()
 
     app_data = await storage.get_app_password_with_scopes(user_id)
     if not app_data:

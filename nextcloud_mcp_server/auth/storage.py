@@ -1614,6 +1614,40 @@ class RefreshTokenStorage:
             )
             return None
 
+    async def update_app_password_scopes(self, user_id: str, scopes: list[str]) -> bool:
+        """Update only the scopes for an existing app password (no decrypt/re-encrypt).
+
+        Args:
+            user_id: MCP user ID
+            scopes: New scope list
+
+        Returns:
+            True if a row was updated, False if user not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        scopes_json = json.dumps(scopes)
+        now = int(time.time())
+        start_time = time.time()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute(
+                    "UPDATE app_passwords SET scopes = ?, updated_at = ? WHERE user_id = ?",
+                    (scopes_json, now, user_id),
+                )
+                await db.commit()
+                updated = cursor.rowcount > 0
+
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "update", duration, "success")
+            return updated
+
+        except Exception:
+            duration = time.time() - start_time
+            record_db_operation("sqlite", "update", duration, "error")
+            raise
+
     # ── Login Flow v2: Session Tracking ──────────────────────────────────
 
     async def store_login_flow_session(
@@ -1809,6 +1843,25 @@ class RefreshTokenStorage:
             duration = time.time() - start_time
             record_db_operation("sqlite", "delete", duration, "error")
             raise
+
+
+_shared_instance: RefreshTokenStorage | None = None
+_shared_lock = anyio.Lock()
+
+
+async def get_shared_storage() -> RefreshTokenStorage:
+    """Get the process-wide RefreshTokenStorage singleton (lock-protected).
+
+    All modules that need storage should use this function instead of
+    creating their own lazy singletons. The lock ensures thread-safe
+    initialization on concurrent first-access.
+    """
+    global _shared_instance
+    async with _shared_lock:
+        if _shared_instance is None:
+            _shared_instance = RefreshTokenStorage.from_env()
+            await _shared_instance.initialize()
+    return _shared_instance
 
 
 async def generate_encryption_key() -> str:

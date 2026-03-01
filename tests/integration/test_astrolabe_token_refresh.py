@@ -30,7 +30,7 @@ import anyio
 import pytest
 from playwright.async_api import Page
 
-pytestmark = [pytest.mark.integration, pytest.mark.oauth]
+pytestmark = [pytest.mark.integration, pytest.mark.multi_user_basic]
 
 logger = logging.getLogger(__name__)
 
@@ -334,7 +334,7 @@ def delete_user_credentials(username: str) -> bool:
 
 
 @pytest.mark.integration
-@pytest.mark.oauth
+@pytest.mark.multi_user_basic
 async def test_app_password_storage_and_cleanup(
     browser,
     nc_client,
@@ -440,7 +440,7 @@ async def test_app_password_storage_and_cleanup(
 
 
 @pytest.mark.integration
-@pytest.mark.oauth
+@pytest.mark.multi_user_basic
 async def test_credential_isolation_between_users(
     browser,
     nc_client,
@@ -549,7 +549,7 @@ async def test_credential_isolation_between_users(
 
 
 @pytest.mark.integration
-@pytest.mark.oauth
+@pytest.mark.multi_user_basic
 async def test_credential_revoke_and_reprovision(
     browser,
     nc_client,

@@ -148,7 +148,7 @@ services:
       # Token storage (required for middleware initialization)
       # DEVELOPMENT ONLY - generate a fresh key for production:
       # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-      - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
+      - TOKEN_ENCRYPTION_KEY=fqqI4G51yBCOcu9cvv6wCUJB7sf_CK2za5ClC6b86yY=
       - TOKEN_STORAGE_DB=/app/data/tokens.db
 
       - ENABLE_SEMANTIC_SEARCH=true
@@ -187,7 +187,7 @@ services:
 
       # Refresh token storage (ADR-002 Tier 1)
       - ENABLE_BACKGROUND_OPERATIONS=true
-      - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
+      - TOKEN_ENCRYPTION_KEY=Qh60VwZQsM7CLtSMunzC0gIGPBT948S6VSawUkODtvU=
       - TOKEN_STORAGE_DB=/app/data/tokens.db
 
       # ADR-005: Multi-audience mode (default - ENABLE_TOKEN_EXCHANGE=false)
@@ -307,7 +307,9 @@ services:
       - ENABLE_LOGIN_FLOW=true
 
       # Token storage (required for app password + session persistence)
-      - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
+      # DEVELOPMENT ONLY - generate a fresh key for production:
+      # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - TOKEN_ENCRYPTION_KEY=rxJvkBf7ZBjZZDL4a1sSqjhmjawhmbRMSOGfK8HDyKU=
       - TOKEN_STORAGE_DB=/app/data/tokens.db
 
       # Semantic search

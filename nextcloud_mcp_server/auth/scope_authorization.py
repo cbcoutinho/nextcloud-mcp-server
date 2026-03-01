@@ -9,7 +9,7 @@ from mcp.server.auth.provider import AccessToken
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.utilities.context_injection import find_context_parameter
 
-from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -478,18 +478,6 @@ def discover_all_scopes(mcp) -> list[str]:
 # ── Login Flow v2 helpers ────────────────────────────────────────────────
 
 
-_scope_storage_instance = None
-
-
-async def _get_scope_storage():
-    """Get initialized storage instance for scope checks (lazy singleton)."""
-    global _scope_storage_instance
-    if _scope_storage_instance is None:
-        _scope_storage_instance = RefreshTokenStorage.from_env()
-        await _scope_storage_instance.initialize()
-    return _scope_storage_instance
-
-
 async def _get_stored_scopes(user_id: str) -> list[str] | str | None:
     """Look up stored app password scopes for a user.
 
@@ -497,16 +485,16 @@ async def _get_stored_scopes(user_id: str) -> list[str] | str | None:
         - list[str]: Specific scopes granted
         - "all": NULL scopes in DB (legacy = all allowed)
         - None: No stored app password (provisioning required)
-    """
-    try:
-        storage = await _get_scope_storage()
 
-        data = await storage.get_app_password_with_scopes(user_id)
-        if data is None:
-            return None
-        if data["scopes"] is None:
-            return "all"
-        return data["scopes"]
-    except Exception as e:
-        logger.error(f"Failed to check stored scopes for {user_id}: {e}")
+    Raises:
+        Storage/infrastructure exceptions propagate to the caller
+        (require_scopes decorator) for proper MCP error responses.
+    """
+    storage = await get_shared_storage()
+
+    data = await storage.get_app_password_with_scopes(user_id)
+    if data is None:
         return None
+    if data["scopes"] is None:
+        return "all"
+    return data["scopes"]

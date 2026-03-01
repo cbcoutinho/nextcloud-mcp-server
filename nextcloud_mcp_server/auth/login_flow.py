@@ -62,9 +62,10 @@ class LoginFlowV2Client:
     async def initiate(
         self, user_agent: str = "nextcloud-mcp-server"
     ) -> LoginFlowInitResponse:
-        """Initiate Login Flow v2.
+        """Initiate Login Flow v2 by sending an HTTP POST to the Nextcloud instance.
 
-        Posts to /index.php/login/v2 to start a new login flow.
+        Makes an outbound HTTP request to POST /index.php/login/v2 on the
+        configured Nextcloud server to start a new login flow.
 
         Args:
             user_agent: User-Agent string for the app password name
@@ -99,9 +100,10 @@ class LoginFlowV2Client:
         return result
 
     async def poll(self, poll_endpoint: str, poll_token: str) -> LoginFlowPollResult:
-        """Poll for Login Flow v2 completion.
+        """Poll for Login Flow v2 completion by sending an HTTP POST to the Nextcloud instance.
 
-        Posts to the poll endpoint with the token. Nextcloud returns:
+        Makes an outbound HTTP request to the poll endpoint provided by the
+        initiate response. Nextcloud returns:
         - 200 with credentials when the user completes login
         - 404 when still pending
         - Other errors for expired/invalid flows

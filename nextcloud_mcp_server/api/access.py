@@ -131,12 +131,10 @@ async def update_user_scopes(request: Request) -> JSONResponse:
                 status_code=404,
             )
 
-        # Re-store with updated scopes (password and username unchanged)
-        await storage.store_app_password_with_scopes(
+        # Update scopes only (no decrypt/re-encrypt of the password)
+        await storage.update_app_password_scopes(
             user_id=username,
-            app_password=existing["app_password"],
             scopes=scopes,
-            username=existing.get("username"),
         )
 
         return JSONResponse(

@@ -72,7 +72,7 @@ from nextcloud_mcp_server.auth.oauth_routes import (
     oauth_callback_nextcloud,
 )
 from nextcloud_mcp_server.auth.session_backend import SessionAuthBackend
-from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.storage import RefreshTokenStorage, get_shared_storage
 from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
 from nextcloud_mcp_server.auth.unified_verifier import UnifiedTokenVerifier
 from nextcloud_mcp_server.auth.userinfo_routes import (
@@ -1528,6 +1528,18 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
     mcp_app = mcp.streamable_http_app()
 
+    async def _login_flow_cleanup_loop() -> None:
+        """Periodically clean up expired Login Flow v2 sessions."""
+        while True:
+            await anyio.sleep(3600)  # Every hour
+            try:
+                storage = await get_shared_storage()
+                count = await storage.delete_expired_login_flow_sessions()
+                if count:
+                    logger.info(f"Cleaned up {count} expired login flow sessions")
+            except Exception as e:
+                logger.warning(f"Login flow cleanup error: {e}")
+
     @asynccontextmanager
     async def starlette_lifespan(app: Starlette):
         # Set OAuth context for OAuth login routes (ADR-004)
@@ -1760,6 +1772,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     f"{settings.vector_sync_processor_workers} processors"
                 )
 
+                # Start Login Flow cleanup task if enabled
+                if settings.enable_login_flow:
+                    tg.start_soon(_login_flow_cleanup_loop)
+
                 # Run MCP session manager and yield
                 async with AsyncExitStack() as stack:
                     await stack.enter_async_context(mcp.session_manager.run())
@@ -1943,6 +1959,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         f"{settings.vector_sync_processor_workers} processors"
                     )
 
+                    # Start Login Flow cleanup task if enabled
+                    if settings.enable_login_flow:
+                        tg.start_soon(_login_flow_cleanup_loop)
+
                     # Run MCP session manager and yield
                     async with AsyncExitStack() as stack:
                         await stack.enter_async_context(mcp.session_manager.run())
@@ -1966,7 +1986,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # Just run MCP session manager without vector sync
                 async with AsyncExitStack() as stack:
                     await stack.enter_async_context(mcp.session_manager.run())
-                    yield
+                    if settings.enable_login_flow:
+                        async with anyio.create_task_group() as cleanup_tg:
+                            cleanup_tg.start_soon(_login_flow_cleanup_loop)
+                            yield
+                            cleanup_tg.cancel_scope.cancel()
+                    else:
+                        yield
 
         else:
             # No vector sync - just run MCP session manager
@@ -1987,7 +2013,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     )
             async with AsyncExitStack() as stack:
                 await stack.enter_async_context(mcp.session_manager.run())
-                yield
+                if settings.enable_login_flow:
+                    async with anyio.create_task_group() as cleanup_tg:
+                        cleanup_tg.start_soon(_login_flow_cleanup_loop)
+                        yield
+                        cleanup_tg.cancel_scope.cancel()
+                else:
+                    yield
 
     # Health check endpoints for Kubernetes probes
     def health_live(request):

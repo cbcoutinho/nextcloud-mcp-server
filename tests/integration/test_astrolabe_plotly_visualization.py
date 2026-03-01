@@ -35,7 +35,7 @@ from tests.integration.test_astrolabe_multi_user_background_sync import (
 
 logger = logging.getLogger(__name__)
 
-pytestmark = [pytest.mark.integration, pytest.mark.oauth]
+pytestmark = [pytest.mark.integration, pytest.mark.multi_user_basic]
 
 
 async def wait_for_vector_sync(
@@ -101,7 +101,7 @@ async def navigate_to_astrolabe_main(page: Page):
 
 
 @pytest.mark.integration
-@pytest.mark.oauth
+@pytest.mark.multi_user_basic
 @pytest.mark.timeout(
     300
 )  # 5 minutes - this test involves OAuth, app password, and vector sync
