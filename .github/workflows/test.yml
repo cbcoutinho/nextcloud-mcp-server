@@ -39,6 +39,7 @@ jobs:
             profile: single-user
             markers: "(smoke and not oauth and not keycloak and not login_flow and not multi_user_basic) or (integration and not oauth and not keycloak and not login_flow and not multi_user_basic)"
             wait-port: 8000
+            mcp-internal-url: "http://mcp:8000"
             needs-playwright: false
             extra-args: >-
               --ignore=tests/integration/test_qdrant_collection_creation.py
@@ -48,6 +49,7 @@ jobs:
             profile: multi-user-basic
             markers: "multi_user_basic"
             wait-port: 8003
+            mcp-internal-url: "http://mcp-multi-user-basic:8000"
             needs-playwright: false
             extra-args: ""
 
@@ -57,6 +59,7 @@ jobs:
             profile: oauth
             markers: "oauth and not keycloak"
             wait-port: 8001
+            mcp-internal-url: "http://mcp-oauth:8001"
             needs-playwright: true
             extra-args: ""
 
@@ -64,6 +67,7 @@ jobs:
             profile: login-flow
             markers: "login_flow"
             wait-port: 8004
+            mcp-internal-url: "http://mcp-login-flow:8004"
             needs-playwright: true
             extra-args: ""
 
@@ -106,6 +110,8 @@ jobs:
           compose-file: "./docker-compose.yml"
           compose-flags: "--profile ${{ matrix.profile }}"
           up-flags: "--build"
+        env:
+          MCP_SERVER_URL: ${{ matrix.mcp-internal-url }}
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
@@ -120,7 +126,7 @@ jobs:
           echo "Waiting for Nextcloud at http://localhost:8080..."
           max_attempts=60
           attempt=0
-          until curl -o /dev/null -s -w "%{http_code}\n" http://localhost:8080/ocs/v2.php/apps/serverinfo/api/v1/info | grep -q "401"; do
+          until curl -sSf http://localhost:8080/status.php 2>/dev/null | grep -q '"installed":true'; do
             attempt=$((attempt + 1))
             if [ $attempt -ge $max_attempts ]; then
               echo "Nextcloud did not become ready in time."
