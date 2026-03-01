@@ -84,12 +84,7 @@ jobs:
           php-version: 8.4
           coverage: none
 
-      # OIDC app only needed for oauth/login-flow modes
-      - name: Install OIDC app composer dependencies
-        if: matrix.needs-playwright
-        run: |
-          cd third_party/oidc
-          composer install --no-dev
+      # OIDC app installed from app store (dev mount removed from docker-compose.yml)
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
