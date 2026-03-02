@@ -1779,7 +1779,7 @@ class RefreshTokenStorage:
             logger.error(
                 f"Failed to retrieve login flow session for user {user_id}: {e}"
             )
-            return None
+            raise
 
     async def delete_login_flow_session(self, user_id: str) -> bool:
         """Delete a Login Flow v2 session.
@@ -1861,7 +1861,7 @@ class RefreshTokenStorage:
 
 
 _shared_instance: RefreshTokenStorage | None = None
-_shared_lock = anyio.Lock()
+_shared_lock: anyio.Lock | None = None
 
 
 async def get_shared_storage() -> RefreshTokenStorage:
@@ -1871,7 +1871,9 @@ async def get_shared_storage() -> RefreshTokenStorage:
     creating their own lazy singletons. The lock ensures thread-safe
     initialization on concurrent first-access.
     """
-    global _shared_instance
+    global _shared_instance, _shared_lock
+    if _shared_lock is None:
+        _shared_lock = anyio.Lock()
     async with _shared_lock:
         if _shared_instance is None:
             _shared_instance = RefreshTokenStorage.from_env()

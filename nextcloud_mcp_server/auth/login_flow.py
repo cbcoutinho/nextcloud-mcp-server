@@ -90,11 +90,16 @@ class LoginFlowV2Client:
 
         poll_data = data.get("poll", {})
 
-        result = LoginFlowInitResponse(
-            login_url=data["login"],
-            poll_endpoint=poll_data["endpoint"],
-            poll_token=poll_data["token"],
-        )
+        try:
+            result = LoginFlowInitResponse(
+                login_url=data["login"],
+                poll_endpoint=poll_data["endpoint"],
+                poll_token=poll_data["token"],
+            )
+        except KeyError as e:
+            raise ValueError(
+                f"Malformed Login Flow v2 initiate response from Nextcloud (missing key: {e})"
+            ) from e
 
         logger.info(f"Login Flow v2 initiated: login_url={result.login_url[:60]}...")
         return result
@@ -129,12 +134,17 @@ class LoginFlowV2Client:
                 f"Login Flow v2 completed: server={data.get('server')}, "
                 f"loginName={data.get('loginName')}"
             )
-            return LoginFlowPollResult(
-                status="completed",
-                server=data["server"],
-                login_name=data["loginName"],
-                app_password=data["appPassword"],
-            )
+            try:
+                return LoginFlowPollResult(
+                    status="completed",
+                    server=data["server"],
+                    login_name=data["loginName"],
+                    app_password=data["appPassword"],
+                )
+            except KeyError as e:
+                raise ValueError(
+                    f"Malformed Login Flow v2 poll response from Nextcloud (missing key: {e})"
+                ) from e
 
         if response.status_code == 404:
             logger.debug("Login Flow v2 still pending")

@@ -9,7 +9,7 @@ class ProvisionAccessResponse(BaseResponse):
     """Response from nc_auth_provision_access tool."""
 
     status: str = Field(
-        description="Provisioning status: 'login_required', 'already_provisioned', 'error'"
+        description="Provisioning status: 'login_required', 'already_provisioned', 'declined', 'cancelled', 'error'"
     )
     login_url: str | None = Field(
         None, description="URL to open in browser for Nextcloud login"
@@ -38,7 +38,9 @@ class ProvisionStatusResponse(BaseResponse):
 class UpdateScopesResponse(BaseResponse):
     """Response from nc_auth_update_scopes tool."""
 
-    status: str = Field(description="Status: 'login_required', 'updated', 'error'")
+    status: str = Field(
+        description="Status: 'login_required', 'unchanged', 'declined', 'cancelled', 'error'"
+    )
     login_url: str | None = Field(
         None, description="URL for re-provisioning with new scopes"
     )

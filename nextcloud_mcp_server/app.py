@@ -1531,7 +1531,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     async def _login_flow_cleanup_loop() -> None:
         """Periodically clean up expired Login Flow v2 sessions."""
         while True:
-            await anyio.sleep(3600)  # Every hour
             try:
                 storage = await get_shared_storage()
                 count = await storage.delete_expired_login_flow_sessions()
@@ -1539,6 +1538,18 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     logger.info(f"Cleaned up {count} expired login flow sessions")
             except Exception as e:
                 logger.warning(f"Login flow cleanup error: {e}")
+            await anyio.sleep(3600)  # Every hour
+
+    @asynccontextmanager
+    async def _maybe_login_flow_cleanup():
+        """Start Login Flow cleanup task if enabled."""
+        if settings.enable_login_flow:
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(_login_flow_cleanup_loop)
+                yield
+                tg.cancel_scope.cancel()
+        else:
+            yield
 
     @asynccontextmanager
     async def starlette_lifespan(app: Starlette):
@@ -1772,13 +1783,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     f"{settings.vector_sync_processor_workers} processors"
                 )
 
-                # Start Login Flow cleanup task if enabled
-                if settings.enable_login_flow:
-                    tg.start_soon(_login_flow_cleanup_loop)
-
                 # Run MCP session manager and yield
                 async with AsyncExitStack() as stack:
                     await stack.enter_async_context(mcp.session_manager.run())
+                    await stack.enter_async_context(_maybe_login_flow_cleanup())
                     try:
                         yield
                     finally:
@@ -1959,13 +1967,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         f"{settings.vector_sync_processor_workers} processors"
                     )
 
-                    # Start Login Flow cleanup task if enabled
-                    if settings.enable_login_flow:
-                        tg.start_soon(_login_flow_cleanup_loop)
-
                     # Run MCP session manager and yield
                     async with AsyncExitStack() as stack:
                         await stack.enter_async_context(mcp.session_manager.run())
+                        await stack.enter_async_context(_maybe_login_flow_cleanup())
                         try:
                             yield
                         finally:
@@ -1986,12 +1991,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # Just run MCP session manager without vector sync
                 async with AsyncExitStack() as stack:
                     await stack.enter_async_context(mcp.session_manager.run())
-                    if settings.enable_login_flow:
-                        async with anyio.create_task_group() as cleanup_tg:
-                            cleanup_tg.start_soon(_login_flow_cleanup_loop)
-                            yield
-                            cleanup_tg.cancel_scope.cancel()
-                    else:
+                    async with _maybe_login_flow_cleanup():
                         yield
 
         else:
@@ -2013,12 +2013,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     )
             async with AsyncExitStack() as stack:
                 await stack.enter_async_context(mcp.session_manager.run())
-                if settings.enable_login_flow:
-                    async with anyio.create_task_group() as cleanup_tg:
-                        cleanup_tg.start_soon(_login_flow_cleanup_loop)
-                        yield
-                        cleanup_tg.cancel_scope.cancel()
-                else:
+                async with _maybe_login_flow_cleanup():
                     yield
 
     # Health check endpoints for Kubernetes probes

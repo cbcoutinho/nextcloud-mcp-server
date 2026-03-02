@@ -212,7 +212,16 @@ def register_auth_tools(mcp: FastMCP) -> None:
             )
 
         # Check for pending login flow session
-        session = await storage.get_login_flow_session(user_id)
+        try:
+            session = await storage.get_login_flow_session(user_id)
+        except Exception as e:
+            logger.error(f"Failed to check login flow session for {user_id}: {e}")
+            return ProvisionStatusResponse(
+                status="error",
+                message=f"Failed to check login flow session: {e}",
+                user_id=user_id,
+                success=False,
+            )
         if not session:
             return ProvisionStatusResponse(
                 status="not_initiated",

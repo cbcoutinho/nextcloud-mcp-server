@@ -14,7 +14,7 @@ import os
 import secrets
 import time
 from typing import Any, AsyncGenerator
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, urlunparse
 
 import anyio
 import httpx
@@ -214,10 +214,11 @@ def _rewrite_login_flow_url(login_url: str) -> str:
     the host and needs localhost:8080 instead.
     """
     nextcloud_host = os.getenv("NEXTCLOUD_HOST", "http://localhost:8080")
-    # Replace common internal Docker hostnames
-    url = login_url.replace("http://app:80", nextcloud_host)
-    url = url.replace("http://app", nextcloud_host)
-    return url
+    target = urlparse(nextcloud_host)
+    parsed = urlparse(login_url)
+    if parsed.hostname == "app":
+        parsed = parsed._replace(scheme=target.scheme, netloc=target.netloc)
+    return urlunparse(parsed)
 
 
 async def _complete_login_flow_v2(browser, login_url: str) -> None:
