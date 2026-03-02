@@ -76,8 +76,6 @@ jobs:
             needs-playwright: true
             extra-args: ""
 
-          # NOTE: Playwright browser tests are skipped in CI (no browser grant flow).
-          # These entries still run non-Playwright tests marked with the same markers.
           - mode: oauth
             profile: oauth
             markers: "oauth and not keycloak"
@@ -198,15 +196,6 @@ jobs:
             -o "addopts=-p no:asyncio" \
             --timeout=300 \
             ${{ matrix.extra-args }}
-
-      - name: Report skipped Playwright tests
-        if: matrix.needs-playwright
-        run: |
-          echo "::notice::Playwright browser tests are skipped in CI. Run locally with: uv run pytest -m '${{ matrix.markers }}' --browser firefox"
-          uv run pytest --collect-only -q \
-            -m '${{ matrix.markers }}' \
-            ${{ matrix.extra-args }} 2>/dev/null \
-            | tail -1 || true
 
       - name: Collect service logs on failure
         if: failure()

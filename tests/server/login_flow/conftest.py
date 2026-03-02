@@ -113,13 +113,6 @@ async def login_flow_oauth_token(
     Uses Playwright browser automation to complete the OAuth flow against
     Nextcloud, obtaining a token suitable for the port 8004 MCP session.
     """
-    # FIXME: Playwright browser automation has issues with the localhost
-    # callback server in GitHub Actions CI. Address in a follow-up PR.
-    if os.getenv("GITHUB_ACTIONS"):
-        pytest.skip(
-            "Login Flow tests with browser automation not supported in GitHub Actions CI"
-        )
-
     nextcloud_host = os.getenv("NEXTCLOUD_HOST")
     username = os.getenv("NEXTCLOUD_USERNAME")
     password = os.getenv("NEXTCLOUD_PASSWORD")

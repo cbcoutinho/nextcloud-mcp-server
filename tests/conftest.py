@@ -1109,13 +1109,6 @@ def oauth_callback_server():
 
     The server automatically shuts down when the fixture is torn down.
     """
-    # FIXME: Playwright browser automation has issues with the localhost
-    # callback server in GitHub Actions CI. Address in a follow-up PR.
-    if os.getenv("GITHUB_ACTIONS"):
-        pytest.skip(
-            "OAuth tests with browser automation not supported in GitHub Actions CI"
-        )
-
     # Use a dict to store auth codes keyed by state parameter
     # This allows multiple concurrent OAuth flows
     auth_states = {}
