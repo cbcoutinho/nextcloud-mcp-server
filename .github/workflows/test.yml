@@ -38,8 +38,8 @@ jobs:
         nextcloud_version: ["31", "32", "33"]
         mode:
           - "single-user"
-          #- "multi-user-basic"
-          #- "oauth"
+          - "multi-user-basic"
+          - "oauth"
           - "login-flow"
         include:
           # Version-specific image pins — Renovate updates these via customManagers
