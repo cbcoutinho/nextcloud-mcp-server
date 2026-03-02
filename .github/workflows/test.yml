@@ -35,7 +35,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        nextcloud_version: ["31", "32", "33"]
+        nextcloud_version:
+          - "31"
+          - "32"
+          # - "33"  # Disabled until all upstream apps support NC 33
         mode:
           - "single-user"
           - "multi-user-basic"
@@ -50,8 +53,9 @@ jobs:
           - nextcloud_version: "32"
             nextcloud_image: "docker.io/library/nextcloud:32.0.6@sha256:5c4e09f72f096cd68379a8ae69f71e61d13da5a07430fc4a17c702a14e6a4267"
           # renovate: datasource=docker depName=docker.io/library/nextcloud
-          - nextcloud_version: "33"
-            nextcloud_image: "docker.io/library/nextcloud:33.0.0@sha256:ff2cbaab14c85e587b5541e3aff4216a8a484e06424ebae661581937c0c8da0c"
+          # Disabled until all upstream apps support NC 33
+          # - nextcloud_version: "33"
+          #   nextcloud_image: "docker.io/library/nextcloud:33.0.0@sha256:ff2cbaab14c85e587b5541e3aff4216a8a484e06424ebae661581937c0c8da0c"
 
           # Mode-specific properties
           - mode: single-user
