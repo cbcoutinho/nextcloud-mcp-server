@@ -33,7 +33,7 @@ async def test_prm_endpoint():
         assert prm_data["resource"] == "http://localhost:8001/mcp"
         assert "notes:read" in prm_data["scopes_supported"]
         assert "notes:write" in prm_data["scopes_supported"]
-        assert "http://localhost:8080" in prm_data["authorization_servers"]
+        assert "http://localhost:8001" in prm_data["authorization_servers"]
         assert "header" in prm_data["bearer_methods_supported"]
         assert "RS256" in prm_data["resource_signing_alg_values_supported"]
 
