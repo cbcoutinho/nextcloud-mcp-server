@@ -66,10 +66,13 @@ from nextcloud_mcp_server.auth.browser_oauth_routes import (
 from nextcloud_mcp_server.auth.client_registration import ensure_oauth_client
 from nextcloud_mcp_server.auth.keycloak_oauth import KeycloakOAuthClient
 from nextcloud_mcp_server.auth.oauth_routes import (
+    oauth_as_metadata,
     oauth_authorize,
     oauth_authorize_nextcloud,
     oauth_callback,
     oauth_callback_nextcloud,
+    oauth_register_proxy,
+    oauth_token_endpoint,
 )
 from nextcloud_mcp_server.auth.session_backend import SessionAuthBackend
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage, get_shared_storage
@@ -2317,14 +2320,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             The 'resource' field is set to the MCP server's public URL (RFC 9728 requires a URL).
             This is used as the audience in access tokens via the resource parameter (RFC 8707).
             The introspection controller matches this URL to the MCP server's client via resource_url field.
-            """
-            # Use PUBLIC_ISSUER_URL for authorization server since external clients
-            # (like Claude) need the publicly accessible URL, not internal Docker URLs
-            public_issuer_url = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
-            if not public_issuer_url:
-                # Fallback to NEXTCLOUD_HOST if PUBLIC_ISSUER_URL not set
-                public_issuer_url = os.getenv("NEXTCLOUD_HOST", "")
 
+            ADR-023: authorization_servers points to the MCP server itself (AS proxy)
+            so that clients authenticate through the proxy and tokens have correct audience.
+            """
             # RFC 9728 requires resource to be a URL (not a client ID)
             # Use the MCP server's public URL
             mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL")
@@ -2336,11 +2335,14 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # This provides a single source of truth based on @require_scopes decorators
             supported_scopes = discover_all_scopes(mcp)
 
+            # ADR-023: Point authorization_servers to the MCP server itself.
+            # The MCP server acts as an OAuth AS proxy, forwarding to Nextcloud
+            # with its own client_id so tokens have the correct audience.
             return JSONResponse(
                 {
                     "resource": f"{mcp_server_url}/mcp",  # RFC 9728: must be a URL
                     "scopes_supported": supported_scopes,
-                    "authorization_servers": [public_issuer_url],
+                    "authorization_servers": [mcp_server_url],
                     "bearer_methods_supported": ["header"],
                     "resource_signing_alg_values_supported": ["RS256"],
                 }
@@ -2397,7 +2399,21 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # Multi-user BasicAuth uses hybrid mode with only Flow 2 (resource provisioning)
     if oauth_enabled:
         routes.append(Route("/oauth/authorize", oauth_authorize, methods=["GET"]))
-        logger.info("OAuth login routes enabled: /oauth/authorize (Flow 1)")
+
+        # ADR-023: AS proxy endpoints — MCP server acts as its own OAuth AS
+        routes.append(Route("/oauth/token", oauth_token_endpoint, methods=["POST"]))
+        routes.append(Route("/oauth/register", oauth_register_proxy, methods=["POST"]))
+        routes.append(
+            Route(
+                "/.well-known/oauth-authorization-server",
+                oauth_as_metadata,
+                methods=["GET"],
+            )
+        )
+        logger.info(
+            "OAuth AS proxy routes enabled: /oauth/authorize, /oauth/token, "
+            "/oauth/register, /.well-known/oauth-authorization-server (ADR-023)"
+        )
 
     # Add browser OAuth login routes for Management API access
     # Available in OAuth modes AND multi-user BasicAuth with offline access
@@ -2505,6 +2521,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     logger.info(
         "Routes: /user/* with SessionAuth, /mcp with FastMCP OAuth Bearer tokens"
     )
+
+    # Store supported scopes on app.state for AS metadata endpoint (ADR-023)
+    if oauth_enabled:
+        app.state.supported_scopes = discover_all_scopes(mcp)
 
     # Add debugging middleware to log Authorization headers and client capabilities
     @app.middleware("http")
