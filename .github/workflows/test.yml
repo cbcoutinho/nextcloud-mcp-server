@@ -35,7 +35,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        nextcloud_version: ["31", "32", "33"]
+        mode: ["single-user", "multi-user-basic", "oauth", "login-flow"]
         include:
+          # Version-specific image pins — Renovate updates these via customManagers
+          # renovate: datasource=docker depName=docker.io/library/nextcloud
+          - nextcloud_version: "31"
+            nextcloud_image: "docker.io/library/nextcloud:31.0.8@sha256:92bc503ea0c19789f402b0469ecfb8df1ffea81e2bf90a45bba39063a626aa00"
+          # renovate: datasource=docker depName=docker.io/library/nextcloud
+          - nextcloud_version: "32"
+            nextcloud_image: "docker.io/library/nextcloud:32.0.6@sha256:5c4e09f72f096cd68379a8ae69f71e61d13da5a07430fc4a17c702a14e6a4267"
+          # renovate: datasource=docker depName=docker.io/library/nextcloud
+          - nextcloud_version: "33"
+            nextcloud_image: "docker.io/library/nextcloud:33.0.0@sha256:ff2cbaab14c85e587b5541e3aff4216a8a484e06424ebae661581937c0c8da0c"
+
+          # Mode-specific properties
           - mode: single-user
             profile: single-user
             markers: "(smoke and not oauth and not keycloak and not login_flow and not multi_user_basic) or (integration and not oauth and not keycloak and not login_flow and not multi_user_basic)"
@@ -72,7 +86,7 @@ jobs:
             needs-playwright: true
             extra-args: ""
 
-    name: integration (${{ matrix.mode }})
+    name: integration (${{ matrix.mode }} / nc${{ matrix.nextcloud_version }})
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -111,6 +125,7 @@ jobs:
           up-flags: "--build"
         env:
           MCP_SERVER_URL: ${{ matrix.mcp-internal-url }}
+          NEXTCLOUD_IMAGE: ${{ matrix.nextcloud_image }}
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7.3.1
@@ -193,7 +208,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: debug-${{ matrix.mode }}
+          name: debug-${{ matrix.mode }}-nc${{ matrix.nextcloud_version }}
           path: |
             /tmp/*.png
             /tmp/docker-compose-logs.txt
