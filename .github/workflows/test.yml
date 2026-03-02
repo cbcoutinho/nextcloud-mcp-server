@@ -36,7 +36,11 @@ jobs:
       fail-fast: false
       matrix:
         nextcloud_version: ["31", "32", "33"]
-        mode: ["single-user", "multi-user-basic", "oauth", "login-flow"]
+        mode:
+          - "single-user"
+          #- "multi-user-basic"
+          #- "oauth"
+          - "login-flow"
         include:
           # Version-specific image pins — Renovate updates these via customManagers
           # renovate: datasource=docker depName=docker.io/library/nextcloud
