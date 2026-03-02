@@ -1532,13 +1532,19 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     mcp_app = mcp.streamable_http_app()
 
     async def _login_flow_cleanup_loop() -> None:
-        """Periodically clean up expired Login Flow v2 sessions."""
+        """Periodically clean up expired Login Flow v2 sessions and proxy codes."""
+        from nextcloud_mcp_server.auth.oauth_routes import (  # noqa: PLC0415
+            _cleanup_expired_proxy_codes,
+        )
+
         while True:
             try:
                 storage = await get_shared_storage()
                 count = await storage.delete_expired_login_flow_sessions()
                 if count:
                     logger.info(f"Cleaned up {count} expired login flow sessions")
+                # Also clean up expired AS proxy codes/sessions
+                _cleanup_expired_proxy_codes()
             except Exception as e:
                 logger.warning(f"Login flow cleanup error: {e}")
             await anyio.sleep(3600)  # Every hour

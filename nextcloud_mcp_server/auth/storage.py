@@ -1493,6 +1493,9 @@ class RefreshTokenStorage:
             app_password: Nextcloud app password to encrypt and store
             scopes: List of granted scopes (None = all scopes allowed)
             username: Nextcloud loginName from Login Flow v2 response
+
+        Raises:
+            ValueError: If any scope is not in ALL_SUPPORTED_SCOPES
         """
         if not self._initialized:
             await self.initialize()
@@ -1502,6 +1505,16 @@ class RefreshTokenStorage:
                 "Encryption key not configured. "
                 "Set TOKEN_ENCRYPTION_KEY for app password storage."
             )
+
+        # Defense-in-depth: validate scopes at storage layer
+        if scopes is not None:
+            from nextcloud_mcp_server.models.auth import (  # noqa: PLC0415
+                ALL_SUPPORTED_SCOPES,
+            )
+
+            invalid = [s for s in scopes if s not in ALL_SUPPORTED_SCOPES]
+            if invalid:
+                raise ValueError(f"Invalid scopes: {invalid}")
 
         encrypted_password = self.cipher.encrypt(app_password.encode())
         scopes_json = json.dumps(scopes) if scopes is not None else None

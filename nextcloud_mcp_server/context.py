@@ -272,7 +272,7 @@ async def _get_client_from_login_flow(
     Raises:
         ProvisioningRequiredError: If no stored app password exists
     """
-    from nextcloud_mcp_server.server.oauth_tools import (  # noqa: PLC0415
+    from nextcloud_mcp_server.auth.token_utils import (  # noqa: PLC0415
         extract_user_id_from_token,
     )
 

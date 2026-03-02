@@ -51,26 +51,28 @@ class UpdateScopesResponse(BaseResponse):
     new_scopes: list[str] | None = Field(None, description="Updated scope set")
 
 
-# All supported application-level scopes
-ALL_SUPPORTED_SCOPES = (
-    "notes:read",
-    "notes:write",
-    "calendar:read",
-    "calendar:write",
-    "todo:read",
-    "todo:write",
-    "contacts:read",
-    "contacts:write",
-    "files:read",
-    "files:write",
-    "tables:read",
-    "tables:write",
-    "deck:read",
-    "deck:write",
-    "cookbook:read",
-    "cookbook:write",
-    "sharing:read",
-    "sharing:write",
-    "news:read",
-    "news:write",
+# All supported application-level scopes (frozenset for O(1) membership tests)
+ALL_SUPPORTED_SCOPES: frozenset[str] = frozenset(
+    {
+        "notes:read",
+        "notes:write",
+        "calendar:read",
+        "calendar:write",
+        "todo:read",
+        "todo:write",
+        "contacts:read",
+        "contacts:write",
+        "files:read",
+        "files:write",
+        "tables:read",
+        "tables:write",
+        "deck:read",
+        "deck:write",
+        "cookbook:read",
+        "cookbook:write",
+        "sharing:read",
+        "sharing:write",
+        "news:read",
+        "news:write",
+    }
 )

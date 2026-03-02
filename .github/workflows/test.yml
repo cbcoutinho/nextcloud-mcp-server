@@ -177,7 +177,7 @@ jobs:
           echo "MCP service is ready on port ${{ matrix.wait-port }}."
 
       - name: Verify OIDC configuration
-        if: matrix.needs-playwright
+        if: matrix.mode == 'oauth' || matrix.mode == 'login-flow'
         run: |
           echo "=== OIDC Discovery ==="
           curl -s http://localhost:8080/.well-known/openid-configuration | jq .

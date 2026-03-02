@@ -14,6 +14,7 @@ from nextcloud_mcp_server.api.passwords import (
     _extract_basic_auth,
     _get_app_password_storage,
 )
+from nextcloud_mcp_server.auth.scope_authorization import invalidate_scope_cache
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,11 @@ async def update_user_scopes(request: Request) -> JSONResponse:
 
     This only updates the stored scopes, not the app password itself.
     The app password remains valid; scope enforcement is application-level.
+
+    Security note: This endpoint allows direct scope modification without
+    re-authenticating via Login Flow. The caller must authenticate with
+    valid BasicAuth credentials (user_id + app_password), which serves
+    as the authorization check.
     """
     path_user_id = request.path_params.get("user_id")
     if not path_user_id:
@@ -113,7 +119,7 @@ async def update_user_scopes(request: Request) -> JSONResponse:
             {
                 "success": False,
                 "error": f"Invalid scopes: {', '.join(invalid)}",
-                "valid_scopes": ALL_SUPPORTED_SCOPES,
+                "valid_scopes": sorted(ALL_SUPPORTED_SCOPES),
             },
             status_code=400,
         )
@@ -137,6 +143,9 @@ async def update_user_scopes(request: Request) -> JSONResponse:
             scopes=scopes,
         )
 
+        # Invalidate scope cache so subsequent tool calls see updated scopes
+        invalidate_scope_cache(username)
+
         return JSONResponse(
             {
                 "success": True,
@@ -159,6 +168,6 @@ async def list_supported_scopes(_: Request) -> JSONResponse:
     return JSONResponse(
         {
             "success": True,
-            "scopes": ALL_SUPPORTED_SCOPES,
+            "scopes": sorted(ALL_SUPPORTED_SCOPES),
         }
     )

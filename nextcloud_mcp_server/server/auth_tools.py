@@ -16,6 +16,7 @@ from nextcloud_mcp_server.auth.elicitation import present_login_url
 from nextcloud_mcp_server.auth.login_flow import LoginFlowV2Client
 from nextcloud_mcp_server.auth.scope_authorization import require_scopes
 from nextcloud_mcp_server.auth.storage import get_shared_storage
+from nextcloud_mcp_server.auth.token_utils import extract_user_id_from_token
 from nextcloud_mcp_server.config import get_nextcloud_ssl_verify, get_settings
 from nextcloud_mcp_server.models.auth import (
     ALL_SUPPORTED_SCOPES,
@@ -23,7 +24,6 @@ from nextcloud_mcp_server.models.auth import (
     ProvisionStatusResponse,
     UpdateScopesResponse,
 )
-from nextcloud_mcp_server.server.oauth_tools import extract_user_id_from_token
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
             return ProvisionAccessResponse(
                 status="error",
                 message=f"Invalid scopes: {', '.join(invalid_scopes)}. "
-                f"Valid scopes: {', '.join(ALL_SUPPORTED_SCOPES)}",
+                f"Valid scopes: {', '.join(sorted(ALL_SUPPORTED_SCOPES))}",
                 success=False,
             )
 
@@ -160,6 +160,13 @@ def register_auth_tools(mcp: FastMCP) -> None:
                 "Login acknowledged. Call nc_auth_check_status to verify "
                 "and complete provisioning."
             )
+            return ProvisionAccessResponse(
+                status="pending",
+                login_url=init_response.login_url,
+                message=message,
+                user_id=user_id,
+                requested_scopes=requested_scopes,
+            )
 
         return ProvisionAccessResponse(
             status="login_required",
@@ -174,10 +181,12 @@ def register_auth_tools(mcp: FastMCP) -> None:
         title="Check Nextcloud Access Status",
         description=(
             "Check if Nextcloud access has been provisioned. "
-            "If a Login Flow is pending, this will poll for completion."
+            "If a Login Flow is pending, this will poll for completion. "
+            "Recommended polling interval: 5 seconds."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=True,
+            idempotentHint=True,
             openWorldHint=True,
         ),
     )

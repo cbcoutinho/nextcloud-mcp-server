@@ -10,9 +10,18 @@ import pytest
 
 from nextcloud_mcp_server.auth.scope_authorization import (
     _get_stored_scopes,
+    _scope_cache,
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def clear_scope_cache():
+    """Clear scope cache before each test."""
+    _scope_cache.clear()
+    yield
+    _scope_cache.clear()
 
 
 async def test_get_stored_scopes_with_scopes():

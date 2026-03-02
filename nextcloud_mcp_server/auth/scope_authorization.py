@@ -1,6 +1,7 @@
 """Scope-based authorization for MCP tools."""
 
 import logging
+import time
 from functools import wraps
 from typing import Any, Callable
 
@@ -141,7 +142,7 @@ def require_scopes(*required_scopes: str):
             if get_settings().enable_login_flow and not set(required_scopes).issubset(
                 IDENTITY_ONLY_SCOPES
             ):
-                from nextcloud_mcp_server.server.oauth_tools import (  # noqa: PLC0415
+                from nextcloud_mcp_server.auth.token_utils import (  # noqa: PLC0415
                     extract_user_id_from_token,
                 )
 
@@ -476,9 +477,18 @@ def discover_all_scopes(mcp) -> list[str]:
 
 # ── Login Flow v2 helpers ────────────────────────────────────────────────
 
+# Scope cache: user_id → (expires_at, scopes)
+_scope_cache: dict[str, tuple[float, list[str] | str | None]] = {}
+_SCOPE_CACHE_TTL = 300  # 5 minutes
+
+
+def invalidate_scope_cache(user_id: str) -> None:
+    """Remove cached scopes for a user (call when scopes are updated)."""
+    _scope_cache.pop(user_id, None)
+
 
 async def _get_stored_scopes(user_id: str) -> list[str] | str | None:
-    """Look up stored app password scopes for a user.
+    """Look up stored app password scopes for a user (with TTL cache).
 
     Returns:
         - list[str]: Specific scopes granted
@@ -489,11 +499,21 @@ async def _get_stored_scopes(user_id: str) -> list[str] | str | None:
         Storage/infrastructure exceptions propagate to the caller
         (require_scopes decorator) for proper MCP error responses.
     """
+    now = time.time()
+    if user_id in _scope_cache:
+        expires_at, cached = _scope_cache[user_id]
+        if now < expires_at:
+            return cached
+
     storage = await get_shared_storage()
 
     data = await storage.get_app_password_with_scopes(user_id)
     if data is None:
-        return None
-    if data["scopes"] is None:
-        return "all"
-    return data["scopes"]
+        result = None
+    elif data["scopes"] is None:
+        result = "all"
+    else:
+        result = data["scopes"]
+
+    _scope_cache[user_id] = (now + _SCOPE_CACHE_TTL, result)
+    return result

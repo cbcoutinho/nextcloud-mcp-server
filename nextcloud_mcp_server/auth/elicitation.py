@@ -76,9 +76,13 @@ async def present_login_url(
             logger.info("User cancelled login flow")
             return "cancelled"
 
-    except NotImplementedError as e:
+    except NotImplementedError:
         # Elicitation not supported by this client/SDK - fall back to message
-        logger.debug(
-            f"Elicitation not available ({type(e).__name__}: {e}), returning URL in message"
+        logger.debug("Elicitation not available, returning URL in message")
+        return "message_only"
+    except Exception as e:
+        logger.warning(
+            f"Elicitation failed unexpectedly ({type(e).__name__}: {e}), "
+            "falling back to message"
         )
         return "message_only"
