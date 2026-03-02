@@ -128,17 +128,10 @@ def require_scopes(*required_scopes: str):
             )
 
             if access_token is None:
-                # No OAuth token — either BasicAuth with env var credentials
-                # or BasicAuth without explicit credentials. Both bypass scope checks.
-                settings = get_settings()
-                if settings.nextcloud_app_password or settings.nextcloud_password:
-                    logger.debug(
-                        f"No access token for {func_name} - allowing (env var app password)"
-                    )
-                else:
-                    logger.debug(
-                        f"No access token present for {func_name} - allowing (BasicAuth mode)"
-                    )
+                # No OAuth token — BasicAuth mode bypasses scope checks
+                logger.debug(
+                    f"No access token for {func_name} - allowing (BasicAuth mode)"
+                )
                 return await func(*args, **kwargs)
 
             # ── Login Flow v2: Check stored app password scopes ──

@@ -84,7 +84,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
             )
 
         # Determine scopes
-        requested_scopes = scopes if scopes else ALL_SUPPORTED_SCOPES.copy()
+        requested_scopes = scopes if scopes else list(ALL_SUPPORTED_SCOPES)
 
         # Validate requested scopes
         invalid_scopes = [s for s in requested_scopes if s not in ALL_SUPPORTED_SCOPES]

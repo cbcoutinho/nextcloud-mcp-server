@@ -49,6 +49,12 @@ async def present_login_url(
             f"Then check the box below and click OK."
         )
 
+    if not hasattr(ctx, "elicit"):
+        logger.debug(
+            "Elicitation not available (no elicit method), returning URL in message"
+        )
+        return "message_only"
+
     try:
         result = await ctx.elicit(
             message=message,
@@ -70,7 +76,7 @@ async def present_login_url(
             logger.info("User cancelled login flow")
             return "cancelled"
 
-    except (AttributeError, NotImplementedError) as e:
+    except NotImplementedError as e:
         # Elicitation not supported by this client/SDK - fall back to message
         logger.debug(
             f"Elicitation not available ({type(e).__name__}: {e}), returning URL in message"

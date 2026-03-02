@@ -302,14 +302,9 @@ async def provision_app_password(request: Request) -> JSONResponse:
     try:
         storage = await _get_app_password_storage(request)
 
-        if scopes is not None or nc_username is not None:
-            # New path: store with scopes and username
-            await storage.store_app_password_with_scopes(
-                username, app_password, scopes=scopes, username=nc_username
-            )
-        else:
-            # Legacy path: store without scopes
-            await storage.store_app_password(username, app_password)
+        await storage.store_app_password_with_scopes(
+            username, app_password, scopes=scopes, username=nc_username
+        )
 
         _record_rate_limit_attempt(path_user_id, success=True)
         logger.info(f"Provisioned app password for user: {username}")

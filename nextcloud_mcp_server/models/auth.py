@@ -52,7 +52,7 @@ class UpdateScopesResponse(BaseResponse):
 
 
 # All supported application-level scopes
-ALL_SUPPORTED_SCOPES = [
+ALL_SUPPORTED_SCOPES = (
     "notes:read",
     "notes:write",
     "calendar:read",
@@ -73,4 +73,4 @@ ALL_SUPPORTED_SCOPES = [
     "sharing:write",
     "news:read",
     "news:write",
-]
+)

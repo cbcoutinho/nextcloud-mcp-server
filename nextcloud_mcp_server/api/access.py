@@ -154,7 +154,7 @@ async def update_user_scopes(request: Request) -> JSONResponse:
         )
 
 
-async def list_supported_scopes(request: Request) -> JSONResponse:
+async def list_supported_scopes(_: Request) -> JSONResponse:
     """GET /api/v1/scopes - List all supported application-level scopes."""
     return JSONResponse(
         {

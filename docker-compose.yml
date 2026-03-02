@@ -292,6 +292,8 @@ services:
   mcp-login-flow:
     build: .
     restart: always
+    # --oauth enables the OAuth/OIDC identity layer that Login Flow v2 builds on
+    # (user identity via OAuth session, Nextcloud access via app passwords)
     command: ["--transport", "streamable-http", "--oauth", "--port", "8004"]
     depends_on:
       app:

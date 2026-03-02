@@ -1552,6 +1552,14 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             yield
 
     @asynccontextmanager
+    async def _mcp_session_with_login_flow():
+        """Start MCP session manager with optional Login Flow cleanup."""
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(mcp.session_manager.run())
+            await stack.enter_async_context(_maybe_login_flow_cleanup())
+            yield
+
+    @asynccontextmanager
     async def starlette_lifespan(app: Starlette):
         # Set OAuth context for OAuth login routes (ADR-004)
         if oauth_enabled:
@@ -1784,9 +1792,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 )
 
                 # Run MCP session manager and yield
-                async with AsyncExitStack() as stack:
-                    await stack.enter_async_context(mcp.session_manager.run())
-                    await stack.enter_async_context(_maybe_login_flow_cleanup())
+                async with _mcp_session_with_login_flow():
                     try:
                         yield
                     finally:
@@ -1968,9 +1974,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     )
 
                     # Run MCP session manager and yield
-                    async with AsyncExitStack() as stack:
-                        await stack.enter_async_context(mcp.session_manager.run())
-                        await stack.enter_async_context(_maybe_login_flow_cleanup())
+                    async with _mcp_session_with_login_flow():
                         try:
                             yield
                         finally:
@@ -1989,10 +1993,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     "To enable, set NEXTCLOUD_OIDC_CLIENT_ID and NEXTCLOUD_OIDC_CLIENT_SECRET."
                 )
                 # Just run MCP session manager without vector sync
-                async with AsyncExitStack() as stack:
-                    await stack.enter_async_context(mcp.session_manager.run())
-                    async with _maybe_login_flow_cleanup():
-                        yield
+                async with _mcp_session_with_login_flow():
+                    yield
 
         else:
             # No vector sync - just run MCP session manager
@@ -2011,10 +2013,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     logger.warning(
                         "Vector sync enabled but TOKEN_ENCRYPTION_KEY not set"
                     )
-            async with AsyncExitStack() as stack:
-                await stack.enter_async_context(mcp.session_manager.run())
-                async with _maybe_login_flow_cleanup():
-                    yield
+            async with _mcp_session_with_login_flow():
+                yield
 
     # Health check endpoints for Kubernetes probes
     def health_live(request):
