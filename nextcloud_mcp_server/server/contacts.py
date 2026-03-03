@@ -18,23 +18,60 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 logger = logging.getLogger(__name__)
 
 
+def _parse_vcard_fields(
+    raw_values: str | dict | list | None, field_type: str
+) -> list[ContactField]:
+    """Parse polymorphic vCard field data into a list of ContactField.
+
+    pythonvCard4 returns field values in several shapes:
+    - ``str``  – plain value, e.g. ``"alice@example.com"``
+    - ``dict`` – ``{'value': '...', 'type': ['HOME', 'PREF']}``
+    - ``list`` – a list whose items are any of the above
+
+    The ``PREF`` type parameter is treated as a *preferred* flag rather than a
+    label.  All other type values are lowercased and joined with ``", "``.
+    """
+    if raw_values is None:
+        return []
+
+    items: list[str | dict] = (
+        raw_values if isinstance(raw_values, list) else [raw_values]
+    )
+
+    fields: list[ContactField] = []
+    for item in items:
+        if isinstance(item, dict):
+            value = str(item.get("value", ""))
+            if not value:
+                continue
+            raw_types: list[str] = item.get("type") or []
+            preferred = any(t.upper() == "PREF" for t in raw_types)
+            labels = [t.lower() for t in raw_types if t.upper() != "PREF"]
+            fields.append(
+                ContactField(
+                    type=field_type,
+                    value=value,
+                    label=", ".join(labels) if labels else None,
+                    preferred=preferred,
+                )
+            )
+        elif isinstance(item, str) and item:
+            fields.append(ContactField(type=field_type, value=item))
+
+    return fields
+
+
 def _raw_contact_to_model(raw: dict) -> Contact:
     """Convert a raw contact dict from the contacts client to a Contact model.
 
-    Only maps fields the client's list_contacts() currently returns:
-    fullname, nickname, birthday, and email. Additional Contact model fields
-    (phones, addresses, organization, etc.) require expanding the client's
-    vCard parsing in ContactsClient.list_contacts().
+    Maps fullname, nickname, birthday, email, and tel fields.
+    Email/tel values may be plain strings, dicts with ``value``/``type`` keys,
+    or lists of either – see :func:`_parse_vcard_fields`.
     """
     contact_info = raw.get("contact", {})
 
-    # Convert email field (str, list, or None) to list[ContactField]
-    raw_email = contact_info.get("email")
-    emails: list[ContactField] = []
-    if isinstance(raw_email, list):
-        emails = [ContactField(type="email", value=e) for e in raw_email if e]
-    elif isinstance(raw_email, str) and raw_email:
-        emails = [ContactField(type="email", value=raw_email)]
+    emails = _parse_vcard_fields(contact_info.get("email"), "email")
+    phones = _parse_vcard_fields(contact_info.get("tel"), "phone")
 
     # Nickname goes into custom_fields (no dedicated model field)
     custom_fields: dict[str, Any] = {}
@@ -48,6 +85,7 @@ def _raw_contact_to_model(raw: dict) -> Contact:
         etag=raw.get("getetag"),
         birthday=contact_info.get("birthday"),
         emails=emails,
+        phones=phones,
         custom_fields=custom_fields,
     )
 
@@ -87,7 +125,13 @@ def configure_contacts_tools(mcp: FastMCP):
     async def nc_contacts_list_contacts(
         ctx: Context, *, addressbook: str
     ) -> ListContactsResponse:
-        """List all contacts in the specified addressbook."""
+        """List all contacts in the specified addressbook.
+
+        Args:
+            addressbook: The URI slug of the addressbook (e.g. "contacts"),
+                not the display name. Use nc_contacts_list_addressbooks to
+                find available URI slugs.
+        """
         client = await get_client(ctx)
         contacts_data = await client.contacts.list_contacts(addressbook=addressbook)
         contacts = [_raw_contact_to_model(c) for c in contacts_data]
@@ -140,7 +184,9 @@ def configure_contacts_tools(mcp: FastMCP):
         """Create a new contact.
 
         Args:
-            addressbook: The name of the addressbook to create the contact in.
+            addressbook: The URI slug of the addressbook (e.g. "contacts"),
+                not the display name. Use nc_contacts_list_addressbooks to
+                find available URI slugs.
             uid: The unique ID for the contact.
             contact_data: A dictionary with the contact's details, e.g. {"fn": "John Doe", "email": "john.doe@example.com"}.
         """
@@ -158,7 +204,14 @@ def configure_contacts_tools(mcp: FastMCP):
     @require_scopes("contacts:write")
     @instrument_tool
     async def nc_contacts_delete_contact(ctx: Context, *, addressbook: str, uid: str):
-        """Delete a contact."""
+        """Delete a contact.
+
+        Args:
+            addressbook: The URI slug of the addressbook (e.g. "contacts"),
+                not the display name. Use nc_contacts_list_addressbooks to
+                find available URI slugs.
+            uid: The unique ID of the contact to delete.
+        """
         client = await get_client(ctx)
         return await client.contacts.delete_contact(addressbook=addressbook, uid=uid)
 
@@ -174,7 +227,9 @@ def configure_contacts_tools(mcp: FastMCP):
         """Update an existing contact while preserving all existing properties.
 
         Args:
-            addressbook: The name of the addressbook containing the contact.
+            addressbook: The URI slug of the addressbook (e.g. "contacts"),
+                not the display name. Use nc_contacts_list_addressbooks to
+                find available URI slugs.
             uid: The unique ID of the contact to update.
             contact_data: A dictionary with the contact's updated details, e.g. {"fn": "Jane Doe", "email": "jane.doe@example.com"}.
             etag: Optional ETag for optimistic concurrency control.

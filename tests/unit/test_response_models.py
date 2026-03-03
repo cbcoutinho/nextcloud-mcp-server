@@ -376,6 +376,153 @@ def test_list_contacts_response_wraps_contacts():
     assert c["custom_fields"]["nickname"] == "Ali"
 
 
+@pytest.mark.unit
+def test_contact_mapping_dict_format_emails():
+    """Regression for #601: pythonvCard4 returns dicts, not plain strings."""
+    raw_contact = {
+        "vcard_id": "dict-email-1",
+        "contact": {
+            "fullname": "Evrim Yilmaz",
+            "email": [
+                {"value": "evrim@example.com", "type": ["HOME"]},
+                {"value": "evrim@work.com", "type": ["WORK"]},
+            ],
+        },
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert len(contact.emails) == 2
+    assert contact.emails[0].value == "evrim@example.com"
+    assert contact.emails[0].label == "home"
+    assert contact.emails[1].value == "evrim@work.com"
+    assert contact.emails[1].label == "work"
+
+
+@pytest.mark.unit
+def test_contact_mapping_dict_format_phones():
+    """Phones from dict-format tel field are parsed into Contact.phones."""
+    raw_contact = {
+        "vcard_id": "dict-tel-1",
+        "contact": {
+            "fullname": "Phone User",
+            "tel": [
+                {"value": "+1-555-0100", "type": ["CELL"]},
+                {"value": "+1-555-0200", "type": ["WORK", "VOICE"]},
+            ],
+        },
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert len(contact.phones) == 2
+    assert contact.phones[0].value == "+1-555-0100"
+    assert contact.phones[0].type == "phone"
+    assert contact.phones[0].label == "cell"
+    assert contact.phones[1].value == "+1-555-0200"
+    assert contact.phones[1].label == "work, voice"
+
+
+@pytest.mark.unit
+def test_contact_mapping_pref_flag_extraction():
+    """PREF type is extracted as preferred=True, not included in labels."""
+    raw_contact = {
+        "vcard_id": "pref-1",
+        "contact": {
+            "fullname": "Pref User",
+            "email": [
+                {"value": "pref@example.com", "type": ["HOME", "PREF"]},
+                {"value": "other@example.com", "type": ["WORK"]},
+            ],
+            "tel": [
+                {"value": "+1-555-0001", "type": ["pref", "CELL"]},
+            ],
+        },
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert contact.emails[0].preferred is True
+    assert contact.emails[0].label == "home"  # PREF stripped from label
+    assert contact.emails[1].preferred is False
+    assert contact.primary_email == "pref@example.com"
+
+    assert contact.phones[0].preferred is True
+    assert contact.phones[0].label == "cell"
+    assert contact.primary_phone == "+1-555-0001"
+
+
+@pytest.mark.unit
+def test_contact_mapping_backward_compat_plain_strings():
+    """Plain string emails/phones still work (backward compatibility)."""
+    raw_contact = {
+        "vcard_id": "compat-1",
+        "contact": {
+            "fullname": "Plain String",
+            "email": "plain@example.com",
+            "tel": "+1-555-9999",
+        },
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert len(contact.emails) == 1
+    assert contact.emails[0].value == "plain@example.com"
+    assert contact.emails[0].label is None
+    assert contact.emails[0].preferred is False
+
+    assert len(contact.phones) == 1
+    assert contact.phones[0].value == "+1-555-9999"
+
+
+@pytest.mark.unit
+def test_contact_mapping_empty_type_list():
+    """Dict with empty or missing type list produces no label."""
+    raw_contact = {
+        "vcard_id": "empty-type-1",
+        "contact": {
+            "fullname": "No Type",
+            "email": {"value": "notype@example.com", "type": []},
+        },
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert len(contact.emails) == 1
+    assert contact.emails[0].value == "notype@example.com"
+    assert contact.emails[0].label is None
+    assert contact.emails[0].preferred is False
+
+
+@pytest.mark.unit
+def test_contact_mapping_multiple_dict_emails_with_labels():
+    """Multiple dict-format emails preserve individual labels."""
+    raw_contact = {
+        "vcard_id": "multi-label-1",
+        "contact": {
+            "fullname": "Multi Label",
+            "email": [
+                {"value": "home@example.com", "type": ["HOME", "PREF"]},
+                {"value": "work@example.com", "type": ["WORK"]},
+                {"value": "other@example.com"},
+            ],
+        },
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert len(contact.emails) == 3
+    assert contact.emails[0].value == "home@example.com"
+    assert contact.emails[0].label == "home"
+    assert contact.emails[0].preferred is True
+    assert contact.emails[1].value == "work@example.com"
+    assert contact.emails[1].label == "work"
+    assert contact.emails[1].preferred is False
+    assert contact.emails[2].value == "other@example.com"
+    assert contact.emails[2].label is None
+    assert contact.primary_email == "home@example.com"
+
+
 # ============= _event_dict_to_summary tests =============
 
 
