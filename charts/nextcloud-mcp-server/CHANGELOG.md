@@ -14,6 +14,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.58.0 (2026-03-03)
+
+### Feat
+
+- **auth**: implement OAuth AS proxy to fix audience mismatch (ADR-023)
+- **ci**: add Nextcloud version matrix (NC 31, 32, 33)
+- **helm**: add login-flow auth mode to Helm chart (ADR-022)
+- add Docker Compose profiles and Login Flow v2 service
+
+### Fix
+
+- replace assert with proper guard and invalidate scope cache after provisioning
+- disable NC rate limiting in dev/CI and add token endpoint diagnostics
+- address review feedback — security, caching, CI 429 retry
+- skip keycloak hook when profile inactive and update stale PRM test
+- address remaining PR #589 review findings
+- address PR #589 review findings
+- address PR review issues for Login Flow v2
+- address PR #589 review feedback (round 2)
+- **ci**: remove dev OIDC mount to fix HTTP 500 in single-user/multi-user-basic
+- **ci**: fix health check timeout and per-profile MCP server URL routing
+- **ci**: fix PHP gating, add multi-user-basic matrix entry, upload debug artifacts
+- address PR #589 review feedback for Login Flow v2
+- **ci**: fix integration test collection and skip Playwright in CI
+- **test**: fix 17 pre-existing unit test failures and add astrolabe CI build
+- **ci**: keep third_party mount, always build submodules in CI
+- **ci**: revert accidental third_party mount, use compose override for OIDC
+- **ci**: don't block integration matrix on unit-test failures
+
 ## nextcloud-mcp-server-0.57.94 (2026-03-03)
 
 ### Fix
