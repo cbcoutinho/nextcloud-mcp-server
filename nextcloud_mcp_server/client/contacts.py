@@ -274,6 +274,7 @@ class ContactsClient(BaseNextcloudClient):
                         "nickname": contact.nickname,
                         "birthday": contact.bday,
                         "email": contact.email,
+                        "tel": contact.tel,
                     },
                     "addressdata": addressdata,
                 }
