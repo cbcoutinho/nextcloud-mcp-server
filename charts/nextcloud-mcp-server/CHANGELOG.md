@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.57.94 (2026-03-03)
+
+### Fix
+
+- handle pythonvCard4 dict-format fields and missing phone numbers (#601)
+
 ## nextcloud-mcp-server-0.57.93 (2026-03-03)
 
 ## nextcloud-mcp-server-0.57.92 (2026-03-02)
