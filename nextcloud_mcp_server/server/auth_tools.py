@@ -14,7 +14,10 @@ from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth.elicitation import present_login_url
 from nextcloud_mcp_server.auth.login_flow import LoginFlowV2Client
-from nextcloud_mcp_server.auth.scope_authorization import require_scopes
+from nextcloud_mcp_server.auth.scope_authorization import (
+    invalidate_scope_cache,
+    require_scopes,
+)
 from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.auth.token_utils import extract_user_id_from_token
 from nextcloud_mcp_server.config import get_nextcloud_ssl_verify, get_settings
@@ -282,6 +285,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
                 scopes=session.get("requested_scopes"),
                 username=poll_result.login_name,
             )
+            invalidate_scope_cache(user_id)
 
             # Clean up the flow session
             await storage.delete_login_flow_session(user_id)

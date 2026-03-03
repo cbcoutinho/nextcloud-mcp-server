@@ -1051,9 +1051,15 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
         )
 
     # Verify PKCE (always required — oauth_authorize mandates code_challenge)
-    assert entry.code_challenge, (
-        "code_challenge must be set (enforced by oauth_authorize)"
-    )  # noqa: S101
+    if not entry.code_challenge:
+        logger.error("AS proxy token: code_challenge missing from stored entry")
+        return JSONResponse(
+            {
+                "error": "server_error",
+                "error_description": "Internal state error: missing PKCE challenge",
+            },
+            status_code=500,
+        )
 
     if not code_verifier:
         logger.warning("AS proxy token: Missing 'code_verifier' (PKCE required)")
