@@ -5,6 +5,35 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.65.0 (2026-03-03)
+
+### Feat
+
+- **auth**: implement OAuth AS proxy to fix audience mismatch (ADR-023)
+- **ci**: add Nextcloud version matrix (NC 31, 32, 33)
+- **helm**: add login-flow auth mode to Helm chart (ADR-022)
+- add Docker Compose profiles and Login Flow v2 service
+
+### Fix
+
+- replace assert with proper guard and invalidate scope cache after provisioning
+- disable NC rate limiting in dev/CI and add token endpoint diagnostics
+- address review feedback — security, caching, CI 429 retry
+- skip keycloak hook when profile inactive and update stale PRM test
+- address remaining PR #589 review findings
+- address PR #589 review findings
+- address PR review issues for Login Flow v2
+- address PR #589 review feedback (round 2)
+- **ci**: remove dev OIDC mount to fix HTTP 500 in single-user/multi-user-basic
+- **ci**: fix health check timeout and per-profile MCP server URL routing
+- **ci**: fix PHP gating, add multi-user-basic matrix entry, upload debug artifacts
+- address PR #589 review feedback for Login Flow v2
+- **ci**: fix integration test collection and skip Playwright in CI
+- **test**: fix 17 pre-existing unit test failures and add astrolabe CI build
+- **ci**: keep third_party mount, always build submodules in CI
+- **ci**: revert accidental third_party mount, use compose override for OIDC
+- **ci**: don't block integration matrix on unit-test failures
+
 ## v0.64.5 (2026-03-03)
 
 ### Fix
