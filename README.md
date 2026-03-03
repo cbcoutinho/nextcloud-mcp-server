@@ -55,6 +55,15 @@ http://127.0.0.1:8000/sse
 http://127.0.0.1:8000/mcp
 ```
 
+**Docker Compose Profiles** (for development/testing):
+
+```bash
+docker compose --profile single-user up -d       # Port 8000
+docker compose --profile multi-user-basic up -d   # Port 8003
+docker compose --profile oauth up -d              # Port 8001
+docker compose --profile login-flow up -d         # Port 8004
+```
+
 **Next Steps:**
 - Connect your MCP client (Claude Desktop, IDEs, `mcp dev`, etc.)
 - See [docs/installation.md](docs/installation.md) for other deployment options (local, Kubernetes)
@@ -99,25 +108,33 @@ Want to see another Nextcloud app supported? [Open an issue](https://github.com/
 
 ### Authentication Modes
 
-The server supports three authentication modes:
+The server supports four authentication modes:
 
-**Single-User Mode (BasicAuth):**
+**Single-User (BasicAuth):**
 - One set of credentials shared by all MCP clients
 - Simple setup: username + app password in environment variables
 - All clients access Nextcloud as the same user
 - Best for: Personal use, development, single-user deployments
 
-**Multi-User Mode (OAuth):**
+**Multi-User (BasicAuth Pass-Through):**
+- MCP clients send credentials via Authorization header
+- Server passes through to Nextcloud (stateless by default)
+- Optional offline access for background operations (`ENABLE_MULTI_USER_BASIC_AUTH=true`)
+- Best for: Multi-user setups without OAuth infrastructure
+
+**Multi-User (OAuth):**
 - Each MCP client authenticates separately with their own Nextcloud account
 - Per-user scopes and permissions (clients only see tools they're authorized for)
 - More secure: tokens expire, credentials never shared with server
 - Best for: Teams, multi-user deployments, production environments with multiple users
+- Requires: Patches to the `user_oidc` app (experimental)
 
-**Hybrid Mode (Multi-User BasicAuth + OAuth):**
-- MCP clients use BasicAuth (simple, stateless)
-- Admin operations use OAuth (webhooks, background sync)
-- Best for: Nextcloud deployments with admin-managed webhooks and semantic search
-- Requires: `ENABLE_MULTI_USER_BASIC_AUTH=true` + `ENABLE_OFFLINE_ACCESS=true`
+**Multi-User (Login Flow v2):**
+- Uses Nextcloud's native Login Flow v2 to obtain per-user app passwords
+- No OAuth patches required — works with stock Nextcloud
+- Each user authenticates via browser, server manages app passwords
+- Best for: Multi-user deployments without OAuth infrastructure (`ENABLE_LOGIN_FLOW=true`)
+- Experimental: See [ADR-022](docs/ADR-022-deployment-mode-consolidation.md) for details
 
 See [docs/authentication.md](docs/authentication.md) for detailed setup instructions.
 

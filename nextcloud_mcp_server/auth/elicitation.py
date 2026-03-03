@@ -1,0 +1,88 @@
+"""MCP elicitation helpers for Login Flow v2.
+
+Provides a unified way to present login URLs to users, using MCP elicitation
+when the client supports it, or falling back to returning the URL in a message.
+"""
+
+import logging
+
+from mcp.server.fastmcp import Context
+from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+
+class LoginFlowConfirmation(BaseModel):
+    """Schema for Login Flow v2 confirmation elicitation."""
+
+    acknowledged: bool = Field(
+        default=False,
+        description="Check this box after completing login at the provided URL",
+    )
+
+
+async def present_login_url(
+    ctx: Context,
+    login_url: str,
+    message: str | None = None,
+) -> str:
+    """Present a login URL to the user via MCP elicitation or message.
+
+    Tries MCP elicitation first (ctx.elicit) for interactive clients.
+    Falls back to returning the URL as a plain message.
+
+    Args:
+        ctx: MCP context
+        login_url: URL the user should open in their browser
+        message: Optional custom message (defaults to standard Login Flow prompt)
+
+    Returns:
+        "accepted" if user acknowledged via elicitation,
+        "declined" if user declined,
+        "message_only" if elicitation not supported (URL returned in message)
+    """
+    if message is None:
+        message = (
+            f"Please log in to Nextcloud to grant access:\n\n"
+            f"{login_url}\n\n"
+            f"Open this URL in your browser, log in, and grant the requested permissions. "
+            f"Then check the box below and click OK."
+        )
+
+    if not hasattr(ctx, "elicit"):
+        logger.debug(
+            "Elicitation not available (no elicit method), returning URL in message"
+        )
+        return "message_only"
+
+    try:
+        result = await ctx.elicit(
+            message=message,
+            schema=LoginFlowConfirmation,
+        )
+
+        if result.action == "accept":
+            if hasattr(result, "data") and not result.data.acknowledged:  # type: ignore[union-attr]
+                logger.warning(
+                    "User accepted login flow without checking the acknowledged box — "
+                    "login completion will be verified via polling"
+                )
+            logger.info("User acknowledged login flow completion")
+            return "accepted"
+        elif result.action == "decline":
+            logger.info("User declined login flow")
+            return "declined"
+        else:
+            logger.info("User cancelled login flow")
+            return "cancelled"
+
+    except NotImplementedError:
+        # Elicitation not supported by this client/SDK - fall back to message
+        logger.debug("Elicitation not available, returning URL in message")
+        return "message_only"
+    except Exception as e:
+        logger.warning(
+            f"Elicitation failed unexpectedly ({type(e).__name__}: {e}), "
+            "falling back to message"
+        )
+        return "message_only"

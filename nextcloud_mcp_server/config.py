@@ -5,7 +5,7 @@ import socket
 import ssl
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 
 class DeploymentMode(Enum):
@@ -169,31 +169,32 @@ class Settings:
     # Optional: If not set, mode is auto-detected from other settings
     # Valid values: single_user_basic, multi_user_basic, oauth_single_audience,
     #               oauth_token_exchange, smithery
-    deployment_mode: Optional[str] = None
+    deployment_mode: str | None = None
 
     # OAuth/OIDC settings
-    oidc_discovery_url: Optional[str] = None
-    oidc_client_id: Optional[str] = None
-    oidc_client_secret: Optional[str] = None
-    oidc_issuer: Optional[str] = None
+    oidc_discovery_url: str | None = None
+    oidc_client_id: str | None = None
+    oidc_client_secret: str | None = None
+    oidc_issuer: str | None = None
 
     # Nextcloud settings
-    nextcloud_host: Optional[str] = None
-    nextcloud_username: Optional[str] = None
-    nextcloud_password: Optional[str] = None
+    nextcloud_host: str | None = None
+    nextcloud_username: str | None = None
+    nextcloud_password: str | None = None
+    nextcloud_app_password: str | None = None  # Preferred over nextcloud_password
 
     # Nextcloud SSL/TLS settings
     nextcloud_verify_ssl: bool = True
-    nextcloud_ca_bundle: Optional[str] = None
+    nextcloud_ca_bundle: str | None = None
 
     # ADR-005: Token Audience Validation (required for OAuth mode)
-    nextcloud_mcp_server_url: Optional[str] = None  # MCP server URL (used as audience)
-    nextcloud_resource_uri: Optional[str] = None  # Nextcloud resource identifier
+    nextcloud_mcp_server_url: str | None = None  # MCP server URL (used as audience)
+    nextcloud_resource_uri: str | None = None  # Nextcloud resource identifier
 
     # Token verification endpoints
-    jwks_uri: Optional[str] = None
-    introspection_uri: Optional[str] = None
-    userinfo_uri: Optional[str] = None
+    jwks_uri: str | None = None
+    introspection_uri: str | None = None
+    userinfo_uri: str | None = None
 
     # Progressive Consent settings (always enabled - no flag needed)
     enable_token_exchange: bool = False
@@ -203,6 +204,9 @@ class Settings:
     # When enabled, MCP server extracts BasicAuth credentials from request headers
     # and passes them through to Nextcloud APIs (no storage, stateless)
     enable_multi_user_basic_auth: bool = False
+
+    # Login Flow v2 settings (ADR-022)
+    enable_login_flow: bool = False
 
     # Token exchange cache settings
     token_exchange_cache_ttl: int = 300  # seconds (5 minutes default)
@@ -214,8 +218,8 @@ class Settings:
     # TOKEN_STORAGE_DB: Path to SQLite database for persistent storage.
     #                   Used for webhook tracking (all modes) and OAuth token storage.
     #                   Defaults to /tmp/tokens.db
-    token_encryption_key: Optional[str] = None
-    token_storage_db: Optional[str] = None
+    token_encryption_key: str | None = None
+    token_storage_db: str | None = None
 
     # Vector sync settings (ADR-007)
     vector_sync_enabled: bool = False
@@ -225,19 +229,19 @@ class Settings:
     vector_sync_user_poll_interval: int = 60  # seconds - OAuth mode user discovery
 
     # Qdrant settings (mutually exclusive modes)
-    qdrant_url: Optional[str] = None  # Network mode: http://qdrant:6333
-    qdrant_location: Optional[str] = None  # Local mode: :memory: or /path/to/data
-    qdrant_api_key: Optional[str] = None
+    qdrant_url: str | None = None  # Network mode: http://qdrant:6333
+    qdrant_location: str | None = None  # Local mode: :memory: or /path/to/data
+    qdrant_api_key: str | None = None
     qdrant_collection: str = "nextcloud_content"
 
     # Ollama settings (for embeddings)
-    ollama_base_url: Optional[str] = None
+    ollama_base_url: str | None = None
     ollama_embedding_model: str = "nomic-embed-text"
     ollama_verify_ssl: bool = True
 
     # OpenAI settings (for embeddings)
-    openai_api_key: Optional[str] = None
-    openai_base_url: Optional[str] = None
+    openai_api_key: str | None = None
+    openai_base_url: str | None = None
     openai_embedding_model: str = "text-embedding-3-small"
 
     # Document chunking settings (for vector embeddings)
@@ -247,7 +251,7 @@ class Settings:
     # Observability settings
     metrics_enabled: bool = True
     metrics_port: int = 9090
-    otel_exporter_otlp_endpoint: Optional[str] = None
+    otel_exporter_otlp_endpoint: str | None = None
     otel_exporter_verify_ssl: bool = False
     otel_service_name: str = "nextcloud-mcp-server"
     otel_traces_sampler: str = "always_on"
@@ -523,6 +527,7 @@ def get_settings() -> Settings:
         nextcloud_host=os.getenv("NEXTCLOUD_HOST"),
         nextcloud_username=os.getenv("NEXTCLOUD_USERNAME"),
         nextcloud_password=os.getenv("NEXTCLOUD_PASSWORD"),
+        nextcloud_app_password=os.getenv("NEXTCLOUD_APP_PASSWORD"),
         # Nextcloud SSL/TLS settings
         nextcloud_verify_ssl=(
             os.getenv("NEXTCLOUD_VERIFY_SSL", "true").lower() == "true"
@@ -544,6 +549,8 @@ def get_settings() -> Settings:
         enable_multi_user_basic_auth=(
             os.getenv("ENABLE_MULTI_USER_BASIC_AUTH", "false").lower() == "true"
         ),
+        # Login Flow v2 settings (ADR-022)
+        enable_login_flow=(os.getenv("ENABLE_LOGIN_FLOW", "false").lower() == "true"),
         # Token exchange cache settings
         token_exchange_cache_ttl=int(os.getenv("TOKEN_EXCHANGE_CACHE_TTL", "300")),
         # Token and webhook storage settings (encryption key optional for webhook-only usage)

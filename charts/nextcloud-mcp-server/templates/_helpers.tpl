@@ -106,6 +106,17 @@ Create the name of the secret to use for OAuth
 {{- end }}
 
 {{/*
+Create the name of the secret to use for Login Flow v2
+*/}}
+{{- define "nextcloud-mcp-server.loginFlowSecretName" -}}
+{{- if .Values.auth.loginFlow.existingSecret }}
+{{- .Values.auth.loginFlow.existingSecret }}
+{{- else }}
+{{- include "nextcloud-mcp-server.fullname" . }}-login-flow
+{{- end }}
+{{- end }}
+
+{{/*
 Create the name of the PVC to use for OAuth storage
 */}}
 {{- define "nextcloud-mcp-server.oauthPvcName" -}}
@@ -146,6 +157,8 @@ Checks new dataStorage.enabled OR legacy persistence configs
 {{- if .Values.dataStorage.enabled -}}
 true
 {{- else if and (eq .Values.auth.mode "multi-user-basic") .Values.auth.multiUserBasic.enableOfflineAccess .Values.auth.multiUserBasic.persistence.enabled -}}
+true
+{{- else if eq .Values.auth.mode "login-flow" -}}
 true
 {{- else if and (eq .Values.qdrant.mode "persistent") .Values.qdrant.localPersistence.enabled -}}
 true

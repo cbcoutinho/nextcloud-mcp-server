@@ -11,6 +11,12 @@ This package is organized into modules by domain:
 - visualization.py: Search and PDF visualization endpoints
 """
 
+from nextcloud_mcp_server.api.access import (
+    get_user_access,
+    list_supported_scopes,
+    update_user_scopes,
+)
+
 # Re-export all public functions for backward compatibility
 from nextcloud_mcp_server.api.management import (
     __version__,
@@ -44,6 +50,10 @@ from nextcloud_mcp_server.api.webhooks import (
 )
 
 __all__ = [
+    # Access endpoints (from access.py)
+    "get_user_access",
+    "update_user_scopes",
+    "list_supported_scopes",
     # Version
     "__version__",
     # Shared helpers (from management.py)

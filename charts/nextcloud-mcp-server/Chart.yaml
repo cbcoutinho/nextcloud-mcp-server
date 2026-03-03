@@ -25,6 +25,15 @@ annotations:
   # Grafana dashboard support
   grafana_dashboard: "true"
   grafana_dashboard_folder: "Nextcloud MCP"
+  artifacthub.io/changes: |
+    - kind: added
+      description: Login Flow v2 auth mode for Helm chart (ADR-022)
+    - kind: added
+      description: Multi-user BasicAuth guidance in post-install NOTES
+    - kind: added
+      description: Version and changelog info in post-install NOTES
+    - kind: changed
+      description: Updated appVersion to 0.64.4
 dependencies:
   - name: qdrant
     version: "1.17.0"

@@ -83,6 +83,7 @@ async def register_client(
     scopes: str = "openid profile email",
     token_type: str | None = "Bearer",
     resource_url: str | None = None,
+    max_retries: int = 3,
 ) -> ClientInfo:
     """
     Register a new OAuth client using RFC 7591 Dynamic Client Registration.
@@ -98,6 +99,7 @@ async def register_client(
         token_type: Type of access tokens (default: "Bearer", supports "JWT" for Nextcloud).
                     Set to None to omit this field (required for Keycloak and other standard providers).
         resource_url: OAuth 2.0 Protected Resource URL (RFC 9728) - used for token introspection authorization
+        max_retries: Maximum number of retries for 429 responses (default: 3)
 
     Returns:
         ClientInfo with registration details
@@ -135,57 +137,91 @@ async def register_client(
     logger.debug(f"Registration endpoint: {registration_endpoint}")
 
     async with nextcloud_httpx_client(timeout=30.0) as client:
-        try:
-            response = await client.post(
-                registration_endpoint,
-                json=client_metadata,
-                headers={"Content-Type": "application/json"},
-            )
-            response.raise_for_status()
-
-            client_info = response.json()
-            logger.info(
-                f"Successfully registered client: {client_info.get('client_id')}"
-            )
-            expires_at = dt.datetime.fromtimestamp(
-                client_info.get("client_secret_expires_at")
-            )
-            logger.info(
-                f"Client expires at: {expires_at} "
-                f"(in {client_info.get('client_secret_expires_at', 0) - int(time.time())} seconds)"
-            )
-
-            # Log if RFC 7592 fields are present
-            has_reg_token = "registration_access_token" in client_info
-            has_reg_uri = "registration_client_uri" in client_info
-            if has_reg_token and has_reg_uri:
-                logger.info(
-                    "RFC 7592 management fields received - client deletion will be supported"
+        for attempt in range(max_retries):
+            try:
+                response = await client.post(
+                    registration_endpoint,
+                    json=client_metadata,
+                    headers={"Content-Type": "application/json"},
                 )
-            else:
-                logger.warning("RFC 7592 fields missing - client deletion may not work")
 
-            return ClientInfo(
-                client_id=client_info["client_id"],
-                client_secret=client_info["client_secret"],
-                client_id_issued_at=client_info.get(
-                    "client_id_issued_at", int(time.time())
-                ),
-                client_secret_expires_at=client_info.get(
-                    "client_secret_expires_at", int(time.time()) + 3600
-                ),
-                redirect_uris=client_info.get("redirect_uris", redirect_uris),
-                registration_access_token=client_info.get("registration_access_token"),
-                registration_client_uri=client_info.get("registration_client_uri"),
-            )
+                if response.status_code == 429:
+                    # Rate limited - retry with exponential backoff
+                    if attempt < max_retries - 1:
+                        retry_after = int(response.headers.get("Retry-After", 2))
+                        wait_time = min(retry_after, 2**attempt)
+                        logger.warning(
+                            f"Rate limited (429) registering client, "
+                            f"retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})"
+                        )
+                        await anyio.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error(
+                            f"Failed to register client after {max_retries} attempts: Rate limited (429)"
+                        )
+                        response.raise_for_status()
 
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Failed to register client: HTTP {e.response.status_code}")
-            logger.error(f"Response: {e.response.text}")
-            raise
-        except KeyError as e:
-            logger.error(f"Invalid response from registration endpoint: missing {e}")
-            raise ValueError(f"Invalid registration response: missing {e}")
+                response.raise_for_status()
+
+                client_info = response.json()
+                logger.info(
+                    f"Successfully registered client: {client_info.get('client_id')}"
+                )
+                expires_at = dt.datetime.fromtimestamp(
+                    client_info.get("client_secret_expires_at")
+                )
+                logger.info(
+                    f"Client expires at: {expires_at} "
+                    f"(in {client_info.get('client_secret_expires_at', 0) - int(time.time())} seconds)"
+                )
+
+                # Log if RFC 7592 fields are present
+                has_reg_token = "registration_access_token" in client_info
+                has_reg_uri = "registration_client_uri" in client_info
+                if has_reg_token and has_reg_uri:
+                    logger.info(
+                        "RFC 7592 management fields received - client deletion will be supported"
+                    )
+                else:
+                    logger.warning(
+                        "RFC 7592 fields missing - client deletion may not work"
+                    )
+
+                return ClientInfo(
+                    client_id=client_info["client_id"],
+                    client_secret=client_info["client_secret"],
+                    client_id_issued_at=client_info.get(
+                        "client_id_issued_at", int(time.time())
+                    ),
+                    client_secret_expires_at=client_info.get(
+                        "client_secret_expires_at", int(time.time()) + 3600
+                    ),
+                    redirect_uris=client_info.get("redirect_uris", redirect_uris),
+                    registration_access_token=client_info.get(
+                        "registration_access_token"
+                    ),
+                    registration_client_uri=client_info.get("registration_client_uri"),
+                )
+
+            except httpx.HTTPStatusError as e:
+                logger.error(
+                    f"Failed to register client: HTTP {e.response.status_code}"
+                )
+                logger.error(f"Response: {e.response.text}")
+                raise
+            except KeyError as e:
+                logger.error(
+                    f"Invalid response from registration endpoint: missing {e}"
+                )
+                raise ValueError(f"Invalid registration response: missing {e}")
+
+    # Should not reach here, but raise if we do
+    raise httpx.HTTPStatusError(
+        "Registration failed after retries",
+        request=httpx.Request("POST", registration_endpoint),
+        response=httpx.Response(429),
+    )
 
 
 async def delete_client(

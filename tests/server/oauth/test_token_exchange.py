@@ -61,14 +61,12 @@ async def token_exchange_service(token_storage):
 @pytest.fixture
 async def token_broker(token_storage):
     """Create test token broker service."""
-    # Use the same encryption key as storage
-    encryption_key = token_storage._test_encryption_key
-
     broker = TokenBrokerService(
         storage=token_storage,
         oidc_discovery_url="http://test-idp/.well-known/openid-configuration",
         nextcloud_host="http://test-nextcloud",
-        encryption_key=encryption_key,
+        client_id="test-client",
+        client_secret="test-secret",
         cache_ttl=300,
         cache_early_refresh=30,
     )

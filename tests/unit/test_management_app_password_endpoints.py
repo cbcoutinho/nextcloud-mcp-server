@@ -184,7 +184,7 @@ async def test_provision_app_password_success(temp_storage, mocker):
     """Test successful app password provisioning."""
     # Mock settings (imported locally in the function)
     mocker.patch(
-        "nextcloud_mcp_server.config.get_settings",
+        "nextcloud_mcp_server.api.passwords.get_settings",
         return_value=MagicMock(
             nextcloud_host="http://localhost:8080",
             nextcloud_verify_ssl=True,
@@ -203,7 +203,7 @@ async def test_provision_app_password_success(temp_storage, mocker):
     mock_client.__aexit__ = AsyncMock()
 
     mocker.patch(
-        "nextcloud_mcp_server.api.passwords.httpx.AsyncClient",
+        "nextcloud_mcp_server.api.passwords.nextcloud_httpx_client",
         return_value=mock_client,
     )
 
@@ -233,7 +233,7 @@ async def test_provision_app_password_success(temp_storage, mocker):
 async def test_provision_app_password_nextcloud_validation_fails(mocker):
     """Test that failed Nextcloud validation returns 401."""
     mocker.patch(
-        "nextcloud_mcp_server.config.get_settings",
+        "nextcloud_mcp_server.api.passwords.get_settings",
         return_value=MagicMock(
             nextcloud_host="http://localhost:8080",
             nextcloud_verify_ssl=True,
@@ -251,7 +251,7 @@ async def test_provision_app_password_nextcloud_validation_fails(mocker):
     mock_client.__aexit__ = AsyncMock()
 
     mocker.patch(
-        "nextcloud_mcp_server.api.passwords.httpx.AsyncClient",
+        "nextcloud_mcp_server.api.passwords.nextcloud_httpx_client",
         return_value=mock_client,
     )
 
@@ -356,7 +356,7 @@ async def test_delete_app_password_success(temp_storage, mocker):
 
     # Mock settings (imported locally in the function)
     mocker.patch(
-        "nextcloud_mcp_server.config.get_settings",
+        "nextcloud_mcp_server.api.passwords.get_settings",
         return_value=MagicMock(
             nextcloud_host="http://localhost:8080",
             nextcloud_verify_ssl=True,
@@ -374,7 +374,7 @@ async def test_delete_app_password_success(temp_storage, mocker):
     mock_client.__aexit__ = AsyncMock()
 
     mocker.patch(
-        "nextcloud_mcp_server.api.passwords.httpx.AsyncClient",
+        "nextcloud_mcp_server.api.passwords.nextcloud_httpx_client",
         return_value=mock_client,
     )
 
@@ -404,7 +404,7 @@ async def test_delete_app_password_not_found(temp_storage, mocker):
     """Test deleting non-existent app password."""
     # Mock settings (imported locally in the function)
     mocker.patch(
-        "nextcloud_mcp_server.config.get_settings",
+        "nextcloud_mcp_server.api.passwords.get_settings",
         return_value=MagicMock(
             nextcloud_host="http://localhost:8080",
             nextcloud_verify_ssl=True,
@@ -422,7 +422,7 @@ async def test_delete_app_password_not_found(temp_storage, mocker):
     mock_client.__aexit__ = AsyncMock()
 
     mocker.patch(
-        "nextcloud_mcp_server.api.passwords.httpx.AsyncClient",
+        "nextcloud_mcp_server.api.passwords.nextcloud_httpx_client",
         return_value=mock_client,
     )
 
@@ -447,7 +447,7 @@ async def test_delete_app_password_not_found(temp_storage, mocker):
 async def test_delete_app_password_invalid_credentials(mocker):
     """Test that invalid credentials returns 401 for deletion."""
     mocker.patch(
-        "nextcloud_mcp_server.config.get_settings",
+        "nextcloud_mcp_server.api.passwords.get_settings",
         return_value=MagicMock(
             nextcloud_host="http://localhost:8080",
             nextcloud_verify_ssl=True,
@@ -465,7 +465,7 @@ async def test_delete_app_password_invalid_credentials(mocker):
     mock_client.__aexit__ = AsyncMock()
 
     mocker.patch(
-        "nextcloud_mcp_server.api.passwords.httpx.AsyncClient",
+        "nextcloud_mcp_server.api.passwords.nextcloud_httpx_client",
         return_value=mock_client,
     )
 
@@ -521,7 +521,7 @@ async def test_delete_app_password_username_mismatch():
 async def test_provision_app_password_rate_limiting(mocker):
     """Test that rate limiting blocks excessive provisioning attempts."""
     mocker.patch(
-        "nextcloud_mcp_server.config.get_settings",
+        "nextcloud_mcp_server.api.passwords.get_settings",
         return_value=MagicMock(
             nextcloud_host="http://localhost:8080",
             nextcloud_verify_ssl=True,
@@ -539,7 +539,7 @@ async def test_provision_app_password_rate_limiting(mocker):
     mock_client.__aexit__ = AsyncMock()
 
     mocker.patch(
-        "nextcloud_mcp_server.api.passwords.httpx.AsyncClient",
+        "nextcloud_mcp_server.api.passwords.nextcloud_httpx_client",
         return_value=mock_client,
     )
 
@@ -584,7 +584,7 @@ async def test_provision_app_password_rate_limiting(mocker):
 async def test_rate_limiting_is_per_user(mocker):
     """Test that rate limiting is applied per user, not globally."""
     mocker.patch(
-        "nextcloud_mcp_server.config.get_settings",
+        "nextcloud_mcp_server.api.passwords.get_settings",
         return_value=MagicMock(
             nextcloud_host="http://localhost:8080",
             nextcloud_verify_ssl=True,
@@ -602,7 +602,7 @@ async def test_rate_limiting_is_per_user(mocker):
     mock_client.__aexit__ = AsyncMock()
 
     mocker.patch(
-        "nextcloud_mcp_server.api.passwords.httpx.AsyncClient",
+        "nextcloud_mcp_server.api.passwords.nextcloud_httpx_client",
         return_value=mock_client,
     )
 

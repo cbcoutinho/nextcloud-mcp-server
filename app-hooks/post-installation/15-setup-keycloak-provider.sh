@@ -13,6 +13,14 @@ echo "===================================================================="
 echo "Configuring user_oidc provider for Keycloak..."
 echo "===================================================================="
 
+# Quick check: Is keycloak service in the Docker network?
+# When the keycloak profile is not active, this hostname won't resolve.
+if ! getent hosts keycloak >/dev/null 2>&1; then
+    echo "  Keycloak service not detected in Docker network (profile not active)"
+    echo "  Skipping keycloak provider configuration"
+    exit 0
+fi
+
 # Wait for Keycloak to be ready and realm to be available
 echo "Waiting for Keycloak realm to be available..."
 MAX_RETRIES=30

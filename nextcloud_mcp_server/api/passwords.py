@@ -288,10 +288,23 @@ async def provision_app_password(request: Request) -> JSONResponse:
             status_code=500,
         )
 
+    # Parse optional scopes and username from request body
+    scopes = None
+    nc_username = None
+    try:
+        body = await request.json()
+        scopes = body.get("scopes")  # list[str] | None
+        nc_username = body.get("username")  # Nextcloud loginName
+    except Exception:
+        pass  # No JSON body = legacy call without scopes
+
     # Store the validated app password
     try:
         storage = await _get_app_password_storage(request)
-        await storage.store_app_password(username, app_password)
+
+        await storage.store_app_password_with_scopes(
+            username, app_password, scopes=scopes, username=nc_username
+        )
 
         _record_rate_limit_attempt(path_user_id, success=True)
         logger.info(f"Provisioned app password for user: {username}")
@@ -300,6 +313,7 @@ async def provision_app_password(request: Request) -> JSONResponse:
             {
                 "success": True,
                 "message": f"App password stored for {username}",
+                "scopes": scopes,
             }
         )
 

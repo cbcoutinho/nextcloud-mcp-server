@@ -40,12 +40,15 @@ from nextcloud_mcp_server.api import (
     get_installed_apps,
     get_pdf_preview,
     get_server_status,
+    get_user_access,
     get_user_session,
     get_vector_sync_status,
+    list_supported_scopes,
     list_webhooks,
     provision_app_password,
     revoke_user_access,
     unified_search,
+    update_user_scopes,
     vector_search,
 )
 from nextcloud_mcp_server.auth import (
@@ -63,13 +66,16 @@ from nextcloud_mcp_server.auth.browser_oauth_routes import (
 from nextcloud_mcp_server.auth.client_registration import ensure_oauth_client
 from nextcloud_mcp_server.auth.keycloak_oauth import KeycloakOAuthClient
 from nextcloud_mcp_server.auth.oauth_routes import (
+    oauth_as_metadata,
     oauth_authorize,
     oauth_authorize_nextcloud,
     oauth_callback,
     oauth_callback_nextcloud,
+    oauth_register_proxy,
+    oauth_token_endpoint,
 )
 from nextcloud_mcp_server.auth.session_backend import SessionAuthBackend
-from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.storage import RefreshTokenStorage, get_shared_storage
 from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
 from nextcloud_mcp_server.auth.unified_verifier import UnifiedTokenVerifier
 from nextcloud_mcp_server.auth.userinfo_routes import (
@@ -123,6 +129,7 @@ from nextcloud_mcp_server.server import (
     configure_tables_tools,
     configure_webdav_tools,
 )
+from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
 from nextcloud_mcp_server.vector import processor_task, scanner_task
 from nextcloud_mcp_server.vector.oauth_sync import (
@@ -1468,6 +1475,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             "Skipping provisioning tools registration (offline access not enabled)"
         )
 
+    # Register Login Flow v2 auth tools (ADR-022)
+    if settings.enable_login_flow:
+        logger.info("Registering Login Flow v2 auth tools")
+        register_auth_tools(mcp)
+
     # Override list_tools to filter based on user's token scopes (OAuth mode only)
     if oauth_enabled:
         original_list_tools = mcp._tool_manager.list_tools
@@ -1518,6 +1530,43 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         )
 
     mcp_app = mcp.streamable_http_app()
+
+    async def _login_flow_cleanup_loop() -> None:
+        """Periodically clean up expired Login Flow v2 sessions and proxy codes."""
+        from nextcloud_mcp_server.auth.oauth_routes import (  # noqa: PLC0415
+            _cleanup_expired_proxy_codes,
+        )
+
+        while True:
+            try:
+                storage = await get_shared_storage()
+                count = await storage.delete_expired_login_flow_sessions()
+                if count:
+                    logger.info(f"Cleaned up {count} expired login flow sessions")
+                # Also clean up expired AS proxy codes/sessions
+                _cleanup_expired_proxy_codes()
+            except Exception as e:
+                logger.warning(f"Login flow cleanup error: {e}")
+            await anyio.sleep(3600)  # Every hour
+
+    @asynccontextmanager
+    async def _maybe_login_flow_cleanup():
+        """Start Login Flow cleanup task if enabled."""
+        if settings.enable_login_flow:
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(_login_flow_cleanup_loop)
+                yield
+                tg.cancel_scope.cancel()
+        else:
+            yield
+
+    @asynccontextmanager
+    async def _mcp_session_with_login_flow():
+        """Start MCP session manager with optional Login Flow cleanup."""
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(mcp.session_manager.run())
+            await stack.enter_async_context(_maybe_login_flow_cleanup())
+            yield
 
     @asynccontextmanager
     async def starlette_lifespan(app: Starlette):
@@ -1752,8 +1801,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 )
 
                 # Run MCP session manager and yield
-                async with AsyncExitStack() as stack:
-                    await stack.enter_async_context(mcp.session_manager.run())
+                async with _mcp_session_with_login_flow():
                     try:
                         yield
                     finally:
@@ -1935,8 +1983,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     )
 
                     # Run MCP session manager and yield
-                    async with AsyncExitStack() as stack:
-                        await stack.enter_async_context(mcp.session_manager.run())
+                    async with _mcp_session_with_login_flow():
                         try:
                             yield
                         finally:
@@ -1955,8 +2002,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     "To enable, set NEXTCLOUD_OIDC_CLIENT_ID and NEXTCLOUD_OIDC_CLIENT_SECRET."
                 )
                 # Just run MCP session manager without vector sync
-                async with AsyncExitStack() as stack:
-                    await stack.enter_async_context(mcp.session_manager.run())
+                async with _mcp_session_with_login_flow():
                     yield
 
         else:
@@ -1976,8 +2022,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     logger.warning(
                         "Vector sync enabled but TOKEN_ENCRYPTION_KEY not set"
                     )
-            async with AsyncExitStack() as stack:
-                await stack.enter_async_context(mcp.session_manager.run())
+            async with _mcp_session_with_login_flow():
                 yield
 
     # Health check endpoints for Kubernetes probes
@@ -2208,10 +2253,27 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         routes.append(
             Route("/api/v1/webhooks/{webhook_id}", delete_webhook, methods=["DELETE"])
         )
+        # Access and scope management endpoints (ADR-022)
+        routes.append(
+            Route(
+                "/api/v1/users/{user_id}/access",
+                get_user_access,
+                methods=["GET"],
+            )
+        )
+        routes.append(
+            Route(
+                "/api/v1/users/{user_id}/scopes",
+                update_user_scopes,
+                methods=["PATCH"],
+            )
+        )
+        routes.append(Route("/api/v1/scopes", list_supported_scopes, methods=["GET"]))
         logger.info(
             "Management API endpoints enabled: /api/v1/status, /api/v1/vector-sync/status, "
             "/api/v1/users/{user_id}/session, /api/v1/users/{user_id}/revoke, "
-            "/api/v1/users/{user_id}/app-password, "
+            "/api/v1/users/{user_id}/app-password, /api/v1/users/{user_id}/access, "
+            "/api/v1/users/{user_id}/scopes, /api/v1/scopes, "
             "/api/v1/vector-viz/search, /api/v1/search, /api/v1/apps, "
             "/api/v1/webhooks, /api/v1/pdf-preview"
         )
@@ -2264,14 +2326,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             The 'resource' field is set to the MCP server's public URL (RFC 9728 requires a URL).
             This is used as the audience in access tokens via the resource parameter (RFC 8707).
             The introspection controller matches this URL to the MCP server's client via resource_url field.
-            """
-            # Use PUBLIC_ISSUER_URL for authorization server since external clients
-            # (like Claude) need the publicly accessible URL, not internal Docker URLs
-            public_issuer_url = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
-            if not public_issuer_url:
-                # Fallback to NEXTCLOUD_HOST if PUBLIC_ISSUER_URL not set
-                public_issuer_url = os.getenv("NEXTCLOUD_HOST", "")
 
+            ADR-023: authorization_servers points to the MCP server itself (AS proxy)
+            so that clients authenticate through the proxy and tokens have correct audience.
+            """
             # RFC 9728 requires resource to be a URL (not a client ID)
             # Use the MCP server's public URL
             mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL")
@@ -2283,11 +2341,14 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # This provides a single source of truth based on @require_scopes decorators
             supported_scopes = discover_all_scopes(mcp)
 
+            # ADR-023: Point authorization_servers to the MCP server itself.
+            # The MCP server acts as an OAuth AS proxy, forwarding to Nextcloud
+            # with its own client_id so tokens have the correct audience.
             return JSONResponse(
                 {
                     "resource": f"{mcp_server_url}/mcp",  # RFC 9728: must be a URL
                     "scopes_supported": supported_scopes,
-                    "authorization_servers": [public_issuer_url],
+                    "authorization_servers": [mcp_server_url],
                     "bearer_methods_supported": ["header"],
                     "resource_signing_alg_values_supported": ["RS256"],
                 }
@@ -2344,7 +2405,21 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # Multi-user BasicAuth uses hybrid mode with only Flow 2 (resource provisioning)
     if oauth_enabled:
         routes.append(Route("/oauth/authorize", oauth_authorize, methods=["GET"]))
-        logger.info("OAuth login routes enabled: /oauth/authorize (Flow 1)")
+
+        # ADR-023: AS proxy endpoints — MCP server acts as its own OAuth AS
+        routes.append(Route("/oauth/token", oauth_token_endpoint, methods=["POST"]))
+        routes.append(Route("/oauth/register", oauth_register_proxy, methods=["POST"]))
+        routes.append(
+            Route(
+                "/.well-known/oauth-authorization-server",
+                oauth_as_metadata,
+                methods=["GET"],
+            )
+        )
+        logger.info(
+            "OAuth AS proxy routes enabled: /oauth/authorize, /oauth/token, "
+            "/oauth/register, /.well-known/oauth-authorization-server (ADR-023)"
+        )
 
     # Add browser OAuth login routes for Management API access
     # Available in OAuth modes AND multi-user BasicAuth with offline access
@@ -2452,6 +2527,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     logger.info(
         "Routes: /user/* with SessionAuth, /mcp with FastMCP OAuth Bearer tokens"
     )
+
+    # Store supported scopes on app.state for AS metadata endpoint (ADR-023)
+    if oauth_enabled:
+        app.state.supported_scopes = discover_all_scopes(mcp)
 
     # Add debugging middleware to log Authorization headers and client capabilities
     @app.middleware("http")

@@ -4,9 +4,10 @@
 
 set -e
 
-# The MCP multi-user BasicAuth service runs on port 8000 inside the container
-# From Nextcloud's perspective (inside Docker network), we reach it via service name
-MCP_SERVER_URL="${MCP_SERVER_URL:-http://mcp-multi-user-basic:8000}"
+if [ -z "${MCP_SERVER_URL:-}" ]; then
+  echo "MCP_SERVER_URL not set, skipping Astrolabe MCP server URL configuration"
+  exit 0
+fi
 
 echo "Configuring MCP server URL: $MCP_SERVER_URL"
 

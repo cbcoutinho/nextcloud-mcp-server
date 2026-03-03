@@ -1,13 +1,13 @@
 """
-OAuth 2.0 Login Routes for ADR-004 (Offline Access Architecture)
+OAuth 2.0 Login Routes for ADR-004 (Offline Access Architecture) and ADR-023 (AS Proxy)
 
 Implements dual OAuth flows with optional offline access provisioning:
 
-Flow 1: Client Authentication - MCP client authenticates directly to IdP
-- Client requests: Nextcloud MCP resource scopes (notes:*, calendar:*, etc.)
-- Token audience (aud): "mcp-server"
-- No server interception - IdP redirects directly to client
-- Client receives resource-scoped token for MCP session
+Flow 1: Client Authentication (AS Proxy mode, ADR-023)
+- MCP server acts as its own OAuth Authorization Server
+- Proxies DCR, authorization, and token endpoints to Nextcloud
+- Uses MCP server's own client_id so tokens have correct audience
+- Client exchanges proxy authorization code for Nextcloud token
 
 Flow 2: Resource Provisioning - MCP server gets delegated Nextcloud access
 - Triggered by user calling provision_nextcloud_access tool
@@ -25,6 +25,8 @@ import os
 import secrets
 import time
 from base64 import urlsafe_b64encode
+from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urlencode
 from urllib.parse import urlparse as parse_url
 
@@ -41,13 +43,113 @@ from ..http import nextcloud_httpx_client
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# In-memory proxy code store for AS proxy flow (ADR-023)
+# Proxy codes are ephemeral (60s TTL), single-instance, so in-memory is fine.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ProxyCodeEntry:
+    """Stores state for a proxy authorization code issued by the AS proxy.
+
+    Proxy codes have a 60-second TTL as a security mitigation: they are
+    single-use, ephemeral codes that bridge the AS proxy callback and the
+    client's token exchange. The short window limits replay risk.
+    """
+
+    client_id: str
+    client_redirect_uri: str
+    client_state: str
+    code_challenge: str
+    code_challenge_method: str
+    nc_token_response: dict[str, Any]  # Full JSON token response from Nextcloud
+    created_at: float = field(default_factory=time.time)
+    expires_at: float = field(default_factory=lambda: time.time() + 60)
+
+    @property
+    def is_expired(self) -> bool:
+        return time.time() > self.expires_at
+
+
+# Server-side state for AS proxy authorize → callback mapping
+@dataclass
+class ASProxySession:
+    """Stores state between /oauth/authorize and the Nextcloud callback.
+
+    Sessions have a 600-second (10 minute) TTL to allow time for the user
+    to complete the browser-based authorization flow.
+    """
+
+    client_id: str
+    client_redirect_uri: str
+    client_state: str
+    code_challenge: str
+    code_challenge_method: str
+    requested_scopes: str
+    created_at: float = field(default_factory=time.time)
+    expires_at: float = field(default_factory=lambda: time.time() + 600)
+
+    @property
+    def is_expired(self) -> bool:
+        return time.time() > self.expires_at
+
+
+# In-memory stores (single-instance, ephemeral)
+_proxy_codes: dict[str, ProxyCodeEntry] = {}
+_as_proxy_sessions: dict[str, ASProxySession] = {}
+
+# OIDC discovery document cache (URL → (expires_at, data))
+_discovery_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_DISCOVERY_CACHE_TTL = 300  # 5 minutes
+
+# DCR rate limiting (IP → [timestamps])
+_dcr_rate_limit: dict[str, list[float]] = {}
+_DCR_RATE_LIMIT_MAX = 10  # max requests
+_DCR_RATE_LIMIT_WINDOW = 60  # per 60 seconds
+
+
+async def _get_cached_discovery(url: str) -> dict[str, Any]:
+    """Fetch OIDC discovery document with caching (5-minute TTL)."""
+    now = time.time()
+    if url in _discovery_cache:
+        expires_at, data = _discovery_cache[url]
+        if now < expires_at:
+            return data
+    async with nextcloud_httpx_client() as http_client:
+        response = await http_client.get(url)
+        response.raise_for_status()
+        data = response.json()
+    _discovery_cache[url] = (now + _DISCOVERY_CACHE_TTL, data)
+    return data
+
+
+def _cleanup_expired_proxy_codes() -> None:
+    """Remove expired proxy codes and sessions."""
+    now = time.time()
+    expired_codes = [k for k, v in _proxy_codes.items() if now > v.expires_at]
+    for k in expired_codes:
+        del _proxy_codes[k]
+    expired_sessions = [k for k, v in _as_proxy_sessions.items() if now > v.expires_at]
+    for k in expired_sessions:
+        del _as_proxy_sessions[k]
+
+
 async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     """
-    OAuth authorization endpoint for Flow 1: Client Authentication.
+    OAuth authorization endpoint — AS Proxy intermediary (ADR-023).
 
-    The client authenticates directly to the IdP with its own client_id.
-    The server validates the client is authorized but does NOT intercept the callback.
-    IdP redirects directly back to the client's redirect_uri.
+    The MCP server acts as its own OAuth Authorization Server, proxying
+    the authorization to Nextcloud. This ensures tokens have the correct
+    audience (MCP server's client_id) instead of the MCP client's client_id.
+
+    Flow:
+    1. Client sends authorize request with its own client_id + PKCE
+    2. Server stores client params, generates server-side state
+    3. Server redirects to Nextcloud with MCP server's own client_id
+    4. Nextcloud callback returns to /oauth/callback (flow_type=as_proxy)
+    5. Server exchanges code, generates proxy_code for client
+    6. Client exchanges proxy_code at /oauth/token
 
     Query parameters:
         response_type: Must be "code"
@@ -59,8 +161,11 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
         code_challenge_method: PKCE method, must be "S256" (required)
 
     Returns:
-        302 redirect to IdP authorization endpoint
+        302 redirect to Nextcloud authorization endpoint
     """
+    # Clean up expired entries periodically
+    _cleanup_expired_proxy_codes()
+
     # Extract parameters
     response_type = request.query_params.get("response_type")
     client_id = request.query_params.get("client_id")
@@ -125,7 +230,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
             status_code=400,
         )
 
-    # Validate client_id (required for Flow 1)
+    # Validate client_id (required)
     if not client_id:
         return JSONResponse(
             {
@@ -166,102 +271,89 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
             status_code=500,
         )
 
-    oauth_client = oauth_ctx["oauth_client"]
     oauth_config = oauth_ctx["config"]
 
-    # Flow 1: Client authenticates directly to IdP WITHOUT server interception
-    # CRITICAL: This is a direct pass-through to IdP
-    # The IdP will redirect directly back to the client's callback
-    # The MCP server does NOT see the IdP authorization code!
+    # AS Proxy: Store client's params and redirect to Nextcloud with MCP server's credentials
+    # PKCE is validated locally when the client exchanges the proxy_code at /oauth/token.
+    # We do NOT forward PKCE to Nextcloud — the MCP server is a confidential client.
+    server_state = secrets.token_urlsafe(32)
 
-    logger.info(
-        f"Starting Flow 1 - no server session needed, "
-        f"client will handle IdP response directly at {redirect_uri}"
-    )
-
-    # Use client's redirect_uri for DIRECT callback (bypasses server)
-    callback_uri = redirect_uri
-
-    # Request resource scopes for MCP tools access
-    # The token will have aud: "mcp-server" claim
-    # Build scopes from NEXTCLOUD_OIDC_SCOPES config
+    requested_scope = request.query_params.get("scope", "")
     default_scopes = "openid profile email"
     resource_scopes = oauth_config.get("scopes", "")
     scopes = f"{default_scopes} {resource_scopes}".strip()
+    if requested_scope:
+        # Merge client-requested scopes with server defaults
+        all_scopes = set(scopes.split()) | set(requested_scope.split())
+        scopes = " ".join(sorted(all_scopes))
 
-    # Pass through client's state directly
-    idp_state = state
+    # Store session for callback
+    _as_proxy_sessions[server_state] = ASProxySession(
+        client_id=client_id,
+        client_redirect_uri=redirect_uri,
+        client_state=state,
+        code_challenge=code_challenge,
+        code_challenge_method=code_challenge_method,
+        requested_scopes=scopes,
+    )
 
-    # Use client's own client_id (client must be pre-registered at IdP)
-    idp_client_id = client_id
+    # Use MCP server's own client_id with Nextcloud
+    mcp_server_client_id = os.getenv(
+        "MCP_SERVER_CLIENT_ID", oauth_config.get("client_id")
+    )
+    mcp_server_url = oauth_config["mcp_server_url"]
+    callback_uri = f"{mcp_server_url}/oauth/callback"
 
-    logger.info("Flow 1: Direct client auth to IdP")
-    logger.info(f"  Client ID: {client_id}")
-    logger.info(f"  Client will receive IdP code directly at: {callback_uri}")
-    logger.info(f"  Scopes: {scopes} (resource access for MCP tools)")
+    logger.info("AS Proxy: Intermediary authorization flow")
+    logger.info(f"  Client: {client_id}")
+    logger.info(f"  MCP server client_id: {mcp_server_client_id}")
+    logger.info(f"  Server callback: {callback_uri}")
+    logger.info(f"  Scopes: {scopes}")
 
-    # Get authorization endpoint from OAuth client
-    if oauth_client:
-        # External IdP mode (Keycloak) - use oauth_client
-        auth_url = await oauth_client.get_authorization_url(
-            state=idp_state,
-            code_challenge="",  # Server doesn't use PKCE with IdP
+    # Discover Nextcloud authorization endpoint
+    discovery_url = oauth_config.get("discovery_url")
+    if not discovery_url:
+        return JSONResponse(
+            {
+                "error": "server_error",
+                "error_description": "OAuth discovery URL not configured",
+            },
+            status_code=500,
         )
-        logger.info(f"Redirecting to external IdP: {auth_url.split('?')[0]}")
-    else:
-        # Integrated mode (Nextcloud OIDC) - build URL directly
-        discovery_url = oauth_config.get("discovery_url")
-        if not discovery_url:
-            return JSONResponse(
-                {
-                    "error": "server_error",
-                    "error_description": "OAuth discovery URL not configured",
-                },
-                status_code=500,
+
+    discovery = await _get_cached_discovery(discovery_url)
+    authorization_endpoint = discovery["authorization_endpoint"]
+
+    # Replace internal Docker hostname with public URL for browser access
+    public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+    if public_issuer:
+        internal_parsed = parse_url(oauth_config["nextcloud_host"])
+        auth_parsed = parse_url(authorization_endpoint)
+
+        if auth_parsed.hostname == internal_parsed.hostname:
+            public_parsed = parse_url(public_issuer)
+            authorization_endpoint = (
+                f"{public_parsed.scheme}://{public_parsed.netloc}{auth_parsed.path}"
+            )
+            if auth_parsed.query:
+                authorization_endpoint += f"?{auth_parsed.query}"
+            logger.info(
+                f"Rewrote authorization endpoint for browser access: {authorization_endpoint}"
             )
 
-        # Fetch authorization endpoint from discovery
-        async with nextcloud_httpx_client() as http_client:
-            response = await http_client.get(discovery_url)
-            response.raise_for_status()
-            discovery = response.json()
-            authorization_endpoint = discovery["authorization_endpoint"]
+    # Redirect to Nextcloud with MCP server's own client_id (no PKCE — confidential client)
+    idp_params = {
+        "client_id": mcp_server_client_id,
+        "redirect_uri": callback_uri,
+        "response_type": "code",
+        "scope": scopes,
+        "state": server_state,
+        "prompt": "consent",
+        "resource": f"{mcp_server_url}/mcp",  # MCP server audience
+    }
 
-        # IMPORTANT: Replace internal Docker hostname with public URL for browser access
-        # The discovery endpoint returns http://app/apps/oidc/authorize (internal)
-        # But browsers need http://localhost:8080/apps/oidc/authorize (public)
-        public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
-        if public_issuer:
-            # Parse internal and authorization endpoint to compare hostnames
-            internal_parsed = parse_url(oauth_config["nextcloud_host"])
-            auth_parsed = parse_url(authorization_endpoint)
-
-            # Check if authorization endpoint uses internal hostname
-            if auth_parsed.hostname == internal_parsed.hostname:
-                # Replace internal hostname+port with public URL
-                # Keep the path from authorization_endpoint
-                public_parsed = parse_url(public_issuer)
-                authorization_endpoint = (
-                    f"{public_parsed.scheme}://{public_parsed.netloc}{auth_parsed.path}"
-                )
-                if auth_parsed.query:
-                    authorization_endpoint += f"?{auth_parsed.query}"
-                logger.info(
-                    f"Rewrote authorization endpoint for browser access: {authorization_endpoint}"
-                )
-
-        idp_params = {
-            "client_id": idp_client_id,
-            "redirect_uri": callback_uri,
-            "response_type": "code",
-            "scope": scopes,
-            "state": idp_state,
-            "prompt": "consent",  # Ensure refresh token
-            "resource": f"{oauth_config['mcp_server_url']}/mcp",  # MCP server audience
-        }
-
-        auth_url = f"{authorization_endpoint}?{urlencode(idp_params)}"
-        logger.info(f"Redirecting to Nextcloud OIDC: {auth_url.split('?')[0]}")
+    auth_url = f"{authorization_endpoint}?{urlencode(idp_params)}"
+    logger.info(f"Redirecting to Nextcloud OIDC: {auth_url.split('?')[0]}")
 
     return RedirectResponse(auth_url, status_code=302)
 
@@ -355,11 +447,8 @@ async def oauth_authorize_nextcloud(
             status_code=500,
         )
 
-    async with nextcloud_httpx_client() as http_client:
-        response = await http_client.get(discovery_url)
-        response.raise_for_status()
-        discovery = response.json()
-        authorization_endpoint = discovery["authorization_endpoint"]
+    discovery = await _get_cached_discovery(discovery_url)
+    authorization_endpoint = discovery["authorization_endpoint"]
 
     # Fix internal hostname for browser access
     public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
@@ -461,11 +550,17 @@ async def oauth_callback_nextcloud(request: Request):
     callback_uri = f"{mcp_server_url}/oauth/callback"
 
     discovery_url = oauth_config.get("discovery_url")
-    async with nextcloud_httpx_client() as http_client:
-        response = await http_client.get(discovery_url)
-        response.raise_for_status()
-        discovery = response.json()
-        token_endpoint = discovery["token_endpoint"]
+    if not discovery_url:
+        return JSONResponse(
+            {
+                "error": "server_error",
+                "error_description": "OIDC discovery URL not configured",
+            },
+            status_code=500,
+        )
+
+    discovery = await _get_cached_discovery(discovery_url)
+    token_endpoint = discovery["token_endpoint"]
 
     # Build token exchange params
     token_params = {
@@ -599,6 +694,11 @@ async def oauth_callback(request: Request):
             status_code=400,
         )
 
+    # Check AS proxy sessions first (in-memory, ADR-023)
+    if state in _as_proxy_sessions:
+        logger.info("Routing to AS proxy callback (ADR-023)")
+        return await _oauth_callback_as_proxy(request, state)
+
     # Lookup OAuth session to determine flow type
     oauth_ctx = request.app.state.oauth_context
     if not oauth_ctx:
@@ -641,3 +741,580 @@ async def oauth_callback(request: Request):
             },
             status_code=400,
         )
+
+
+# ---------------------------------------------------------------------------
+# AS Proxy endpoints (ADR-023)
+# ---------------------------------------------------------------------------
+
+
+async def _oauth_callback_as_proxy(
+    request: Request, server_state: str
+) -> RedirectResponse | JSONResponse:
+    """
+    Handle Nextcloud callback for the AS proxy flow.
+
+    Exchanges the Nextcloud auth code for tokens server-side, generates a
+    proxy authorization code, and redirects back to the client.
+    """
+    # Check for errors from Nextcloud
+    error = request.query_params.get("error")
+    if error:
+        error_description = request.query_params.get(
+            "error_description", "Authorization failed"
+        )
+        logger.error(f"AS proxy callback error: {error} - {error_description}")
+
+        # Retrieve session to redirect back to client with error
+        session = _as_proxy_sessions.pop(server_state, None)
+        if session:
+            params = urlencode(
+                {
+                    "error": error,
+                    "error_description": error_description,
+                    "state": session.client_state,
+                }
+            )
+            return RedirectResponse(
+                f"{session.client_redirect_uri}?{params}", status_code=302
+            )
+        return JSONResponse(
+            {"error": error, "error_description": error_description},
+            status_code=400,
+        )
+
+    code = request.query_params.get("code")
+    if not code:
+        return JSONResponse(
+            {
+                "error": "invalid_request",
+                "error_description": "code parameter is required",
+            },
+            status_code=400,
+        )
+
+    # Retrieve and consume the session (one-time use)
+    session = _as_proxy_sessions.pop(server_state, None)
+    if not session:
+        return JSONResponse(
+            {
+                "error": "invalid_request",
+                "error_description": "Unknown or expired server state",
+            },
+            status_code=400,
+        )
+
+    if session.is_expired:
+        return JSONResponse(
+            {
+                "error": "invalid_request",
+                "error_description": "Authorization session expired",
+            },
+            status_code=400,
+        )
+
+    # Get OAuth context
+    oauth_ctx = request.app.state.oauth_context
+    oauth_config = oauth_ctx["config"]
+
+    mcp_server_client_id = os.getenv(
+        "MCP_SERVER_CLIENT_ID", oauth_config.get("client_id")
+    )
+    mcp_server_client_secret = os.getenv(
+        "MCP_SERVER_CLIENT_SECRET", oauth_config.get("client_secret")
+    )
+
+    if not mcp_server_client_id or not mcp_server_client_secret:
+        return JSONResponse(
+            {
+                "error": "server_error",
+                "error_description": "MCP server OAuth credentials not configured",
+            },
+            status_code=500,
+        )
+
+    mcp_server_url = oauth_config["mcp_server_url"]
+    callback_uri = f"{mcp_server_url}/oauth/callback"
+
+    # Discover token endpoint
+    discovery_url = oauth_config.get("discovery_url")
+    if not discovery_url:
+        return JSONResponse(
+            {
+                "error": "server_error",
+                "error_description": "OIDC discovery URL not configured",
+            },
+            status_code=500,
+        )
+
+    discovery = await _get_cached_discovery(discovery_url)
+    token_endpoint = discovery["token_endpoint"]
+
+    # Exchange auth code with Nextcloud (server-side, confidential client, no PKCE)
+    token_params = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": callback_uri,
+        "client_id": mcp_server_client_id,
+        "client_secret": mcp_server_client_secret,
+    }
+
+    async with nextcloud_httpx_client() as http_client:
+        response = await http_client.post(token_endpoint, data=token_params)
+
+    if response.status_code != 200:
+        logger.error(
+            f"AS proxy token exchange failed: {response.status_code} {response.text}"
+        )
+        params = urlencode(
+            {
+                "error": "server_error",
+                "error_description": "Failed to exchange authorization code",
+                "state": session.client_state,
+            }
+        )
+        return RedirectResponse(
+            f"{session.client_redirect_uri}?{params}", status_code=302
+        )
+
+    nc_token_response = response.json()
+
+    logger.info(
+        "AS proxy: Successfully exchanged code for Nextcloud token "
+        f"(token_type={nc_token_response.get('token_type')})"
+    )
+
+    # Generate a proxy authorization code for the client
+    proxy_code = secrets.token_urlsafe(32)
+    _proxy_codes[proxy_code] = ProxyCodeEntry(
+        client_id=session.client_id,
+        client_redirect_uri=session.client_redirect_uri,
+        client_state=session.client_state,
+        code_challenge=session.code_challenge,
+        code_challenge_method=session.code_challenge_method,
+        nc_token_response=nc_token_response,
+    )
+
+    # Redirect back to client with proxy_code and client's original state
+    redirect_params = urlencode({"code": proxy_code, "state": session.client_state})
+    redirect_url = f"{session.client_redirect_uri}?{redirect_params}"
+
+    logger.info(
+        f"AS proxy: Redirecting to client with proxy_code (client_id={session.client_id})"
+    )
+    return RedirectResponse(redirect_url, status_code=302)
+
+
+def _verify_pkce_s256(code_verifier: str, code_challenge: str) -> bool:
+    """Verify PKCE S256 code_verifier against stored code_challenge.
+
+    Per RFC 7636 Section 4.6:
+    code_challenge = BASE64URL(SHA256(ASCII(code_verifier)))
+    """
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    computed_challenge = urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return secrets.compare_digest(computed_challenge, code_challenge)
+
+
+async def oauth_token_endpoint(request: Request) -> JSONResponse:
+    """
+    OAuth token endpoint for AS proxy (ADR-023).
+
+    Handles:
+    - grant_type=authorization_code: Exchange proxy_code for Nextcloud token
+    - grant_type=refresh_token: Proxy refresh request to Nextcloud
+
+    Form parameters:
+        grant_type: "authorization_code" or "refresh_token"
+        code: Proxy authorization code (for authorization_code grant)
+        redirect_uri: Must match the original redirect_uri
+        code_verifier: PKCE verifier (for authorization_code grant)
+        client_id: Client identifier
+        client_secret: Client secret (optional for public clients)
+        refresh_token: Refresh token (for refresh_token grant)
+    """
+    # Parse form body
+    form = await request.form()
+    grant_type = form.get("grant_type")
+
+    if grant_type == "authorization_code":
+        return await _token_authorization_code(request, form)
+    elif grant_type == "refresh_token":
+        return await _token_refresh(request, form)
+    else:
+        return JSONResponse(
+            {
+                "error": "unsupported_grant_type",
+                "error_description": f"Unsupported grant_type: {grant_type}",
+            },
+            status_code=400,
+        )
+
+
+async def _token_authorization_code(request: Request, form) -> JSONResponse:
+    """Handle authorization_code grant type at the token endpoint."""
+    code = form.get("code")
+    redirect_uri = form.get("redirect_uri")
+    code_verifier = form.get("code_verifier")
+    client_id = form.get("client_id")
+
+    logger.debug(
+        "AS proxy token: received code=%s client_id=%s redirect_uri=%s "
+        "code_verifier=%s",
+        code[:8] + "..." if code else None,
+        client_id,
+        redirect_uri,
+        "present" if code_verifier else "missing",
+    )
+
+    if not code:
+        logger.warning("AS proxy token: Missing 'code' parameter")
+        return JSONResponse(
+            {"error": "invalid_request", "error_description": "code is required"},
+            status_code=400,
+        )
+
+    # Look up and consume proxy code (one-time use)
+    entry = _proxy_codes.pop(code, None)
+    if not entry:
+        logger.warning(
+            "AS proxy token: Invalid or expired code (active_codes=%d)",
+            len(_proxy_codes),
+        )
+        return JSONResponse(
+            {
+                "error": "invalid_grant",
+                "error_description": "Invalid or expired authorization code",
+            },
+            status_code=400,
+        )
+
+    if entry.is_expired:
+        age = time.time() - entry.created_at
+        logger.warning("AS proxy token: Proxy code expired (age=%.1fs, TTL=60s)", age)
+        return JSONResponse(
+            {
+                "error": "invalid_grant",
+                "error_description": "Authorization code has expired",
+            },
+            status_code=400,
+        )
+
+    # Validate client_id (required per RFC 6749 Section 4.1.3)
+    if not client_id:
+        logger.warning("AS proxy token: Missing 'client_id' parameter")
+        return JSONResponse(
+            {
+                "error": "invalid_request",
+                "error_description": "client_id is required",
+            },
+            status_code=400,
+        )
+
+    if client_id != entry.client_id:
+        logger.warning(
+            "AS proxy token: client_id mismatch (got=%s, expected=%s)",
+            client_id,
+            entry.client_id,
+        )
+        return JSONResponse(
+            {
+                "error": "invalid_grant",
+                "error_description": "client_id mismatch",
+            },
+            status_code=400,
+        )
+
+    # Validate redirect_uri (required per RFC 6749 Section 4.1.3)
+    if not redirect_uri:
+        logger.warning("AS proxy token: Missing 'redirect_uri' parameter")
+        return JSONResponse(
+            {
+                "error": "invalid_request",
+                "error_description": "redirect_uri is required",
+            },
+            status_code=400,
+        )
+
+    if redirect_uri != entry.client_redirect_uri:
+        logger.warning(
+            "AS proxy token: redirect_uri mismatch (got=%s, expected=%s)",
+            redirect_uri,
+            entry.client_redirect_uri,
+        )
+        return JSONResponse(
+            {
+                "error": "invalid_grant",
+                "error_description": "redirect_uri mismatch",
+            },
+            status_code=400,
+        )
+
+    # Verify PKCE (always required — oauth_authorize mandates code_challenge)
+    if not entry.code_challenge:
+        logger.error("AS proxy token: code_challenge missing from stored entry")
+        return JSONResponse(
+            {
+                "error": "server_error",
+                "error_description": "Internal state error: missing PKCE challenge",
+            },
+            status_code=500,
+        )
+
+    if not code_verifier:
+        logger.warning("AS proxy token: Missing 'code_verifier' (PKCE required)")
+        return JSONResponse(
+            {
+                "error": "invalid_grant",
+                "error_description": "code_verifier is required (PKCE)",
+            },
+            status_code=400,
+        )
+
+    if not _verify_pkce_s256(code_verifier, entry.code_challenge):
+        logger.warning(f"PKCE verification failed for client {entry.client_id}")
+        return JSONResponse(
+            {
+                "error": "invalid_grant",
+                "error_description": "PKCE verification failed",
+            },
+            status_code=400,
+        )
+
+    logger.info(
+        f"AS proxy token: Returning Nextcloud token for client {entry.client_id}"
+    )
+
+    # Return the stored Nextcloud token response directly
+    return JSONResponse(entry.nc_token_response)
+
+
+async def _token_refresh(request: Request, form) -> JSONResponse:
+    """Handle refresh_token grant type by proxying to Nextcloud."""
+    refresh_token = form.get("refresh_token")
+    if not refresh_token:
+        return JSONResponse(
+            {
+                "error": "invalid_request",
+                "error_description": "refresh_token is required",
+            },
+            status_code=400,
+        )
+
+    # Get OAuth context
+    oauth_ctx = request.app.state.oauth_context
+    if not oauth_ctx:
+        return JSONResponse(
+            {
+                "error": "server_error",
+                "error_description": "OAuth not configured on server",
+            },
+            status_code=500,
+        )
+
+    oauth_config = oauth_ctx["config"]
+
+    mcp_server_client_id = os.getenv(
+        "MCP_SERVER_CLIENT_ID", oauth_config.get("client_id")
+    )
+    mcp_server_client_secret = os.getenv(
+        "MCP_SERVER_CLIENT_SECRET", oauth_config.get("client_secret")
+    )
+
+    if not mcp_server_client_id or not mcp_server_client_secret:
+        return JSONResponse(
+            {
+                "error": "server_error",
+                "error_description": "MCP server OAuth credentials not configured",
+            },
+            status_code=500,
+        )
+
+    mcp_server_url = oauth_config["mcp_server_url"]
+
+    # Discover token endpoint
+    discovery_url = oauth_config.get("discovery_url")
+    if not discovery_url:
+        return JSONResponse(
+            {
+                "error": "server_error",
+                "error_description": "OIDC discovery URL not configured",
+            },
+            status_code=500,
+        )
+
+    discovery = await _get_cached_discovery(discovery_url)
+    token_endpoint = discovery["token_endpoint"]
+
+    # Proxy refresh request to Nextcloud
+    token_params = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": mcp_server_client_id,
+        "client_secret": mcp_server_client_secret,
+        "resource": f"{mcp_server_url}/mcp",
+    }
+
+    async with nextcloud_httpx_client() as http_client:
+        response = await http_client.post(token_endpoint, data=token_params)
+
+    if response.status_code != 200:
+        logger.error(
+            f"AS proxy token refresh failed: {response.status_code} {response.text}"
+        )
+        return JSONResponse(
+            {
+                "error": "invalid_grant",
+                "error_description": "Token refresh failed",
+            },
+            status_code=response.status_code,
+        )
+
+    return JSONResponse(response.json())
+
+
+async def oauth_register_proxy(request: Request) -> JSONResponse:
+    """
+    DCR proxy endpoint for AS proxy (ADR-023).
+
+    Proxies Dynamic Client Registration requests to Nextcloud's OIDC endpoint
+    and registers the resulting client in the local ClientRegistry.
+
+    This allows MCP clients to register via the MCP server (their AS) rather
+    than directly with Nextcloud (which would produce tokens with wrong audience).
+    """
+    # Parse JSON body
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {
+                "error": "invalid_request",
+                "error_description": "Request body must be valid JSON",
+            },
+            status_code=400,
+        )
+
+    # Get OAuth context for Nextcloud endpoint
+    oauth_ctx = request.app.state.oauth_context
+    if not oauth_ctx:
+        return JSONResponse(
+            {
+                "error": "server_error",
+                "error_description": "OAuth not configured on server",
+            },
+            status_code=500,
+        )
+
+    oauth_config = oauth_ctx["config"]
+    nextcloud_host = oauth_config["nextcloud_host"]
+
+    # Rate limit DCR requests per client IP
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    timestamps = _dcr_rate_limit.get(client_ip, [])
+    # Remove timestamps outside the window
+    timestamps = [t for t in timestamps if now - t < _DCR_RATE_LIMIT_WINDOW]
+    if len(timestamps) >= _DCR_RATE_LIMIT_MAX:
+        logger.warning(f"DCR rate limit exceeded for {client_ip}")
+        return JSONResponse(
+            {
+                "error": "too_many_requests",
+                "error_description": "Rate limit exceeded for client registration",
+            },
+            status_code=429,
+            headers={"Retry-After": str(_DCR_RATE_LIMIT_WINDOW)},
+        )
+    timestamps.append(now)
+    _dcr_rate_limit[client_ip] = timestamps
+
+    # Discover registration endpoint from OIDC discovery (prefer over hardcoded path)
+    discovery_url = oauth_config.get("discovery_url")
+    if discovery_url:
+        try:
+            discovery = await _get_cached_discovery(discovery_url)
+            registration_endpoint = discovery.get(
+                "registration_endpoint", f"{nextcloud_host}/apps/oidc/register"
+            )
+        except Exception:
+            logger.warning(
+                "Failed to fetch OIDC discovery for DCR endpoint, using fallback"
+            )
+            registration_endpoint = f"{nextcloud_host}/apps/oidc/register"
+    else:
+        registration_endpoint = f"{nextcloud_host}/apps/oidc/register"
+
+    logger.info(f"DCR proxy: Forwarding registration to {registration_endpoint}")
+
+    async with nextcloud_httpx_client() as http_client:
+        response = await http_client.post(
+            registration_endpoint,
+            json=body,
+            headers={"Content-Type": "application/json"},
+        )
+
+    if response.status_code not in (200, 201):
+        logger.error(
+            f"DCR proxy: Nextcloud registration failed: {response.status_code} {response.text}"
+        )
+        return JSONResponse(
+            response.json()
+            if response.headers.get("content-type", "").startswith("application/json")
+            else {
+                "error": "server_error",
+                "error_description": f"Upstream registration failed: {response.status_code}",
+            },
+            status_code=response.status_code,
+        )
+
+    nc_response = response.json()
+    new_client_id = nc_response.get("client_id")
+
+    if new_client_id:
+        # Register in local ClientRegistry so /oauth/authorize accepts it
+        redirect_uris = nc_response.get("redirect_uris", [])
+        client_name = nc_response.get("client_name", "")
+        registry = get_client_registry()
+        registry.register_proxy_client(
+            client_id=new_client_id,
+            redirect_uris=redirect_uris,
+            name=client_name,
+        )
+        logger.info(f"DCR proxy: Registered client {new_client_id} in local registry")
+
+    return JSONResponse(nc_response, status_code=response.status_code)
+
+
+async def oauth_as_metadata(request: Request) -> JSONResponse:
+    """
+    RFC 8414 OAuth Authorization Server Metadata endpoint (ADR-023).
+
+    Advertises the MCP server as its own OAuth Authorization Server so that
+    MCP clients (e.g., Claude Code) authenticate through the proxy rather
+    than directly with Nextcloud.
+    """
+    mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+
+    # Dynamically discover scopes from registered tools if available
+    scopes_supported = ["openid", "profile", "email"]
+    app_scopes = getattr(request.app.state, "supported_scopes", None)
+    if app_scopes:
+        scopes_supported = app_scopes
+
+    return JSONResponse(
+        {
+            "issuer": mcp_server_url,
+            "authorization_endpoint": f"{mcp_server_url}/oauth/authorize",
+            "token_endpoint": f"{mcp_server_url}/oauth/token",
+            "registration_endpoint": f"{mcp_server_url}/oauth/register",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": [
+                "client_secret_post",
+                "client_secret_basic",
+                "none",
+            ],
+            "scopes_supported": scopes_supported,
+        }
+    )

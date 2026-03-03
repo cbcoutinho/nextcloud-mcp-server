@@ -34,7 +34,7 @@ async def test_query_idp_userinfo_success(mocker):
     mock_client.__aexit__.return_value = None
 
     mocker.patch(
-        "nextcloud_mcp_server.auth.userinfo_routes.httpx.AsyncClient",
+        "nextcloud_mcp_server.auth.userinfo_routes.nextcloud_httpx_client",
         return_value=mock_client,
     )
 
@@ -59,7 +59,7 @@ async def test_query_idp_userinfo_failure(mocker):
     mock_client.__aexit__.return_value = None
 
     mocker.patch(
-        "nextcloud_mcp_server.auth.userinfo_routes.httpx.AsyncClient",
+        "nextcloud_mcp_server.auth.userinfo_routes.nextcloud_httpx_client",
         return_value=mock_client,
     )
 

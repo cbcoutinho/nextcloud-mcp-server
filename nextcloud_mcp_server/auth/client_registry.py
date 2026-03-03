@@ -142,8 +142,8 @@ class ClientRegistry:
             if not self._validate_redirect_uri(client, redirect_uri):
                 return False, f"Invalid redirect_uri for client {client_id}"
 
-        # Validate scopes if provided
-        if scopes:
+        # Validate scopes if provided (wildcard "*" allows all scopes)
+        if scopes and "*" not in client.allowed_scopes:
             invalid_scopes = set(scopes) - set(client.allowed_scopes)
             if invalid_scopes:
                 return False, f"Invalid scopes for client {client_id}: {invalid_scopes}"
@@ -201,6 +201,29 @@ class ClientRegistry:
 
         # In production, would persist to database
         return True
+
+    def register_proxy_client(
+        self, client_id: str, redirect_uris: list[str], name: str = ""
+    ) -> None:
+        """Register a client discovered via DCR proxy.
+
+        When the MCP server acts as an OAuth AS proxy, clients register via
+        the proxy's /oauth/register endpoint. This method stores the client
+        locally so /oauth/authorize can validate it.
+
+        Args:
+            client_id: Client identifier from Nextcloud DCR response
+            redirect_uris: Allowed redirect URIs
+            name: Optional human-readable name
+        """
+        self._clients[client_id] = MCPClientInfo(
+            client_id=client_id,
+            name=name or f"DCR-{client_id[:8]}",
+            redirect_uris=redirect_uris or ["http://localhost:*", "http://127.0.0.1:*"],
+            allowed_scopes=["*"],  # Nextcloud enforces actual scopes
+            is_public=True,
+        )
+        logger.info(f"Registered proxy client: {client_id}")
 
     def get_client(self, client_id: str) -> Optional[MCPClientInfo]:
         """

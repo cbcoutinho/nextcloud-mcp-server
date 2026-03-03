@@ -1,6 +1,7 @@
 """Scope-based authorization for MCP tools."""
 
 import logging
+import time
 from functools import wraps
 from typing import Any, Callable
 
@@ -9,9 +10,17 @@ from mcp.server.auth.provider import AccessToken
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.utilities.context_injection import find_context_parameter
 
+from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Scopes that only assert identity (OIDC standard claims).
+# Tools requiring *only* these scopes (e.g. auth provisioning tools) must
+# bypass the Login Flow v2 "is the user provisioned?" check — otherwise the
+# very tools that *create* app passwords would be blocked for unprovisioned
+# users, creating a circular dependency.
+IDENTITY_ONLY_SCOPES: frozenset[str] = frozenset({"openid", "profile", "email"})
 
 
 class ScopeAuthorizationError(Exception):
@@ -120,12 +129,60 @@ def require_scopes(*required_scopes: str):
             )
 
             if access_token is None:
-                # Not in OAuth mode (BasicAuth or no auth)
-                # In BasicAuth mode, all operations are allowed
+                # No OAuth token — BasicAuth mode bypasses scope checks
                 logger.debug(
-                    f"No access token present for {func_name} - allowing (BasicAuth mode)"
+                    f"No access token for {func_name} - allowing (BasicAuth mode)"
                 )
                 return await func(*args, **kwargs)
+
+            # ── Login Flow v2: Check stored app password scopes ──
+            # In Login Flow v2 multi-user mode, OAuth tokens provide MCP session
+            # identity only. Nextcloud API access uses stored app passwords.
+            # Check if the user has a stored app password with appropriate scopes.
+            if get_settings().enable_login_flow and not set(required_scopes).issubset(
+                IDENTITY_ONLY_SCOPES
+            ):
+                from nextcloud_mcp_server.auth.token_utils import (  # noqa: PLC0415
+                    extract_user_id_from_token,
+                )
+
+                user_id = await extract_user_id_from_token(ctx)
+                if user_id and user_id != "default_user":
+                    stored_scopes = await _get_stored_scopes(user_id)
+
+                    if stored_scopes is None:
+                        # No stored app password → require provisioning
+                        error_msg = (
+                            f"Access denied to {func_name}: "
+                            f"Nextcloud access not provisioned. "
+                            f"Please call 'nc_auth_provision_access' first."
+                        )
+                        logger.warning(error_msg)
+                        raise ProvisioningRequiredError(error_msg)
+
+                    if stored_scopes == "all":
+                        # NULL scopes in DB = legacy app password = all allowed
+                        logger.debug(
+                            f"Stored app password scope check passed for {func_name}: all scopes"
+                        )
+                        return await func(*args, **kwargs)
+
+                    # Check stored scopes against required
+                    stored_set = set(stored_scopes)
+                    missing = set(required_scopes) - stored_set
+                    if missing:
+                        error_msg = (
+                            f"Access denied to {func_name}: "
+                            f"Missing scopes: {', '.join(sorted(missing))}. "
+                            f"Call 'nc_auth_update_scopes' to add permissions."
+                        )
+                        logger.warning(error_msg)
+                        raise InsufficientScopeError(list(missing), error_msg)
+
+                    logger.debug(
+                        f"Stored app password scope check passed for {func_name}"
+                    )
+                    return await func(*args, **kwargs)
 
             # Extract scopes from access token
             token_scopes = set(access_token.scopes or [])
@@ -416,3 +473,47 @@ def discover_all_scopes(mcp) -> list[str]:
 
     # Return sorted list of unique scopes
     return sorted(all_scopes)
+
+
+# ── Login Flow v2 helpers ────────────────────────────────────────────────
+
+# Scope cache: user_id → (expires_at, scopes)
+_scope_cache: dict[str, tuple[float, list[str] | str | None]] = {}
+_SCOPE_CACHE_TTL = 300  # 5 minutes
+
+
+def invalidate_scope_cache(user_id: str) -> None:
+    """Remove cached scopes for a user (call when scopes are updated)."""
+    _scope_cache.pop(user_id, None)
+
+
+async def _get_stored_scopes(user_id: str) -> list[str] | str | None:
+    """Look up stored app password scopes for a user (with TTL cache).
+
+    Returns:
+        - list[str]: Specific scopes granted
+        - "all": NULL scopes in DB (legacy = all allowed)
+        - None: No stored app password (provisioning required)
+
+    Raises:
+        Storage/infrastructure exceptions propagate to the caller
+        (require_scopes decorator) for proper MCP error responses.
+    """
+    now = time.time()
+    if user_id in _scope_cache:
+        expires_at, cached = _scope_cache[user_id]
+        if now < expires_at:
+            return cached
+
+    storage = await get_shared_storage()
+
+    data = await storage.get_app_password_with_scopes(user_id)
+    if data is None:
+        result = None
+    elif data["scopes"] is None:
+        result = "all"
+    else:
+        result = data["scopes"]
+
+    _scope_cache[user_id] = (now + _SCOPE_CACHE_TTL, result)
+    return result

@@ -40,12 +40,13 @@ nextcloud:
   publicIssuerUrl: ""
 
 # Authentication configuration
-# Choose one mode: "basic", "multi-user-basic", or "oauth"
+# Choose one mode: "basic", "multi-user-basic", "oauth", or "login-flow"
 auth:
-  # Authentication mode: "basic", "multi-user-basic", or "oauth"
+  # Authentication mode: "basic", "multi-user-basic", "oauth", or "login-flow"
   # basic: Single-user with username/password (recommended for personal use)
   # multi-user-basic: Multi-user with BasicAuth pass-through (credentials in request headers)
   # oauth: Uses OAuth2/OIDC (experimental, requires patches)
+  # login-flow: Multi-user via Nextcloud Login Flow v2 (experimental, ADR-022)
   mode: basic
 
   # Basic authentication settings (single-user mode)
@@ -139,6 +140,21 @@ auth:
       # Use existing PVC
       existingClaim: ""
 
+  # Login Flow v2 settings (experimental, ADR-022)
+  # Uses Nextcloud's native Login Flow v2 to obtain app passwords per user.
+  # No OAuth patches required — works with stock Nextcloud.
+  # See: docs/ADR-022-deployment-mode-consolidation.md
+  loginFlow:
+    # Token encryption key (required, ignored if existingSecret is set)
+    # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    tokenEncryptionKey: ""
+    # Token storage database path
+    tokenStorageDb: "/app/data/tokens.db"
+    # Use existing secret instead of creating one
+    existingSecret: ""
+    # Key in the existing secret
+    tokenEncryptionKeyKey: "token_encryption_key"
+
 # Data Storage Configuration
 # Persistent volume for /app/data directory
 # Used for: token databases, qdrant persistent storage, and any app data
@@ -147,6 +163,7 @@ dataStorage:
   # Enable persistent storage for /app/data
   # Set to true when using:
   # - Multi-user basic auth with offline access (stores tokens.db)
+  # - Login flow mode (stores app passwords in tokens.db)
   # - Qdrant persistent mode (stores vector database)
   # - Any feature requiring persistent app data
   # Set to false for basic auth without persistence (uses emptyDir)

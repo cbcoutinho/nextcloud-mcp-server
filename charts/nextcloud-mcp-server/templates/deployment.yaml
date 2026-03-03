@@ -46,8 +46,10 @@ spec:
           args:
             - "--transport"
             - "{{ .Values.mcp.transport }}"
-            {{- if eq .Values.auth.mode "oauth" }}
+            {{- if or (eq .Values.auth.mode "oauth") (eq .Values.auth.mode "login-flow") }}
             - "--oauth"
+            {{- end }}
+            {{- if eq .Values.auth.mode "oauth" }}
             - "--oauth-token-type"
             - "{{ .Values.auth.oauth.tokenType }}"
             {{- end }}
@@ -134,6 +136,21 @@ spec:
                   name: {{ include "nextcloud-mcp-server.oauthSecretName" . }}
                   key: {{ .Values.auth.oauth.clientSecretKey }}
             {{- end }}
+            {{- else if eq .Values.auth.mode "login-flow" }}
+            # Login Flow v2 mode (ADR-022)
+            - name: ENABLE_LOGIN_FLOW
+              value: "true"
+            - name: NEXTCLOUD_MCP_SERVER_URL
+              value: {{ include "nextcloud-mcp-server.mcpServerUrl" . | quote }}
+            - name: NEXTCLOUD_PUBLIC_ISSUER_URL
+              value: {{ include "nextcloud-mcp-server.publicIssuerUrl" . | quote }}
+            - name: TOKEN_STORAGE_DB
+              value: {{ .Values.auth.loginFlow.tokenStorageDb | quote }}
+            - name: TOKEN_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nextcloud-mcp-server.loginFlowSecretName" . }}
+                  key: {{ .Values.auth.loginFlow.tokenEncryptionKeyKey }}
             {{- end }}
             {{- if .Values.documentProcessing.enabled }}
             # Document processing
@@ -282,7 +299,7 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            {{- if and (eq .Values.auth.mode "oauth") .Values.auth.oauth.persistence.enabled }}
+            {{- if or (and (eq .Values.auth.mode "oauth") .Values.auth.oauth.persistence.enabled) (eq .Values.auth.mode "login-flow") }}
             - name: oauth-storage
               mountPath: /app/.oauth
             {{- end }}
@@ -294,7 +311,7 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-        {{- if and (eq .Values.auth.mode "oauth") .Values.auth.oauth.persistence.enabled }}
+        {{- if or (and (eq .Values.auth.mode "oauth") .Values.auth.oauth.persistence.enabled) (eq .Values.auth.mode "login-flow") }}
         - name: oauth-storage
           persistentVolumeClaim:
             claimName: {{ include "nextcloud-mcp-server.oauthPvcName" . }}
