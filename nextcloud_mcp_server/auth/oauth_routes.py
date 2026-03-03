@@ -958,7 +958,17 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
     code_verifier = form.get("code_verifier")
     client_id = form.get("client_id")
 
+    logger.debug(
+        "AS proxy token: received code=%s client_id=%s redirect_uri=%s "
+        "code_verifier=%s",
+        code[:8] + "..." if code else None,
+        client_id,
+        redirect_uri,
+        "present" if code_verifier else "missing",
+    )
+
     if not code:
+        logger.warning("AS proxy token: Missing 'code' parameter")
         return JSONResponse(
             {"error": "invalid_request", "error_description": "code is required"},
             status_code=400,
@@ -967,6 +977,10 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
     # Look up and consume proxy code (one-time use)
     entry = _proxy_codes.pop(code, None)
     if not entry:
+        logger.warning(
+            "AS proxy token: Invalid or expired code (active_codes=%d)",
+            len(_proxy_codes),
+        )
         return JSONResponse(
             {
                 "error": "invalid_grant",
@@ -976,6 +990,8 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
         )
 
     if entry.is_expired:
+        age = time.time() - entry.created_at
+        logger.warning("AS proxy token: Proxy code expired (age=%.1fs, TTL=60s)", age)
         return JSONResponse(
             {
                 "error": "invalid_grant",
@@ -986,6 +1002,7 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
 
     # Validate client_id (required per RFC 6749 Section 4.1.3)
     if not client_id:
+        logger.warning("AS proxy token: Missing 'client_id' parameter")
         return JSONResponse(
             {
                 "error": "invalid_request",
@@ -995,6 +1012,11 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
         )
 
     if client_id != entry.client_id:
+        logger.warning(
+            "AS proxy token: client_id mismatch (got=%s, expected=%s)",
+            client_id,
+            entry.client_id,
+        )
         return JSONResponse(
             {
                 "error": "invalid_grant",
@@ -1005,6 +1027,7 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
 
     # Validate redirect_uri (required per RFC 6749 Section 4.1.3)
     if not redirect_uri:
+        logger.warning("AS proxy token: Missing 'redirect_uri' parameter")
         return JSONResponse(
             {
                 "error": "invalid_request",
@@ -1014,6 +1037,11 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
         )
 
     if redirect_uri != entry.client_redirect_uri:
+        logger.warning(
+            "AS proxy token: redirect_uri mismatch (got=%s, expected=%s)",
+            redirect_uri,
+            entry.client_redirect_uri,
+        )
         return JSONResponse(
             {
                 "error": "invalid_grant",
@@ -1028,6 +1056,7 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
     )  # noqa: S101
 
     if not code_verifier:
+        logger.warning("AS proxy token: Missing 'code_verifier' (PKCE required)")
         return JSONResponse(
             {
                 "error": "invalid_grant",
