@@ -4,13 +4,14 @@ import datetime as dt
 import logging
 import uuid
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import anyio
 from caldav.async_collection import AsyncCalendar, AsyncEvent
 from caldav.async_davclient import AsyncDAVClient
 from caldav.elements import cdav, dav
 from httpx import Auth
-from icalendar import Alarm, Calendar, vDDDTypes, vRecur
+from icalendar import Alarm, Calendar, vCalAddress, vDDDTypes, vRecur, vText
 from icalendar import Event as ICalEvent
 from icalendar import Todo as ICalTodo
 from lxml import etree  # type: ignore[import-untyped]
@@ -23,16 +24,35 @@ logger = logging.getLogger(__name__)
 class CalendarClient:
     """Client for Nextcloud CalDAV calendar and task operations."""
 
-    def __init__(self, base_url: str, username: str, auth: Auth | None = None):
+    def __init__(
+        self,
+        base_url: str,
+        username: str,
+        auth: Auth | None = None,
+        user_email: str | None = None,
+        user_display_name: str | None = None,
+    ):
         """Initialize CalendarClient with AsyncDAVClient.
 
         Args:
             base_url: Nextcloud base URL
             username: Nextcloud username
             auth: httpx.Auth object (BasicAuth or BearerAuth)
+            user_email: Optional email address of the user for organizer field
+            user_display_name: Optional display name of the user for organizer field
         """
         self.username = username
         self.base_url = base_url
+        self.user_email = user_email
+        self.user_display_name = user_display_name
+        
+        # Extract hostname from base_url for fallback email construction
+        try:
+            parsed = urlparse(base_url)
+            self._hostname = parsed.hostname or ""
+        except Exception:
+            self._hostname = ""
+        
         # AsyncDAVClient needs the full base URL for proper URL construction
         self._dav_client = AsyncDAVClient(
             url=f"{base_url}/remote.php/dav/",
@@ -41,6 +61,30 @@ class CalendarClient:
             ssl_verify_cert=get_nextcloud_ssl_verify(),  # type: ignore[arg-type]  # caldav types say bool|str but passes through to httpx which accepts SSLContext
         )
         self._calendar_home_url = f"{base_url}/remote.php/dav/calendars/{username}/"
+
+    def _get_default_organizer(self) -> str | None:
+        """Get default organizer string for the current user.
+        
+        Returns:
+            String in "Name <email>" format, or None if no information available.
+        """
+        # Use display name if non-empty, otherwise username
+        if self.user_display_name and self.user_display_name.strip():
+            name = self.user_display_name
+        else:
+            name = self.username
+        
+        email = self.user_email
+        if not email and self._hostname:
+            # Construct email from username and hostname
+            email = f"{self.username}@{self._hostname}"
+        
+        if email:
+            # Only include name if it's different from email and not empty
+            if name and name.strip() and name != email and name != email.split('@')[0]:
+                return f"{name} <{email}>"
+            return email
+        return None
 
     def _get_calendar_url(self, calendar_name: str) -> str:
         """Get the full URL for a calendar."""
@@ -616,6 +660,84 @@ class CalendarClient:
 
     # ============= Helper Methods - Event iCalendar =============
 
+    def _parse_name_email(self, attendee_str: str) -> tuple[str, str]:
+        """Parse attendee/organizer string in "Name <email>" or "email" format.
+        
+        Args:
+            attendee_str: String like "John Doe <john@example.com>" or "john@example.com"
+            
+        Returns:
+            Tuple of (name, email)
+        """
+        attendee_str = attendee_str.strip()
+        if not attendee_str:
+            raise ValueError("Attendee string cannot be empty")
+        
+        # Check for "Name <email>" format
+        if '<' in attendee_str and '>' in attendee_str:
+            # Extract name and email
+            name_part = attendee_str[:attendee_str.find('<')].strip()
+            email_part = attendee_str[attendee_str.find('<') + 1:attendee_str.find('>')].strip()
+            name = name_part if name_part else email_part.split('@')[0] if '@' in email_part else email_part
+            return name, email_part
+        else:
+            # Just email
+            email = attendee_str
+            name = email.split('@')[0] if '@' in email else email
+            return name, email
+
+    def _extract_vcal_address(self, vcal: vCalAddress) -> tuple[str, str]:
+        """Extract name and email from a vCalAddress object.
+        
+        Args:
+            vcal: vCalAddress object
+            
+        Returns:
+            Tuple of (name, email)
+        """
+        # Extract email from vCalAddress value (e.g., "mailto:test@example.com")
+        email = str(vcal).replace("mailto:", "")
+        # Extract name from CN parameter if present
+        name_param = vcal.params.get('CN')
+        if name_param:
+            name = str(name_param)
+        else:
+            # Fallback to email local part
+            name = email.split('@')[0] if '@' in email else email
+        return name, email
+
+    def _format_vcal_address(self, name: str, email: str) -> str:
+        """Format name and email as "Name <email>" or "email".
+        
+        Args:
+            name: Display name
+            email: Email address
+            
+        Returns:
+            Formatted string
+        """
+        if not name or name == email or name == email.split('@')[0]:
+            return email
+        return f"{name} <{email}>"
+
+    def _create_attendee_vcal(self, attendee_str: str) -> vCalAddress:
+        """Create a vCalAddress for an attendee with proper parameters."""
+        name, email = self._parse_name_email(attendee_str)
+        attendee = vCalAddress(f"mailto:{email}")
+        attendee.params['CN'] = vText(name)
+        attendee.params['ROLE'] = vText('REQ-PARTICIPANT')
+        attendee.params['PARTSTAT'] = vText('NEEDS-ACTION')
+        attendee.params['CUTYPE'] = vText('INDIVIDUAL')
+        attendee.params['RSVP'] = vText('TRUE')
+        return attendee
+
+    def _create_organizer_vcal(self, organizer_str: str) -> vCalAddress:
+        """Create a vCalAddress for an organizer with proper parameters."""
+        name, email = self._parse_name_email(organizer_str)
+        organizer = vCalAddress(f"mailto:{email}")
+        organizer.params['CN'] = vText(name)
+        return organizer
+
     def _create_ical_event(self, event_data: Dict[str, Any], event_uid: str) -> str:
         """Create iCalendar content from event data."""
         cal = Calendar()
@@ -684,12 +806,25 @@ class CalendarClient:
             alarm.add("trigger", dt.timedelta(minutes=-reminder_minutes))
             event.add_component(alarm)
 
+        # Add organizer and attendees
+        attendees_str = event_data.get("attendees", "")
+        organizer = event_data.get("organizer", "")
+        # If no organizer specified but there are attendees, use default organizer
+        if not organizer and attendees_str:
+            default_organizer = self._get_default_organizer()
+            if default_organizer:
+                organizer = default_organizer
+        if organizer:
+            organizer_vcal = self._create_organizer_vcal(organizer)
+            event['ORGANIZER'] = organizer_vcal
+
         # Add attendees
-        attendees = event_data.get("attendees", "")
-        if attendees:
-            for email in attendees.split(","):
-                if email.strip():
-                    event.add("attendee", f"mailto:{email.strip()}")
+        if attendees_str:
+            for email in attendees_str.split(","):
+                email = email.strip()
+                if email:
+                    attendee_vcal = self._create_attendee_vcal(email)
+                    event.add("attendee", attendee_vcal)
 
         # Add timestamps
         now = dt.datetime.now(dt.UTC)
@@ -750,11 +885,20 @@ class CalendarClient:
         attendees = []
         for attendee in component.get("attendee", []):
             if isinstance(attendee, list):
-                attendees.extend(str(a).replace("mailto:", "") for a in attendee)
+                for a in attendee:
+                    name, email = self._extract_vcal_address(a)
+                    attendees.append(self._format_vcal_address(name, email))
             else:
-                attendees.append(str(attendee).replace("mailto:", ""))
+                name, email = self._extract_vcal_address(attendee)
+                attendees.append(self._format_vcal_address(name, email))
         if attendees:
             event_data["attendees"] = ",".join(attendees)
+
+        # Handle organizer
+        organizer = component.get("organizer")
+        if organizer:
+            name, email = self._extract_vcal_address(organizer)
+            event_data["organizer"] = self._format_vcal_address(name, email)
 
         return event_data
 
@@ -829,6 +973,15 @@ class CalendarClient:
                         elif "RRULE" in component:
                             del component["RRULE"]
 
+                    # Handle organizer
+                    if "organizer" in event_data:
+                        organizer_str = event_data["organizer"]
+                        if organizer_str:
+                            organizer_vcal = self._create_organizer_vcal(organizer_str)
+                            component["ORGANIZER"] = organizer_vcal
+                        elif "ORGANIZER" in component:
+                            del component["ORGANIZER"]
+
                     # Handle attendees
                     if "attendees" in event_data:
                         attendees_str = event_data["attendees"]
@@ -837,8 +990,10 @@ class CalendarClient:
                             del component["ATTENDEE"]
                         if attendees_str:
                             for email in attendees_str.split(","):
-                                if email.strip():
-                                    component.add("attendee", f"mailto:{email.strip()}")
+                                email = email.strip()
+                                if email:
+                                    attendee_vcal = self._create_attendee_vcal(email)
+                                    component.add("attendee", attendee_vcal)
 
                     # Handle reminder (VALARM)
                     if "reminder_minutes" in event_data:
@@ -1120,6 +1275,8 @@ class CalendarClient:
                 return ", ".join(result)
             else:
                 # Handle single category string or object
+                if isinstance(categories_obj, str):
+                    return categories_obj
                 if hasattr(categories_obj, "to_ical"):
                     return categories_obj.to_ical().decode("utf-8")
                 return str(categories_obj)

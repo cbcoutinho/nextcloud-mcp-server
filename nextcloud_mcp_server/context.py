@@ -2,6 +2,7 @@
 
 import logging
 
+import httpx
 from httpx import BasicAuth
 from mcp.server.fastmcp import Context
 
@@ -19,6 +20,49 @@ from nextcloud_mcp_server.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _fetch_user_profile_basic_auth(
+    base_url: str, username: str, password: str
+) -> tuple[str | None, str | None]:
+    """Fetch user profile (email and display name) using BasicAuth.
+    
+    Args:
+        base_url: Nextcloud base URL
+        username: Nextcloud username
+        password: Nextcloud password/app password
+        
+    Returns:
+        Tuple of (email, display_name). Either or both may be None if not available.
+    """
+    try:
+        async with httpx.AsyncClient(
+            base_url=base_url,
+            auth=BasicAuth(username, password),
+            timeout=10.0,
+        ) as client:
+            response = await client.get(
+                "/ocs/v2.php/cloud/user",
+                headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            # Nextcloud OCS API returns data in ocs.data
+            user_data = data.get("ocs", {}).get("data", {})
+            
+            email = user_data.get("email")
+            display_name = user_data.get("displayname")
+            
+            logger.debug(
+                f"Fetched user profile via BasicAuth: email={email}, display_name={display_name}"
+            )
+            return email, display_name
+            
+    except Exception as e:
+        logger.warning(f"Failed to fetch user profile via BasicAuth: {e}")
+        # Don't fail the whole request if profile fetch fails
+        return None, None
 
 
 async def get_client(ctx: Context) -> NextcloudClient:
@@ -76,7 +120,7 @@ async def get_client(ctx: Context) -> NextcloudClient:
 
     # Multi-user BasicAuth pass-through mode - extract credentials from request
     if settings.enable_multi_user_basic_auth:
-        return _get_client_from_basic_auth(ctx)
+        return await _get_client_from_basic_auth(ctx)
 
     lifespan_ctx = ctx.request_context.lifespan_context
 
@@ -102,7 +146,7 @@ async def get_client(ctx: Context) -> NextcloudClient:
             # Mode 1: Multi-audience token - use directly
             # Token was validated to have MCP audience in UnifiedTokenVerifier
             # Nextcloud will independently validate its own audience when receiving API calls
-            return get_client_from_context(ctx, lifespan_ctx.nextcloud_host)
+            return await get_client_from_context(ctx, lifespan_ctx.nextcloud_host)
 
     # Unknown context type
     raise AttributeError(
@@ -190,7 +234,7 @@ def _get_client_from_session_config(ctx: Context) -> NextcloudClient:
     )
 
 
-def _get_client_from_basic_auth(ctx: Context) -> NextcloudClient:
+async def _get_client_from_basic_auth(ctx: Context) -> NextcloudClient:
     """
     Create NextcloudClient from BasicAuth credentials in request headers.
 
@@ -245,12 +289,21 @@ def _get_client_from_basic_auth(ctx: Context) -> NextcloudClient:
         f"Creating multi-user BasicAuth client for {settings.nextcloud_host} as {username}"
     )
 
+    # Fetch user profile for organizer field
+    email, display_name = await _fetch_user_profile_basic_auth(
+        settings.nextcloud_host, username, password
+    )
+    if email or display_name:
+        logger.debug(f"Using user profile from BasicAuth: email={email}, display_name={display_name}")
+
     # Create client that passes BasicAuth credentials through to Nextcloud
     # settings.nextcloud_host is guaranteed to be str after the check above
     return NextcloudClient(
         base_url=settings.nextcloud_host,
         username=username,
         auth=BasicAuth(username, password),
+        user_email=email,
+        user_display_name=display_name,
     )
 
 
@@ -295,8 +348,17 @@ async def _get_client_from_login_flow(
 
     logger.debug(f"Creating Login Flow v2 client for {nextcloud_host} as {username}")
 
+    # Fetch user profile for organizer field
+    email, display_name = await _fetch_user_profile_basic_auth(
+        nextcloud_host, username, app_data["app_password"]
+    )
+    if email or display_name:
+        logger.debug(f"Using user profile from Login Flow: email={email}, display_name={display_name}")
+
     return NextcloudClient(
         base_url=nextcloud_host,
         username=username,
         auth=BasicAuth(username, app_data["app_password"]),
+        user_email=email,
+        user_display_name=display_name,
     )
