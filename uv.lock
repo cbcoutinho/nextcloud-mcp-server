@@ -290,8 +290,8 @@ wheels = [
 
 [[package]]
 name = "caldav"
-version = "2.0.2.dev47+g3e44cf827"
-source = { git = "https://github.com/cbcoutinho/caldav?branch=feature%2Fhttpx#3e44cf827e392a0073a16a6b01e299ecef02404b" }
+version = "2.0.2.dev48+ged212a8db"
+source = { git = "https://github.com/nickallevato/caldav?branch=fix%2Fasync-search-href#ed212a8dbb642f9616836ff6c10aab5375074d90" }
 dependencies = [
     { name = "httpx", extra = ["http2"] },
     { name = "icalendar" },
@@ -2048,7 +2048,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.42.0" },
     { name = "authlib", specifier = ">=1.6.5" },
     { name = "boto3", specifier = ">=1.35.0" },
-    { name = "caldav", git = "https://github.com/cbcoutinho/caldav?branch=feature%2Fhttpx" },
+    { name = "caldav", git = "https://github.com/nickallevato/caldav?branch=fix%2Fasync-search-href" },
     { name = "click", specifier = ">=8.1.8" },
     { name = "fastembed", specifier = ">=0.7.3" },
     { name = "httpx", specifier = ">=0.28.1,<0.29.0" },
