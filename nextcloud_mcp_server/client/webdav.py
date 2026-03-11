@@ -9,6 +9,7 @@ from urllib.parse import unquote
 
 from httpx import HTTPStatusError
 
+from nextcloud_mcp_server.utils.path import sanitize_webdav_path
 from nextcloud_mcp_server.utils.xml import escape_xml
 
 from .base import BaseNextcloudClient
@@ -29,7 +30,7 @@ class WebDAVClient(BaseNextcloudClient):
         else:
             path_with_slash = path
 
-        webdav_path = f"{self._get_webdav_base_path()}/{path_with_slash.lstrip('/')}"
+        webdav_path = f"{self._get_webdav_base_path()}/{sanitize_webdav_path(path_with_slash)}"
         logger.debug(f"Deleting WebDAV resource: {webdav_path}")
 
         headers = {"OCS-APIRequest": "true"}
@@ -222,7 +223,7 @@ class WebDAVClient(BaseNextcloudClient):
 
     async def list_directory(self, path: str = "") -> List[Dict[str, Any]]:
         """List files and directories in the specified path via WebDAV PROPFIND."""
-        webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
+        webdav_path = f"{self._get_webdav_base_path()}/{sanitize_webdav_path(path)}"
         if not webdav_path.endswith("/"):
             webdav_path += "/"
 
@@ -320,7 +321,7 @@ class WebDAVClient(BaseNextcloudClient):
 
     async def read_file(self, path: str) -> Tuple[bytes, str]:
         """Read a file's content via WebDAV GET."""
-        webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
+        webdav_path = f"{self._get_webdav_base_path()}/{sanitize_webdav_path(path)}"
 
         logger.debug(f"Reading file: {path}")
 
@@ -347,7 +348,7 @@ class WebDAVClient(BaseNextcloudClient):
         self, path: str, content: bytes, content_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """Write content to a file via WebDAV PUT."""
-        webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
+        webdav_path = f"{self._get_webdav_base_path()}/{sanitize_webdav_path(path)}"
 
         logger.debug(f"Writing file: {path}")
 
@@ -378,7 +379,7 @@ class WebDAVClient(BaseNextcloudClient):
         self, path: str, recursive: bool = False
     ) -> Dict[str, Any]:
         """Create a directory via WebDAV MKCOL."""
-        webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
+        webdav_path = f"{self._get_webdav_base_path()}/{sanitize_webdav_path(path)}"
         if not webdav_path.endswith("/"):
             webdav_path += "/"
 
@@ -435,9 +436,9 @@ class WebDAVClient(BaseNextcloudClient):
         Returns:
             Dict with status_code and optional message
         """
-        source_webdav_path = f"{self._get_webdav_base_path()}/{source_path.lstrip('/')}"
+        source_webdav_path = f"{self._get_webdav_base_path()}/{sanitize_webdav_path(source_path)}"
         destination_webdav_path = (
-            f"{self._get_webdav_base_path()}/{destination_path.lstrip('/')}"
+            f"{self._get_webdav_base_path()}/{sanitize_webdav_path(destination_path)}"
         )
 
         # Ensure paths have consistent trailing slashes for directories
@@ -516,9 +517,9 @@ class WebDAVClient(BaseNextcloudClient):
         Returns:
             Dict with status_code and optional message
         """
-        source_webdav_path = f"{self._get_webdav_base_path()}/{source_path.lstrip('/')}"
+        source_webdav_path = f"{self._get_webdav_base_path()}/{sanitize_webdav_path(source_path)}"
         destination_webdav_path = (
-            f"{self._get_webdav_base_path()}/{destination_path.lstrip('/')}"
+            f"{self._get_webdav_base_path()}/{sanitize_webdav_path(destination_path)}"
         )
 
         # Ensure paths have consistent trailing slashes for directories
@@ -656,7 +657,7 @@ class WebDAVClient(BaseNextcloudClient):
         username = self.username
         scope_path = f"/files/{username}"
         if scope:
-            scope_path = f"{scope_path}/{scope.lstrip('/')}"
+            scope_path = f"{scope_path}/{sanitize_webdav_path(scope)}"
 
         # Build property list
         prop_xml = "\n".join([self._property_to_xml(prop) for prop in properties])
@@ -1310,7 +1311,7 @@ class WebDAVClient(BaseNextcloudClient):
             File info dictionary with id, name, size, content_type, etc.
             Returns None if file not found.
         """
-        webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
+        webdav_path = f"{self._get_webdav_base_path()}/{sanitize_webdav_path(path)}"
 
         propfind_body = """<?xml version="1.0"?>
 <d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
