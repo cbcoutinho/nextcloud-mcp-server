@@ -1,7 +1,7 @@
 """CardDAV client for NextCloud contacts operations."""
 
 import logging
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 
 from pythonvCard4.vcard import Contact
 

@@ -2,7 +2,7 @@
 
 import logging
 import mimetypes
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote

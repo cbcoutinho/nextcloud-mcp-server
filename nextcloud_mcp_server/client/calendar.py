@@ -125,7 +125,8 @@ class CalendarClient:
         result = []
 
         # Parse XML response
-        tree = etree.fromstring(response.raw.encode("utf-8"))
+        parser = etree.XMLParser(resolve_entities=False, no_network=True)
+        tree = etree.fromstring(response.raw.encode("utf-8"), parser=parser)
         ns = {
             "d": "DAV:",
             "cs": "http://calendarserver.org/ns/",
