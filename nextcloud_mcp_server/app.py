@@ -97,6 +97,7 @@ from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import (
     DeploymentMode,
     Settings,
+    get_basic_auth_scopes,
     get_document_processor_config,
     get_settings,
 )
@@ -456,6 +457,36 @@ class BasicAuthMiddleware:
                     logger.debug(
                         f"BasicAuth credentials extracted for user: {username}"
                     )
+
+                    # Inject synthetic AccessToken if scopes are configured
+                    # for this user, enabling @require_scopes checks and
+                    # list_tools_filtered() to work in BasicAuth mode
+                    configured_scopes = get_basic_auth_scopes(username)
+                    if configured_scopes is not None:
+                        from mcp.server.auth.middleware.auth_context import (  # noqa: PLC0415
+                            auth_context_var,
+                        )
+                        from mcp.server.auth.middleware.bearer_auth import (  # noqa: PLC0415
+                            AuthenticatedUser,
+                        )
+                        from mcp.server.auth.provider import (  # noqa: PLC0415
+                            AccessToken,
+                        )
+
+                        synthetic_token = AccessToken(
+                            token="basic-auth-synthetic",
+                            client_id=f"basic-auth:{username}",
+                            scopes=configured_scopes,
+                        )
+                        ctx_token = auth_context_var.set(
+                            AuthenticatedUser(synthetic_token)
+                        )
+                        try:
+                            await self.app(scope, receive, send)
+                        finally:
+                            auth_context_var.reset(ctx_token)
+                        return
+
                 except Exception as e:
                     logger.warning(f"Failed to extract BasicAuth credentials: {e}")
 
