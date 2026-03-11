@@ -8,7 +8,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.10.7@sha256:edd1fd89f3e5b005814cc8f777610445d
 RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
     git \
     tesseract-ocr \
-    sqlite3 && apt clean
+    sqlite3 && apt clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -19,6 +19,10 @@ RUN uv sync --locked --no-dev --no-install-project --no-cache
 COPY . .
 
 RUN uv sync --locked --no-dev --no-editable --no-cache
+
+RUN adduser --disabled-password --gecos "" --uid 10001 appuser && \
+    chown -R appuser:appuser /app
+USER appuser
 
 ENV PYTHONUNBUFFERED=1
 ENV VIRTUAL_ENV=/app/.venv
