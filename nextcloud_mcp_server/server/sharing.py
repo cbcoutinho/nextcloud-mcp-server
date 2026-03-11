@@ -89,7 +89,7 @@ def configure_sharing_tools(mcp: FastMCP):
         title="Get Share Details",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("sharing:write")
+    @require_scopes("sharing:read")
     @instrument_tool
     async def nc_share_get(share_id: int, ctx: Context) -> str:
         """Get information about a specific share.
@@ -111,7 +111,7 @@ def configure_sharing_tools(mcp: FastMCP):
         title="List Shares",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("sharing:write")
+    @require_scopes("sharing:read")
     @instrument_tool
     async def nc_share_list(
         ctx: Context, path: str | None = None, shared_with_me: bool = False
