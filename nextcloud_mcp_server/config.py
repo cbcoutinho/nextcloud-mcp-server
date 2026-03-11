@@ -602,6 +602,32 @@ def get_settings() -> Settings:
     )
 
 
+def get_basic_auth_scopes(username: str) -> list[str] | None:
+    """Get configured scopes for a BasicAuth user.
+
+    Reads from BASIC_AUTH_SCOPES_<USERNAME> environment variable.
+    Username is uppercased and hyphens are replaced with underscores
+    to form a valid env var name.
+
+    Args:
+        username: BasicAuth username
+
+    Returns:
+        List of scope strings, or None if no scope config exists
+        (None means all operations are allowed for backward compatibility)
+
+    Example:
+        BASIC_AUTH_SCOPES_CLAUDE=files:read,files:write,notes:read
+        BASIC_AUTH_SCOPES_N8N=calendar:read,calendar:write
+        # BASIC_AUTH_SCOPES_ADMIN not set → full access
+    """
+    env_key = f"BASIC_AUTH_SCOPES_{username.upper().replace('-', '_')}"
+    raw = os.getenv(env_key)
+    if raw is None:
+        return None
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 def get_nextcloud_ssl_verify() -> bool | ssl.SSLContext:
     """Return the SSL verification setting for Nextcloud connections.
 
