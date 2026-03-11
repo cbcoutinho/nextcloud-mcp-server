@@ -475,6 +475,43 @@ def discover_all_scopes(mcp) -> list[str]:
     return sorted(all_scopes)
 
 
+def require_resource_scopes(*required_scopes: str):
+    """Decorator to require scopes for MCP resource handlers.
+
+    Unlike require_scopes (which extracts Context from tool parameters),
+    this decorator reads the access token directly from the MCP SDK's
+    auth_context_var. This works for @mcp.resource() handlers that don't
+    receive a Context parameter.
+
+    When no access token is present (unconfigured BasicAuth), all access
+    is permitted for backward compatibility.
+
+    Args:
+        *required_scopes: Scope strings required for access
+
+    Raises:
+        InsufficientScopeError: If the token lacks required scopes
+    """
+
+    def decorator(func: Callable) -> Callable:
+        func._required_scopes = list(required_scopes)  # type: ignore[attr-defined]
+
+        @wraps(func)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            access_token: AccessToken | None = get_access_token()
+            if access_token is None:
+                # No token → BasicAuth without scope config → allow all
+                return await func(*args, **kwargs)
+            missing = set(required_scopes) - set(access_token.scopes or [])
+            if missing:
+                raise InsufficientScopeError(sorted(missing))
+            return await func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 # ── Login Flow v2 helpers ────────────────────────────────────────────────
 
 # Scope cache: user_id → (expires_at, scopes)

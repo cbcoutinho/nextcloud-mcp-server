@@ -5,7 +5,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData, ToolAnnotations
 
-from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.auth import require_resource_scopes, require_scopes
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.cookbook import (
     Category,
@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 def configure_cookbook_tools(mcp: FastMCP):
     @mcp.resource("cookbook://version")
+    @require_resource_scopes("cookbook:read")
     async def cookbook_get_version():
         """Get the Cookbook app and API version"""
         ctx: Context = mcp.get_context()
@@ -39,6 +40,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         return Version(**version_data)
 
     @mcp.resource("cookbook://config")
+    @require_resource_scopes("cookbook:read")
     async def cookbook_get_config():
         """Get the Cookbook app configuration"""
         ctx: Context = mcp.get_context()
@@ -47,6 +49,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         return CookbookConfig(**config_data)
 
     @mcp.resource("nc://Cookbook/{recipe_id}")
+    @require_resource_scopes("cookbook:read")
     async def nc_cookbook_get_recipe_resource(recipe_id: int):
         """Get a recipe by ID using resource URI"""
         ctx: Context = mcp.get_context()
