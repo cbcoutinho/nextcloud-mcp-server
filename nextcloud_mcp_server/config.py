@@ -252,7 +252,7 @@ class Settings:
     metrics_enabled: bool = True
     metrics_port: int = 9090
     otel_exporter_otlp_endpoint: str | None = None
-    otel_exporter_verify_ssl: bool = False
+    otel_exporter_verify_ssl: bool = True
     otel_service_name: str = "nextcloud-mcp-server"
     otel_traces_sampler: str = "always_on"
     otel_traces_sampler_arg: float = 1.0
@@ -590,7 +590,7 @@ def get_settings() -> Settings:
         metrics_enabled=os.getenv("METRICS_ENABLED", "true").lower() == "true",
         metrics_port=int(os.getenv("METRICS_PORT", "9090")),
         otel_exporter_otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
-        otel_exporter_verify_ssl=os.getenv("OTEL_EXPORTER_VERIFY_SSL", "false").lower()
+        otel_exporter_verify_ssl=os.getenv("OTEL_EXPORTER_VERIFY_SSL", "true").lower()
         == "true",
         otel_service_name=os.getenv("OTEL_SERVICE_NAME", "nextcloud-mcp-server"),
         otel_traces_sampler=os.getenv("OTEL_TRACES_SAMPLER", "always_on"),
