@@ -119,6 +119,7 @@ The server supports four authentication modes:
 **Multi-User (BasicAuth Pass-Through):**
 - MCP clients send credentials via Authorization header
 - Server passes through to Nextcloud (stateless by default)
+- Optional per-user scope restrictions via `BASIC_AUTH_SCOPES_<USERNAME>` env vars
 - Optional offline access for background operations (`ENABLE_MULTI_USER_BASIC_AUTH=true`)
 - Best for: Multi-user setups without OAuth infrastructure
 
