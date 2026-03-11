@@ -5,6 +5,8 @@ import xml.etree.ElementTree as ET
 
 from pythonvCard4.vcard import Contact
 
+from nextcloud_mcp_server.utils.xml import escape_xml
+
 from .base import BaseNextcloudClient
 
 logger = logging.getLogger(__name__)
@@ -104,7 +106,7 @@ class ContactsClient(BaseNextcloudClient):
                         <d:collection/>
                         <c:addressbook/>
                     </d:resourcetype>
-                    <d:displayname>{display_name}</d:displayname>
+                    <d:displayname>{escape_xml(display_name)}</d:displayname>
                 </d:prop>
             </d:set>
         </d:mkcol>"""

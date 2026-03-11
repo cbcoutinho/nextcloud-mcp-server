@@ -9,6 +9,8 @@ from urllib.parse import unquote
 
 from httpx import HTTPStatusError
 
+from nextcloud_mcp_server.utils.xml import escape_xml
+
 from .base import BaseNextcloudClient
 
 logger = logging.getLogger(__name__)
@@ -875,7 +877,7 @@ class WebDAVClient(BaseNextcloudClient):
                 <d:prop>
                     <d:displayname/>
                 </d:prop>
-                <d:literal>{pattern}</d:literal>
+                <d:literal>{escape_xml(pattern)}</d:literal>
             </d:like>
         """
 
@@ -908,7 +910,7 @@ class WebDAVClient(BaseNextcloudClient):
                 <d:prop>
                     <d:getcontenttype/>
                 </d:prop>
-                <d:literal>{mime_type}</d:literal>
+                <d:literal>{escape_xml(mime_type)}</d:literal>
             </d:like>
         """
 
@@ -994,7 +996,7 @@ class WebDAVClient(BaseNextcloudClient):
                 <d:prop>
                     <oc:tags/>
                 </d:prop>
-                <d:literal>%{tag_name}%</d:literal>
+                <d:literal>%{escape_xml(tag_name)}%</d:literal>
             </d:like>
         """
 
