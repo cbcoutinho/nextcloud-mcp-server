@@ -1511,8 +1511,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         logger.info("Registering Login Flow v2 auth tools")
         register_auth_tools(mcp)
 
-    # Override list_tools to filter based on user's token scopes (OAuth mode only)
-    if oauth_enabled:
+    # Override list_tools to filter based on user's token scopes
+    # Active in OAuth mode and when BasicAuth users have scope configuration
+    if oauth_enabled or settings.enable_multi_user_basic_auth:
         original_list_tools = mcp._tool_manager.list_tools
 
         def list_tools_filtered():
@@ -1556,9 +1557,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
         # Replace the tool manager's list_tools method
         mcp._tool_manager.list_tools = list_tools_filtered  # type: ignore[method-assign]
-        logger.info(
-            "Dynamic tool filtering enabled for OAuth mode (JWT and Bearer tokens)"
-        )
+        mode = "OAuth" if oauth_enabled else "BasicAuth"
+        logger.info(f"Dynamic tool filtering enabled for {mode} mode")
 
     mcp_app = mcp.streamable_http_app()
 
