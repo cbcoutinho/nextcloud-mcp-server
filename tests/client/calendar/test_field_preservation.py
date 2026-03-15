@@ -4,13 +4,12 @@ This test module demonstrates data loss issues when non-supported fields
 are present in calendar events and contacts during round-trip operations.
 """
 
+import inspect
 import logging
 import uuid
 from datetime import datetime, timedelta
 
 import pytest
-
-from nextcloud_mcp_server.client.calendar import _maybe_await
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +36,9 @@ async def test_calendar_event_custom_fields_preservation(nc_client):
         # Get the calendar object from the caldav library
         calendar = nc_client.calendar._get_calendar(calendar_name)
         event = await nc_client.calendar._async_object_by_uid(calendar, event_uid)
-        await _maybe_await(event.load())
+        result = event.load()
+        if inspect.isawaitable(result):
+            await result
 
         # Now manually inject custom iCal properties into the raw data
         # This simulates what would happen if the event was created by another CalDAV client
@@ -309,7 +310,9 @@ async def test_calendar_event_roundtrip_data_loss_demonstration(nc_client):
         # Get the calendar object and event
         calendar = nc_client.calendar._get_calendar(calendar_name)
         event = await nc_client.calendar._async_object_by_uid(calendar, event_uid)
-        await _maybe_await(event.load())
+        result = event.load()
+        if inspect.isawaitable(result):
+            await result
 
         # Inject additional iCal properties that are valid but not supported by our parser
         extended_ical = f"""BEGIN:VCALENDAR
