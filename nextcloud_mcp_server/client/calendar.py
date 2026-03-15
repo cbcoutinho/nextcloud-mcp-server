@@ -1,14 +1,15 @@
 """CalDAV client for Nextcloud calendar and task operations using caldav library."""
 
 import datetime as dt
+import inspect
 import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
 import anyio
-from caldav.async_collection import AsyncCalendar, AsyncEvent
-from caldav.async_davclient import AsyncDAVClient
+from caldav.aio import AsyncCalendar, AsyncDAVClient, AsyncEvent
 from caldav.elements import cdav, dav
+from caldav.lib import error as caldav_error
 from httpx import Auth
 from icalendar import Alarm, Calendar, vDDDTypes, vRecur
 from icalendar import Event as ICalEvent
@@ -18,6 +19,18 @@ from lxml import etree  # type: ignore[import-untyped]
 from ..config import get_nextcloud_ssl_verify
 
 logger = logging.getLogger(__name__)
+
+
+async def _maybe_await(result: Any) -> Any:
+    """Await a result if it's a coroutine, otherwise return it directly.
+
+    caldav v3 uses dual-mode methods that return coroutines for async clients
+    but plain objects when the result is already available (e.g. load() on
+    already-loaded objects).
+    """
+    if inspect.isawaitable(result):
+        return await result
+    return result
 
 
 class CalendarClient:
@@ -50,8 +63,28 @@ class CalendarClient:
         """Get an AsyncCalendar object for the given calendar name."""
         calendar_url = self._get_calendar_url(calendar_name)
         return AsyncCalendar(
-            client=self._dav_client, url=calendar_url, name=calendar_name
+            client=self._dav_client,  # type: ignore[arg-type]  # AsyncDAVClient is valid for async mode
+            url=calendar_url,
+            name=calendar_name,
         )
+
+    async def _async_object_by_uid(
+        self, calendar: AsyncCalendar, uid: str, comp_filter: Any = None
+    ) -> Any:
+        """Async version of Calendar.get_object_by_uid.
+
+        Upstream caldav v3's get_object_by_uid is not async-aware: it calls
+        search() which returns a coroutine for async clients, then tries to
+        iterate the coroutine synchronously. This method properly awaits the
+        search result.
+        """
+        items_found = await calendar.search(  # type: ignore[misc]  # dual-mode: returns coroutine for async clients
+            uid=uid, xml=comp_filter, post_filter=True, _hacks="insist"
+        )
+        items_found = [o for o in items_found if o.id == uid]
+        if not items_found:
+            raise caldav_error.NotFoundError(f"{uid} not found on server")
+        return items_found[0]
 
     async def close(self):
         """Close the DAV client connection."""
@@ -117,7 +150,9 @@ class CalendarClient:
 </d:propfind>"""
 
         response = await self._dav_client.propfind(
-            self._calendar_home_url, props=propfind_body, depth=1
+            self._calendar_home_url,
+            props=propfind_body,  # type: ignore[arg-type]  # props accepts XML body string
+            depth=1,
         )
 
         result = []
@@ -267,12 +302,12 @@ class CalendarClient:
             expanded = bool(start_datetime and end_datetime)
         else:
             # No date filter — fetch all events
-            events = await calendar.events()
+            events = await calendar.events()  # type: ignore[misc]  # dual-mode
             expanded = False
 
         result = []
         for event in events:
-            await event.load(only_if_unloaded=True)
+            await _maybe_await(event.load(only_if_unloaded=True))
             if event.data:
                 if expanded:
                     # Server-side expansion: each response resource may contain
@@ -326,7 +361,7 @@ class CalendarClient:
             query.xmlelement(), encoding="utf-8", xml_declaration=True
         )
         assert calendar.client is not None
-        response = await calendar.client.report(str(calendar.url), body, depth=1)
+        response = await calendar.client.report(str(calendar.url), body, depth=1)  # type: ignore[misc]  # dual-mode
 
         # Parse response (same pattern as AsyncCalendar.search)
         objects = []
@@ -336,7 +371,12 @@ class CalendarClient:
                 continue
             cal_data = props.get(cdav.CalendarData.tag)
             if cal_data:
-                obj = AsyncEvent(client=calendar.client, data=cal_data, parent=calendar)
+                obj = AsyncEvent(
+                    client=calendar.client,
+                    url=calendar.url.join(href),  # type: ignore[union-attr]  # url is always set for calendars
+                    data=cal_data,
+                    parent=calendar,
+                )
                 objects.append(obj)
 
         return objects
@@ -350,13 +390,7 @@ class CalendarClient:
         event_uid = str(uuid.uuid4())
         ical_content = self._create_ical_event(event_data, event_uid)
 
-        # save_event returns (event, response) tuple
-        event, response = await calendar.save_event(ical=ical_content)
-
-        if response.status not in [201, 204]:
-            raise RuntimeError(
-                f"Failed to create event {event_uid}: HTTP {response.status}"
-            )
+        event = await calendar.save_event(ical=ical_content)  # type: ignore[misc]  # dual-mode
 
         logger.debug(f"Created event {event_uid}")
 
@@ -378,14 +412,16 @@ class CalendarClient:
         calendar = self._get_calendar(calendar_name)
 
         # Find the event by UID using caldav library
-        event = await calendar.event_by_uid(event_uid)
-        await event.load(only_if_unloaded=True)
+        event = await self._async_object_by_uid(
+            calendar, event_uid, cdav.CompFilter("VEVENT")
+        )
+        await _maybe_await(event.load(only_if_unloaded=True))
 
         # Merge updates into existing iCal data
         updated_ical = self._merge_ical_properties(event.data, event_data, event_uid)  # type: ignore[arg-type]
         event.data = updated_ical  # type: ignore[misc]
 
-        await event.save()
+        await _maybe_await(event.save())
 
         logger.debug(f"Updated event {event_uid}")
         return {
@@ -400,8 +436,10 @@ class CalendarClient:
         calendar = self._get_calendar(calendar_name)
 
         try:
-            event = await calendar.event_by_uid(event_uid)
-            await event.delete()
+            event = await self._async_object_by_uid(
+                calendar, event_uid, cdav.CompFilter("VEVENT")
+            )
+            await _maybe_await(event.delete())
             logger.debug(f"Deleted event {event_uid}")
             return {"status_code": 204}
         except Exception as e:
@@ -414,8 +452,10 @@ class CalendarClient:
         """Get detailed information about a specific event."""
         calendar = self._get_calendar(calendar_name)
 
-        event = await calendar.event_by_uid(event_uid)
-        await event.load(only_if_unloaded=True)
+        event = await self._async_object_by_uid(
+            calendar, event_uid, cdav.CompFilter("VEVENT")
+        )
+        await _maybe_await(event.load(only_if_unloaded=True))
 
         event_data = self._parse_ical_event(event.data) if event.data else None  # type: ignore[arg-type]
         if not event_data:
@@ -476,14 +516,14 @@ class CalendarClient:
         """List todos/tasks in a calendar."""
         calendar = self._get_calendar(calendar_name)
 
-        # Get all todos using caldav library (now with proper filter)
-        todos = await calendar.todos()
+        # Get all todos including completed ones (filtering is done client-side)
+        todos = await calendar.todos(include_completed=True)  # type: ignore[misc]  # dual-mode
 
         result = []
         for todo in todos:
             # Only load if data not already present from REPORT response
             # This avoids 404 errors for virtual calendars (e.g., Deck boards)
-            await todo.load(only_if_unloaded=True)
+            await _maybe_await(todo.load(only_if_unloaded=True))
             if todo.data:
                 todo_dict = self._parse_ical_todo(todo.data)  # type: ignore[arg-type]
             else:
@@ -508,13 +548,7 @@ class CalendarClient:
         todo_uid = str(uuid.uuid4())
         ical_content = self._create_ical_todo(todo_data, todo_uid)
 
-        # save_todo returns (todo, response) tuple
-        todo, response = await calendar.save_todo(ical=ical_content)
-
-        if response.status not in [201, 204]:
-            raise RuntimeError(
-                f"Failed to create todo {todo_uid}: HTTP {response.status}"
-            )
+        todo = await calendar.save_todo(ical=ical_content)  # type: ignore[misc]  # dual-mode
 
         logger.debug(f"Created todo {todo_uid}")
 
@@ -537,8 +571,10 @@ class CalendarClient:
 
         try:
             # Find the todo by UID
-            todo = await calendar.todo_by_uid(todo_uid)
-            await todo.load(only_if_unloaded=True)
+            todo = await self._async_object_by_uid(
+                calendar, todo_uid, cdav.CompFilter("VTODO")
+            )
+            await _maybe_await(todo.load(only_if_unloaded=True))
 
             logger.debug(
                 f"Loaded todo {todo_uid}, current data length: {len(todo.data)}"  # type: ignore
@@ -555,8 +591,7 @@ class CalendarClient:
 
             todo.data = updated_ical
 
-            save_result = await todo.save()
-            logger.debug(f"Save result: {save_result}")
+            await _maybe_await(todo.save())
 
             logger.debug(f"Updated todo {todo_uid}")
             return {
@@ -574,8 +609,10 @@ class CalendarClient:
         calendar = self._get_calendar(calendar_name)
 
         try:
-            todo = await calendar.todo_by_uid(todo_uid)
-            await todo.delete()
+            todo = await self._async_object_by_uid(
+                calendar, todo_uid, cdav.CompFilter("VTODO")
+            )
+            await _maybe_await(todo.delete())
             logger.debug(f"Deleted todo {todo_uid}")
             return {"status_code": 204}
         except Exception as e:

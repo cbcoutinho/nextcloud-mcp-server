@@ -2,6 +2,7 @@
 
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta
 
 import pytest
@@ -467,3 +468,80 @@ async def test_mcp_todo_categories(
                 await nc_client.calendar.delete_todo(calendar_name, todo_uid)
             except Exception:
                 pass
+
+
+async def test_mcp_todo_href_mismatch(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_calendar: str
+):
+    """Test that todos with filename != UID are handled correctly (issue #629).
+
+    When a CalDAV object is stored with a filename different from its VTODO UID,
+    the server returns an href based on the filename. list_todos must return the
+    correct server-assigned href, and delete_todo must actually remove the todo.
+    """
+    calendar_name = temporary_calendar
+    todo_uid = str(uuid.uuid4())
+    different_filename = str(uuid.uuid4())
+
+    # Build iCal content with a UID that differs from the filename
+    ical_content = (
+        "BEGIN:VCALENDAR\r\n"
+        "VERSION:2.0\r\n"
+        "PRODID:-//Test//Test//EN\r\n"
+        "BEGIN:VTODO\r\n"
+        f"UID:{todo_uid}\r\n"
+        "SUMMARY:Href Mismatch Test\r\n"
+        "STATUS:NEEDS-ACTION\r\n"
+        "END:VTODO\r\n"
+        "END:VCALENDAR\r\n"
+    )
+
+    try:
+        # PUT the todo with a filename that differs from the UID
+        calendar = nc_client.calendar._get_calendar(calendar_name)
+        put_url = f"{calendar.url}{different_filename}.ics"
+        await calendar.client.put(
+            put_url,
+            ical_content,
+            {"Content-Type": "text/calendar; charset=utf-8"},
+        )
+
+        # list_todos via MCP should return href containing the filename, not the UID
+        list_result = await nc_mcp_client.call_tool(
+            "nc_calendar_list_todos",
+            {"calendar_name": calendar_name},
+        )
+        assert list_result.isError is False
+
+        list_data = json.loads(list_result.content[0].text)
+        our_todo = next((t for t in list_data["todos"] if t["uid"] == todo_uid), None)
+        assert our_todo is not None, f"Todo {todo_uid} not found in list_todos"
+        assert different_filename in our_todo["href"], (
+            f"Expected href to contain filename '{different_filename}', "
+            f"got '{our_todo['href']}'"
+        )
+        assert todo_uid not in our_todo["href"], (
+            f"href should NOT contain the UID '{todo_uid}', got '{our_todo['href']}'"
+        )
+
+        # delete_todo via MCP should actually remove the todo
+        delete_result = await nc_mcp_client.call_tool(
+            "nc_calendar_delete_todo",
+            {"calendar_name": calendar_name, "todo_uid": todo_uid},
+        )
+        assert delete_result.isError is False
+
+        # Verify it's really gone
+        todos = await nc_client.calendar.list_todos(calendar_name)
+        assert not any(t["uid"] == todo_uid for t in todos), (
+            "Todo should have been deleted but still exists"
+        )
+
+        logger.info("Todo href mismatch test passed")
+
+    finally:
+        # Cleanup in case of failure
+        try:
+            await nc_client.calendar.delete_todo(calendar_name, todo_uid)
+        except Exception:
+            pass

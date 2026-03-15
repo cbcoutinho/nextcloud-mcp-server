@@ -639,11 +639,10 @@ async def test_calendar_operations_error_handling(
     # Test with non-existent calendar
     fake_calendar = f"nonexistent_calendar_{uuid.uuid4().hex}"
 
-    # caldav library returns empty list for non-existent calendars, doesn't raise
-    # Testing that it doesn't crash and returns empty results
-    events = await nc_client.calendar.get_calendar_events(fake_calendar)
-    assert isinstance(events, list)
-    # Empty list is expected for non-existent calendar
-    assert len(events) == 0
+    # caldav v3 raises NotFoundError for non-existent calendars
+    from caldav.lib.error import NotFoundError
+
+    with pytest.raises(NotFoundError):
+        await nc_client.calendar.get_calendar_events(fake_calendar)
 
     logger.info("Error handling tests completed successfully")

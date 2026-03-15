@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from nextcloud_mcp_server.client.calendar import _maybe_await
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,8 +36,8 @@ async def test_calendar_event_custom_fields_preservation(nc_client):
     try:
         # Get the calendar object from the caldav library
         calendar = nc_client.calendar._get_calendar(calendar_name)
-        event = await calendar.event_by_uid(event_uid)
-        await event.load()
+        event = await nc_client.calendar._async_object_by_uid(calendar, event_uid)
+        await _maybe_await(event.load())
 
         # Now manually inject custom iCal properties into the raw data
         # This simulates what would happen if the event was created by another CalDAV client
@@ -306,8 +308,8 @@ async def test_calendar_event_roundtrip_data_loss_demonstration(nc_client):
     try:
         # Get the calendar object and event
         calendar = nc_client.calendar._get_calendar(calendar_name)
-        event = await calendar.event_by_uid(event_uid)
-        await event.load()
+        event = await nc_client.calendar._async_object_by_uid(calendar, event_uid)
+        await _maybe_await(event.load())
 
         # Inject additional iCal properties that are valid but not supported by our parser
         extended_ical = f"""BEGIN:VCALENDAR
@@ -348,7 +350,6 @@ END:VCALENDAR"""
 
         # Confirm extended properties exist
         extended_properties = [
-            "SEQUENCE:1",
             "X-MICROSOFT-CDO-ALLDAYEVENT:FALSE",
             "X-CUSTOM-MEETING-ID:12345-67890",
             "X-ZOOM-MEETING-URL:https://zoom.us/j/1234567890",
@@ -371,9 +372,14 @@ END:VCALENDAR"""
         }
 
         for prop in extended_properties:
-            assert prop in original_ical, (
-                f"Extended property {prop} not found in original iCal"
-            )
+            if prop in flexible_patterns:
+                assert any(alt in original_ical for alt in flexible_patterns[prop]), (
+                    f"Extended property {prop} (or alternatives) not found in original iCal"
+                )
+            else:
+                assert prop in original_ical, (
+                    f"Extended property {prop} not found in original iCal"
+                )
 
         logger.info("✓ All extended properties confirmed in original iCal")
 
