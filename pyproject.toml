@@ -114,7 +114,7 @@ extend-select = ["I", "PLC0415"]
 "tests/**" = ["PLC0415"]
 
 [tool.uv.sources]
-caldav = { git = "https://github.com/cbcoutinho/caldav", branch = "feature/httpx" }
+caldav = { git = "https://github.com/nickallevato/caldav", branch = "fix/async-search-href" }
 qdrant-client = { git = "https://github.com/cbcoutinho/qdrant-client", branch = "fix/fusion-score-threshold" }
 
 [build-system]
