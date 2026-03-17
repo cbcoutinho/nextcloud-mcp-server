@@ -51,7 +51,7 @@ class CalendarClient:
             url=f"{base_url}/remote.php/dav/",
             username=username,
             auth=auth,
-            ssl_verify_cert=get_nextcloud_ssl_verify(),  # type: ignore[arg-type]  # caldav types say bool|str but passes through to httpx which accepts SSLContext
+            ssl_verify_cert=get_nextcloud_ssl_verify(),  # type: ignore[arg-type]  # caldav types say bool|str but passes through to niquests which accepts SSLContext
         )
         self._calendar_home_url = f"{base_url}/remote.php/dav/calendars/{username}/"
 
