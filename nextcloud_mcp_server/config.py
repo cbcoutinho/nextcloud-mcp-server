@@ -252,7 +252,7 @@ class Settings:
     metrics_enabled: bool = True
     metrics_port: int = 9090
     otel_exporter_otlp_endpoint: str | None = None
-    otel_exporter_verify_ssl: bool = False
+    otel_exporter_verify_ssl: bool = True
     otel_service_name: str = "nextcloud-mcp-server"
     otel_traces_sampler: str = "always_on"
     otel_traces_sampler_arg: float = 1.0
@@ -590,7 +590,7 @@ def get_settings() -> Settings:
         metrics_enabled=os.getenv("METRICS_ENABLED", "true").lower() == "true",
         metrics_port=int(os.getenv("METRICS_PORT", "9090")),
         otel_exporter_otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
-        otel_exporter_verify_ssl=os.getenv("OTEL_EXPORTER_VERIFY_SSL", "false").lower()
+        otel_exporter_verify_ssl=os.getenv("OTEL_EXPORTER_VERIFY_SSL", "true").lower()
         == "true",
         otel_service_name=os.getenv("OTEL_SERVICE_NAME", "nextcloud-mcp-server"),
         otel_traces_sampler=os.getenv("OTEL_TRACES_SAMPLER", "always_on"),
@@ -600,6 +600,32 @@ def get_settings() -> Settings:
         log_include_trace_context=os.getenv("LOG_INCLUDE_TRACE_CONTEXT", "true").lower()
         == "true",
     )
+
+
+def get_basic_auth_scopes(username: str) -> list[str] | None:
+    """Get configured scopes for a BasicAuth user.
+
+    Reads from BASIC_AUTH_SCOPES_<USERNAME> environment variable.
+    Username is uppercased and hyphens are replaced with underscores
+    to form a valid env var name.
+
+    Args:
+        username: BasicAuth username
+
+    Returns:
+        List of scope strings, or None if no scope config exists
+        (None means all operations are allowed for backward compatibility)
+
+    Example:
+        BASIC_AUTH_SCOPES_CLAUDE=files:read,files:write,notes:read
+        BASIC_AUTH_SCOPES_N8N=calendar:read,calendar:write
+        # BASIC_AUTH_SCOPES_ADMIN not set → full access
+    """
+    env_key = f"BASIC_AUTH_SCOPES_{username.upper().replace('-', '_')}"
+    raw = os.getenv(env_key)
+    if raw is None:
+        return None
+    return [s.strip() for s in raw.split(",") if s.strip()]
 
 
 def get_nextcloud_ssl_verify() -> bool | ssl.SSLContext:

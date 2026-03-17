@@ -170,6 +170,12 @@ When running in multi-user BasicAuth mode with `ENABLE_OFFLINE_ACCESS=true`, the
 # Enable multi-user BasicAuth
 ENABLE_MULTI_USER_BASIC_AUTH=true
 
+# Per-user scope restrictions (optional)
+# Omit a user's variable to grant full access (backward compatible)
+BASIC_AUTH_SCOPES_CLAUDE=files:read,files:write,notes:read
+BASIC_AUTH_SCOPES_N8N=calendar:read,calendar:write
+# BASIC_AUTH_SCOPES_ADMIN not set → full access
+
 # Enable hybrid mode (OAuth provisioning for management APIs)
 ENABLE_OFFLINE_ACCESS=true
 

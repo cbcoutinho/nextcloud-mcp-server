@@ -97,6 +97,7 @@ from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import (
     DeploymentMode,
     Settings,
+    get_basic_auth_scopes,
     get_document_processor_config,
     get_settings,
 )
@@ -456,6 +457,36 @@ class BasicAuthMiddleware:
                     logger.debug(
                         f"BasicAuth credentials extracted for user: {username}"
                     )
+
+                    # Inject synthetic AccessToken if scopes are configured
+                    # for this user, enabling @require_scopes checks and
+                    # list_tools_filtered() to work in BasicAuth mode
+                    configured_scopes = get_basic_auth_scopes(username)
+                    if configured_scopes is not None:
+                        from mcp.server.auth.middleware.auth_context import (  # noqa: PLC0415
+                            auth_context_var,
+                        )
+                        from mcp.server.auth.middleware.bearer_auth import (  # noqa: PLC0415
+                            AuthenticatedUser,
+                        )
+                        from mcp.server.auth.provider import (  # noqa: PLC0415
+                            AccessToken,
+                        )
+
+                        synthetic_token = AccessToken(
+                            token="basic-auth-synthetic",
+                            client_id=f"basic-auth:{username}",
+                            scopes=configured_scopes,
+                        )
+                        ctx_token = auth_context_var.set(
+                            AuthenticatedUser(synthetic_token)
+                        )
+                        try:
+                            await self.app(scope, receive, send)
+                        finally:
+                            auth_context_var.reset(ctx_token)
+                        return
+
                 except Exception as e:
                     logger.warning(f"Failed to extract BasicAuth credentials: {e}")
 
@@ -1480,8 +1511,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         logger.info("Registering Login Flow v2 auth tools")
         register_auth_tools(mcp)
 
-    # Override list_tools to filter based on user's token scopes (OAuth mode only)
-    if oauth_enabled:
+    # Override list_tools to filter based on user's token scopes
+    # Active in OAuth mode and when BasicAuth users have scope configuration
+    if oauth_enabled or settings.enable_multi_user_basic_auth:
         original_list_tools = mcp._tool_manager.list_tools
 
         def list_tools_filtered():
@@ -1525,9 +1557,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
         # Replace the tool manager's list_tools method
         mcp._tool_manager.list_tools = list_tools_filtered  # type: ignore[method-assign]
-        logger.info(
-            "Dynamic tool filtering enabled for OAuth mode (JWT and Bearer tokens)"
-        )
+        mode = "OAuth" if oauth_enabled else "BasicAuth"
+        logger.info(f"Dynamic tool filtering enabled for {mode} mode")
 
     mcp_app = mcp.streamable_http_app()
 

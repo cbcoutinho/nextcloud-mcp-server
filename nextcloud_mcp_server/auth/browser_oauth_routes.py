@@ -28,6 +28,17 @@ from ..http import nextcloud_httpx_client
 logger = logging.getLogger(__name__)
 
 
+def _validate_redirect_url(url: str, default: str = "/app") -> str:
+    """Validate redirect URL to prevent open redirects.
+
+    Only relative paths (starting with /) without embedded protocol are allowed.
+    Rejects absolute URLs, protocol-relative URLs, and other redirect tricks.
+    """
+    if not url.startswith("/") or "://" in url or url.startswith("//"):
+        return default
+    return url
+
+
 def _should_use_secure_cookies() -> bool:
     """Determine if cookies should have secure flag.
 
@@ -75,7 +86,7 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
     logger.info(f"oauth_login called - oauth_client: {oauth_client is not None}")
 
     # Get redirect URL from query params (default to /app)
-    next_url = request.query_params.get("next", "/app")
+    next_url = _validate_redirect_url(request.query_params.get("next", "/app"))
     logger.info(f"oauth_login - next_url: {next_url}")
 
     # Generate state for CSRF protection
@@ -442,7 +453,7 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
 
     # Create response and set session cookie
     # Redirect to stored next_url (from OAuth session) or /app as default
-    response = RedirectResponse(next_url, status_code=302)
+    response = RedirectResponse(_validate_redirect_url(next_url), status_code=302)
     response.set_cookie(
         key="mcp_session",
         value=user_id,
@@ -465,7 +476,9 @@ async def oauth_logout(request: Request) -> RedirectResponse:
     Returns:
         302 redirect with cleared session cookie
     """
-    next_url = request.query_params.get("next", "/oauth/login")
+    next_url = _validate_redirect_url(
+        request.query_params.get("next", "/oauth/login"), default="/oauth/login"
+    )
 
     # TODO: Optionally revoke refresh token from storage
     # session_id = request.cookies.get("mcp_session")

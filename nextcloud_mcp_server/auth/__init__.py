@@ -12,6 +12,7 @@ from .scope_authorization import (
     get_required_scopes,
     has_required_scopes,
     is_jwt_token,
+    require_resource_scopes,
     require_scopes,
 )
 from .unified_verifier import UnifiedTokenVerifier
@@ -23,6 +24,7 @@ __all__ = [
     "ensure_oauth_client",
     "get_client_from_context",
     "require_scopes",
+    "require_resource_scopes",
     "ScopeAuthorizationError",
     "InsufficientScopeError",
     "check_scopes",

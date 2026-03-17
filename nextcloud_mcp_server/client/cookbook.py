@@ -6,6 +6,8 @@ from urllib.parse import quote
 
 from httpx import Timeout
 
+from nextcloud_mcp_server.utils.url import validate_external_url
+
 from .base import BaseNextcloudClient
 
 logger = logging.getLogger(__name__)
@@ -130,6 +132,7 @@ class CookbookClient(BaseNextcloudClient):
         Returns:
             Full imported recipe data
         """
+        validate_external_url(url)
         logger.info(f"Importing recipe from URL: {url}")
         response = await self._make_request(
             "POST",

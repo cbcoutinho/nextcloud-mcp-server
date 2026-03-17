@@ -4,7 +4,7 @@ from typing import Optional
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
-from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.auth import require_resource_scopes, require_scopes
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.deck import (
     CardOperationResponse,
@@ -33,6 +33,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     # Resources
     @mcp.resource("nc://Deck/boards")
+    @require_resource_scopes("deck:read")
     async def deck_boards_resource():
         """List all Nextcloud Deck boards"""
         ctx: Context = mcp.get_context()
@@ -42,6 +43,7 @@ def configure_deck_tools(mcp: FastMCP):
         return [board.model_dump() for board in boards]
 
     @mcp.resource("nc://Deck/boards/{board_id}")
+    @require_resource_scopes("deck:read")
     async def deck_board_resource(board_id: int):
         """Get details of a specific Nextcloud Deck board"""
         ctx: Context = mcp.get_context()
@@ -53,6 +55,7 @@ def configure_deck_tools(mcp: FastMCP):
         return board.model_dump()
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks")
+    @require_resource_scopes("deck:read")
     async def deck_stacks_resource(board_id: int):
         """List all stacks in a Nextcloud Deck board"""
         ctx: Context = mcp.get_context()
@@ -64,6 +67,7 @@ def configure_deck_tools(mcp: FastMCP):
         return [stack.model_dump() for stack in stacks]
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}")
+    @require_resource_scopes("deck:read")
     async def deck_stack_resource(board_id: int, stack_id: int):
         """Get details of a specific Nextcloud Deck stack"""
         ctx: Context = mcp.get_context()
@@ -75,6 +79,7 @@ def configure_deck_tools(mcp: FastMCP):
         return stack.model_dump()
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}/cards")
+    @require_resource_scopes("deck:read")
     async def deck_cards_resource(board_id: int, stack_id: int):
         """List all cards in a Nextcloud Deck stack"""
         ctx: Context = mcp.get_context()
@@ -88,6 +93,7 @@ def configure_deck_tools(mcp: FastMCP):
         return []
 
     @mcp.resource("nc://Deck/boards/{board_id}/stacks/{stack_id}/cards/{card_id}")
+    @require_resource_scopes("deck:read")
     async def deck_card_resource(board_id: int, stack_id: int, card_id: int):
         """Get details of a specific Nextcloud Deck card"""
         ctx: Context = mcp.get_context()
@@ -99,6 +105,7 @@ def configure_deck_tools(mcp: FastMCP):
         return card.model_dump()
 
     @mcp.resource("nc://Deck/boards/{board_id}/labels")
+    @require_resource_scopes("deck:read")
     async def deck_labels_resource(board_id: int):
         """List all labels in a Nextcloud Deck board"""
         ctx: Context = mcp.get_context()
@@ -110,6 +117,7 @@ def configure_deck_tools(mcp: FastMCP):
         return [label.model_dump() for label in (board.labels or [])]
 
     @mcp.resource("nc://Deck/boards/{board_id}/labels/{label_id}")
+    @require_resource_scopes("deck:read")
     async def deck_label_resource(board_id: int, label_id: int):
         """Get details of a specific Nextcloud Deck label"""
         ctx: Context = mcp.get_context()

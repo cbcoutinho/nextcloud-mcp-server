@@ -4,6 +4,4 @@
 !README.md
 !uv.lock
 
-!nextcloud_mcp_server/**/*.py
-!nextcloud_mcp_server/**/*.html
-!nextcloud_mcp_server/auth/static/*
+!nextcloud_mcp_server/

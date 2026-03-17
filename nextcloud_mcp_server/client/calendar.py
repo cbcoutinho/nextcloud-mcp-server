@@ -13,6 +13,8 @@ from httpx import Auth
 from icalendar import Alarm, Calendar, vDDDTypes, vRecur
 from icalendar import Event as ICalEvent
 from icalendar import Todo as ICalTodo
+
+from nextcloud_mcp_server.utils.xml import escape_xml
 from lxml import etree  # type: ignore[import-untyped]
 
 from ..config import get_nextcloud_ssl_verify
@@ -123,7 +125,8 @@ class CalendarClient:
         result = []
 
         # Parse XML response
-        tree = etree.fromstring(response.raw.encode("utf-8"))
+        parser = etree.XMLParser(resolve_entities=False, no_network=True)
+        tree = etree.fromstring(response.raw.encode("utf-8"), parser=parser)
         ns = {
             "d": "DAV:",
             "cs": "http://calendarserver.org/ns/",
@@ -203,9 +206,9 @@ class CalendarClient:
 <mkcalendar xmlns="urn:ietf:params:xml:ns:caldav" xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">
     <d:set>
         <d:prop>
-            <d:displayname>{display_name or calendar_name}</d:displayname>
-            <cs:calendar-color>{color}</cs:calendar-color>
-            <caldav:calendar-description xmlns:caldav="urn:ietf:params:xml:ns:caldav">{description}</caldav:calendar-description>
+            <d:displayname>{escape_xml(display_name or calendar_name)}</d:displayname>
+            <cs:calendar-color>{escape_xml(color)}</cs:calendar-color>
+            <caldav:calendar-description xmlns:caldav="urn:ietf:params:xml:ns:caldav">{escape_xml(description)}</caldav:calendar-description>
             <caldav:supported-calendar-component-set xmlns:caldav="urn:ietf:params:xml:ns:caldav">
                 <caldav:comp name="VEVENT"/>
                 <caldav:comp name="VTODO"/>
