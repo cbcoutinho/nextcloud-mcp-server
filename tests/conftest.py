@@ -382,27 +382,34 @@ async def nc_mcp_oauth_client_with_elicitation(
                 await page.wait_for_load_state("networkidle", timeout=60000)
                 logger.info("  ✓ Login completed")
 
+            # Wait for the OIDC redirect chain to settle before handling consent.
+            logger.info("  Waiting for OIDC redirect chain to settle...")
+            settle_start = time.time()
+            while time.time() - settle_start < 15:
+                current_url = page.url
+                if "/consent" in current_url or "/callback" in current_url:
+                    break
+                await anyio.sleep(0.5)
+
             # Handle consent screen if present
-            try:
-                logger.info(f"  Current URL before consent: {page.url}")
-                consent_handled = await _handle_oauth_consent_screen(page, username)
-                if consent_handled:
-                    logger.info("  ✓ Consent granted")
-                else:
-                    logger.warning("  ⚠ No consent screen detected")
-                    # Take screenshot for debugging
-                    screenshot_path = f"/tmp/elicitation_no_consent_{uuid.uuid4()}.png"
+            if "/consent" in page.url:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+                try:
+                    logger.info(f"  Current URL before consent: {page.url}")
+                    consent_handled = await _handle_oauth_consent_screen(page, username)
+                    if consent_handled:
+                        logger.info("  ✓ Consent granted")
+                    else:
+                        logger.warning("  ⚠ Consent handler returned False")
+                except Exception as e:
+                    logger.warning(f"  ⚠ Consent screen handling failed: {e}")
+                    screenshot_path = (
+                        f"/tmp/elicitation_consent_error_{uuid.uuid4()}.png"
+                    )
                     await page.screenshot(path=screenshot_path)
                     logger.info(f"  Screenshot saved: {screenshot_path}")
-                    # Log page title for debugging
-                    page_title = await page.title()
-                    logger.info(f"  Page title: {page_title}")
-            except Exception as e:
-                logger.warning(f"  ⚠ Consent screen handling failed: {e}")
-                # Take screenshot for debugging
-                screenshot_path = f"/tmp/elicitation_consent_error_{uuid.uuid4()}.png"
-                await page.screenshot(path=screenshot_path)
-                logger.info(f"  Screenshot saved: {screenshot_path}")
+            else:
+                logger.debug(f"  No consent screen (URL: {page.url})")
 
             # Wait for OAuth callback URL to be reached
             # The MCP server's callback endpoint will handle token exchange
@@ -1843,11 +1850,24 @@ async def playwright_oauth_token(
             current_url = page.url
             logger.info(f"After login, current URL: {current_url}")
 
+        # Wait for the OIDC redirect chain to settle before handling consent.
+        # After login, the flow goes: /apps/oidc/redirect (JS page) → JS navigates
+        # to /authorize → 303 to /consent. networkidle fires after the JS page
+        # loads but before the JS navigation starts.
+        logger.info("Waiting for OIDC redirect chain to settle...")
+        settle_start = time.time()
+        while time.time() - settle_start < 15:
+            current_url = page.url
+            if "/consent" in current_url or "localhost:8081" in current_url:
+                break
+            await anyio.sleep(0.5)
+
         # Handle consent screen if present
-        try:
+        if "/consent" in page.url:
+            await page.wait_for_load_state("networkidle", timeout=10000)
             await _handle_oauth_consent_screen(page, username)
-        except Exception as e:
-            logger.debug(f"No consent screen or already authorized: {e}")
+        else:
+            logger.debug(f"No consent screen (URL: {page.url})")
 
         # Wait for callback server to receive the auth code
         # Browser will be redirected to localhost:8081 which will capture the code
@@ -2138,11 +2158,21 @@ async def _get_oauth_token_with_scopes(
             current_url = page.url
             logger.info(f"After login, current URL: {current_url}")
 
+        # Wait for the OIDC redirect chain to settle before handling consent.
+        logger.info(f"Waiting for OIDC redirect chain to settle for {username}...")
+        settle_start = time.time()
+        while time.time() - settle_start < 15:
+            current_url = page.url
+            if "/consent" in current_url or "localhost:8081" in current_url:
+                break
+            await anyio.sleep(0.5)
+
         # Handle consent screen if present
-        try:
+        if "/consent" in page.url:
+            await page.wait_for_load_state("networkidle", timeout=10000)
             await _handle_oauth_consent_screen(page, username)
-        except Exception as e:
-            logger.debug(f"No consent screen or already authorized: {e}")
+        else:
+            logger.debug(f"No consent screen for {username} (URL: {page.url})")
 
         # Wait for callback server to receive the auth code
         logger.info(f"Waiting for auth code with state: {state[:16]}...")
@@ -2510,11 +2540,30 @@ async def _get_oauth_token_for_user(
             await page.wait_for_load_state("networkidle", timeout=30000)
             current_url = page.url
 
+        # Wait for the OIDC redirect chain to settle before handling consent.
+        # After login, the flow goes: /apps/oidc/redirect (JS page) → JS navigates
+        # to /authorize → 303 to /consent. networkidle fires after the JS page
+        # loads but before the JS navigation starts, so we must wait for the URL
+        # to reach either the consent page or the callback.
+        logger.info(f"Waiting for OIDC redirect chain to settle for {username}...")
+        settle_start = time.time()
+        while time.time() - settle_start < 15:
+            current_url = page.url
+            if "/consent" in current_url or "localhost:8081" in current_url:
+                break
+            await anyio.sleep(0.5)
+        else:
+            logger.warning(
+                f"OIDC redirect chain did not settle for {username}, "
+                f"current URL: {page.url}"
+            )
+
         # Handle consent screen if present
-        try:
+        if "/consent" in page.url:
+            await page.wait_for_load_state("networkidle", timeout=10000)
             await _handle_oauth_consent_screen(page, username)
-        except Exception as e:
-            logger.debug(f"No consent screen or already authorized for {username}: {e}")
+        else:
+            logger.debug(f"No consent screen for {username} (URL: {page.url})")
 
         # Wait for callback server to receive the auth code
         # Browser will be redirected to localhost:8081 which will capture the code

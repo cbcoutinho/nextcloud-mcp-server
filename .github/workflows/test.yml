@@ -206,7 +206,9 @@ jobs:
 
       - name: Collect service logs on failure
         if: failure()
-        run: docker compose --profile ${{ matrix.profile }} logs --tail=500 > /tmp/docker-compose-logs.txt 2>&1
+        run: |
+          docker compose --profile ${{ matrix.profile }} logs --tail=500 > /tmp/docker-compose-logs.txt 2>&1
+          docker compose exec -T app cat /var/www/html/data/nextcloud.log 2>/dev/null | tail -100 > /tmp/nextcloud-app.log 2>&1 || true
 
       - name: Upload debug artifacts
         if: failure()
@@ -216,5 +218,6 @@ jobs:
           path: |
             /tmp/*.png
             /tmp/docker-compose-logs.txt
+            /tmp/nextcloud-app.log
           retention-days: 7
           if-no-files-found: ignore
