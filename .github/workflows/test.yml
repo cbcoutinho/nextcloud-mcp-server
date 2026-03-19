@@ -48,7 +48,7 @@ jobs:
           # Version-specific image pins — Renovate updates these via customManagers
           # renovate: datasource=docker depName=docker.io/library/nextcloud
           - nextcloud_version: "31"
-            nextcloud_image: "docker.io/library/nextcloud:31.0.14@sha256:9bf3fae91aad4dca3eff02c1f71df8d5c6705a349065fb537aa5c5ef578f1013"
+            nextcloud_image: "docker.io/library/nextcloud:31.0.14@sha256:07ec73cc816e58d6f45a162cd53ef886462c29271a23fc68d0124cec276e3767"
           # renovate: datasource=docker depName=docker.io/library/nextcloud
           - nextcloud_version: "32"
             nextcloud_image: "docker.io/library/nextcloud:32.0.6@sha256:5c4e09f72f096cd68379a8ae69f71e61d13da5a07430fc4a17c702a14e6a4267"
