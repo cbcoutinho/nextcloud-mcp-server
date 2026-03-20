@@ -43,9 +43,28 @@ class SharingClient(BaseNextcloudClient):
         Raises:
             HTTPStatusError: If the request fails
         """
-        # Nextcloud WebDAV may return percent-encoded href segments for Cyrillic
-        # filenames. OCS share expects decoded `path`.
+        # Nextcloud can provide the "path" in multiple forms:
+        # - decoded relative file path (what OCS expects)
+        # - percent-encoded path (from WebDAV href segments)
+        # - WebDAV absolute-like href: /remote.php/dav/files/<principal>/<rel-path>
+        #
+        # Normalize to "relative to user's files root" before calling OCS.
         path = unquote(path)
+
+        # Strip WebDAV DAV prefix if a href was passed by caller/agent.
+        # Keep everything after /remote.php/dav/files/<principal>/
+        dav_prefix = "/remote.php/dav/files/"
+        if dav_prefix in path:
+            after = path.split(dav_prefix, 1)[1]
+            # after: "<principal>/<rest>"
+            parts = after.split("/", 1)
+            if len(parts) == 2:
+                path = parts[1]
+            else:
+                path = ""
+
+        # OCS expects path without leading slash.
+        path = path.lstrip("/")
 
         response = await self._client.post(
             "/ocs/v2.php/apps/files_sharing/api/v1/shares",
