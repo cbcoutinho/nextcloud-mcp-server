@@ -102,8 +102,18 @@ class SharingClient(BaseNextcloudClient):
         path = path.lstrip("/")
 
         # For user shares Nextcloud may expect internal UUID user id.
+        # Additionally, this Nextcloud instance forbids sharing with yourself.
+        # If caller requested `share_type=0` and `share_with` resolves to the
+        # current user, fall back to a public share (share_type=3) so that
+        # `nc_share_create` can still generate a usable link for the caller.
         if share_type == 0 and share_with:
-            share_with = await self._resolve_user_id(share_with)
+            resolved_share_with = await self._resolve_user_id(share_with)
+            resolved_self = await self._resolve_user_id(self.username)
+            if resolved_share_with == resolved_self:
+                share_type = 3
+                share_with = ""
+            else:
+                share_with = resolved_share_with
 
         response = await self._client.post(
             "/ocs/v2.php/apps/files_sharing/api/v1/shares",
