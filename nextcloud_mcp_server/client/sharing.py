@@ -2,6 +2,7 @@
 
 import logging
 from typing import Any
+from urllib.parse import unquote
 
 from .base import BaseNextcloudClient, retry_on_429
 
@@ -42,6 +43,10 @@ class SharingClient(BaseNextcloudClient):
         Raises:
             HTTPStatusError: If the request fails
         """
+        # Nextcloud WebDAV may return percent-encoded href segments for Cyrillic
+        # filenames. OCS share expects decoded `path`.
+        path = unquote(path)
+
         response = await self._client.post(
             "/ocs/v2.php/apps/files_sharing/api/v1/shares",
             headers={"OCS-APIRequest": "true", "Accept": "application/json"},
