@@ -2,6 +2,7 @@
 
 import logging
 import xml.etree.ElementTree as ET
+from typing import Optional
 
 from pythonvCard4.vcard import Contact
 
@@ -15,13 +16,107 @@ class ContactsClient(BaseNextcloudClient):
 
     app_name = "contacts"
 
+    def __init__(self, http_client, username: str):
+        super().__init__(http_client, username)
+        self._carddav_base_path: Optional[str] = None
+        self._principal_id: Optional[str] = None
+        self._carddav_base_path_discovered = False
+
     def _get_carddav_base_path(self) -> str:
         """Helper to get the base CardDAV path for contacts."""
+        if self._carddav_base_path:
+            return self._carddav_base_path
+        # Fallback: username-based path. Nextcloud often uses UUID principals.
         return f"/remote.php/dav/addressbooks/users/{self.username}"
+
+    async def _ensure_carddav_base_path(self) -> None:
+        """Discover CardDAV addressbook-home-set via DAV principal UUID."""
+        if self._carddav_base_path_discovered:
+            return
+
+        try:
+            propfind_principal_body = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:">
+  <d:prop>
+    <d:current-user-principal/>
+  </d:prop>
+</d:propfind>"""
+
+            response = await self._make_request(
+                "PROPFIND",
+                "/remote.php/dav/",
+                content=propfind_principal_body,
+                headers={
+                    "Depth": "0",
+                    "Content-Type": "application/xml",
+                    "Accept": "application/xml",
+                },
+            )
+
+            ns = {"d": "DAV:", "card": "urn:ietf:params:xml:ns:carddav"}
+            root = ET.fromstring(response.content)
+            principal_href_el = root.find(
+                ".//d:current-user-principal/d:href",
+                ns,
+            )
+            principal_href = (
+                principal_href_el.text.strip()
+                if principal_href_el is not None and principal_href_el.text
+                else None
+            )
+            if not principal_href:
+                raise RuntimeError("current-user-principal href not found")
+
+            principal_id = principal_href.rstrip("/").split("/")[-1]
+            self._principal_id = principal_id
+
+            propfind_home_body = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">
+  <d:prop>
+    <card:addressbook-home-set/>
+  </d:prop>
+</d:propfind>"""
+
+            home_resp = await self._make_request(
+                "PROPFIND",
+                principal_href,
+                content=propfind_home_body,
+                headers={
+                    "Depth": "0",
+                    "Content-Type": "application/xml",
+                    "Accept": "application/xml",
+                },
+            )
+
+            home_root = ET.fromstring(home_resp.content)
+            home_href_el = home_root.find(
+                ".//card:addressbook-home-set/d:href",
+                ns,
+            )
+            home_href = (
+                home_href_el.text.strip()
+                if home_href_el is not None and home_href_el.text
+                else None
+            )
+
+            if home_href:
+                self._carddav_base_path = home_href.rstrip("/")
+                logger.info(
+                    "Discovered CardDAV addressbook-home-set: %s",
+                    self._carddav_base_path,
+                )
+        except Exception as e:
+            logger.warning(
+                "CardDAV addressbook-home-set discovery failed; using username-based path: %s",
+                e,
+            )
+        finally:
+            self._carddav_base_path_discovered = True
 
     async def list_addressbooks(self):
         """List all available addressbooks for the user."""
 
+        await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
 
         propfind_body = """<?xml version="1.0" encoding="utf-8"?>
@@ -58,7 +153,10 @@ class ContactsClient(BaseNextcloudClient):
 
             # Extract addressbook name from href
             addressbook_name = href_text.rstrip("/").split("/")[-1]
-            if not addressbook_name or addressbook_name == self.username:
+            if not addressbook_name:
+                continue
+            # Don't treat the principal container itself as a real addressbook.
+            if self._principal_id and addressbook_name == self._principal_id:
                 continue
 
             # Get properties
@@ -93,6 +191,7 @@ class ContactsClient(BaseNextcloudClient):
 
     async def create_addressbook(self, *, name: str, display_name: str):
         """Create a new addressbook."""
+        await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{name}/"
 
@@ -117,12 +216,14 @@ class ContactsClient(BaseNextcloudClient):
 
     async def delete_addressbook(self, *, name: str):
         """Delete an addressbook."""
+        await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{name}/"
         await self._make_request("DELETE", url)
 
     async def create_contact(self, *, addressbook: str, uid: str, contact_data: dict):
         """Create a new contact."""
+        await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{uid}.vcf"
 
@@ -143,6 +244,7 @@ class ContactsClient(BaseNextcloudClient):
 
     async def delete_contact(self, *, addressbook: str, uid: str):
         """Delete a contact."""
+        await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{uid}.vcf"
         await self._make_request("DELETE", url)
@@ -151,6 +253,7 @@ class ContactsClient(BaseNextcloudClient):
         self, *, addressbook: str, uid: str, contact_data: dict, etag: str = ""
     ):
         """Update an existing contact while preserving all existing properties."""
+        await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{uid}.vcf"
 
@@ -194,6 +297,7 @@ class ContactsClient(BaseNextcloudClient):
     async def list_contacts(self, *, addressbook: str):
         """List all available contacts for addressbook."""
 
+        await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
 
         report_body = """<?xml version="1.0" encoding="utf-8"?>

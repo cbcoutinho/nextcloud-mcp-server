@@ -9,6 +9,7 @@ import anyio
 from caldav.async_collection import AsyncCalendar, AsyncEvent
 from caldav.async_davclient import AsyncDAVClient
 from caldav.elements import cdav, dav
+import httpx
 from httpx import Auth
 from icalendar import Alarm, Calendar, vDDDTypes, vRecur
 from icalendar import Event as ICalEvent
@@ -32,15 +33,120 @@ class CalendarClient:
             auth: httpx.Auth object (BasicAuth or BearerAuth)
         """
         self.username = username
-        self.base_url = base_url
+        self.base_url = base_url.rstrip("/")
+        self._auth = auth
+        self._ssl_verify = get_nextcloud_ssl_verify()
         # AsyncDAVClient needs the full base URL for proper URL construction
         self._dav_client = AsyncDAVClient(
-            url=f"{base_url}/remote.php/dav/",
+            url=f"{self.base_url}/remote.php/dav/",
             username=username,
             auth=auth,
-            ssl_verify_cert=get_nextcloud_ssl_verify(),  # type: ignore[arg-type]  # caldav types say bool|str but passes through to httpx which accepts SSLContext
+            ssl_verify_cert=self._ssl_verify,  # type: ignore[arg-type]  # caldav types say bool|str but passes through to httpx which accepts SSLContext
         )
-        self._calendar_home_url = f"{base_url}/remote.php/dav/calendars/{username}/"
+        # Fallback: some servers still support username-based home sets.
+        # Nextcloud typically uses a UUID principal, so we'll discover the
+        # correct home-set lazily via `current-user-principal`.
+        self._calendar_home_url = (
+            f"{self.base_url}/remote.php/dav/calendars/{username}/"
+        )
+        self._calendar_home_url_discovered = False
+
+    async def _ensure_calendar_home_url(self) -> None:
+        """Discover CalDAV calendar-home-set using DAV principal UUID.
+
+        Nextcloud frequently uses UUID principals for `current-user-principal`.
+        The correct calendar home is then exposed via `cal:calendar-home-set`.
+        """
+        if self._calendar_home_url_discovered:
+            return
+
+        timeout = httpx.Timeout(timeout=30, connect=5)
+        try:
+            async with httpx.AsyncClient(
+                auth=self._auth, verify=self._ssl_verify, timeout=timeout
+            ) as client:
+                propfind_principal_body = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:">
+  <d:prop>
+    <d:current-user-principal/>
+  </d:prop>
+</d:propfind>"""
+
+                principal_resp = await client.request(
+                    "PROPFIND",
+                    f"{self.base_url}/remote.php/dav/",
+                    headers={
+                        "Depth": "0",
+                        "Content-Type": "application/xml",
+                        "Accept": "application/xml",
+                    },
+                    content=propfind_principal_body,
+                )
+                principal_resp.raise_for_status()
+
+                principal_tree = etree.fromstring(principal_resp.content)
+                principal_href_el = principal_tree.find(
+                    ".//d:current-user-principal/d:href",
+                    namespaces={"d": "DAV:"},
+                )
+                principal_href = (
+                    principal_href_el.text.strip()
+                    if principal_href_el is not None
+                    and principal_href_el.text
+                    else None
+                )
+                if not principal_href:
+                    raise RuntimeError("current-user-principal href not found")
+
+                propfind_home_body = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:prop>
+    <cal:calendar-home-set/>
+  </d:prop>
+</d:propfind>"""
+
+                home_resp = await client.request(
+                    "PROPFIND",
+                    f"{self.base_url}{principal_href}",
+                    headers={
+                        "Depth": "0",
+                        "Content-Type": "application/xml",
+                        "Accept": "application/xml",
+                    },
+                    content=propfind_home_body,
+                )
+                home_resp.raise_for_status()
+
+                home_tree = etree.fromstring(home_resp.content)
+                home_href_el = home_tree.find(
+                    ".//cal:calendar-home-set/d:href",
+                    namespaces={
+                        "d": "DAV:",
+                        "cal": "urn:ietf:params:xml:ns:caldav",
+                    },
+                )
+                home_href = (
+                    home_href_el.text.strip()
+                    if home_href_el is not None and home_href_el.text
+                    else None
+                )
+                if home_href:
+                    # home_href is a DAV path like /remote.php/dav/calendars/<uuid>/
+                    self._calendar_home_url = (
+                        f"{self.base_url}{home_href}".rstrip("/") + "/"
+                    )
+                    logger.info(
+                        "Discovered CalDAV calendar-home-set: %s",
+                        self._calendar_home_url,
+                    )
+        except Exception as e:
+            logger.warning(
+                "CalDAV calendar-home-set discovery failed; using username-based path: %s",
+                e,
+            )
+        finally:
+            # Avoid repeatedly hitting discovery endpoints within a session.
+            self._calendar_home_url_discovered = True
 
     def _get_calendar_url(self, calendar_name: str) -> str:
         """Get the full URL for a calendar."""
@@ -102,6 +208,7 @@ class CalendarClient:
 
     async def list_calendars(self) -> List[Dict[str, Any]]:
         """List all available calendars for the user."""
+        await self._ensure_calendar_home_url()
         # Use custom PROPFIND with CalendarServer namespace (cs:) for calendar-color.
         # caldav library's nsmap lacks "CS" namespace, and its CalendarColor uses
         # Apple iCal namespace which Nextcloud doesn't recognize.
@@ -191,13 +298,12 @@ class CalendarClient:
         color: str = "#1976D2",
     ) -> Dict[str, Any]:
         """Create a new calendar with retry on 429 errors."""
+        await self._ensure_calendar_home_url()
         # Use custom MKCALENDAR XML instead of caldav library's make_calendar() due to:
         # 1. Missing CalendarServer namespace (cs:) in caldav's nsmap
         # 2. caldav's CalendarColor uses Apple iCal namespace, not cs:calendar-color
         # 3. make_calendar() doesn't support calendar-description or calendar-color params
-        calendar_url = (
-            f"{self.base_url}/remote.php/dav/calendars/{self.username}/{calendar_name}/"
-        )
+        calendar_url = f"{self._calendar_home_url}{calendar_name}/"
 
         mkcalendar_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <mkcalendar xmlns="urn:ietf:params:xml:ns:caldav" xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">
@@ -237,10 +343,9 @@ class CalendarClient:
 
     async def delete_calendar(self, calendar_name: str) -> Dict[str, Any]:
         """Delete a calendar."""
+        await self._ensure_calendar_home_url()
         # Use absolute URL for deletion
-        calendar_url = (
-            f"{self.base_url}/remote.php/dav/calendars/{self.username}/{calendar_name}/"
-        )
+        calendar_url = f"{self._calendar_home_url}{calendar_name}/"
         await self._dav_client.delete(calendar_url)
 
         logger.debug(f"Deleted calendar: {calendar_name}")
