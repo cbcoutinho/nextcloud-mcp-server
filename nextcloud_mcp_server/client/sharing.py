@@ -110,6 +110,11 @@ class SharingClient(BaseNextcloudClient):
             resolved_share_with = await self._resolve_user_id(share_with)
             resolved_self = await self._resolve_user_id(self.username)
             if resolved_share_with == resolved_self:
+                logger.info(
+                    "Share with yourself is forbidden for internal shares; "
+                    "falling back to public share_type=3 for path '%s'",
+                    path,
+                )
                 share_type = 3
                 share_with = ""
             else:
