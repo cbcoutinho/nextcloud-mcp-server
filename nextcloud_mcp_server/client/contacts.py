@@ -4,6 +4,8 @@ import logging
 import xml.etree.ElementTree as ET
 from typing import Optional
 
+from xml.sax.saxutils import escape as xml_escape
+
 from pythonvCard4.vcard import Contact
 
 from .base import BaseNextcloudClient
@@ -295,17 +297,146 @@ class ContactsClient(BaseNextcloudClient):
         await self._make_request("PUT", url, content=vcard_content, headers=headers)
 
     async def list_contacts(self, *, addressbook: str):
-        """List all available contacts for addressbook."""
+        """List contacts for addressbook (can be expensive)."""
+        return await self.list_contacts_query(addressbook=addressbook)
+
+    async def list_contacts_query(
+        self,
+        *,
+        addressbook: str,
+        query: str | None = None,
+        limit: int | None = None,
+    ):
+        """List contacts with optional CardDAV server-side filtering."""
 
         await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
 
-        report_body = """<?xml version="1.0" encoding="utf-8"?>
+        filter_xml = ""
+        if query:
+            def translit_ru_to_lat(s: str) -> str:
+                """Very small best-effort transliteration for Russian -> Latin.
+
+                Used to make CardDAV text-match work when vCard stores names
+                in Latin (e.g. "Agarkov") while the user searches in Cyrillic.
+                """
+                mapping = {
+                    "а": "a",
+                    "б": "b",
+                    "в": "v",
+                    "г": "g",
+                    "д": "d",
+                    "е": "e",
+                    "ё": "e",
+                    "ж": "zh",
+                    "з": "z",
+                    "и": "i",
+                    "й": "y",
+                    "к": "k",
+                    "л": "l",
+                    "м": "m",
+                    "н": "n",
+                    "о": "o",
+                    "п": "p",
+                    "р": "r",
+                    "с": "s",
+                    "т": "t",
+                    "у": "u",
+                    "ф": "f",
+                    "х": "kh",
+                    "ц": "ts",
+                    "ч": "ch",
+                    "ш": "sh",
+                    "щ": "shch",
+                    "ъ": "",
+                    "ы": "y",
+                    "ь": "",
+                    "э": "e",
+                    "ю": "yu",
+                    "я": "ya",
+                    "А": "A",
+                    "Б": "B",
+                    "В": "V",
+                    "Г": "G",
+                    "Д": "D",
+                    "Е": "E",
+                    "Ё": "E",
+                    "Ж": "Zh",
+                    "З": "Z",
+                    "И": "I",
+                    "Й": "Y",
+                    "К": "K",
+                    "Л": "L",
+                    "М": "M",
+                    "Н": "N",
+                    "О": "O",
+                    "П": "P",
+                    "Р": "R",
+                    "С": "S",
+                    "Т": "T",
+                    "У": "U",
+                    "Ф": "F",
+                    "Х": "Kh",
+                    "Ц": "Ts",
+                    "Ч": "Ch",
+                    "Ш": "Sh",
+                    "Щ": "Shch",
+                    "Ъ": "",
+                    "Ы": "Y",
+                    "Ь": "",
+                    "Э": "E",
+                    "Ю": "Yu",
+                    "Я": "Ya",
+                }
+
+                return "".join(mapping.get(ch, ch) for ch in s)
+
+            # Server-side text search on the FN (full name) vCard property.
+            # RFC6352 supports CardDAV text matching via card:text-match.
+            q_raw = str(query)
+            q_translit = translit_ru_to_lat(q_raw)
+
+            q_xml = xml_escape(q_raw, {"\"": "&quot;"})
+            q_translit_xml = (
+                xml_escape(q_translit, {"\"": "&quot;"})
+                if q_translit != q_raw
+                else None
+            )
+
+            # Best-effort: match either the original query (if server has Cyrillic)
+            # or its transliteration (common when vCard stores Latin names).
+            match_parts = [
+                f"<card:text-match collation=\"i;unicode-casemap\" match-type=\"contains\">{q_xml}</card:text-match>"
+            ]
+            if q_translit_xml:
+                match_parts.append(
+                    f"<card:text-match collation=\"i;unicode-casemap\" match-type=\"contains\">{q_translit_xml}</card:text-match>"
+                )
+
+            filter_xml = f"""
+            <card:filter test="allof">
+                <card:prop-filter name="FN" test="anyof">
+                    {''.join(match_parts)}
+                </card:prop-filter>
+            </card:filter>"""
+
+        limit_xml = ""
+        if limit is not None:
+            # Best-effort: use CardDAV limit stanza. Some servers may ignore it,
+            # but it won't hurt correctness when combined with filtering.
+            limit_xml = f"""
+            <card:limit>
+                <card:nresults>{int(limit)}</card:nresults>
+            </card:limit>"""
+
+        report_body = f"""<?xml version="1.0" encoding="utf-8"?>
         <card:addressbook-query xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">
             <d:prop>
                 <d:getetag />
                 <card:address-data />
             </d:prop>
+            {filter_xml}
+            {limit_xml}
         </card:addressbook-query>"""
 
         headers = {
@@ -415,6 +546,9 @@ class ContactsClient(BaseNextcloudClient):
                     "addressdata": addressdata,
                 }
             )
+
+            if limit is not None and len(contacts) >= limit:
+                break
 
         logger.debug(f"Found {len(contacts)} contacts")
         return contacts
