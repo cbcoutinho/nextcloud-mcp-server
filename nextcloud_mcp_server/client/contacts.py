@@ -367,7 +367,39 @@ class ContactsClient(BaseNextcloudClient):
                 logger.info("Skip missing addressdata")
                 continue
 
-            contact = Contact.from_vcard(addressdata)
+            def _remove_bday_lines(vcard: str) -> str:
+                # Some Nextcloud contacts contain invalid BDAY values that break vCard parsing.
+                # Best-effort sanitize by removing all BDAY lines.
+                lines = vcard.splitlines()
+                kept: list[str] = []
+                for line in lines:
+                    # Handle both "BDAY:" and "BDAY;PARAM=...:" variants.
+                    if line.lstrip().upper().startswith("BDAY"):
+                        continue
+                    kept.append(line)
+                return "\n".join(kept)
+
+            try:
+                contact = Contact.from_vcard(addressdata)
+            except Exception as e:
+                # Avoid failing the whole addressbook due to a single broken contact.
+                logger.warning(
+                    "Failed to parse vCard for '%s' (addressbook='%s'): %s. Retrying without BDAY.",
+                    vcard_id,
+                    addressbook,
+                    e,
+                )
+                try:
+                    sanitized = _remove_bday_lines(addressdata)
+                    contact = Contact.from_vcard(sanitized)
+                except Exception as e2:
+                    logger.warning(
+                        "Retry without BDAY failed for vCard '%s' (addressbook='%s'): %s. Skipping contact.",
+                        vcard_id,
+                        addressbook,
+                        e2,
+                    )
+                    continue
 
             contacts.append(
                 {
