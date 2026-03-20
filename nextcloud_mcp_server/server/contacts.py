@@ -122,7 +122,8 @@ def configure_contacts_tools(mcp: FastMCP):
     )
     @require_scopes("contacts:read")
     @instrument_tool
-    async def nc_contacts_list_contacts        ctx: Context,
+    async def nc_contacts_list_contacts(
+        ctx: Context,
         *,
         addressbook: str,
         query: str | None = None,

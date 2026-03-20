@@ -19,8 +19,81 @@ class WebDAVClient(BaseNextcloudClient):
 
     app_name = "webdav"
 
+    def __init__(self, http_client, username: str):
+        super().__init__(http_client, username)
+        # Nextcloud often uses UUID principals for WebDAV files home.
+        # Example correct base: /remote.php/dav/files/<principal_uuid>/
+        self._files_principal_id: Optional[str] = None
+        self._files_principal_discovered = False
+
+    async def _ensure_files_principal_id(self) -> None:
+        """Discover WebDAV files principal id via DAV current-user-principal."""
+        if self._files_principal_discovered:
+            return
+
+        try:
+            propfind_principal_body = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:">
+  <d:prop>
+    <d:current-user-principal/>
+  </d:prop>
+</d:propfind>"""
+
+            response = await self._make_request(
+                "PROPFIND",
+                "/remote.php/dav/",
+                content=propfind_principal_body,
+                headers={
+                    "Depth": "0",
+                    "Content-Type": "application/xml",
+                    "Accept": "application/xml",
+                },
+            )
+
+            root = ET.fromstring(response.content)
+
+            principal_href: Optional[str] = None
+            for elem in root.iter():
+                local = elem.tag.split("}")[-1]
+                if local != "current-user-principal":
+                    continue
+                for sub in elem.iter():
+                    sub_local = sub.tag.split("}")[-1]
+                    if sub_local == "href" and sub.text:
+                        principal_href = sub.text.strip()
+                        break
+                if principal_href:
+                    break
+
+            if not principal_href:
+                raise RuntimeError("current-user-principal href not found")
+
+            # principal_href example:
+            # /remote.php/dav/principals/users/<UUID>/
+            principal_id = principal_href.rstrip("/").split("/")[-1]
+            if not principal_id:
+                raise RuntimeError("Unable to extract files principal id")
+
+            self._files_principal_id = principal_id
+        except Exception as e:
+            logger.warning(
+                "WebDAV files principal discovery failed; using username-based path: %s",
+                e,
+            )
+            self._files_principal_id = None
+        finally:
+            self._files_principal_discovered = True
+
+    def _get_files_principal_id(self) -> str:
+        return self._files_principal_id or self.username
+
+    def _get_webdav_base_path(self) -> str:
+        """Helper to get the base WebDAV path for the authenticated user."""
+        return f"/remote.php/dav/files/{self._get_files_principal_id()}"
+
     async def delete_resource(self, path: str) -> Dict[str, Any]:
         """Delete a resource (file or directory) via WebDAV DELETE."""
+        await self._ensure_files_principal_id()
         # Ensure path ends with a slash if it's a directory
         if not path.endswith("/"):
             path_with_slash = f"{path}/"
@@ -108,6 +181,7 @@ class WebDAVClient(BaseNextcloudClient):
         mime_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Add/Update an attachment to a note via WebDAV PUT."""
+        await self._ensure_files_principal_id()
         # Construct paths based on provided category
         webdav_base = self._get_webdav_base_path()
         category_path_part = f"{category}/" if category else ""
@@ -185,6 +259,7 @@ class WebDAVClient(BaseNextcloudClient):
         self, note_id: int, filename: str, category: Optional[str] = None
     ) -> Tuple[bytes, str]:
         """Fetch a specific attachment from a note via WebDAV GET."""
+        await self._ensure_files_principal_id()
         webdav_base = self._get_webdav_base_path()
         category_path_part = f"{category}/" if category else ""
         attachment_dir_segment = f".attachments.{note_id}"
@@ -220,6 +295,7 @@ class WebDAVClient(BaseNextcloudClient):
 
     async def list_directory(self, path: str = "") -> List[Dict[str, Any]]:
         """List files and directories in the specified path via WebDAV PROPFIND."""
+        await self._ensure_files_principal_id()
         webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
         if not webdav_path.endswith("/"):
             webdav_path += "/"
@@ -318,6 +394,7 @@ class WebDAVClient(BaseNextcloudClient):
 
     async def read_file(self, path: str) -> Tuple[bytes, str]:
         """Read a file's content via WebDAV GET."""
+        await self._ensure_files_principal_id()
         webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
 
         logger.debug(f"Reading file: {path}")
@@ -345,6 +422,7 @@ class WebDAVClient(BaseNextcloudClient):
         self, path: str, content: bytes, content_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """Write content to a file via WebDAV PUT."""
+        await self._ensure_files_principal_id()
         webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
 
         logger.debug(f"Writing file: {path}")
@@ -376,6 +454,7 @@ class WebDAVClient(BaseNextcloudClient):
         self, path: str, recursive: bool = False
     ) -> Dict[str, Any]:
         """Create a directory via WebDAV MKCOL."""
+        await self._ensure_files_principal_id()
         webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
         if not webdav_path.endswith("/"):
             webdav_path += "/"
@@ -433,6 +512,7 @@ class WebDAVClient(BaseNextcloudClient):
         Returns:
             Dict with status_code and optional message
         """
+        await self._ensure_files_principal_id()
         source_webdav_path = f"{self._get_webdav_base_path()}/{source_path.lstrip('/')}"
         destination_webdav_path = (
             f"{self._get_webdav_base_path()}/{destination_path.lstrip('/')}"
@@ -514,6 +594,7 @@ class WebDAVClient(BaseNextcloudClient):
         Returns:
             Dict with status_code and optional message
         """
+        await self._ensure_files_principal_id()
         source_webdav_path = f"{self._get_webdav_base_path()}/{source_path.lstrip('/')}"
         destination_webdav_path = (
             f"{self._get_webdav_base_path()}/{destination_path.lstrip('/')}"
@@ -595,6 +676,7 @@ class WebDAVClient(BaseNextcloudClient):
         Returns:
             List of file/directory dictionaries with requested properties
         """
+        await self._ensure_files_principal_id()
         # Default properties if not specified
         if properties is None:
             properties = [
@@ -651,8 +733,8 @@ class WebDAVClient(BaseNextcloudClient):
     ) -> str:
         """Build the XML body for a SEARCH request."""
         # Construct the scope path
-        username = self.username
-        scope_path = f"/files/{username}"
+        files_principal_id = self._get_files_principal_id()
+        scope_path = f"/files/{files_principal_id}"
         if scope:
             scope_path = f"{scope_path}/{scope.lstrip('/')}"
 
@@ -1204,6 +1286,7 @@ class WebDAVClient(BaseNextcloudClient):
         Returns:
             List of file info dictionaries with path, size, content_type, etc.
         """
+        await self._ensure_files_principal_id()
         # Use WebDAV REPORT method with systemtag filter, requesting all properties
         report_body = f"""<?xml version="1.0"?>
 <oc:filter-files xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
@@ -1263,7 +1346,9 @@ class WebDAVClient(BaseNextcloudClient):
             # Decode href path and extract the file path
             href_path = unquote(href_elem.text)
             # Remove WebDAV prefix to get user-relative path
-            webdav_prefix = f"/remote.php/dav/files/{self.username}/"
+            webdav_prefix = (
+                f"/remote.php/dav/files/{self._get_files_principal_id()}/"
+            )
             file_path = href_path.replace(webdav_prefix, "/")
 
             # Parse last modified timestamp
@@ -1308,6 +1393,7 @@ class WebDAVClient(BaseNextcloudClient):
             File info dictionary with id, name, size, content_type, etc.
             Returns None if file not found.
         """
+        await self._ensure_files_principal_id()
         webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
 
         propfind_body = """<?xml version="1.0"?>
