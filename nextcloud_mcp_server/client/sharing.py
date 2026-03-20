@@ -14,6 +14,41 @@ class SharingClient(BaseNextcloudClient):
 
     app_name = "sharing"
 
+    def __init__(self, http_client, username: str):
+        super().__init__(http_client, username)
+        self._resolved_user_ids: dict[str, str] = {}
+
+    async def _resolve_user_id(self, share_with: str) -> str:
+        """Resolve Nextcloud internal user id (UUID) for `share_type=0`.
+
+        On some Nextcloud instances `files_sharing` expects `shareWith` to be
+        an internal user id rather than the login/username.
+        """
+        # Already looks like a UUID/principal id.
+        if share_with in self._resolved_user_ids:
+            return self._resolved_user_ids[share_with]
+
+        try:
+            resp = await self._client.get(
+                "/ocs/v2.php/cloud/users",
+                params={"search": share_with},
+                headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            users = data.get("ocs", {}).get("data", {}).get("users") or []
+            if users:
+                self._resolved_user_ids[share_with] = users[0]
+                return users[0]
+        except Exception as e:
+            logger.debug(
+                "Failed to resolve internal user id for '%s': %s",
+                share_with,
+                e,
+            )
+
+        return share_with
+
     @retry_on_429
     async def create_share(
         self,
@@ -65,6 +100,10 @@ class SharingClient(BaseNextcloudClient):
 
         # OCS expects path without leading slash.
         path = path.lstrip("/")
+
+        # For user shares Nextcloud may expect internal UUID user id.
+        if share_type == 0 and share_with:
+            share_with = await self._resolve_user_id(share_with)
 
         response = await self._client.post(
             "/ocs/v2.php/apps/files_sharing/api/v1/shares",
