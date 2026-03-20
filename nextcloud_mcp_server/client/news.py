@@ -4,6 +4,8 @@ import logging
 from enum import IntEnum
 from typing import Any
 
+from nextcloud_mcp_server.utils.url import validate_external_url
+
 from .base import BaseNextcloudClient
 
 logger = logging.getLogger(__name__)
@@ -121,6 +123,7 @@ class NewsClient(BaseNextcloudClient):
         Raises:
             HTTPStatusError: 409 if feed already exists, 422 if URL is invalid
         """
+        validate_external_url(url)
         body: dict[str, Any] = {"url": url}
         if folder_id is not None:
             body["folderId"] = folder_id

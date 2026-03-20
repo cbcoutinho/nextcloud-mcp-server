@@ -215,7 +215,9 @@ class OllamaProvider(Provider):
             model: Model name to check
             autoload: Whether to automatically pull the model if not loaded
         """
-        response = httpx.get(f"{self.base_url}/api/tags")
+        response = httpx.get(
+            f"{self.base_url}/api/tags", verify=self.verify_ssl
+        )
         response.raise_for_status()
 
         models = [m["name"] for m in response.json().get("models", [])]
@@ -226,7 +228,11 @@ class OllamaProvider(Provider):
                 "Model '%s' not yet available in ollama, attempting to pull now...",
                 model,
             )
-            response = httpx.post(f"{self.base_url}/api/pull", json={"model": model})
+            response = httpx.post(
+                f"{self.base_url}/api/pull",
+                json={"model": model},
+                verify=self.verify_ssl,
+            )
             response.raise_for_status()
 
     async def close(self) -> None:
