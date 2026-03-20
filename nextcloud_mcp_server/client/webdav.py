@@ -335,7 +335,10 @@ class WebDAVClient(BaseNextcloudClient):
 
                 # Extract file/directory name from href
                 href_text = href.text or ""
-                name = href_text.rstrip("/").split("/")[-1]
+                # Nextcloud may return percent-encoded href segments.
+                # Decode so downstream tools (e.g. OCS sharing) can use this
+                # name as-is (decoded file/folder path).
+                name = unquote(href_text.rstrip("/").split("/")[-1])
                 if not name:
                     continue
 
@@ -866,6 +869,9 @@ class WebDAVClient(BaseNextcloudClient):
                 relative_path = path_after_user.rstrip("/")
             else:
                 relative_path = href_text.rstrip("/").split("/")[-1]
+
+            # Decode percent-encoded path segments (e.g. for Cyrillic names).
+            relative_path = unquote(relative_path)
 
             # Get properties
             propstat = response_elem.find(".//{DAV:}propstat")
