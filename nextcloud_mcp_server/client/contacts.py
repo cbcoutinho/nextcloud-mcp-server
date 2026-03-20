@@ -2,6 +2,9 @@
 
 import logging
 import xml.etree.ElementTree as ET
+from typing import Optional
+
+from xml.sax.saxutils import escape as xml_escape
 
 from pythonvCard4.vcard import Contact
 
@@ -15,13 +18,107 @@ class ContactsClient(BaseNextcloudClient):
 
     app_name = "contacts"
 
+    def __init__(self, http_client, username: str):
+        super().__init__(http_client, username)
+        self._carddav_base_path: Optional[str] = None
+        self._principal_id: Optional[str] = None
+        self._carddav_base_path_discovered = False
+
     def _get_carddav_base_path(self) -> str:
         """Helper to get the base CardDAV path for contacts."""
+        if self._carddav_base_path:
+            return self._carddav_base_path
+        # Fallback: username-based path. Nextcloud often uses UUID principals.
         return f"/remote.php/dav/addressbooks/users/{self.username}"
+
+    async def _ensure_carddav_base_path(self) -> None:
+        """Discover CardDAV addressbook-home-set via DAV principal UUID."""
+        if self._carddav_base_path_discovered:
+            return
+
+        try:
+            propfind_principal_body = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:">
+  <d:prop>
+    <d:current-user-principal/>
+  </d:prop>
+</d:propfind>"""
+
+            response = await self._make_request(
+                "PROPFIND",
+                "/remote.php/dav/",
+                content=propfind_principal_body,
+                headers={
+                    "Depth": "0",
+                    "Content-Type": "application/xml",
+                    "Accept": "application/xml",
+                },
+            )
+
+            ns = {"d": "DAV:", "card": "urn:ietf:params:xml:ns:carddav"}
+            root = ET.fromstring(response.content)
+            principal_href_el = root.find(
+                ".//d:current-user-principal/d:href",
+                ns,
+            )
+            principal_href = (
+                principal_href_el.text.strip()
+                if principal_href_el is not None and principal_href_el.text
+                else None
+            )
+            if not principal_href:
+                raise RuntimeError("current-user-principal href not found")
+
+            principal_id = principal_href.rstrip("/").split("/")[-1]
+            self._principal_id = principal_id
+
+            propfind_home_body = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">
+  <d:prop>
+    <card:addressbook-home-set/>
+  </d:prop>
+</d:propfind>"""
+
+            home_resp = await self._make_request(
+                "PROPFIND",
+                principal_href,
+                content=propfind_home_body,
+                headers={
+                    "Depth": "0",
+                    "Content-Type": "application/xml",
+                    "Accept": "application/xml",
+                },
+            )
+
+            home_root = ET.fromstring(home_resp.content)
+            home_href_el = home_root.find(
+                ".//card:addressbook-home-set/d:href",
+                ns,
+            )
+            home_href = (
+                home_href_el.text.strip()
+                if home_href_el is not None and home_href_el.text
+                else None
+            )
+
+            if home_href:
+                self._carddav_base_path = home_href.rstrip("/")
+                logger.info(
+                    "Discovered CardDAV addressbook-home-set: %s",
+                    self._carddav_base_path,
+                )
+        except Exception as e:
+            logger.warning(
+                "CardDAV addressbook-home-set discovery failed; using username-based path: %s",
+                e,
+            )
+        finally:
+            self._carddav_base_path_discovered = True
 
     async def list_addressbooks(self):
         """List all available addressbooks for the user."""
 
+        await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
 
         propfind_body = """<?xml version="1.0" encoding="utf-8"?>
@@ -58,7 +155,10 @@ class ContactsClient(BaseNextcloudClient):
 
             # Extract addressbook name from href
             addressbook_name = href_text.rstrip("/").split("/")[-1]
-            if not addressbook_name or addressbook_name == self.username:
+            if not addressbook_name:
+                continue
+            # Don't treat the principal container itself as a real addressbook.
+            if self._principal_id and addressbook_name == self._principal_id:
                 continue
 
             # Get properties
@@ -93,6 +193,7 @@ class ContactsClient(BaseNextcloudClient):
 
     async def create_addressbook(self, *, name: str, display_name: str):
         """Create a new addressbook."""
+        await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{name}/"
 
@@ -117,12 +218,14 @@ class ContactsClient(BaseNextcloudClient):
 
     async def delete_addressbook(self, *, name: str):
         """Delete an addressbook."""
+        await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{name}/"
         await self._make_request("DELETE", url)
 
     async def create_contact(self, *, addressbook: str, uid: str, contact_data: dict):
         """Create a new contact."""
+        await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{uid}.vcf"
 
@@ -143,6 +246,7 @@ class ContactsClient(BaseNextcloudClient):
 
     async def delete_contact(self, *, addressbook: str, uid: str):
         """Delete a contact."""
+        await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{uid}.vcf"
         await self._make_request("DELETE", url)
@@ -151,6 +255,7 @@ class ContactsClient(BaseNextcloudClient):
         self, *, addressbook: str, uid: str, contact_data: dict, etag: str = ""
     ):
         """Update an existing contact while preserving all existing properties."""
+        await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{uid}.vcf"
 
@@ -192,16 +297,146 @@ class ContactsClient(BaseNextcloudClient):
         await self._make_request("PUT", url, content=vcard_content, headers=headers)
 
     async def list_contacts(self, *, addressbook: str):
-        """List all available contacts for addressbook."""
+        """List contacts for addressbook (can be expensive)."""
+        return await self.list_contacts_query(addressbook=addressbook)
 
+    async def list_contacts_query(
+        self,
+        *,
+        addressbook: str,
+        query: str | None = None,
+        limit: int | None = None,
+    ):
+        """List contacts with optional CardDAV server-side filtering."""
+
+        await self._ensure_carddav_base_path()
         carddav_path = self._get_carddav_base_path()
 
-        report_body = """<?xml version="1.0" encoding="utf-8"?>
+        filter_xml = ""
+        if query:
+            def translit_ru_to_lat(s: str) -> str:
+                """Very small best-effort transliteration for Russian -> Latin.
+
+                Used to make CardDAV text-match work when vCard stores names
+                in Latin (e.g. "Agarkov") while the user searches in Cyrillic.
+                """
+                mapping = {
+                    "а": "a",
+                    "б": "b",
+                    "в": "v",
+                    "г": "g",
+                    "д": "d",
+                    "е": "e",
+                    "ё": "e",
+                    "ж": "zh",
+                    "з": "z",
+                    "и": "i",
+                    "й": "y",
+                    "к": "k",
+                    "л": "l",
+                    "м": "m",
+                    "н": "n",
+                    "о": "o",
+                    "п": "p",
+                    "р": "r",
+                    "с": "s",
+                    "т": "t",
+                    "у": "u",
+                    "ф": "f",
+                    "х": "kh",
+                    "ц": "ts",
+                    "ч": "ch",
+                    "ш": "sh",
+                    "щ": "shch",
+                    "ъ": "",
+                    "ы": "y",
+                    "ь": "",
+                    "э": "e",
+                    "ю": "yu",
+                    "я": "ya",
+                    "А": "A",
+                    "Б": "B",
+                    "В": "V",
+                    "Г": "G",
+                    "Д": "D",
+                    "Е": "E",
+                    "Ё": "E",
+                    "Ж": "Zh",
+                    "З": "Z",
+                    "И": "I",
+                    "Й": "Y",
+                    "К": "K",
+                    "Л": "L",
+                    "М": "M",
+                    "Н": "N",
+                    "О": "O",
+                    "П": "P",
+                    "Р": "R",
+                    "С": "S",
+                    "Т": "T",
+                    "У": "U",
+                    "Ф": "F",
+                    "Х": "Kh",
+                    "Ц": "Ts",
+                    "Ч": "Ch",
+                    "Ш": "Sh",
+                    "Щ": "Shch",
+                    "Ъ": "",
+                    "Ы": "Y",
+                    "Ь": "",
+                    "Э": "E",
+                    "Ю": "Yu",
+                    "Я": "Ya",
+                }
+
+                return "".join(mapping.get(ch, ch) for ch in s)
+
+            # Server-side text search on the FN (full name) vCard property.
+            # RFC6352 supports CardDAV text matching via card:text-match.
+            q_raw = str(query)
+            q_translit = translit_ru_to_lat(q_raw)
+
+            q_xml = xml_escape(q_raw, {"\"": "&quot;"})
+            q_translit_xml = (
+                xml_escape(q_translit, {"\"": "&quot;"})
+                if q_translit != q_raw
+                else None
+            )
+
+            # Best-effort: match either the original query (if server has Cyrillic)
+            # or its transliteration (common when vCard stores Latin names).
+            match_parts = [
+                f"<card:text-match collation=\"i;unicode-casemap\" match-type=\"contains\">{q_xml}</card:text-match>"
+            ]
+            if q_translit_xml:
+                match_parts.append(
+                    f"<card:text-match collation=\"i;unicode-casemap\" match-type=\"contains\">{q_translit_xml}</card:text-match>"
+                )
+
+            filter_xml = f"""
+            <card:filter test="allof">
+                <card:prop-filter name="FN" test="anyof">
+                    {''.join(match_parts)}
+                </card:prop-filter>
+            </card:filter>"""
+
+        limit_xml = ""
+        if limit is not None:
+            # Best-effort: use CardDAV limit stanza. Some servers may ignore it,
+            # but it won't hurt correctness when combined with filtering.
+            limit_xml = f"""
+            <card:limit>
+                <card:nresults>{int(limit)}</card:nresults>
+            </card:limit>"""
+
+        report_body = f"""<?xml version="1.0" encoding="utf-8"?>
         <card:addressbook-query xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">
             <d:prop>
                 <d:getetag />
                 <card:address-data />
             </d:prop>
+            {filter_xml}
+            {limit_xml}
         </card:addressbook-query>"""
 
         headers = {
@@ -263,7 +498,39 @@ class ContactsClient(BaseNextcloudClient):
                 logger.info("Skip missing addressdata")
                 continue
 
-            contact = Contact.from_vcard(addressdata)
+            def _remove_bday_lines(vcard: str) -> str:
+                # Some Nextcloud contacts contain invalid BDAY values that break vCard parsing.
+                # Best-effort sanitize by removing all BDAY lines.
+                lines = vcard.splitlines()
+                kept: list[str] = []
+                for line in lines:
+                    # Handle both "BDAY:" and "BDAY;PARAM=...:" variants.
+                    if line.lstrip().upper().startswith("BDAY"):
+                        continue
+                    kept.append(line)
+                return "\n".join(kept)
+
+            try:
+                contact = Contact.from_vcard(addressdata)
+            except Exception as e:
+                # Avoid failing the whole addressbook due to a single broken contact.
+                logger.warning(
+                    "Failed to parse vCard for '%s' (addressbook='%s'): %s. Retrying without BDAY.",
+                    vcard_id,
+                    addressbook,
+                    e,
+                )
+                try:
+                    sanitized = _remove_bday_lines(addressdata)
+                    contact = Contact.from_vcard(sanitized)
+                except Exception as e2:
+                    logger.warning(
+                        "Retry without BDAY failed for vCard '%s' (addressbook='%s'): %s. Skipping contact.",
+                        vcard_id,
+                        addressbook,
+                        e2,
+                    )
+                    continue
 
             contacts.append(
                 {
@@ -279,6 +546,9 @@ class ContactsClient(BaseNextcloudClient):
                     "addressdata": addressdata,
                 }
             )
+
+            if limit is not None and len(contacts) >= limit:
+                break
 
         logger.debug(f"Found {len(contacts)} contacts")
         return contacts

@@ -2,6 +2,7 @@
 
 import logging
 from typing import Any
+from urllib.parse import unquote
 
 from .base import BaseNextcloudClient, retry_on_429
 
@@ -12,6 +13,41 @@ class SharingClient(BaseNextcloudClient):
     """Client for Nextcloud OCS Sharing API operations."""
 
     app_name = "sharing"
+
+    def __init__(self, http_client, username: str):
+        super().__init__(http_client, username)
+        self._resolved_user_ids: dict[str, str] = {}
+
+    async def _resolve_user_id(self, share_with: str) -> str:
+        """Resolve Nextcloud internal user id (UUID) for `share_type=0`.
+
+        On some Nextcloud instances `files_sharing` expects `shareWith` to be
+        an internal user id rather than the login/username.
+        """
+        # Already looks like a UUID/principal id.
+        if share_with in self._resolved_user_ids:
+            return self._resolved_user_ids[share_with]
+
+        try:
+            resp = await self._client.get(
+                "/ocs/v2.php/cloud/users",
+                params={"search": share_with},
+                headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            users = data.get("ocs", {}).get("data", {}).get("users") or []
+            if users:
+                self._resolved_user_ids[share_with] = users[0]
+                return users[0]
+        except Exception as e:
+            logger.debug(
+                "Failed to resolve internal user id for '%s': %s",
+                share_with,
+                e,
+            )
+
+        return share_with
 
     @retry_on_429
     async def create_share(
@@ -42,6 +78,48 @@ class SharingClient(BaseNextcloudClient):
         Raises:
             HTTPStatusError: If the request fails
         """
+        # Nextcloud can provide the "path" in multiple forms:
+        # - decoded relative file path (what OCS expects)
+        # - percent-encoded path (from WebDAV href segments)
+        # - WebDAV absolute-like href: /remote.php/dav/files/<principal>/<rel-path>
+        #
+        # Normalize to "relative to user's files root" before calling OCS.
+        path = unquote(path)
+
+        # Strip WebDAV DAV prefix if a href was passed by caller/agent.
+        # Keep everything after /remote.php/dav/files/<principal>/
+        dav_prefix = "/remote.php/dav/files/"
+        if dav_prefix in path:
+            after = path.split(dav_prefix, 1)[1]
+            # after: "<principal>/<rest>"
+            parts = after.split("/", 1)
+            if len(parts) == 2:
+                path = parts[1]
+            else:
+                path = ""
+
+        # OCS expects path without leading slash.
+        path = path.lstrip("/")
+
+        # For user shares Nextcloud may expect internal UUID user id.
+        # Additionally, this Nextcloud instance forbids sharing with yourself.
+        # If caller requested `share_type=0` and `share_with` resolves to the
+        # current user, fall back to a public share (share_type=3) so that
+        # `nc_share_create` can still generate a usable link for the caller.
+        if share_type == 0 and share_with:
+            resolved_share_with = await self._resolve_user_id(share_with)
+            resolved_self = await self._resolve_user_id(self.username)
+            if resolved_share_with == resolved_self:
+                logger.info(
+                    "Share with yourself is forbidden for internal shares; "
+                    "falling back to public share_type=3 for path '%s'",
+                    path,
+                )
+                share_type = 3
+                share_with = ""
+            else:
+                share_with = resolved_share_with
+
         response = await self._client.post(
             "/ocs/v2.php/apps/files_sharing/api/v1/shares",
             headers={"OCS-APIRequest": "true", "Accept": "application/json"},

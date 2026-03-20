@@ -123,7 +123,11 @@ def configure_contacts_tools(mcp: FastMCP):
     @require_scopes("contacts:read")
     @instrument_tool
     async def nc_contacts_list_contacts(
-        ctx: Context, *, addressbook: str
+        ctx: Context,
+        *,
+        addressbook: str,
+        query: str | None = None,
+        limit: int | None = 50,
     ) -> ListContactsResponse:
         """List all contacts in the specified addressbook.
 
@@ -131,9 +135,13 @@ def configure_contacts_tools(mcp: FastMCP):
             addressbook: The URI slug of the addressbook (e.g. "contacts"),
                 not the display name. Use nc_contacts_list_addressbooks to
                 find available URI slugs.
+            query: Optional text to search by (matched server-side against vCard `FN`).
+            limit: Maximum number of contacts to return (best-effort; defaults to 50).
         """
         client = await get_client(ctx)
-        contacts_data = await client.contacts.list_contacts(addressbook=addressbook)
+        contacts_data = await client.contacts.list_contacts_query(
+            addressbook=addressbook, query=query, limit=limit
+        )
         contacts = [_raw_contact_to_model(c) for c in contacts_data]
         return ListContactsResponse(
             contacts=contacts, addressbook=addressbook, total_count=len(contacts)
