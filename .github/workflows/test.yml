@@ -122,6 +122,13 @@ jobs:
           npm ci
           npm run build
 
+      - name: Build OIDC app
+        run: |
+          cd third_party/oidc
+          composer install --no-dev --optimize-autoloader
+          npm ci
+          npm run build
+
       # Start services with the appropriate profile
       - name: Run docker compose
         uses: hoverkraft-tech/compose-action@4894d2492015c1774ee5a13a95b1072093087ec3 # v2.5.0
@@ -199,7 +206,9 @@ jobs:
 
       - name: Collect service logs on failure
         if: failure()
-        run: docker compose --profile ${{ matrix.profile }} logs --tail=500 > /tmp/docker-compose-logs.txt 2>&1
+        run: |
+          docker compose --profile ${{ matrix.profile }} logs --tail=500 > /tmp/docker-compose-logs.txt 2>&1
+          docker compose exec -T app cat /var/www/html/data/nextcloud.log 2>/dev/null | tail -100 > /tmp/nextcloud-app.log 2>&1 || true
 
       - name: Upload debug artifacts
         if: failure()
@@ -209,5 +218,6 @@ jobs:
           path: |
             /tmp/*.png
             /tmp/docker-compose-logs.txt
+            /tmp/nextcloud-app.log
           retention-days: 7
           if-no-files-found: ignore

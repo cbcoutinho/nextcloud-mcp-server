@@ -37,7 +37,7 @@ services:
       # The post-installation hook will register /opt/apps as an additional app directory
       #- ./third_party:/opt/apps:ro
       - ./third_party/astrolabe:/opt/apps/astrolabe:ro
-      #- ./third_party/oidc:/opt/apps/oidc:ro  # Use app store version; dev mount lacks vendor/
+      - ./third_party/oidc:/opt/apps/oidc:ro
     environment:
       - NEXTCLOUD_TRUSTED_DOMAINS=app
       - NEXTCLOUD_ADMIN_USER=admin
@@ -65,9 +65,9 @@ services:
     image: downloads.unstructured.io/unstructured-io/unstructured-api:latest@sha256:ba6cb073af079c498e9466a5a9152ba4b6c9cad12efeeaf053ba383023d5db08
     restart: always
     ports:
-      - 127.0.0.1:8002:8000
+      - 127.0.0.1:8005:8000
     # Unstructured API runs on port 8000 internally
-    # We expose it on 8002 externally to avoid conflict
+    # We expose it on 8005 externally to avoid conflict
     profiles:
       - unstructured
 
@@ -323,26 +323,6 @@ services:
       - login-flow-oauth-storage:/app/.oauth
     profiles:
       - login-flow
-
-  # Smithery stateless deployment mode (ADR-016)
-  # Test with: docker compose --profile smithery up smithery
-  # Then: curl http://localhost:8081/.well-known/mcp-config
-  smithery:
-    build:
-      context: .
-      dockerfile: Dockerfile.smithery
-    restart: always
-    depends_on:
-      app:
-        condition: service_healthy
-    ports:
-      - 127.0.0.1:8081:8081
-    environment:
-      - SMITHERY_DEPLOYMENT=true
-      - ENABLE_SEMANTIC_SEARCH=false
-      - PORT=8081
-    profiles:
-      - smithery
 
   qdrant:
     image: docker.io/qdrant/qdrant:v1.17.0@sha256:f1c7272cdac52b38c1a0e89313922d940ba50afd90d593a1605dbbc214e66ffb

@@ -1,14 +1,15 @@
 """CalDAV client for Nextcloud calendar and task operations using caldav library."""
 
 import datetime as dt
+import inspect
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import anyio
-from caldav.async_collection import AsyncCalendar, AsyncEvent
-from caldav.async_davclient import AsyncDAVClient
+from caldav.aio import AsyncCalendar, AsyncDAVClient, AsyncEvent
 from caldav.elements import cdav, dav
+from caldav.lib import error as caldav_error
 from httpx import Auth
 from icalendar import Alarm, Calendar, vDDDTypes, vRecur
 from icalendar import Event as ICalEvent
@@ -18,6 +19,18 @@ from lxml import etree  # type: ignore[import-untyped]
 from ..config import get_nextcloud_ssl_verify
 
 logger = logging.getLogger(__name__)
+
+
+async def _maybe_await(result: Any) -> Any:
+    """Await a result if it's a coroutine, otherwise return it directly.
+
+    caldav v3 uses dual-mode methods that return coroutines for async clients
+    but plain objects when the result is already available (e.g. load() on
+    already-loaded objects).
+    """
+    if inspect.isawaitable(result):
+        return await result
+    return result
 
 
 class CalendarClient:
@@ -38,7 +51,7 @@ class CalendarClient:
             url=f"{base_url}/remote.php/dav/",
             username=username,
             auth=auth,
-            ssl_verify_cert=get_nextcloud_ssl_verify(),  # type: ignore[arg-type]  # caldav types say bool|str but passes through to httpx which accepts SSLContext
+            ssl_verify_cert=get_nextcloud_ssl_verify(),  # type: ignore[arg-type]  # caldav types say bool|str but passes through to niquests which accepts SSLContext
         )
         self._calendar_home_url = f"{base_url}/remote.php/dav/calendars/{username}/"
 
@@ -50,8 +63,31 @@ class CalendarClient:
         """Get an AsyncCalendar object for the given calendar name."""
         calendar_url = self._get_calendar_url(calendar_name)
         return AsyncCalendar(
-            client=self._dav_client, url=calendar_url, name=calendar_name
+            client=self._dav_client,  # type: ignore[arg-type]  # AsyncDAVClient is valid for async mode
+            url=calendar_url,
+            name=calendar_name,
         )
+
+    async def _async_object_by_uid(
+        self, calendar: AsyncCalendar, uid: str, comp_filter: Any = None
+    ) -> Any:
+        """Async version of Calendar.get_object_by_uid.
+
+        Upstream caldav v3's get_object_by_uid is not async-aware: it calls
+        search() which returns a coroutine for async clients, then tries to
+        iterate the coroutine synchronously. This method properly awaits the
+        search result.
+        """
+        # _hacks="insist" mirrors upstream's Calendar.get_object_by_uid pattern:
+        # retries with per-component-type searches if the initial search returns
+        # nothing, handling CalDAV servers with incomplete search support.
+        items_found = await calendar.search(  # type: ignore[misc]  # dual-mode: returns coroutine for async clients
+            uid=uid, xml=comp_filter, post_filter=True, _hacks="insist"
+        )
+        items_found = [o for o in items_found if o.id == uid]
+        if not items_found:
+            raise caldav_error.NotFoundError(f"{uid} not found on server")
+        return items_found[0]
 
     async def close(self):
         """Close the DAV client connection."""
@@ -100,7 +136,7 @@ class CalendarClient:
 
     # ============= Calendar Operations =============
 
-    async def list_calendars(self) -> List[Dict[str, Any]]:
+    async def list_calendars(self) -> list[dict[str, Any]]:
         """List all available calendars for the user."""
         # Use custom PROPFIND with CalendarServer namespace (cs:) for calendar-color.
         # caldav library's nsmap lacks "CS" namespace, and its CalendarColor uses
@@ -117,7 +153,9 @@ class CalendarClient:
 </d:propfind>"""
 
         response = await self._dav_client.propfind(
-            self._calendar_home_url, props=propfind_body, depth=1
+            self._calendar_home_url,
+            props=propfind_body,  # type: ignore[arg-type]  # props accepts XML body string
+            depth=1,
         )
 
         result = []
@@ -189,7 +227,7 @@ class CalendarClient:
         display_name: str = "",
         description: str = "",
         color: str = "#1976D2",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Create a new calendar with retry on 429 errors."""
         # Use custom MKCALENDAR XML instead of caldav library's make_calendar() due to:
         # 1. Missing CalendarServer namespace (cs:) in caldav's nsmap
@@ -235,7 +273,7 @@ class CalendarClient:
             "status_code": 201,
         }
 
-    async def delete_calendar(self, calendar_name: str) -> Dict[str, Any]:
+    async def delete_calendar(self, calendar_name: str) -> dict[str, Any]:
         """Delete a calendar."""
         # Use absolute URL for deletion
         calendar_url = (
@@ -251,10 +289,10 @@ class CalendarClient:
     async def get_calendar_events(
         self,
         calendar_name: str,
-        start_datetime: Optional[dt.datetime] = None,
-        end_datetime: Optional[dt.datetime] = None,
+        start_datetime: dt.datetime | None = None,
+        end_datetime: dt.datetime | None = None,
         limit: int = 50,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """List events in a calendar within date range."""
         calendar = self._get_calendar(calendar_name)
 
@@ -267,12 +305,12 @@ class CalendarClient:
             expanded = bool(start_datetime and end_datetime)
         else:
             # No date filter — fetch all events
-            events = await calendar.events()
+            events = await calendar.events()  # type: ignore[misc]  # dual-mode
             expanded = False
 
         result = []
         for event in events:
-            await event.load(only_if_unloaded=True)
+            await _maybe_await(event.load(only_if_unloaded=True))
             if event.data:
                 if expanded:
                     # Server-side expansion: each response resource may contain
@@ -297,8 +335,8 @@ class CalendarClient:
     async def _search_events_by_date(
         self,
         calendar: AsyncCalendar,
-        start_datetime: Optional[dt.datetime] = None,
-        end_datetime: Optional[dt.datetime] = None,
+        start_datetime: dt.datetime | None = None,
+        end_datetime: dt.datetime | None = None,
     ) -> list:
         """Execute a CalDAV REPORT with time-range filter."""
         # Ensure naive datetimes are treated as UTC
@@ -326,7 +364,7 @@ class CalendarClient:
             query.xmlelement(), encoding="utf-8", xml_declaration=True
         )
         assert calendar.client is not None
-        response = await calendar.client.report(str(calendar.url), body, depth=1)
+        response = await calendar.client.report(str(calendar.url), body, depth=1)  # type: ignore[misc]  # dual-mode
 
         # Parse response (same pattern as AsyncCalendar.search)
         objects = []
@@ -336,27 +374,27 @@ class CalendarClient:
                 continue
             cal_data = props.get(cdav.CalendarData.tag)
             if cal_data:
-                obj = AsyncEvent(client=calendar.client, data=cal_data, parent=calendar)
+                obj = AsyncEvent(
+                    client=calendar.client,
+                    url=calendar.url.join(href),  # type: ignore[union-attr]  # url is always set for calendars
+                    data=cal_data,
+                    parent=calendar,
+                )
                 objects.append(obj)
 
         return objects
 
     async def create_event(
-        self, calendar_name: str, event_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, calendar_name: str, event_data: dict[str, Any]
+    ) -> dict[str, Any]:
         """Create a new calendar event."""
         calendar = self._get_calendar(calendar_name)
 
         event_uid = str(uuid.uuid4())
         ical_content = self._create_ical_event(event_data, event_uid)
 
-        # save_event returns (event, response) tuple
-        event, response = await calendar.save_event(ical=ical_content)
-
-        if response.status not in [201, 204]:
-            raise RuntimeError(
-                f"Failed to create event {event_uid}: HTTP {response.status}"
-            )
+        # caldav v3's _async_put raises PutError on HTTP failure
+        event = await calendar.save_event(ical=ical_content)  # type: ignore[misc]  # dual-mode
 
         logger.debug(f"Created event {event_uid}")
 
@@ -371,21 +409,23 @@ class CalendarClient:
         self,
         calendar_name: str,
         event_uid: str,
-        event_data: Dict[str, Any],
+        event_data: dict[str, Any],
         etag: str = "",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Update an existing calendar event."""
         calendar = self._get_calendar(calendar_name)
 
         # Find the event by UID using caldav library
-        event = await calendar.event_by_uid(event_uid)
-        await event.load(only_if_unloaded=True)
+        event = await self._async_object_by_uid(
+            calendar, event_uid, cdav.CompFilter("VEVENT")
+        )
+        await _maybe_await(event.load(only_if_unloaded=True))
 
         # Merge updates into existing iCal data
         updated_ical = self._merge_ical_properties(event.data, event_data, event_uid)  # type: ignore[arg-type]
         event.data = updated_ical  # type: ignore[misc]
 
-        await event.save()
+        await _maybe_await(event.save())
 
         logger.debug(f"Updated event {event_uid}")
         return {
@@ -395,27 +435,31 @@ class CalendarClient:
             "status_code": 200,
         }
 
-    async def delete_event(self, calendar_name: str, event_uid: str) -> Dict[str, Any]:
+    async def delete_event(self, calendar_name: str, event_uid: str) -> dict[str, Any]:
         """Delete a calendar event."""
         calendar = self._get_calendar(calendar_name)
 
         try:
-            event = await calendar.event_by_uid(event_uid)
-            await event.delete()
+            event = await self._async_object_by_uid(
+                calendar, event_uid, cdav.CompFilter("VEVENT")
+            )
+            await _maybe_await(event.delete())
             logger.debug(f"Deleted event {event_uid}")
             return {"status_code": 204}
-        except Exception as e:
+        except caldav_error.NotFoundError as e:
             logger.debug(f"Event {event_uid} not found: {e}")
             return {"status_code": 404}
 
     async def get_event(
         self, calendar_name: str, event_uid: str
-    ) -> tuple[Dict[str, Any], str]:
+    ) -> tuple[dict[str, Any], str]:
         """Get detailed information about a specific event."""
         calendar = self._get_calendar(calendar_name)
 
-        event = await calendar.event_by_uid(event_uid)
-        await event.load(only_if_unloaded=True)
+        event = await self._async_object_by_uid(
+            calendar, event_uid, cdav.CompFilter("VEVENT")
+        )
+        await _maybe_await(event.load(only_if_unloaded=True))
 
         event_data = self._parse_ical_event(event.data) if event.data else None  # type: ignore[arg-type]
         if not event_data:
@@ -429,10 +473,10 @@ class CalendarClient:
 
     async def search_events_across_calendars(
         self,
-        start_datetime: Optional[dt.datetime] = None,
-        end_datetime: Optional[dt.datetime] = None,
-        filters: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
+        start_datetime: dt.datetime | None = None,
+        end_datetime: dt.datetime | None = None,
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Search events across all calendars with advanced filtering."""
         try:
             calendars = await self.list_calendars()
@@ -471,19 +515,19 @@ class CalendarClient:
     # ============= Todo/Task Operations (NEW) =============
 
     async def list_todos(
-        self, calendar_name: str, filters: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
+        self, calendar_name: str, filters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         """List todos/tasks in a calendar."""
         calendar = self._get_calendar(calendar_name)
 
-        # Get all todos using caldav library (now with proper filter)
-        todos = await calendar.todos()
+        # Get all todos including completed ones (filtering is done client-side)
+        todos = await calendar.todos(include_completed=True)  # type: ignore[misc]  # dual-mode
 
         result = []
         for todo in todos:
             # Only load if data not already present from REPORT response
             # This avoids 404 errors for virtual calendars (e.g., Deck boards)
-            await todo.load(only_if_unloaded=True)
+            await _maybe_await(todo.load(only_if_unloaded=True))
             if todo.data:
                 todo_dict = self._parse_ical_todo(todo.data)  # type: ignore[arg-type]
             else:
@@ -500,21 +544,16 @@ class CalendarClient:
         return result
 
     async def create_todo(
-        self, calendar_name: str, todo_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, calendar_name: str, todo_data: dict[str, Any]
+    ) -> dict[str, Any]:
         """Create a new todo/task."""
         calendar = self._get_calendar(calendar_name)
 
         todo_uid = str(uuid.uuid4())
         ical_content = self._create_ical_todo(todo_data, todo_uid)
 
-        # save_todo returns (todo, response) tuple
-        todo, response = await calendar.save_todo(ical=ical_content)
-
-        if response.status not in [201, 204]:
-            raise RuntimeError(
-                f"Failed to create todo {todo_uid}: HTTP {response.status}"
-            )
+        # caldav v3's _async_put raises PutError on HTTP failure
+        todo = await calendar.save_todo(ical=ical_content)  # type: ignore[misc]  # dual-mode
 
         logger.debug(f"Created todo {todo_uid}")
 
@@ -529,16 +568,18 @@ class CalendarClient:
         self,
         calendar_name: str,
         todo_uid: str,
-        todo_data: Dict[str, Any],
+        todo_data: dict[str, Any],
         etag: str = "",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Update an existing todo/task."""
         calendar = self._get_calendar(calendar_name)
 
         try:
             # Find the todo by UID
-            todo = await calendar.todo_by_uid(todo_uid)
-            await todo.load(only_if_unloaded=True)
+            todo = await self._async_object_by_uid(
+                calendar, todo_uid, cdav.CompFilter("VTODO")
+            )
+            await _maybe_await(todo.load(only_if_unloaded=True))
 
             logger.debug(
                 f"Loaded todo {todo_uid}, current data length: {len(todo.data)}"  # type: ignore
@@ -555,8 +596,7 @@ class CalendarClient:
 
             todo.data = updated_ical
 
-            save_result = await todo.save()
-            logger.debug(f"Save result: {save_result}")
+            await _maybe_await(todo.save())
 
             logger.debug(f"Updated todo {todo_uid}")
             return {
@@ -569,22 +609,24 @@ class CalendarClient:
             logger.error(f"Error updating todo {todo_uid}: {e}", exc_info=True)
             raise
 
-    async def delete_todo(self, calendar_name: str, todo_uid: str) -> Dict[str, Any]:
+    async def delete_todo(self, calendar_name: str, todo_uid: str) -> dict[str, Any]:
         """Delete a todo/task."""
         calendar = self._get_calendar(calendar_name)
 
         try:
-            todo = await calendar.todo_by_uid(todo_uid)
-            await todo.delete()
+            todo = await self._async_object_by_uid(
+                calendar, todo_uid, cdav.CompFilter("VTODO")
+            )
+            await _maybe_await(todo.delete())
             logger.debug(f"Deleted todo {todo_uid}")
             return {"status_code": 204}
-        except Exception as e:
+        except caldav_error.NotFoundError as e:
             logger.debug(f"Todo {todo_uid} not found: {e}")
             return {"status_code": 404}
 
     async def search_todos_across_calendars(
-        self, filters: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
+        self, filters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         """Search todos across all calendars."""
         try:
             calendars = await self.list_calendars()
@@ -616,7 +658,7 @@ class CalendarClient:
 
     # ============= Helper Methods - Event iCalendar =============
 
-    def _create_ical_event(self, event_data: Dict[str, Any], event_uid: str) -> str:
+    def _create_ical_event(self, event_data: dict[str, Any], event_uid: str) -> str:
         """Create iCalendar content from event data."""
         cal = Calendar()
         cal.add("prodid", "-//Nextcloud MCP Server//EN")
@@ -700,12 +742,12 @@ class CalendarClient:
         cal.add_component(event)
         return cal.to_ical().decode("utf-8")
 
-    def _extract_vevent_data(self, component) -> Dict[str, Any]:
+    def _extract_vevent_data(self, component) -> dict[str, Any]:
         """Extract event data from a single VEVENT component.
 
         Shared helper used by both _parse_ical_event() and _parse_all_ical_events().
         """
-        event_data: Dict[str, Any] = {
+        event_data: dict[str, Any] = {
             "uid": str(component.get("uid", "")),
             "title": str(component.get("summary", "")),
             "description": str(component.get("description", "")),
@@ -758,7 +800,7 @@ class CalendarClient:
 
         return event_data
 
-    def _parse_ical_event(self, ical_text: str) -> Optional[Dict[str, Any]]:
+    def _parse_ical_event(self, ical_text: str) -> dict[str, Any] | None:
         """Parse iCalendar text and extract the first event."""
         try:
             cal = Calendar.from_ical(ical_text)
@@ -770,13 +812,13 @@ class CalendarClient:
             logger.error(f"Error parsing iCalendar event: {e}")
             return None
 
-    def _parse_all_ical_events(self, ical_text: str) -> list[Dict[str, Any]]:
+    def _parse_all_ical_events(self, ical_text: str) -> list[dict[str, Any]]:
         """Parse iCalendar text and extract ALL event occurrences.
 
         Used with server-side expansion where a single VCALENDAR contains
         multiple VEVENT components (one per recurrence occurrence).
         """
-        results: list[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         try:
             cal = Calendar.from_ical(ical_text)
             for component in cal.walk():
@@ -787,7 +829,7 @@ class CalendarClient:
         return results
 
     def _merge_ical_properties(
-        self, raw_ical: str, event_data: Dict[str, Any], event_uid: str
+        self, raw_ical: str, event_data: dict[str, Any], event_uid: str
     ) -> str:
         """Merge new event data into existing raw iCal while preserving all properties."""
         try:
@@ -923,7 +965,7 @@ class CalendarClient:
 
         return parsed_dt
 
-    def _create_ical_todo(self, todo_data: Dict[str, Any], todo_uid: str) -> str:
+    def _create_ical_todo(self, todo_data: dict[str, Any], todo_uid: str) -> str:
         """Create iCalendar VTODO content from todo data."""
         cal = Calendar()
         cal.add("prodid", "-//Nextcloud MCP Server//EN")
@@ -978,7 +1020,7 @@ class CalendarClient:
         cal.add_component(todo)
         return cal.to_ical().decode("utf-8")
 
-    def _parse_ical_todo(self, ical_text: str) -> Optional[Dict[str, Any]]:
+    def _parse_ical_todo(self, ical_text: str) -> dict[str, Any] | None:
         """Parse iCalendar text and extract todo data."""
         try:
             cal = Calendar.from_ical(ical_text)
@@ -1022,7 +1064,7 @@ class CalendarClient:
             return None
 
     def _merge_ical_todo_properties(
-        self, raw_ical: str, todo_data: Dict[str, Any], todo_uid: str
+        self, raw_ical: str, todo_data: dict[str, Any], todo_uid: str
     ) -> str:
         """Merge new todo data into existing raw iCal while preserving all properties."""
         try:
@@ -1128,15 +1170,15 @@ class CalendarClient:
             return str(categories_obj)
 
     def _apply_event_filters(
-        self, events: List[Dict[str, Any]], filters: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, events: list[dict[str, Any]], filters: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """Apply advanced filters to event list."""
         return [
             event for event in events if self._event_matches_filters(event, filters)
         ]
 
     def _event_matches_filters(
-        self, event: Dict[str, Any], filters: Dict[str, Any]
+        self, event: dict[str, Any], filters: dict[str, Any]
     ) -> bool:
         """Check if an event matches the provided filters."""
         try:
@@ -1179,7 +1221,7 @@ class CalendarClient:
             return True
 
     def _todo_matches_filters(
-        self, todo: Dict[str, Any], filters: Dict[str, Any]
+        self, todo: dict[str, Any], filters: dict[str, Any]
     ) -> bool:
         """Check if a todo matches the provided filters."""
         try:
@@ -1216,8 +1258,8 @@ class CalendarClient:
     # ============= Legacy Methods (for backward compatibility) =============
 
     async def bulk_update_events(
-        self, filter_criteria: Dict[str, Any], update_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, filter_criteria: dict[str, Any], update_data: dict[str, Any]
+    ) -> dict[str, Any]:
         """Bulk update events matching filter criteria."""
         try:
             start_datetime = None
@@ -1277,11 +1319,11 @@ class CalendarClient:
     async def find_availability(
         self,
         duration_minutes: int,
-        attendees: Optional[List[str]] = None,
-        start_datetime: Optional[dt.datetime] = None,
-        end_datetime: Optional[dt.datetime] = None,
-        constraints: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
+        attendees: list[str] | None = None,
+        start_datetime: dt.datetime | None = None,
+        end_datetime: dt.datetime | None = None,
+        constraints: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Find available time slots for scheduling.
 
         Note: This is a simplified stub that returns empty list.

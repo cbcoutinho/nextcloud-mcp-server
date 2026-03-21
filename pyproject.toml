@@ -17,7 +17,7 @@ dependencies = [
     "pythonvcard4>=0.2.0",
     "pydantic>=2.11.4",
     "click>=8.1.8",
-    "caldav",
+    "caldav>=3.0.1,<4.0",
     "pyjwt[crypto]>=2.8.0",
     "aiosqlite>=0.20.0", # Async SQLite for refresh token storage
     "alembic>=1.14.0", # Database migrations
@@ -114,7 +114,6 @@ extend-select = ["I", "PLC0415"]
 "tests/**" = ["PLC0415"]
 
 [tool.uv.sources]
-caldav = { git = "https://github.com/cbcoutinho/caldav", branch = "feature/httpx" }
 qdrant-client = { git = "https://github.com/cbcoutinho/qdrant-client", branch = "fix/fusion-score-threshold" }
 
 [build-system]
