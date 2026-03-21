@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.65.1 (2026-03-21)
+
+### Fix
+
+- resolve OIDC consent flow 500 errors on NC 32
+- address PR #632 review comments
+- **ci**: build OIDC app for all test modes including single-user
+- patch OIDC consent flow regression and add CI build step
+- **caldav**: address PR #632 review feedback
+- **caldav**: migrate to upstream caldav v3.0.1 to fix href handling (#629)
+
 ## v0.65.0 (2026-03-03)
 
 ### Feat
