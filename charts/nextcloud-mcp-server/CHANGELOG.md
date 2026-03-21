@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.58.4 (2026-03-21)
+
+### Fix
+
+- resolve OIDC consent flow 500 errors on NC 32
+- address PR #632 review comments
+- **ci**: build OIDC app for all test modes including single-user
+- patch OIDC consent flow regression and add CI build step
+- **caldav**: address PR #632 review feedback
+- **caldav**: migrate to upstream caldav v3.0.1 to fix href handling (#629)
+
 ## nextcloud-mcp-server-0.58.3 (2026-03-16)
 
 ## nextcloud-mcp-server-0.58.2 (2026-03-14)
