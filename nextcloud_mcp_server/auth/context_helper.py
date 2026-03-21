@@ -7,6 +7,7 @@ import hashlib
 import logging
 import time
 
+import httpx
 from mcp.server.auth.provider import AccessToken
 from mcp.server.fastmcp import Context
 
@@ -20,11 +21,52 @@ from .token_exchange import exchange_token_for_audience
 
 logger = logging.getLogger(__name__)
 
+
+async def _fetch_user_profile(base_url: str, token: str) -> tuple[str | None, str | None]:
+    """Fetch user profile (email and display name) from Nextcloud API.
+    
+    Args:
+        base_url: Nextcloud base URL
+        token: OAuth bearer token
+        
+    Returns:
+        Tuple of (email, display_name). Either or both may be None if not available.
+    """
+    try:
+        async with httpx.AsyncClient(
+            base_url=base_url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10.0,
+        ) as client:
+            response = await client.get(
+                "/ocs/v2.php/cloud/user",
+                headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            # Nextcloud OCS API returns data in ocs.data
+            user_data = data.get("ocs", {}).get("data", {})
+            
+            email = user_data.get("email")
+            display_name = user_data.get("displayname")
+            
+            logger.debug(
+                f"Fetched user profile: email={email}, display_name={display_name}"
+            )
+            return email, display_name
+            
+    except Exception as e:
+        logger.warning(f"Failed to fetch user profile: {e}")
+        # Don't fail the whole request if profile fetch fails
+        return None, None
+
+
 # Token exchange cache: token_hash -> (exchanged_token, expiry_timestamp)
 _exchange_cache: dict[str, tuple[str, float]] = {}
 
 
-def get_client_from_context(ctx: Context, base_url: str) -> NextcloudClient:
+async def get_client_from_context(ctx: Context, base_url: str) -> NextcloudClient:
     """
     Create NextcloudClient for multi-audience mode (no exchange needed).
 
@@ -69,10 +111,22 @@ def get_client_from_context(ctx: Context, base_url: str) -> NextcloudClient:
             f"(no exchange needed)"
         )
 
+        # Fetch user profile for organizer field
+        email, display_name = await _fetch_user_profile(base_url, access_token.token)
+        
+        if email or display_name:
+            logger.debug(f"Using user profile: email={email}, display_name={display_name}")
+        else:
+            logger.debug("No user profile available, using username only")
+
         # Token was validated to have MCP audience
         # Nextcloud will validate its own audience independently
         return NextcloudClient.from_token(
-            base_url=base_url, token=access_token.token, username=username
+            base_url=base_url,
+            token=access_token.token,
+            username=username,
+            user_email=email,
+            user_display_name=display_name,
         )
 
     except AttributeError as e:
@@ -143,8 +197,16 @@ async def get_session_client_from_context(
                     f"Using cached exchanged token (expires in {expiry - time.time():.1f}s)"
                 )
                 oauth_token_cache_hits_total.labels(hit="true").inc()
+                # Fetch user profile for organizer field
+                email, display_name = await _fetch_user_profile(base_url, cached_token)
+                if email or display_name:
+                    logger.debug(f"Using cached user profile: email={email}, display_name={display_name}")
                 return NextcloudClient.from_token(
-                    base_url=base_url, token=cached_token, username=username
+                    base_url=base_url,
+                    token=cached_token,
+                    username=username,
+                    user_email=email,
+                    user_display_name=display_name,
                 )
             else:
                 logger.debug("Cached token expired, removing from cache")
@@ -178,9 +240,18 @@ async def get_session_client_from_context(
         # Clean up expired cache entries
         _cleanup_exchange_cache()
 
+        # Fetch user profile for organizer field
+        email, display_name = await _fetch_user_profile(base_url, exchanged_token)
+        if email or display_name:
+            logger.debug(f"Using user profile from exchanged token: email={email}, display_name={display_name}")
+        
         # Create client with exchanged token
         return NextcloudClient.from_token(
-            base_url=base_url, token=exchanged_token, username=username
+            base_url=base_url,
+            token=exchanged_token,
+            username=username,
+            user_email=email,
+            user_display_name=display_name,
         )
 
     except AttributeError as e:

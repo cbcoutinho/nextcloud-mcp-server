@@ -90,6 +90,7 @@ def configure_calendar_tools(mcp: FastMCP):
         priority: int = 5,
         privacy: str = "PUBLIC",
         attendees: str = "",
+        organizer: str = "",
         url: str = "",
         color: str = "",
     ):
@@ -113,7 +114,8 @@ def configure_calendar_tools(mcp: FastMCP):
             status: Event status: CONFIRMED, TENTATIVE, or CANCELLED
             priority: Priority level 1-9 (1=highest, 9=lowest, 5=normal)
             privacy: Privacy level: PUBLIC, PRIVATE, or CONFIDENTIAL
-            attendees: Comma-separated email addresses
+            attendees: Comma-separated attendee information in "Name <email>" or "email" format
+            organizer: Organizer information in "Name <email>" or "email" format (optional)
             url: Related URL for the event
             color: Event color (hex or name)
 
@@ -139,6 +141,7 @@ def configure_calendar_tools(mcp: FastMCP):
             "priority": priority,
             "privacy": privacy,
             "attendees": attendees,
+            "organizer": organizer,
             "url": url,
             "color": color,
         }
@@ -310,6 +313,7 @@ def configure_calendar_tools(mcp: FastMCP):
         priority: int | None = None,
         privacy: str | None = None,
         attendees: str | None = None,
+        organizer: str | None = None,
         url: str | None = None,
         color: str | None = None,
         etag: str = "",
@@ -349,6 +353,8 @@ def configure_calendar_tools(mcp: FastMCP):
             event_data["privacy"] = privacy
         if attendees is not None:
             event_data["attendees"] = attendees
+        if organizer is not None:
+            event_data["organizer"] = organizer
         if url is not None:
             event_data["url"] = url
         if color is not None:
@@ -389,6 +395,7 @@ def configure_calendar_tools(mcp: FastMCP):
         duration_minutes: int = 60,
         calendar_name: str = "personal",
         attendees: str = "",
+        organizer: str = "",
         location: str = "",
         description: str = "",
         reminder_minutes: int = 15,
@@ -411,7 +418,8 @@ def configure_calendar_tools(mcp: FastMCP):
             ctx: MCP context
             duration_minutes: Meeting duration in minutes (default: 60)
             calendar_name: Calendar to create the meeting in (default: "personal")
-            attendees: Comma-separated email addresses of attendees
+            attendees: Comma-separated attendee information in "Name <email>" or "email" format
+            organizer: Organizer information in "Name <email>" or "email" format (optional)
             location: Meeting location
             description: Meeting description/agenda
             reminder_minutes: Minutes before meeting to send reminder (default: 15)
@@ -437,6 +445,7 @@ def configure_calendar_tools(mcp: FastMCP):
             "description": description,
             "location": location,
             "attendees": attendees,
+            "organizer": organizer,
             "reminder_minutes": reminder_minutes,
             "status": "CONFIRMED",
             "priority": 5,
