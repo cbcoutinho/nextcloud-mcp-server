@@ -55,7 +55,7 @@ jobs:
           # renovate: datasource=docker depName=docker.io/library/nextcloud
           # Disabled until all upstream apps support NC 33
           # - nextcloud_version: "33"
-          #   nextcloud_image: "docker.io/library/nextcloud:33.0.0@sha256:d53f6cb35b0712aa890a5e4a8ca21043d6fcd390f38c55b710816dd7cbc2edc0"
+          #   nextcloud_image: "docker.io/library/nextcloud:33.0.0@sha256:666fd3f31c0865991d75e73369e4c074d304b782c937112f7614cd7ddc5ae089"
 
           # Mode-specific properties
           - mode: single-user
