@@ -23,6 +23,56 @@ from mcp.types import CreateMessageResult, TextContent
 pytestmark = pytest.mark.integration
 
 
+async def wait_for_vector_sync(
+    nc_mcp_client,
+    *,
+    initial_indexed_count: int | None = None,
+    max_wait: int = 90,
+    wait_interval: int = 1,
+) -> dict:
+    """Wait for vector sync to complete, returning final status.
+
+    Args:
+        nc_mcp_client: MCP client to poll status with.
+        initial_indexed_count: If set, wait until indexed_count exceeds this
+            value and pending_count reaches 0. Otherwise wait for idle with
+            no pending work.
+        max_wait: Maximum seconds to wait before failing.
+        wait_interval: Seconds between status polls.
+
+    Returns:
+        The last status dict from nc_get_vector_sync_status.
+    """
+    waited = 0
+    status_data: dict = {}
+    while waited < max_wait:
+        sync_status = await nc_mcp_client.call_tool(
+            "nc_get_vector_sync_status", arguments={}
+        )
+        status_data = json.loads(sync_status.content[0].text)
+
+        if initial_indexed_count is not None:
+            # Wait for new document(s) to be indexed
+            if (
+                status_data["indexed_count"] > initial_indexed_count
+                and status_data["pending_count"] == 0
+            ):
+                break
+        else:
+            # Wait for all pending work to complete
+            if status_data["status"] == "idle" and status_data["pending_count"] == 0:
+                break
+
+        await anyio.sleep(wait_interval)
+        waited += wait_interval
+
+    assert waited < max_wait, (
+        f"Vector sync did not complete within {max_wait} seconds. "
+        f"Last status: {status_data}"
+    )
+    return status_data
+
+
 async def require_vector_sync_tools(nc_mcp_client):
     """Skip test if vector sync tools are not available."""
     tools = await nc_mcp_client.list_tools()
@@ -93,37 +143,8 @@ Avoid blocking operations in async code.""",
     print(f"Created note ID: {_note['id']}")
 
     # Wait for vector indexing to complete
-    max_wait = 30  # Maximum 30 seconds
-    wait_interval = 1  # Check every 1 second
-    waited = 0
-
-    while waited < max_wait:
-        sync_status = await nc_mcp_client.call_tool(
-            "nc_get_vector_sync_status", arguments={}
-        )
-        status_data = json.loads(sync_status.content[0].text)
-
-        print(
-            f"Sync status at {waited}s: indexed={status_data['indexed_count']}, pending={status_data['pending_count']}, status={status_data['status']}"
-        )
-
-        # Check if indexed count increased (new note was indexed)
-        if (
-            status_data["indexed_count"] > initial_indexed_count
-            and status_data["pending_count"] == 0
-        ):
-            # Sync complete and new document indexed
-            print(
-                f"✓ Sync complete: {status_data['indexed_count']} documents indexed (was {initial_indexed_count})"
-            )
-            break
-
-        await anyio.sleep(wait_interval)
-        waited += wait_interval
-
-    # Verify sync completed
-    assert waited < max_wait, (
-        f"Vector sync did not complete within {max_wait} seconds. Last status: {status_data}"
+    status_data = await wait_for_vector_sync(
+        nc_mcp_client, initial_indexed_count=initial_indexed_count
     )
     assert status_data["indexed_count"] > initial_indexed_count, (
         f"New note was not indexed (count stayed at {initial_indexed_count})"
@@ -247,24 +268,7 @@ async def test_semantic_search_answer_with_limit(nc_mcp_client, temporary_note_f
     )
 
     # Wait for vector indexing to complete
-
-    max_wait = 30
-    wait_interval = 1
-    waited = 0
-
-    while waited < max_wait:
-        sync_status = await nc_mcp_client.call_tool(
-            "nc_get_vector_sync_status", arguments={}
-        )
-        status_data = json.loads(sync_status.content[0].text)
-
-        if status_data["status"] == "idle" and status_data["pending_count"] == 0:
-            break
-
-        await anyio.sleep(wait_interval)
-        waited += wait_interval
-
-    assert waited < max_wait, f"Vector sync did not complete within {max_wait} seconds"
+    await wait_for_vector_sync(nc_mcp_client)
 
     call_result = await nc_mcp_client.call_tool(
         "nc_semantic_search_answer",
@@ -305,24 +309,7 @@ async def test_semantic_search_answer_score_threshold(
     )
 
     # Wait for vector indexing to complete
-
-    max_wait = 30
-    wait_interval = 1
-    waited = 0
-
-    while waited < max_wait:
-        sync_status = await nc_mcp_client.call_tool(
-            "nc_get_vector_sync_status", arguments={}
-        )
-        status_data = json.loads(sync_status.content[0].text)
-
-        if status_data["status"] == "idle" and status_data["pending_count"] == 0:
-            break
-
-        await anyio.sleep(wait_interval)
-        waited += wait_interval
-
-    assert waited < max_wait, f"Vector sync did not complete within {max_wait} seconds"
+    await wait_for_vector_sync(nc_mcp_client)
 
     # Query with exact match
     call_result = await nc_mcp_client.call_tool(
@@ -369,24 +356,7 @@ async def test_semantic_search_answer_max_tokens(nc_mcp_client, temporary_note_f
     )
 
     # Wait for vector indexing to complete
-
-    max_wait = 30
-    wait_interval = 1
-    waited = 0
-
-    while waited < max_wait:
-        sync_status = await nc_mcp_client.call_tool(
-            "nc_get_vector_sync_status", arguments={}
-        )
-        status_data = json.loads(sync_status.content[0].text)
-
-        if status_data["status"] == "idle" and status_data["pending_count"] == 0:
-            break
-
-        await anyio.sleep(wait_interval)
-        waited += wait_interval
-
-    assert waited < max_wait, f"Vector sync did not complete within {max_wait} seconds"
+    await wait_for_vector_sync(nc_mcp_client)
 
     call_result = await nc_mcp_client.call_tool(
         "nc_semantic_search_answer",

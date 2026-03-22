@@ -2187,11 +2187,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     logger.info("Test webhook endpoint enabled: /webhooks/nextcloud")
 
     # Add management API endpoints for Nextcloud PHP app
-    # Available in: OAuth modes OR multi-user BasicAuth with offline access (for Astrolabe integration)
-    enable_management_apis = oauth_enabled or (
-        settings.enable_multi_user_basic_auth and settings.enable_offline_access
-    )
-    if enable_management_apis:
+    # Tier 1: Public endpoints (no auth required) - available in all non-Smithery modes
+    # These let Astrolabe show basic server status even in single-user BasicAuth mode
+    if deployment_mode != DeploymentMode.SMITHERY_STATELESS:
         routes.append(Route("/api/v1/status", get_server_status, methods=["GET"]))
         routes.append(
             Route(
@@ -2200,6 +2198,16 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 methods=["GET"],
             )
         )
+        logger.info(
+            "Public management API endpoints enabled: /api/v1/status, /api/v1/vector-sync/status"
+        )
+
+    # Tier 2+: Authenticated management endpoints (OAuth required)
+    # Available in: OAuth modes OR multi-user BasicAuth with offline access
+    enable_authenticated_management_apis = oauth_enabled or (
+        settings.enable_multi_user_basic_auth and settings.enable_offline_access
+    )
+    if enable_authenticated_management_apis:
         routes.append(
             Route(
                 "/api/v1/users/{user_id}/session",
@@ -2270,7 +2278,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         )
         routes.append(Route("/api/v1/scopes", list_supported_scopes, methods=["GET"]))
         logger.info(
-            "Management API endpoints enabled: /api/v1/status, /api/v1/vector-sync/status, "
+            "Authenticated management API endpoints enabled: "
             "/api/v1/users/{user_id}/session, /api/v1/users/{user_id}/revoke, "
             "/api/v1/users/{user_id}/app-password, /api/v1/users/{user_id}/access, "
             "/api/v1/users/{user_id}/scopes, /api/v1/scopes, "
