@@ -91,7 +91,7 @@ services:
 
       # Semantic search configuration (ADR-007, ADR-021)
       - ENABLE_SEMANTIC_SEARCH=true
-      - VECTOR_SYNC_SCAN_INTERVAL=60
+      - VECTOR_SYNC_SCAN_INTERVAL=5
       - VECTOR_SYNC_PROCESSOR_WORKERS=1
 
       #- LOG_FORMAT=json
