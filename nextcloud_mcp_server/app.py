@@ -8,10 +8,9 @@ import time
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Optional, cast
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 import anyio
 import click
@@ -95,7 +94,6 @@ from nextcloud_mcp_server.auth.webhook_routes import (
 )
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import (
-    DeploymentMode,
     Settings,
     get_document_processor_config,
     get_settings,
@@ -357,67 +355,6 @@ class OAuthAppContext:
     )
 
 
-@dataclass
-class SmitheryAppContext:
-    """Application context for Smithery stateless mode.
-
-    ADR-016: No shared client - clients created per-request from session config.
-    """
-
-    pass  # No shared state needed - everything comes from session config
-
-
-# ADR-016: Smithery config schema for container runtime
-# This schema is served at /.well-known/mcp-config for Smithery discovery
-# See: https://smithery.ai/docs/build/session-config
-SMITHERY_CONFIG_SCHEMA = {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "$id": "https://server.smithery.ai/nextcloud-mcp-server/.well-known/mcp-config",
-    "title": "Nextcloud MCP Server Configuration",
-    "description": "Configuration for connecting to your Nextcloud instance via app password authentication",
-    "x-query-style": "flat",  # Our schema has no nested objects, so flat style works
-    "type": "object",
-    "required": ["nextcloud_url", "username", "app_password"],
-    "properties": {
-        "nextcloud_url": {
-            "type": "string",
-            "title": "Nextcloud URL",
-            "description": "Your Nextcloud instance URL (e.g., https://cloud.example.com). Must be publicly accessible.",
-            "pattern": "^https?://.+",
-        },
-        "username": {
-            "type": "string",
-            "title": "Username",
-            "description": "Your Nextcloud username",
-            "minLength": 1,
-        },
-        "app_password": {
-            "type": "string",
-            "title": "App Password",
-            "description": "Nextcloud app password. Generate at Settings > Security > App passwords. Do NOT use your main password.",
-            "minLength": 1,
-        },
-    },
-    "additionalProperties": False,
-}
-
-
-# ADR-016: Context variable to hold Smithery session config per-request
-# This is set by SmitheryConfigMiddleware and accessed in context.py
-_smithery_session_config: ContextVar[dict[str, str] | None] = ContextVar(
-    "smithery_session_config"
-)
-_smithery_session_config.set(None)  # Set initial value
-
-
-def get_smithery_session_config() -> dict | None:
-    """Get the current Smithery session config from context variable.
-
-    Used by context.py to access config extracted from URL query parameters.
-    """
-    return _smithery_session_config.get()
-
-
 class BasicAuthMiddleware:
     """Middleware to extract BasicAuth credentials from Authorization header.
 
@@ -460,76 +397,6 @@ class BasicAuthMiddleware:
                     logger.warning(f"Failed to extract BasicAuth credentials: {e}")
 
         await self.app(scope, receive, send)
-
-
-class SmitheryConfigMiddleware:
-    """Middleware to extract Smithery config from URL query parameters.
-
-    ADR-016: For container runtime, Smithery passes configuration as URL query
-    parameters to the /mcp endpoint. This middleware extracts those parameters
-    and stores them in a context variable for access in tools.
-
-    Configuration parameters:
-    - nextcloud_url: Nextcloud instance URL
-    - username: Nextcloud username
-    - app_password: Nextcloud app password
-
-    The extracted config is stored in a ContextVar and can be accessed via
-    get_smithery_session_config() in context.py.
-    """
-
-    def __init__(self, app: ASGIApp):
-        self.app = app
-
-    async def __call__(
-        self, scope: StarletteScope, receive: Receive, send: Send
-    ) -> None:
-        if scope["type"] == "http":
-            # Extract config from query parameters
-            query_string = scope.get("query_string", b"").decode("utf-8")
-            params = parse_qs(query_string)
-
-            # Build session config from query parameters
-            # Smithery uses dot notation for nested objects, but our schema is flat
-            session_config = {}
-            for key in ["nextcloud_url", "username", "app_password"]:
-                if key in params:
-                    # parse_qs returns lists, take first value
-                    session_config[key] = params[key][0]
-
-            # Store in context variable for access by context.py
-            if session_config:
-                _smithery_session_config.set(session_config)
-                logger.debug(
-                    f"Smithery config extracted: nextcloud_url={session_config.get('nextcloud_url')}, "
-                    f"username={session_config.get('username')}"
-                )
-
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            # Clear context variable after request
-            _smithery_session_config.set(None)
-
-
-@asynccontextmanager
-async def app_lifespan_smithery(server: FastMCP) -> AsyncIterator[SmitheryAppContext]:
-    """
-    Manage application lifecycle for Smithery stateless mode.
-
-    ADR-016: Minimal lifespan with no shared state.
-    - No shared Nextcloud client (created per-request from session config)
-    - No vector sync (disabled in Smithery mode)
-    - No persistent storage (stateless deployment)
-    - No document processors (not enabled in Smithery mode)
-    """
-    logger.info("Starting MCP server in Smithery stateless mode")
-    logger.info("Clients will be created per-request from session config")
-
-    try:
-        yield SmitheryAppContext()
-    finally:
-        logger.info("Shutting down Smithery stateless mode")
 
 
 async def load_oauth_client_credentials(
@@ -1169,12 +1036,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         AuthMode.OAUTH_SINGLE_AUDIENCE,
         AuthMode.OAUTH_TOKEN_EXCHANGE,
     )
-    deployment_mode = (
-        DeploymentMode.SMITHERY_STATELESS
-        if mode == AuthMode.SMITHERY_STATELESS
-        else DeploymentMode.SELF_HOSTED
-    )
-
     # Log hybrid authentication status for multi-user BasicAuth with offline access
     if mode == AuthMode.MULTI_USER_BASIC and settings.enable_offline_access:
         logger.info(
@@ -1386,20 +1247,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 enable_dns_rebinding_protection=False
             ),
         )
-    elif mode == AuthMode.SMITHERY_STATELESS:
-        logger.info("Configuring MCP server for Smithery stateless mode")
-        # json_response=True returns plain JSON-RPC instead of SSE format,
-        # required for Smithery scanner compatibility
-        mcp = FastMCP(
-            "Nextcloud MCP",
-            lifespan=app_lifespan_smithery,
-            json_response=True,
-            # Disable DNS rebinding protection for containerized deployments (k8s, Docker)
-            # MCP 1.23+ auto-enables this for localhost, breaking k8s service DNS names
-            transport_security=TransportSecuritySettings(
-                enable_dns_rebinding_protection=False
-            ),
-        )
     else:
         # BasicAuth modes (single-user or multi-user)
         logger.info(f"Configuring MCP server for {mode.value} mode")
@@ -1448,10 +1295,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             )
 
     # Register semantic search tools (cross-app feature)
-    # ADR-016: Skip in Smithery stateless mode (no vector database)
-    if deployment_mode == DeploymentMode.SMITHERY_STATELESS:
-        logger.info("Skipping semantic search tools (Smithery stateless mode)")
-    elif settings.vector_sync_enabled:
+    if settings.vector_sync_enabled:
         logger.info("Configuring semantic search tools (vector sync enabled)")
         configure_semantic_tools(mcp)
     else:
@@ -2103,9 +1947,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 checks["auth_mode"] = "basic"
                 checks["auth_configured"] = "error: credentials not set"
                 is_ready = False
-        elif mode == AuthMode.SMITHERY_STATELESS:
-            checks["auth_mode"] = "smithery"
-            checks["auth_configured"] = "ok"
 
         # Check Qdrant status if using network mode (external Qdrant service)
         # In-memory and persistent modes use embedded Qdrant, no external service to check
@@ -2187,20 +2028,19 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     logger.info("Test webhook endpoint enabled: /webhooks/nextcloud")
 
     # Add management API endpoints for Nextcloud PHP app
-    # Tier 1: Public endpoints (no auth required) - available in all non-Smithery modes
+    # Tier 1: Public endpoints (no auth required)
     # These let Astrolabe show basic server status even in single-user BasicAuth mode
-    if deployment_mode != DeploymentMode.SMITHERY_STATELESS:
-        routes.append(Route("/api/v1/status", get_server_status, methods=["GET"]))
-        routes.append(
-            Route(
-                "/api/v1/vector-sync/status",
-                get_vector_sync_status,
-                methods=["GET"],
-            )
+    routes.append(Route("/api/v1/status", get_server_status, methods=["GET"]))
+    routes.append(
+        Route(
+            "/api/v1/vector-sync/status",
+            get_vector_sync_status,
+            methods=["GET"],
         )
-        logger.info(
-            "Public management API endpoints enabled: /api/v1/status, /api/v1/vector-sync/status"
-        )
+    )
+    logger.info(
+        "Public management API endpoints enabled: /api/v1/status, /api/v1/vector-sync/status"
+    )
 
     # Tier 2+: Authenticated management endpoints (OAuth required)
     # Available in: OAuth modes OR multi-user BasicAuth with offline access
@@ -2285,26 +2125,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             "/api/v1/vector-viz/search, /api/v1/search, /api/v1/apps, "
             "/api/v1/webhooks, /api/v1/pdf-preview"
         )
-
-    # ADR-016: Add Smithery well-known config endpoint for container runtime discovery
-    if deployment_mode == DeploymentMode.SMITHERY_STATELESS:
-
-        def smithery_mcp_config(request):
-            """Smithery MCP configuration endpoint.
-
-            Returns JSON Schema for Smithery's configuration UI.
-            This endpoint is required for Smithery container runtime discovery.
-            """
-            return JSONResponse(SMITHERY_CONFIG_SCHEMA)
-
-        routes.append(
-            Route(
-                "/.well-known/mcp-config",
-                smithery_mcp_config,
-                methods=["GET"],
-            )
-        )
-        logger.info("Smithery config endpoint enabled: /.well-known/mcp-config")
 
     # Note: Metrics endpoint is NOT exposed on main HTTP port for security reasons.
     # Metrics are served on dedicated port via setup_metrics() (default: 9090)
@@ -2453,80 +2273,72 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         )
 
     # Add user info routes (available in both BasicAuth and OAuth modes)
-    # ADR-016: Skip /app admin UI in Smithery stateless mode (no vector sync, webhooks)
-    if deployment_mode != DeploymentMode.SMITHERY_STATELESS:
-        # Create a separate Starlette app for browser routes that need session auth
-        # This prevents SessionAuthBackend from interfering with FastMCP's OAuth
-        browser_routes = [
-            Route(
-                "/", user_info_html, methods=["GET"]
-            ),  # /app → user info with all tabs
-            Route(
-                "/revoke",
-                revoke_session,
-                methods=["POST"],
-                name="revoke_session_endpoint",
-            ),  # /app/revoke → revoke_session
-            # Vector sync status fragment (htmx polling)
-            Route(
-                "/vector-sync/status",
-                vector_sync_status_fragment,
-                methods=["GET"],
-            ),  # /app/vector-sync/status
-            # Vector visualization routes
-            Route(
-                "/vector-viz", vector_visualization_html, methods=["GET"]
-            ),  # /app/vector-viz
-            Route(
-                "/vector-viz/search",
-                vector_visualization_search,
-                methods=["GET"],
-            ),  # /app/vector-viz/search
-            Route(
-                "/chunk-context",
-                chunk_context_endpoint,
-                methods=["GET"],
-            ),  # /app/chunk-context
-            # Webhook management routes (admin-only)
-            Route(
-                "/webhooks", webhook_management_pane, methods=["GET"]
-            ),  # /app/webhooks
-            Route(
-                "/webhooks/enable/{preset_id:str}",
-                enable_webhook_preset,
-                methods=["POST"],
-            ),
-            Route(
-                "/webhooks/disable/{preset_id:str}",
-                disable_webhook_preset,
-                methods=["DELETE"],
-            ),
-        ]
+    # Create a separate Starlette app for browser routes that need session auth
+    # This prevents SessionAuthBackend from interfering with FastMCP's OAuth
+    browser_routes = [
+        Route("/", user_info_html, methods=["GET"]),  # /app → user info with all tabs
+        Route(
+            "/revoke",
+            revoke_session,
+            methods=["POST"],
+            name="revoke_session_endpoint",
+        ),  # /app/revoke → revoke_session
+        # Vector sync status fragment (htmx polling)
+        Route(
+            "/vector-sync/status",
+            vector_sync_status_fragment,
+            methods=["GET"],
+        ),  # /app/vector-sync/status
+        # Vector visualization routes
+        Route(
+            "/vector-viz", vector_visualization_html, methods=["GET"]
+        ),  # /app/vector-viz
+        Route(
+            "/vector-viz/search",
+            vector_visualization_search,
+            methods=["GET"],
+        ),  # /app/vector-viz/search
+        Route(
+            "/chunk-context",
+            chunk_context_endpoint,
+            methods=["GET"],
+        ),  # /app/chunk-context
+        # Webhook management routes (admin-only)
+        Route("/webhooks", webhook_management_pane, methods=["GET"]),  # /app/webhooks
+        Route(
+            "/webhooks/enable/{preset_id:str}",
+            enable_webhook_preset,
+            methods=["POST"],
+        ),
+        Route(
+            "/webhooks/disable/{preset_id:str}",
+            disable_webhook_preset,
+            methods=["DELETE"],
+        ),
+    ]
 
-        # Add static files mount if directory exists
-        static_dir = os.path.join(os.path.dirname(__file__), "auth", "static")
-        if os.path.isdir(static_dir):
-            browser_routes.append(
-                Mount("/static", StaticFiles(directory=static_dir), name="static")
-            )
-            logger.info(f"Mounted static files from {static_dir}")
-
-        browser_app = Starlette(routes=browser_routes)
-        browser_app.add_middleware(
-            AuthenticationMiddleware,  # type: ignore[invalid-argument-type]
-            backend=SessionAuthBackend(oauth_enabled=oauth_enabled),
+    # Add static files mount if directory exists
+    static_dir = os.path.join(os.path.dirname(__file__), "auth", "static")
+    if os.path.isdir(static_dir):
+        browser_routes.append(
+            Mount("/static", StaticFiles(directory=static_dir), name="static")
         )
+        logger.info(f"Mounted static files from {static_dir}")
 
-        # Add redirect from /app to /app/ (Starlette requires trailing slash for mounted apps)
-        routes.append(
-            Route("/app", lambda request: RedirectResponse("/app/", status_code=307))
-        )
+    browser_app = Starlette(routes=browser_routes)
+    browser_app.add_middleware(
+        AuthenticationMiddleware,  # type: ignore[invalid-argument-type]
+        backend=SessionAuthBackend(oauth_enabled=oauth_enabled),
+    )
 
-        # Mount browser app at /app (webapp and admin routes)
-        routes.append(Mount("/app", app=browser_app))
-        logger.info("App routes with session auth: /app, /app/webhooks, /app/revoke")
-    else:
-        logger.info("Admin UI (/app) disabled in Smithery stateless mode")
+    # Add redirect from /app to /app/ (Starlette requires trailing slash for mounted apps)
+    routes.append(
+        Route("/app", lambda request: RedirectResponse("/app/", status_code=307))
+    )
+
+    # Mount browser app at /app (webapp and admin routes)
+    routes.append(Mount("/app", app=browser_app))
+    logger.info("App routes with session auth: /app, /app/webhooks, /app/revoke")
 
     # Mount FastMCP at root last (catch-all, handles OAuth via token_verifier)
     routes.append(Mount("/", app=mcp_app))
@@ -2647,13 +2459,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             )
 
         logger.info("WWW-Authenticate scope challenge handler enabled")
-
-    # ADR-016: Apply SmitheryConfigMiddleware in Smithery stateless mode
-    # This must be the outermost middleware to extract config from URL query parameters
-    # before any other middleware processes the request
-    if deployment_mode == DeploymentMode.SMITHERY_STATELESS:
-        app = SmitheryConfigMiddleware(app)
-        logger.info("SmitheryConfigMiddleware enabled for query parameter config")
 
     # Apply BasicAuthMiddleware for multi-user BasicAuth pass-through mode
     if settings.enable_multi_user_basic_auth:

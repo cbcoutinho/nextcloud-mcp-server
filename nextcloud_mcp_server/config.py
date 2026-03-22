@@ -4,36 +4,7 @@ import os
 import socket
 import ssl
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
-
-
-class DeploymentMode(Enum):
-    """Deployment mode for the MCP server.
-
-    SELF_HOSTED: Full features, environment-based configuration.
-                 Supports vector sync, semantic search, admin UI.
-
-    SMITHERY_STATELESS: Stateless mode for Smithery hosting.
-                        Session-based configuration, no persistent storage.
-                        Excludes semantic search, vector sync, admin UI.
-    """
-
-    SELF_HOSTED = "self_hosted"
-    SMITHERY_STATELESS = "smithery"
-
-
-def get_deployment_mode() -> DeploymentMode:
-    """Detect deployment mode from environment.
-
-    Returns:
-        DeploymentMode.SMITHERY_STATELESS if SMITHERY_DEPLOYMENT=true,
-        otherwise DeploymentMode.SELF_HOSTED (default).
-    """
-    if os.getenv("SMITHERY_DEPLOYMENT", "false").lower() == "true":
-        return DeploymentMode.SMITHERY_STATELESS
-    return DeploymentMode.SELF_HOSTED
-
 
 LOGGING_CONFIG = {
     "version": 1,
@@ -168,7 +139,7 @@ class Settings:
     # Deployment mode (ADR-021: explicit mode selection)
     # Optional: If not set, mode is auto-detected from other settings
     # Valid values: single_user_basic, multi_user_basic, oauth_single_audience,
-    #               oauth_token_exchange, smithery
+    #               oauth_token_exchange
     deployment_mode: str | None = None
 
     # OAuth/OIDC settings
@@ -434,15 +405,10 @@ def _is_multi_user_mode() -> bool:
 
     Single-user modes are:
     - Single-user BasicAuth (username and password both set)
-    - Smithery Stateless (SMITHERY_DEPLOYMENT=true)
 
     Returns:
         True if multi-user mode detected
     """
-    # Smithery is always single-user (stateless)
-    if os.getenv("SMITHERY_DEPLOYMENT", "false").lower() == "true":
-        return False
-
     # Multi-user BasicAuth explicitly enabled
     if os.getenv("ENABLE_MULTI_USER_BASIC_AUTH", "false").lower() == "true":
         return True

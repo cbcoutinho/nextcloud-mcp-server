@@ -10,7 +10,6 @@ This document provides a unified reference for authentication flows across all d
 | [Multi-User BasicAuth](#2-multi-user-basicauth) | Header pass-through | App password (optional) | Bearer token |
 | [OAuth Single-Audience](#3-oauth-single-audience-default) | Multi-audience token | Refresh token exchange | Bearer token |
 | [OAuth Token Exchange](#4-oauth-token-exchange-rfc-8693) | RFC 8693 exchange | Refresh token exchange | Bearer token |
-| [Smithery Stateless](#5-smithery-stateless) | Session parameters | Not supported | N/A |
 
 ## Communication Patterns
 
@@ -303,59 +302,6 @@ Same as Multi-User BasicAuth. See [Astrolabe → MCP Server](#astrolabe--mcp-ser
 
 ---
 
-### 5. Smithery Stateless
-
-**Use Case:** Multi-tenant SaaS deployment via Smithery platform. Fully stateless.
-
-Enabled by `SMITHERY_DEPLOYMENT=true`.
-
-#### MCP Client → MCP Server → Nextcloud
-
-```
-MCP Client                    MCP Server                   Nextcloud
-    │                             │                            │
-    │── SSE Connect ─────────────▶│                            │
-    │   ?nextcloud_url=...        │                            │
-    │   &username=...             │                            │
-    │   &app_password=...         │                            │
-    │                             │── SmitheryConfigMiddleware │
-    │                             │   Extract URL params       │
-    │                             │                            │
-    │── MCP Request ─────────────▶│                            │
-    │   (no Authorization header) │                            │
-    │                             │── Create per-request ─────▶│
-    │                             │   NextcloudClient          │
-    │                             │                            │
-    │                             │── HTTP + BasicAuth ───────▶│
-    │                             │   (from session params)    │
-    │                             │◀── API Response ───────────│
-    │◀── Tool Result ─────────────│                            │
-```
-
-**Key characteristics:**
-- Configuration passed via URL query parameters (Smithery `configSchema`)
-- No persistent state - client created fresh per request
-- No OAuth infrastructure
-- No background sync support (stateless)
-- No admin UI available
-
-**Required session parameters:**
-- `nextcloud_url`: Nextcloud instance URL
-- `username`: Nextcloud username
-- `app_password`: Nextcloud app password
-
-**Implementation:** `context.py:108-184` - `_get_client_from_session_config()` creates client from session params
-
-#### Background Sync
-
-Not supported. Smithery mode is fully stateless with no credential storage.
-
-#### Astrolabe Integration
-
-Not applicable. Smithery deployments don't integrate with Astrolabe.
-
----
-
 ## Configuration Quick Reference
 
 ### Single-User BasicAuth
@@ -402,12 +348,6 @@ NEXTCLOUD_OIDC_CLIENT_SECRET=<client-secret>
 ENABLE_OFFLINE_ACCESS=true
 TOKEN_ENCRYPTION_KEY=<32-byte-key>
 TOKEN_STORAGE_DB=/data/tokens.db
-```
-
-### Smithery Stateless
-```bash
-SMITHERY_DEPLOYMENT=true
-# All other config comes from session URL parameters
 ```
 
 ---

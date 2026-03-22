@@ -142,7 +142,6 @@ dev = [
 
 [project.scripts]
 nextcloud-mcp-server = "nextcloud_mcp_server.cli:cli"
-smithery-main = "nextcloud_mcp_server.smithery_main:main"
 
 [[tool.uv.index]]
 name = "testpypi"

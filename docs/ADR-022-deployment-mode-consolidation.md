@@ -13,8 +13,6 @@ The Nextcloud MCP Server currently supports five distinct deployment modes (ADR-
 2. **Multi-User BasicAuth** - HTTP header credential pass-through
 3. **OAuth Single-Audience** - Multi-audience token validation
 4. **OAuth Token Exchange** - RFC 8693 delegation
-5. **Smithery Stateless** - Session URL parameters (free tier sunsetting March 2026)
-
 This complexity creates several problems:
 
 ### Maintenance Burden

@@ -218,8 +218,6 @@ async def get_server_status(request: Request) -> JSONResponse:
         auth_mode = "multi_user_basic"
     elif mode == AuthMode.SINGLE_USER_BASIC:
         auth_mode = "basic"
-    elif mode == AuthMode.SMITHERY_STATELESS:
-        auth_mode = "smithery"
     else:
         auth_mode = "unknown"
 

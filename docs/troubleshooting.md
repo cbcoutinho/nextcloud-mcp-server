@@ -69,7 +69,7 @@ ENABLE_BACKGROUND_OPERATIONS=true
 
 **Symptom:**
 ```
-ValueError: Invalid MCP_DEPLOYMENT_MODE: 'oauth'. Valid values: single_user_basic, multi_user_basic, oauth_single_audience, oauth_token_exchange, smithery
+ValueError: Invalid MCP_DEPLOYMENT_MODE: 'oauth'. Valid values: single_user_basic, multi_user_basic, oauth_single_audience, oauth_token_exchange
 ```
 
 **Cause:** Invalid value for `MCP_DEPLOYMENT_MODE`.
@@ -82,7 +82,6 @@ MCP_DEPLOYMENT_MODE=single_user_basic          # Single-user with username/passw
 MCP_DEPLOYMENT_MODE=multi_user_basic           # Multi-user BasicAuth
 MCP_DEPLOYMENT_MODE=oauth_single_audience      # OAuth (recommended)
 MCP_DEPLOYMENT_MODE=oauth_token_exchange       # OAuth with token exchange
-MCP_DEPLOYMENT_MODE=smithery                   # Smithery deployment
 ```
 
 Or remove `MCP_DEPLOYMENT_MODE` to use automatic detection.

@@ -9,7 +9,6 @@ See ADR-020 for detailed architecture and deployment mode documentation.
 """
 
 import logging
-import os
 from dataclasses import dataclass
 from enum import Enum
 
@@ -28,7 +27,6 @@ class AuthMode(Enum):
     MULTI_USER_BASIC = "multi_user_basic"
     OAUTH_SINGLE_AUDIENCE = "oauth_single"
     OAUTH_TOKEN_EXCHANGE = "oauth_exchange"
-    SMITHERY_STATELESS = "smithery"
 
 
 @dataclass
@@ -199,25 +197,6 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
         "MCP tokens are separate from Nextcloud tokens. "
         "Server exchanges MCP token for Nextcloud token on each request.",
     ),
-    AuthMode.SMITHERY_STATELESS: ModeRequirements(
-        required=[],  # All config from session URL params
-        optional=[],
-        forbidden=[
-            "nextcloud_host",
-            "nextcloud_username",
-            "nextcloud_password",
-            "enable_multi_user_basic_auth",
-            "enable_token_exchange",
-            "enable_offline_access",
-            "vector_sync_enabled",
-            "oidc_client_id",
-            "oidc_client_secret",
-        ],
-        conditional={},
-        description="Stateless multi-tenant deployment for Smithery platform. "
-        "Configuration comes from session URL parameters. "
-        "No persistent storage, no OAuth, no vector sync.",
-    ),
 }
 
 
@@ -226,11 +205,10 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
 
     Mode detection priority (ADR-021):
     0. Explicit MCP_DEPLOYMENT_MODE (if set) - NEW in ADR-021
-    1. Smithery (explicit flag)
-    2. Token exchange (most specific OAuth mode)
-    3. Multi-user BasicAuth
-    4. Single-user BasicAuth
-    5. OAuth single-audience (default OAuth mode)
+    1. Token exchange (most specific OAuth mode)
+    2. Multi-user BasicAuth
+    3. Single-user BasicAuth
+    4. OAuth single-audience (default OAuth mode)
 
     Args:
         settings: Application settings
@@ -254,7 +232,6 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
             "multi_user_basic": AuthMode.MULTI_USER_BASIC,
             "oauth_single_audience": AuthMode.OAUTH_SINGLE_AUDIENCE,
             "oauth_token_exchange": AuthMode.OAUTH_TOKEN_EXCHANGE,
-            "smithery": AuthMode.SMITHERY_STATELESS,
         }
 
         if mode_str not in mode_map:
@@ -269,12 +246,6 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
         return explicit_mode
 
     # Auto-detection (existing behavior)
-    # Check for Smithery mode (explicit environment variable)
-    # Note: This checks the environment directly, not settings
-    # because Smithery mode has no settings-based config
-    if os.getenv("SMITHERY_DEPLOYMENT", "false").lower() == "true":
-        return AuthMode.SMITHERY_STATELESS
-
     # Check for token exchange (most specific OAuth mode)
     if settings.enable_token_exchange:
         return AuthMode.OAUTH_TOKEN_EXCHANGE

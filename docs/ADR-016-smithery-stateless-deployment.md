@@ -1,7 +1,8 @@
 # ADR-016: Smithery Stateless Deployment for Multi-User Public Nextcloud Instances
 
-**Status:** Proposed
+**Status:** Deprecated (removed in v0.66.0)
 **Date:** 2025-01-22
+**Deprecated:** 2026-03-22 — Smithery deployment mode has been removed. Smithery sunsetted its free tier and third-party hosting conflicts with the project's privacy-first design. See ADR-022 for rationale.
 **Deciders:** Development Team
 **Related:** ADR-004 (OAuth), ADR-007 (Background Vector Sync), ADR-015 (Unified Provider)
 
