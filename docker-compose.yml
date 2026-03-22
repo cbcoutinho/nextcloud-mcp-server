@@ -90,7 +90,7 @@ services:
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
 
       # Semantic search configuration (ADR-007, ADR-021)
-      #- ENABLE_SEMANTIC_SEARCH=true
+      - ENABLE_SEMANTIC_SEARCH=true
       - VECTOR_SYNC_SCAN_INTERVAL=60
       - VECTOR_SYNC_PROCESSOR_WORKERS=1
 
@@ -100,7 +100,7 @@ services:
       # 1. Network mode: Set QDRANT_URL=http://qdrant:6333 (requires qdrant service)
       # 2. In-memory mode: Set QDRANT_LOCATION=:memory: (default if nothing set)
       # 3. Persistent local: Set QDRANT_LOCATION=/app/data/qdrant (stored in mcp-data volume)
-      #- QDRANT_LOCATION=/app/data/qdrant  # In-memory mode used if not set
+      - QDRANT_LOCATION=":memory:"
       #- QDRANT_URL=http://qdrant:6333  # Uncomment for network mode
       #- QDRANT_API_KEY=${QDRANT_API_KEY:-my_secret_api_key}  # Only for network mode
 
