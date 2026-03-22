@@ -5,6 +5,14 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.65.2 (2026-03-22)
+
+### Fix
+
+- increase vector sync wait timeout to prevent sampling test timeouts in CI
+- reduce vector sync scan interval to 5s for single-user service
+- expose public status endpoints in all modes and enable vector sync (#637)
+
 ## v0.65.1 (2026-03-21)
 
 ### Fix
