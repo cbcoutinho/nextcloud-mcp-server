@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.58.6 (2026-03-22)
+
+### Fix
+
+- increase vector sync wait timeout to prevent sampling test timeouts in CI
+- reduce vector sync scan interval to 5s for single-user service
+- expose public status endpoints in all modes and enable vector sync (#637)
+
 ## nextcloud-mcp-server-0.58.5 (2026-03-22)
 
 ## nextcloud-mcp-server-0.58.4 (2026-03-21)
