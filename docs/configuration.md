@@ -42,7 +42,6 @@ MCP_DEPLOYMENT_MODE=oauth_single_audience
 - `multi_user_basic` - Multi-user with BasicAuth pass-through
 - `oauth_single_audience` - Multi-user OAuth (recommended)
 - `oauth_token_exchange` - Multi-user OAuth with token exchange
-- `smithery` - Smithery platform deployment
 
 **Benefits:**
 - ✅ Clear which mode is active

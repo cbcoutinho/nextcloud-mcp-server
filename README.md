@@ -5,7 +5,6 @@
 # Nextcloud MCP Server
 
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io/cbcoutinho/nextcloud--mcp--server-blue)](https://github.com/cbcoutinho/nextcloud-mcp-server/pkgs/container/nextcloud-mcp-server)
-[![smithery badge](https://smithery.ai/badge/@cbcoutinho/nextcloud-mcp-server)](https://smithery.ai/server/@cbcoutinho/nextcloud-mcp-server)
 
 **A production-ready MCP server that connects AI assistants to your Nextcloud instance.**
 
@@ -16,20 +15,7 @@ This is a **dedicated standalone MCP server** designed for external MCP clients 
 > [!NOTE]
 > **Looking for AI features inside Nextcloud?** Nextcloud also provides [Context Agent](https://github.com/nextcloud/context_agent), which powers the Assistant app and runs as an ExApp inside Nextcloud. See [docs/comparison-context-agent.md](docs/comparison-context-agent.md) for a detailed comparison of use cases.
 
-## Quick Start
-
-The fastest way to get started is via [Smithery](https://smithery.ai/server/@cbcoutinho/nextcloud-mcp-server) - no Docker or self-hosting required:
-
-1. Visit the [Smithery marketplace page](https://smithery.ai/server/@cbcoutinho/nextcloud-mcp-server)
-2. Click "Deploy" and configure:
-   - **Nextcloud URL**: Your Nextcloud instance (e.g., `https://cloud.example.com`)
-   - **Username**: Your Nextcloud username
-   - **App Password**: Generate one in Nextcloud → Settings → Security → Devices & sessions
-
-> [!NOTE]
-> Smithery runs in stateless mode without semantic search. For full features, use [Docker](#docker-self-hosted) or see [ADR-016](docs/ADR-016-smithery-stateless-deployment.md).
-
-## Docker (Self-Hosted)
+## Quick Start (Docker)
 
 For full features including semantic search, run with Docker:
 

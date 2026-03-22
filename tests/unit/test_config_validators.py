@@ -22,14 +22,6 @@ from nextcloud_mcp_server.config_validators import (
 class TestModeDetection:
     """Test auth mode detection from configuration."""
 
-    def test_smithery_mode_detection(self):
-        """Test Smithery mode is detected from environment variable."""
-        settings = Settings()
-
-        with patch.dict(os.environ, {"SMITHERY_DEPLOYMENT": "true"}):
-            mode = detect_auth_mode(settings)
-            assert mode == AuthMode.SMITHERY_STATELESS
-
     def test_token_exchange_mode_detection(self):
         """Test token exchange mode is detected."""
         settings = Settings(
@@ -69,20 +61,6 @@ class TestModeDetection:
 
         mode = detect_auth_mode(settings)
         assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
-
-    def test_mode_priority_smithery_over_all(self):
-        """Test Smithery mode has highest priority."""
-        settings = Settings(
-            nextcloud_host="http://localhost",
-            nextcloud_username="admin",
-            nextcloud_password="password",
-            enable_token_exchange=True,
-            enable_multi_user_basic_auth=True,
-        )
-
-        with patch.dict(os.environ, {"SMITHERY_DEPLOYMENT": "true"}):
-            mode = detect_auth_mode(settings)
-            assert mode == AuthMode.SMITHERY_STATELESS
 
     def test_mode_priority_token_exchange_over_basic(self):
         """Test token exchange has priority over BasicAuth."""
@@ -486,57 +464,6 @@ class TestOAuthTokenExchangeValidation:
         assert any("nextcloud_password" in err.lower() for err in errors)
 
 
-class TestSmitheryValidation:
-    """Test validation for Smithery stateless mode."""
-
-    def test_valid_empty_config(self):
-        """Test valid empty config for Smithery mode."""
-        settings = Settings()
-
-        with patch.dict(os.environ, {"SMITHERY_DEPLOYMENT": "true"}):
-            mode, errors = validate_configuration(settings)
-
-            assert mode == AuthMode.SMITHERY_STATELESS
-            assert len(errors) == 0
-
-    def test_forbidden_nextcloud_host(self):
-        """Test error when NEXTCLOUD_HOST is set."""
-        settings = Settings(
-            nextcloud_host="http://localhost",
-        )
-
-        with patch.dict(os.environ, {"SMITHERY_DEPLOYMENT": "true"}):
-            mode, errors = validate_configuration(settings)
-
-            assert mode == AuthMode.SMITHERY_STATELESS
-            assert any("nextcloud_host" in err.lower() for err in errors)
-
-    def test_forbidden_credentials(self):
-        """Test error when credentials are set."""
-        settings = Settings(
-            nextcloud_username="admin",
-            nextcloud_password="password",
-        )
-
-        with patch.dict(os.environ, {"SMITHERY_DEPLOYMENT": "true"}):
-            mode, errors = validate_configuration(settings)
-
-            assert mode == AuthMode.SMITHERY_STATELESS
-            assert any("nextcloud_username" in err.lower() for err in errors)
-
-    def test_forbidden_vector_sync(self):
-        """Test error when vector sync is enabled."""
-        settings = Settings(
-            vector_sync_enabled=True,
-        )
-
-        with patch.dict(os.environ, {"SMITHERY_DEPLOYMENT": "true"}):
-            mode, errors = validate_configuration(settings)
-
-            assert mode == AuthMode.SMITHERY_STATELESS
-            assert any("vector_sync_enabled" in err.lower() for err in errors)
-
-
 class TestModeSummary:
     """Test mode summary generation."""
 
@@ -549,14 +476,6 @@ class TestModeSummary:
         assert "NEXTCLOUD_USERNAME" in summary
         assert "NEXTCLOUD_PASSWORD" in summary
         assert "VECTOR_SYNC_ENABLED" in summary
-
-    def test_smithery_summary(self):
-        """Test summary for Smithery mode."""
-        summary = get_mode_summary(AuthMode.SMITHERY_STATELESS)
-
-        assert "smithery" in summary
-        assert "session" in summary.lower()
-        assert "(none" in summary  # No required config
 
     def test_oauth_token_exchange_summary(self):
         """Test summary for OAuth token exchange mode."""
@@ -897,22 +816,6 @@ class TestExplicitModeSelection:
             mode = detect_auth_mode(settings)
 
             assert mode == AuthMode.OAUTH_TOKEN_EXCHANGE
-
-    def test_explicit_smithery_mode(self):
-        """Test explicit smithery mode selection."""
-        with patch.dict(
-            os.environ,
-            {
-                "MCP_DEPLOYMENT_MODE": "smithery",
-            },
-            clear=True,
-        ):
-            from nextcloud_mcp_server.config import get_settings
-
-            settings = get_settings()
-            mode = detect_auth_mode(settings)
-
-            assert mode == AuthMode.SMITHERY_STATELESS
 
     def test_invalid_deployment_mode_raises_error(self):
         """Test invalid MCP_DEPLOYMENT_MODE raises ValueError."""

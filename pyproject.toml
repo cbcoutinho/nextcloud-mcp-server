@@ -22,7 +22,7 @@ dependencies = [
     "aiosqlite>=0.20.0", # Async SQLite for refresh token storage
     "alembic>=1.14.0", # Database migrations
     "authlib>=1.6.5",
-    "qdrant-client>=1.7.0",
+    "qdrant-client>=1.17.0",
     "fastembed>=0.7.3", # BM25 sparse vector embeddings for hybrid search
     "anthropic>=0.42.0", # For RAG evaluation with Anthropic LLMs
     "boto3>=1.35.0", # For Amazon Bedrock provider (optional)
@@ -113,9 +113,6 @@ extend-select = ["I", "PLC0415"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["PLC0415"]
 
-[tool.uv.sources]
-qdrant-client = { git = "https://github.com/cbcoutinho/qdrant-client", branch = "fix/fusion-score-threshold" }
-
 [build-system]
 requires = ["uv_build>=0.10.0,<0.11.0"]
 build-backend = "uv_build"
@@ -142,7 +139,6 @@ dev = [
 
 [project.scripts]
 nextcloud-mcp-server = "nextcloud_mcp_server.cli:cli"
-smithery-main = "nextcloud_mcp_server.smithery_main:main"
 
 [[tool.uv.index]]
 name = "testpypi"

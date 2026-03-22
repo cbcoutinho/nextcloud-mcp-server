@@ -313,7 +313,6 @@ if ENABLE_SEMANTIC_SEARCH == true:
 | Multi-User BasicAuth | ✅ | ✅ Yes |
 | OAuth Single-Audience | ✅ | ✅ Yes |
 | OAuth Token Exchange | ✅ | ✅ Yes |
-| Smithery Stateless | N/A (not supported) | N/A |
 
 ### When to Explicitly Set ENABLE_BACKGROUND_OPERATIONS
 
@@ -366,7 +365,6 @@ NEXTCLOUD_HOST=https://nextcloud.example.com
 | `multi_user_basic` | Multi-user with BasicAuth pass-through |
 | `oauth_single_audience` | Multi-user OAuth (recommended) |
 | `oauth_token_exchange` | Multi-user OAuth with token exchange |
-| `smithery` | Smithery platform deployment |
 
 ### Mode Detection Priority
 
@@ -377,7 +375,7 @@ When `MCP_DEPLOYMENT_MODE` is set:
 
 When `MCP_DEPLOYMENT_MODE` is NOT set:
 1. ✅ Auto-detection runs (existing behavior)
-2. ✅ Priority: Smithery → Token Exchange → Multi-User BasicAuth → Single-User BasicAuth → OAuth Single-Audience
+2. ✅ Priority: Token Exchange → Multi-User BasicAuth → Single-User BasicAuth → OAuth Single-Audience
 
 ---
 

@@ -89,7 +89,7 @@ Add `MCP_DEPLOYMENT_MODE` environment variable to remove detection ambiguity:
 MCP_DEPLOYMENT_MODE=oauth_single_audience
 
 # Valid values: single_user_basic, multi_user_basic,
-#               oauth_single_audience, oauth_token_exchange, smithery
+#               oauth_single_audience, oauth_token_exchange
 ```
 
 **Detection logic**:
