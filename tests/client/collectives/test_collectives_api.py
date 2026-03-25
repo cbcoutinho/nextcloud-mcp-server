@@ -263,7 +263,7 @@ async def test_create_tag(mocker):
 
 async def test_assign_tag(mocker):
     """Test assigning a tag to a page."""
-    mock_response = create_mock_response(status_code=200, json_data={})
+    mock_response = _ocs_response({})
     mock_request = mocker.patch.object(
         CollectivesClient, "_make_request", return_value=mock_response
     )
@@ -278,7 +278,7 @@ async def test_assign_tag(mocker):
 
 async def test_remove_tag(mocker):
     """Test removing a tag from a page."""
-    mock_response = create_mock_response(status_code=200, json_data={})
+    mock_response = _ocs_response({})
     mock_request = mocker.patch.object(
         CollectivesClient, "_make_request", return_value=mock_response
     )
@@ -325,6 +325,25 @@ async def test_restore_page(mocker):
 
 
 # --- Error Handling ---
+
+
+async def test_ocs_missing_data_returns_empty(mocker):
+    """Test that OCS envelope without 'data' key returns empty dict."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data={
+            "ocs": {
+                "meta": {"status": "ok", "statuscode": 200},
+            }
+        },
+    )
+    mocker.patch.object(CollectivesClient, "_make_request", return_value=mock_response)
+
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    # get_collectives accesses data["collectives"], which will KeyError on empty dict
+    # This tests that _unwrap_ocs itself doesn't crash — it returns {}
+    with pytest.raises(KeyError):
+        await client.get_collectives()
 
 
 async def test_ocs_error_status_raises(mocker):

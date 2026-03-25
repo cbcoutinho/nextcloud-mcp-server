@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 def _handle_collectives_error(e: OCSError | HTTPStatusError) -> McpError:
     """Convert OCS or HTTP errors to McpError."""
     if isinstance(e, OCSError):
-        return McpError(ErrorData(code=e.status_code, message=e.message))
-    return McpError(ErrorData(code=e.response.status_code, message=str(e)))
+        return McpError(ErrorData(code=-1, message=e.message))
+    return McpError(ErrorData(code=-1, message=str(e)))
 
 
 def configure_collectives_tools(mcp: FastMCP):
@@ -120,7 +120,7 @@ def configure_collectives_tools(mcp: FastMCP):
             if page.filePath:
                 parts.append(page.filePath)
             parts.append(page.fileName)
-            webdav_path = "/".join(parts)
+            webdav_path = "/".join(p.strip("/") for p in parts)
             try:
                 file_bytes, _ = await client.webdav.read_file(webdav_path)
                 content = file_bytes.decode("utf-8")
@@ -243,11 +243,13 @@ def configure_collectives_tools(mcp: FastMCP):
     async def collectives_update_collective(
         ctx: Context, collective_id: int, emoji: str | None = None
     ) -> CollectiveOperationResponse:
-        """Update a Nextcloud Collective (emoji)
+        """Update a Nextcloud Collective (emoji).
+
+        At least one field must be provided.
 
         Args:
             collective_id: ID of the collective
-            emoji: New emoji for the collective
+            emoji: New emoji for the collective (required)
         """
         client = await get_client(ctx)
         try:
@@ -340,7 +342,7 @@ def configure_collectives_tools(mcp: FastMCP):
     @mcp.tool(
         title="Trash Collective Page",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructiveHint=True, idempotentHint=False, openWorldHint=True
         ),
     )
     @require_scopes("collectives:write")

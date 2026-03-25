@@ -1,6 +1,8 @@
 """Pydantic models for Nextcloud Collectives app."""
 
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator
 
 from .base import BaseResponse, StatusResponse
 
@@ -53,7 +55,14 @@ class CollectiveTag(BaseModel):
     id: int = Field(description="Tag ID")
     collectiveId: int = Field(description="Parent collective ID")
     name: str = Field(description="Tag name")
-    color: str = Field(description="Hex color code")
+    color: str = Field(description="Hex color code (e.g. 'FF0000')")
+
+    @field_validator("color")
+    @classmethod
+    def validate_hex_color(cls, v: str) -> str:
+        if not re.fullmatch(r"[0-9A-Fa-f]{3,8}", v):
+            raise ValueError(f"Invalid hex color: {v!r}")
+        return v
 
 
 # Response Models

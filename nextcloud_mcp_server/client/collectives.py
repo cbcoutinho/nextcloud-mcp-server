@@ -40,7 +40,7 @@ class CollectivesClient(BaseNextcloudClient):
         if status_code >= 400:
             message = meta.get("message", "OCS error")
             raise OCSError(status_code, message)
-        return ocs["data"]
+        return ocs.get("data", {})
 
     # Collectives
 
@@ -215,19 +215,21 @@ class CollectivesClient(BaseNextcloudClient):
 
     async def assign_tag(self, collective_id: int, page_id: int, tag_id: int) -> None:
         """Assign a tag to a page."""
-        await self._make_request(
+        response = await self._make_request(
             "PUT",
             f"{API_BASE}/collectives/{collective_id}/pages/{page_id}/tags/{tag_id}",
             headers=self._get_ocs_headers(),
         )
+        self._unwrap_ocs(response.json())
 
     async def remove_tag(self, collective_id: int, page_id: int, tag_id: int) -> None:
         """Remove a tag from a page."""
-        await self._make_request(
+        response = await self._make_request(
             "DELETE",
             f"{API_BASE}/collectives/{collective_id}/pages/{page_id}/tags/{tag_id}",
             headers=self._get_ocs_headers(),
         )
+        self._unwrap_ocs(response.json())
 
     # Trash
 
