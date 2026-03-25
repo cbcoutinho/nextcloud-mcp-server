@@ -1,10 +1,22 @@
 """Client for Nextcloud Collectives app API (OCS)."""
 
+import logging
 from typing import Any
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 
+logger = logging.getLogger(__name__)
+
 API_BASE = "/ocs/v2.php/apps/collectives/api/v1.0"
+
+
+class OCSError(Exception):
+    """Error returned in the OCS response envelope."""
+
+    def __init__(self, status_code: int, message: str):
+        self.status_code = status_code
+        self.message = message
+        super().__init__(f"OCS error {status_code}: {message}")
 
 
 class CollectivesClient(BaseNextcloudClient):
@@ -12,22 +24,23 @@ class CollectivesClient(BaseNextcloudClient):
 
     app_name = "collectives"
 
-    def _get_ocs_headers(
-        self, additional_headers: dict[str, str] | None = None
-    ) -> dict[str, str]:
+    def _get_ocs_headers(self) -> dict[str, str]:
         """Get standard headers required for OCS API calls."""
-        headers = {
+        return {
             "OCS-APIRequest": "true",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        if additional_headers:
-            headers.update(additional_headers)
-        return headers
 
     def _unwrap_ocs(self, response_json: dict[str, Any]) -> Any:
-        """Unwrap OCS envelope, returning the data payload."""
-        return response_json["ocs"]["data"]
+        """Unwrap OCS envelope, validating the status before returning data."""
+        ocs = response_json["ocs"]
+        meta = ocs.get("meta", {})
+        status_code = meta.get("statuscode", 200)
+        if status_code >= 400:
+            message = meta.get("message", "OCS error")
+            raise OCSError(status_code, message)
+        return ocs["data"]
 
     # Collectives
 

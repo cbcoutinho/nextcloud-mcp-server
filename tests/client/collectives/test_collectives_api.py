@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from nextcloud_mcp_server.client.collectives import CollectivesClient
+from nextcloud_mcp_server.client.collectives import CollectivesClient, OCSError
 from tests.client.conftest import create_mock_response
 
 pytestmark = pytest.mark.unit
@@ -46,7 +46,7 @@ def _sample_page(
         "title": title,
         "emoji": None,
         "fileName": f"{title}.md",
-        "filePath": f"{title}.md",
+        "filePath": "",
         "collectivePath": collective_path,
         "parentId": parent_id,
         "timestamp": 1700000000,
@@ -325,6 +325,28 @@ async def test_restore_page(mocker):
 
 
 # --- Error Handling ---
+
+
+async def test_ocs_error_status_raises(mocker):
+    """Test that OCS envelope with error statuscode raises OCSError."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data={
+            "ocs": {
+                "meta": {
+                    "status": "failure",
+                    "statuscode": 403,
+                    "message": "Not permitted",
+                },
+                "data": {},
+            }
+        },
+    )
+    mocker.patch.object(CollectivesClient, "_make_request", return_value=mock_response)
+
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    with pytest.raises(OCSError, match="Not permitted"):
+        await client.get_collectives()
 
 
 async def test_get_collectives_403(mocker):

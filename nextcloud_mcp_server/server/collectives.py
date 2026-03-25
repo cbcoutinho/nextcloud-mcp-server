@@ -2,6 +2,7 @@
 
 import logging
 
+from httpx import HTTPStatusError
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
@@ -80,8 +81,8 @@ def configure_collectives_tools(mcp: FastMCP):
         """Get a page's metadata and markdown content from a Nextcloud Collective.
 
         Content is fetched via WebDAV using the page's file path. To update
-        page content, use the nc_webdav_write_file tool with the path from
-        the page's collectivePath/filePath fields.
+        page content, use the nc_webdav_write_file tool with the path
+        collectivePath/filePath/fileName (omit filePath for root-level pages).
 
         Args:
             collective_id: ID of the collective
@@ -104,10 +105,11 @@ def configure_collectives_tools(mcp: FastMCP):
             try:
                 file_bytes, _ = await client.webdav.read_file(webdav_path)
                 content = file_bytes.decode("utf-8")
-            except Exception:
+            except (HTTPStatusError, OSError) as e:
                 logger.warning(
-                    "Failed to read page content via WebDAV: %s",
+                    "Failed to read page content via WebDAV: %s: %s",
                     webdav_path,
+                    e,
                 )
 
         return GetPageResponse(page=page, content=content)
@@ -217,11 +219,12 @@ def configure_collectives_tools(mcp: FastMCP):
             emoji: New emoji for the collective
         """
         client = await get_client(ctx)
-        await client.collectives.update_collective(collective_id, emoji)
+        raw = await client.collectives.update_collective(collective_id, emoji)
+        collective = Collective(**raw)
         return CollectiveOperationResponse(
-            collective_id=collective_id,
+            collective_id=collective.id,
             status_code=200,
-            message="Collective updated",
+            message=f"Collective updated (emoji: {collective.emoji})",
         )
 
     @mcp.tool(
@@ -236,7 +239,8 @@ def configure_collectives_tools(mcp: FastMCP):
         """Create a new page in a Nextcloud Collective.
 
         Pages are created as empty markdown files. Use nc_webdav_write_file
-        with the page's collectivePath/filePath to add content after creation.
+        with the path collectivePath/filePath/fileName to add content after
+        creation (omit filePath for root-level pages).
 
         Args:
             collective_id: ID of the collective
@@ -279,15 +283,16 @@ def configure_collectives_tools(mcp: FastMCP):
             copy: If true, copy instead of move
         """
         client = await get_client(ctx)
-        await client.collectives.move_page(
+        raw = await client.collectives.move_page(
             collective_id, page_id, parent_id, title, index, copy
         )
+        page = PageInfo(**raw)
         action = "copied" if copy else "moved"
         return PageOperationResponse(
-            page_id=page_id,
+            page_id=page.id,
             collective_id=collective_id,
             status_code=200,
-            message=f"Page {action}",
+            message=f"Page {action} (title: {page.title}, parent: {page.parentId})",
         )
 
     @mcp.tool(
@@ -360,12 +365,13 @@ def configure_collectives_tools(mcp: FastMCP):
             emoji: Emoji to set, or null to clear
         """
         client = await get_client(ctx)
-        await client.collectives.set_page_emoji(collective_id, page_id, emoji)
+        raw = await client.collectives.set_page_emoji(collective_id, page_id, emoji)
+        page = PageInfo(**raw)
         return PageOperationResponse(
-            page_id=page_id,
+            page_id=page.id,
             collective_id=collective_id,
             status_code=200,
-            message="Page emoji updated",
+            message=f"Page emoji updated (emoji: {page.emoji})",
         )
 
     @mcp.tool(
