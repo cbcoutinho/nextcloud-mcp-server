@@ -205,7 +205,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Update Collective",
-        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
     @require_scopes("collectives:write")
     @instrument_tool
@@ -422,7 +422,9 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Remove Tag from Collective Page",
-        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
     )
     @require_scopes("collectives:write")
     @instrument_tool
