@@ -71,10 +71,16 @@ class CollectivesClient(BaseNextcloudClient):
     async def update_collective(
         self, collective_id: int, emoji: str | None = None
     ) -> dict[str, Any]:
-        """Update a collective (emoji)."""
+        """Update a collective (emoji).
+
+        Raises:
+            ValueError: If no fields are provided to update.
+        """
         json_data: dict[str, Any] = {}
         if emoji is not None:
             json_data["emoji"] = emoji
+        if not json_data:
+            raise ValueError("At least one field must be provided to update")
         response = await self._make_request(
             "PUT",
             f"{API_BASE}/collectives/{collective_id}",

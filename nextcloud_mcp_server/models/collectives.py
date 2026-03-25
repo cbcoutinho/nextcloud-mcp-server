@@ -42,6 +42,9 @@ class PageInfo(BaseModel):
         default_factory=list, description="Ordered subpage IDs"
     )
     isFullWidth: bool | None = Field(default=None, description="Full-width page layout")
+    trashTimestamp: int | None = Field(
+        default=None, description="Timestamp when the page was trashed"
+    )
 
 
 class CollectiveTag(BaseModel):
@@ -120,11 +123,20 @@ class SearchPagesResponse(BaseResponse):
     collective_id: int = Field(description="Collective ID")
 
 
+class ListTrashedPagesResponse(ListPagesResponse):
+    """Response for listing trashed pages in a collective."""
+
+    is_trash: bool = Field(
+        default=True, description="Indicates these are trashed pages"
+    )
+
+
 class ListTagsResponse(BaseResponse):
     """Response for listing tags in a collective."""
 
     tags: list[CollectiveTag] = Field(description="List of tags")
     total: int = Field(description="Total number of tags")
+    collective_id: int = Field(description="Collective ID")
 
 
 class CreateTagResponse(BaseResponse):

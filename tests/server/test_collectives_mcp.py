@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import uuid
 
 import httpx
@@ -11,9 +12,10 @@ from mcp import ClientSession
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration
 
-# Nextcloud credentials for direct API cleanup (matches docker-compose.yml)
-_NC_BASE = "http://localhost:8080"
-_NC_AUTH = ("admin", "admin")
+# Nextcloud credentials from environment (matches .envrc / docker-compose.yml defaults)
+_NC_BASE = os.environ.get("NEXTCLOUD_HOST", "http://localhost:8080")
+_NC_USER = os.environ.get("NEXTCLOUD_USERNAME", "admin")
+_NC_PASS = os.environ.get("NEXTCLOUD_PASSWORD", "admin")
 _OCS_HEADERS = {
     "OCS-APIRequest": "true",
     "Accept": "application/json",
@@ -38,13 +40,15 @@ async def temporary_collective(nc_mcp_client: ClientSession):
     collective_id = data["id"]
     logger.info(f"Created temporary collective: {name} (ID: {collective_id})")
 
-    # Get the landing page ID (auto-created with each collective)
+    # Get the landing page ID — filter by parentId == 0 (root page)
     pages_result = await nc_mcp_client.call_tool(
         "collectives_get_pages",
         {"collective_id": collective_id},
     )
     pages_data = json.loads(pages_result.content[0].text)
-    landing_page_id = pages_data["pages"][0]["id"]
+    root_pages = [p for p in pages_data["pages"] if p["parentId"] == 0]
+    assert root_pages, "Expected at least one root page (landing page)"
+    landing_page_id = root_pages[0]["id"]
 
     yield {
         "id": collective_id,
@@ -54,7 +58,9 @@ async def temporary_collective(nc_mcp_client: ClientSession):
 
     # Cleanup: trash and permanently delete the collective via direct OCS API
     try:
-        async with httpx.AsyncClient(base_url=_NC_BASE, auth=_NC_AUTH) as client:
+        async with httpx.AsyncClient(
+            base_url=_NC_BASE, auth=(_NC_USER, _NC_PASS)
+        ) as client:
             api = "/ocs/v2.php/apps/collectives/api/v1.0"
             await client.delete(
                 f"{api}/collectives/{collective_id}",

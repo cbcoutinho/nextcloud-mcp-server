@@ -58,8 +58,9 @@ async def test_destructive_tools_have_correct_annotations(nc_mcp_client: ClientS
     """Verify destructive operations are marked correctly."""
     tools = await nc_mcp_client.list_tools()
 
-    # Known destructive operations
-    destructive_keywords = ["delete", "remove", "revoke"]
+    # Known destructive operations (permanently delete data).
+    # "remove" is excluded — removing associations (labels, tags) is reversible.
+    destructive_keywords = ["delete", "revoke"]
 
     for tool in tools.tools:
         has_destructive_keyword = any(
