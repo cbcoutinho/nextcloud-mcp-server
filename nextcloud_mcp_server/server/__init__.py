@@ -1,4 +1,5 @@
 from .calendar import configure_calendar_tools
+from .collectives import configure_collectives_tools
 from .contacts import configure_contacts_tools
 from .cookbook import configure_cookbook_tools
 from .deck import configure_deck_tools
@@ -11,6 +12,7 @@ from .webdav import configure_webdav_tools
 
 __all__ = [
     "configure_calendar_tools",
+    "configure_collectives_tools",
     "configure_contacts_tools",
     "configure_cookbook_tools",
     "configure_deck_tools",

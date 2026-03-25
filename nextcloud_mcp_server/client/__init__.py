@@ -14,6 +14,7 @@ from httpx import (
 from ..controllers.notes_search import NotesSearchController
 from ..http import nextcloud_httpx_transport
 from .calendar import CalendarClient
+from .collectives import CollectivesClient
 from .contacts import ContactsClient
 from .cookbook import CookbookClient
 from .deck import DeckClient
@@ -81,6 +82,7 @@ class NextcloudClient:
         )  # Uses AsyncDavClient internally
         self.contacts = ContactsClient(self._client, username)
         self.cookbook = CookbookClient(self._client, username)
+        self.collectives = CollectivesClient(self._client, username)
         self.deck = DeckClient(self._client, username)
         self.news = NewsClient(self._client, username)
         self.users = UsersClient(self._client, username)

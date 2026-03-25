@@ -117,6 +117,7 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.server import (
     configure_calendar_tools,
+    configure_collectives_tools,
     configure_contacts_tools,
     configure_cookbook_tools,
     configure_deck_tools,
@@ -1274,6 +1275,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         "webdav": configure_webdav_tools,
         "sharing": configure_sharing_tools,
         "calendar": configure_calendar_tools,
+        "collectives": configure_collectives_tools,
         "contacts": configure_contacts_tools,
         "cookbook": configure_cookbook_tools,
         "deck": configure_deck_tools,
