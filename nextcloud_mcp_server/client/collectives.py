@@ -44,7 +44,9 @@ class CollectivesClient(BaseNextcloudClient):
         if status_code >= 400:
             message = meta.get("message", "OCS error")
             raise OCSError(status_code, message)
-        return ocs.get("data", {})
+        if "data" not in ocs:
+            raise OCSError(500, "OCS response missing 'data' field")
+        return ocs["data"]
 
     # Collectives
 
@@ -189,6 +191,7 @@ class CollectivesClient(BaseNextcloudClient):
         self, collective_id: int, page_id: int, emoji: str | None
     ) -> dict[str, Any]:
         """Set or clear the emoji on a page."""
+        # Sending {"emoji": null} intentionally clears the emoji on the server
         json_data = {"emoji": emoji}
         response = await self._make_request(
             "PUT",
@@ -245,7 +248,7 @@ class CollectivesClient(BaseNextcloudClient):
         response = await self._make_request(
             "PUT",
             f"{API_BASE}/collectives/{collective_id}/pages/{page_id}/tags/{tag_id}",
-            headers=self._OCS_HEADERS_JSON,
+            headers=self._OCS_HEADERS,
         )
         self._unwrap_ocs(response.json())
 

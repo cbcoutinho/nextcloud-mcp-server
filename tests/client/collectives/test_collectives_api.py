@@ -358,8 +358,8 @@ async def test_restore_page(mocker):
 # --- Error Handling ---
 
 
-async def test_ocs_missing_data_raises_key_error(mocker):
-    """Test that OCS envelope without 'data' key causes KeyError on field access."""
+async def test_ocs_missing_data_raises_ocs_error(mocker):
+    """Test that OCS envelope without 'data' key raises OCSError."""
     mock_response = create_mock_response(
         status_code=200,
         json_data={
@@ -371,9 +371,7 @@ async def test_ocs_missing_data_raises_key_error(mocker):
     mocker.patch.object(CollectivesClient, "_make_request", return_value=mock_response)
 
     client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
-    # _unwrap_ocs returns {} when "data" is absent; the caller then
-    # raises KeyError when accessing the expected key (e.g. "collectives")
-    with pytest.raises(KeyError):
+    with pytest.raises(OCSError, match="missing 'data' field"):
         await client.get_collectives()
 
 

@@ -60,7 +60,7 @@ class CollectiveTag(BaseModel):
     @field_validator("color")
     @classmethod
     def validate_hex_color(cls, v: str) -> str:
-        if not re.fullmatch(r"[0-9A-Fa-f]{3,8}", v):
+        if not re.fullmatch(r"[0-9A-Fa-f]{3}(?:[0-9A-Fa-f]{3})?", v):
             raise ValueError(f"Invalid hex color: {v!r}")
         return v
 

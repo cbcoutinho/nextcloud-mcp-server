@@ -236,7 +236,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Update Collective",
-        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
     )
     @require_scopes("collectives:write")
     @instrument_tool
