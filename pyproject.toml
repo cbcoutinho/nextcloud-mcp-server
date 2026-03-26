@@ -30,6 +30,7 @@ dependencies = [
     "prometheus-client>=0.21.0", # Prometheus metrics
     "opentelemetry-api>=1.28.2", # OpenTelemetry API
     "opentelemetry-sdk>=1.28.2", # OpenTelemetry SDK
+    "starlette<1.0", # Pin until we address starlette 1.0 breaking changes (#648)
     "opentelemetry-instrumentation-asgi>=0.49b2", # Auto-instrument ASGI/Starlette
     "opentelemetry-instrumentation-httpx>=0.49b2", # Auto-instrument httpx client
     "opentelemetry-instrumentation-logging>=0.49b2", # Logging integration
