@@ -266,6 +266,66 @@ def configure_collectives_tools(mcp: FastMCP):
         )
 
     @mcp.tool(
+        title="Trash Collective",
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=False, openWorldHint=True
+        ),
+    )
+    @require_scopes("collectives:write")
+    @instrument_tool
+    async def collectives_trash_collective(
+        ctx: Context, collective_id: int
+    ) -> CollectiveOperationResponse:
+        """Move a Nextcloud Collective to trash (soft delete).
+
+        The collective can be restored or permanently deleted afterwards.
+
+        Args:
+            collective_id: ID of the collective to trash
+        """
+        client = await get_client(ctx)
+        try:
+            await client.collectives.trash_collective(collective_id)
+        except (OCSError, HTTPStatusError) as e:
+            raise _handle_collectives_error(e) from e
+        return CollectiveOperationResponse(
+            collective_id=collective_id,
+            status_code=200,
+            message="Collective moved to trash",
+        )
+
+    @mcp.tool(
+        title="Delete Collective",
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
+    )
+    @require_scopes("collectives:write")
+    @instrument_tool
+    async def collectives_delete_collective(
+        ctx: Context, collective_id: int
+    ) -> CollectiveOperationResponse:
+        """Permanently delete a Nextcloud Collective.
+
+        WARNING: This is irreversible. The collective must be in the trash
+        first (use collectives_trash_collective). All pages and content
+        will be permanently destroyed.
+
+        Args:
+            collective_id: ID of the trashed collective to permanently delete
+        """
+        client = await get_client(ctx)
+        try:
+            await client.collectives.delete_collective(collective_id)
+        except (OCSError, HTTPStatusError) as e:
+            raise _handle_collectives_error(e) from e
+        return CollectiveOperationResponse(
+            collective_id=collective_id,
+            status_code=200,
+            message="Collective permanently deleted",
+        )
+
+    @mcp.tool(
         title="Create Collective Page",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )

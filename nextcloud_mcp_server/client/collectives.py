@@ -24,13 +24,15 @@ class CollectivesClient(BaseNextcloudClient):
 
     app_name = "collectives"
 
+    _OCS_HEADERS: dict[str, str] = {
+        "OCS-APIRequest": "true",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
     def _get_ocs_headers(self) -> dict[str, str]:
         """Get standard headers required for OCS API calls."""
-        return {
-            "OCS-APIRequest": "true",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
+        return self._OCS_HEADERS
 
     def _unwrap_ocs(self, response_json: dict[str, Any]) -> Any:
         """Unwrap OCS envelope, validating the status before returning data."""
@@ -89,6 +91,26 @@ class CollectivesClient(BaseNextcloudClient):
         )
         data = self._unwrap_ocs(response.json())
         return data["collective"]
+
+    async def trash_collective(self, collective_id: int) -> None:
+        """Move a collective to trash (soft delete)."""
+        await self._make_request(
+            "DELETE",
+            f"{API_BASE}/collectives/{collective_id}",
+            headers=self._get_ocs_headers(),
+        )
+
+    async def delete_collective(self, collective_id: int) -> None:
+        """Permanently delete a collective (must be trashed first).
+
+        This is irreversible. The collective must be in the trash before
+        calling this method.
+        """
+        await self._make_request(
+            "DELETE",
+            f"{API_BASE}/collectives/trash/{collective_id}",
+            headers=self._get_ocs_headers(),
+        )
 
     # Pages
 

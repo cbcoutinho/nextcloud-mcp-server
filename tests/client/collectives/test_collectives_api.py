@@ -115,6 +115,37 @@ async def test_create_collective(mocker):
     assert call_args[1]["json"]["emoji"] == "📚"
 
 
+async def test_trash_collective(mocker):
+    """Test trashing a collective sends DELETE to correct endpoint."""
+    mock_response = create_mock_response(status_code=200, json_data={})
+    mock_request = mocker.patch.object(
+        CollectivesClient, "_make_request", return_value=mock_response
+    )
+
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.trash_collective(collective_id=5)
+
+    call_args = mock_request.call_args
+    assert call_args[0][0] == "DELETE"
+    assert "/collectives/5" in call_args[0][1]
+    assert "/trash" not in call_args[0][1]
+
+
+async def test_delete_collective(mocker):
+    """Test permanently deleting a collective sends DELETE to trash endpoint."""
+    mock_response = create_mock_response(status_code=200, json_data={})
+    mock_request = mocker.patch.object(
+        CollectivesClient, "_make_request", return_value=mock_response
+    )
+
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.delete_collective(collective_id=5)
+
+    call_args = mock_request.call_args
+    assert call_args[0][0] == "DELETE"
+    assert "/collectives/trash/5" in call_args[0][1]
+
+
 # --- Pages ---
 
 

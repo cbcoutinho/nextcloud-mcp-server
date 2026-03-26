@@ -2,24 +2,13 @@
 
 import json
 import logging
-import os
 import uuid
 
-import httpx
 import pytest
 from mcp import ClientSession
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration
-
-# Nextcloud credentials from environment (matches .envrc / docker-compose.yml defaults)
-_NC_BASE = os.environ.get("NEXTCLOUD_HOST", "http://localhost:8080")
-_NC_USER = os.environ.get("NEXTCLOUD_USERNAME", "admin")
-_NC_PASS = os.environ.get("NEXTCLOUD_PASSWORD", "admin")
-_OCS_HEADERS = {
-    "OCS-APIRequest": "true",
-    "Accept": "application/json",
-}
 
 
 # --- Fixtures ---
@@ -56,20 +45,16 @@ async def temporary_collective(nc_mcp_client: ClientSession):
         "landing_page_id": landing_page_id,
     }
 
-    # Cleanup: trash and permanently delete the collective via direct OCS API
+    # Cleanup: trash and permanently delete the collective via MCP tools
     try:
-        async with httpx.AsyncClient(
-            base_url=_NC_BASE, auth=(_NC_USER, _NC_PASS)
-        ) as client:
-            api = "/ocs/v2.php/apps/collectives/api/v1.0"
-            await client.delete(
-                f"{api}/collectives/{collective_id}",
-                headers=_OCS_HEADERS,
-            )
-            await client.delete(
-                f"{api}/collectives/trash/{collective_id}",
-                headers=_OCS_HEADERS,
-            )
+        await nc_mcp_client.call_tool(
+            "collectives_trash_collective",
+            {"collective_id": collective_id},
+        )
+        await nc_mcp_client.call_tool(
+            "collectives_delete_collective",
+            {"collective_id": collective_id},
+        )
         logger.info(f"Cleaned up collective: {collective_id}")
     except Exception as e:
         logger.warning(f"Cleanup of collective {collective_id} failed: {e}")
@@ -87,6 +72,8 @@ async def test_collectives_tools_available(nc_mcp_client: ClientSession):
         "collectives_get_collectives",
         "collectives_create_collective",
         "collectives_update_collective",
+        "collectives_trash_collective",
+        "collectives_delete_collective",
         "collectives_get_pages",
         "collectives_get_page",
         "collectives_create_page",
