@@ -117,7 +117,7 @@ async def test_create_collective(mocker):
 
 async def test_trash_collective(mocker):
     """Test trashing a collective sends DELETE to correct endpoint."""
-    mock_response = create_mock_response(status_code=200, json_data={})
+    mock_response = _ocs_response({})
     mock_request = mocker.patch.object(
         CollectivesClient, "_make_request", return_value=mock_response
     )
@@ -133,7 +133,7 @@ async def test_trash_collective(mocker):
 
 async def test_delete_collective(mocker):
     """Test permanently deleting a collective sends DELETE to trash endpoint."""
-    mock_response = create_mock_response(status_code=200, json_data={})
+    mock_response = _ocs_response({})
     mock_request = mocker.patch.object(
         CollectivesClient, "_make_request", return_value=mock_response
     )
@@ -203,7 +203,7 @@ async def test_create_page(mocker):
 
 async def test_trash_page(mocker):
     """Test trashing a page sends DELETE."""
-    mock_response = create_mock_response(status_code=200, json_data={})
+    mock_response = _ocs_response({})
     mock_request = mocker.patch.object(
         CollectivesClient, "_make_request", return_value=mock_response
     )
@@ -358,8 +358,8 @@ async def test_restore_page(mocker):
 # --- Error Handling ---
 
 
-async def test_ocs_missing_data_returns_empty(mocker):
-    """Test that OCS envelope without 'data' key returns empty dict."""
+async def test_ocs_missing_data_raises_key_error(mocker):
+    """Test that OCS envelope without 'data' key causes KeyError on field access."""
     mock_response = create_mock_response(
         status_code=200,
         json_data={
@@ -371,9 +371,22 @@ async def test_ocs_missing_data_returns_empty(mocker):
     mocker.patch.object(CollectivesClient, "_make_request", return_value=mock_response)
 
     client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
-    # get_collectives accesses data["collectives"], which will KeyError on empty dict
-    # This tests that _unwrap_ocs itself doesn't crash — it returns {}
+    # _unwrap_ocs returns {} when "data" is absent; the caller then
+    # raises KeyError when accessing the expected key (e.g. "collectives")
     with pytest.raises(KeyError):
+        await client.get_collectives()
+
+
+async def test_non_ocs_envelope_raises_ocs_error(mocker):
+    """Test that a non-OCS response (e.g. proxy error) raises OCSError."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data={"error": "Bad Gateway"},
+    )
+    mocker.patch.object(CollectivesClient, "_make_request", return_value=mock_response)
+
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    with pytest.raises(OCSError, match="not an OCS envelope"):
         await client.get_collectives()
 
 

@@ -26,17 +26,19 @@ class CollectivesClient(BaseNextcloudClient):
 
     _OCS_HEADERS: dict[str, str] = {
         "OCS-APIRequest": "true",
-        "Content-Type": "application/json",
         "Accept": "application/json",
     }
 
-    def _get_ocs_headers(self) -> dict[str, str]:
-        """Get standard headers required for OCS API calls."""
-        return self._OCS_HEADERS
+    _OCS_HEADERS_JSON: dict[str, str] = {
+        **_OCS_HEADERS,
+        "Content-Type": "application/json",
+    }
 
     def _unwrap_ocs(self, response_json: dict[str, Any]) -> Any:
         """Unwrap OCS envelope, validating the status before returning data."""
-        ocs = response_json["ocs"]
+        ocs = response_json.get("ocs")
+        if ocs is None:
+            raise OCSError(500, "Response is not an OCS envelope")
         meta = ocs.get("meta", {})
         status_code = meta.get("statuscode", 200)
         if status_code >= 400:
@@ -49,7 +51,7 @@ class CollectivesClient(BaseNextcloudClient):
     async def get_collectives(self) -> list[dict[str, Any]]:
         """List all collectives the user has access to."""
         response = await self._make_request(
-            "GET", f"{API_BASE}/collectives", headers=self._get_ocs_headers()
+            "GET", f"{API_BASE}/collectives", headers=self._OCS_HEADERS
         )
         data = self._unwrap_ocs(response.json())
         return data["collectives"]
@@ -65,7 +67,7 @@ class CollectivesClient(BaseNextcloudClient):
             "POST",
             f"{API_BASE}/collectives",
             json=json_data,
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS_JSON,
         )
         data = self._unwrap_ocs(response.json())
         return data["collective"]
@@ -87,18 +89,19 @@ class CollectivesClient(BaseNextcloudClient):
             "PUT",
             f"{API_BASE}/collectives/{collective_id}",
             json=json_data,
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS_JSON,
         )
         data = self._unwrap_ocs(response.json())
         return data["collective"]
 
     async def trash_collective(self, collective_id: int) -> None:
         """Move a collective to trash (soft delete)."""
-        await self._make_request(
+        response = await self._make_request(
             "DELETE",
             f"{API_BASE}/collectives/{collective_id}",
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS,
         )
+        self._unwrap_ocs(response.json())
 
     async def delete_collective(self, collective_id: int) -> None:
         """Permanently delete a collective (must be trashed first).
@@ -106,11 +109,12 @@ class CollectivesClient(BaseNextcloudClient):
         This is irreversible. The collective must be in the trash before
         calling this method.
         """
-        await self._make_request(
+        response = await self._make_request(
             "DELETE",
             f"{API_BASE}/collectives/trash/{collective_id}",
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS,
         )
+        self._unwrap_ocs(response.json())
 
     # Pages
 
@@ -119,7 +123,7 @@ class CollectivesClient(BaseNextcloudClient):
         response = await self._make_request(
             "GET",
             f"{API_BASE}/collectives/{collective_id}/pages",
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS,
         )
         data = self._unwrap_ocs(response.json())
         return data["pages"]
@@ -129,7 +133,7 @@ class CollectivesClient(BaseNextcloudClient):
         response = await self._make_request(
             "GET",
             f"{API_BASE}/collectives/{collective_id}/pages/{page_id}",
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS,
         )
         data = self._unwrap_ocs(response.json())
         return data["page"]
@@ -143,7 +147,7 @@ class CollectivesClient(BaseNextcloudClient):
             "POST",
             f"{API_BASE}/collectives/{collective_id}/pages/{parent_id}",
             json=json_data,
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS_JSON,
         )
         data = self._unwrap_ocs(response.json())
         return data["page"]
@@ -167,18 +171,19 @@ class CollectivesClient(BaseNextcloudClient):
             "PUT",
             f"{API_BASE}/collectives/{collective_id}/pages/{page_id}",
             json=json_data,
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS_JSON,
         )
         data = self._unwrap_ocs(response.json())
         return data["page"]
 
     async def trash_page(self, collective_id: int, page_id: int) -> None:
         """Move a page to trash (soft delete)."""
-        await self._make_request(
+        response = await self._make_request(
             "DELETE",
             f"{API_BASE}/collectives/{collective_id}/pages/{page_id}",
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS,
         )
+        self._unwrap_ocs(response.json())
 
     async def set_page_emoji(
         self, collective_id: int, page_id: int, emoji: str | None
@@ -189,7 +194,7 @@ class CollectivesClient(BaseNextcloudClient):
             "PUT",
             f"{API_BASE}/collectives/{collective_id}/pages/{page_id}/emoji",
             json=json_data,
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS_JSON,
         )
         data = self._unwrap_ocs(response.json())
         return data["page"]
@@ -204,7 +209,7 @@ class CollectivesClient(BaseNextcloudClient):
             "GET",
             f"{API_BASE}/collectives/{collective_id}/search",
             params={"searchString": query},
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS,
         )
         data = self._unwrap_ocs(response.json())
         return data["pages"]
@@ -216,7 +221,7 @@ class CollectivesClient(BaseNextcloudClient):
         response = await self._make_request(
             "GET",
             f"{API_BASE}/collectives/{collective_id}/tags",
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS,
         )
         data = self._unwrap_ocs(response.json())
         return data["tags"]
@@ -230,7 +235,7 @@ class CollectivesClient(BaseNextcloudClient):
             "POST",
             f"{API_BASE}/collectives/{collective_id}/tags",
             json=json_data,
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS_JSON,
         )
         data = self._unwrap_ocs(response.json())
         return data["tag"]
@@ -240,7 +245,7 @@ class CollectivesClient(BaseNextcloudClient):
         response = await self._make_request(
             "PUT",
             f"{API_BASE}/collectives/{collective_id}/pages/{page_id}/tags/{tag_id}",
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS_JSON,
         )
         self._unwrap_ocs(response.json())
 
@@ -249,7 +254,7 @@ class CollectivesClient(BaseNextcloudClient):
         response = await self._make_request(
             "DELETE",
             f"{API_BASE}/collectives/{collective_id}/pages/{page_id}/tags/{tag_id}",
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS,
         )
         self._unwrap_ocs(response.json())
 
@@ -260,7 +265,7 @@ class CollectivesClient(BaseNextcloudClient):
         response = await self._make_request(
             "GET",
             f"{API_BASE}/collectives/{collective_id}/pages/trash",
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS,
         )
         data = self._unwrap_ocs(response.json())
         return data["pages"]
@@ -270,7 +275,7 @@ class CollectivesClient(BaseNextcloudClient):
         response = await self._make_request(
             "PATCH",
             f"{API_BASE}/collectives/{collective_id}/pages/trash/{page_id}",
-            headers=self._get_ocs_headers(),
+            headers=self._OCS_HEADERS,
         )
         data = self._unwrap_ocs(response.json())
         return data["page"]

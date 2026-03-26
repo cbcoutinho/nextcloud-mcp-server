@@ -249,7 +249,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
         Args:
             collective_id: ID of the collective
-            emoji: New emoji for the collective (required)
+            emoji: New emoji for the collective
         """
         client = await get_client(ctx)
         try:
