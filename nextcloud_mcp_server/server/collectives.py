@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 def _handle_collectives_error(e: OCSError | HTTPStatusError) -> McpError:
     """Convert OCS or HTTP errors to McpError."""
     if isinstance(e, OCSError):
-        return McpError(ErrorData(code=-1, message=e.message))
-    return McpError(ErrorData(code=-1, message=str(e)))
+        return McpError(ErrorData(code=-32603, message=e.message))
+    return McpError(ErrorData(code=-32603, message=str(e)))
 
 
 def configure_collectives_tools(mcp: FastMCP):
@@ -124,7 +124,7 @@ def configure_collectives_tools(mcp: FastMCP):
             try:
                 file_bytes, _ = await client.webdav.read_file(webdav_path)
                 content = file_bytes.decode("utf-8")
-            except (HTTPStatusError, OSError) as e:
+            except (HTTPStatusError, OSError, UnicodeDecodeError) as e:
                 logger.warning(
                     "Failed to read page content via WebDAV: %s: %s",
                     webdav_path,
@@ -235,21 +235,21 @@ def configure_collectives_tools(mcp: FastMCP):
         )
 
     @mcp.tool(
-        title="Update Collective",
+        title="Set Collective Emoji",
         annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
     )
     @require_scopes("collectives:write")
     @instrument_tool
-    async def collectives_update_collective(
-        ctx: Context, collective_id: int, emoji: str | None = None
+    async def collectives_set_collective_emoji(
+        ctx: Context, collective_id: int, emoji: str
     ) -> CollectiveOperationResponse:
-        """Update a Nextcloud Collective (emoji).
+        """Set the emoji on a Nextcloud Collective.
 
-        At least one field must be provided.
+        Setting the same emoji twice produces the same result (idempotent).
 
         Args:
             collective_id: ID of the collective
-            emoji: New emoji for the collective
+            emoji: Emoji to set on the collective
         """
         client = await get_client(ctx)
         try:
@@ -262,7 +262,7 @@ def configure_collectives_tools(mcp: FastMCP):
         return CollectiveOperationResponse(
             collective_id=collective.id,
             status_code=200,
-            message=f"Collective updated (emoji: {collective.emoji})",
+            message=f"Collective emoji set to: {collective.emoji}",
         )
 
     @mcp.tool(
