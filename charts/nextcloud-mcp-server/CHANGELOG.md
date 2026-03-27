@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.58.11 (2026-03-27)
+
+### Fix
+
+- pin starlette<1.0 to prevent startup crash (#648)
+
 ## nextcloud-mcp-server-0.58.10 (2026-03-27)
 
 ## nextcloud-mcp-server-0.58.9 (2026-03-26)
