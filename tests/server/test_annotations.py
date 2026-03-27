@@ -78,8 +78,12 @@ async def test_delete_operations_are_idempotent(nc_mcp_client: ClientSession):
     """Verify delete operations are marked as idempotent (ADR-017 decision)."""
     tools = await nc_mcp_client.list_tools()
 
+    # Exceptions: delete operations that require a precondition (e.g. must be
+    # trashed first), so calling twice produces an error on the second call.
+    non_idempotent_deletes = {"collectives_delete_collective"}
+
     for tool in tools.tools:
-        if "delete" in tool.name.lower():
+        if "delete" in tool.name.lower() and tool.name not in non_idempotent_deletes:
             assert tool.annotations is not None, f"Tool {tool.name} missing annotations"
             assert tool.annotations.idempotentHint is True, (
                 f"Delete tool {tool.name} should be idempotent (same end state)"

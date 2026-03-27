@@ -453,3 +453,67 @@ async def test_get_page_404(mocker):
     client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
     with pytest.raises(httpx.HTTPStatusError):
         await client.get_page(collective_id=1, page_id=999)
+
+
+# --- Additional coverage ---
+
+
+async def test_update_collective_no_fields_raises_value_error(mocker):
+    """Test that update_collective raises ValueError when called with no fields."""
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    with pytest.raises(ValueError, match="At least one field"):
+        await client.update_collective(collective_id=1)
+
+
+async def test_set_page_emoji_clear(mocker):
+    """Test that set_page_emoji sends null emoji to clear it."""
+    page = _sample_page(10, "Test Page")
+    page["emoji"] = None
+    mock_response = _ocs_response({"page": page})
+    mock_request = mocker.patch.object(
+        CollectivesClient, "_make_request", return_value=mock_response
+    )
+
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    result = await client.set_page_emoji(collective_id=1, page_id=10, emoji=None)
+
+    assert result["emoji"] is None
+    call_args = mock_request.call_args
+    assert call_args[1]["json"] == {"emoji": None}
+
+
+async def test_get_trashed_collectives(mocker):
+    """Test listing trashed collectives."""
+    mock_response = _ocs_response(
+        {"collectives": [_sample_collective(1, "Trashed Wiki")]}
+    )
+    mock_request = mocker.patch.object(
+        CollectivesClient, "_make_request", return_value=mock_response
+    )
+
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    result = await client.get_trashed_collectives()
+
+    assert len(result) == 1
+    assert result[0]["name"] == "Trashed Wiki"
+    call_args = mock_request.call_args
+    assert "/collectives/trash" in call_args[0][1]
+    assert call_args[0][0] == "GET"
+
+
+async def test_restore_collective(mocker):
+    """Test restoring a collective from trash."""
+    mock_response = _ocs_response(
+        {"collective": _sample_collective(5, "Restored Wiki")}
+    )
+    mock_request = mocker.patch.object(
+        CollectivesClient, "_make_request", return_value=mock_response
+    )
+
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    result = await client.restore_collective(collective_id=5)
+
+    assert result["name"] == "Restored Wiki"
+    call_args = mock_request.call_args
+    assert call_args[0][0] == "PATCH"
+    assert "/collectives/trash/5" in call_args[0][1]

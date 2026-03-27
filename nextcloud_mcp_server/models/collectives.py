@@ -140,6 +140,13 @@ class ListTrashedPagesResponse(ListPagesResponse):
     )
 
 
+class ListTrashedCollectivesResponse(BaseResponse):
+    """Response for listing trashed collectives."""
+
+    collectives: list[Collective] = Field(description="List of trashed collectives")
+    total: int = Field(description="Total number of trashed collectives")
+
+
 class ListTagsResponse(BaseResponse):
     """Response for listing tags in a collective."""
 

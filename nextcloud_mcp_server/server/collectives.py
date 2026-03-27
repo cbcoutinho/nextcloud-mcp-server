@@ -21,6 +21,7 @@ from nextcloud_mcp_server.models.collectives import (
     ListCollectivesResponse,
     ListPagesResponse,
     ListTagsResponse,
+    ListTrashedCollectivesResponse,
     ListTrashedPagesResponse,
     PageInfo,
     PageOperationResponse,
@@ -241,21 +242,22 @@ def configure_collectives_tools(mcp: FastMCP):
     @require_scopes("collectives:write")
     @instrument_tool
     async def collectives_set_collective_emoji(
-        ctx: Context, collective_id: int, emoji: str
+        ctx: Context, collective_id: int, emoji: str | None = None
     ) -> CollectiveOperationResponse:
-        """Set the emoji on a Nextcloud Collective.
+        """Set or clear the emoji on a Nextcloud Collective.
 
         Setting the same emoji twice produces the same result (idempotent).
+        Pass emoji=None to clear the emoji.
 
         Args:
             collective_id: ID of the collective
-            emoji: Emoji to set on the collective
+            emoji: Emoji to set, or None to clear
         """
         client = await get_client(ctx)
         try:
             raw = await client.collectives.update_collective(collective_id, emoji)
         except ValueError as e:
-            raise McpError(ErrorData(code=400, message=str(e))) from e
+            raise McpError(ErrorData(code=-32603, message=str(e))) from e
         except (OCSError, HTTPStatusError) as e:
             raise _handle_collectives_error(e) from e
         collective = Collective(**raw)
@@ -267,9 +269,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Trash Collective",
-        annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=False, openWorldHint=True
-        ),
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
     @require_scopes("collectives:write")
     @instrument_tool
@@ -297,7 +297,7 @@ def configure_collectives_tools(mcp: FastMCP):
     @mcp.tool(
         title="Delete Collective",
         annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
+            destructiveHint=True, idempotentHint=False, openWorldHint=True
         ),
     )
     @require_scopes("collectives:write")
@@ -323,6 +323,56 @@ def configure_collectives_tools(mcp: FastMCP):
             collective_id=collective_id,
             status_code=200,
             message="Collective permanently deleted",
+        )
+
+    @mcp.tool(
+        title="List Trashed Collectives",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("collectives:read")
+    @instrument_tool
+    async def collectives_get_trashed_collectives(
+        ctx: Context,
+    ) -> ListTrashedCollectivesResponse:
+        """List all trashed Nextcloud Collectives.
+
+        Returns collectives that have been soft-deleted and can be restored
+        or permanently deleted.
+        """
+        client = await get_client(ctx)
+        try:
+            raw = await client.collectives.get_trashed_collectives()
+        except (OCSError, HTTPStatusError) as e:
+            raise _handle_collectives_error(e) from e
+        collectives = [Collective(**c) for c in raw]
+        return ListTrashedCollectivesResponse(
+            collectives=collectives, total=len(collectives)
+        )
+
+    @mcp.tool(
+        title="Restore Collective",
+        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
+    )
+    @require_scopes("collectives:write")
+    @instrument_tool
+    async def collectives_restore_collective(
+        ctx: Context, collective_id: int
+    ) -> CollectiveOperationResponse:
+        """Restore a Nextcloud Collective from trash.
+
+        Args:
+            collective_id: ID of the trashed collective to restore
+        """
+        client = await get_client(ctx)
+        try:
+            raw = await client.collectives.restore_collective(collective_id)
+        except (OCSError, HTTPStatusError) as e:
+            raise _handle_collectives_error(e) from e
+        collective = Collective(**raw)
+        return CollectiveOperationResponse(
+            collective_id=collective.id,
+            status_code=200,
+            message=f"Collective '{collective.name}' restored from trash",
         )
 
     @mcp.tool(
@@ -401,9 +451,7 @@ def configure_collectives_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Trash Collective Page",
-        annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=False, openWorldHint=True
-        ),
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
     @require_scopes("collectives:write")
     @instrument_tool

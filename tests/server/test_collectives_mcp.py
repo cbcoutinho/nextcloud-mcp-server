@@ -87,6 +87,8 @@ async def test_collectives_tools_available(nc_mcp_client: ClientSession):
         "collectives_assign_tag",
         "collectives_remove_tag",
         "collectives_get_trashed_pages",
+        "collectives_get_trashed_collectives",
+        "collectives_restore_collective",
     ]
 
     for expected in expected_tools:
@@ -280,6 +282,7 @@ async def test_collectives_move_page(
     data = json.loads(move_result.content[0].text)
     assert data["page_id"] == page_id
     assert "moved" in data["message"]
+    assert new_title in data["message"]
     logger.info(f"Page renamed to: {new_title}")
 
     # Cleanup
@@ -380,6 +383,71 @@ async def test_collectives_search(
     assert data["collective_id"] == cid
     # Search may or may not find results depending on indexing timing
     logger.info(f"Search returned {data['total']} results for 'Welcome'")
+
+
+# --- Collective Trash / Restore / Delete ---
+
+
+async def test_collectives_trash_restore_delete_workflow(
+    nc_mcp_client: ClientSession,
+):
+    """Test the full collective lifecycle: create, trash, list trashed, restore, trash, delete."""
+    # Create a throwaway collective
+    name = f"Lifecycle Test {uuid.uuid4().hex[:8]}"
+    create_result = await nc_mcp_client.call_tool(
+        "collectives_create_collective",
+        {"name": name},
+    )
+    assert create_result.isError is False
+    created = json.loads(create_result.content[0].text)
+    cid = created["id"]
+    logger.info(f"Created collective {name} (ID: {cid})")
+
+    # Trash the collective
+    trash_result = await nc_mcp_client.call_tool(
+        "collectives_trash_collective",
+        {"collective_id": cid},
+    )
+    assert trash_result.isError is False
+    logger.info("Collective moved to trash")
+
+    # List trashed collectives — should include ours
+    list_trash_result = await nc_mcp_client.call_tool(
+        "collectives_get_trashed_collectives",
+        {},
+    )
+    assert list_trash_result.isError is False
+    trash_data = json.loads(list_trash_result.content[0].text)
+    trashed_ids = [c["id"] for c in trash_data["collectives"]]
+    assert cid in trashed_ids
+    logger.info(f"Found {trash_data['total']} trashed collectives")
+
+    # Restore the collective
+    restore_result = await nc_mcp_client.call_tool(
+        "collectives_restore_collective",
+        {"collective_id": cid},
+    )
+    assert restore_result.isError is False
+    restore_data = json.loads(restore_result.content[0].text)
+    assert restore_data["collective_id"] == cid
+    assert "restored" in restore_data["message"].lower()
+    logger.info("Collective restored from trash")
+
+    # Trash again, then permanently delete
+    trash_result2 = await nc_mcp_client.call_tool(
+        "collectives_trash_collective",
+        {"collective_id": cid},
+    )
+    assert trash_result2.isError is False
+
+    delete_result = await nc_mcp_client.call_tool(
+        "collectives_delete_collective",
+        {"collective_id": cid},
+    )
+    assert delete_result.isError is False
+    delete_data = json.loads(delete_result.content[0].text)
+    assert "permanently deleted" in delete_data["message"].lower()
+    logger.info("Collective permanently deleted")
 
 
 # --- Error Handling ---

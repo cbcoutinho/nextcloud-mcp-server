@@ -118,6 +118,26 @@ class CollectivesClient(BaseNextcloudClient):
         )
         self._unwrap_ocs(response.json())
 
+    # Trash (collectives)
+
+    async def get_trashed_collectives(self) -> list[dict[str, Any]]:
+        """List trashed collectives."""
+        response = await self._make_request(
+            "GET", f"{API_BASE}/collectives/trash", headers=self._OCS_HEADERS
+        )
+        data = self._unwrap_ocs(response.json())
+        return data["collectives"]
+
+    async def restore_collective(self, collective_id: int) -> dict[str, Any]:
+        """Restore a collective from trash."""
+        response = await self._make_request(
+            "PATCH",
+            f"{API_BASE}/collectives/trash/{collective_id}",
+            headers=self._OCS_HEADERS,
+        )
+        data = self._unwrap_ocs(response.json())
+        return data["collective"]
+
     # Pages
 
     async def get_pages(self, collective_id: int) -> list[dict[str, Any]]:
