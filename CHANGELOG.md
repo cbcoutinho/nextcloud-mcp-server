@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.65.4 (2026-03-27)
+
+### Fix
+
+- pin starlette<1.0 to prevent startup crash (#648)
+
 ## v0.65.3 (2026-03-22)
 
 ### Refactor
