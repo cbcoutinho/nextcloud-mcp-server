@@ -36,7 +36,7 @@ annotations:
       description: Updated appVersion to 0.64.4
 dependencies:
   - name: qdrant
-    version: "1.17.0"
+    version: "1.17.1"
     repository: https://qdrant.github.io/qdrant-helm
     condition: qdrant.networkMode.deploySubchart
   - name: ollama
