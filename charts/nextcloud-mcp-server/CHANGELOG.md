@@ -14,6 +14,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.58.12 (2026-03-28)
+
+### Feat
+
+- add Nextcloud Collectives app support (#621)
+
+### Fix
+
+- address PR review feedback (round 9)
+- address PR review feedback (round 8)
+- address PR review feedback (round 7) and fix CI
+- address PR review feedback (round 6)
+- address PR review feedback (round 5)
+- add trash/delete collective tools and address review feedback (round 4)
+- address PR review feedback (round 3)
+- address PR review feedback (round 2)
+- correct tool annotations to match ADR-017 conventions
+- address PR review feedback for Collectives support
+
 ## nextcloud-mcp-server-0.58.11 (2026-03-27)
 
 ### Fix
