@@ -9,6 +9,9 @@ logger = logging.getLogger(__name__)
 
 API_BASE = "/ocs/v2.php/apps/collectives/api/v1.0"
 
+_UNSET = object()
+"""Sentinel to distinguish 'not provided' from an explicit None."""
+
 
 class OCSError(Exception):
     """Error returned in the OCS response envelope."""
@@ -75,15 +78,18 @@ class CollectivesClient(BaseNextcloudClient):
         return data["collective"]
 
     async def update_collective(
-        self, collective_id: int, emoji: str | None = None
+        self, collective_id: int, emoji: str | None | object = _UNSET
     ) -> dict[str, Any]:
         """Update a collective (emoji).
+
+        Pass emoji=None to clear the emoji. Omit emoji entirely to leave
+        it unchanged.
 
         Raises:
             ValueError: If no fields are provided to update.
         """
         json_data: dict[str, Any] = {}
-        if emoji is not None:
+        if emoji is not _UNSET:
             json_data["emoji"] = emoji
         if not json_data:
             raise ValueError("At least one field must be provided to update")

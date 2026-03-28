@@ -135,10 +135,6 @@ class SearchPagesResponse(BaseResponse):
 class ListTrashedPagesResponse(ListPagesResponse):
     """Response for listing trashed pages in a collective."""
 
-    is_trash: bool = Field(
-        default=True, description="Indicates these are trashed pages"
-    )
-
 
 class ListTrashedCollectivesResponse(BaseResponse):
     """Response for listing trashed collectives."""

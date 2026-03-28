@@ -461,8 +461,26 @@ async def test_get_page_404(mocker):
 async def test_update_collective_no_fields_raises_value_error(mocker):
     """Test that update_collective raises ValueError when called with no fields."""
     client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    # Omitting emoji entirely (not passing it) should raise
     with pytest.raises(ValueError, match="At least one field"):
         await client.update_collective(collective_id=1)
+
+
+async def test_update_collective_clear_emoji(mocker):
+    """Test that update_collective sends null emoji to clear it."""
+    mock_response = _ocs_response(
+        {"collective": _sample_collective(1, "Test Wiki", emoji=None)}
+    )
+    mock_request = mocker.patch.object(
+        CollectivesClient, "_make_request", return_value=mock_response
+    )
+
+    client = CollectivesClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    result = await client.update_collective(collective_id=1, emoji=None)
+
+    assert result["emoji"] is None
+    call_args = mock_request.call_args
+    assert call_args[1]["json"] == {"emoji": None}
 
 
 async def test_set_page_emoji_clear(mocker):

@@ -208,6 +208,30 @@ def configure_collectives_tools(mcp: FastMCP):
             pages=pages, total=len(pages), collective_id=collective_id
         )
 
+    @mcp.tool(
+        title="List Trashed Collectives",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("collectives:read")
+    @instrument_tool
+    async def collectives_get_trashed_collectives(
+        ctx: Context,
+    ) -> ListTrashedCollectivesResponse:
+        """List all trashed Nextcloud Collectives.
+
+        Returns collectives that have been soft-deleted and can be restored
+        or permanently deleted.
+        """
+        client = await get_client(ctx)
+        try:
+            raw = await client.collectives.get_trashed_collectives()
+        except (OCSError, HTTPStatusError) as e:
+            raise _handle_collectives_error(e) from e
+        collectives = [Collective(**c) for c in raw]
+        return ListTrashedCollectivesResponse(
+            collectives=collectives, total=len(collectives)
+        )
+
     # --- Write Tools ---
 
     @mcp.tool(
@@ -326,30 +350,6 @@ def configure_collectives_tools(mcp: FastMCP):
         )
 
     @mcp.tool(
-        title="List Trashed Collectives",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
-    )
-    @require_scopes("collectives:read")
-    @instrument_tool
-    async def collectives_get_trashed_collectives(
-        ctx: Context,
-    ) -> ListTrashedCollectivesResponse:
-        """List all trashed Nextcloud Collectives.
-
-        Returns collectives that have been soft-deleted and can be restored
-        or permanently deleted.
-        """
-        client = await get_client(ctx)
-        try:
-            raw = await client.collectives.get_trashed_collectives()
-        except (OCSError, HTTPStatusError) as e:
-            raise _handle_collectives_error(e) from e
-        collectives = [Collective(**c) for c in raw]
-        return ListTrashedCollectivesResponse(
-            collectives=collectives, total=len(collectives)
-        )
-
-    @mcp.tool(
         title="Restore Collective",
         annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
     )
@@ -458,7 +458,11 @@ def configure_collectives_tools(mcp: FastMCP):
     async def collectives_trash_page(
         ctx: Context, collective_id: int, page_id: int
     ) -> PageOperationResponse:
-        """Move a page to trash in a Nextcloud Collective (soft delete)
+        """Move a page to trash in a Nextcloud Collective (soft delete).
+
+        Trashed pages can be restored with collectives_restore_page. The
+        Collectives API does not support permanent page deletion; trashed
+        pages are cleaned up by Nextcloud's retention policy.
 
         Args:
             collective_id: ID of the collective

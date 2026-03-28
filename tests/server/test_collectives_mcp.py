@@ -134,6 +134,30 @@ async def test_collectives_set_collective_emoji(
     logger.info("Collective emoji updated")
 
 
+async def test_collectives_clear_collective_emoji(
+    nc_mcp_client: ClientSession, temporary_collective: dict
+):
+    """Test clearing a collective's emoji by passing null."""
+    cid = temporary_collective["id"]
+
+    # Set an emoji first
+    set_result = await nc_mcp_client.call_tool(
+        "collectives_set_collective_emoji",
+        {"collective_id": cid, "emoji": "🔬"},
+    )
+    assert set_result.isError is False
+
+    # Clear the emoji by passing null
+    clear_result = await nc_mcp_client.call_tool(
+        "collectives_set_collective_emoji",
+        {"collective_id": cid, "emoji": None},
+    )
+    assert clear_result.isError is False
+    data = json.loads(clear_result.content[0].text)
+    assert data["collective_id"] == cid
+    logger.info("Collective emoji cleared")
+
+
 # --- Page CRUD ---
 
 
