@@ -45,14 +45,12 @@ jobs:
           - "oauth"
           - "login-flow"
         include:
-          # Version-specific image pins — Renovate updates these via customManagers
-          # renovate: datasource=docker depName=docker.io/library/nextcloud
+          # Version-specific image pins — Renovate updates these via customManagers in renovate.json
+          # Each entry is pinned to its major version (e.g., NC 31 only gets 31.x updates)
           - nextcloud_version: "31"
             nextcloud_image: "docker.io/library/nextcloud:31.0.14@sha256:9bf3fae91aad4dca3eff02c1f71df8d5c6705a349065fb537aa5c5ef578f1013"
-          # renovate: datasource=docker depName=docker.io/library/nextcloud
           - nextcloud_version: "32"
             nextcloud_image: "docker.io/library/nextcloud:32.0.6@sha256:5c4e09f72f096cd68379a8ae69f71e61d13da5a07430fc4a17c702a14e6a4267"
-          # renovate: datasource=docker depName=docker.io/library/nextcloud
           # Disabled until all upstream apps support NC 33
           # - nextcloud_version: "33"
           #   nextcloud_image: "docker.io/library/nextcloud:33.0.0@sha256:d53f6cb35b0712aa890a5e4a8ca21043d6fcd390f38c55b710816dd7cbc2edc0"

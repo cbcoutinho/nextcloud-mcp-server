@@ -11,18 +11,41 @@
         "pillow"
       ],
       "allowedVersions": "<12.0.0"
+    },
+    {
+      "description": "Pin each Nextcloud matrix entry to its own major version",
+      "matchDepNames": ["nextcloud-31"],
+      "allowedVersions": "/^31\\./"
+    },
+    {
+      "matchDepNames": ["nextcloud-32"],
+      "allowedVersions": "/^32\\./"
+    },
+    {
+      "matchDepNames": ["nextcloud-33"],
+      "allowedVersions": "/^33\\./"
+    },
+    {
+      "description": "Pin docker-compose.yml Nextcloud image to 32.x",
+      "matchPackageNames": ["docker.io/library/nextcloud"],
+      "matchFileNames": ["docker-compose.yml"],
+      "allowedVersions": "/^32\\./"
     }
   ],
   "customManagers": [
     {
       "customType": "regex",
+      "description": "Nextcloud version matrix pins in CI — each entry gets a version-specific dep name",
       "managerFilePatterns": [
         "/^\\.github/workflows/test\\.yml$/"
       ],
       "matchStrings": [
-        "nextcloud_image:\\s*\"(?<depName>[^:]+):(?<currentValue>[^@]+)@(?<currentDigest>sha256:[a-f0-9]+)\""
+        "nextcloud_version:\\s*\"(?<major>\\d+)\"\\s*\\n\\s*#?\\s*nextcloud_image:\\s*\"(?<packageName>[^:]+):(?<currentValue>[^@]+)@(?<currentDigest>sha256:[a-f0-9]+)\""
       ],
-      "datasourceTemplate": "docker"
+      "depNameTemplate": "nextcloud-{{{major}}}",
+      "packageNameTemplate": "docker.io/library/nextcloud",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ]
 }
