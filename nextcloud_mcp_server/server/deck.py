@@ -641,9 +641,7 @@ def configure_deck_tools(mcp: FastMCP):
 
     @mcp.tool(
         title="Remove Label from Deck Card",
-        annotations=ToolAnnotations(
-            destructiveHint=True, idempotentHint=True, openWorldHint=True
-        ),
+        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
     )
     @require_scopes("deck:write")
     @instrument_tool
