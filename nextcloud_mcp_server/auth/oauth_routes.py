@@ -24,10 +24,10 @@ import logging
 import os
 import secrets
 import time
-from base64 import urlsafe_b64encode
+from base64 import b64decode, urlsafe_b64encode
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode
 from urllib.parse import urlparse as parse_url
 
 import jwt
@@ -193,12 +193,16 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
             status_code=400,
         )
 
-    # Validate redirect_uri is localhost (RFC 8252 for native clients)
-    if not redirect_uri.startswith(("http://localhost:", "http://127.0.0.1:")):
+    # Validate redirect_uri scheme security (OAuth 2.1):
+    # - Localhost: HTTP allowed (RFC 8252 loopback exception for native clients)
+    # - Remote hosts: HTTPS required (cloud clients like Claude AI)
+    parsed_redirect = parse_url(redirect_uri)
+    is_loopback = parsed_redirect.hostname in ("localhost", "127.0.0.1")
+    if not (is_loopback or parsed_redirect.scheme == "https"):
         return JSONResponse(
             {
                 "error": "invalid_request",
-                "error_description": "redirect_uri must be localhost for native clients",
+                "error_description": "redirect_uri must use HTTPS for non-localhost URIs",
             },
             status_code=400,
         )
@@ -905,6 +909,19 @@ async def _oauth_callback_as_proxy(
     return RedirectResponse(redirect_url, status_code=302)
 
 
+def _extract_basic_auth(request: Request) -> tuple[str | None, str | None]:
+    """Extract client_id and client_secret from HTTP Basic Auth header (RFC 6749 §2.3.1)."""
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Basic "):
+        return None, None
+    try:
+        decoded = b64decode(auth_header[6:]).decode("utf-8")
+        client_id, _, client_secret = decoded.partition(":")
+        return unquote(client_id), unquote(client_secret) if client_secret else None
+    except Exception:
+        return None, None
+
+
 def _verify_pkce_s256(code_verifier: str, code_challenge: str) -> bool:
     """Verify PKCE S256 code_verifier against stored code_challenge.
 
@@ -957,6 +974,10 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
     redirect_uri = form.get("redirect_uri")
     code_verifier = form.get("code_verifier")
     client_id = form.get("client_id")
+
+    # RFC 6749 §2.3.1: clients may authenticate via HTTP Basic Auth
+    if not client_id:
+        client_id, _ = _extract_basic_auth(request)
 
     logger.debug(
         "AS proxy token: received code=%s client_id=%s redirect_uri=%s "

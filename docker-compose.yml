@@ -37,7 +37,7 @@ services:
       # The post-installation hook will register /opt/apps as an additional app directory
       #- ./third_party:/opt/apps:ro
       - ./third_party/astrolabe:/opt/apps/astrolabe:ro
-      - ./third_party/oidc:/opt/apps/oidc:ro
+      #- ./third_party/oidc:/opt/apps/oidc:ro
     environment:
       - NEXTCLOUD_TRUSTED_DOMAINS=app
       - NEXTCLOUD_ADMIN_USER=admin
@@ -47,6 +47,9 @@ services:
       - MYSQL_USER=nextcloud
       - MYSQL_HOST=db
       - REDIS_HOST=redis
+      # Set MCP_SERVER_URL to enable Astrolabe OAuth client auto-creation
+      # (before-starting hook creates OIDC client + stores credentials in config.php)
+      # Example: MCP_SERVER_URL=http://mcp-login-flow:8004 docker compose --profile login-flow up -d
       - MCP_SERVER_URL=${MCP_SERVER_URL:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -Ss http://localhost/status.php | grep '\"installed\":true' || exit 1"]

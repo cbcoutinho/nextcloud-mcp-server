@@ -120,12 +120,14 @@ jobs:
           npm ci
           npm run build
 
-      - name: Build OIDC app
-        run: |
-          cd third_party/oidc
-          composer install --no-dev --optimize-autoloader
-          npm ci
-          npm run build
+      # OIDC app is now installed from the Nextcloud app store via app-hook
+      # (third_party/oidc fork no longer mounted — upstream v1.16.3 fixes PR #631)
+      # - name: Build OIDC app
+      #   run: |
+      #     cd third_party/oidc
+      #     composer install --no-dev --optimize-autoloader
+      #     npm ci
+      #     npm run build
 
       # Start services with the appropriate profile
       - name: Run docker compose
