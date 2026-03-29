@@ -1807,9 +1807,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         break
 
                 # Determine authentication mode for background sync
-                # Multi-user BasicAuth: use app passwords via Astrolabe (NOT OAuth)
-                # OAuth mode: use OAuth refresh tokens (NOT app passwords)
-                use_basic_auth = not oauth_enabled
+                # Login Flow v2 and multi-user BasicAuth: use app passwords
+                # OAuth mode (without Login Flow): use OAuth refresh tokens
+                use_basic_auth = not oauth_enabled or settings.enable_login_flow
 
                 # Start background tasks using anyio TaskGroup
                 async with anyio.create_task_group() as tg:

@@ -489,21 +489,13 @@ async def user_manager_task(
         try:
             # Get current provisioned users based on mode
             if use_basic_auth:
-                # BasicAuth mode: query app_passwords table
+                # BasicAuth / Login Flow v2 mode: query app_passwords table
                 provisioned_users = set(
                     await refresh_token_storage.get_all_app_password_user_ids()
                 )
             else:
                 # OAuth mode: query refresh_tokens table
                 provisioned_users = set(await refresh_token_storage.get_all_user_ids())
-                # Login Flow mode: also check app_passwords table
-                # (users provisioned via Login Flow v2 have app passwords,
-                # not refresh tokens)
-                if settings.enable_login_flow:
-                    app_pw_users = set(
-                        await refresh_token_storage.get_all_app_password_user_ids()
-                    )
-                    provisioned_users |= app_pw_users
             active_users = set(user_states.keys())
 
             # Start scanners for new users
