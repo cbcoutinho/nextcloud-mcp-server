@@ -73,6 +73,10 @@ from nextcloud_mcp_server.auth.oauth_routes import (
     oauth_register_proxy,
     oauth_token_endpoint,
 )
+from nextcloud_mcp_server.auth.provision_routes import (
+    provision_page,
+    provision_status,
+)
 from nextcloud_mcp_server.auth.session_backend import SessionAuthBackend
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage, get_shared_storage
 from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
@@ -2317,6 +2321,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             chunk_context_endpoint,
             methods=["GET"],
         ),  # /app/chunk-context
+        # Login Flow v2 web provisioning (used by Astrolabe)
+        Route("/provision", provision_page, methods=["GET"]),  # /app/provision
+        Route(
+            "/provision/status", provision_status, methods=["GET"]
+        ),  # /app/provision/status
         # Webhook management routes (admin-only)
         Route("/webhooks", webhook_management_pane, methods=["GET"]),  # /app/webhooks
         Route(
