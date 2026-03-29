@@ -82,6 +82,17 @@ class UnifiedTokenVerifier(TokenVerifier):
             self.introspection_uri = settings.introspection_uri
             logger.info(f"Token introspection enabled: {self.introspection_uri}")
 
+        # Build list of valid issuers (internal + public may differ in Docker)
+        # AS proxy obtains tokens via internal URL (e.g. http://app:80), while
+        # NEXTCLOUD_PUBLIC_ISSUER_URL is the browser-facing URL (e.g. http://localhost:8080)
+        self.valid_issuers: list[str] = []
+        if hasattr(settings, "oidc_issuer") and settings.oidc_issuer:
+            self.valid_issuers.append(settings.oidc_issuer)
+        if hasattr(settings, "nextcloud_host") and settings.nextcloud_host:
+            host = settings.nextcloud_host.rstrip("/")
+            if host not in self.valid_issuers:
+                self.valid_issuers.append(host)
+
         # Token cache: token_hash -> (userinfo, expiry_timestamp)
         self._token_cache: dict[str, tuple[dict[str, Any], float]] = {}
         self.cache_ttl = 3600  # 1 hour default
@@ -89,7 +100,8 @@ class UnifiedTokenVerifier(TokenVerifier):
         logger.info(
             f"UnifiedTokenVerifier initialized in {self.mode} mode. "
             f"MCP audience: {settings.oidc_client_id} or {settings.nextcloud_mcp_server_url}, "
-            f"Nextcloud resource URI: {settings.nextcloud_resource_uri}"
+            f"Nextcloud resource URI: {settings.nextcloud_resource_uri}, "
+            f"Valid issuers: {self.valid_issuers}"
         )
 
     async def verify_token(self, token: str) -> AccessToken | None:
@@ -208,6 +220,14 @@ class UnifiedTokenVerifier(TokenVerifier):
                     record_oauth_token_validation("jwt", "valid")
                 else:
                     record_oauth_token_validation("jwt", "invalid")
+                    # Fall back to introspection if JWT verification failed
+                    if self.introspection_uri:
+                        validation_method = "introspect"
+                        payload = await self._introspect_token(token)
+                        if payload:
+                            record_oauth_token_validation("introspect", "valid")
+                        else:
+                            record_oauth_token_validation("introspect", "invalid")
             else:
                 # Fall back to introspection for opaque tokens
                 validation_method = "introspect"
@@ -390,25 +410,29 @@ class UnifiedTokenVerifier(TokenVerifier):
 
             # Verify and decode JWT
             # Note: We don't validate audience here - that's done separately based on mode
-            # Issuer validation can be skipped for management API tokens (from Astrolabe)
-            should_verify_issuer = (
-                not skip_issuer_check
-                and hasattr(self.settings, "oidc_issuer")
-                and self.settings.oidc_issuer
-            )
+            # Issuer is checked manually below to support multiple valid issuers
+            # (internal Docker URL vs public URL in AS proxy deployments)
             payload = jwt.decode(
                 token,
                 signing_key.key,
                 algorithms=["RS256"],
-                issuer=(self.settings.oidc_issuer if should_verify_issuer else None),
                 options={
                     "verify_signature": True,
                     "verify_exp": True,
                     "verify_iat": True,
-                    "verify_iss": should_verify_issuer,
-                    "verify_aud": False,  # We handle audience validation separately
+                    "verify_iss": False,  # Checked manually below
+                    "verify_aud": False,  # Handled separately based on mode
                 },
             )
+
+            # Manual issuer validation against multiple valid issuers
+            if not skip_issuer_check and self.valid_issuers:
+                token_issuer = payload.get("iss")
+                if token_issuer not in self.valid_issuers:
+                    raise jwt.InvalidIssuerError(
+                        f"Invalid issuer '{token_issuer}', "
+                        f"expected one of: {self.valid_issuers}"
+                    )
 
             logger.debug(f"JWT signature verified for user: {payload.get('sub')}")
             return payload

@@ -37,7 +37,7 @@ services:
       # The post-installation hook will register /opt/apps as an additional app directory
       #- ./third_party:/opt/apps:ro
       - ./third_party/astrolabe:/opt/apps/astrolabe:ro
-      - ./third_party/oidc:/opt/apps/oidc:ro
+      #- ./third_party/oidc:/opt/apps/oidc:ro
     environment:
       - NEXTCLOUD_TRUSTED_DOMAINS=app
       - NEXTCLOUD_ADMIN_USER=admin
