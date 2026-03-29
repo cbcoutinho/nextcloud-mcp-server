@@ -205,12 +205,17 @@ async def provision_page(request: Request) -> RedirectResponse | HTMLResponse:
     )
 
     # Redirect to Nextcloud's Login Flow v2 login page.
-    # The login_url may use the internal Docker URL (http://app:80/...).
+    # The login_url may use the internal Docker hostname (http://app/...).
     # Replace with the public Nextcloud URL for the browser.
     login_url = init_response.login_url
     public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL", "")
-    if public_issuer and nextcloud_host and nextcloud_host in login_url:
-        login_url = login_url.replace(nextcloud_host, public_issuer.rstrip("/"))
+    if public_issuer and nextcloud_host:
+        # Extract just scheme+host from NEXTCLOUD_HOST for matching
+        # (NC may omit default ports, e.g. http://app:80 → http://app)
+        parsed = urlparse(nextcloud_host)
+        internal_origin = f"{parsed.scheme}://{parsed.hostname}"
+        if internal_origin in login_url:
+            login_url = login_url.replace(internal_origin, public_issuer.rstrip("/"))
 
     return RedirectResponse(login_url)
 
