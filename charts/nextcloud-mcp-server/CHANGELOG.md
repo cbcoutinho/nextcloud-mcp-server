@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.58.17 (2026-03-29)
+
+### Fix
+
+- allow HTTPS redirect URIs for non-localhost OAuth clients
+- move Astrolabe OAuth hook to before-starting for reliable OIDC client creation
+- resolve OAuth compatibility issues for login-flow deployment
+
 ## nextcloud-mcp-server-0.58.16 (2026-03-28)
 
 ## nextcloud-mcp-server-0.58.15 (2026-03-28)
