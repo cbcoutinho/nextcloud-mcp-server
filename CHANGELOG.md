@@ -5,6 +5,14 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.66.2 (2026-03-29)
+
+### Fix
+
+- allow HTTPS redirect URIs for non-localhost OAuth clients
+- move Astrolabe OAuth hook to before-starting for reliable OIDC client creation
+- resolve OAuth compatibility issues for login-flow deployment
+
 ## v0.66.1 (2026-03-28)
 
 ### Fix
