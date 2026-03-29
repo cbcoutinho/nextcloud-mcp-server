@@ -332,7 +332,7 @@ services:
   # Usage: docker compose --profile login-flow --profile claude-funnel up --build -d
   # Requires: TS_AUTHKEY in .env file (see env.sample.claude-funnel)
   tailscale-mcp:
-    image: tailscale/tailscale:latest
+    image: tailscale/tailscale:latest@sha256:95e528798bebe75f39b10e74e7051cf51188ee615934f232ba7ad06a3390ffa1
     hostname: nextcloud-mcp-dev
     restart: always
     environment:
@@ -351,7 +351,7 @@ services:
       - claude-funnel
 
   nginx-claude-filter:
-    image: docker.io/library/nginx:alpine
+    image: docker.io/library/nginx:alpine@sha256:e7257f1ef28ba17cf7c248cb8ccf6f0c6e0228ab9c315c152f9c203cd34cf6d1
     restart: always
     depends_on:
       - mcp-login-flow
