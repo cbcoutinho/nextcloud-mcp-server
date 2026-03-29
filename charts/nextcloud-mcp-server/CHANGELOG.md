@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.58.18 (2026-03-29)
+
+### Feat
+
+- add Tailscale Funnel config for Claude AI connector testing
+
 ## nextcloud-mcp-server-0.58.17 (2026-03-29)
 
 ### Fix
