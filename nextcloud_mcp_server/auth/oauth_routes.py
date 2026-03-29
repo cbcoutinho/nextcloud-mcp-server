@@ -193,12 +193,16 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
             status_code=400,
         )
 
-    # Validate redirect_uri is localhost (RFC 8252 for native clients)
-    if not redirect_uri.startswith(("http://localhost:", "http://127.0.0.1:")):
+    # Validate redirect_uri scheme security (OAuth 2.1):
+    # - Localhost: HTTP allowed (RFC 8252 loopback exception for native clients)
+    # - Remote hosts: HTTPS required (cloud clients like Claude AI)
+    parsed_redirect = parse_url(redirect_uri)
+    is_loopback = parsed_redirect.hostname in ("localhost", "127.0.0.1")
+    if not (is_loopback or parsed_redirect.scheme == "https"):
         return JSONResponse(
             {
                 "error": "invalid_request",
-                "error_description": "redirect_uri must be localhost for native clients",
+                "error_description": "redirect_uri must use HTTPS for non-localhost URIs",
             },
             status_code=400,
         )
