@@ -24,7 +24,7 @@ from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import JSONResponse, RedirectResponse
+from starlette.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Send
@@ -2341,6 +2341,18 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # Mount browser app at /app (webapp and admin routes)
     routes.append(Mount("/app", app=browser_app))
     logger.info("App routes with session auth: /app, /app/webhooks, /app/revoke")
+
+    # Favicon for connector directory discovery (Google favicon service)
+    favicon_path = os.path.join(
+        os.path.dirname(__file__), "auth", "static", "favicon.png"
+    )
+    if os.path.isfile(favicon_path):
+        routes.append(
+            Route(
+                "/favicon.ico",
+                lambda request: FileResponse(favicon_path, media_type="image/png"),
+            )
+        )
 
     # Mount FastMCP at root last (catch-all, handles OAuth via token_verifier)
     routes.append(Mount("/", app=mcp_app))
