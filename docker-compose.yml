@@ -47,6 +47,9 @@ services:
       - MYSQL_USER=nextcloud
       - MYSQL_HOST=db
       - REDIS_HOST=redis
+      # Set MCP_SERVER_URL to enable Astrolabe OAuth client auto-creation
+      # (before-starting hook creates OIDC client + stores credentials in config.php)
+      # Example: MCP_SERVER_URL=http://mcp-login-flow:8004 docker compose --profile login-flow up -d
       - MCP_SERVER_URL=${MCP_SERVER_URL:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -Ss http://localhost/status.php | grep '\"installed\":true' || exit 1"]
