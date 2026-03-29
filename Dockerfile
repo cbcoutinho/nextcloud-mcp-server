@@ -6,6 +6,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.10.12@sha256:72ab0aeb448090480ccabb99fb5f52b0
 # 1. git (required for caldav dependency from git)
 # 2. sqlite for development with token db
 RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
+    curl \
     git \
     tesseract-ocr \
     sqlite3 && apt clean
