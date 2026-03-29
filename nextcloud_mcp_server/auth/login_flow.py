@@ -10,6 +10,7 @@ The flow has two steps:
 
 import logging
 import ssl
+from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field
 
@@ -91,9 +92,16 @@ class LoginFlowV2Client:
         poll_data = data.get("poll", {})
 
         try:
+            raw_poll_endpoint = poll_data["endpoint"]
+            # Nextcloud returns URLs using its internal hostname (e.g.
+            # http://localhost/login/v2/poll) which may be unreachable from
+            # this process. Rewrite the poll endpoint to use nextcloud_host
+            # so server-side polling works across Docker networks.
+            poll_endpoint = self._rewrite_to_nextcloud_host(raw_poll_endpoint)
+
             result = LoginFlowInitResponse(
                 login_url=data["login"],
-                poll_endpoint=poll_data["endpoint"],
+                poll_endpoint=poll_endpoint,
                 poll_token=poll_data["token"],
             )
         except KeyError as e:
@@ -102,6 +110,25 @@ class LoginFlowV2Client:
             ) from e
 
         logger.info(f"Login Flow v2 initiated: login_url={result.login_url[:60]}...")
+        return result
+
+    def _rewrite_to_nextcloud_host(self, url: str) -> str:
+        """Rewrite a URL's origin to use self.nextcloud_host.
+
+        Nextcloud may return URLs with its internal hostname (e.g.
+        http://localhost) which differs from the configured NEXTCLOUD_HOST
+        (e.g. http://app:80). This replaces the scheme+host+port while
+        preserving the path and query.
+        """
+        parsed_url = urlparse(url)
+        parsed_host = urlparse(self.nextcloud_host)
+        rewritten = parsed_url._replace(
+            scheme=parsed_host.scheme,
+            netloc=parsed_host.netloc,
+        )
+        result = urlunparse(rewritten)
+        if result != url:
+            logger.debug(f"Rewrote Login Flow v2 URL: {url} → {result}")
         return result
 
     async def poll(self, poll_endpoint: str, poll_token: str) -> LoginFlowPollResult:
