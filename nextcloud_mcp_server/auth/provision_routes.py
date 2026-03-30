@@ -30,8 +30,10 @@ from nextcloud_mcp_server.config import get_nextcloud_ssl_verify, get_settings
 
 logger = logging.getLogger(__name__)
 
-# In-memory store for web provision sessions (short-lived, no persistence needed)
-# Maps provision_id → session data
+# In-memory store for web provision sessions (short-lived, no persistence needed).
+# Maps provision_id → session data.
+# NOTE: This does not work with multi-process deployments (e.g. uvicorn --workers N).
+# Login Flow v2 mode assumes a single worker process.
 _provision_sessions: dict[str, dict] = {}
 
 # Session TTL: 20 minutes (matches Nextcloud's Login Flow v2 timeout)
@@ -192,7 +194,9 @@ async def provision_page(request: Request) -> RedirectResponse | HTMLResponse:
     except Exception as e:
         logger.error(f"Failed to initiate Login Flow v2 for web provision: {e}")
         return HTMLResponse(
-            content=_render_error(f"Failed to start login flow: {e}"),
+            content=_render_error(
+                "Failed to start login flow. Please try again later."
+            ),
             status_code=502,
         )
 
@@ -230,6 +234,9 @@ async def provision_page(request: Request) -> RedirectResponse | HTMLResponse:
     # Redirect to Nextcloud's Login Flow v2 login page.
     # The login_url may use the internal Docker hostname (http://app/...).
     # Replace with the public Nextcloud URL for the browser.
+    # Note: poll_endpoint is rewritten to NEXTCLOUD_HOST (server-side, in
+    # LoginFlowV2Client) while login_url is rewritten to the public issuer
+    # URL here because the browser needs a publicly-reachable address.
     login_url = init_response.login_url
     public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL", "")
     if public_issuer and nextcloud_host:

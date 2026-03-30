@@ -1398,6 +1398,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         from nextcloud_mcp_server.auth.oauth_routes import (  # noqa: PLC0415
             _cleanup_expired_proxy_codes,
         )
+        from nextcloud_mcp_server.auth.provision_routes import (  # noqa: PLC0415
+            _cleanup_expired_sessions as _cleanup_expired_provision_sessions,
+        )
 
         while True:
             try:
@@ -1407,6 +1410,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     logger.info(f"Cleaned up {count} expired login flow sessions")
                 # Also clean up expired AS proxy codes/sessions
                 _cleanup_expired_proxy_codes()
+                # Clean up expired web provision sessions
+                _cleanup_expired_provision_sessions()
             except Exception as e:
                 logger.warning(f"Login flow cleanup error: {e}")
             await anyio.sleep(3600)  # Every hour
@@ -2337,11 +2342,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             chunk_context_endpoint,
             methods=["GET"],
         ),  # /app/chunk-context
-        # Login Flow v2 web provisioning (used by Astrolabe)
-        Route("/provision", provision_page, methods=["GET"]),  # /app/provision
-        Route(
-            "/provision/status", provision_status, methods=["GET"]
-        ),  # /app/provision/status
         # Webhook management routes (admin-only)
         Route("/webhooks", webhook_management_pane, methods=["GET"]),  # /app/webhooks
         Route(
@@ -2355,6 +2355,15 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             methods=["DELETE"],
         ),
     ]
+
+    # Login Flow v2 web provisioning (only when Login Flow is enabled)
+    if settings.enable_login_flow:
+        browser_routes += [
+            Route("/provision", provision_page, methods=["GET"]),  # /app/provision
+            Route(
+                "/provision/status", provision_status, methods=["GET"]
+            ),  # /app/provision/status
+        ]
 
     # Add static files mount if directory exists
     static_dir = os.path.join(os.path.dirname(__file__), "auth", "static")
