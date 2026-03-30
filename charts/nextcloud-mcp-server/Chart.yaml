@@ -40,6 +40,6 @@ dependencies:
     repository: https://qdrant.github.io/qdrant-helm
     condition: qdrant.networkMode.deploySubchart
   - name: ollama
-    version: "1.47.0"
+    version: "1.54.0"
     repository: https://otwld.github.io/ollama-helm
     condition: ollama.enabled
