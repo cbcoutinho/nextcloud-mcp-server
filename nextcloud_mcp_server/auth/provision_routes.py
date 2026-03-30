@@ -64,7 +64,8 @@ async def _poll_and_store(provision_id: str) -> None:
     settings = get_settings()
     nextcloud_host = settings.nextcloud_host
     if not nextcloud_host:
-        session["status"] = "expired"
+        if provision_id in _provision_sessions:
+            session["status"] = "error"
         return
 
     flow_client = LoginFlowV2Client(
@@ -96,7 +97,11 @@ async def _poll_and_store(provision_id: str) -> None:
             storage = await get_shared_storage()
             effective_user_id = user_id or result.login_name or "unknown"
             if not result.app_password:
-                session["status"] = "expired"
+                # Re-fetch session to avoid writing to orphaned dict if
+                # _cleanup_expired_sessions removed it while we were polling
+                session = _provision_sessions.get(provision_id)
+                if session:
+                    session["status"] = "error"
                 logger.error(
                     f"Login Flow v2 completed but no app_password (provision_id={provision_id})"
                 )
@@ -107,8 +112,10 @@ async def _poll_and_store(provision_id: str) -> None:
                 scopes=None,  # All scopes
                 username=result.login_name,
             )
-            session["status"] = "completed"
-            session["username"] = result.login_name
+            session = _provision_sessions.get(provision_id)
+            if session:
+                session["status"] = "completed"
+                session["username"] = result.login_name
             logger.info(
                 f"Login Flow v2 web provision completed for user {effective_user_id} "
                 f"(provision_id={provision_id})"
@@ -116,7 +123,9 @@ async def _poll_and_store(provision_id: str) -> None:
             return
 
         if result.status == "expired":
-            session["status"] = "expired"
+            session = _provision_sessions.get(provision_id)
+            if session:
+                session["status"] = "expired"
             logger.warning(
                 f"Login Flow v2 web provision expired (provision_id={provision_id})"
             )
@@ -125,7 +134,9 @@ async def _poll_and_store(provision_id: str) -> None:
         await anyio.sleep(2)
 
     # Timed out
-    session["status"] = "expired"
+    session = _provision_sessions.get(provision_id)
+    if session:
+        session["status"] = "expired"
     logger.warning(
         f"Login Flow v2 web provision timed out (provision_id={provision_id})"
     )
@@ -177,9 +188,7 @@ async def provision_page(request: Request) -> RedirectResponse | HTMLResponse:
             nextcloud_host=nextcloud_host,
             verify_ssl=get_nextcloud_ssl_verify(),
         )
-        init_response = await flow_client.initiate(
-            user_agent="Astrolabe Background Sync"
-        )
+        init_response = await flow_client.initiate()
     except Exception as e:
         logger.error(f"Failed to initiate Login Flow v2 for web provision: {e}")
         return HTMLResponse(
@@ -234,7 +243,12 @@ async def provision_status(request: Request) -> JSONResponse:
 
     GET /app/provision/status?id=...
 
-    Returns JSON: {"status": "pending"|"completed"|"expired", "username": "..."}
+    Returns JSON with status field:
+    - ``"pending"``  — flow in progress, poll again
+    - ``"completed"`` — app password stored, includes ``"username"``
+    - ``"expired"``  — flow timed out or was rejected by Nextcloud
+    - ``"error"``    — flow completed but server-side error (e.g. missing app password)
+    - ``"not_found"`` — unknown or already-consumed session (404)
     """
     provision_id = request.query_params.get("id", "")
 
@@ -247,6 +261,12 @@ async def provision_status(request: Request) -> JSONResponse:
             },
             status_code=404,
         )
+
+    # Detect sessions that outlived their TTL (e.g. no new provision
+    # requests triggered _cleanup_expired_sessions)
+    if session["expires_at"] < time.time():
+        _provision_sessions.pop(provision_id, None)
+        return JSONResponse({"status": "expired"}, status_code=404)
 
     response: dict = {"status": session["status"]}
     if session["status"] == "completed":

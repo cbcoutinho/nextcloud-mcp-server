@@ -1,6 +1,7 @@
 """Unit tests for web-based Login Flow v2 provisioning routes.
 
-Tests validation, HTML escaping, URL rewriting, and route handlers.
+Tests validation, HTML escaping, URL rewriting, route handlers, and
+background polling logic.
 """
 
 import time
@@ -8,7 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from nextcloud_mcp_server.auth.login_flow import LoginFlowPollResult
 from nextcloud_mcp_server.auth.provision_routes import (
+    _poll_and_store,
     _provision_sessions,
     _render_error,
     _validate_redirect_uri,
@@ -17,6 +20,14 @@ from nextcloud_mcp_server.auth.provision_routes import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _clear_provision_sessions():
+    """Ensure _provision_sessions is empty before and after each test."""
+    _provision_sessions.clear()
+    yield
+    _provision_sessions.clear()
 
 
 # ── _validate_redirect_uri tests ─────────────────────────────────────────
@@ -106,12 +117,9 @@ async def test_provision_status_pending():
         "status": "pending",
         "expires_at": time.time() + 600,
     }
-    try:
-        request = _make_request({"id": provision_id})
-        response = await provision_status(request)
-        assert response.status_code == 200
-    finally:
-        _provision_sessions.pop(provision_id, None)
+    request = _make_request({"id": provision_id})
+    response = await provision_status(request)
+    assert response.status_code == 200
 
 
 async def test_provision_status_completed_cleans_up():
@@ -126,6 +134,19 @@ async def test_provision_status_completed_cleans_up():
     response = await provision_status(request)
     assert response.status_code == 200
     # Session should be cleaned up after status read
+    assert provision_id not in _provision_sessions
+
+
+async def test_provision_status_expired_by_ttl():
+    """Session past its TTL is reported as expired and cleaned up."""
+    provision_id = "test-expired-ttl"
+    _provision_sessions[provision_id] = {
+        "status": "pending",
+        "expires_at": time.time() - 1,  # Already expired
+    }
+    request = _make_request({"id": provision_id})
+    response = await provision_status(request)
+    assert response.status_code == 404
     assert provision_id not in _provision_sessions
 
 
@@ -162,9 +183,173 @@ async def test_provision_page_skips_if_already_provisioned():
 
     with patch(
         "nextcloud_mcp_server.auth.provision_routes.get_shared_storage",
+        new_callable=AsyncMock,
         return_value=mock_storage,
     ):
         response = await provision_page(request)
 
     assert response.status_code == 307  # RedirectResponse default
     assert response.headers["location"] == "https://app.example.com/settings"
+
+
+# ── _poll_and_store tests ────────────────────────────────────────────────
+
+
+def _create_poll_session(provision_id: str) -> dict:
+    """Create a minimal provision session for polling tests."""
+    session = {
+        "status": "pending",
+        "poll_endpoint": "https://cloud.example.com/login/v2/poll",
+        "poll_token": "secret-token",
+        "user_id": "alice",
+        "created_at": time.time(),
+        "expires_at": time.time() + 1200,
+    }
+    _provision_sessions[provision_id] = session
+    return session
+
+
+async def test_poll_and_store_completed():
+    """Successful poll stores app password and sets status to completed."""
+    provision_id = "test-poll-completed"
+    _create_poll_session(provision_id)
+
+    mock_poll_result = LoginFlowPollResult(
+        status="completed",
+        server="https://cloud.example.com",
+        login_name="alice",
+        app_password="aaaaa-bbbbb-ccccc-ddddd-eeeee",
+    )
+
+    mock_flow_client = AsyncMock()
+    mock_flow_client.poll.return_value = mock_poll_result
+
+    mock_storage = AsyncMock()
+
+    mock_settings = MagicMock()
+    mock_settings.nextcloud_host = "https://cloud.example.com"
+
+    with (
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_settings",
+            return_value=mock_settings,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_nextcloud_ssl_verify",
+            return_value=False,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.LoginFlowV2Client",
+            return_value=mock_flow_client,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_shared_storage",
+            new_callable=AsyncMock,
+            return_value=mock_storage,
+        ),
+    ):
+        await _poll_and_store(provision_id)
+
+    assert _provision_sessions[provision_id]["status"] == "completed"
+    assert _provision_sessions[provision_id]["username"] == "alice"
+    mock_storage.store_app_password_with_scopes.assert_called_once_with(
+        user_id="alice",
+        app_password="aaaaa-bbbbb-ccccc-ddddd-eeeee",
+        scopes=None,
+        username="alice",
+    )
+
+
+async def test_poll_and_store_expired():
+    """Expired poll result sets session status to expired."""
+    provision_id = "test-poll-expired"
+    _create_poll_session(provision_id)
+
+    mock_poll_result = LoginFlowPollResult(status="expired")
+
+    mock_flow_client = AsyncMock()
+    mock_flow_client.poll.return_value = mock_poll_result
+
+    mock_settings = MagicMock()
+    mock_settings.nextcloud_host = "https://cloud.example.com"
+
+    with (
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_settings",
+            return_value=mock_settings,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_nextcloud_ssl_verify",
+            return_value=False,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.LoginFlowV2Client",
+            return_value=mock_flow_client,
+        ),
+    ):
+        await _poll_and_store(provision_id)
+
+    assert _provision_sessions[provision_id]["status"] == "expired"
+
+
+async def test_poll_and_store_missing_app_password():
+    """Completed poll with no app_password sets status to error."""
+    provision_id = "test-poll-no-password"
+    _create_poll_session(provision_id)
+
+    mock_poll_result = LoginFlowPollResult(
+        status="completed",
+        server="https://cloud.example.com",
+        login_name="alice",
+        app_password=None,  # Missing
+    )
+
+    mock_flow_client = AsyncMock()
+    mock_flow_client.poll.return_value = mock_poll_result
+
+    mock_settings = MagicMock()
+    mock_settings.nextcloud_host = "https://cloud.example.com"
+
+    mock_storage = AsyncMock()
+
+    with (
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_settings",
+            return_value=mock_settings,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_nextcloud_ssl_verify",
+            return_value=False,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.LoginFlowV2Client",
+            return_value=mock_flow_client,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_shared_storage",
+            new_callable=AsyncMock,
+            return_value=mock_storage,
+        ),
+    ):
+        await _poll_and_store(provision_id)
+
+    assert _provision_sessions[provision_id]["status"] == "error"
+    mock_storage.store_app_password_with_scopes.assert_not_called()
+
+
+async def test_poll_and_store_session_cleaned_up():
+    """Poll exits early if session was cleaned up externally."""
+    provision_id = "test-poll-cleaned"
+    # Don't create session — simulate it being cleaned up before poll starts
+
+    mock_settings = MagicMock()
+    mock_settings.nextcloud_host = "https://cloud.example.com"
+
+    with patch(
+        "nextcloud_mcp_server.auth.provision_routes.get_settings",
+        return_value=mock_settings,
+    ):
+        # Should return immediately without error
+        await _poll_and_store(provision_id)
+
+    assert provision_id not in _provision_sessions

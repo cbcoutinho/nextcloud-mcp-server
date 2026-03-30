@@ -1413,16 +1413,28 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
     @asynccontextmanager
     async def _maybe_login_flow_cleanup(app: Starlette):
-        """Start Login Flow cleanup task and provision poll task group."""
+        """Start Login Flow cleanup task and provision poll task group.
+
+        The task group is always created (even when Login Flow cleanup is
+        disabled) because provision routes use it to spawn background poll
+        tasks via ``browser_app.state.poll_task_group``.
+        """
         async with anyio.create_task_group() as tg:
             if settings.enable_login_flow:
                 tg.start_soon(_login_flow_cleanup_loop)
             # Share task group with provision routes for background polling
+            found_app_mount = False
             for route in app.routes:
                 if isinstance(route, Mount) and route.path == "/app":
                     browser_app = cast(Starlette, route.app)
                     browser_app.state.poll_task_group = tg
+                    found_app_mount = True
                     break
+            if not found_app_mount:
+                logger.warning(
+                    "Could not find /app mount to share poll task group; "
+                    "web provisioning will return 500"
+                )
             yield
             tg.cancel_scope.cancel()
 
