@@ -13,17 +13,18 @@ Flow:
 5. User returns to Astrolabe settings (via redirect_uri or navigation)
 """
 
-import asyncio
+import html
 import logging
 import os
 import secrets
 import time
 from urllib.parse import urlparse
 
+import anyio
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from nextcloud_mcp_server.auth.login_flow import LoginFlowV2Client
+from nextcloud_mcp_server.auth.login_flow import LoginFlowV2Client, rewrite_url_origin
 from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.config import get_nextcloud_ssl_verify, get_settings
 
@@ -87,7 +88,7 @@ async def _poll_and_store(provision_id: str) -> None:
             logger.warning(
                 f"Login Flow v2 poll error for provision {provision_id}: {e}"
             )
-            await asyncio.sleep(2)
+            await anyio.sleep(2)
             continue
 
         if result.status == "completed":
@@ -121,7 +122,7 @@ async def _poll_and_store(provision_id: str) -> None:
             )
             return
 
-        await asyncio.sleep(2)
+        await anyio.sleep(2)
 
     # Timed out
     session["status"] = "expired"
@@ -150,6 +151,9 @@ async def provision_page(request: Request) -> RedirectResponse | HTMLResponse:
             content=_render_error("Missing or invalid redirect_uri parameter."),
             status_code=400,
         )
+
+    if urlparse(redirect_uri).scheme == "http":
+        logger.warning(f"Provision redirect_uri uses insecure HTTP: {redirect_uri}")
 
     # Check if user already has an app password — skip straight to redirect
     if user_id:
@@ -196,8 +200,18 @@ async def provision_page(request: Request) -> RedirectResponse | HTMLResponse:
         "expires_at": time.time() + _SESSION_TTL,
     }
 
-    # Start background polling task
-    asyncio.create_task(_poll_and_store(provision_id))
+    # Start background polling task (uses task group from app lifespan)
+    poll_tg = getattr(request.app.state, "poll_task_group", None)
+    if poll_tg is None:
+        logger.error("No poll task group available; cannot start background polling")
+        _provision_sessions.pop(provision_id, None)
+        return HTMLResponse(
+            content=_render_error(
+                "Server configuration error: background polling unavailable."
+            ),
+            status_code=500,
+        )
+    poll_tg.start_soon(_poll_and_store, provision_id)
 
     logger.info(
         f"Login Flow v2 web provision initiated (provision_id={provision_id}, "
@@ -210,12 +224,7 @@ async def provision_page(request: Request) -> RedirectResponse | HTMLResponse:
     login_url = init_response.login_url
     public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL", "")
     if public_issuer and nextcloud_host:
-        # Extract just scheme+host from NEXTCLOUD_HOST for matching
-        # (NC may omit default ports, e.g. http://app:80 → http://app)
-        parsed = urlparse(nextcloud_host)
-        internal_origin = f"{parsed.scheme}://{parsed.hostname}"
-        if internal_origin in login_url:
-            login_url = login_url.replace(internal_origin, public_issuer.rstrip("/"))
+        login_url = rewrite_url_origin(login_url, public_issuer.rstrip("/"))
 
     return RedirectResponse(login_url)
 
@@ -282,7 +291,7 @@ def _render_error(message: str) -> str:
 <body>
     <div class="card">
         <h1 class="error">Provisioning Error</h1>
-        <p>{message}</p>
+        <p>{html.escape(message)}</p>
     </div>
 </body>
 </html>"""

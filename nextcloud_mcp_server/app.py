@@ -1412,22 +1412,26 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             await anyio.sleep(3600)  # Every hour
 
     @asynccontextmanager
-    async def _maybe_login_flow_cleanup():
-        """Start Login Flow cleanup task if enabled."""
-        if settings.enable_login_flow:
-            async with anyio.create_task_group() as tg:
+    async def _maybe_login_flow_cleanup(app: Starlette):
+        """Start Login Flow cleanup task and provision poll task group."""
+        async with anyio.create_task_group() as tg:
+            if settings.enable_login_flow:
                 tg.start_soon(_login_flow_cleanup_loop)
-                yield
-                tg.cancel_scope.cancel()
-        else:
+            # Share task group with provision routes for background polling
+            for route in app.routes:
+                if isinstance(route, Mount) and route.path == "/app":
+                    browser_app = cast(Starlette, route.app)
+                    browser_app.state.poll_task_group = tg
+                    break
             yield
+            tg.cancel_scope.cancel()
 
     @asynccontextmanager
-    async def _mcp_session_with_login_flow():
+    async def _mcp_session_with_login_flow(app: Starlette):
         """Start MCP session manager with optional Login Flow cleanup."""
         async with AsyncExitStack() as stack:
             await stack.enter_async_context(mcp.session_manager.run())
-            await stack.enter_async_context(_maybe_login_flow_cleanup())
+            await stack.enter_async_context(_maybe_login_flow_cleanup(app))
             yield
 
     @asynccontextmanager
@@ -1663,7 +1667,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 )
 
                 # Run MCP session manager and yield
-                async with _mcp_session_with_login_flow():
+                async with _mcp_session_with_login_flow(app):
                     try:
                         yield
                     finally:
@@ -1845,7 +1849,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     )
 
                     # Run MCP session manager and yield
-                    async with _mcp_session_with_login_flow():
+                    async with _mcp_session_with_login_flow(app):
                         try:
                             yield
                         finally:
@@ -1864,7 +1868,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     "To enable, set NEXTCLOUD_OIDC_CLIENT_ID and NEXTCLOUD_OIDC_CLIENT_SECRET."
                 )
                 # Just run MCP session manager without vector sync
-                async with _mcp_session_with_login_flow():
+                async with _mcp_session_with_login_flow(app):
                     yield
 
         else:
@@ -1884,7 +1888,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     logger.warning(
                         "Vector sync enabled but TOKEN_ENCRYPTION_KEY not set"
                     )
-            async with _mcp_session_with_login_flow():
+            async with _mcp_session_with_login_flow(app):
                 yield
 
     # Health check endpoints for Kubernetes probes

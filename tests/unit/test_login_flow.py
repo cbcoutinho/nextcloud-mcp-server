@@ -14,6 +14,7 @@ from nextcloud_mcp_server.auth.login_flow import (
     LoginFlowInitResponse,
     LoginFlowPollResult,
     LoginFlowV2Client,
+    rewrite_url_origin,
 )
 
 pytestmark = pytest.mark.unit
@@ -208,3 +209,36 @@ async def test_login_flow_poll_result_model():
     assert pending.status == "pending"
     assert pending.server is None
     assert pending.app_password is None
+
+
+# ── rewrite_url_origin tests ─────────────────────────────────────────────
+
+
+async def test_rewrite_url_origin_basic():
+    """Test basic origin rewriting."""
+    result = rewrite_url_origin(
+        "http://localhost/login/v2/poll", "https://cloud.example.com"
+    )
+    assert result == "https://cloud.example.com/login/v2/poll"
+
+
+async def test_rewrite_url_origin_preserves_port():
+    """Test that port in target_host is preserved."""
+    result = rewrite_url_origin("http://localhost/path", "http://app:8080")
+    assert result == "http://app:8080/path"
+
+
+async def test_rewrite_url_origin_preserves_query():
+    """Test that query string and fragment are preserved."""
+    result = rewrite_url_origin(
+        "http://internal/path?token=abc&foo=bar#section",
+        "https://public.example.com",
+    )
+    assert result == "https://public.example.com/path?token=abc&foo=bar#section"
+
+
+async def test_rewrite_url_origin_noop_when_same():
+    """Test that rewriting to the same origin is a no-op."""
+    url = "https://cloud.example.com/login/v2/poll"
+    result = rewrite_url_origin(url, "https://cloud.example.com")
+    assert result == url

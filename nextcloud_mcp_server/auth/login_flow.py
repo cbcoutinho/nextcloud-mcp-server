@@ -19,6 +19,26 @@ from nextcloud_mcp_server.http import nextcloud_httpx_client
 logger = logging.getLogger(__name__)
 
 
+def rewrite_url_origin(url: str, target_host: str) -> str:
+    """Rewrite a URL's scheme+host+port to match target_host.
+
+    Preserves the path, params, query, and fragment from the original URL.
+    Useful for rewriting internal Docker hostnames to public-facing URLs.
+    """
+    parsed_url = urlparse(url)
+    parsed_host = urlparse(target_host)
+    return urlunparse(
+        (
+            parsed_host.scheme,
+            parsed_host.netloc,
+            parsed_url.path,
+            parsed_url.params,
+            parsed_url.query,
+            parsed_url.fragment,
+        )
+    )
+
+
 class LoginFlowInitResponse(BaseModel):
     """Response from initiating Login Flow v2."""
 
@@ -120,13 +140,7 @@ class LoginFlowV2Client:
         (e.g. http://app:80). This replaces the scheme+host+port while
         preserving the path and query.
         """
-        parsed_url = urlparse(url)
-        parsed_host = urlparse(self.nextcloud_host)
-        rewritten = parsed_url._replace(
-            scheme=parsed_host.scheme,
-            netloc=parsed_host.netloc,
-        )
-        result = urlunparse(rewritten)
+        result = rewrite_url_origin(url, self.nextcloud_host)
         if result != url:
             logger.debug(f"Rewrote Login Flow v2 URL: {url} → {result}")
         return result
