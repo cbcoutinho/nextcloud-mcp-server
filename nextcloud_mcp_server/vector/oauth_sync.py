@@ -489,7 +489,7 @@ async def user_manager_task(
         try:
             # Get current provisioned users based on mode
             if use_basic_auth:
-                # BasicAuth mode: query app_passwords table
+                # BasicAuth / Login Flow v2 mode: query app_passwords table
                 provisioned_users = set(
                     await refresh_token_storage.get_all_app_password_user_ids()
                 )

@@ -73,6 +73,10 @@ from nextcloud_mcp_server.auth.oauth_routes import (
     oauth_register_proxy,
     oauth_token_endpoint,
 )
+from nextcloud_mcp_server.auth.provision_routes import (
+    provision_page,
+    provision_status,
+)
 from nextcloud_mcp_server.auth.session_backend import SessionAuthBackend
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage, get_shared_storage
 from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
@@ -1394,6 +1398,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         from nextcloud_mcp_server.auth.oauth_routes import (  # noqa: PLC0415
             _cleanup_expired_proxy_codes,
         )
+        from nextcloud_mcp_server.auth.provision_routes import (  # noqa: PLC0415
+            _cleanup_expired_sessions as _cleanup_expired_provision_sessions,
+        )
 
         while True:
             try:
@@ -1403,27 +1410,45 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     logger.info(f"Cleaned up {count} expired login flow sessions")
                 # Also clean up expired AS proxy codes/sessions
                 _cleanup_expired_proxy_codes()
+                # Clean up expired web provision sessions
+                _cleanup_expired_provision_sessions()
             except Exception as e:
                 logger.warning(f"Login flow cleanup error: {e}")
             await anyio.sleep(3600)  # Every hour
 
     @asynccontextmanager
-    async def _maybe_login_flow_cleanup():
-        """Start Login Flow cleanup task if enabled."""
-        if settings.enable_login_flow:
-            async with anyio.create_task_group() as tg:
+    async def _maybe_login_flow_cleanup(app: Starlette):
+        """Start Login Flow cleanup task and provision poll task group.
+
+        The task group is always created (even when Login Flow cleanup is
+        disabled) because provision routes use it to spawn background poll
+        tasks via ``browser_app.state.poll_task_group``.
+        """
+        async with anyio.create_task_group() as tg:
+            if settings.enable_login_flow:
                 tg.start_soon(_login_flow_cleanup_loop)
-                yield
-                tg.cancel_scope.cancel()
-        else:
+            # Share task group with provision routes for background polling
+            found_app_mount = False
+            for route in app.routes:
+                if isinstance(route, Mount) and route.path == "/app":
+                    browser_app = cast(Starlette, route.app)
+                    browser_app.state.poll_task_group = tg
+                    found_app_mount = True
+                    break
+            if not found_app_mount:
+                logger.warning(
+                    "Could not find /app mount to share poll task group; "
+                    "web provisioning will return 500"
+                )
             yield
+            tg.cancel_scope.cancel()
 
     @asynccontextmanager
-    async def _mcp_session_with_login_flow():
+    async def _mcp_session_with_login_flow(app: Starlette):
         """Start MCP session manager with optional Login Flow cleanup."""
         async with AsyncExitStack() as stack:
             await stack.enter_async_context(mcp.session_manager.run())
-            await stack.enter_async_context(_maybe_login_flow_cleanup())
+            await stack.enter_async_context(_maybe_login_flow_cleanup(app))
             yield
 
     @asynccontextmanager
@@ -1659,7 +1684,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 )
 
                 # Run MCP session manager and yield
-                async with _mcp_session_with_login_flow():
+                async with _mcp_session_with_login_flow(app):
                     try:
                         yield
                     finally:
@@ -1803,9 +1828,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         break
 
                 # Determine authentication mode for background sync
-                # Multi-user BasicAuth: use app passwords via Astrolabe (NOT OAuth)
-                # OAuth mode: use OAuth refresh tokens (NOT app passwords)
-                use_basic_auth = not oauth_enabled
+                # Login Flow v2 and multi-user BasicAuth: use app passwords
+                # OAuth mode (without Login Flow): use OAuth refresh tokens
+                use_basic_auth = not oauth_enabled or settings.enable_login_flow
 
                 # Start background tasks using anyio TaskGroup
                 async with anyio.create_task_group() as tg:
@@ -1841,7 +1866,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     )
 
                     # Run MCP session manager and yield
-                    async with _mcp_session_with_login_flow():
+                    async with _mcp_session_with_login_flow(app):
                         try:
                             yield
                         finally:
@@ -1860,7 +1885,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     "To enable, set NEXTCLOUD_OIDC_CLIENT_ID and NEXTCLOUD_OIDC_CLIENT_SECRET."
                 )
                 # Just run MCP session manager without vector sync
-                async with _mcp_session_with_login_flow():
+                async with _mcp_session_with_login_flow(app):
                     yield
 
         else:
@@ -1880,7 +1905,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     logger.warning(
                         "Vector sync enabled but TOKEN_ENCRYPTION_KEY not set"
                     )
-            async with _mcp_session_with_login_flow():
+            async with _mcp_session_with_login_flow(app):
                 yield
 
     # Health check endpoints for Kubernetes probes
@@ -2330,6 +2355,15 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             methods=["DELETE"],
         ),
     ]
+
+    # Login Flow v2 web provisioning (only when Login Flow is enabled)
+    if settings.enable_login_flow:
+        browser_routes += [
+            Route("/provision", provision_page, methods=["GET"]),  # /app/provision
+            Route(
+                "/provision/status", provision_status, methods=["GET"]
+            ),  # /app/provision/status
+        ]
 
     # Add static files mount if directory exists
     static_dir = os.path.join(os.path.dirname(__file__), "auth", "static")

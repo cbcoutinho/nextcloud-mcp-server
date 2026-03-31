@@ -3,9 +3,11 @@ FROM docker.io/library/python:3.12-slim-trixie@sha256:f3fa41d74a768c2fce8016b98c
 COPY --from=ghcr.io/astral-sh/uv:0.10.12@sha256:72ab0aeb448090480ccabb99fb5f52b0dc3c71923bffb5e2e26517a1c27b7fec /uv /uvx /bin/
 
 # Install dependencies
-# 1. git (required for caldav dependency from git)
-# 2. sqlite for development with token db
+# 1. curl (required for container healthcheck probes)
+# 2. git (required for caldav dependency from git)
+# 3. sqlite for development with token db
 RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
+    curl \
     git \
     tesseract-ocr \
     sqlite3 && apt clean
