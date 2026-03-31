@@ -3,7 +3,7 @@ services:
   # https://hub.docker.com/_/mariadb
   db:
     # Note: Check the recommend version here: https://docs.nextcloud.com/server/latest/admin_manual/installation/system_requirements.html#server
-    image: docker.io/library/mariadb:lts@sha256:8164f184d16c30e2f159e30518113667b796306dff0fe558876ab1ff521a682f
+    image: docker.io/library/mariadb:11.8.6-noble
     restart: always
     command: --transaction-isolation=READ-COMMITTED
     volumes:
