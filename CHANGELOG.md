@@ -5,6 +5,27 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.68.0 (2026-03-31)
+
+### Feat
+
+- add web-based Login Flow v2 provisioning endpoint
+
+### Fix
+
+- require bearer token on provision endpoints (open redirect mitigation)
+- address PR review round 3 — info disclosure, conditional routes, cleanup
+- address PR review round 2 — expiry checks, race guards, poll tests
+- address PR review — XSS escape, asyncio→anyio, URL rewrite dedup
+- use app password auth for background sync in Login Flow mode
+- discover Login Flow v2 users in OAuth mode user manager
+- rewrite Login Flow v2 poll endpoint URL to use configured host
+- handle internal hostname without port in Login Flow v2 URL rewriting
+
+### Refactor
+
+- use redirect-based Login Flow v2 provision instead of popup
+
 ## v0.67.0 (2026-03-29)
 
 ### Feat
