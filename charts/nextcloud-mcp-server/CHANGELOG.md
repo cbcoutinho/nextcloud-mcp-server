@@ -14,6 +14,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.58.20 (2026-03-31)
+
+### Feat
+
+- add web-based Login Flow v2 provisioning endpoint
+
+### Fix
+
+- require bearer token on provision endpoints (open redirect mitigation)
+- address PR review round 3 — info disclosure, conditional routes, cleanup
+- address PR review round 2 — expiry checks, race guards, poll tests
+- address PR review — XSS escape, asyncio→anyio, URL rewrite dedup
+- use app password auth for background sync in Login Flow mode
+- discover Login Flow v2 users in OAuth mode user manager
+- rewrite Login Flow v2 poll endpoint URL to use configured host
+- handle internal hostname without port in Login Flow v2 URL rewriting
+
+### Refactor
+
+- use redirect-based Login Flow v2 provision instead of popup
+
 ## nextcloud-mcp-server-0.58.19 (2026-03-31)
 
 ## nextcloud-mcp-server-0.58.18 (2026-03-29)
