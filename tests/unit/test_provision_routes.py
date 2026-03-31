@@ -92,6 +92,16 @@ async def test_render_error_preserves_plain_text():
     assert "Provisioning Error" in html_output
 
 
+# ── Auth helper ──────────────────────────────────────────────────────────
+
+_MOCK_TOKEN_PATCH = patch(
+    "nextcloud_mcp_server.auth.provision_routes.validate_token_and_get_user",
+    new_callable=AsyncMock,
+    return_value=("alice", {"sub": "alice", "client_id": "astrolabe", "scopes": []}),
+)
+"""Patch that makes validate_token_and_get_user succeed as user 'alice'."""
+
+
 # ── provision_status tests ───────────────────────────────────────────────
 
 
@@ -102,10 +112,23 @@ def _make_request(query_params: dict) -> MagicMock:
     return request
 
 
+async def test_provision_status_rejects_missing_token():
+    """Missing bearer token returns 401."""
+    request = _make_request({"id": "some-id"})
+    with patch(
+        "nextcloud_mcp_server.auth.provision_routes.validate_token_and_get_user",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Missing Authorization header"),
+    ):
+        response = await provision_status(request)
+    assert response.status_code == 401
+
+
 async def test_provision_status_not_found():
     """Unknown provision ID returns 404."""
     request = _make_request({"id": "nonexistent-id"})
-    response = await provision_status(request)
+    with _MOCK_TOKEN_PATCH:
+        response = await provision_status(request)
     assert response.status_code == 404
     assert response.body is not None
 
@@ -118,7 +141,8 @@ async def test_provision_status_pending():
         "expires_at": time.time() + 600,
     }
     request = _make_request({"id": provision_id})
-    response = await provision_status(request)
+    with _MOCK_TOKEN_PATCH:
+        response = await provision_status(request)
     assert response.status_code == 200
 
 
@@ -131,7 +155,8 @@ async def test_provision_status_completed_cleans_up():
         "expires_at": time.time() + 600,
     }
     request = _make_request({"id": provision_id})
-    response = await provision_status(request)
+    with _MOCK_TOKEN_PATCH:
+        response = await provision_status(request)
     assert response.status_code == 200
     # Session should be cleaned up after status read
     assert provision_id not in _provision_sessions
@@ -145,7 +170,8 @@ async def test_provision_status_expired_by_ttl():
         "expires_at": time.time() - 1,  # Already expired
     }
     request = _make_request({"id": provision_id})
-    response = await provision_status(request)
+    with _MOCK_TOKEN_PATCH:
+        response = await provision_status(request)
     assert response.status_code == 404
     assert provision_id not in _provision_sessions
 
@@ -153,17 +179,43 @@ async def test_provision_status_expired_by_ttl():
 # ── provision_page tests ─────────────────────────────────────────────────
 
 
+async def test_provision_page_rejects_missing_token():
+    """Missing bearer token returns 401."""
+    request = _make_request({"redirect_uri": "https://example.com/callback"})
+    with patch(
+        "nextcloud_mcp_server.auth.provision_routes.validate_token_and_get_user",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Missing Authorization header"),
+    ):
+        response = await provision_page(request)
+    assert response.status_code == 401
+
+
+async def test_provision_page_rejects_invalid_token():
+    """Invalid bearer token returns 401."""
+    request = _make_request({"redirect_uri": "https://example.com/callback"})
+    with patch(
+        "nextcloud_mcp_server.auth.provision_routes.validate_token_and_get_user",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Token validation failed"),
+    ):
+        response = await provision_page(request)
+    assert response.status_code == 401
+
+
 async def test_provision_page_missing_redirect_uri():
     """Missing redirect_uri returns 400."""
     request = _make_request({})
-    response = await provision_page(request)
+    with _MOCK_TOKEN_PATCH:
+        response = await provision_page(request)
     assert response.status_code == 400
 
 
 async def test_provision_page_invalid_redirect_uri():
     """Invalid redirect_uri (javascript:) returns 400."""
     request = _make_request({"redirect_uri": "javascript:alert(1)"})
-    response = await provision_page(request)
+    with _MOCK_TOKEN_PATCH:
+        response = await provision_page(request)
     assert response.status_code == 400
 
 
@@ -172,7 +224,6 @@ async def test_provision_page_skips_if_already_provisioned():
     request = _make_request(
         {
             "redirect_uri": "https://app.example.com/settings",
-            "user_id": "alice",
         }
     )
 
@@ -181,10 +232,13 @@ async def test_provision_page_skips_if_already_provisioned():
         "app_password": "existing-password",
     }
 
-    with patch(
-        "nextcloud_mcp_server.auth.provision_routes.get_shared_storage",
-        new_callable=AsyncMock,
-        return_value=mock_storage,
+    with (
+        _MOCK_TOKEN_PATCH,
+        patch(
+            "nextcloud_mcp_server.auth.provision_routes.get_shared_storage",
+            new_callable=AsyncMock,
+            return_value=mock_storage,
+        ),
     ):
         response = await provision_page(request)
 

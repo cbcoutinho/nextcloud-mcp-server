@@ -24,6 +24,7 @@ import anyio
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from nextcloud_mcp_server.api.management import validate_token_and_get_user
 from nextcloud_mcp_server.auth.login_flow import LoginFlowV2Client, rewrite_url_origin
 from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.config import get_nextcloud_ssl_verify, get_settings
@@ -144,20 +145,32 @@ async def _poll_and_store(provision_id: str) -> None:
     )
 
 
-async def provision_page(request: Request) -> RedirectResponse | HTMLResponse:
+async def provision_page(
+    request: Request,
+) -> RedirectResponse | HTMLResponse | JSONResponse:
     """Initiate Login Flow v2 and redirect to Nextcloud's login page.
 
-    GET /app/provision?redirect_uri=...&user_id=...
+    GET /app/provision?redirect_uri=...
+
+    Requires a valid Nextcloud OIDC bearer token (Authorization header).
+    The authenticated user identity is extracted from the token — the
+    ``user_id`` query parameter is ignored if present.
 
     Initiates Login Flow v2, starts background polling, and redirects the
     browser to Nextcloud's login/grant page. After the user grants access,
     the background task stores the app password. The user then navigates
     back to the redirect_uri (Astrolabe settings).
     """
+    # Authenticate: require a valid Nextcloud OIDC bearer token
+    try:
+        user_id, _token_data = await validate_token_and_get_user(request)
+    except (ValueError, KeyError, AttributeError) as e:
+        logger.warning(f"Provision request rejected: {e}")
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+
     _cleanup_expired_sessions()
 
     redirect_uri = request.query_params.get("redirect_uri", "")
-    user_id = request.query_params.get("user_id", "")
 
     if not redirect_uri or not _validate_redirect_uri(redirect_uri):
         return HTMLResponse(
@@ -250,6 +263,8 @@ async def provision_status(request: Request) -> JSONResponse:
 
     GET /app/provision/status?id=...
 
+    Requires a valid Nextcloud OIDC bearer token (Authorization header).
+
     Returns JSON with status field:
     - ``"pending"``  — flow in progress, poll again
     - ``"completed"`` — app password stored, includes ``"username"``
@@ -257,6 +272,13 @@ async def provision_status(request: Request) -> JSONResponse:
     - ``"error"``    — flow completed but server-side error (e.g. missing app password)
     - ``"not_found"`` — unknown or already-consumed session (404)
     """
+    # Authenticate: require a valid Nextcloud OIDC bearer token
+    try:
+        _user_id, _token_data = await validate_token_and_get_user(request)
+    except (ValueError, KeyError, AttributeError) as e:
+        logger.warning(f"Provision status request rejected: {e}")
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+
     provision_id = request.query_params.get("id", "")
 
     session = _provision_sessions.get(provision_id)
