@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.58.23 (2026-04-01)
+
+### Fix
+
+- convert BDAY datetime.date to string before Pydantic validation
+
 ## nextcloud-mcp-server-0.58.22 (2026-04-01)
 
 ## nextcloud-mcp-server-0.58.21 (2026-03-31)
