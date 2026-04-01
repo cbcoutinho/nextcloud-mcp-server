@@ -43,7 +43,6 @@ async def reset_all_singletons():
     # Import all modules with singletons
     import nextcloud_mcp_server.app as app_module
     import nextcloud_mcp_server.auth.client_registry as client_registry_module
-    import nextcloud_mcp_server.auth.token_exchange as token_exchange_module
     import nextcloud_mcp_server.embedding.service as embedding_module
     import nextcloud_mcp_server.observability.tracing as tracing_module
     import nextcloud_mcp_server.providers.registry as registry_module
@@ -63,7 +62,6 @@ async def reset_all_singletons():
         ),
         "tracer": tracing_module._tracer,
         "registry": client_registry_module._registry,
-        "token_exchange_service": token_exchange_module._token_exchange_service,
     }
 
     # Close any open memory streams before reset
@@ -89,7 +87,6 @@ async def reset_all_singletons():
     app_module._vector_sync_state.scanner_wake_event = None
     tracing_module._tracer = None
     client_registry_module._registry = None
-    token_exchange_module._token_exchange_service = None
 
     logger.debug("All singletons reset for test module")
 
@@ -115,4 +112,3 @@ async def reset_all_singletons():
     ) = originals["vector_sync_state"]
     tracing_module._tracer = originals["tracer"]
     client_registry_module._registry = originals["registry"]
-    token_exchange_module._token_exchange_service = originals["token_exchange_service"]

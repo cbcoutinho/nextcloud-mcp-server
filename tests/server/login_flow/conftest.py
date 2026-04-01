@@ -667,9 +667,7 @@ async def all_login_flow_user_tokens(
 
     results: dict[str, str | Exception] = {}
 
-    async def _fetch(username: str, config: dict, delay: float) -> None:
-        if delay > 0:
-            await anyio.sleep(delay)
+    async def _fetch(username: str, config: dict) -> None:
         try:
             token = await _get_login_flow_token_for_user(
                 browser,
@@ -684,8 +682,8 @@ async def all_login_flow_user_tokens(
 
     user_list = list(test_users_setup.items())
     async with anyio.create_task_group() as tg:
-        for idx, (username, config) in enumerate(user_list):
-            tg.start_soon(_fetch, username, config, idx * 0.5)
+        for username, config in user_list:
+            tg.start_soon(_fetch, username, config)
 
     for username, result in results.items():
         if isinstance(result, Exception):
@@ -773,7 +771,15 @@ async def _complete_login_flow_v2_as_user(
 ) -> None:
     """Complete Nextcloud Login Flow v2 in a browser as a specific user.
 
-    Same steps as ``_complete_login_flow_v2`` but uses the given *username* and
+    The full Nextcloud Login Flow v2 has these steps:
+    1. "Connect to your account" page -> click "Log in" button
+    2. Login form -> fill username/password, submit
+       (if already logged in via session cookie, this step is skipped)
+    3. "Account access" grant page -> click "Grant access" button
+    4. Password confirmation dialog -> enter password, click "Confirm"
+    5. "Account connected" success page
+
+    Same flow as ``_complete_login_flow_v2`` but uses the given *username* and
     *password* instead of reading from environment variables.
     """
     login_url = _rewrite_login_flow_url(login_url)
@@ -782,33 +788,45 @@ async def _complete_login_flow_v2_as_user(
     page = await context.new_page()
 
     try:
-        logger.info(f"Opening Login Flow v2 URL for {username}: {login_url[:80]}...")
+        logger.info(f"[{username}] Opening Login Flow v2 URL: {login_url[:80]}...")
         await page.goto(login_url, wait_until="networkidle", timeout=60000)
+        logger.info(f"[{username}] Step 1 - Current URL: {page.url}")
 
-        # Step 1: "Connect to your account" page
+        # Step 1: "Connect to your account" page - click "Log in"
         login_btn = page.get_by_role("button", name="Log in")
         try:
             await login_btn.wait_for(timeout=10000)
             await login_btn.click()
+            logger.info(f"[{username}] Clicked 'Log in' on Connect page")
             await page.wait_for_load_state("networkidle", timeout=30000)
         except Exception:
-            pass
+            logger.info(
+                f"[{username}] No 'Log in' button - may already be on login/grant page"
+            )
 
-        # Step 2: Login form
+        logger.info(f"[{username}] Step 2 - Current URL: {page.url}")
+
+        # Step 2: Login form (only if not already logged in)
         user_field = page.locator('input[name="user"]')
         if await user_field.count() > 0:
+            logger.info(f"[{username}] Login form detected, filling credentials...")
             await user_field.fill(username)
             await page.locator('input[name="password"]').fill(password)
             await page.get_by_role("button", name="Log in", exact=True).click()
             await page.wait_for_load_state("networkidle", timeout=60000)
+            logger.info(f"[{username}] After login: {page.url}")
+        else:
+            logger.info(f"[{username}] No login form - already logged in via session")
 
-        # Step 3: "Account access" grant page
+        # Step 3: "Account access" grant page - click "Grant access"
         grant_btn = page.get_by_role("button", name="Grant access")
         try:
             await grant_btn.wait_for(timeout=15000)
             await grant_btn.click()
-        except Exception:
-            pass
+            logger.info(f"[{username}] Clicked 'Grant access'")
+        except Exception as e:
+            logger.warning(f"[{username}] No Grant access button: {e}")
+            await page.screenshot(path=f"/tmp/login_flow_no_grant_{username}.png")
 
         # Step 4: Password confirmation dialog
         confirm_password = page.get_by_role("dialog").get_by_role(
@@ -816,22 +834,27 @@ async def _complete_login_flow_v2_as_user(
         )
         try:
             await confirm_password.wait_for(timeout=10000)
+            logger.info(f"[{username}] Password confirmation dialog detected")
             await confirm_password.fill(password)
             confirm_btn = page.get_by_role("dialog").get_by_role(
                 "button", name="Confirm"
             )
             await confirm_btn.wait_for(timeout=5000)
             await confirm_btn.click()
+            logger.info(f"[{username}] Clicked 'Confirm' in password dialog")
         except Exception:
-            pass
+            logger.info(
+                f"[{username}] No password confirmation dialog "
+                "(may have been auto-confirmed)"
+            )
 
-        # Step 5: Wait for success
+        # Step 5: Wait for "Account connected" success page
         try:
             await page.get_by_text("Account connected").wait_for(timeout=15000)
-            logger.info(f"Login Flow v2 completed for {username}")
+            logger.info(f"[{username}] Login Flow v2 completed: Account connected!")
         except Exception:
             await page.wait_for_load_state("networkidle", timeout=10000)
-            logger.info(f"Login Flow v2 done for {username}. URL: {page.url}")
+            logger.info(f"[{username}] Login Flow v2 done. Final URL: {page.url}")
 
     finally:
         await context.close()
