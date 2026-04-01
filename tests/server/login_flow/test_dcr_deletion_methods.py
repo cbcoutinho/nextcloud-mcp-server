@@ -16,7 +16,7 @@ from nextcloud_mcp_server.auth.client_registration import register_client
 
 logger = logging.getLogger(__name__)
 
-pytestmark = [pytest.mark.integration, pytest.mark.oauth]
+pytestmark = [pytest.mark.integration, pytest.mark.login_flow]
 
 
 @pytest.mark.integration

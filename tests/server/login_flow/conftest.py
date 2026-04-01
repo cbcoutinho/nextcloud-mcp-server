@@ -24,6 +24,9 @@ from mcp.types import ElicitRequestParams, ElicitResult
 
 from tests.conftest import (
     DEFAULT_FULL_SCOPES,
+    DEFAULT_READ_SCOPES,
+    DEFAULT_WRITE_SCOPES,
+    _get_oauth_token_with_scopes,
     _handle_oauth_consent_screen,
     create_mcp_client_session,
     get_mcp_server_resource_metadata,
@@ -414,4 +417,130 @@ async def nc_mcp_login_flow_client(
                 f"Login Flow v2 did not complete after {max_attempts} attempts"
             )
 
+        yield session
+
+
+# ---------------------------------------------------------------------------
+# Scope-filtered OAuth client fixtures for scope authorization tests
+# These obtain tokens with specific scope subsets via the login-flow server
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+async def login_flow_read_only_token(
+    anyio_backend,
+    browser,
+    login_flow_oauth_client_credentials,
+    oauth_callback_server,
+) -> str:
+    """OAuth token with read-only scopes for the login-flow MCP server."""
+    return await _get_oauth_token_with_scopes(
+        browser,
+        login_flow_oauth_client_credentials,
+        oauth_callback_server,
+        scopes=DEFAULT_READ_SCOPES,
+        mcp_server_base_url=LOGIN_FLOW_MCP_BASE_URL,
+    )
+
+
+@pytest.fixture(scope="session")
+async def login_flow_write_only_token(
+    anyio_backend,
+    browser,
+    login_flow_oauth_client_credentials,
+    oauth_callback_server,
+) -> str:
+    """OAuth token with write-only scopes for the login-flow MCP server."""
+    return await _get_oauth_token_with_scopes(
+        browser,
+        login_flow_oauth_client_credentials,
+        oauth_callback_server,
+        scopes=DEFAULT_WRITE_SCOPES,
+        mcp_server_base_url=LOGIN_FLOW_MCP_BASE_URL,
+    )
+
+
+@pytest.fixture(scope="session")
+async def login_flow_full_access_token(
+    anyio_backend,
+    browser,
+    login_flow_oauth_client_credentials,
+    oauth_callback_server,
+) -> str:
+    """OAuth token with full access scopes for the login-flow MCP server."""
+    return await _get_oauth_token_with_scopes(
+        browser,
+        login_flow_oauth_client_credentials,
+        oauth_callback_server,
+        scopes=DEFAULT_FULL_SCOPES,
+        mcp_server_base_url=LOGIN_FLOW_MCP_BASE_URL,
+    )
+
+
+@pytest.fixture(scope="session")
+async def login_flow_no_custom_scopes_token(
+    anyio_backend,
+    browser,
+    login_flow_oauth_client_credentials,
+    oauth_callback_server,
+) -> str:
+    """OAuth token with no custom scopes (only OIDC defaults) for the login-flow MCP server."""
+    return await _get_oauth_token_with_scopes(
+        browser,
+        login_flow_oauth_client_credentials,
+        oauth_callback_server,
+        scopes="openid profile email",
+        mcp_server_base_url=LOGIN_FLOW_MCP_BASE_URL,
+    )
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_login_flow_client_read_only(
+    anyio_backend, login_flow_read_only_token: str
+) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client with read-only scopes on the login-flow server."""
+    async for session in create_mcp_client_session(
+        url=LOGIN_FLOW_MCP_URL,
+        token=login_flow_read_only_token,
+        client_name="Login Flow MCP Read-Only",
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_login_flow_client_write_only(
+    anyio_backend, login_flow_write_only_token: str
+) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client with write-only scopes on the login-flow server."""
+    async for session in create_mcp_client_session(
+        url=LOGIN_FLOW_MCP_URL,
+        token=login_flow_write_only_token,
+        client_name="Login Flow MCP Write-Only",
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_login_flow_client_full_access(
+    anyio_backend, login_flow_full_access_token: str
+) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client with full access scopes on the login-flow server."""
+    async for session in create_mcp_client_session(
+        url=LOGIN_FLOW_MCP_URL,
+        token=login_flow_full_access_token,
+        client_name="Login Flow MCP Full Access",
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def nc_mcp_login_flow_client_no_custom_scopes(
+    anyio_backend, login_flow_no_custom_scopes_token: str
+) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client with no custom scopes on the login-flow server."""
+    async for session in create_mcp_client_session(
+        url=LOGIN_FLOW_MCP_URL,
+        token=login_flow_no_custom_scopes_token,
+        client_name="Login Flow MCP No Custom Scopes",
+    ):
         yield session

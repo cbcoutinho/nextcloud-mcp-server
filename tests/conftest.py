@@ -2005,33 +2005,37 @@ async def _handle_oauth_consent_screen(page, username: str = "user"):
                         f"    ⊗ Scope checkbox {i + 1} disabled (required scope)"
                     )
 
-        # Click the Allow button to grant consent
-        # Check button exists first
-        allow_button_locator = page.locator('button:has-text("Allow")')
+        # Click the Allow button to grant consent with retry logic.
+        # Uses Playwright's native click (dispatches proper browser events that
+        # trigger Vue.js handlers) instead of JS btn.click() which can miss them.
+        allow_button = page.locator('button:has-text("Allow")')
 
-        if await allow_button_locator.count() > 0:
+        if await allow_button.count() > 0:
             logger.info(f"  Clicking Allow button to grant consent for {username}...")
 
-            # Use JavaScript click to handle consent buttons that may be outside viewport
-            # This is more reliable than Playwright's click which requires element visibility
-            logger.info(
-                "  Using JavaScript click for consent (handles viewport issues)..."
-            )
-            await page.evaluate(
-                """
-                const buttons = document.querySelectorAll('button');
-                for (const btn of buttons) {
-                    if (btn.textContent.trim() === 'Allow') {
-                        btn.click();
-                        break;
-                    }
-                }
-                """
-            )
+            for attempt in range(3):
+                await allow_button.scroll_into_view_if_needed()
+                await allow_button.click()
+                try:
+                    await page.wait_for_url(
+                        lambda url: "/consent" not in url, timeout=10000
+                    )
+                    logger.info(f"  Consent granted for {username}")
+                    return True
+                except TimeoutError:
+                    if attempt == 2:
+                        screenshot_path = f"/tmp/consent_click_failed_{username}.png"
+                        await page.screenshot(path=screenshot_path)
+                        logger.error(
+                            f"  Consent click failed after 3 attempts for {username}, "
+                            f"screenshot: {screenshot_path}"
+                        )
+                        raise
+                    logger.warning(
+                        f"  Consent click attempt {attempt + 1} didn't navigate, retrying..."
+                    )
 
-            await page.wait_for_load_state("networkidle", timeout=30000)
-            logger.info(f"  Consent granted for {username}")
-            return True
+            return True  # unreachable but satisfies type checker
         else:
             logger.error(f"  Allow button not found for {username}")
             return False
@@ -2047,6 +2051,7 @@ async def _get_oauth_token_with_scopes(
     oauth_callback_server,
     scopes: str,
     resource: str | None = None,
+    mcp_server_base_url: str = "http://localhost:8004",
 ) -> str:
     """
     Helper function to obtain OAuth token with specific scopes.
@@ -2057,6 +2062,7 @@ async def _get_oauth_token_with_scopes(
         oauth_callback_server: OAuth callback server fixture
         scopes: Space-separated list of scopes (e.g., "openid profile email notes:read")
         resource: Optional resource parameter (RFC 8707) for token audience
+        mcp_server_base_url: Base URL of the MCP server for resource metadata discovery
 
     Returns:
         OAuth access token string with requested scopes
@@ -2085,7 +2091,6 @@ async def _get_oauth_token_with_scopes(
 
     # If no resource provided, fetch from MCP server metadata
     if resource is None:
-        mcp_server_base_url = "http://localhost:8001"
         try:
             resource_metadata = await get_mcp_server_resource_metadata(
                 mcp_server_base_url

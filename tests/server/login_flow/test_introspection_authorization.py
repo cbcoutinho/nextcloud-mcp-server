@@ -27,7 +27,7 @@ from ...conftest import _handle_oauth_consent_screen
 
 logger = logging.getLogger(__name__)
 
-pytestmark = [pytest.mark.integration, pytest.mark.oauth]
+pytestmark = [pytest.mark.integration, pytest.mark.login_flow]
 
 
 @pytest.fixture(scope="module")

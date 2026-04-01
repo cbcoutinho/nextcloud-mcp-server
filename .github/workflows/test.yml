@@ -42,7 +42,6 @@ jobs:
         mode:
           - "single-user"
           - "multi-user-basic"
-          - "oauth"
           - "login-flow"
         include:
           # Version-specific image pins — Renovate updates these via customManagers in renovate.json
@@ -58,7 +57,7 @@ jobs:
           # Mode-specific properties
           - mode: single-user
             profile: single-user
-            markers: "(smoke and not oauth and not keycloak and not login_flow and not multi_user_basic) or (integration and not oauth and not keycloak and not login_flow and not multi_user_basic)"
+            markers: "(smoke and not keycloak and not login_flow and not multi_user_basic) or (integration and not keycloak and not login_flow and not multi_user_basic)"
             wait-port: 8000
             mcp-internal-url: "http://mcp:8000"
             needs-playwright: false
@@ -71,14 +70,6 @@ jobs:
             markers: "multi_user_basic"
             wait-port: 8003
             mcp-internal-url: "http://mcp-multi-user-basic:8000"
-            needs-playwright: true
-            extra-args: ""
-
-          - mode: oauth
-            profile: oauth
-            markers: "oauth and not keycloak"
-            wait-port: 8001
-            mcp-internal-url: "http://mcp-oauth:8001"
             needs-playwright: true
             extra-args: ""
 
@@ -184,7 +175,7 @@ jobs:
           echo "MCP service is ready on port ${{ matrix.wait-port }}."
 
       - name: Verify OIDC configuration
-        if: matrix.mode == 'oauth' || matrix.mode == 'login-flow'
+        if: matrix.mode == 'login-flow'
         run: |
           echo "=== OIDC Discovery ==="
           curl -s http://localhost:8080/.well-known/openid-configuration | jq .

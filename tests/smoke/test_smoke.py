@@ -102,19 +102,3 @@ async def test_webdav_basic_smoke(nc_mcp_client):
     data = json.loads(result.content[0].text)
     assert "files" in data
     assert isinstance(data["files"], list)
-
-
-@pytest.mark.oauth
-async def test_oauth_connectivity_smoke(nc_mcp_oauth_client):
-    """Smoke test: Verify OAuth authentication works."""
-    # List tools with OAuth
-    result = await nc_mcp_oauth_client.list_tools()
-    assert result is not None
-    assert len(result.tools) > 0
-
-    # Execute a simple tool
-    search_result = await nc_mcp_oauth_client.call_tool(
-        "nc_notes_search_notes",
-        arguments={"query": ""},
-    )
-    assert search_result.isError is False

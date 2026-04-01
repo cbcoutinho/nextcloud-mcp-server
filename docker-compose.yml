@@ -169,56 +169,6 @@ services:
     profiles:
       - multi-user-basic
 
-  mcp-oauth:
-    build: .
-    command: ["--transport", "streamable-http", "--oauth", "--port", "8001", "--oauth-token-type", "jwt"]
-    restart: always
-    depends_on:
-      app:
-        condition: service_healthy
-    ports:
-      - 127.0.0.1:8001:8001
-    environment:
-      # Generic OIDC configuration (integrated mode - Nextcloud OIDC app)
-      # OIDC_DISCOVERY_URL not set - defaults to NEXTCLOUD_HOST/.well-known/openid-configuration
-      # OIDC_CLIENT_ID not set - uses Dynamic Client Registration (DCR)
-      - NEXTCLOUD_HOST=http://app:80
-      - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8001
-      - NEXTCLOUD_RESOURCE_URI=http://localhost:8080  # ADR-005: Nextcloud resource identifier for audience validation
-      - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
-      - NEXTCLOUD_OIDC_SCOPES=openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write
-
-      # Refresh token storage (ADR-002 Tier 1)
-      - ENABLE_BACKGROUND_OPERATIONS=true
-      - TOKEN_ENCRYPTION_KEY=Qh60VwZQsM7CLtSMunzC0gIGPBT948S6VSawUkODtvU=
-      - TOKEN_STORAGE_DB=/app/data/tokens.db
-
-      # ADR-005: Multi-audience mode (default - ENABLE_TOKEN_EXCHANGE=false)
-      # Tokens must contain BOTH MCP and Nextcloud audiences
-      # No token exchange needed - tokens work for both MCP auth and Nextcloud APIs
-
-      # Semantic search configuration (ADR-007, ADR-021)
-      - ENABLE_SEMANTIC_SEARCH=true
-      - VECTOR_SYNC_SCAN_INTERVAL=60
-      - VECTOR_SYNC_PROCESSOR_WORKERS=1
-
-      # Qdrant configuration - persistent local storage
-      - QDRANT_LOCATION=/app/data/qdrant
-
-      # Embedding provider for vector sync (use Simple provider as fallback)
-      # Ollama not available in CI/test environments
-      # - OLLAMA_BASE_URL=http://ollama:11434
-      # - OLLAMA_EMBEDDING_MODEL=nomic-embed-text
-
-      # NO admin credentials - using OAuth with Dynamic Client Registration (DCR)
-      # Client credentials registered via RFC 7591 and stored in volume
-      # JWT token type is used for testing (faster validation, scopes embedded in token)
-    volumes:
-      - oauth-client-storage:/app/.oauth
-      - oauth-tokens:/app/data
-    profiles:
-      - oauth
-
   keycloak:
     image: quay.io/keycloak/keycloak:26.5.4@sha256:ae8efb0d218d8921334b03a2dbee7069a0b868240691c50a3ffc9f42fabba8b4
     command:
@@ -381,8 +331,6 @@ services:
 volumes:
   nextcloud:
   db:
-  oauth-client-storage:
-  oauth-tokens:
   keycloak-tokens:
   keycloak-oauth-storage:
   login-flow-data:
