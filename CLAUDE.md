@@ -52,9 +52,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Decorators**: `@require_scopes`, `@require_provisioning` for access control
 - **Context pattern**: `await get_client(ctx)` to access authenticated NextcloudClient (async!)
 - **FastMCP decorators**: `@mcp.tool()`, `@mcp.resource()`
-- **Token acquisition**: `get_client()` handles both pass-through and token exchange modes
-  - Pass-through (default): Simple, stateless (ENABLE_TOKEN_EXCHANGE=false)
-  - Token exchange (opt-in): RFC 8693 delegation (ENABLE_TOKEN_EXCHANGE=true)
+- **Token acquisition**: `get_client()` resolves credentials per deployment mode (see Deployment Modes below)
 
 ### MCP Tool Annotations (ADR-017)
 
@@ -199,20 +197,20 @@ uv run pytest tests/client/notes/test_notes_api.py -v
 ```
 
 **Important**: After code changes, rebuild the correct container:
-- Single-user tests: `docker-compose up --build -d mcp`
-- OAuth tests: `docker-compose up --build -d mcp-oauth`
-- Keycloak tests: `docker-compose up --build -d mcp-keycloak`
+- Single-user tests: `docker compose up --build -d mcp`
+- OAuth tests: `docker compose up --build -d mcp-oauth`
+- Keycloak tests: `docker compose up --build -d mcp-keycloak`
 
 ### Running the Server
 ```bash
 # Local development
 export $(grep -v '^#' .env | xargs)
-mcp run --transport sse nextcloud_mcp_server.app:mcp
+uv run mcp run --transport sse nextcloud_mcp_server.app:mcp
 
 # Docker development (rebuilds after code changes)
-docker-compose up --build -d mcp        # Single-user (port 8000)
-docker-compose up --build -d mcp-oauth  # Nextcloud OAuth (port 8001)
-docker-compose up --build -d mcp-keycloak  # Keycloak OAuth (port 8002)
+docker compose up --build -d mcp        # Single-user (port 8000)
+docker compose up --build -d mcp-oauth  # Nextcloud OAuth (port 8001)
+docker compose up --build -d mcp-keycloak  # Keycloak OAuth (port 8002)
 ```
 
 ### Environment Setup
@@ -239,9 +237,11 @@ uv run python -m tests.load.benchmark --output results.json --verbose
 
 **Credentials**: root/password, nextcloud/password, database: `nextcloud`
 
-### Quick Query Script (Recommended for Agents)
+**Do NOT use `docker compose exec db mariadb` or `docker compose exec <service> sqlite3` directly.** Use the wrapper scripts below instead -- they handle credentials, output formatting, and avoid repeated docker exec approvals.
 
-Use `scripts/dbquery.py` for single SQL statements without requiring approval for each `docker compose exec`:
+### MariaDB (Nextcloud)
+
+Use `scripts/dbquery.py` for all MariaDB queries:
 
 ```bash
 # Basic query
@@ -254,27 +254,6 @@ Use `scripts/dbquery.py` for single SQL statements without requiring approval fo
 ./scripts/dbquery.py -u nextcloud -p nextcloud "SHOW TABLES"
 ```
 
-### Direct Docker Access
-
-For interactive sessions or complex operations:
-
-```bash
-# Connect to database
-docker compose exec db mariadb -u root -ppassword nextcloud
-
-# Check OAuth clients
-docker compose exec db mariadb -u root -ppassword nextcloud -e \
-  "SELECT id, name, token_type FROM oc_oidc_clients ORDER BY id DESC LIMIT 10;"
-
-# Check OAuth client scopes
-docker compose exec db mariadb -u root -ppassword nextcloud -e \
-  "SELECT c.id, c.name, s.scope FROM oc_oidc_clients c LEFT JOIN oc_oidc_client_scopes s ON c.id = s.client_id WHERE c.name LIKE '%MCP%';"
-
-# Check OAuth access tokens
-docker compose exec db mariadb -u root -ppassword nextcloud -e \
-  "SELECT id, client_id, user_id, created_at FROM oc_oidc_access_tokens ORDER BY created_at DESC LIMIT 10;"
-```
-
 **Important Tables**:
 - `oc_oidc_clients` - OAuth client registrations (DCR)
 - `oc_oidc_client_scopes` - Client allowed scopes
@@ -283,9 +262,9 @@ docker compose exec db mariadb -u root -ppassword nextcloud -e \
 - `oc_oidc_registration_tokens` - RFC 7592 registration tokens
 - `oc_oidc_redirect_uris` - Redirect URIs
 
-### SQLite Databases (MCP Services)
+### SQLite (MCP Services)
 
-Use `scripts/sqlitequery.py` to query SQLite databases in MCP service containers:
+Use `scripts/sqlitequery.py` for all SQLite queries:
 
 ```bash
 # List tables
@@ -338,48 +317,29 @@ Use `scripts/sqlitequery.py` to query SQLite databases in MCP service containers
 3. MCP tools use context pattern: `get_client(ctx)` → `NextcloudClient`
 4. All operations are async using httpx
 
-### Progressive Consent Architecture (ADR-004)
+### Deployment Modes
 
-**Important**: Progressive consent is a *mechanism* for granting access, not a feature flag. The architecture is always present in OAuth mode. Whether provisioning tools are available is controlled by `ENABLE_OFFLINE_ACCESS`.
+The server supports three deployment modes, controlled by environment variables and docker compose profiles:
 
-**What is Progressive Consent?**
-- Dual OAuth flow architecture that separates client authentication (Flow 1) from resource provisioning (Flow 2)
-- Flow 1: MCP client authenticates directly to IdP with resource scopes (notes:*, calendar:*, etc.)
-  - Token audience: "mcp-server"
-  - Client receives resource-scoped token for MCP session
-- Flow 2: Server explicitly provisions Nextcloud access via separate login (only when `ENABLE_OFFLINE_ACCESS=true`)
-  - Server requests: openid, profile, email, offline_access
-  - Token audience: "nextcloud"
-  - Server receives refresh token for offline access
-  - Client never sees this token
-- Provides clear separation between session tokens and offline access tokens
+**1. Single-User** (profile: `single-user`)
+- Set `NEXTCLOUD_USERNAME` + `NEXTCLOUD_PASSWORD` (app password)
+- One shared Nextcloud identity for all MCP requests
+- Stateless, no persistent storage needed
+- Best for: personal instances, local development
 
-**Modes:**
-- **Pass-through mode** (`ENABLE_OFFLINE_ACCESS=false`, default):
-  - No Flow 2 provisioning
-  - Server uses client's token to access Nextcloud (pass-through)
-  - No provisioning tools available
-  - Suitable for stateless, client-driven operations
-- **Offline access mode** (`ENABLE_OFFLINE_ACCESS=true`):
-  - Flow 2 provisioning available
-  - Server stores refresh tokens for background operations
-  - Provisioning tools available: `provision_nextcloud_access`, `check_logged_in`
-  - Suitable for background jobs and server-initiated operations
+**2. Multi-User BasicAuth** (profile: `multi-user-basic`)
+- Set `ENABLE_MULTI_USER_BASIC_AUTH=true`
+- Each MCP client provides credentials via HTTP Authorization header
+- Per-request client creation from extracted credentials
+- Best for: internal deployments where users manage their own Nextcloud credentials
 
-**When to use OAuth mode:**
-- Multi-user deployments
-- Background jobs requiring offline access (with `ENABLE_OFFLINE_ACCESS=true`)
-- Enhanced security with separate authorization contexts
-- Explicit user control over resource access
-
-**When to use BasicAuth instead:**
-- Simple single-user deployments
-- Local development and testing
-
-**Key features:**
-- No scope escalation - client gets exactly what it requests
-- User explicitly authorizes via `provision_nextcloud_access` tool
-- Clear security boundaries between MCP session and Nextcloud access
+**3. Login Flow v2** (profile: `login-flow`)
+- Browser-based app password acquisition via Nextcloud's native Login Flow v2 API
+- Per-user app passwords stored encrypted in SQLite
+- Application-level scope enforcement (defense-in-depth)
+- Works with any Nextcloud 16+ instance (no special apps required)
+- Best for: production multi-user deployments, OAuth MCP integration
+- See `docs/ADR-022-login-flow-v2.md` for architecture details
 
 ## MCP Response Patterns (CRITICAL)
 
@@ -541,7 +501,7 @@ uv run pytest tests/server/oauth/test_oauth_core.py --browser firefox --headed -
 
 **Setup**:
 ```bash
-docker-compose up -d keycloak app mcp-keycloak
+docker compose up -d keycloak app mcp-keycloak
 curl http://localhost:8888/realms/nextcloud-mcp/.well-known/openid-configuration
 docker compose exec app php occ user_oidc:provider keycloak
 ```
@@ -557,7 +517,8 @@ docker compose exec app php occ user_oidc:provider keycloak
 ## Integration Testing with Docker
 
 **Nextcloud**: `docker compose exec app php occ ...` for occ commands
-**MariaDB**: `docker compose exec db mariadb -u [user] -p [password] [database]` for queries
+**MariaDB**: Use `./scripts/dbquery.py` for queries (see Database Inspection above)
+**SQLite**: Use `./scripts/sqlitequery.py` for MCP service databases
 
 ### Querying Nextcloud Application Logs
 
