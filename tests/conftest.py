@@ -21,6 +21,7 @@ from mcp import ClientSession
 from mcp.client.session import RequestContext
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import ElicitRequestParams, ElicitResult, ErrorData
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from nextcloud_mcp_server.client import NextcloudClient
 
@@ -2022,7 +2023,7 @@ async def _handle_oauth_consent_screen(page, username: str = "user"):
                     )
                     logger.info(f"  Consent granted for {username}")
                     return True
-                except TimeoutError:
+                except (TimeoutError, PlaywrightTimeoutError):
                     if attempt == 2:
                         screenshot_path = f"/tmp/consent_click_failed_{username}.png"
                         await page.screenshot(path=screenshot_path)
@@ -2035,7 +2036,7 @@ async def _handle_oauth_consent_screen(page, username: str = "user"):
                         f"  Consent click attempt {attempt + 1} didn't navigate, retrying..."
                     )
 
-            return True  # unreachable but satisfies type checker
+            raise RuntimeError("consent click retry loop exited unexpectedly")
         else:
             logger.error(f"  Allow button not found for {username}")
             return False
@@ -2051,7 +2052,7 @@ async def _get_oauth_token_with_scopes(
     oauth_callback_server,
     scopes: str,
     resource: str | None = None,
-    mcp_server_base_url: str = "http://localhost:8004",
+    mcp_server_base_url: str = "http://localhost:8004",  # login-flow container port
 ) -> str:
     """
     Helper function to obtain OAuth token with specific scopes.

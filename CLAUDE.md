@@ -198,7 +198,7 @@ uv run pytest tests/client/notes/test_notes_api.py -v
 
 **Important**: After code changes, rebuild the correct container:
 - Single-user tests: `docker compose up --build -d mcp`
-- OAuth tests: `docker compose up --build -d mcp-oauth`
+- Login Flow tests: `docker compose up --build -d mcp-login-flow`
 - Keycloak tests: `docker compose up --build -d mcp-keycloak`
 
 ### Running the Server
@@ -209,7 +209,7 @@ uv run mcp run --transport sse nextcloud_mcp_server.app:mcp
 
 # Docker development (rebuilds after code changes)
 docker compose up --build -d mcp        # Single-user (port 8000)
-docker compose up --build -d mcp-oauth  # Nextcloud OAuth (port 8001)
+docker compose up --build -d mcp-login-flow  # Login Flow v2 (port 8004)
 docker compose up --build -d mcp-keycloak  # Keycloak OAuth (port 8002)
 ```
 
@@ -443,7 +443,7 @@ async def nc_notes_semantic_search_answer(
 ### Use Existing Fixtures
 See `tests/conftest.py` for 2888 lines of test infrastructure:
 - `nc_mcp_client` - MCP client for tool/resource testing (uses `mcp` container)
-- `nc_mcp_oauth_client` - MCP client for OAuth testing (uses `mcp-oauth` container)
+- `nc_mcp_oauth_client` - MCP client for OAuth testing (uses `mcp-login-flow` container)
 - `nc_client` - Direct NextcloudClient for setup/cleanup
 - `temporary_note`, `temporary_addressbook`, `temporary_contact` - Auto-cleanup
 
@@ -478,7 +478,7 @@ async def test_notes_api_get_note(mocker):
 OAuth tests use **Playwright browser automation** to complete flows programmatically.
 
 **Test Environment**:
-- Three MCP containers: `mcp` (single-user), `mcp-oauth` (Nextcloud OIDC), `mcp-keycloak` (external IdP)
+- Three MCP containers: `mcp` (single-user), `mcp-login-flow` (Login Flow v2), `mcp-keycloak` (external IdP)
 - OAuth tests require `NEXTCLOUD_HOST`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_PASSWORD` environment variables
 - Playwright configuration: `--browser firefox --headed` for debugging
 - Install browsers: `uv run playwright install firefox`
