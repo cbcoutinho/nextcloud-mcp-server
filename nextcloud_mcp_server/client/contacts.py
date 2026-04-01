@@ -2,6 +2,7 @@
 
 import logging
 import xml.etree.ElementTree as ET
+from datetime import date
 
 from pythonvCard4.vcard import Contact
 
@@ -272,7 +273,9 @@ class ContactsClient(BaseNextcloudClient):
                     "contact": {
                         "fullname": contact.fn,
                         "nickname": contact.nickname,
-                        "birthday": contact.bday,
+                        "birthday": contact.bday.isoformat()
+                        if isinstance(contact.bday, date)
+                        else contact.bday,
                         "email": contact.email,
                         "tel": contact.tel,
                     },

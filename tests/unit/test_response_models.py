@@ -1,5 +1,7 @@
 """Unit tests for Pydantic response models."""
 
+from datetime import date
+
 import pytest
 
 from nextcloud_mcp_server.models.contacts import (
@@ -308,6 +310,46 @@ def test_contact_mapping_preserves_email_birthday_nickname():
     assert contact.emails[0].value == "jane@example.com"
     assert contact.emails[0].type == "email"
     assert contact.custom_fields["nickname"] == "JD"
+
+
+@pytest.mark.unit
+def test_contact_mapping_birthday_datetime_date_object():
+    """Test that a datetime.date birthday is converted to ISO string.
+
+    Regression test for GH #672: pythonvCard4 returns datetime.date objects
+    for BDAY fields, which caused Pydantic validation errors.
+    """
+    raw_contact = {
+        "vcard_id": "bday-date-1",
+        "contact": {
+            "fullname": "Date Object",
+            "birthday": date(1990, 5, 15),
+        },
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert contact.birthday == "1990-05-15"
+
+
+@pytest.mark.unit
+def test_contact_mapping_birthday_apple_unknown_year():
+    """Test Apple/iOS unknown-year birthday convention (year 1604).
+
+    Apple contacts use BDAY;VALUE=DATE:16040808 when the birth year is unknown.
+    pythonvCard4 parses this as datetime.date(1604, 8, 8).
+    """
+    raw_contact = {
+        "vcard_id": "bday-apple-1",
+        "contact": {
+            "fullname": "Apple Contact",
+            "birthday": date(1604, 8, 8),
+        },
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert contact.birthday == "1604-08-08"
 
 
 @pytest.mark.unit

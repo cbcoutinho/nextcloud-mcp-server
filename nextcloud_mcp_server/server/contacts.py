@@ -1,4 +1,5 @@
 import logging
+from datetime import date
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -83,7 +84,9 @@ def _raw_contact_to_model(raw: dict) -> Contact:
         uid=raw["vcard_id"],
         fn=contact_info.get("fullname", ""),
         etag=raw.get("getetag"),
-        birthday=contact_info.get("birthday"),
+        birthday=contact_info["birthday"].isoformat()
+        if isinstance(contact_info.get("birthday"), date)
+        else contact_info.get("birthday"),
         emails=emails,
         phones=phones,
         custom_fields=custom_fields,
