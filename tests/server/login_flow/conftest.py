@@ -544,3 +544,362 @@ async def nc_mcp_login_flow_client_no_custom_scopes(
         client_name="Login Flow MCP No Custom Scopes",
     ):
         yield session
+
+
+# ---------------------------------------------------------------------------
+# Multi-user Login Flow fixtures for permission / isolation tests
+# ---------------------------------------------------------------------------
+
+
+async def _get_login_flow_token_for_user(
+    browser,
+    login_flow_oauth_client_credentials,
+    auth_states: dict,
+    username: str,
+    password: str,
+) -> str:
+    """Get an OAuth token for a specific user targeting the login-flow MCP server.
+
+    Similar to the global ``_get_oauth_token_for_user`` but hard-wires the
+    resource / PRM discovery against port 8004.
+    """
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    if not nextcloud_host:
+        pytest.skip("Login Flow tests require NEXTCLOUD_HOST")
+
+    client_id, client_secret, callback_url, token_endpoint, authorization_endpoint = (
+        login_flow_oauth_client_credentials
+    )
+
+    # Discover resource identifier from the login-flow server
+    try:
+        resource_metadata = await get_mcp_server_resource_metadata(
+            LOGIN_FLOW_MCP_BASE_URL
+        )
+        resource_id = resource_metadata.get("resource")
+    except Exception:
+        resource_id = None
+
+    state = secrets.token_urlsafe(32)
+
+    scopes_encoded = quote(DEFAULT_FULL_SCOPES, safe="")
+    auth_url = (
+        f"{authorization_endpoint}?"
+        f"response_type=code&"
+        f"client_id={client_id}&"
+        f"redirect_uri={quote(callback_url, safe='')}&"
+        f"state={state}&"
+        f"scope={scopes_encoded}"
+    )
+    if resource_id:
+        auth_url += f"&resource={quote(resource_id, safe='')}"
+
+    context = await browser.new_context(ignore_https_errors=True)
+    page = await context.new_page()
+
+    try:
+        await page.goto(auth_url, wait_until="networkidle", timeout=60000)
+        current_url = page.url
+
+        # Login
+        if "/login" in current_url or "/index.php/login" in current_url:
+            await page.wait_for_selector('input[name="user"]', timeout=10000)
+            await page.fill('input[name="user"]', username)
+            await page.fill('input[name="password"]', password)
+            await page.click('button[type="submit"]')
+            await page.wait_for_load_state("networkidle", timeout=60000)
+
+        # Wait for OIDC redirect chain to settle
+        settle_start = time.time()
+        while time.time() - settle_start < 15:
+            current_url = page.url
+            if "/consent" in current_url or "localhost:8081" in current_url:
+                break
+            await anyio.sleep(0.5)
+
+        # Handle consent screen
+        if "/consent" in page.url:
+            await page.wait_for_load_state("networkidle", timeout=10000)
+            await _handle_oauth_consent_screen(page, username)
+
+        # Wait for callback
+        start_time = time.time()
+        while state not in auth_states:
+            if time.time() - start_time > 30:
+                screenshot_path = f"/tmp/login_flow_oauth_timeout_{username}.png"
+                await page.screenshot(path=screenshot_path)
+                raise TimeoutError(f"Timeout waiting for OAuth callback for {username}")
+            await anyio.sleep(0.5)
+
+        auth_code = auth_states[state]
+    finally:
+        await context.close()
+
+    # Exchange code for token
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        token_response = await http_client.post(
+            token_endpoint,
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": callback_url,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+        )
+        token_response.raise_for_status()
+        return token_response.json()["access_token"]
+
+
+@pytest.fixture(scope="session")
+async def all_login_flow_user_tokens(
+    anyio_backend,
+    browser,
+    login_flow_oauth_client_credentials,
+    test_users_setup,
+    oauth_callback_server,
+) -> dict[str, str]:
+    """Fetch OAuth tokens for all test users in parallel, targeting port 8004."""
+    auth_states, _ = oauth_callback_server
+
+    start_time = time.time()
+    logger.info("Fetching login-flow OAuth tokens for all users in parallel...")
+
+    results: dict[str, str | Exception] = {}
+
+    async def _fetch(username: str, config: dict, delay: float) -> None:
+        if delay > 0:
+            await anyio.sleep(delay)
+        try:
+            token = await _get_login_flow_token_for_user(
+                browser,
+                login_flow_oauth_client_credentials,
+                auth_states,
+                username,
+                config["password"],
+            )
+            results[username] = token
+        except Exception as exc:
+            results[username] = exc
+
+    user_list = list(test_users_setup.items())
+    async with anyio.create_task_group() as tg:
+        for idx, (username, config) in enumerate(user_list):
+            tg.start_soon(_fetch, username, config, idx * 0.5)
+
+    for username, result in results.items():
+        if isinstance(result, Exception):
+            raise result
+
+    elapsed = time.time() - start_time
+    logger.info(
+        f"Fetched {len(results)} login-flow tokens in {elapsed:.1f}s "
+        f"(~{elapsed / len(results):.1f}s per user)"
+    )
+    return results  # type: ignore[return-value]
+
+
+async def _provision_login_flow_mcp_client(
+    token: str,
+    browser,
+    username: str,
+    password: str,
+) -> AsyncGenerator[ClientSession, Any]:
+    """Connect to login-flow MCP server, complete Login Flow v2 provisioning, yield session."""
+    login_url_holder: dict[str, str] = {}
+
+    async def elicitation_callback(
+        context: Any,
+        params: ElicitRequestParams,
+    ) -> ElicitResult:
+        message = params.message
+        for line in message.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("http") and "/login/v2/" in stripped:
+                login_url_holder["url"] = stripped
+                break
+
+        if "url" in login_url_holder:
+            await _complete_login_flow_v2_as_user(
+                browser, login_url_holder["url"], username, password
+            )
+
+        return ElicitResult(action="accept", content={"acknowledged": True})
+
+    async for session in create_mcp_client_session(
+        url=LOGIN_FLOW_MCP_URL,
+        token=token,
+        client_name=f"Login Flow MCP ({username})",
+        elicitation_callback=elicitation_callback,
+    ):
+        # Provision access
+        provision_result = await session.call_tool(
+            "nc_auth_provision_access", {"scopes": None}
+        )
+        provision_data = json.loads(provision_result.content[0].text)
+
+        if provision_data.get("status") == "login_required":
+            login_url = provision_data.get("login_url")
+            if login_url and "url" not in login_url_holder:
+                await _complete_login_flow_v2_as_user(
+                    browser, login_url, username, password
+                )
+
+        # Poll for completion
+        for attempt in range(15):
+            status_result = await session.call_tool("nc_auth_check_status", {})
+            status_data = json.loads(status_result.content[0].text)
+            if status_data.get("status") == "provisioned":
+                logger.info(
+                    f"Login Flow v2 provisioned for {username}: "
+                    f"{status_data.get('username')}"
+                )
+                break
+            if status_data.get("status") in ("not_initiated", "error"):
+                raise RuntimeError(
+                    f"Login Flow v2 failed for {username}: {status_data.get('message')}"
+                )
+            await anyio.sleep(2)
+        else:
+            raise TimeoutError(
+                f"Login Flow v2 did not complete for {username} after 15 attempts"
+            )
+
+        yield session
+
+
+async def _complete_login_flow_v2_as_user(
+    browser, login_url: str, username: str, password: str
+) -> None:
+    """Complete Nextcloud Login Flow v2 in a browser as a specific user.
+
+    Same steps as ``_complete_login_flow_v2`` but uses the given *username* and
+    *password* instead of reading from environment variables.
+    """
+    login_url = _rewrite_login_flow_url(login_url)
+
+    context = await browser.new_context(ignore_https_errors=True)
+    page = await context.new_page()
+
+    try:
+        logger.info(f"Opening Login Flow v2 URL for {username}: {login_url[:80]}...")
+        await page.goto(login_url, wait_until="networkidle", timeout=60000)
+
+        # Step 1: "Connect to your account" page
+        login_btn = page.get_by_role("button", name="Log in")
+        try:
+            await login_btn.wait_for(timeout=10000)
+            await login_btn.click()
+            await page.wait_for_load_state("networkidle", timeout=30000)
+        except Exception:
+            pass
+
+        # Step 2: Login form
+        user_field = page.locator('input[name="user"]')
+        if await user_field.count() > 0:
+            await user_field.fill(username)
+            await page.locator('input[name="password"]').fill(password)
+            await page.get_by_role("button", name="Log in", exact=True).click()
+            await page.wait_for_load_state("networkidle", timeout=60000)
+
+        # Step 3: "Account access" grant page
+        grant_btn = page.get_by_role("button", name="Grant access")
+        try:
+            await grant_btn.wait_for(timeout=15000)
+            await grant_btn.click()
+        except Exception:
+            pass
+
+        # Step 4: Password confirmation dialog
+        confirm_password = page.get_by_role("dialog").get_by_role(
+            "textbox", name="Password"
+        )
+        try:
+            await confirm_password.wait_for(timeout=10000)
+            await confirm_password.fill(password)
+            confirm_btn = page.get_by_role("dialog").get_by_role(
+                "button", name="Confirm"
+            )
+            await confirm_btn.wait_for(timeout=5000)
+            await confirm_btn.click()
+        except Exception:
+            pass
+
+        # Step 5: Wait for success
+        try:
+            await page.get_by_text("Account connected").wait_for(timeout=15000)
+            logger.info(f"Login Flow v2 completed for {username}")
+        except Exception:
+            await page.wait_for_load_state("networkidle", timeout=10000)
+            logger.info(f"Login Flow v2 done for {username}. URL: {page.url}")
+
+    finally:
+        await context.close()
+
+
+@pytest.fixture(scope="session")
+async def alice_login_flow_mcp_client(
+    anyio_backend,
+    all_login_flow_user_tokens: dict[str, str],
+    test_users_setup,
+    browser,
+) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client authenticated and provisioned as alice (owner role)."""
+    async for session in _provision_login_flow_mcp_client(
+        token=all_login_flow_user_tokens["alice"],
+        browser=browser,
+        username="alice",
+        password=test_users_setup["alice"]["password"],
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def bob_login_flow_mcp_client(
+    anyio_backend,
+    all_login_flow_user_tokens: dict[str, str],
+    test_users_setup,
+    browser,
+) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client authenticated and provisioned as bob (viewer role)."""
+    async for session in _provision_login_flow_mcp_client(
+        token=all_login_flow_user_tokens["bob"],
+        browser=browser,
+        username="bob",
+        password=test_users_setup["bob"]["password"],
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def charlie_login_flow_mcp_client(
+    anyio_backend,
+    all_login_flow_user_tokens: dict[str, str],
+    test_users_setup,
+    browser,
+) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client authenticated and provisioned as charlie (editor role)."""
+    async for session in _provision_login_flow_mcp_client(
+        token=all_login_flow_user_tokens["charlie"],
+        browser=browser,
+        username="charlie",
+        password=test_users_setup["charlie"]["password"],
+    ):
+        yield session
+
+
+@pytest.fixture(scope="session")
+async def diana_login_flow_mcp_client(
+    anyio_backend,
+    all_login_flow_user_tokens: dict[str, str],
+    test_users_setup,
+    browser,
+) -> AsyncGenerator[ClientSession, Any]:
+    """MCP client authenticated and provisioned as diana (no-access role)."""
+    async for session in _provision_login_flow_mcp_client(
+        token=all_login_flow_user_tokens["diana"],
+        browser=browser,
+        username="diana",
+        password=test_users_setup["diana"]["password"],
+    ):
+        yield session
