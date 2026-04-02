@@ -60,7 +60,7 @@ class UnifiedTokenVerifier(TokenVerifier):
             settings: Application settings containing OAuth configuration
         """
         self.settings = settings
-        self.mode = "exchange" if settings.enable_token_exchange else "multi-audience"
+        self.mode = "multi-audience"
 
         # Common components for all modes
         self.http_client = nextcloud_httpx_client(timeout=10.0)

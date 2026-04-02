@@ -37,7 +37,6 @@ def create_mock_settings(
     oidc_issuer: str | None = None,
     vector_sync_enabled: bool = False,
     nextcloud_url: str = "http://localhost",
-    enable_token_exchange: bool = False,
     mcp_client_id: str | None = None,
     mcp_client_secret: str | None = None,
 ):
@@ -49,7 +48,6 @@ def create_mock_settings(
     settings.oidc_issuer = oidc_issuer
     settings.vector_sync_enabled = vector_sync_enabled
     settings.nextcloud_url = nextcloud_url
-    settings.enable_token_exchange = enable_token_exchange
     settings.mcp_client_id = mcp_client_id
     settings.mcp_client_secret = mcp_client_secret
     return settings

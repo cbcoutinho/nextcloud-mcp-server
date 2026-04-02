@@ -11,7 +11,7 @@ The Token Broker provides:
 - Short-lived token caching (5-minute TTL)
 - Master refresh token rotation
 - Audience-specific token validation
-- Session vs background token separation (RFC 8693)
+- Background token management
 """
 
 import logging
@@ -23,7 +23,6 @@ import httpx
 import jwt
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
-from nextcloud_mcp_server.auth.token_exchange import exchange_token_for_delegation
 
 from ..http import nextcloud_httpx_client
 
@@ -217,55 +216,6 @@ class TokenBrokerService:
             logger.error(f"Failed to get Nextcloud token for user {user_id}: {e}")
             # Invalidate cache on error
             await self.cache.invalidate(user_id)
-            return None
-
-    async def get_session_token(
-        self,
-        flow1_token: str,
-        required_scopes: list[str],
-        requested_audience: str = "nextcloud",
-    ) -> Optional[str]:
-        """
-        Get ephemeral token for MCP session operations (on-demand).
-
-        This implements the correct Progressive Consent pattern where:
-        1. Client provides Flow 1 token (aud: "mcp-server")
-        2. Server exchanges it for ephemeral Nextcloud token
-        3. Token is NOT stored, only used for current operation
-
-        Key properties:
-        - On-demand generation during tool execution
-        - Ephemeral (not stored, discarded after use)
-        - Limited scopes (only what tool needs)
-        - Short-lived (5 minutes)
-
-        Args:
-            flow1_token: The MCP session token (aud: "mcp-server")
-            required_scopes: Minimal scopes needed for this operation
-            requested_audience: Target audience (usually "nextcloud")
-
-        Returns:
-            Ephemeral Nextcloud access token or None if exchange fails
-        """
-        try:
-            # Perform RFC 8693 token exchange
-            delegated_token, expires_in = await exchange_token_for_delegation(
-                flow1_token=flow1_token,
-                requested_scopes=required_scopes,
-                requested_audience=requested_audience,
-            )
-
-            # NOTE: We intentionally do NOT cache session tokens
-            # They are ephemeral and should be discarded after use
-            logger.info(
-                f"Generated ephemeral session token with scopes: {required_scopes}, "
-                f"expires in {expires_in}s"
-            )
-
-            return delegated_token
-
-        except Exception as e:
-            logger.error(f"Failed to get session token: {e}")
             return None
 
     async def get_background_token(

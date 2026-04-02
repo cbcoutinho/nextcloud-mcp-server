@@ -22,16 +22,6 @@ from nextcloud_mcp_server.config_validators import (
 class TestModeDetection:
     """Test auth mode detection from configuration."""
 
-    def test_token_exchange_mode_detection(self):
-        """Test token exchange mode is detected."""
-        settings = Settings(
-            nextcloud_host="http://localhost",
-            enable_token_exchange=True,
-        )
-
-        mode = detect_auth_mode(settings)
-        assert mode == AuthMode.OAUTH_TOKEN_EXCHANGE
-
     def test_multi_user_basic_mode_detection(self):
         """Test multi-user BasicAuth mode is detected."""
         settings = Settings(
@@ -61,18 +51,6 @@ class TestModeDetection:
 
         mode = detect_auth_mode(settings)
         assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
-
-    def test_mode_priority_token_exchange_over_basic(self):
-        """Test token exchange has priority over BasicAuth."""
-        settings = Settings(
-            nextcloud_host="http://localhost",
-            nextcloud_username="admin",
-            nextcloud_password="password",
-            enable_token_exchange=True,
-        )
-
-        mode = detect_auth_mode(settings)
-        assert mode == AuthMode.OAUTH_TOKEN_EXCHANGE
 
 
 class TestSingleUserBasicValidation:
@@ -164,21 +142,6 @@ class TestSingleUserBasicValidation:
         assert mode == AuthMode.MULTI_USER_BASIC
         # It will fail multi-user validation because username/password are forbidden
         assert len(errors) > 0
-
-    def test_forbidden_token_exchange(self):
-        """Test error when ENABLE_TOKEN_EXCHANGE is set."""
-        settings = Settings(
-            nextcloud_host="http://localhost",
-            nextcloud_username="admin",
-            nextcloud_password="password",
-            enable_token_exchange=True,
-        )
-
-        # Note: This will detect as OAUTH_TOKEN_EXCHANGE due to priority
-        mode, errors = validate_configuration(settings)
-
-        assert mode == AuthMode.OAUTH_TOKEN_EXCHANGE
-        # It will fail OAuth validation
 
     def test_vector_sync_without_embedding_provider_uses_fallback(self):
         """Test that vector sync works with Simple provider fallback (no config needed)."""
@@ -419,51 +382,6 @@ class TestOAuthSingleAudienceValidation:
             assert settings.enable_offline_access is True
 
 
-class TestOAuthTokenExchangeValidation:
-    """Test validation for OAuth token exchange mode."""
-
-    def test_valid_minimal_config(self):
-        """Test valid minimal OAuth token exchange config."""
-        settings = Settings(
-            nextcloud_host="http://localhost",
-            enable_token_exchange=True,
-        )
-
-        mode, errors = validate_configuration(settings)
-
-        assert mode == AuthMode.OAUTH_TOKEN_EXCHANGE
-        assert len(errors) == 0
-
-    def test_valid_with_credentials(self):
-        """Test valid config with OAuth credentials."""
-        settings = Settings(
-            nextcloud_host="http://localhost",
-            enable_token_exchange=True,
-            oidc_client_id="test-client",
-            oidc_client_secret="test-secret",
-        )
-
-        mode, errors = validate_configuration(settings)
-
-        assert mode == AuthMode.OAUTH_TOKEN_EXCHANGE
-        assert len(errors) == 0
-
-    def test_forbidden_username_password(self):
-        """Test error when username/password are set."""
-        settings = Settings(
-            nextcloud_host="http://localhost",
-            enable_token_exchange=True,
-            nextcloud_username="admin",
-            nextcloud_password="password",
-        )
-
-        mode, errors = validate_configuration(settings)
-
-        assert mode == AuthMode.OAUTH_TOKEN_EXCHANGE
-        assert any("nextcloud_username" in err.lower() for err in errors)
-        assert any("nextcloud_password" in err.lower() for err in errors)
-
-
 class TestModeSummary:
     """Test mode summary generation."""
 
@@ -476,14 +394,6 @@ class TestModeSummary:
         assert "NEXTCLOUD_USERNAME" in summary
         assert "NEXTCLOUD_PASSWORD" in summary
         assert "VECTOR_SYNC_ENABLED" in summary
-
-    def test_oauth_token_exchange_summary(self):
-        """Test summary for OAuth token exchange mode."""
-        summary = get_mode_summary(AuthMode.OAUTH_TOKEN_EXCHANGE)
-
-        assert "oauth_exchange" in summary
-        assert "ENABLE_TOKEN_EXCHANGE" in summary
-        assert "RFC 8693" in summary
 
 
 class TestEdgeCases:
@@ -799,23 +709,6 @@ class TestExplicitModeSelection:
             mode = detect_auth_mode(settings)
 
             assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
-
-    def test_explicit_oauth_token_exchange_mode(self):
-        """Test explicit oauth_token_exchange mode selection."""
-        with patch.dict(
-            os.environ,
-            {
-                "NEXTCLOUD_HOST": "http://localhost:8080",
-                "MCP_DEPLOYMENT_MODE": "oauth_token_exchange",
-            },
-            clear=True,
-        ):
-            from nextcloud_mcp_server.config import get_settings
-
-            settings = get_settings()
-            mode = detect_auth_mode(settings)
-
-            assert mode == AuthMode.OAUTH_TOKEN_EXCHANGE
 
     def test_invalid_deployment_mode_raises_error(self):
         """Test invalid MCP_DEPLOYMENT_MODE raises ValueError."""

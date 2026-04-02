@@ -212,7 +212,7 @@ async def get_server_status(request: Request) -> JSONResponse:
 
     # Map deployment mode to auth_mode for API response
     # This helps clients (like Astrolabe) determine which auth flow to use
-    if mode == AuthMode.OAUTH_SINGLE_AUDIENCE or mode == AuthMode.OAUTH_TOKEN_EXCHANGE:
+    if mode == AuthMode.OAUTH_SINGLE_AUDIENCE:
         auth_mode = "oauth"
     elif mode == AuthMode.MULTI_USER_BASIC:
         auth_mode = "multi_user_basic"

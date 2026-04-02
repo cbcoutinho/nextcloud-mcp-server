@@ -26,7 +26,6 @@ class AuthMode(Enum):
     SINGLE_USER_BASIC = "single_user_basic"
     MULTI_USER_BASIC = "multi_user_basic"
     OAUTH_SINGLE_AUDIENCE = "oauth_single"
-    OAUTH_TOKEN_EXCHANGE = "oauth_exchange"
 
 
 @dataclass
@@ -66,7 +65,6 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
         ],
         forbidden=[
             "enable_multi_user_basic_auth",
-            "enable_token_exchange",
             "oidc_client_id",
             "oidc_client_secret",
         ],
@@ -100,7 +98,6 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
         forbidden=[
             "nextcloud_username",
             "nextcloud_password",
-            "enable_token_exchange",
         ],
         conditional={
             "enable_offline_access": [
@@ -141,7 +138,6 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
         forbidden=[
             "nextcloud_username",
             "nextcloud_password",
-            "enable_token_exchange",
             "enable_multi_user_basic_auth",
         ],
         conditional={
@@ -157,46 +153,6 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
         "Tokens work for both MCP server and Nextcloud APIs (pass-through). "
         "Uses Dynamic Client Registration if credentials not provided.",
     ),
-    AuthMode.OAUTH_TOKEN_EXCHANGE: ModeRequirements(
-        required=["nextcloud_host", "enable_token_exchange"],
-        optional=[
-            # OAuth credentials
-            "oidc_client_id",
-            "oidc_client_secret",
-            "oidc_discovery_url",
-            # Token exchange settings
-            "token_exchange_cache_ttl",
-            # Offline access
-            "enable_offline_access",
-            "token_encryption_key",
-            "token_storage_db",
-            # Vector sync
-            "vector_sync_enabled",
-            "qdrant_url",
-            "qdrant_location",
-            "ollama_base_url",
-            "ollama_embedding_model",
-            "openai_api_key",
-            "openai_embedding_model",
-        ],
-        forbidden=[
-            "nextcloud_username",
-            "nextcloud_password",
-            "enable_multi_user_basic_auth",
-        ],
-        conditional={
-            "enable_offline_access": [
-                "token_encryption_key",
-                "token_storage_db",
-            ],
-            # Note: vector_sync_enabled (now ENABLE_SEMANTIC_SEARCH) automatically
-            # enables background operations in multi-user modes. No explicit
-            # enable_offline_access setting required.
-        },
-        description="OAuth multi-user deployment with token exchange (RFC 8693). "
-        "MCP tokens are separate from Nextcloud tokens. "
-        "Server exchanges MCP token for Nextcloud token on each request.",
-    ),
 }
 
 
@@ -205,10 +161,9 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
 
     Mode detection priority (ADR-021):
     0. Explicit MCP_DEPLOYMENT_MODE (if set) - NEW in ADR-021
-    1. Token exchange (most specific OAuth mode)
-    2. Multi-user BasicAuth
-    3. Single-user BasicAuth
-    4. OAuth single-audience (default OAuth mode)
+    1. Multi-user BasicAuth
+    2. Single-user BasicAuth
+    3. OAuth single-audience (default OAuth mode)
 
     Args:
         settings: Application settings
@@ -231,7 +186,6 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
             "single_user_basic": AuthMode.SINGLE_USER_BASIC,
             "multi_user_basic": AuthMode.MULTI_USER_BASIC,
             "oauth_single_audience": AuthMode.OAUTH_SINGLE_AUDIENCE,
-            "oauth_token_exchange": AuthMode.OAUTH_TOKEN_EXCHANGE,
         }
 
         if mode_str not in mode_map:
@@ -246,10 +200,6 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
         return explicit_mode
 
     # Auto-detection (existing behavior)
-    # Check for token exchange (most specific OAuth mode)
-    if settings.enable_token_exchange:
-        return AuthMode.OAUTH_TOKEN_EXCHANGE
-
     # Check for multi-user BasicAuth
     if settings.enable_multi_user_basic_auth:
         return AuthMode.MULTI_USER_BASIC
@@ -351,10 +301,7 @@ def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
                 f"{settings.nextcloud_host}"
             )
 
-    if mode in [
-        AuthMode.OAUTH_SINGLE_AUDIENCE,
-        AuthMode.OAUTH_TOKEN_EXCHANGE,
-    ]:
+    if mode == AuthMode.OAUTH_SINGLE_AUDIENCE:
         # If OAuth credentials not provided, DCR must be available
         # (This is a runtime check, not a config check, so we just warn)
         if not settings.oidc_client_id or not settings.oidc_client_secret:

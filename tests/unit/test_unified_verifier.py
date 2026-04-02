@@ -29,16 +29,7 @@ def base_settings():
         nextcloud_resource_uri="http://localhost:8080",
         jwks_uri="https://idp.example.com/jwks",
         introspection_uri="https://idp.example.com/introspect",
-        enable_token_exchange=False,  # Multi-audience mode
-        token_exchange_cache_ttl=300,
     )
-
-
-@pytest.fixture
-def exchange_settings(base_settings):
-    """Create settings for token exchange mode."""
-    base_settings.enable_token_exchange = True
-    return base_settings
 
 
 class TestUnifiedTokenVerifierInit:
@@ -50,11 +41,11 @@ class TestUnifiedTokenVerifierInit:
         assert verifier.mode == "multi-audience"
         assert verifier.settings == base_settings
 
-    def test_init_exchange_mode(self, exchange_settings):
-        """Test verifier initialization in token exchange mode."""
-        verifier = UnifiedTokenVerifier(exchange_settings)
-        assert verifier.mode == "exchange"
-        assert verifier.settings == exchange_settings
+    def test_init_always_multi_audience(self, base_settings):
+        """Test verifier always initializes in multi-audience mode."""
+        verifier = UnifiedTokenVerifier(base_settings)
+        assert verifier.mode == "multi-audience"
+        assert verifier.settings == base_settings
 
 
 class TestAudienceValidation:
@@ -117,9 +108,9 @@ class TestAudienceValidation:
         # Should pass - we only validate MCP audience per RFC 7519
         assert verifier._has_mcp_audience(payload) is True
 
-    def test_has_mcp_audience_with_client_id(self, exchange_settings):
+    def test_has_mcp_audience_with_client_id(self, base_settings):
         """Test MCP audience validation with client ID."""
-        verifier = UnifiedTokenVerifier(exchange_settings)
+        verifier = UnifiedTokenVerifier(base_settings)
         payload = {
             "aud": ["test-client-id"],
             "sub": "testuser",
@@ -128,9 +119,9 @@ class TestAudienceValidation:
 
         assert verifier._has_mcp_audience(payload) is True
 
-    def test_has_mcp_audience_with_server_url(self, exchange_settings):
+    def test_has_mcp_audience_with_server_url(self, base_settings):
         """Test MCP audience validation with server URL."""
-        verifier = UnifiedTokenVerifier(exchange_settings)
+        verifier = UnifiedTokenVerifier(base_settings)
         payload = {
             "aud": ["http://localhost:8000"],
             "sub": "testuser",
@@ -139,9 +130,9 @@ class TestAudienceValidation:
 
         assert verifier._has_mcp_audience(payload) is True
 
-    def test_has_mcp_audience_missing(self, exchange_settings):
+    def test_has_mcp_audience_missing(self, base_settings):
         """Test MCP audience validation fails without MCP audience."""
-        verifier = UnifiedTokenVerifier(exchange_settings)
+        verifier = UnifiedTokenVerifier(base_settings)
         payload = {
             "aud": ["http://localhost:8080"],  # Wrong audience
             "sub": "testuser",
@@ -292,12 +283,12 @@ class TestMultiAudienceVerification:
             assert result.resource == "testuser"
 
 
-class TestExchangeModeVerification:
-    """Test token exchange mode verification."""
+class TestMcpAudienceVerification:
+    """Test MCP audience verification."""
 
-    async def test_verify_mcp_audience_only_success(self, exchange_settings):
+    async def test_verify_mcp_audience_only_success(self, base_settings):
         """Test MCP-only audience verification succeeds with MCP audience."""
-        verifier = UnifiedTokenVerifier(exchange_settings)
+        verifier = UnifiedTokenVerifier(base_settings)
 
         # Mock introspection response with MCP audience only
         introspection_response = {
@@ -318,9 +309,9 @@ class TestExchangeModeVerification:
             assert result is not None
             assert result.resource == "testuser"
 
-    async def test_verify_mcp_audience_only_fails_without_mcp(self, exchange_settings):
+    async def test_verify_mcp_audience_only_fails_without_mcp(self, base_settings):
         """Test MCP audience verification fails without MCP audience."""
-        verifier = UnifiedTokenVerifier(exchange_settings)
+        verifier = UnifiedTokenVerifier(base_settings)
 
         # Mock introspection response without MCP audience
         introspection_response = {
@@ -503,9 +494,9 @@ class TestVerifyTokenFlow:
             assert result is not None
             assert result.resource == "testuser"
 
-    async def test_verify_token_exchange_mode(self, exchange_settings):
-        """Test verify_token in exchange mode."""
-        verifier = UnifiedTokenVerifier(exchange_settings)
+    async def test_verify_token_mcp_audience_only(self, base_settings):
+        """Test verify_token with MCP audience only."""
+        verifier = UnifiedTokenVerifier(base_settings)
 
         introspection_response = {
             "active": True,
