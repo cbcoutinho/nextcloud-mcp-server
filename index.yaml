@@ -14,6 +14,55 @@ entries:
       grafana_dashboard: "true"
       grafana_dashboard_folder: Nextcloud MCP
     apiVersion: v2
+    appVersion: 0.68.2
+    created: "2026-04-04T08:32:20.899178718Z"
+    dependencies:
+    - condition: qdrant.networkMode.deploySubchart
+      name: qdrant
+      repository: https://qdrant.github.io/qdrant-helm
+      version: 1.17.1
+    - condition: ollama.enabled
+      name: ollama
+      repository: https://otwld.github.io/ollama-helm
+      version: 1.47.0
+    description: A Helm chart for Nextcloud MCP Server - enables AI assistants to
+      interact with Nextcloud
+    digest: 0a25864853cc3377aa849e77b718f8bd3455509790c1f26f8ce278bf3260a9fe
+    home: https://github.com/cbcoutinho/nextcloud-mcp-server
+    icon: https://raw.githubusercontent.com/nextcloud/server/master/core/img/logo/logo.svg
+    keywords:
+    - nextcloud
+    - mcp
+    - model-context-protocol
+    - llm
+    - ai
+    - claude
+    - webdav
+    - caldav
+    - carddav
+    maintainers:
+    - email: chris@coutinho.io
+      name: Chris Coutinho
+    name: nextcloud-mcp-server
+    sources:
+    - https://github.com/cbcoutinho/nextcloud-mcp-server
+    type: application
+    urls:
+    - https://github.com/cbcoutinho/nextcloud-mcp-server/releases/download/nextcloud-mcp-server-0.58.26/nextcloud-mcp-server-0.58.26.tgz
+    version: 0.58.26
+  - annotations:
+      artifacthub.io/changes: |
+        - kind: added
+          description: Login Flow v2 auth mode for Helm chart (ADR-022)
+        - kind: added
+          description: Multi-user BasicAuth guidance in post-install NOTES
+        - kind: added
+          description: Version and changelog info in post-install NOTES
+        - kind: changed
+          description: Updated appVersion to 0.64.4
+      grafana_dashboard: "true"
+      grafana_dashboard_folder: Nextcloud MCP
+    apiVersion: v2
     appVersion: 0.68.1
     created: "2026-04-03T07:44:27.35053516Z"
     dependencies:
@@ -7615,4 +7664,4 @@ entries:
     urls:
     - https://github.com/cbcoutinho/nextcloud-mcp-server/releases/download/nextcloud-mcp-server-0.1.0/nextcloud-mcp-server-0.1.0.tgz
     version: 0.1.0
-generated: "2026-04-03T07:44:27.3516513Z"
+generated: "2026-04-04T08:32:20.899674091Z"
