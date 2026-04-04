@@ -70,6 +70,24 @@ class ClientRegistry:
                     )
                     logger.info(f"Registered static client: {client_id}")
 
+        # Load cloud clients (web-based, HTTPS redirect URIs)
+        # Format: "client_id|redirect_uri,client_id2|redirect_uri2"
+        cloud_clients = os.getenv("ALLOWED_MCP_CLOUD_CLIENTS", "").strip()
+        if cloud_clients:
+            for entry in cloud_clients.split(","):
+                entry = entry.strip()
+                if "|" in entry:
+                    cid, redirect = entry.split("|", 1)
+                    cid, redirect = cid.strip(), redirect.strip()
+                    self._clients[cid] = MCPClientInfo(
+                        client_id=cid,
+                        name=self._get_client_name(cid),
+                        redirect_uris=[redirect],
+                        allowed_scopes=["*"],
+                        is_public=True,
+                    )
+                    logger.info(f"Registered cloud client: {cid}")
+
         # Add well-known clients if not explicitly configured
         if not self._clients:
             self._add_well_known_clients()
@@ -78,6 +96,7 @@ class ClientRegistry:
         """Get human-readable name for client_id."""
         known_names = {
             "claude-desktop": "Claude Desktop",
+            "claude-ai": "Claude AI",
             "continue-dev": "Continue IDE Extension",
             "zed-editor": "Zed Editor",
             "vscode-mcp": "VS Code MCP Extension",
