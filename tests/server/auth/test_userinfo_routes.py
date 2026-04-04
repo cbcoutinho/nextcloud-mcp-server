@@ -1,11 +1,6 @@
 """Unit tests for user info routes.
 
-Note: Most unit tests were removed as they relied on the old _get_user_info API.
-The new browser OAuth session-based implementation is covered by integration tests
-in tests/server/oauth/test_userinfo_integration.py which test the full OAuth flow
-with real browser sessions, token storage, and IdP interactions.
-
-These unit tests cover only the simple _query_idp_userinfo helper function.
+These unit tests cover the simple _query_idp_userinfo helper function.
 """
 
 from unittest.mock import AsyncMock, Mock

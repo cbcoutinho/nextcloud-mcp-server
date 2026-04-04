@@ -72,7 +72,6 @@ log_level = "ERROR"
 markers = [
     "unit: Fast unit tests with mocked dependencies",
     "integration: Integration tests requiring Docker containers",
-    "oauth: OAuth tests requiring Playwright (slowest)",
     "smoke: Critical path smoke tests for quick validation",
     "keycloak: OAuth tests that utilize keycloak external identity provider",
     "login_flow: Login Flow v2 integration tests (ADR-022)",

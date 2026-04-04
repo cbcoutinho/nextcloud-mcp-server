@@ -125,12 +125,6 @@ oauth_token_validations_total = Counter(
     ["method", "result"],  # method: introspect | jwt; result: valid | invalid | error
 )
 
-oauth_token_exchange_total = Counter(
-    "mcp_oauth_token_exchange_total",
-    "Total OAuth token exchange operations (RFC 8693)",
-    ["status"],  # status: success | error
-)
-
 oauth_token_cache_hits_total = Counter(
     "mcp_oauth_token_cache_hits_total",
     "Total OAuth token cache lookups",

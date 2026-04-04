@@ -15,7 +15,6 @@ from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
-from nextcloud_mcp_server.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -63,14 +62,6 @@ def require_provisioning(func: Callable) -> Callable:
         if hasattr(lifespan_ctx, "client"):
             # BasicAuth mode - no provisioning needed, just proceed
             logger.debug("BasicAuth mode detected - skipping provisioning check")
-            return await func(*args, **kwargs)
-
-        # Check if we're in token exchange mode - if so, skip provisioning check
-        # In token exchange mode, tokens are exchanged per-request (no stored refresh tokens)
-        settings = get_settings()
-        if hasattr(lifespan_ctx, "nextcloud_host") and settings.enable_token_exchange:
-            # Token exchange mode - per-request exchange, no provisioning needed
-            logger.debug("Token exchange mode detected - skipping provisioning check")
             return await func(*args, **kwargs)
 
         # Offline access mode - check if user has completed Flow 2 provisioning

@@ -138,8 +138,7 @@ class Settings:
 
     # Deployment mode (ADR-021: explicit mode selection)
     # Optional: If not set, mode is auto-detected from other settings
-    # Valid values: single_user_basic, multi_user_basic, oauth_single_audience,
-    #               oauth_token_exchange
+    # Valid values: single_user_basic, multi_user_basic, oauth_single_audience
     deployment_mode: str | None = None
 
     # OAuth/OIDC settings
@@ -168,7 +167,6 @@ class Settings:
     userinfo_uri: str | None = None
 
     # Progressive Consent settings (always enabled - no flag needed)
-    enable_token_exchange: bool = False
     enable_offline_access: bool = False
 
     # Multi-user BasicAuth pass-through mode (ADR-019 interim solution)
@@ -178,9 +176,6 @@ class Settings:
 
     # Login Flow v2 settings (ADR-022)
     enable_login_flow: bool = False
-
-    # Token exchange cache settings
-    token_exchange_cache_ttl: int = 300  # seconds (5 minutes default)
 
     # Token and webhook storage settings
     # TOKEN_ENCRYPTION_KEY: Optional - Only required for OAuth token storage operations.
@@ -507,9 +502,6 @@ def get_settings() -> Settings:
         introspection_uri=os.getenv("INTROSPECTION_URI"),
         userinfo_uri=os.getenv("USERINFO_URI"),
         # Progressive Consent settings (always enabled)
-        enable_token_exchange=(
-            os.getenv("ENABLE_TOKEN_EXCHANGE", "false").lower() == "true"
-        ),
         enable_offline_access=enable_background_operations,  # Smart dependency resolution
         # Multi-user BasicAuth pass-through mode
         enable_multi_user_basic_auth=(
@@ -517,8 +509,6 @@ def get_settings() -> Settings:
         ),
         # Login Flow v2 settings (ADR-022)
         enable_login_flow=(os.getenv("ENABLE_LOGIN_FLOW", "false").lower() == "true"),
-        # Token exchange cache settings
-        token_exchange_cache_ttl=int(os.getenv("TOKEN_EXCHANGE_CACHE_TTL", "300")),
         # Token and webhook storage settings (encryption key optional for webhook-only usage)
         token_encryption_key=os.getenv("TOKEN_ENCRYPTION_KEY"),
         token_storage_db=os.getenv("TOKEN_STORAGE_DB", "/tmp/tokens.db"),

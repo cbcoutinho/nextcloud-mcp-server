@@ -18,22 +18,22 @@ import pytest
 
 
 @pytest.mark.integration
-@pytest.mark.oauth
+@pytest.mark.login_flow
 async def test_prm_endpoint():
     """Test that the Protected Resource Metadata endpoint returns correct data."""
 
     # Test the PRM endpoint directly (RFC 9728 - path includes /mcp resource)
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            "http://localhost:8001/.well-known/oauth-protected-resource/mcp"
+            "http://localhost:8004/.well-known/oauth-protected-resource/mcp"
         )
         assert response.status_code == 200
 
         prm_data = response.json()
-        assert prm_data["resource"] == "http://localhost:8001/mcp"
+        assert prm_data["resource"] == "http://localhost:8004/mcp"
         assert "notes:read" in prm_data["scopes_supported"]
         assert "notes:write" in prm_data["scopes_supported"]
-        assert "http://localhost:8001" in prm_data["authorization_servers"]
+        assert "http://localhost:8004" in prm_data["authorization_servers"]
         assert "header" in prm_data["bearer_methods_supported"]
         assert "RS256" in prm_data["resource_signing_alg_values_supported"]
 
@@ -61,14 +61,14 @@ async def test_basicauth_shows_all_tools(nc_mcp_client):
 
 
 @pytest.mark.integration
-@pytest.mark.oauth
-async def test_read_only_token_filters_write_tools(nc_mcp_oauth_client_read_only):
+@pytest.mark.login_flow
+async def test_read_only_token_filters_write_tools(nc_mcp_login_flow_client_read_only):
     """Test that a token with only read scopes filters out write tools."""
 
     logger = logging.getLogger(__name__)
 
     # Connect with token that has only "notes:read" scope
-    result = await nc_mcp_oauth_client_read_only.list_tools()
+    result = await nc_mcp_login_flow_client_read_only.list_tools()
     assert result is not None
     assert len(result.tools) > 0
 
@@ -110,14 +110,14 @@ async def test_read_only_token_filters_write_tools(nc_mcp_oauth_client_read_only
 
 
 @pytest.mark.integration
-@pytest.mark.oauth
-async def test_write_only_token_filters_read_tools(nc_mcp_oauth_client_write_only):
+@pytest.mark.login_flow
+async def test_write_only_token_filters_read_tools(nc_mcp_login_flow_client_write_only):
     """Test that a token with only write scopes filters out read tools."""
 
     logger = logging.getLogger(__name__)
 
     # Connect with token that has only "notes:write" scope
-    result = await nc_mcp_oauth_client_write_only.list_tools()
+    result = await nc_mcp_login_flow_client_write_only.list_tools()
     assert result is not None
     assert len(result.tools) > 0
 
@@ -159,14 +159,14 @@ async def test_write_only_token_filters_read_tools(nc_mcp_oauth_client_write_onl
 
 
 @pytest.mark.integration
-@pytest.mark.oauth
-async def test_full_access_token_shows_all_tools(nc_mcp_oauth_client_full_access):
+@pytest.mark.login_flow
+async def test_full_access_token_shows_all_tools(nc_mcp_login_flow_client_full_access):
     """Test that a token with both read and write scopes scopes can see all tools."""
 
     logger = logging.getLogger(__name__)
 
     # Connect with token that has both "notes:read" and "notes:write" scopes
-    result = await nc_mcp_oauth_client_full_access.list_tools()
+    result = await nc_mcp_login_flow_client_full_access.list_tools()
     assert result is not None
     assert len(result.tools) > 0
 
@@ -393,9 +393,9 @@ async def test_scope_metadata_coverage(nc_mcp_client):
 
 
 @pytest.mark.integration
-@pytest.mark.oauth
+@pytest.mark.login_flow
 async def test_jwt_with_no_custom_scopes_returns_zero_tools(
-    nc_mcp_oauth_client_no_custom_scopes,
+    nc_mcp_login_flow_client_no_custom_scopes,
 ):
     """
     Test that a JWT token with only OIDC default scopes shows only OAuth provisioning tools.
@@ -410,36 +410,39 @@ async def test_jwt_with_no_custom_scopes_returns_zero_tools(
     logger = logging.getLogger(__name__)
 
     # Connect with JWT token that has NO custom scopes (only openid, profile, email)
-    result = await nc_mcp_oauth_client_no_custom_scopes.list_tools()
+    result = await nc_mcp_login_flow_client_no_custom_scopes.list_tools()
     assert result is not None
 
     tool_names = [tool.name for tool in result.tools]
     logger.info(
-        f"JWT token with no custom scopes sees {len(tool_names)} tools (should be 4 OAuth tools)"
+        f"JWT token with no custom scopes sees {len(tool_names)} tools (should be 7 auth tools)"
     )
 
-    # Only OAuth provisioning tools should be visible (they require 'openid' scope)
-    expected_oauth_tools = [
+    # Only auth/provisioning tools should be visible (they require 'openid' scope)
+    expected_auth_tools = [
         "provision_nextcloud_access",
         "revoke_nextcloud_access",
         "check_provisioning_status",
         "check_logged_in",  # Login elicitation tool (ADR-006)
+        "nc_auth_provision_access",  # Login Flow v2 (ADR-022)
+        "nc_auth_check_status",  # Login Flow v2
+        "nc_auth_update_scopes",  # Login Flow v2
     ]
 
-    assert set(tool_names) == set(expected_oauth_tools), (
-        f"Expected only OAuth provisioning tools {expected_oauth_tools} "
+    assert set(tool_names) == set(expected_auth_tools), (
+        f"Expected only auth/provisioning tools {expected_auth_tools} "
         f"but got {tool_names}"
     )
 
     logger.info(
-        f"✅ JWT token with only openid scope correctly shows {len(tool_names)} OAuth provisioning tools, "
+        f"✅ JWT token with only openid scope correctly shows {len(tool_names)} auth tools, "
         "resource tools filtered out"
     )
 
 
 @pytest.mark.integration
-@pytest.mark.oauth
-async def test_jwt_consent_scenarios_read_only(nc_mcp_oauth_client_read_only):
+@pytest.mark.login_flow
+async def test_jwt_consent_scenarios_read_only(nc_mcp_login_flow_client_read_only):
     """
     Test JWT with only nc:read scope consented.
 
@@ -449,7 +452,7 @@ async def test_jwt_consent_scenarios_read_only(nc_mcp_oauth_client_read_only):
 
     logger = logging.getLogger(__name__)
 
-    result = await nc_mcp_oauth_client_read_only.list_tools()
+    result = await nc_mcp_login_flow_client_read_only.list_tools()
     assert result is not None
     assert len(result.tools) > 0
 
@@ -476,8 +479,8 @@ async def test_jwt_consent_scenarios_read_only(nc_mcp_oauth_client_read_only):
 
 
 @pytest.mark.integration
-@pytest.mark.oauth
-async def test_jwt_consent_scenarios_write_only(nc_mcp_oauth_client_write_only):
+@pytest.mark.login_flow
+async def test_jwt_consent_scenarios_write_only(nc_mcp_login_flow_client_write_only):
     """
     Test JWT with only nc:write scope consented.
 
@@ -487,7 +490,7 @@ async def test_jwt_consent_scenarios_write_only(nc_mcp_oauth_client_write_only):
 
     logger = logging.getLogger(__name__)
 
-    result = await nc_mcp_oauth_client_write_only.list_tools()
+    result = await nc_mcp_login_flow_client_write_only.list_tools()
     assert result is not None
     assert len(result.tools) > 0
 
@@ -514,8 +517,8 @@ async def test_jwt_consent_scenarios_write_only(nc_mcp_oauth_client_write_only):
 
 
 @pytest.mark.integration
-@pytest.mark.oauth
-async def test_jwt_consent_scenarios_full_access(nc_mcp_oauth_client_full_access):
+@pytest.mark.login_flow
+async def test_jwt_consent_scenarios_full_access(nc_mcp_login_flow_client_full_access):
     """
     Test JWT with both nc:read and nc:write scopes consented.
 
@@ -525,7 +528,7 @@ async def test_jwt_consent_scenarios_full_access(nc_mcp_oauth_client_full_access
 
     logger = logging.getLogger(__name__)
 
-    result = await nc_mcp_oauth_client_full_access.list_tools()
+    result = await nc_mcp_login_flow_client_full_access.list_tools()
     assert result is not None
     assert len(result.tools) > 0
 

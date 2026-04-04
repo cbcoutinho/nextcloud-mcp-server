@@ -232,7 +232,7 @@ def trace_oauth_operation(operation: str, details: dict[str, Any] | None = None)
             pass
 
     Args:
-        operation: OAuth operation name (e.g., "token.validate", "token.exchange")
+        operation: OAuth operation name (e.g., "token.validate", "token.refresh")
         details: Optional operation details (sensitive data will be sanitized)
 
     Returns:

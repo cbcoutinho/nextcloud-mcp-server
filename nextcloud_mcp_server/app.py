@@ -63,7 +63,6 @@ from nextcloud_mcp_server.auth.browser_oauth_routes import (
     oauth_logout,
 )
 from nextcloud_mcp_server.auth.client_registration import ensure_oauth_client
-from nextcloud_mcp_server.auth.keycloak_oauth import KeycloakOAuthClient
 from nextcloud_mcp_server.auth.oauth_routes import (
     oauth_as_metadata,
     oauth_authorize,
@@ -353,7 +352,7 @@ class OAuthAppContext:
     nextcloud_host: str
     token_verifier: object  # UnifiedTokenVerifier (ADR-005 compliant)
     refresh_token_storage: Optional["RefreshTokenStorage"] = None
-    oauth_client: Optional[object] = None  # NextcloudOAuthClient or KeycloakOAuthClient
+    oauth_client: Optional[object] = None
     oauth_provider: str = "nextcloud"  # "nextcloud" or "keycloak"
     server_client_id: Optional[str] = (
         None  # MCP server's OAuth client ID (static or DCR)
@@ -772,21 +771,11 @@ async def setup_oauth_config():
     token_verifier = UnifiedTokenVerifier(settings)
 
     # Log the mode
-    enable_token_exchange = (
-        os.getenv("ENABLE_TOKEN_EXCHANGE", "false").lower() == "true"
+    logger.info(
+        "✓ Multi-audience mode enabled (ADR-005) - tokens must contain both MCP and Nextcloud audiences"
     )
-    if enable_token_exchange:
-        logger.info(
-            "✓ Token Exchange mode enabled (ADR-005) - exchanging MCP tokens for Nextcloud tokens via RFC 8693"
-        )
-        logger.info(f"  MCP audience: {client_id} or {mcp_server_url}")
-        logger.info(f"  Nextcloud audience: {nextcloud_resource_uri}")
-    else:
-        logger.info(
-            "✓ Multi-audience mode enabled (ADR-005) - tokens must contain both MCP and Nextcloud audiences"
-        )
-        logger.info(f"  Required MCP audience: {client_id} or {mcp_server_url}")
-        logger.info(f"  Required Nextcloud audience: {nextcloud_resource_uri}")
+    logger.info(f"  Required MCP audience: {client_id} or {mcp_server_url}")
+    logger.info(f"  Required Nextcloud audience: {nextcloud_resource_uri}")
 
     if introspection_uri:
         logger.info("✓ Opaque token introspection enabled (RFC 7662)")
@@ -803,45 +792,7 @@ async def setup_oauth_config():
         # that are separate from the real-time token exchange flow
         logger.debug("Token broker available for future offline access features")
 
-    # Create OAuth client for server-initiated flows (e.g., token exchange, background workers)
     oauth_client = None
-    if enable_offline_access and refresh_token_storage and is_external_idp:
-        # For external IdP mode, create generic OIDC client for token operations
-        mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
-        # Note: This redirect_uri is for OAuth client initialization, not used for actual redirects
-        # since this client is used for backend token operations (exchange, refresh)
-        redirect_uri = f"{mcp_server_url}/oauth/callback"
-
-        # Extract base URL and realm from discovery URL
-        # Format: http://keycloak:8080/realms/nextcloud-mcp/.well-known/openid-configuration
-        # → base_url: http://keycloak:8080, realm: nextcloud-mcp
-        if "/realms/" in discovery_url:
-            base_url = discovery_url.split("/realms/")[0]
-            realm = discovery_url.split("/realms/")[1].split("/")[0]
-        else:
-            # Fallback: use issuer to extract base URL
-            base_url = (
-                issuer.rsplit("/realms/", 1)[0] if "/realms/" in issuer else issuer
-            )
-            realm = issuer.split("/realms/")[1] if "/realms/" in issuer else ""
-
-        oauth_client = KeycloakOAuthClient(
-            keycloak_url=base_url,
-            realm=realm,
-            client_id=client_id,
-            client_secret=client_secret,
-            redirect_uri=redirect_uri,
-        )
-        await oauth_client.discover()
-        logger.info(
-            "✓ OIDC client initialized for token operations (token exchange, refresh)"
-        )
-    elif enable_offline_access and refresh_token_storage:
-        # For integrated mode, OAuth client could be added later
-        # For now, token refresh can use httpx directly with discovered endpoints
-        logger.info(
-            "OAuth client for token refresh not yet implemented for integrated mode"
-        )
 
     # Create auth settings
     mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
@@ -1049,10 +1000,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     logger.debug(f"Mode details:\n{get_mode_summary(mode)}")
 
     # Derive helper variables for backward compatibility with existing code
-    oauth_enabled = mode in (
-        AuthMode.OAUTH_SINGLE_AUDIENCE,
-        AuthMode.OAUTH_TOKEN_EXCHANGE,
-    )
+    oauth_enabled = mode == AuthMode.OAUTH_SINGLE_AUDIENCE
     # Log hybrid authentication status for multi-user BasicAuth with offline access
     if mode == AuthMode.MULTI_USER_BASIC and settings.enable_offline_access:
         logger.info(
@@ -1202,7 +1150,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 raise
 
     # Create MCP server based on detected mode
-    if mode in (AuthMode.OAUTH_SINGLE_AUDIENCE, AuthMode.OAUTH_TOKEN_EXCHANGE):
+    if mode == AuthMode.OAUTH_SINGLE_AUDIENCE:
         logger.info("Configuring MCP server for OAuth mode")
         # Asynchronously get the OAuth configuration
 
@@ -1320,18 +1268,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         logger.info("Skipping semantic search tools (VECTOR_SYNC_ENABLED not set)")
 
     # Register OAuth provisioning tools (only when offline access is enabled)
-    # With token exchange enabled (external IdP), provisioning is not needed for MCP operations
-    enable_token_exchange = (
-        os.getenv("ENABLE_TOKEN_EXCHANGE", "false").lower() == "true"
-    )
-    # Use settings.enable_offline_access which handles both ENABLE_BACKGROUND_OPERATIONS (new)
-    # and ENABLE_OFFLINE_ACCESS (deprecated) environment variables
     enable_offline_access_for_tools = settings.enable_offline_access
-    if oauth_enabled and enable_offline_access_for_tools and not enable_token_exchange:
+    if oauth_enabled and enable_offline_access_for_tools:
         logger.info("Registering OAuth provisioning tools for offline access")
         register_oauth_tools(mcp)
-    elif oauth_enabled and enable_token_exchange:
-        logger.info("Skipping provisioning tools registration (token exchange enabled)")
     elif oauth_enabled and not enable_offline_access_for_tools:
         logger.info(
             "Skipping provisioning tools registration (offline access not enabled)"
@@ -1965,10 +1905,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         # Check authentication configuration
         # Report the deployment mode, not just whether OAuth is enabled
         # This helps clients (like Astrolabe) determine which auth flow to use
-        if (
-            mode == AuthMode.OAUTH_SINGLE_AUDIENCE
-            or mode == AuthMode.OAUTH_TOKEN_EXCHANGE
-        ):
+        if mode == AuthMode.OAUTH_SINGLE_AUDIENCE:
             checks["auth_mode"] = "oauth"
             checks["auth_configured"] = "ok"
         elif mode == AuthMode.MULTI_USER_BASIC:
