@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.68.2 (2026-04-04)
+
+### Fix
+
+- address PR review — remove token exchange tests, improve logging
+- address PR review — stale mcp-oauth refs, Playwright TimeoutError catch
+- update expected auth tools list for login-flow scope test
+
+### Refactor
+
+- remove RFC 8693 token exchange and Keycloak OAuth implementation
+- remove oauth profile, migrate MCP/OAuth tests to login-flow
+
 ## v0.68.1 (2026-04-01)
 
 ### Fix
