@@ -14,6 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.58.26 (2026-04-04)
+
+### Fix
+
+- address PR review — remove token exchange tests, improve logging
+- address PR review — stale mcp-oauth refs, Playwright TimeoutError catch
+- update expected auth tools list for login-flow scope test
+
+### Refactor
+
+- remove RFC 8693 token exchange and Keycloak OAuth implementation
+- remove oauth profile, migrate MCP/OAuth tests to login-flow
+
 ## nextcloud-mcp-server-0.58.25 (2026-04-03)
 
 ## nextcloud-mcp-server-0.58.24 (2026-04-02)
