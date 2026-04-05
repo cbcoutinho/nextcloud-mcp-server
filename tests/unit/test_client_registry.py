@@ -23,7 +23,6 @@ def _get_registry(monkeypatch, value: str | None = None):
         monkeypatch.setenv("ALLOWED_MCP_CLIENTS", value)
     else:
         monkeypatch.delenv("ALLOWED_MCP_CLIENTS", raising=False)
-    monkeypatch.delenv("ALLOWED_MCP_CLOUD_CLIENTS", raising=False)
     return registry_mod.get_client_registry()
 
 
@@ -160,15 +159,6 @@ def test_well_known_clients_wildcard_scopes(monkeypatch):
         assert client.allowed_scopes == ["*"], (
             f"Well-known client {client.client_id} should have wildcard scopes"
         )
-
-
-def test_deprecated_cloud_clients_warning(monkeypatch, caplog):
-    monkeypatch.setenv("ALLOWED_MCP_CLOUD_CLIENTS", "old|https://old.com/cb")
-    monkeypatch.setenv("ALLOWED_MCP_CLIENTS", "new-client")
-    with caplog.at_level(logging.WARNING):
-        registry_mod.get_client_registry()
-
-    assert "ALLOWED_MCP_CLOUD_CLIENTS is deprecated" in caplog.text
 
 
 def test_client_name_resolution(monkeypatch):

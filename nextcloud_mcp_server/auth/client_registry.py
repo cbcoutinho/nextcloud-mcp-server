@@ -61,14 +61,6 @@ class ClientRegistry:
         - https:// redirect URIs are allowed (cloud clients)
         - http:// non-localhost redirect URIs are rejected with a warning
         """
-        # Deprecation warning for old env var
-        if os.getenv("ALLOWED_MCP_CLOUD_CLIENTS"):
-            logger.warning(
-                "ALLOWED_MCP_CLOUD_CLIENTS is deprecated. "
-                "Merge entries into ALLOWED_MCP_CLIENTS using the format: "
-                "client_id|https://redirect-uri"
-            )
-
         allowed_clients = os.getenv("ALLOWED_MCP_CLIENTS", "").strip()
 
         if allowed_clients:
