@@ -64,7 +64,7 @@ Adopt [dynaconf](https://www.dynaconf.com/) as the configuration management laye
 | Secrets file separation | Yes (`.secrets.toml`) | No built-in | Separate `.env` |
 | Local overrides | Yes (`settings.local.toml` auto-loaded) | No | No |
 | Zero-prefix env vars | Yes (`envvar_prefix=False`) | Custom | N/A |
-| Dependency | Pure Python, well-maintained | Heavy (Pydantic) | Minimal |
+| Dependency | Pure Python, well-maintained | Pydantic (already in project for models) | Minimal |
 
 ### Architecture
 
@@ -72,23 +72,28 @@ Adopt [dynaconf](https://www.dynaconf.com/) as the configuration management laye
 
 ```python
 # nextcloud_mcp_server/config.py
+from pathlib import Path
 from dynaconf import Dynaconf, Validator
 
 settings = Dynaconf(
     settings_files=["settings.toml", ".secrets.toml"],
+    root_path=Path(__file__).parent.parent,
     environments=True,
     env_switcher="MCP_DEPLOYMENT_MODE",
     envvar_prefix=False,
     load_dotenv=False,
     ignore_unknown_envvars=True,
+    post_hooks=[handle_deprecations, resolve_dependencies],
     validators=[...],  # See Section 4
 )
 ```
 
 Key choices:
 - **`envvar_prefix=False`**: Existing env vars (`NEXTCLOUD_HOST`, `ENABLE_SEMANTIC_SEARCH`, etc.) work without any prefix. No renaming required.
-- **`env_switcher="MCP_DEPLOYMENT_MODE"`**: Reuses the existing ADR-021 variable. Setting `MCP_DEPLOYMENT_MODE=single_user_basic` loads the `[single_user_basic]` TOML section on top of `[default]`.
+- **`env_switcher="MCP_DEPLOYMENT_MODE"`**: Reuses the existing ADR-021 variable. Setting `MCP_DEPLOYMENT_MODE=single_user_basic` loads the `[single_user_basic]` TOML section on top of `[default]`. Note: dynaconf's `environments` feature is designed for lifecycle environments (dev/staging/prod), but custom environment names are a supported pattern — see `tests_functional/legacy/simple_ini_example/` in the dynaconf repo for a precedent using `environments=["ansible", "puppet"]`.
 - **`ignore_unknown_envvars=True`**: Only env vars matching keys defined in `settings.toml` or defaults are loaded. System env vars (`HOME`, `PATH`, `LANG`) are ignored.
+- **`root_path=Path(__file__).parent.parent`**: Anchors settings file lookup to the project root regardless of working directory. This ensures consistent behavior whether running via `uv run` from the repo root, inside a container with `WORKDIR /app`, or during test execution.
+- **`post_hooks=[...]`**: Deprecation remapping and dependency resolution run after all sources are loaded (see Sections 5 and 6).
 - **`load_dotenv=False`**: We don't auto-load `.env` files to avoid surprising behavior. Users who want dotenv can use `direnv` or shell-level loading.
 
 #### 2. Settings File Structure
@@ -98,9 +103,9 @@ Key choices:
 ```toml
 [default]
 # === Nextcloud Connection ===
-nextcloud_host = ""
+# nextcloud_host — Required, set via env var or .secrets.toml. No default.
 nextcloud_verify_ssl = true
-nextcloud_ca_bundle = ""
+nextcloud_ca_bundle = "@none"
 
 # === Deployment Mode ===
 # Auto-detected if not set. Valid: single_user_basic, multi_user_basic,
@@ -263,19 +268,17 @@ validators = [
     Validator("LOG_LEVEL", is_in=["DEBUG", "INFO", "WARNING", "ERROR"]),
     Validator("OTEL_TRACES_SAMPLER", is_in=["always_on", "always_off", "parentbased_always_on", "parentbased_always_off", "traceidratio", "parentbased_traceidratio"]),
 
-    # Mutual exclusivity
-    Validator("QDRANT_URL", must_exist=False, when=Validator("QDRANT_LOCATION", must_exist=True)),
+    # Mutual exclusivity: QDRANT_URL and non-default QDRANT_LOCATION cannot both be set.
+    # QDRANT_LOCATION defaults to ":memory:", so check for non-default values.
+    Validator("QDRANT_URL", must_exist=False, when=Validator("QDRANT_LOCATION", ne=":memory:")),
 ]
 ```
 
 #### 5. Backward Compatibility: Deprecation Hooks
 
-Deprecated env var names (`VECTOR_SYNC_ENABLED`, `ENABLE_OFFLINE_ACCESS`) are handled via a post-hook that runs after all sources are loaded:
+Deprecated env var names (`VECTOR_SYNC_ENABLED`, `ENABLE_OFFLINE_ACCESS`) are handled via a post-hook that runs after all sources are loaded. Hooks are registered via `Dynaconf(post_hooks=[...])` (see Section 1):
 
 ```python
-from dynaconf import hookable
-
-@hookable.post  # Runs after all settings are loaded
 def handle_deprecations(settings):
     """Map deprecated variable names to current names (ADR-021 compatibility)."""
     # VECTOR_SYNC_ENABLED -> ENABLE_SEMANTIC_SEARCH
@@ -294,7 +297,6 @@ def handle_deprecations(settings):
 The auto-enablement of `ENABLE_BACKGROUND_OPERATIONS` when semantic search is active in multi-user modes (existing behavior from ADR-021) is preserved as a post-hook:
 
 ```python
-@hookable.post
 def resolve_dependencies(settings):
     """Auto-enable background operations for semantic search in multi-user modes."""
     is_multi_user = (
@@ -342,6 +344,26 @@ This is a zero-risk change: every consumer of `get_settings()` sees the same `Se
 
 `providers/registry.py:ProviderRegistry.create_provider()` reads ~15 env vars directly. It will be updated to accept a settings object or read from the dynaconf instance, consolidating all configuration into a single source.
 
+#### 11. Test Isolation
+
+Tests must not be affected by `settings.toml` or `.secrets.toml` being present in the repository. The test configuration strategy:
+
+```python
+# conftest.py
+import pytest
+
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path, monkeypatch):
+    """Ensure tests use a clean dynaconf instance with no file-based config."""
+    monkeypatch.setenv("SETTINGS_FILE_FOR_DYNACONF", str(tmp_path / "empty.toml"))
+    (tmp_path / "empty.toml").write_text("[default]\n")
+    # Reset the dynaconf instance to pick up the override
+    from nextcloud_mcp_server.config import _dynaconf
+    _dynaconf.reload()
+```
+
+Tests that need specific configuration values continue to use `monkeypatch.setenv()` as today, which will override any file-based defaults (env vars have highest priority in dynaconf).
+
 ### Docker Compose Impact
 
 **Zero breaking changes.** All existing `environment:` blocks in `docker-compose.yml` continue to work because `envvar_prefix=False` means env vars map directly to setting keys.
@@ -378,9 +400,10 @@ mcp:
 - Add dynaconf `Validator` instances for type checking, range validation, and enum constraints
 - Remove corresponding manual checks from `Settings.__post_init__`
 
-### Phase 4: Deprecation and Dependency Hooks
+### Phase 4: Deprecation and Dependency Hooks (Optional, Future)
 - Move `_get_semantic_search_enabled()`, `_get_background_operations_enabled()`, and `_is_multi_user_mode()` logic into dynaconf post-hooks
 - Remove standalone helper functions
+- **Risk note:** These functions contain nuanced multi-variable logic (e.g., the `ENABLE_SEMANTIC_SEARCH` + `VECTOR_SYNC_ENABLED` OR pattern, the username/password presence check for mode detection). Running them as dynaconf post-hooks changes their execution context and ordering guarantees relative to `config_validators.py`. This phase should only proceed after Phases 1-3 are stable and well-tested.
 
 ### Phase 5: Direct Dynaconf Access (Optional, Future)
 - Gradually replace `get_settings().field` with `settings.FIELD` in consumers
@@ -400,11 +423,11 @@ mcp:
 - **Secret separation** via `.secrets.toml` provides a standard pattern for credential management
 - **Local overrides** via `settings.local.toml` simplify developer workflows without polluting git
 - **12-factor compliant** — env vars always win, files are optional
-- **Zero breaking changes** in Phases 1-4
+- **Zero breaking changes** in Phases 1-3. Phase 4 is optional and carries moderate risk due to complex multi-variable logic.
 
 ### Negative
 - **New dependency** — `dynaconf` is a runtime dependency (~50KB, pure Python, well-maintained)
-- **Two configuration systems during migration** — Phases 1-4 run dynaconf alongside the existing `Settings` dataclass
+- **Two configuration systems during migration** — Phases 1-3 run dynaconf alongside the existing `Settings` dataclass
 - **Learning curve** — Contributors must understand dynaconf's merge semantics and environment sections
 - **`envvar_prefix=False` risk** — Without a prefix, any env var matching a setting key is loaded. Mitigated by `ignore_unknown_envvars=True` which restricts to pre-defined keys only
 
@@ -415,7 +438,7 @@ mcp:
 ## Alternatives Considered
 
 ### 1. Pydantic Settings
-Pydantic v2's `BaseSettings` provides type validation and env var loading. However, it lacks native file-based configuration (TOML sections, environment switching, secrets files), which is the primary motivation for this change. It would also add a heavier dependency (Pydantic v2) that is not currently used in the project.
+Pydantic v2's `BaseSettings` provides type validation and env var loading. However, it lacks native file-based configuration (TOML sections, environment switching, secrets files), which is the primary motivation for this change. While Pydantic v2 is already used in the project for response models (`nextcloud_mcp_server/models/`), Pydantic Settings still lacks native TOML sections, environment switching, and secrets file separation.
 
 ### 2. python-decouple
 Supports `.env` and `.ini` files with type casting. Lacks environment sections, validators, secrets separation, and TOML support. Too limited for our needs.
