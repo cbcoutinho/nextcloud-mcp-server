@@ -141,13 +141,25 @@ async def test_dcr_client_deletion_via_keycloak(keycloak_mcp_available):
         client_id = data["client_id"]
         rat = data["registration_access_token"]
 
-        # Delete via Keycloak (external URL)
-        del_resp = await http.delete(
-            f"{KEYCLOAK_BASE_URL}/realms/{KEYCLOAK_REALM}"
-            f"/clients-registrations/openid-connect/{client_id}",
-            headers={"Authorization": f"Bearer {rat}"},
-        )
-        assert del_resp.status_code == 204
+        try:
+            # Delete via Keycloak (external URL)
+            del_resp = await http.delete(
+                f"{KEYCLOAK_BASE_URL}/realms/{KEYCLOAK_REALM}"
+                f"/clients-registrations/openid-connect/{client_id}",
+                headers={"Authorization": f"Bearer {rat}"},
+            )
+            assert del_resp.status_code == 204
+        except Exception:
+            # Best-effort cleanup if assertion failed
+            try:
+                await http.delete(
+                    f"{KEYCLOAK_BASE_URL}/realms/{KEYCLOAK_REALM}"
+                    f"/clients-registrations/openid-connect/{client_id}",
+                    headers={"Authorization": f"Bearer {rat}"},
+                )
+            except Exception:
+                pass
+            raise
 
 
 # --- AS metadata tests ---
@@ -198,3 +210,9 @@ async def test_authorize_rejects_unknown_client(keycloak_mcp_available):
     if resp.status_code == 400:
         data = resp.json()
         assert "error" in data
+    else:
+        # 302 redirect must carry an error parameter
+        location = resp.headers.get("location", "")
+        assert "error=" in location, (
+            f"302 redirect should contain error= in Location, got: {location}"
+        )

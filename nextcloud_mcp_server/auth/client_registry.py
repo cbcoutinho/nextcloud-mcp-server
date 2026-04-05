@@ -36,6 +36,12 @@ class ClientRegistry:
     2. Integrate with IdP client registry
     3. Store client metadata in database
     4. Support client updates and revocation
+
+    Scope Policy:
+        All clients are registered with allowed_scopes=["*"] (wildcard).
+        The MCP server acts as an OAuth AS proxy — it validates client
+        identity and redirect URIs locally, but delegates scope enforcement
+        to the upstream IdP (Nextcloud or Keycloak).
     """
 
     def __init__(self, allow_dynamic_registration: bool = False):
@@ -80,13 +86,19 @@ class ClientRegistry:
                         continue
 
                     parsed = urlparse(redirect)
-                    is_loopback = parsed.hostname in ("localhost", "127.0.0.1")
+                    hostname = parsed.hostname
+                    if hostname is None:
+                        logger.warning(
+                            f"Skipping client {cid!r}: cannot parse hostname "
+                            f"from {redirect!r}"
+                        )
+                        continue
+                    is_loopback = hostname in ("localhost", "127.0.0.1", "::1")
 
-                    if parsed.scheme == "https":
-                        pass  # HTTPS always allowed
-                    elif parsed.scheme == "http" and is_loopback:
-                        pass  # HTTP localhost allowed
-                    else:
+                    if not (
+                        parsed.scheme == "https"
+                        or (parsed.scheme == "http" and is_loopback)
+                    ):
                         logger.warning(
                             f"Rejecting client {cid!r}: HTTP redirect URIs are only "
                             f"allowed for localhost, got {redirect!r}"
@@ -205,6 +217,8 @@ class ClientRegistry:
         """
         # Parse the redirect URI
         parsed = urlparse(redirect_uri)
+        if not parsed.hostname:
+            return False
 
         # Check against registered patterns
         for pattern in client.redirect_uris:
@@ -213,7 +227,7 @@ class ClientRegistry:
                 pattern_base = pattern.replace(":*", "")
                 if redirect_uri.startswith(pattern_base + ":"):
                     # Validate it's localhost with a port
-                    if parsed.hostname in ["localhost", "127.0.0.1"]:
+                    if parsed.hostname in ("localhost", "127.0.0.1", "::1"):
                         return True
             elif redirect_uri == pattern:
                 return True

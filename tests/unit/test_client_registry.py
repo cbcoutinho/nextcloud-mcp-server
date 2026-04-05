@@ -165,3 +165,36 @@ def test_client_name_resolution(monkeypatch):
     registry = _get_registry(monkeypatch, "claude-desktop, custom-tool")
     assert registry.get_client("claude-desktop").name == "Claude Desktop"
     assert registry.get_client("custom-tool").name == "Custom Tool"
+
+
+def test_ipv6_loopback_allowed(monkeypatch):
+    registry = _get_registry(monkeypatch, "ipv6-app|http://[::1]:3000/cb")
+    client = registry.get_client("ipv6-app")
+    assert client is not None
+    assert client.redirect_uris == ["http://[::1]:3000/cb"]
+
+
+def test_malformed_uri_no_hostname_skipped(monkeypatch, caplog):
+    with caplog.at_level(logging.WARNING):
+        registry = _get_registry(monkeypatch, "bad|http:///no-host")
+
+    assert registry.get_client("bad") is None
+    assert "cannot parse hostname" in caplog.text
+
+
+def test_validate_redirect_uri_ipv6_loopback(monkeypatch):
+    """IPv6 loopback redirect URIs should match wildcard localhost patterns."""
+    registry = _get_registry(monkeypatch, "ipv6-app|http://[::1]:3000/cb")
+    valid, err = registry.validate_client(
+        "ipv6-app", redirect_uri="http://[::1]:3000/cb"
+    )
+    assert valid is True
+    assert err is None
+
+
+def test_validate_redirect_uri_no_hostname(monkeypatch):
+    """Redirect URIs with no parseable hostname should be rejected."""
+    registry = _get_registry(monkeypatch, "test-client")
+    valid, err = registry.validate_client("test-client", redirect_uri="not-a-uri")
+    assert valid is False
+    assert "redirect_uri" in err.lower()
