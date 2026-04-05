@@ -50,35 +50,57 @@ class ClientRegistry:
         self._load_static_clients()
 
     def _load_static_clients(self):
-        """Load statically configured clients from environment."""
-        # Load from ALLOWED_MCP_CLIENTS environment variable
+        """Load statically configured clients from environment.
+
+        Format: comma-separated entries, each either:
+        - Simple client ID: gets localhost redirect URIs
+        - client_id|redirect_uri: gets the specified redirect URI
+
+        Redirect URI rules:
+        - http://localhost:* and http://127.0.0.1:* are allowed (native clients)
+        - https:// redirect URIs are allowed (cloud clients)
+        - http:// non-localhost redirect URIs are rejected with a warning
+        """
+        # Deprecation warning for old env var
+        if os.getenv("ALLOWED_MCP_CLOUD_CLIENTS"):
+            logger.warning(
+                "ALLOWED_MCP_CLOUD_CLIENTS is deprecated. "
+                "Merge entries into ALLOWED_MCP_CLIENTS using the format: "
+                "client_id|https://redirect-uri"
+            )
+
         allowed_clients = os.getenv("ALLOWED_MCP_CLIENTS", "").strip()
 
         if allowed_clients:
-            # Parse comma-separated list
-            for client_id in allowed_clients.split(","):
-                client_id = client_id.strip()
-                if client_id:
-                    # Create basic client info
-                    # In production, would load full metadata from database
-                    self._clients[client_id] = MCPClientInfo(
-                        client_id=client_id,
-                        name=self._get_client_name(client_id),
-                        redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
-                        allowed_scopes=["openid", "profile", "email", "mcp-server:api"],
-                        is_public=True,
-                    )
-                    logger.info(f"Registered static client: {client_id}")
-
-        # Load cloud clients (web-based, HTTPS redirect URIs)
-        # Format: "client_id|redirect_uri,client_id2|redirect_uri2"
-        cloud_clients = os.getenv("ALLOWED_MCP_CLOUD_CLIENTS", "").strip()
-        if cloud_clients:
-            for entry in cloud_clients.split(","):
+            for entry in allowed_clients.split(","):
                 entry = entry.strip()
+                if not entry:
+                    continue
+
                 if "|" in entry:
                     cid, redirect = entry.split("|", 1)
                     cid, redirect = cid.strip(), redirect.strip()
+
+                    if not cid or not redirect:
+                        logger.warning(
+                            f"Skipping malformed ALLOWED_MCP_CLIENTS entry: {entry!r}"
+                        )
+                        continue
+
+                    parsed = urlparse(redirect)
+                    is_loopback = parsed.hostname in ("localhost", "127.0.0.1")
+
+                    if parsed.scheme == "https":
+                        pass  # HTTPS always allowed
+                    elif parsed.scheme == "http" and is_loopback:
+                        pass  # HTTP localhost allowed
+                    else:
+                        logger.warning(
+                            f"Rejecting client {cid!r}: HTTP redirect URIs are only "
+                            f"allowed for localhost, got {redirect!r}"
+                        )
+                        continue
+
                     self._clients[cid] = MCPClientInfo(
                         client_id=cid,
                         name=self._get_client_name(cid),
@@ -86,7 +108,16 @@ class ClientRegistry:
                         allowed_scopes=["*"],
                         is_public=True,
                     )
-                    logger.info(f"Registered cloud client: {cid}")
+                    logger.info(f"Registered static client: {cid}")
+                else:
+                    self._clients[entry] = MCPClientInfo(
+                        client_id=entry,
+                        name=self._get_client_name(entry),
+                        redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
+                        allowed_scopes=["*"],
+                        is_public=True,
+                    )
+                    logger.info(f"Registered static client: {entry}")
 
         # Add well-known clients if not explicitly configured
         if not self._clients:
@@ -111,7 +142,7 @@ class ClientRegistry:
                 client_id="claude-desktop",
                 name="Claude Desktop",
                 redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
-                allowed_scopes=["openid", "profile", "email", "mcp-server:api"],
+                allowed_scopes=["*"],
                 is_public=True,
                 metadata={"vendor": "Anthropic"},
             ),
@@ -119,7 +150,7 @@ class ClientRegistry:
                 client_id="test-mcp-client",
                 name="Test MCP Client",
                 redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
-                allowed_scopes=["openid", "profile", "email", "mcp-server:api"],
+                allowed_scopes=["*"],
                 is_public=True,
                 metadata={"purpose": "testing"},
             ),

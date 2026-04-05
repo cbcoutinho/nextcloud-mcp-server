@@ -1267,7 +1267,7 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
                 "error": "registration_not_supported",
                 "error_description": "The upstream identity provider does not support "
                 "dynamic client registration. Configure the client statically using "
-                "ALLOWED_MCP_CLIENTS or ALLOWED_MCP_CLOUD_CLIENTS.",
+                "ALLOWED_MCP_CLIENTS.",
             },
             status_code=400,
         )
@@ -1283,7 +1283,7 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
 
     if response.status_code not in (200, 201):
         logger.error(
-            f"DCR proxy: Nextcloud registration failed: {response.status_code} {response.text}"
+            f"DCR proxy: Upstream registration failed: {response.status_code} {response.text}"
         )
         return JSONResponse(
             response.json()
