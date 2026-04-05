@@ -2159,7 +2159,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.35.0" },
     { name = "caldav", specifier = ">=3.0.1,<4.0" },
     { name = "click", specifier = ">=8.1.8" },
-    { name = "dynaconf", specifier = ">=3.2.13" },
+    { name = "dynaconf", specifier = ">=3.2.13,<4.0" },
     { name = "fastembed", specifier = ">=0.7.3" },
     { name = "httpx", specifier = ">=0.28.1,<0.29.0" },
     { name = "icalendar", specifier = ">=7.0.2,<7.1.0" },
