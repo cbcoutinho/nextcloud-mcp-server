@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.68.3 (2026-04-05)
+
+### Fix
+
+- address PR review feedback for client registry and DCR proxy
+- support cloud OAuth clients and graceful DCR fallback
+
+### Refactor
+
+- remove ALLOWED_MCP_CLOUD_CLIENTS and add keycloak CI profile
+- consolidate ALLOWED_MCP_CLIENTS and add redirect URI validation
+
 ## v0.68.2 (2026-04-04)
 
 ### Fix

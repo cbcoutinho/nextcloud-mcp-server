@@ -36,6 +36,12 @@ class ClientRegistry:
     2. Integrate with IdP client registry
     3. Store client metadata in database
     4. Support client updates and revocation
+
+    Scope Policy:
+        All clients are registered with allowed_scopes=["*"] (wildcard).
+        The MCP server acts as an OAuth AS proxy — it validates client
+        identity and redirect URIs locally, but delegates scope enforcement
+        to the upstream IdP (Nextcloud or Keycloak).
     """
 
     def __init__(self, allow_dynamic_registration: bool = False):
@@ -50,25 +56,72 @@ class ClientRegistry:
         self._load_static_clients()
 
     def _load_static_clients(self):
-        """Load statically configured clients from environment."""
-        # Load from ALLOWED_MCP_CLIENTS environment variable
+        """Load statically configured clients from environment.
+
+        Format: comma-separated entries, each either:
+        - Simple client ID: gets localhost redirect URIs
+        - client_id|redirect_uri: gets the specified redirect URI
+
+        Redirect URI rules:
+        - http://localhost:* and http://127.0.0.1:* are allowed (native clients)
+        - https:// redirect URIs are allowed (cloud clients)
+        - http:// non-localhost redirect URIs are rejected with a warning
+        """
         allowed_clients = os.getenv("ALLOWED_MCP_CLIENTS", "").strip()
 
         if allowed_clients:
-            # Parse comma-separated list
-            for client_id in allowed_clients.split(","):
-                client_id = client_id.strip()
-                if client_id:
-                    # Create basic client info
-                    # In production, would load full metadata from database
-                    self._clients[client_id] = MCPClientInfo(
-                        client_id=client_id,
-                        name=self._get_client_name(client_id),
-                        redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
-                        allowed_scopes=["openid", "profile", "email", "mcp-server:api"],
+            for entry in allowed_clients.split(","):
+                entry = entry.strip()
+                if not entry:
+                    continue
+
+                if "|" in entry:
+                    cid, redirect = entry.split("|", 1)
+                    cid, redirect = cid.strip(), redirect.strip()
+
+                    if not cid or not redirect:
+                        logger.warning(
+                            f"Skipping malformed ALLOWED_MCP_CLIENTS entry: {entry!r}"
+                        )
+                        continue
+
+                    parsed = urlparse(redirect)
+                    hostname = parsed.hostname
+                    if hostname is None:
+                        logger.warning(
+                            f"Skipping client {cid!r}: cannot parse hostname "
+                            f"from {redirect!r}"
+                        )
+                        continue
+                    is_loopback = hostname in ("localhost", "127.0.0.1", "::1")
+
+                    if not (
+                        parsed.scheme == "https"
+                        or (parsed.scheme == "http" and is_loopback)
+                    ):
+                        logger.warning(
+                            f"Rejecting client {cid!r}: HTTP redirect URIs are only "
+                            f"allowed for localhost, got {redirect!r}"
+                        )
+                        continue
+
+                    self._clients[cid] = MCPClientInfo(
+                        client_id=cid,
+                        name=self._get_client_name(cid),
+                        redirect_uris=[redirect],
+                        allowed_scopes=["*"],
                         is_public=True,
                     )
-                    logger.info(f"Registered static client: {client_id}")
+                    logger.info(f"Registered static client: {cid}")
+                else:
+                    self._clients[entry] = MCPClientInfo(
+                        client_id=entry,
+                        name=self._get_client_name(entry),
+                        redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
+                        allowed_scopes=["*"],
+                        is_public=True,
+                    )
+                    logger.info(f"Registered static client: {entry}")
 
         # Add well-known clients if not explicitly configured
         if not self._clients:
@@ -78,6 +131,7 @@ class ClientRegistry:
         """Get human-readable name for client_id."""
         known_names = {
             "claude-desktop": "Claude Desktop",
+            "claude-ai": "Claude AI",
             "continue-dev": "Continue IDE Extension",
             "zed-editor": "Zed Editor",
             "vscode-mcp": "VS Code MCP Extension",
@@ -92,7 +146,7 @@ class ClientRegistry:
                 client_id="claude-desktop",
                 name="Claude Desktop",
                 redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
-                allowed_scopes=["openid", "profile", "email", "mcp-server:api"],
+                allowed_scopes=["*"],
                 is_public=True,
                 metadata={"vendor": "Anthropic"},
             ),
@@ -100,7 +154,7 @@ class ClientRegistry:
                 client_id="test-mcp-client",
                 name="Test MCP Client",
                 redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
-                allowed_scopes=["openid", "profile", "email", "mcp-server:api"],
+                allowed_scopes=["*"],
                 is_public=True,
                 metadata={"purpose": "testing"},
             ),
@@ -163,6 +217,8 @@ class ClientRegistry:
         """
         # Parse the redirect URI
         parsed = urlparse(redirect_uri)
+        if not parsed.hostname:
+            return False
 
         # Check against registered patterns
         for pattern in client.redirect_uris:
@@ -171,7 +227,7 @@ class ClientRegistry:
                 pattern_base = pattern.replace(":*", "")
                 if redirect_uri.startswith(pattern_base + ":"):
                     # Validate it's localhost with a port
-                    if parsed.hostname in ["localhost", "127.0.0.1"]:
+                    if parsed.hostname in ("localhost", "127.0.0.1", "::1"):
                         return True
             elif redirect_uri == pattern:
                 return True

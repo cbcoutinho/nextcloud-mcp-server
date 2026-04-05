@@ -14,6 +14,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.58.28 (2026-04-05)
+
+### Fix
+
+- address PR review feedback for client registry and DCR proxy
+- support cloud OAuth clients and graceful DCR fallback
+
+### Refactor
+
+- remove ALLOWED_MCP_CLOUD_CLIENTS and add keycloak CI profile
+- consolidate ALLOWED_MCP_CLIENTS and add redirect URI validation
+
+## nextcloud-mcp-server-0.58.27 (2026-04-05)
+
 ## nextcloud-mcp-server-0.58.26 (2026-04-04)
 
 ### Fix

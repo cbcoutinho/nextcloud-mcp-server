@@ -43,6 +43,7 @@ jobs:
           - "single-user"
           - "multi-user-basic"
           - "login-flow"
+          - "keycloak"
         include:
           # Version-specific image pins — Renovate updates these via customManagers in renovate.json
           # Each entry is pinned to its major version (e.g., NC 31 only gets 31.x updates)
@@ -78,6 +79,14 @@ jobs:
             markers: "login_flow"
             wait-port: 8004
             mcp-internal-url: "http://mcp-login-flow:8004"
+            needs-playwright: true
+            extra-args: ""
+
+          - mode: keycloak
+            profile: keycloak
+            markers: "keycloak"
+            wait-port: 8002
+            mcp-internal-url: "http://mcp-keycloak:8002"
             needs-playwright: true
             extra-args: ""
 
@@ -174,13 +183,39 @@ jobs:
           done
           echo "MCP service is ready on port ${{ matrix.wait-port }}."
 
+      - name: Wait for Keycloak
+        if: matrix.mode == 'keycloak'
+        run: |
+          echo "Waiting for Keycloak realm at http://localhost:8888..."
+          max_attempts=30
+          attempt=0
+          until curl -sf http://localhost:8888/realms/nextcloud-mcp > /dev/null 2>&1; do
+            attempt=$((attempt + 1))
+            if [ $attempt -ge $max_attempts ]; then
+              echo "Keycloak did not become ready in time."
+              docker compose --profile keycloak logs keycloak
+              exit 1
+            fi
+            echo "Attempt $attempt/$max_attempts: Not ready, sleeping 5s..."
+            sleep 5
+          done
+          echo "Keycloak is ready."
+
       - name: Verify OIDC configuration
-        if: matrix.mode == 'login-flow'
+        if: matrix.mode == 'login-flow' || matrix.mode == 'keycloak'
         run: |
           echo "=== OIDC Discovery ==="
           curl -s http://localhost:8080/.well-known/openid-configuration | jq .
           echo "=== OIDC App Status ==="
           docker compose exec -T app php occ app:list --output=json 2>/dev/null | jq '.enabled.oidc // "NOT INSTALLED"'
+
+      - name: Verify Keycloak realm
+        if: matrix.mode == 'keycloak'
+        run: |
+          echo "=== Keycloak Realm Discovery ==="
+          curl -s http://localhost:8888/realms/nextcloud-mcp/.well-known/openid-configuration | jq .
+          echo "=== Keycloak Provider in Nextcloud ==="
+          docker compose exec -T app php occ user_oidc:provider keycloak 2>/dev/null || echo "Provider not yet configured"
 
       - name: Run tests (${{ matrix.mode }})
         env:

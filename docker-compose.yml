@@ -230,6 +230,10 @@ services:
       - ENABLE_TOKEN_EXCHANGE=true
       - TOKEN_EXCHANGE_CACHE_TTL=300  # Cache exchanged tokens for 5 minutes (default)
 
+      # Login Flow v2 (ADR-022) with external IdP
+      - ENABLE_LOGIN_FLOW=true
+      - ENABLE_DCR=true
+
       # OAuth scopes (optional - uses defaults if not specified)
       - NEXTCLOUD_OIDC_SCOPES=openid profile email offline_access notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write
 

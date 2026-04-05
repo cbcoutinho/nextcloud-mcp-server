@@ -1228,7 +1228,6 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
         )
 
     oauth_config = oauth_ctx["config"]
-    nextcloud_host = oauth_config["nextcloud_host"]
 
     # Rate limit DCR requests per client IP
     client_ip = request.client.host if request.client else "unknown"
@@ -1249,21 +1248,29 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
     timestamps.append(now)
     _dcr_rate_limit[client_ip] = timestamps
 
-    # Discover registration endpoint from OIDC discovery (prefer over hardcoded path)
+    # Discover registration endpoint from OIDC discovery
     discovery_url = oauth_config.get("discovery_url")
+    registration_endpoint = None
     if discovery_url:
         try:
             discovery = await _get_cached_discovery(discovery_url)
-            registration_endpoint = discovery.get(
-                "registration_endpoint", f"{nextcloud_host}/apps/oidc/register"
-            )
+            registration_endpoint = discovery.get("registration_endpoint")
         except Exception:
-            logger.warning(
-                "Failed to fetch OIDC discovery for DCR endpoint, using fallback"
-            )
-            registration_endpoint = f"{nextcloud_host}/apps/oidc/register"
-    else:
-        registration_endpoint = f"{nextcloud_host}/apps/oidc/register"
+            logger.warning("Failed to fetch OIDC discovery for DCR endpoint")
+
+    if not registration_endpoint:
+        logger.warning(
+            "DCR proxy: Upstream IdP does not support dynamic client registration"
+        )
+        return JSONResponse(
+            {
+                "error": "registration_not_supported",
+                "error_description": "The upstream identity provider does not support "
+                "dynamic client registration. Configure the client statically using "
+                "ALLOWED_MCP_CLIENTS.",
+            },
+            status_code=400,
+        )
 
     logger.info(f"DCR proxy: Forwarding registration to {registration_endpoint}")
 
@@ -1276,7 +1283,7 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
 
     if response.status_code not in (200, 201):
         logger.error(
-            f"DCR proxy: Nextcloud registration failed: {response.status_code} {response.text}"
+            f"DCR proxy: Upstream registration failed: {response.status_code} {response.text}"
         )
         return JSONResponse(
             response.json()
