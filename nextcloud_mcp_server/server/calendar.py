@@ -1148,3 +1148,36 @@ def configure_calendar_tools(mcp: FastMCP):
 
         todos = [Todo(**todo_data) for todo_data in todos_data]
         return ListTodosResponse(todos=todos, total_count=len(todos))
+
+    @mcp.tool(
+        title="Create Calendar Events (Batch)",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
+    @require_scopes("calendar:write")
+    @instrument_tool
+    async def nc_calendar_create_events_batch(
+        calendar_name: str,
+        events: list[dict],
+        ctx: Context,
+    ):
+        """Create multiple calendar events in a single call.
+
+        Use this tool instead of calling nc_calendar_create_event repeatedly.
+        Events are created sequentially; failures are collected and reported
+        without aborting the remaining events.
+
+        Args:
+            calendar_name: Name of the calendar to create the events in
+            events: List of event objects. Each supports the same fields as
+                nc_calendar_create_event: title (required), start_datetime
+                (required), end_datetime, all_day, description, location,
+                categories, recurring, recurrence_rule, recurrence_end_date,
+                reminder_minutes, reminder_email, status, priority, privacy,
+                attendees, url, color.
+            ctx: MCP context
+
+        Returns:
+            Dict with created_count, failed_count, and per-event results
+        """
+        client = await get_client(ctx)
+        return await client.calendar.create_events_batch(calendar_name, events)

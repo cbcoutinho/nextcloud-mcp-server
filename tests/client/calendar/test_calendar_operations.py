@@ -646,3 +646,45 @@ async def test_calendar_operations_error_handling(
         await nc_client.calendar.get_calendar_events(fake_calendar)
 
     logger.info("Error handling tests completed successfully")
+
+
+async def test_create_events_batch(
+    nc_client: NextcloudClient, temporary_calendar: str
+):
+    """Test creating multiple calendar events in a single batch call."""
+    calendar_name = temporary_calendar
+    created_uids = []
+
+    tomorrow = datetime.now() + timedelta(days=1)
+    events = [
+        {
+            "title": f"Batch Event {i}",
+            "start_datetime": tomorrow.strftime(f"%Y-%m-%dT{10 + i}:00:00"),
+            "end_datetime": tomorrow.strftime(f"%Y-%m-%dT{11 + i}:00:00"),
+            "description": f"Batch test event {i}",
+            "status": "CONFIRMED",
+            "priority": 5,
+        }
+        for i in range(3)
+    ]
+
+    try:
+        result = await nc_client.calendar.create_events_batch(calendar_name, events)
+
+        assert result["created_count"] == 3
+        assert result["failed_count"] == 0
+        assert len(result["created"]) == 3
+
+        for entry in result["created"]:
+            assert "uid" in entry
+            assert entry["status_code"] in [200, 201, 204]
+            created_uids.append(entry["uid"])
+
+        logger.info(f"Batch created {len(created_uids)} events")
+
+    finally:
+        for uid in created_uids:
+            try:
+                await nc_client.calendar.delete_event(calendar_name, uid)
+            except Exception as e:
+                logger.warning(f"Cleanup failed for batch event {uid}: {e}")

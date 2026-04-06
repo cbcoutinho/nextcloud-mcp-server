@@ -405,6 +405,25 @@ class CalendarClient:
             "status_code": 201,
         }
 
+    async def create_events_batch(
+        self, calendar_name: str, events: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Create multiple calendar events in a single call."""
+        created = []
+        failed = []
+        for event_data in events:
+            try:
+                result = await self.create_event(calendar_name, event_data)
+                created.append({**result, "title": event_data.get("title", "")})
+            except Exception as e:
+                failed.append({"title": event_data.get("title", ""), "error": str(e)})
+        return {
+            "created_count": len(created),
+            "failed_count": len(failed),
+            "created": created,
+            "failed": failed,
+        }
+
     async def update_event(
         self,
         calendar_name: str,
