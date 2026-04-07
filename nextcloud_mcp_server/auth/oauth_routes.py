@@ -456,7 +456,17 @@ async def oauth_authorize_nextcloud(
     # Resource scopes are requested by client in Flow 1
     scopes = "openid profile email"
     if get_settings().enable_offline_access:
-        scopes += " offline_access"
+        # Only include offline_access if the IdP advertises it in scopes_supported.
+        # IdPs like AWS Cognito provide refresh tokens automatically without
+        # supporting the offline_access scope.
+        discovery_url = oauth_config.get("discovery_url")
+        if discovery_url:
+            disc = await _get_cached_discovery(discovery_url)
+            scopes_supported = disc.get("scopes_supported")
+            if scopes_supported is None or "offline_access" in scopes_supported:
+                scopes += " offline_access"
+        else:
+            scopes += " offline_access"
 
     # Generate PKCE values (required by Nextcloud OIDC)
     code_verifier = secrets.token_urlsafe(32)

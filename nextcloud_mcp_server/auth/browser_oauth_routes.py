@@ -85,10 +85,11 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
     mcp_server_url = oauth_config["mcp_server_url"]
     callback_uri = f"{mcp_server_url}/oauth/callback"
 
-    # Request only basic OIDC scopes for browser session
+    # Request only basic OIDC scopes for browser session.
+    # offline_access is added conditionally below based on IdP discovery.
     # Note: Nextcloud app scopes (notes.read, etc.) are for MCP client access tokens,
     # not for the MCP server's own browser authentication
-    scopes = "openid profile email offline_access"
+    scopes = "openid profile email"
 
     # Generate PKCE values for ALL modes (both external and integrated IdP require PKCE)
     code_verifier = secrets.token_urlsafe(32)
@@ -112,6 +113,12 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
         # External IdP mode (Keycloak)
         if not oauth_client.authorization_endpoint:
             await oauth_client.discover()
+
+        # Check if IdP supports offline_access via server metadata from discovery
+        idp_metadata = getattr(oauth_client, "server_metadata", None) or {}
+        idp_scopes = idp_metadata.get("scopes_supported")
+        if idp_scopes is None or "offline_access" in idp_scopes:
+            scopes += " offline_access"
 
         # Get Nextcloud resource URI for audience (background sync needs Nextcloud-scoped tokens)
         nextcloud_resource_uri = oauth_config.get(
@@ -150,6 +157,14 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
             response.raise_for_status()
             discovery = response.json()
             authorization_endpoint = discovery["authorization_endpoint"]
+
+        # Include offline_access only if the IdP advertises it (or if
+        # scopes_supported is absent from the discovery document).
+        # IdPs like AWS Cognito provide refresh tokens automatically without
+        # supporting the offline_access scope.
+        idp_scopes = discovery.get("scopes_supported")
+        if idp_scopes is None or "offline_access" in idp_scopes:
+            scopes += " offline_access"
 
         # Replace internal Docker hostname with public URL
         public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
