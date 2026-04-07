@@ -235,7 +235,7 @@ services:
       - ENABLE_DCR=true
 
       # OAuth scopes (optional - uses defaults if not specified)
-      - NEXTCLOUD_OIDC_SCOPES=openid profile email offline_access notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write
+      - NEXTCLOUD_OIDC_SCOPES=openid profile email offline_access notes.read notes.write calendar.read calendar.write contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write tables.read tables.write files.read files.write sharing.read sharing.write todo.read todo.write
 
       # NO admin credentials - using external IdP OAuth only!
     volumes:

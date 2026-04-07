@@ -56,7 +56,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
 
         Args:
             ctx: MCP context
-            scopes: Requested application scopes (e.g. ["notes:read", "calendar:write"]).
+            scopes: Requested application scopes (e.g. ["notes.read", "calendar.write"]).
                     If not specified, all available scopes are requested.
 
         Returns:

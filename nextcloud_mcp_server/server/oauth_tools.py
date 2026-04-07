@@ -473,14 +473,14 @@ async def check_logged_in(ctx: Context, user_id: Optional[str] = None) -> str:
             "profile",
             "email",
             "offline_access",  # Critical for background operations
-            "notes:read",
-            "notes:write",
-            "calendar:read",
-            "calendar:write",
-            "contacts:read",
-            "contacts:write",
-            "files:read",
-            "files:write",
+            "notes.read",
+            "notes.write",
+            "calendar.read",
+            "calendar.write",
+            "contacts.read",
+            "contacts.write",
+            "files.read",
+            "files.write",
         ]
 
         # Generate authorization URL

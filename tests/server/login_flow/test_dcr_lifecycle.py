@@ -37,7 +37,7 @@ async def get_oauth_token_with_client(
     authorization_endpoint: str,
     callback_url: str,
     auth_states: dict,
-    scopes: str = "openid profile email notes:read notes:write",
+    scopes: str = "openid profile email notes.read notes.write",
 ) -> str:
     """
     Helper to obtain OAuth access token using existing client credentials.
@@ -187,7 +187,7 @@ async def test_dcr_register_and_delete_lifecycle(
         "token_endpoint_auth_method": "client_secret_post",
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
-        "scope": "openid profile email notes:read",
+        "scope": "openid profile email notes.read",
         "token_type": "Bearer",
     }
 
@@ -209,7 +209,7 @@ async def test_dcr_register_and_delete_lifecycle(
         registration_endpoint=registration_endpoint,
         client_name="DCR Lifecycle Test Client 2",
         redirect_uris=[callback_url],
-        scopes="openid profile email notes:read",
+        scopes="openid profile email notes.read",
         token_type="Bearer",
     )
 
@@ -235,7 +235,7 @@ async def test_dcr_register_and_delete_lifecycle(
         authorization_endpoint=authorization_endpoint,
         callback_url=callback_url,
         auth_states=auth_states,
-        scopes="openid profile email notes:read",
+        scopes="openid profile email notes.read",
     )
 
     assert access_token, "Failed to obtain access token"

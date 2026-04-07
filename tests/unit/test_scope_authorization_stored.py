@@ -29,7 +29,7 @@ async def test_get_stored_scopes_with_scopes():
     mock_storage = AsyncMock()
     mock_storage.get_app_password_with_scopes.return_value = {
         "app_password": "xxxxx",
-        "scopes": ["notes:read", "calendar:read"],
+        "scopes": ["notes.read", "calendar.read"],
         "username": "alice",
         "created_at": 1000,
         "updated_at": 1000,
@@ -41,7 +41,7 @@ async def test_get_stored_scopes_with_scopes():
     ):
         result = await _get_stored_scopes("alice")
 
-    assert result == ["notes:read", "calendar:read"]
+    assert result == ["notes.read", "calendar.read"]
 
 
 async def test_get_stored_scopes_null_scopes():

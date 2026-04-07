@@ -99,7 +99,7 @@ def configure_contacts_tools(mcp: FastMCP):
         title="List Address Books",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("contacts:read")
+    @require_scopes("contacts.read")
     @instrument_tool
     async def nc_contacts_list_addressbooks(ctx: Context) -> ListAddressBooksResponse:
         """List all addressbooks for the user."""
@@ -123,7 +123,7 @@ def configure_contacts_tools(mcp: FastMCP):
         title="List Contacts",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("contacts:read")
+    @require_scopes("contacts.read")
     @instrument_tool
     async def nc_contacts_list_contacts(
         ctx: Context, *, addressbook: str
@@ -146,7 +146,7 @@ def configure_contacts_tools(mcp: FastMCP):
         title="Create Address Book",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("contacts:write")
+    @require_scopes("contacts.write")
     @instrument_tool
     async def nc_contacts_create_addressbook(
         ctx: Context, *, name: str, display_name: str
@@ -168,7 +168,7 @@ def configure_contacts_tools(mcp: FastMCP):
             destructiveHint=True, idempotentHint=True, openWorldHint=True
         ),
     )
-    @require_scopes("contacts:write")
+    @require_scopes("contacts.write")
     @instrument_tool
     async def nc_contacts_delete_addressbook(ctx: Context, *, name: str):
         """Delete an addressbook."""
@@ -179,7 +179,7 @@ def configure_contacts_tools(mcp: FastMCP):
         title="Create Contact",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("contacts:write")
+    @require_scopes("contacts.write")
     @instrument_tool
     async def nc_contacts_create_contact(
         ctx: Context, *, addressbook: str, uid: str, contact_data: dict
@@ -204,7 +204,7 @@ def configure_contacts_tools(mcp: FastMCP):
             destructiveHint=True, idempotentHint=True, openWorldHint=True
         ),
     )
-    @require_scopes("contacts:write")
+    @require_scopes("contacts.write")
     @instrument_tool
     async def nc_contacts_delete_contact(ctx: Context, *, addressbook: str, uid: str):
         """Delete a contact.
@@ -222,7 +222,7 @@ def configure_contacts_tools(mcp: FastMCP):
         title="Update Contact",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("contacts:write")
+    @require_scopes("contacts.write")
     @instrument_tool
     async def nc_contacts_update_contact(
         ctx: Context, *, addressbook: str, uid: str, contact_data: dict, etag: str = ""

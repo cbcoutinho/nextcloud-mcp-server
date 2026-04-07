@@ -74,7 +74,7 @@ def require_scopes(*required_scopes: str):
     users who lack the necessary scopes.
 
     Args:
-        *required_scopes: Variable number of scope strings required (e.g., "notes:read", "notes:write")
+        *required_scopes: Variable number of scope strings required (e.g., "notes.read", "notes.write")
 
     Returns:
         Decorated function that checks scopes before execution
@@ -82,15 +82,15 @@ def require_scopes(*required_scopes: str):
     Example:
         ```python
         @mcp.tool()
-        @require_scopes("notes:read")
+        @require_scopes("notes.read")
         async def nc_notes_get_note(ctx: Context, note_id: int):
-            # This tool requires the notes:read scope
+            # This tool requires the notes.read scope
             ...
 
         @mcp.tool()
-        @require_scopes("notes:write")
+        @require_scopes("notes.write")
         async def nc_notes_create_note(ctx: Context, ...):
-            # This tool requires the notes:write scope
+            # This tool requires the notes.write scope
             ...
         ```
 
@@ -203,12 +203,12 @@ def require_scopes(*required_scopes: str):
                     if any(
                         s.startswith(prefix)
                         for prefix in [
-                            "notes:",
-                            "calendar:",
-                            "contacts:",
-                            "files:",
-                            "tables:",
-                            "deck:",
+                            "notes.",
+                            "calendar.",
+                            "contacts.",
+                            "files.",
+                            "tables.",
+                            "deck.",
                         ]
                     )
                 ]
@@ -223,12 +223,12 @@ def require_scopes(*required_scopes: str):
                         s.startswith(prefix)
                         for s in token_scopes
                         for prefix in [
-                            "notes:",
-                            "calendar:",
-                            "contacts:",
-                            "files:",
-                            "tables:",
-                            "deck:",
+                            "notes.",
+                            "calendar.",
+                            "contacts.",
+                            "files.",
+                            "tables.",
+                            "deck.",
                         ]
                     )
 
@@ -305,7 +305,7 @@ def check_scopes(ctx: Context, *required_scopes: str) -> tuple[bool, set[str]]:
     Example:
         ```python
         async def my_tool(ctx: Context):
-            has_scopes, missing = check_scopes(ctx, "notes:read", "notes:write")
+            has_scopes, missing = check_scopes(ctx, "notes.read", "notes.write")
             if not has_scopes:
                 # Handle missing scopes
                 ...
@@ -335,11 +335,11 @@ def get_required_scopes(func: Callable) -> list[str]:
 
     Example:
         ```python
-        @require_scopes("notes:read", "notes:write")
+        @require_scopes("notes.read", "notes.write")
         async def my_tool():
             pass
 
-        scopes = get_required_scopes(my_tool)  # ["notes:read", "notes:write"]
+        scopes = get_required_scopes(my_tool)  # ["notes.read", "notes.write"]
         ```
     """
     return getattr(func, "_required_scopes", [])
@@ -385,14 +385,14 @@ def has_required_scopes(func: Callable, user_scopes: set[str]) -> bool:
 
     Example:
         ```python
-        @require_scopes("notes:write")
+        @require_scopes("notes.write")
         async def create_note():
             pass
 
-        user_scopes = {"notes:read", "notes:write"}
+        user_scopes = {"notes.read", "notes.write"}
         can_see = has_required_scopes(create_note, user_scopes)  # True
 
-        limited_user_scopes = {"notes:read"}
+        limited_user_scopes = {"notes.read"}
         can_see = has_required_scopes(create_note, limited_user_scopes)  # False
         ```
     """
@@ -431,17 +431,17 @@ def discover_all_scopes(mcp) -> list[str]:
         mcp = FastMCP("My Server")
 
         @mcp.tool()
-        @require_scopes("notes:read")
+        @require_scopes("notes.read")
         async def get_notes():
             pass
 
         @mcp.tool()
-        @require_scopes("notes:write")
+        @require_scopes("notes.write")
         async def create_note():
             pass
 
         scopes = discover_all_scopes(mcp)
-        # Returns: ["notes:read", "notes:write", "openid", "profile", "email"]
+        # Returns: ["notes.read", "notes.write", "openid", "profile", "email"]
         ```
 
     Note:

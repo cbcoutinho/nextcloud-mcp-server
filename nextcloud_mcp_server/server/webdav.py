@@ -25,7 +25,7 @@ def configure_webdav_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("files:read")
+    @require_scopes("files.read")
     @instrument_tool
     async def nc_webdav_list_directory(
         ctx: Context, path: str = ""
@@ -65,7 +65,7 @@ def configure_webdav_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("files:read")
+    @require_scopes("files.read")
     @instrument_tool
     async def nc_webdav_read_file(path: str, ctx: Context):
         """Read the content of a file from NextCloud.
@@ -137,7 +137,7 @@ def configure_webdav_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("files:write")
+    @require_scopes("files.write")
     @instrument_tool
     async def nc_webdav_write_file(
         path: str, content: str, ctx: Context, content_type: str | None = None
@@ -170,7 +170,7 @@ def configure_webdav_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("files:write")
+    @require_scopes("files.write")
     @instrument_tool
     async def nc_webdav_create_directory(path: str, ctx: Context):
         """Create a directory in NextCloud.
@@ -192,7 +192,7 @@ def configure_webdav_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("files:write")
+    @require_scopes("files.write")
     @instrument_tool
     async def nc_webdav_delete_resource(path: str, ctx: Context):
         """Delete a file or directory in NextCloud.
@@ -213,7 +213,7 @@ def configure_webdav_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("files:write")
+    @require_scopes("files.write")
     @instrument_tool
     async def nc_webdav_move_resource(
         source_path: str, destination_path: str, ctx: Context, overwrite: bool = False
@@ -240,7 +240,7 @@ def configure_webdav_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("files:write")
+    @require_scopes("files.write")
     @instrument_tool
     async def nc_webdav_copy_resource(
         source_path: str, destination_path: str, ctx: Context, overwrite: bool = False
@@ -267,7 +267,7 @@ def configure_webdav_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("files:read")
+    @require_scopes("files.read")
     @instrument_tool
     async def nc_webdav_search_files(
         ctx: Context,
@@ -390,7 +390,7 @@ def configure_webdav_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("files:read")
+    @require_scopes("files.read")
     @instrument_tool
     async def nc_webdav_find_by_name(
         pattern: str, ctx: Context, scope: str = "", limit: int | None = None
@@ -424,7 +424,7 @@ def configure_webdav_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("files:read")
+    @require_scopes("files.read")
     @instrument_tool
     async def nc_webdav_find_by_type(
         mime_type: str, ctx: Context, scope: str = "", limit: int | None = None
@@ -458,7 +458,7 @@ def configure_webdav_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("files:read")
+    @require_scopes("files.read")
     @instrument_tool
     async def nc_webdav_list_favorites(
         ctx: Context, scope: str = "", limit: int | None = None

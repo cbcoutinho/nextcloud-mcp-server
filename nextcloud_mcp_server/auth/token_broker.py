@@ -337,7 +337,7 @@ class TokenBrokerService:
         data = {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
-            "scope": "openid profile email offline_access notes:read notes:write calendar:read calendar:write",
+            "scope": "openid profile email offline_access notes.read notes.write calendar.read calendar.write",
             "client_id": self.client_id,
             "client_secret": self.client_secret,
         }
@@ -521,7 +521,7 @@ class TokenBrokerService:
             data = {
                 "grant_type": "refresh_token",
                 "refresh_token": current_refresh_token,
-                "scope": "openid profile email offline_access notes:read notes:write calendar:read calendar:write",
+                "scope": "openid profile email offline_access notes.read notes.write calendar.read calendar.write",
             }
 
             response = await client.post(

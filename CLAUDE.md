@@ -373,7 +373,7 @@ MCP sampling allows servers to request LLM completions from their clients. This 
 from mcp.types import ModelHint, ModelPreferences, SamplingMessage, TextContent
 
 @mcp.tool()
-@require_scopes("notes:read")
+@require_scopes("notes.read")
 async def nc_notes_semantic_search_answer(
     query: str, ctx: Context, limit: int = 5, max_answer_tokens: int = 500
 ) -> SamplingSearchResponse:

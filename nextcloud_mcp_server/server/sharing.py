@@ -21,7 +21,7 @@ def configure_sharing_tools(mcp: FastMCP):
         title="Create Share",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("sharing:write")
+    @require_scopes("sharing.write")
     @instrument_tool
     async def nc_share_create(
         path: str,
@@ -66,7 +66,7 @@ def configure_sharing_tools(mcp: FastMCP):
             destructiveHint=True, idempotentHint=True, openWorldHint=True
         ),
     )
-    @require_scopes("sharing:write")
+    @require_scopes("sharing.write")
     @instrument_tool
     async def nc_share_delete(share_id: int, ctx: Context) -> str:
         """Delete a share by its ID.
@@ -89,7 +89,7 @@ def configure_sharing_tools(mcp: FastMCP):
         title="Get Share Details",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("sharing:write")
+    @require_scopes("sharing.write")
     @instrument_tool
     async def nc_share_get(share_id: int, ctx: Context) -> str:
         """Get information about a specific share.
@@ -111,7 +111,7 @@ def configure_sharing_tools(mcp: FastMCP):
         title="List Shares",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("sharing:write")
+    @require_scopes("sharing.write")
     @instrument_tool
     async def nc_share_list(
         ctx: Context, path: str | None = None, shared_with_me: bool = False
@@ -136,7 +136,7 @@ def configure_sharing_tools(mcp: FastMCP):
         title="Update Share",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("sharing:write")
+    @require_scopes("sharing.write")
     @instrument_tool
     async def nc_share_update(share_id: int, permissions: int, ctx: Context) -> str:
         """Update the permissions of an existing share.

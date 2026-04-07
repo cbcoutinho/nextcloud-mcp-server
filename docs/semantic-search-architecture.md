@@ -298,7 +298,7 @@ sequenceDiagram
     participant NC as Nextcloud API
 
     User->>MCP: nc_semantic_search("machine learning")
-    MCP->>MCP: Check OAuth scope<br/>(semantic:read)
+    MCP->>MCP: Check OAuth scope<br/>(semantic.read)
     MCP->>Ollama: Generate query embedding
     Ollama-->>MCP: Query vector (768-dim)
     MCP->>Qdrant: Search similar vectors<br/>(filter: user_id=alice)
@@ -319,7 +319,7 @@ sequenceDiagram
 ### Dual-Phase Authorization
 
 **Phase 1: OAuth Scope Check**
-- Verify user has `semantic:read` scope
+- Verify user has `semantic.read` scope
 - Rejects unauthorized users immediately
 
 **Phase 2: Per-Document Verification**
@@ -419,19 +419,19 @@ except Exception as e:
 
 ### OAuth Scopes
 
-**`semantic:read`** - Search permission
+**`semantic.read`** - Search permission
 - Allows using `nc_semantic_search` and `nc_semantic_search_answer` tools
 - Does NOT grant access to documents (verified via app APIs)
 - Required for any semantic search operation
 
-**`semantic:write`** - Sync control permission
+**`semantic.write`** - Sync control permission
 - Allows enabling/disabling background sync (`provision_vector_sync`, `deprovision_vector_sync`)
 - Controls whether user's documents are indexed
 - Currently not implemented in OAuth mode (BasicAuth only)
 
 ### Dual-Phase Authorization Pattern
 
-**Phase 1: Scope Check** (semantic:read)
+**Phase 1: Scope Check** (semantic.read)
 - Verifies user authorized to search
 - Prevents unauthorized vector database access
 
@@ -482,7 +482,7 @@ except Exception as e:
 - Credentials stored in `.env` file (secure server access required)
 
 **OAuth:**
-- Client authenticates with `semantic:read` scope
+- Client authenticates with `semantic.read` scope
 - User must explicitly provision offline access (future: `provision_vector_sync` tool)
 - Background sync only works for users who provisioned access
 - More secure: tokens expire, user controls access

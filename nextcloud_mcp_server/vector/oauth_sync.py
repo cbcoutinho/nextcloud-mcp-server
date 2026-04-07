@@ -46,10 +46,10 @@ logger = logging.getLogger(__name__)
 
 # Scopes required for vector sync operations
 VECTOR_SYNC_SCOPES = [
-    "notes:read",
-    "files:read",
-    "deck:read",
-    # "news:read",  # News app may not be installed
+    "notes.read",
+    "files.read",
+    "deck.read",
+    # "news.read",  # News app may not be installed
 ]
 
 

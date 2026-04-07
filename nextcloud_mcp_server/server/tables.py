@@ -17,7 +17,7 @@ def configure_tables_tools(mcp: FastMCP):
         title="List Tables",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("tables:read")
+    @require_scopes("tables.read")
     @instrument_tool
     async def nc_tables_list_tables(ctx: Context) -> ListTablesResponse:
         """List all tables available to the user"""
@@ -30,7 +30,7 @@ def configure_tables_tools(mcp: FastMCP):
         title="Get Table Schema",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("tables:read")
+    @require_scopes("tables.read")
     @instrument_tool
     async def nc_tables_get_schema(table_id: int, ctx: Context):
         """Get the schema/structure of a specific table including columns and views"""
@@ -41,7 +41,7 @@ def configure_tables_tools(mcp: FastMCP):
         title="Read Table Rows",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("tables:read")
+    @require_scopes("tables.read")
     @instrument_tool
     async def nc_tables_read_table(
         table_id: int,
@@ -57,7 +57,7 @@ def configure_tables_tools(mcp: FastMCP):
         title="Insert Table Row",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("tables:write")
+    @require_scopes("tables.write")
     @instrument_tool
     async def nc_tables_insert_row(table_id: int, data: dict, ctx: Context):
         """Insert a new row into a table.
@@ -71,7 +71,7 @@ def configure_tables_tools(mcp: FastMCP):
         title="Update Table Row",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("tables:write")
+    @require_scopes("tables.write")
     @instrument_tool
     async def nc_tables_update_row(row_id: int, data: dict, ctx: Context):
         """Update an existing row in a table.
@@ -87,7 +87,7 @@ def configure_tables_tools(mcp: FastMCP):
             destructiveHint=True, idempotentHint=True, openWorldHint=True
         ),
     )
-    @require_scopes("tables:write")
+    @require_scopes("tables.write")
     @instrument_tool
     async def nc_tables_delete_row(row_id: int, ctx: Context):
         """Delete a row from a table"""
