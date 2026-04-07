@@ -468,11 +468,14 @@ async def check_logged_in(ctx: Context, user_id: Optional[str] = None) -> str:
         )
 
         # Define scopes for Nextcloud access
+        # Note: offline_access is only included when enabled in settings.
+        # The actual scope sent to the IdP is determined by
+        # oauth_authorize_nextcloud() based on IdP discovery, so this list
+        # is informational (generate_oauth_url_for_flow2 marks it as unused).
         scopes = [
             "openid",
             "profile",
             "email",
-            "offline_access",  # Critical for background operations
             "notes.read",
             "notes.write",
             "calendar.read",
@@ -482,6 +485,8 @@ async def check_logged_in(ctx: Context, user_id: Optional[str] = None) -> str:
             "files.read",
             "files.write",
         ]
+        if get_settings().enable_offline_access:
+            scopes.insert(3, "offline_access")
 
         # Generate authorization URL
         auth_url = generate_oauth_url_for_flow2(

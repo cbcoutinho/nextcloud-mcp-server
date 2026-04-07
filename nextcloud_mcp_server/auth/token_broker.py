@@ -169,6 +169,24 @@ class TokenBrokerService:
             self._oidc_config = response.json()
         return self._oidc_config
 
+    async def _idp_supports_offline_access(self) -> bool:
+        """Check if the IdP advertises ``offline_access`` in ``scopes_supported``.
+
+        Returns ``True`` when ``offline_access`` is explicitly listed **or**
+        when ``scopes_supported`` is absent from the discovery document (the
+        field is OPTIONAL per the OIDC spec, so absence means unknown —
+        include ``offline_access`` as a safe default).
+
+        Returns ``False`` when ``scopes_supported`` is present but does **not**
+        include ``offline_access`` (e.g. AWS Cognito, which provides refresh
+        tokens automatically without requiring the scope).
+        """
+        config = await self._get_oidc_config()
+        scopes_supported = config.get("scopes_supported")
+        if scopes_supported is None:
+            return True
+        return "offline_access" in scopes_supported
+
     async def get_nextcloud_token(self, user_id: str) -> Optional[str]:
         """
         Get a valid Nextcloud access token for the user.
@@ -334,10 +352,18 @@ class TokenBrokerService:
 
         # Request new access token using refresh token
         # Include client credentials as required by most OAuth servers
+        # Only request offline_access if the IdP advertises it (e.g. Cognito does not)
+        base_scopes = ["openid", "profile", "email"]
+        if await self._idp_supports_offline_access():
+            base_scopes.append("offline_access")
+        scope_str = " ".join(
+            base_scopes
+            + ["notes.read", "notes.write", "calendar.read", "calendar.write"]
+        )
         data = {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
-            "scope": "openid profile email offline_access notes.read notes.write calendar.read calendar.write",
+            "scope": scope_str,
             "client_id": self.client_id,
             "client_secret": self.client_secret,
         }
@@ -402,10 +428,13 @@ class TokenBrokerService:
 
         client = await self._get_http_client()
 
-        # Always include basic OpenID scopes + offline_access to get new refresh token
-        scopes = list(
-            set(["openid", "profile", "email", "offline_access"] + required_scopes)
-        )
+        # Always include basic OpenID scopes; only add offline_access if the IdP
+        # advertises it (e.g. AWS Cognito provides refresh tokens automatically
+        # without supporting the offline_access scope).
+        base_scopes = ["openid", "profile", "email"]
+        if await self._idp_supports_offline_access():
+            base_scopes.append("offline_access")
+        scopes = list(set(base_scopes + required_scopes))
 
         # Request new access token with specific scopes
         # Include client credentials as required by most OAuth servers
@@ -518,10 +547,18 @@ class TokenBrokerService:
             client = await self._get_http_client()
 
             # Request new refresh token
+            # Only request offline_access if the IdP advertises it
+            base_scopes = ["openid", "profile", "email"]
+            if await self._idp_supports_offline_access():
+                base_scopes.append("offline_access")
+            scope_str = " ".join(
+                base_scopes
+                + ["notes.read", "notes.write", "calendar.read", "calendar.write"]
+            )
             data = {
                 "grant_type": "refresh_token",
                 "refresh_token": current_refresh_token,
-                "scope": "openid profile email offline_access notes.read notes.write calendar.read calendar.write",
+                "scope": scope_str,
             }
 
             response = await client.post(
