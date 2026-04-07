@@ -36,9 +36,9 @@ from .app import get_app
 @click.option(
     "--transport",
     "-t",
-    default="streamable-http",
+    default="stdio",
     show_default=True,
-    type=click.Choice(["streamable-http", "http"]),
+    type=click.Choice(["stdio", "streamable-http", "http"]),
     help="MCP transport protocol",
 )
 @click.option(
@@ -46,7 +46,18 @@ from .app import get_app
     "-e",
     multiple=True,
     type=click.Choice(
-        ["notes", "tables", "webdav", "calendar", "contacts", "cookbook", "deck"]
+        [
+            "notes",
+            "tables",
+            "webdav",
+            "calendar",
+            "contacts",
+            "cookbook",
+            "deck",
+            "news",
+            "collectives",
+            "sharing",
+        ]
     ),
     help="Enable specific Nextcloud app APIs. Can be specified multiple times. If not specified, all apps are enabled.",
 )
@@ -158,6 +169,9 @@ def run(
       # OAuth with public issuer URL (for Docker/proxy setups)
       $ nextcloud-mcp-server --nextcloud-host=http://app --oauth \\
           --public-issuer-url=http://localhost:8080
+
+      # stdio transport for local use (e.g. Claude Code)
+      $ nextcloud-mcp-server run --transport stdio
     """
     # Set env vars from CLI options if provided
     if nextcloud_host:
@@ -240,6 +254,19 @@ def run(
             )
 
     enabled_apps = list(enable_app) if enable_app else None
+
+    if transport == "stdio":
+        if oauth is True:
+            raise click.ClickException(
+                "stdio transport does not support OAuth mode. "
+                "Use single-user BasicAuth with NEXTCLOUD_HOST, "
+                "NEXTCLOUD_USERNAME, and NEXTCLOUD_PASSWORD."
+            )
+        from .stdio import get_stdio_mcp  # noqa: PLC0415
+
+        mcp = get_stdio_mcp(enabled_apps=enabled_apps)
+        mcp.run(transport="stdio")
+        return
 
     app = get_app(transport=transport, enabled_apps=enabled_apps)
 

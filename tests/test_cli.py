@@ -108,6 +108,8 @@ def test_cli_options_set_environment_variables(runner, clean_env, monkeypatch):
     _ = runner.invoke(
         run,
         [
+            "--transport",
+            "streamable-http",
             "--nextcloud-host",
             "https://test.example.com",
             "--nextcloud-username",
@@ -164,6 +166,8 @@ def test_cli_options_override_environment_variables(runner, monkeypatch):
     _ = runner.invoke(
         run,
         [
+            "--transport",
+            "streamable-http",
             "--nextcloud-host",
             "https://from-cli.example.com",
             "--nextcloud-username",
@@ -214,7 +218,7 @@ def test_environment_variables_used_when_cli_not_provided(runner, monkeypatch):
     monkeypatch.setattr("nextcloud_mcp_server.cli.get_app", mock_get_app)
 
     # Don't provide any CLI options - should use env vars
-    _ = runner.invoke(run, [])
+    _ = runner.invoke(run, ["--transport", "streamable-http"])
 
     # Verify env vars were used
     assert captured_env["NEXTCLOUD_HOST"] == "https://from-env.example.com"
@@ -246,7 +250,7 @@ def test_default_values(runner, clean_env, monkeypatch):
     monkeypatch.setattr("nextcloud_mcp_server.cli.get_app", mock_get_app)
 
     # Don't provide CLI options or env vars - should use defaults
-    _ = runner.invoke(run, [])
+    _ = runner.invoke(run, ["--transport", "streamable-http"])
 
     # Verify default values
     assert captured_env["NEXTCLOUD_OIDC_SCOPES"] == (
@@ -278,10 +282,55 @@ def test_oauth_token_type_case_normalization(runner, clean_env, monkeypatch):
     monkeypatch.setattr("nextcloud_mcp_server.cli.get_app", mock_get_app)
 
     # Test uppercase JWT
-    runner.invoke(run, ["--oauth-token-type", "JWT"])
+    runner.invoke(run, ["--transport", "streamable-http", "--oauth-token-type", "JWT"])
     assert captured_env["NEXTCLOUD_OIDC_TOKEN_TYPE"] in ["JWT", "jwt"]
 
     # Test mixed case Bearer
     captured_env.clear()
-    runner.invoke(run, ["--oauth-token-type", "Bearer"])
+    runner.invoke(
+        run, ["--transport", "streamable-http", "--oauth-token-type", "Bearer"]
+    )
     assert captured_env["NEXTCLOUD_OIDC_TOKEN_TYPE"] in ["Bearer", "bearer"]
+
+
+def test_help_includes_stdio_transport(runner):
+    """Test that stdio appears as a transport option in help output."""
+    result = runner.invoke(run, ["--help"])
+    assert result.exit_code == 0
+    assert "stdio" in result.output
+
+
+def test_stdio_rejects_oauth_flag(runner, clean_env, monkeypatch):
+    """Test that --transport stdio --oauth raises an error."""
+    monkeypatch.setenv("NEXTCLOUD_HOST", "https://cloud.example.com")
+    result = runner.invoke(run, ["--transport", "stdio", "--oauth"])
+    assert result.exit_code != 0
+    assert "stdio transport does not support OAuth mode" in result.output
+
+
+def test_stdio_calls_get_stdio_mcp(runner, clean_env, monkeypatch):
+    """Test that --transport stdio invokes the stdio code path."""
+    monkeypatch.setenv("NEXTCLOUD_HOST", "https://cloud.example.com")
+    monkeypatch.setenv("NEXTCLOUD_USERNAME", "admin")
+    monkeypatch.setenv("NEXTCLOUD_PASSWORD", "secret")
+
+    called_with = {}
+
+    class FakeMcp:
+        def run(self, transport):
+            called_with["transport"] = transport
+
+    def mock_get_stdio_mcp(enabled_apps=None):
+        called_with["enabled_apps"] = enabled_apps
+        return FakeMcp()
+
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.cli.get_stdio_mcp", mock_get_stdio_mcp, raising=False
+    )
+    # The lazy import means we need to patch at the module level it imports from
+    monkeypatch.setattr("nextcloud_mcp_server.stdio.get_stdio_mcp", mock_get_stdio_mcp)
+
+    result = runner.invoke(run, ["--transport", "stdio"])
+    assert result.exit_code == 0, result.output
+    assert called_with.get("transport") == "stdio"
+    assert called_with.get("enabled_apps") is None
