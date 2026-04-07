@@ -353,6 +353,10 @@ class UnifiedTokenVerifier(TokenVerifier):
         presence in the audience claim. We don't validate Nextcloud's audience - that's
         Nextcloud's responsibility when it receives the token.
 
+        AWS Cognito access tokens do not include an ``aud`` claim — they use
+        ``client_id`` instead.  When ``aud`` is absent we fall back to
+        ``client_id`` so that Cognito-issued tokens are accepted.
+
         Args:
             payload: Decoded token payload
 
@@ -364,6 +368,12 @@ class UnifiedTokenVerifier(TokenVerifier):
             audiences = [audiences]
 
         audiences_set = set(audiences)
+
+        # Cognito fallback: access tokens carry client_id instead of aud
+        if not audiences_set:
+            token_client_id = payload.get("client_id", "")
+            if token_client_id:
+                audiences_set = {token_client_id}
 
         # MCP must have at least one: client_id OR server_url OR server_url/mcp
         return bool(
