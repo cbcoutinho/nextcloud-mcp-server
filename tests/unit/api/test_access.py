@@ -100,7 +100,7 @@ class TestGetUserAccess:
         await temp_storage.store_app_password_with_scopes(
             user_id="alice",
             app_password="test-app-pw",
-            scopes=["notes:read", "calendar:write"],
+            scopes=["notes.read", "calendar.write"],
             username="alice_nc",
         )
 
@@ -115,7 +115,7 @@ class TestGetUserAccess:
         data = resp.json()
         assert data["success"] is True
         assert data["provisioned"] is True
-        assert set(data["scopes"]) == {"notes:read", "calendar:write"}
+        assert set(data["scopes"]) == {"notes.read", "calendar.write"}
         assert data["username"] == "alice_nc"
 
     async def test_missing_auth_header(self, temp_storage):
@@ -146,7 +146,7 @@ class TestUpdateUserScopes:
         await temp_storage.store_app_password_with_scopes(
             user_id="alice",
             app_password="test-app-pw",
-            scopes=["notes:read"],
+            scopes=["notes.read"],
             username="alice_nc",
         )
 
@@ -156,19 +156,19 @@ class TestUpdateUserScopes:
         resp = client.patch(
             "/api/v1/users/alice/scopes",
             headers={"Authorization": create_basic_auth_header("alice", "pw")},
-            json={"scopes": ["notes:read", "notes:write", "calendar:read"]},
+            json={"scopes": ["notes.read", "notes.write", "calendar.read"]},
         )
         assert resp.status_code == 200
         data = resp.json()
         assert data["success"] is True
-        assert set(data["scopes"]) == {"notes:read", "notes:write", "calendar:read"}
+        assert set(data["scopes"]) == {"notes.read", "notes.write", "calendar.read"}
 
     async def test_invalid_scopes(self, temp_storage):
         """Returns 400 for invalid scope names."""
         await temp_storage.store_app_password_with_scopes(
             user_id="alice",
             app_password="test-app-pw",
-            scopes=["notes:read"],
+            scopes=["notes.read"],
         )
 
         app = create_test_app(temp_storage)
@@ -177,7 +177,7 @@ class TestUpdateUserScopes:
         resp = client.patch(
             "/api/v1/users/alice/scopes",
             headers={"Authorization": create_basic_auth_header("alice", "pw")},
-            json={"scopes": ["notes:read", "invalid:scope"]},
+            json={"scopes": ["notes.read", "invalid:scope"]},
         )
         assert resp.status_code == 400
         data = resp.json()
@@ -192,7 +192,7 @@ class TestUpdateUserScopes:
         resp = client.patch(
             "/api/v1/users/alice/scopes",
             headers={"Authorization": create_basic_auth_header("alice", "pw")},
-            json={"scopes": ["notes:read"]},
+            json={"scopes": ["notes.read"]},
         )
         assert resp.status_code == 404
         data = resp.json()

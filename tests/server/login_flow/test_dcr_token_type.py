@@ -93,7 +93,7 @@ async def get_oauth_token_with_client(
     authorization_endpoint: str,
     callback_url: str,
     auth_states: dict,
-    scopes: str = "openid profile email notes:read notes:write",
+    scopes: str = "openid profile email notes.read notes.write",
 ) -> str:
     """
     Helper to obtain OAuth access token using existing client credentials.
@@ -241,7 +241,7 @@ async def test_dcr_respects_jwt_token_type(
         registration_endpoint=registration_endpoint,
         client_name="DCR Test - JWT Token Type",
         redirect_uris=[callback_url],
-        scopes="openid profile email notes:read notes:write",
+        scopes="openid profile email notes.read notes.write",
         token_type="jwt",
     )
 
@@ -276,8 +276,8 @@ async def test_dcr_respects_jwt_token_type(
     # Verify scope claim exists (critical for MCP tool filtering)
     assert "scope" in payload, "JWT payload missing 'scope' claim"
     scopes = payload["scope"].split()
-    assert "notes:read" in scopes, "JWT scope claim missing notes:read"
-    assert "notes:write" in scopes, "JWT scope claim missing notes:write"
+    assert "notes.read" in scopes, "JWT scope claim missing notes.read"
+    assert "notes.write" in scopes, "JWT scope claim missing notes.write"
 
     logger.info(
         f"✅ DCR with token_type=jwt works correctly! "
@@ -325,7 +325,7 @@ async def test_dcr_respects_bearer_token_type(
         registration_endpoint=registration_endpoint,
         client_name="DCR Test - Opaque Token Type",
         redirect_uris=[callback_url],
-        scopes="openid profile email notes:read notes:write",
+        scopes="openid profile email notes.read notes.write",
         token_type="opaque",
     )
 

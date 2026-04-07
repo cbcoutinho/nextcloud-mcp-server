@@ -48,7 +48,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="List Collectives",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("collectives:read")
+    @require_scopes("collectives.read")
     @instrument_tool
     async def collectives_get_collectives(
         ctx: Context,
@@ -66,7 +66,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="List Collective Pages",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("collectives:read")
+    @require_scopes("collectives.read")
     @instrument_tool
     async def collectives_get_pages(
         ctx: Context, collective_id: int
@@ -90,7 +90,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="Get Collective Page",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("collectives:read")
+    @require_scopes("collectives.read")
     @instrument_tool
     async def collectives_get_page(
         ctx: Context, collective_id: int, page_id: int
@@ -138,7 +138,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="Search Collective Pages",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("collectives:read")
+    @require_scopes("collectives.read")
     @instrument_tool
     async def collectives_search_pages(
         ctx: Context, collective_id: int, query: str
@@ -166,7 +166,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="List Collective Tags",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("collectives:read")
+    @require_scopes("collectives.read")
     @instrument_tool
     async def collectives_get_tags(
         ctx: Context, collective_id: int
@@ -188,7 +188,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="List Trashed Collective Pages",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("collectives:read")
+    @require_scopes("collectives.read")
     @instrument_tool
     async def collectives_get_trashed_pages(
         ctx: Context, collective_id: int
@@ -212,7 +212,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="List Trashed Collectives",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("collectives:read")
+    @require_scopes("collectives.read")
     @instrument_tool
     async def collectives_get_trashed_collectives(
         ctx: Context,
@@ -238,7 +238,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="Create Collective",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("collectives:write")
+    @require_scopes("collectives.write")
     @instrument_tool
     async def collectives_create_collective(
         ctx: Context, name: str, emoji: str | None = None
@@ -263,7 +263,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="Set Collective Emoji",
         annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
     )
-    @require_scopes("collectives:write")
+    @require_scopes("collectives.write")
     @instrument_tool
     async def collectives_set_collective_emoji(
         ctx: Context, collective_id: int, emoji: str | None = None
@@ -295,7 +295,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="Trash Collective",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("collectives:write")
+    @require_scopes("collectives.write")
     @instrument_tool
     async def collectives_trash_collective(
         ctx: Context, collective_id: int
@@ -324,7 +324,7 @@ def configure_collectives_tools(mcp: FastMCP):
             destructiveHint=True, idempotentHint=False, openWorldHint=True
         ),
     )
-    @require_scopes("collectives:write")
+    @require_scopes("collectives.write")
     @instrument_tool
     async def collectives_delete_collective(
         ctx: Context, collective_id: int
@@ -353,7 +353,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="Restore Collective",
         annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
     )
-    @require_scopes("collectives:write")
+    @require_scopes("collectives.write")
     @instrument_tool
     async def collectives_restore_collective(
         ctx: Context, collective_id: int
@@ -379,7 +379,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="Create Collective Page",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("collectives:write")
+    @require_scopes("collectives.write")
     @instrument_tool
     async def collectives_create_page(
         ctx: Context, collective_id: int, parent_id: int, title: str
@@ -412,7 +412,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="Move Collective Page",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("collectives:write")
+    @require_scopes("collectives.write")
     @instrument_tool
     async def collectives_move_page(
         ctx: Context,
@@ -453,7 +453,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="Trash Collective Page",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("collectives:write")
+    @require_scopes("collectives.write")
     @instrument_tool
     async def collectives_trash_page(
         ctx: Context, collective_id: int, page_id: int
@@ -484,7 +484,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="Restore Collective Page",
         annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
     )
-    @require_scopes("collectives:write")
+    @require_scopes("collectives.write")
     @instrument_tool
     async def collectives_restore_page(
         ctx: Context, collective_id: int, page_id: int
@@ -512,7 +512,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="Set Collective Page Emoji",
         annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
     )
-    @require_scopes("collectives:write")
+    @require_scopes("collectives.write")
     @instrument_tool
     async def collectives_set_page_emoji(
         ctx: Context,
@@ -544,7 +544,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="Create Collective Tag",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("collectives:write")
+    @require_scopes("collectives.write")
     @instrument_tool
     async def collectives_create_tag(
         ctx: Context, collective_id: int, name: str, color: str
@@ -568,7 +568,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="Assign Tag to Collective Page",
         annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
     )
-    @require_scopes("collectives:write")
+    @require_scopes("collectives.write")
     @instrument_tool
     async def collectives_assign_tag(
         ctx: Context, collective_id: int, page_id: int, tag_id: int
@@ -596,7 +596,7 @@ def configure_collectives_tools(mcp: FastMCP):
         title="Remove Tag from Collective Page",
         annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
     )
-    @require_scopes("collectives:write")
+    @require_scopes("collectives.write")
     @instrument_tool
     async def collectives_remove_tag(
         ctx: Context, collective_id: int, page_id: int, tag_id: int

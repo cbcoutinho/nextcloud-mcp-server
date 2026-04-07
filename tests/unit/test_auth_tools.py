@@ -38,14 +38,14 @@ async def test_store_app_password_with_scopes(temp_storage):
     await temp_storage.store_app_password_with_scopes(
         user_id="alice",
         app_password="aaaaa-bbbbb-ccccc-ddddd-eeeee",
-        scopes=["notes:read", "notes:write"],
+        scopes=["notes.read", "notes.write"],
         username="alice_nc",
     )
 
     data = await temp_storage.get_app_password_with_scopes("alice")
     assert data is not None
     assert data["app_password"] == "aaaaa-bbbbb-ccccc-ddddd-eeeee"
-    assert data["scopes"] == ["notes:read", "notes:write"]
+    assert data["scopes"] == ["notes.read", "notes.write"]
     assert data["username"] == "alice_nc"
     assert data["created_at"] is not None
     assert data["updated_at"] is not None
@@ -70,18 +70,18 @@ async def test_store_app_password_with_scopes_replaces(temp_storage):
     await temp_storage.store_app_password_with_scopes(
         user_id="alice",
         app_password="aaaaa-bbbbb-ccccc-ddddd-eeeee",
-        scopes=["notes:read"],
+        scopes=["notes.read"],
     )
     await temp_storage.store_app_password_with_scopes(
         user_id="alice",
         app_password="xxxxx-yyyyy-zzzzz-aaaaa-bbbbb",
-        scopes=["notes:read", "calendar:read"],
+        scopes=["notes.read", "calendar.read"],
         username="alice_nc",
     )
 
     data = await temp_storage.get_app_password_with_scopes("alice")
     assert data["app_password"] == "xxxxx-yyyyy-zzzzz-aaaaa-bbbbb"
-    assert data["scopes"] == ["notes:read", "calendar:read"]
+    assert data["scopes"] == ["notes.read", "calendar.read"]
 
 
 async def test_get_app_password_with_scopes_nonexistent(temp_storage):
@@ -99,14 +99,14 @@ async def test_store_and_get_login_flow_session(temp_storage):
         user_id="alice",
         poll_token="secret-poll-token",
         poll_endpoint="https://cloud.example.com/login/v2/poll",
-        requested_scopes=["notes:read", "notes:write"],
+        requested_scopes=["notes.read", "notes.write"],
     )
 
     session = await temp_storage.get_login_flow_session("alice")
     assert session is not None
     assert session["poll_token"] == "secret-poll-token"
     assert session["poll_endpoint"] == "https://cloud.example.com/login/v2/poll"
-    assert session["requested_scopes"] == ["notes:read", "notes:write"]
+    assert session["requested_scopes"] == ["notes.read", "notes.write"]
     assert session["created_at"] is not None
     assert session["expires_at"] is not None
 
@@ -187,11 +187,11 @@ async def test_delete_expired_login_flow_sessions(temp_storage):
 
 def test_all_supported_scopes():
     """Test that ALL_SUPPORTED_SCOPES contains expected scopes."""
-    assert "notes:read" in ALL_SUPPORTED_SCOPES
-    assert "notes:write" in ALL_SUPPORTED_SCOPES
-    assert "calendar:read" in ALL_SUPPORTED_SCOPES
-    assert "files:read" in ALL_SUPPORTED_SCOPES
-    assert "deck:read" in ALL_SUPPORTED_SCOPES
+    assert "notes.read" in ALL_SUPPORTED_SCOPES
+    assert "notes.write" in ALL_SUPPORTED_SCOPES
+    assert "calendar.read" in ALL_SUPPORTED_SCOPES
+    assert "files.read" in ALL_SUPPORTED_SCOPES
+    assert "deck.read" in ALL_SUPPORTED_SCOPES
     # Scopes should be in pairs (read/write)
     read_scopes = [s for s in ALL_SUPPORTED_SCOPES if s.endswith(":read")]
     write_scopes = [s for s in ALL_SUPPORTED_SCOPES if s.endswith(":write")]

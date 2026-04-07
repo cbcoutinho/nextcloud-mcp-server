@@ -76,7 +76,7 @@ Both modes maintain the critical separation: **refresh tokens are never used for
 - ✅ Generated **on-demand** during tool execution
 - ✅ **Ephemeral** - used only for current operation
 - ✅ **NOT stored** - discarded after use
-- ✅ **Limited scopes** - only what tool needs (e.g., `notes:read` for search)
+- ✅ **Limited scopes** - only what tool needs (e.g., `notes.read` for search)
 - ✅ **Short-lived** - expires quickly (e.g., 5 minutes)
 
 **Background Jobs (Offline Operations)**:
@@ -202,7 +202,7 @@ Tools use the same pattern regardless of token acquisition mode:
 
 ```python
 @mcp.tool()
-@require_scopes("notes:read")  # Soft-scope enforced by MCP server, not Nextcloud
+@require_scopes("notes.read")  # Soft-scope enforced by MCP server, not Nextcloud
 @require_provisioning
 async def nc_notes_search_notes(query: str, ctx: Context) -> SearchNotesResponse:
     """Search notes by title or content."""
@@ -333,7 +333,7 @@ When enabled, all MCP tool calls will use token exchange (RFC 8693) to obtain ep
 
 ## Nextcloud Scope Limitation
 
-**IMPORTANT**: Nextcloud does not support OAuth scopes natively. Scopes like "notes:read" are **soft-scopes** enforced by the MCP server via `@require_scopes` decorator, not by the IdP or Nextcloud.
+**IMPORTANT**: Nextcloud does not support OAuth scopes natively. Scopes like "notes.read" are **soft-scopes** enforced by the MCP server via `@require_scopes` decorator, not by the IdP or Nextcloud.
 
 This means:
 - Token exchange provides audit and delegation benefits, not scope restriction

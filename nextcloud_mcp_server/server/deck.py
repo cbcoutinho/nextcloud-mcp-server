@@ -126,7 +126,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="List Deck Boards",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("deck:read")
+    @require_scopes("deck.read")
     @instrument_tool
     async def deck_get_boards(ctx: Context) -> ListBoardsResponse:
         """Get all Nextcloud Deck boards"""
@@ -138,7 +138,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Get Deck Board",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("deck:read")
+    @require_scopes("deck.read")
     @instrument_tool
     async def deck_get_board(ctx: Context, board_id: int) -> DeckBoard:
         """Get details of a specific Nextcloud Deck board"""
@@ -150,7 +150,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="List Deck Stacks",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("deck:read")
+    @require_scopes("deck.read")
     @instrument_tool
     async def deck_get_stacks(ctx: Context, board_id: int) -> ListStacksResponse:
         """Get all stacks in a Nextcloud Deck board"""
@@ -162,7 +162,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Get Deck Stack",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("deck:read")
+    @require_scopes("deck.read")
     @instrument_tool
     async def deck_get_stack(ctx: Context, board_id: int, stack_id: int) -> DeckStack:
         """Get details of a specific Nextcloud Deck stack"""
@@ -174,7 +174,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="List Deck Cards",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("deck:read")
+    @require_scopes("deck.read")
     @instrument_tool
     async def deck_get_cards(
         ctx: Context, board_id: int, stack_id: int
@@ -189,7 +189,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Get Deck Card",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("deck:read")
+    @require_scopes("deck.read")
     @instrument_tool
     async def deck_get_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int
@@ -203,7 +203,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="List Deck Labels",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("deck:read")
+    @require_scopes("deck.read")
     @instrument_tool
     async def deck_get_labels(ctx: Context, board_id: int) -> ListLabelsResponse:
         """Get all labels in a Nextcloud Deck board"""
@@ -216,7 +216,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Get Deck Label",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("deck:read")
+    @require_scopes("deck.read")
     @instrument_tool
     async def deck_get_label(ctx: Context, board_id: int, label_id: int) -> DeckLabel:
         """Get details of a specific Nextcloud Deck label"""
@@ -230,7 +230,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Create Deck Board",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_create_board(
         ctx: Context, title: str, color: str
@@ -251,7 +251,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Create Deck Stack",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_create_stack(
         ctx: Context, board_id: int, title: str, order: int
@@ -271,7 +271,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Update Deck Stack",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_update_stack(
         ctx: Context,
@@ -303,7 +303,7 @@ def configure_deck_tools(mcp: FastMCP):
             destructiveHint=True, idempotentHint=True, openWorldHint=True
         ),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_delete_stack(
         ctx: Context, board_id: int, stack_id: int
@@ -328,7 +328,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Create Deck Card",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_create_card(
         ctx: Context,
@@ -366,7 +366,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Update Deck Card",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_update_card(
         ctx: Context,
@@ -425,7 +425,7 @@ def configure_deck_tools(mcp: FastMCP):
             destructiveHint=True, idempotentHint=True, openWorldHint=True
         ),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_delete_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int
@@ -451,7 +451,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Archive Deck Card",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_archive_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int
@@ -477,7 +477,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Unarchive Deck Card",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_unarchive_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int
@@ -503,7 +503,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Reorder/Move Deck Card",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_reorder_card(
         ctx: Context,
@@ -539,7 +539,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Create Deck Label",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_create_label(
         ctx: Context, board_id: int, title: str, color: str
@@ -559,7 +559,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Update Deck Label",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_update_label(
         ctx: Context,
@@ -591,7 +591,7 @@ def configure_deck_tools(mcp: FastMCP):
             destructiveHint=True, idempotentHint=True, openWorldHint=True
         ),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_delete_label(
         ctx: Context, board_id: int, label_id: int
@@ -616,7 +616,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Assign Label to Deck Card",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_assign_label_to_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int, label_id: int
@@ -643,7 +643,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Remove Label from Deck Card",
         annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_remove_label_from_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int, label_id: int
@@ -671,7 +671,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Assign User to Deck Card",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_assign_user_to_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int, user_id: str
@@ -700,7 +700,7 @@ def configure_deck_tools(mcp: FastMCP):
             destructiveHint=True, idempotentHint=True, openWorldHint=True
         ),
     )
-    @require_scopes("deck:write")
+    @require_scopes("deck.write")
     @instrument_tool
     async def deck_unassign_user_from_card(
         ctx: Context, board_id: int, stack_id: int, card_id: int, user_id: str

@@ -89,7 +89,7 @@ Phase 2: OAuth Authorization Flow (PKCE - RFC 7636)
        │    client_id=xxx                 │                                     │
        │    &code_challenge=abc...        │                                     │
        │    &code_challenge_method=S256   │                                     │
-       │    &scope=openid notes:read ...  │                                     │
+       │    &scope=openid notes.read ...  │                                     │
        │                                  │                                     │
        │  2c. User consent page           │                                     │
        │<─────────────────────────────────┼─────────────────────────────────────┤
@@ -111,7 +111,7 @@ Phase 2: OAuth Authorization Flow (PKCE - RFC 7636)
        │  2g. Access token (JWT/opaque)   │                                     │
        │<─────────────────────────────────┼─────────────────────────────────────┤
        │  {access_token, token_type,      │                                     │
-       │   scope: "openid notes:read...") │  ← User's granted scopes            │
+       │   scope: "openid notes.read...") │  ← User's granted scopes            │
        │                                  │                                     │
 
 
@@ -140,11 +140,11 @@ Phase 3: MCP Tool Access (Scope-based Authorization)
        │                                  │                                     │
        │  3e. Call tool                   │                                     │
        ├─────────────────────────────────>│                                     │
-       │  nc_notes_get_note(note_id=1)    │  ← @require_scopes("notes:read")    │
+       │  nc_notes_get_note(note_id=1)    │  ← @require_scopes("notes.read")    │
        │  Authorization: Bearer <token>   │                                     │
        │                                  │                                     │
        │                                  │  3f. Scope check PASSED             │
-       │                                  │  ✓ Token has notes:read             │
+       │                                  │  ✓ Token has notes.read             │
        │                                  │                                     │
        │                                  │  3g. Nextcloud API call             │
        │                                  ├────────────────────────────────────>│
@@ -168,17 +168,17 @@ Insufficient Scope Example (Step-Up Authorization)
 
        │  4a. Call write tool             │                                     │
        ├─────────────────────────────────>│                                     │
-       │  nc_notes_create_note(...)       │  ← @require_scopes("notes:write")   │
+       │  nc_notes_create_note(...)       │  ← @require_scopes("notes.write")   │
        │  Authorization: Bearer <token>   │                                     │
        │                                  │                                     │
        │                                  │  4b. Scope check FAILED             │
-       │                                  │  ✗ Token only has notes:read        │
+       │                                  │  ✗ Token only has notes.read        │
        │                                  │                                     │
        │  4c. 403 Insufficient Scope      │                                     │
        │<─────────────────────────────────┤                                     │
        │  WWW-Authenticate: Bearer        │                                     │
        │    error="insufficient_scope",   │                                     │
-       │    scope="notes:write",          │                                     │
+       │    scope="notes.write",          │                                     │
        │    resource_metadata="..."       │                                     │
        │                                  │                                     │
        │  → Client can re-authorize with  │                                     │
@@ -364,7 +364,7 @@ The OAuth flow consists of four distinct phases (see diagram above for visual re
      - `client_id`: OAuth client ID
      - `code_challenge`: SHA256 hash of verifier
      - `code_challenge_method`: `S256`
-     - `scope`: Requested scopes (e.g., `openid notes:read notes:write`)
+     - `scope`: Requested scopes (e.g., `openid notes.read notes.write`)
      - `redirect_uri`: MCP server callback URL
 
 3. **User Consent**
@@ -409,7 +409,7 @@ The OAuth flow consists of four distinct phases (see diagram above for visual re
 3. **Dynamic Tool Filtering**
    - Server compares token scopes with each tool's `@require_scopes`
    - Only returns tools where user has all required scopes
-   - Example: Token with `notes:read` sees 4 read tools, not 3 write tools
+   - Example: Token with `notes.read` sees 4 read tools, not 3 write tools
 
 4. **Filtered Tool List**
    - Client receives only tools they can use
@@ -420,7 +420,7 @@ The OAuth flow consists of four distinct phases (see diagram above for visual re
 
 2. **Scope Validation**
    - `@require_scopes` decorator extracts token scopes
-   - Verifies token contains required scope (e.g., `notes:read`)
+   - Verifies token contains required scope (e.g., `notes.read`)
    - If missing → 403 with `WWW-Authenticate` header (step-up auth)
    - If present → continues execution
 
@@ -443,26 +443,26 @@ The OAuth flow consists of four distinct phases (see diagram above for visual re
 
 **Steps**:
 1. **Tool Call with Insufficient Scopes**
-   - User calls `nc_notes_create_note` (requires `notes:write`)
-   - But token only has `notes:read`
+   - User calls `nc_notes_create_note` (requires `notes.write`)
+   - But token only has `notes.read`
 
 2. **Scope Validation Fails**
-   - `@require_scopes("notes:write")` decorator checks token
-   - Finds `notes:write` missing
+   - `@require_scopes("notes.write")` decorator checks token
+   - Finds `notes.write` missing
 
 3. **403 Response with Challenge**
    - Returns `403 Forbidden`
    - Includes `WWW-Authenticate` header:
      ```
      Bearer error="insufficient_scope",
-            scope="notes:write",
+            scope="notes.write",
             resource_metadata="http://localhost:8000/.well-known/oauth-protected-resource/mcp"
      ```
 
 4. **Client Re-Authorization** (Optional)
    - Client can initiate new OAuth flow requesting additional scopes
    - User re-consents with expanded permissions
-   - New token includes both `notes:read` and `notes:write`
+   - New token includes both `notes.read` and `notes.write`
 
 **Result**: User can dynamically upgrade permissions without full re-authentication
 
@@ -599,46 +599,46 @@ The server supports the following OAuth scopes, organized by Nextcloud app:
 - `email` - Access to user email address (required)
 
 #### Notes App
-- `notes:read` - Read notes, search notes, get note attachments
-- `notes:write` - Create, update, append to, and delete notes
+- `notes.read` - Read notes, search notes, get note attachments
+- `notes.write` - Create, update, append to, and delete notes
 
 #### Calendar App
-- `calendar:read` - List calendars, read events, search events
-- `calendar:write` - Create, update, and delete calendars and events
+- `calendar.read` - List calendars, read events, search events
+- `calendar.write` - Create, update, and delete calendars and events
 
 #### Calendar Tasks (VTODO)
-- `todo:read` - List and read CalDAV tasks
-- `todo:write` - Create, update, and delete CalDAV tasks
+- `todo.read` - List and read CalDAV tasks
+- `todo.write` - Create, update, and delete CalDAV tasks
 
 #### Contacts App
-- `contacts:read` - List address books and read contacts (CardDAV)
-- `contacts:write` - Create, update, and delete address books and contacts
+- `contacts.read` - List address books and read contacts (CardDAV)
+- `contacts.write` - Create, update, and delete address books and contacts
 
 #### Cookbook App
-- `cookbook:read` - Read recipes, search recipes
-- `cookbook:write` - Create, update, and delete recipes
+- `cookbook.read` - Read recipes, search recipes
+- `cookbook.write` - Create, update, and delete recipes
 
 #### Deck App
-- `deck:read` - List boards, stacks, cards, and labels
-- `deck:write` - Create, update, and delete boards, stacks, cards, and labels
+- `deck.read` - List boards, stacks, cards, and labels
+- `deck.write` - Create, update, and delete boards, stacks, cards, and labels
 
 #### Tables App
-- `tables:read` - List tables and read rows
-- `tables:write` - Create, update, and delete rows in tables
+- `tables.read` - List tables and read rows
+- `tables.write` - Create, update, and delete rows in tables
 
 #### Files (WebDAV)
-- `files:read` - List files, read file contents, search files
-- `files:write` - Upload, update, move, copy, and delete files
+- `files.read` - List files, read file contents, search files
+- `files.write` - Upload, update, move, copy, and delete files
 
 #### Sharing
-- `sharing:read` - List shares and read share information
-- `sharing:write` - Create, update, and delete shares
+- `sharing.read` - List shares and read share information
+- `sharing.write` - Create, update, and delete shares
 
 #### Semantic Search (Multi-App Vector Database)
-- `semantic:read` - Query vector database, perform semantic search across all indexed Nextcloud apps (notes, calendar, deck, files, contacts)
-- `semantic:write` - Enable/disable background vector synchronization, manage indexing settings
+- `semantic.read` - Query vector database, perform semantic search across all indexed Nextcloud apps (notes, calendar, deck, files, contacts)
+- `semantic.write` - Enable/disable background vector synchronization, manage indexing settings
 
-> **Note**: Semantic search scopes provide access to the vector database that indexes content across **all** Nextcloud apps. Unlike app-specific scopes (e.g., `notes:read`), semantic scopes grant cross-app search capabilities powered by background vector synchronization (ADR-007).
+> **Note**: Semantic search scopes provide access to the vector database that indexes content across **all** Nextcloud apps. Unlike app-specific scopes (e.g., `notes.read`), semantic scopes grant cross-app search capabilities powered by background vector synchronization (ADR-007).
 
 ### Scope Discovery
 
@@ -652,7 +652,7 @@ curl http://localhost:8000/.well-known/oauth-protected-resource/mcp
 # Response includes dynamically discovered scopes
 {
   "resource": "http://localhost:8000/mcp",
-  "scopes_supported": ["openid", "profile", "email", "notes:read", ...],
+  "scopes_supported": ["openid", "profile", "email", "notes.read", ...],
   "authorization_servers": ["https://nextcloud.example.com"],
   "bearer_methods_supported": ["header"],
   "resource_signing_alg_values_supported": ["RS256"]
@@ -669,7 +669,7 @@ Tools are decorated with `@require_scopes()` to declare their required permissio
 from nextcloud_mcp_server.auth import require_scopes
 
 @mcp.tool()
-@require_scopes("notes:read")
+@require_scopes("notes.read")
 async def nc_notes_get_note(ctx: Context, note_id: int):
     """Get a specific note by ID"""
     # Implementation
@@ -681,7 +681,7 @@ During OAuth client registration (dynamic or manual), clients request a set of s
 
 **Environment Variable**:
 ```bash
-NEXTCLOUD_OIDC_SCOPES="openid profile email notes:read notes:write calendar:read calendar:write ..."
+NEXTCLOUD_OIDC_SCOPES="openid profile email notes.read notes.write calendar.read calendar.write ..."
 ```
 
 **Default**: All supported scopes (recommended for development)
@@ -695,7 +695,7 @@ The server supports OAuth step-up authorization (RFC 8693). If a user attempts t
 1. Tool returns `403 Forbidden` with `InsufficientScopeError`
 2. Response includes `WWW-Authenticate` header listing missing scopes:
    ```
-   WWW-Authenticate: Bearer error="insufficient_scope", scope="notes:write", resource_metadata="..."
+   WWW-Authenticate: Bearer error="insufficient_scope", scope="notes.write", resource_metadata="..."
    ```
 3. Client can re-authorize with additional scopes
 
@@ -708,9 +708,9 @@ All scope enforcement happens at two levels:
 
 **Example**:
 ```python
-# User token has: ["openid", "profile", "email", "notes:read"]
+# User token has: ["openid", "profile", "email", "notes.read"]
 # They will see: 4 read-only notes tools
-# They will NOT see: 3 write notes tools (notes:write required)
+# They will NOT see: 3 write notes tools (notes.write required)
 # Attempting to call a write tool returns 403 Forbidden
 ```
 

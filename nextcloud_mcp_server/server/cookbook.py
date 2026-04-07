@@ -75,7 +75,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         title="Import Recipe from URL",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("cookbook:write")
+    @require_scopes("cookbook.write")
     @instrument_tool
     async def nc_cookbook_import_recipe(url: str, ctx: Context) -> ImportRecipeResponse:
         """Import a recipe from a URL using schema.org metadata.
@@ -136,7 +136,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         title="List Recipes",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("cookbook:read")
+    @require_scopes("cookbook.read")
     @instrument_tool
     async def nc_cookbook_list_recipes(ctx: Context) -> ListRecipesResponse:
         """Get all recipes in the database"""
@@ -165,7 +165,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         title="Get Recipe",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("cookbook:read")
+    @require_scopes("cookbook.read")
     @instrument_tool
     async def nc_cookbook_get_recipe(recipe_id: int, ctx: Context) -> Recipe:
         """Get a specific recipe by its ID"""
@@ -194,7 +194,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         title="Create Recipe",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("cookbook:write")
+    @require_scopes("cookbook.write")
     @instrument_tool
     async def nc_cookbook_create_recipe(
         name: str,
@@ -277,7 +277,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         title="Update Recipe",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("cookbook:write")
+    @require_scopes("cookbook.write")
     @instrument_tool
     async def nc_cookbook_update_recipe(
         recipe_id: int,
@@ -372,7 +372,7 @@ def configure_cookbook_tools(mcp: FastMCP):
             destructiveHint=True, idempotentHint=True, openWorldHint=True
         ),
     )
-    @require_scopes("cookbook:write")
+    @require_scopes("cookbook.write")
     @instrument_tool
     async def nc_cookbook_delete_recipe(
         recipe_id: int, ctx: Context
@@ -411,7 +411,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         title="Search Recipes",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("cookbook:read")
+    @require_scopes("cookbook.read")
     @instrument_tool
     async def nc_cookbook_search_recipes(
         query: str, ctx: Context
@@ -451,7 +451,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         title="List Recipe Categories",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("cookbook:read")
+    @require_scopes("cookbook.read")
     @instrument_tool
     async def nc_cookbook_list_categories(ctx: Context) -> ListCategoriesResponse:
         """Get all known categories.
@@ -482,7 +482,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         title="Get Recipes in Category",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("cookbook:read")
+    @require_scopes("cookbook.read")
     @instrument_tool
     async def nc_cookbook_get_recipes_in_category(
         category: str, ctx: Context
@@ -522,7 +522,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         title="List Recipe Keywords",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("cookbook:read")
+    @require_scopes("cookbook.read")
     @instrument_tool
     async def nc_cookbook_list_keywords(ctx: Context) -> ListKeywordsResponse:
         """Get all known keywords/tags"""
@@ -551,7 +551,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         title="Get Recipes with Keywords",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("cookbook:read")
+    @require_scopes("cookbook.read")
     @instrument_tool
     async def nc_cookbook_get_recipes_with_keywords(
         keywords: list[str], ctx: Context
@@ -589,7 +589,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         title="Set Cookbook Configuration",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("cookbook:write")
+    @require_scopes("cookbook.write")
     @instrument_tool
     async def nc_cookbook_set_config(
         folder: str | None = None,
@@ -636,7 +636,7 @@ def configure_cookbook_tools(mcp: FastMCP):
         title="Reindex Recipes",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("cookbook:write")
+    @require_scopes("cookbook.write")
     @instrument_tool
     async def nc_cookbook_reindex(ctx: Context) -> ReindexResponse:
         """Trigger a rescan of all recipes into the caching database.

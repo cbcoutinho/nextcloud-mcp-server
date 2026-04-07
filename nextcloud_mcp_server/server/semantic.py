@@ -48,7 +48,7 @@ def configure_semantic_tools(mcp: FastMCP):
             openWorldHint=True,  # Queries external Nextcloud service
         ),
     )
-    @require_scopes("semantic:read")
+    @require_scopes("semantic.read")
     @instrument_tool
     async def nc_semantic_search(
         query: str,
@@ -303,7 +303,7 @@ def configure_semantic_tools(mcp: FastMCP):
             openWorldHint=False,  # Searches only indexed Nextcloud data
         ),
     )
-    @require_scopes("semantic:read")
+    @require_scopes("semantic.read")
     @instrument_tool
     async def nc_semantic_search_answer(
         query: str,
@@ -645,7 +645,7 @@ def configure_semantic_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("semantic:read")
+    @require_scopes("semantic.read")
     @instrument_tool
     async def nc_get_vector_sync_status(ctx: Context) -> VectorSyncStatusResponse:
         """Get the current vector sync status.

@@ -84,7 +84,7 @@ auth:
     clientId: ""
     clientSecret: ""
     # OAuth scopes to request (space-separated)
-    scopes: "openid profile email offline_access notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write"
+    scopes: "openid profile email offline_access notes.read notes.write calendar.read calendar.write contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write tables.read tables.write files.read files.write sharing.read sharing.write todo.read todo.write"
     # Use existing secret for multi-user basic auth credentials
     # If set, tokenEncryptionKey, clientId, and clientSecret above are ignored
     # Secret should contain keys specified in the *Key fields below
@@ -118,7 +118,7 @@ auth:
     # Pre-registered OAuth client secret (optional, ignored if existingSecret is set)
     clientSecret: ""
     # OAuth scopes to request (space-separated)
-    scopes: "openid profile email notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write"
+    scopes: "openid profile email notes.read notes.write calendar.read calendar.write contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write tables.read tables.write files.read files.write sharing.read sharing.write todo.read todo.write"
     # Use existing secret for OAuth client credentials
     # If set, clientId and clientSecret above are ignored
     # Secret must contain keys specified in clientIdKey and clientSecretKey

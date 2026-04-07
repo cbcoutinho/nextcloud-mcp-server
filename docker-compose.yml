@@ -23,7 +23,7 @@ services:
     restart: always
 
   app:
-    image: ${NEXTCLOUD_IMAGE:-docker.io/library/nextcloud:32.0.8@sha256:30aa31f1ef08974254114bef99845de79c3f5f00306d1d09b6211707e7d4c3e3}
+    image: ${NEXTCLOUD_IMAGE:-docker.io/library/nextcloud:32.0.8@sha256:509caed16832edc659911b19ee6f347b8105a065a416089b6e187badf2241c90}
     restart: always
     ports:
       - 127.0.0.1:8080:80
@@ -237,7 +237,7 @@ services:
       - ENABLE_DCR=true
 
       # OAuth scopes (optional - uses defaults if not specified)
-      - NEXTCLOUD_OIDC_SCOPES=openid profile email offline_access notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write todo:read todo:write
+      - NEXTCLOUD_OIDC_SCOPES=openid profile email offline_access notes.read notes.write calendar.read calendar.write contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write tables.read tables.write files.read files.write sharing.read sharing.write todo.read todo.write
 
       # NO admin credentials - using external IdP OAuth only!
     volumes:

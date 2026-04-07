@@ -462,19 +462,19 @@ async def load_oauth_client_credentials(
         # These must stay in sync — any scope a tool uses via @require_scopes must be listed here.
         dcr_scopes = (
             "openid profile email "
-            "notes:read notes:write calendar:read calendar:write todo:read todo:write "
-            "contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write "
-            "tables:read tables:write files:read files:write sharing:read sharing:write "
-            "news:read news:write collectives:read collectives:write"
+            "notes.read notes.write calendar.read calendar.write todo.read todo.write "
+            "contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write "
+            "tables.read tables.write files.read files.write sharing.read sharing.write "
+            "news.read news.write collectives.read collectives.write"
         )
 
         # Add conditional scopes based on server configuration
         dcr_settings = get_settings()
 
-        # semantic:read gates MCP-server-level semantic search tools
+        # semantic.read gates MCP-server-level semantic search tools
         if dcr_settings.vector_sync_enabled:
-            dcr_scopes = f"{dcr_scopes} semantic:read"
-            logger.info("✓ semantic:read scope enabled for semantic search tools")
+            dcr_scopes = f"{dcr_scopes} semantic.read"
+            logger.info("✓ semantic.read scope enabled for semantic search tools")
 
         # offline_access enables refresh tokens for background operations
         enable_offline_access = dcr_settings.enable_offline_access

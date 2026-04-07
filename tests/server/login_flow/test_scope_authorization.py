@@ -31,8 +31,8 @@ async def test_prm_endpoint():
 
         prm_data = response.json()
         assert prm_data["resource"] == "http://localhost:8004/mcp"
-        assert "notes:read" in prm_data["scopes_supported"]
-        assert "notes:write" in prm_data["scopes_supported"]
+        assert "notes.read" in prm_data["scopes_supported"]
+        assert "notes.write" in prm_data["scopes_supported"]
         assert "http://localhost:8004" in prm_data["authorization_servers"]
         assert "header" in prm_data["bearer_methods_supported"]
         assert "RS256" in prm_data["resource_signing_alg_values_supported"]
@@ -67,7 +67,7 @@ async def test_read_only_token_filters_write_tools(nc_mcp_login_flow_client_read
 
     logger = logging.getLogger(__name__)
 
-    # Connect with token that has only "notes:read" scope
+    # Connect with token that has only "notes.read" scope
     result = await nc_mcp_login_flow_client_read_only.list_tools()
     assert result is not None
     assert len(result.tools) > 0
@@ -76,13 +76,13 @@ async def test_read_only_token_filters_write_tools(nc_mcp_login_flow_client_read
     logger.info(f"Read-only token sees {len(tool_names)} tools")
 
     # Verify read tools are present (only for apps with :read scopes)
-    # Read-only token has: notes:read, calendar:read, contacts:read,
-    # cookbook:read, deck:read, tables:read, files:read, sharing:read
+    # Read-only token has: notes.read, calendar.read, contacts.read,
+    # cookbook.read, deck.read, tables.read, files.read, sharing.read
     expected_read_tools = [
-        "nc_notes_get_note",  # notes:read
-        "nc_notes_search_notes",  # notes:read
-        "nc_calendar_list_calendars",  # calendar:read
-        "nc_calendar_get_event",  # calendar:read
+        "nc_notes_get_note",  # notes.read
+        "nc_notes_search_notes",  # notes.read
+        "nc_calendar_list_calendars",  # calendar.read
+        "nc_calendar_get_event",  # calendar.read
     ]
 
     for tool in expected_read_tools:
@@ -90,12 +90,12 @@ async def test_read_only_token_filters_write_tools(nc_mcp_login_flow_client_read
 
     # Verify write tools are NOT present (filtered out)
     write_tools_should_be_filtered = [
-        "nc_notes_create_note",  # notes:write
-        "nc_notes_update_note",  # notes:write
-        "nc_notes_delete_note",  # notes:write
-        "nc_calendar_create_event",  # calendar:write
-        "nc_calendar_update_event",  # calendar:write
-        "nc_calendar_delete_event",  # calendar:write
+        "nc_notes_create_note",  # notes.write
+        "nc_notes_update_note",  # notes.write
+        "nc_notes_delete_note",  # notes.write
+        "nc_calendar_create_event",  # calendar.write
+        "nc_calendar_update_event",  # calendar.write
+        "nc_calendar_delete_event",  # calendar.write
     ]
 
     for tool in write_tools_should_be_filtered:
@@ -116,7 +116,7 @@ async def test_write_only_token_filters_read_tools(nc_mcp_login_flow_client_writ
 
     logger = logging.getLogger(__name__)
 
-    # Connect with token that has only "notes:write" scope
+    # Connect with token that has only "notes.write" scope
     result = await nc_mcp_login_flow_client_write_only.list_tools()
     assert result is not None
     assert len(result.tools) > 0
@@ -125,15 +125,15 @@ async def test_write_only_token_filters_read_tools(nc_mcp_login_flow_client_writ
     logger.info(f"Write-only token sees {len(tool_names)} tools")
 
     # Verify write tools are present
-    # Write-only token has: notes:write, calendar:write, contacts:write,
-    # cookbook:write, deck:write, tables:write, files:write, sharing:write
+    # Write-only token has: notes.write, calendar.write, contacts.write,
+    # cookbook.write, deck.write, tables.write, files.write, sharing.write
     expected_write_tools = [
-        "nc_notes_create_note",  # notes:write
-        "nc_notes_update_note",  # notes:write
-        "nc_notes_delete_note",  # notes:write
-        "nc_calendar_create_event",  # calendar:write
-        "nc_calendar_update_event",  # calendar:write
-        "nc_calendar_delete_event",  # calendar:write
+        "nc_notes_create_note",  # notes.write
+        "nc_notes_update_note",  # notes.write
+        "nc_notes_delete_note",  # notes.write
+        "nc_calendar_create_event",  # calendar.write
+        "nc_calendar_update_event",  # calendar.write
+        "nc_calendar_delete_event",  # calendar.write
     ]
 
     for tool in expected_write_tools:
@@ -141,10 +141,10 @@ async def test_write_only_token_filters_read_tools(nc_mcp_login_flow_client_writ
 
     # Verify read-only tools are NOT present (write-only scope)
     read_tools_should_be_filtered = [
-        "nc_notes_get_note",  # notes:read
-        "nc_notes_search_notes",  # notes:read
-        "nc_calendar_list_calendars",  # calendar:read
-        "nc_calendar_get_event",  # calendar:read
+        "nc_notes_get_note",  # notes.read
+        "nc_notes_search_notes",  # notes.read
+        "nc_calendar_list_calendars",  # calendar.read
+        "nc_calendar_get_event",  # calendar.read
     ]
 
     for tool in read_tools_should_be_filtered:
@@ -165,7 +165,7 @@ async def test_full_access_token_shows_all_tools(nc_mcp_login_flow_client_full_a
 
     logger = logging.getLogger(__name__)
 
-    # Connect with token that has both "notes:read" and "notes:write" scopes
+    # Connect with token that has both "notes.read" and "notes.write" scopes
     result = await nc_mcp_login_flow_client_full_access.list_tools()
     assert result is not None
     assert len(result.tools) > 0
@@ -177,14 +177,14 @@ async def test_full_access_token_shows_all_tools(nc_mcp_login_flow_client_full_a
     # Verify both read and write tools are present
     # Full access has all *read and *write scopes
     expected_read_tools = [
-        "nc_notes_get_note",  # notes:read
-        "nc_notes_search_notes",  # notes:read
-        "nc_calendar_list_calendars",  # calendar:read
+        "nc_notes_get_note",  # notes.read
+        "nc_notes_search_notes",  # notes.read
+        "nc_calendar_list_calendars",  # calendar.read
     ]
 
     expected_write_tools = [
-        "nc_notes_create_note",  # notes:write
-        "nc_calendar_create_event",  # calendar:write
+        "nc_notes_create_note",  # notes.write
+        "nc_calendar_create_event",  # calendar.write
     ]
 
     for tool in expected_read_tools:
@@ -217,17 +217,17 @@ async def test_scope_helper_functions():
         pass
 
     # Add scope metadata
-    mock_read_tool._required_scopes = ["notes:read"]  # type: ignore
-    mock_write_tool._required_scopes = ["notes:write"]  # type: ignore
+    mock_read_tool._required_scopes = ["notes.read"]  # type: ignore
+    mock_write_tool._required_scopes = ["notes.write"]  # type: ignore
 
     # Test get_required_scopes
-    assert get_required_scopes(mock_read_tool) == ["notes:read"]
-    assert get_required_scopes(mock_write_tool) == ["notes:write"]
+    assert get_required_scopes(mock_read_tool) == ["notes.read"]
+    assert get_required_scopes(mock_write_tool) == ["notes.write"]
     assert get_required_scopes(mock_no_scope_tool) == []
 
     # Test has_required_scopes
-    read_only_scopes = {"notes:read"}
-    full_scopes = {"notes:read", "notes:write"}
+    read_only_scopes = {"notes.read"}
+    full_scopes = {"notes.read", "notes.write"}
     no_scopes = set()
 
     # User with only read scope
@@ -251,13 +251,13 @@ async def test_scope_decorator_stores_metadata():
     """Test that @require_scopes decorator properly stores metadata."""
     from nextcloud_mcp_server.auth import require_scopes
 
-    @require_scopes("notes:read", "notes:write")
+    @require_scopes("notes.read", "notes.write")
     async def test_function():
         pass
 
     # Check that metadata was stored
     assert hasattr(test_function, "_required_scopes")
-    assert test_function._required_scopes == ["notes:read", "notes:write"]
+    assert test_function._required_scopes == ["notes.read", "notes.write"]
 
 
 @pytest.mark.integration
@@ -308,28 +308,28 @@ async def test_scope_classification():
     from scripts.add_scope_decorators_simple import classify_function
 
     # Test read operations
-    assert classify_function("nc_notes_get_note") == "notes:read"
-    assert classify_function("nc_notes_search_notes") == "notes:read"
-    assert classify_function("nc_calendar_list_events") == "calendar:read"
-    assert classify_function("nc_webdav_read_file") == "files:read"
-    assert classify_function("nc_calendar_find_availability") == "calendar:read"
-    assert classify_function("nc_calendar_get_upcoming_events") == "notes:read"
+    assert classify_function("nc_notes_get_note") == "notes.read"
+    assert classify_function("nc_notes_search_notes") == "notes.read"
+    assert classify_function("nc_calendar_list_events") == "calendar.read"
+    assert classify_function("nc_webdav_read_file") == "files.read"
+    assert classify_function("nc_calendar_find_availability") == "calendar.read"
+    assert classify_function("nc_calendar_get_upcoming_events") == "notes.read"
 
     # Test write operations
-    assert classify_function("nc_notes_create_note") == "notes:write"
-    assert classify_function("nc_notes_update_note") == "notes:write"
-    assert classify_function("nc_notes_delete_note") == "notes:write"
-    assert classify_function("nc_notes_append_content") == "notes:write"
-    assert classify_function("nc_calendar_create_event") == "calendar:write"
-    assert classify_function("nc_calendar_update_event") == "notes:write"
-    assert classify_function("nc_calendar_manage_calendar") == "notes:write"
-    assert classify_function("nc_webdav_write_file") == "files:write"
-    assert classify_function("nc_webdav_move_resource") == "notes:write"
-    assert classify_function("nc_contacts_create_contact") == "notes:write"
-    assert classify_function("nc_cookbook_import_recipe") == "notes:write"
-    assert classify_function("nc_tables_insert_row") == "notes:write"
-    assert classify_function("deck_archive_card") == "notes:write"
-    assert classify_function("deck_assign_label_to_card") == "notes:write"
+    assert classify_function("nc_notes_create_note") == "notes.write"
+    assert classify_function("nc_notes_update_note") == "notes.write"
+    assert classify_function("nc_notes_delete_note") == "notes.write"
+    assert classify_function("nc_notes_append_content") == "notes.write"
+    assert classify_function("nc_calendar_create_event") == "calendar.write"
+    assert classify_function("nc_calendar_update_event") == "notes.write"
+    assert classify_function("nc_calendar_manage_calendar") == "notes.write"
+    assert classify_function("nc_webdav_write_file") == "files.write"
+    assert classify_function("nc_webdav_move_resource") == "notes.write"
+    assert classify_function("nc_contacts_create_contact") == "notes.write"
+    assert classify_function("nc_cookbook_import_recipe") == "notes.write"
+    assert classify_function("nc_tables_insert_row") == "notes.write"
+    assert classify_function("deck_archive_card") == "notes.write"
+    assert classify_function("deck_assign_label_to_card") == "notes.write"
 
 
 @pytest.mark.skip(reason="Script no longer exists - decorators are already in place")

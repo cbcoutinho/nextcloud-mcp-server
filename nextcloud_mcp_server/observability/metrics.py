@@ -410,7 +410,7 @@ def instrument_tool(func):
 
     Usage:
         @mcp.tool()
-        @require_scopes("notes:write")
+        @require_scopes("notes.write")
         @instrument_tool
         async def nc_notes_create_note(...):
             ...
