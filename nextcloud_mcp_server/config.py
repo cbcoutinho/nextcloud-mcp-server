@@ -9,6 +9,16 @@ from typing import Any
 
 from dynaconf import Dynaconf, Validator
 
+# Resolve root_path for dynaconf settings files.
+# Editable installs: parent.parent is the project root (has settings.toml).
+# Non-editable installs (Docker): settings.toml is mounted at WORKDIR (/app/).
+_config_root = Path(__file__).parent.parent
+if not (_config_root / "settings.toml").exists():
+    _config_root = Path.cwd()
+
+# Sentinel for "key not in dynaconf at all" vs "explicitly set to None".
+_UNSET = object()
+
 # Dynaconf instance — loads settings.toml + .secrets.toml + env vars.
 # Env vars always win (12-factor). See ADR-024 for architecture.
 _dynaconf = Dynaconf(
@@ -17,7 +27,7 @@ _dynaconf = Dynaconf(
     envvar_prefix=False,
     env_switcher="MCP_DEPLOYMENT_MODE",
     ignore_unknown_envvars=True,
-    root_path=str(Path(__file__).parent.parent),
+    root_path=str(_config_root),
     load_dotenv=False,
     validators=[
         # Port ranges
@@ -518,6 +528,16 @@ def _get_background_operations_enabled() -> bool:
     return explicit or legacy or auto_enabled
 
 
+def _dget(key):
+    """Get a value from dynaconf if configured, otherwise return _UNSET.
+
+    Distinguishes "explicitly set to None" (via @none in TOML or env var)
+    from "not configured at all". When _UNSET is returned, callers should
+    let the Settings dataclass default apply.
+    """
+    return _dynaconf[key] if key in _dynaconf else _UNSET
+
+
 def get_settings() -> Settings:
     """Get application settings from dynaconf configuration.
 
@@ -528,6 +548,10 @@ def get_settings() -> Settings:
     4. settings.local.toml (if present)
     5. Environment variables (highest priority)
 
+    Values not found in any source are omitted, letting Settings dataclass
+    defaults apply. This ensures the server starts correctly even without
+    settings.toml (e.g., env-var-only deployments).
+
     Returns:
         Settings object with configuration values
     """
@@ -535,72 +559,84 @@ def get_settings() -> Settings:
     enable_semantic_search = _get_semantic_search_enabled()
     enable_background_operations = _get_background_operations_enabled()
 
-    return Settings(
+    # Mapping from Settings field name to dynaconf key
+    _field_map = {
         # Deployment mode (ADR-021)
-        deployment_mode=_dynaconf.get("MCP_DEPLOYMENT_MODE"),
+        "deployment_mode": "MCP_DEPLOYMENT_MODE",
         # OAuth/OIDC settings
-        oidc_discovery_url=_dynaconf.get("OIDC_DISCOVERY_URL"),
-        oidc_client_id=_dynaconf.get("NEXTCLOUD_OIDC_CLIENT_ID"),
-        oidc_client_secret=_dynaconf.get("NEXTCLOUD_OIDC_CLIENT_SECRET"),
-        oidc_issuer=_dynaconf.get("OIDC_ISSUER"),
+        "oidc_discovery_url": "OIDC_DISCOVERY_URL",
+        "oidc_client_id": "NEXTCLOUD_OIDC_CLIENT_ID",
+        "oidc_client_secret": "NEXTCLOUD_OIDC_CLIENT_SECRET",
+        "oidc_issuer": "OIDC_ISSUER",
         # Nextcloud settings
-        nextcloud_host=_dynaconf.get("NEXTCLOUD_HOST"),
-        nextcloud_username=_dynaconf.get("NEXTCLOUD_USERNAME"),
-        nextcloud_password=_dynaconf.get("NEXTCLOUD_PASSWORD"),
-        nextcloud_app_password=_dynaconf.get("NEXTCLOUD_APP_PASSWORD"),
+        "nextcloud_host": "NEXTCLOUD_HOST",
+        "nextcloud_username": "NEXTCLOUD_USERNAME",
+        "nextcloud_password": "NEXTCLOUD_PASSWORD",
+        "nextcloud_app_password": "NEXTCLOUD_APP_PASSWORD",
         # Nextcloud SSL/TLS settings
-        nextcloud_verify_ssl=_dynaconf.get("NEXTCLOUD_VERIFY_SSL"),
-        nextcloud_ca_bundle=_dynaconf.get("NEXTCLOUD_CA_BUNDLE"),
+        "nextcloud_verify_ssl": "NEXTCLOUD_VERIFY_SSL",
+        "nextcloud_ca_bundle": "NEXTCLOUD_CA_BUNDLE",
         # ADR-005: Token Audience Validation
-        nextcloud_mcp_server_url=_dynaconf.get("NEXTCLOUD_MCP_SERVER_URL"),
-        nextcloud_resource_uri=_dynaconf.get("NEXTCLOUD_RESOURCE_URI"),
+        "nextcloud_mcp_server_url": "NEXTCLOUD_MCP_SERVER_URL",
+        "nextcloud_resource_uri": "NEXTCLOUD_RESOURCE_URI",
         # Token verification endpoints
-        jwks_uri=_dynaconf.get("JWKS_URI"),
-        introspection_uri=_dynaconf.get("INTROSPECTION_URI"),
-        userinfo_uri=_dynaconf.get("USERINFO_URI"),
-        # Progressive Consent settings (always enabled)
-        enable_offline_access=enable_background_operations,  # Smart dependency resolution
+        "jwks_uri": "JWKS_URI",
+        "introspection_uri": "INTROSPECTION_URI",
+        "userinfo_uri": "USERINFO_URI",
         # Multi-user BasicAuth pass-through mode
-        enable_multi_user_basic_auth=_dynaconf.get("ENABLE_MULTI_USER_BASIC_AUTH"),
+        "enable_multi_user_basic_auth": "ENABLE_MULTI_USER_BASIC_AUTH",
         # Login Flow v2 settings (ADR-022)
-        enable_login_flow=_dynaconf.get("ENABLE_LOGIN_FLOW"),
-        # Token and webhook storage settings (encryption key optional for webhook-only usage)
-        token_encryption_key=_dynaconf.get("TOKEN_ENCRYPTION_KEY"),
-        token_storage_db=_dynaconf.get("TOKEN_STORAGE_DB"),
+        "enable_login_flow": "ENABLE_LOGIN_FLOW",
+        # Token and webhook storage settings
+        "token_encryption_key": "TOKEN_ENCRYPTION_KEY",
+        "token_storage_db": "TOKEN_STORAGE_DB",
         # Vector sync settings (ADR-007)
-        vector_sync_enabled=enable_semantic_search,  # Smart dependency resolution
-        vector_sync_scan_interval=_dynaconf.get("VECTOR_SYNC_SCAN_INTERVAL"),
-        vector_sync_processor_workers=_dynaconf.get("VECTOR_SYNC_PROCESSOR_WORKERS"),
-        vector_sync_queue_max_size=_dynaconf.get("VECTOR_SYNC_QUEUE_MAX_SIZE"),
-        vector_sync_user_poll_interval=_dynaconf.get("VECTOR_SYNC_USER_POLL_INTERVAL"),
+        "vector_sync_scan_interval": "VECTOR_SYNC_SCAN_INTERVAL",
+        "vector_sync_processor_workers": "VECTOR_SYNC_PROCESSOR_WORKERS",
+        "vector_sync_queue_max_size": "VECTOR_SYNC_QUEUE_MAX_SIZE",
+        "vector_sync_user_poll_interval": "VECTOR_SYNC_USER_POLL_INTERVAL",
         # Qdrant settings
-        qdrant_url=_dynaconf.get("QDRANT_URL"),
-        qdrant_location=_dynaconf.get("QDRANT_LOCATION"),
-        qdrant_api_key=_dynaconf.get("QDRANT_API_KEY"),
-        qdrant_collection=_dynaconf.get("QDRANT_COLLECTION"),
+        "qdrant_url": "QDRANT_URL",
+        "qdrant_location": "QDRANT_LOCATION",
+        "qdrant_api_key": "QDRANT_API_KEY",
+        "qdrant_collection": "QDRANT_COLLECTION",
         # Ollama settings
-        ollama_base_url=_dynaconf.get("OLLAMA_BASE_URL"),
-        ollama_embedding_model=_dynaconf.get("OLLAMA_EMBEDDING_MODEL"),
-        ollama_verify_ssl=_dynaconf.get("OLLAMA_VERIFY_SSL"),
+        "ollama_base_url": "OLLAMA_BASE_URL",
+        "ollama_embedding_model": "OLLAMA_EMBEDDING_MODEL",
+        "ollama_verify_ssl": "OLLAMA_VERIFY_SSL",
         # OpenAI settings
-        openai_api_key=_dynaconf.get("OPENAI_API_KEY"),
-        openai_base_url=_dynaconf.get("OPENAI_BASE_URL"),
-        openai_embedding_model=_dynaconf.get("OPENAI_EMBEDDING_MODEL"),
+        "openai_api_key": "OPENAI_API_KEY",
+        "openai_base_url": "OPENAI_BASE_URL",
+        "openai_embedding_model": "OPENAI_EMBEDDING_MODEL",
         # Document chunking settings
-        document_chunk_size=_dynaconf.get("DOCUMENT_CHUNK_SIZE"),
-        document_chunk_overlap=_dynaconf.get("DOCUMENT_CHUNK_OVERLAP"),
+        "document_chunk_size": "DOCUMENT_CHUNK_SIZE",
+        "document_chunk_overlap": "DOCUMENT_CHUNK_OVERLAP",
         # Observability settings
-        metrics_enabled=_dynaconf.get("METRICS_ENABLED"),
-        metrics_port=_dynaconf.get("METRICS_PORT"),
-        otel_exporter_otlp_endpoint=_dynaconf.get("OTEL_EXPORTER_OTLP_ENDPOINT"),
-        otel_exporter_verify_ssl=_dynaconf.get("OTEL_EXPORTER_VERIFY_SSL"),
-        otel_service_name=_dynaconf.get("OTEL_SERVICE_NAME"),
-        otel_traces_sampler=_dynaconf.get("OTEL_TRACES_SAMPLER"),
-        otel_traces_sampler_arg=_dynaconf.get("OTEL_TRACES_SAMPLER_ARG"),
-        log_format=_dynaconf.get("LOG_FORMAT"),
-        log_level=_dynaconf.get("LOG_LEVEL"),
-        log_include_trace_context=_dynaconf.get("LOG_INCLUDE_TRACE_CONTEXT"),
-    )
+        "metrics_enabled": "METRICS_ENABLED",
+        "metrics_port": "METRICS_PORT",
+        "otel_exporter_otlp_endpoint": "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "otel_exporter_verify_ssl": "OTEL_EXPORTER_VERIFY_SSL",
+        "otel_service_name": "OTEL_SERVICE_NAME",
+        "otel_traces_sampler": "OTEL_TRACES_SAMPLER",
+        "otel_traces_sampler_arg": "OTEL_TRACES_SAMPLER_ARG",
+        "log_format": "LOG_FORMAT",
+        "log_level": "LOG_LEVEL",
+        "log_include_trace_context": "LOG_INCLUDE_TRACE_CONTEXT",
+    }
+
+    # Only pass values that dynaconf actually has; omit unset keys so
+    # the Settings dataclass defaults apply.
+    kwargs = {
+        field: val
+        for field, key in _field_map.items()
+        if (val := _dget(key)) is not _UNSET
+    }
+
+    # Smart dependency overrides (always set, regardless of dynaconf)
+    kwargs["vector_sync_enabled"] = enable_semantic_search
+    kwargs["enable_offline_access"] = enable_background_operations
+
+    return Settings(**kwargs)
 
 
 def get_nextcloud_ssl_verify() -> bool | ssl.SSLContext:

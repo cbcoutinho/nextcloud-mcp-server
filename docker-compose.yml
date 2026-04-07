@@ -86,6 +86,7 @@ services:
       - 127.0.0.1:9090:9090
     volumes:
       - mcp-data:/app/data
+      - ./settings.toml:/app/settings.toml:ro
     environment:
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_USERNAME=admin
@@ -166,6 +167,7 @@ services:
       # NO admin credentials - credentials come from client Authorization header
     volumes:
       - multi-user-basic-data:/app/data
+      - ./settings.toml:/app/settings.toml:ro
     profiles:
       - multi-user-basic
 
@@ -241,6 +243,7 @@ services:
     volumes:
       - keycloak-tokens:/app/data
       - keycloak-oauth-storage:/app/.oauth
+      - ./settings.toml:/app/settings.toml:ro
     profiles:
       - keycloak
 
@@ -279,6 +282,7 @@ services:
     volumes:
       - login-flow-data:/app/data
       - login-flow-oauth-storage:/app/.oauth
+      - ./settings.toml:/app/settings.toml:ro
     profiles:
       - login-flow
 
