@@ -109,6 +109,28 @@ _DCR_RATE_LIMIT_MAX = 10  # max requests
 _DCR_RATE_LIMIT_WINDOW = 60  # per 60 seconds
 
 
+# OIDC standard scopes that must never be prefixed with a resource server identifier.
+_OIDC_STANDARD_SCOPES = {"openid", "profile", "email", "offline_access"}
+
+
+def _transform_scopes_for_idp(scopes: str, resource_server_id: str) -> str:
+    """Prefix resource scopes with an IdP resource server identifier.
+
+    IdPs like AWS Cognito require resource scopes in ``{identifier}/{scope}``
+    format.  Standard OIDC scopes (openid, profile, email, offline_access) are
+    forwarded unchanged.
+
+    When *resource_server_id* is empty the original scope string is returned
+    as-is.
+    """
+    if not resource_server_id:
+        return scopes
+    return " ".join(
+        f"{resource_server_id}/{s}" if s not in _OIDC_STANDARD_SCOPES else s
+        for s in scopes.split()
+    )
+
+
 async def _get_cached_discovery(url: str) -> dict[str, Any]:
     """Fetch OIDC discovery document with caching (5-minute TTL)."""
     now = time.time()
@@ -347,17 +369,10 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
 
     # Prefix resource scopes with the resource server identifier if configured.
     # Required for IdPs like Cognito that use {identifier}/{scope} format.
-    # OIDC standard scopes are forwarded as-is.
-    oidc_scopes = {"openid", "profile", "email"}
-    resource_server_id = os.getenv("OIDC_RESOURCE_SERVER_ID", "")
+    resource_server_id = os.getenv("OIDC_RESOURCE_SERVER_ID", "").strip()
+    idp_scope_str = _transform_scopes_for_idp(scopes, resource_server_id)
     if resource_server_id:
-        idp_scope_list = [
-            f"{resource_server_id}/{s}" if s not in oidc_scopes else s
-            for s in scopes.split()
-        ]
-        idp_scope_str = " ".join(idp_scope_list)
-    else:
-        idp_scope_str = scopes
+        logger.info(f"  IdP scopes (prefixed): {idp_scope_str}")
 
     # Redirect to Nextcloud with MCP server's own client_id (no PKCE — confidential client)
     idp_params = {
