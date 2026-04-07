@@ -1,4 +1,5 @@
 import os
+from importlib.metadata import version
 
 import click
 import uvicorn
@@ -453,7 +454,14 @@ def migrate(message: str):
 
 
 # Create CLI group with subcommands
-cli = click.Group()
+@click.group()
+@click.version_option(
+    version=version("nextcloud-mcp-server"), prog_name="nextcloud-mcp-server"
+)
+def cli():
+    pass
+
+
 cli.add_command(run)
 cli.add_command(db)
 
