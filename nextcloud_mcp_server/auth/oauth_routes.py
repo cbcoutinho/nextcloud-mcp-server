@@ -37,6 +37,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from nextcloud_mcp_server.auth.browser_oauth_routes import oauth_login_callback
 from nextcloud_mcp_server.auth.client_registry import get_client_registry
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+from nextcloud_mcp_server.config import get_settings
 
 from ..http import nextcloud_httpx_client
 
@@ -107,6 +108,31 @@ _DISCOVERY_CACHE_TTL = 300  # 5 minutes
 _dcr_rate_limit: dict[str, list[float]] = {}
 _DCR_RATE_LIMIT_MAX = 10  # max requests
 _DCR_RATE_LIMIT_WINDOW = 60  # per 60 seconds
+
+
+# OIDC standard scopes that must never be prefixed with a resource server identifier.
+_OIDC_STANDARD_SCOPES = {"openid", "profile", "email", "offline_access"}
+
+
+def _transform_scopes_for_idp(scopes: str, resource_server_id: str) -> str:
+    """Prefix resource scopes with an IdP resource server identifier.
+
+    IdPs like AWS Cognito require resource scopes in ``{identifier}/{scope}``
+    format.  Standard OIDC scopes (openid, profile, email, offline_access) are
+    forwarded unchanged.
+
+    When *resource_server_id* is empty the original scope string is returned
+    as-is.
+    """
+    if not resource_server_id:
+        return scopes
+    prefix = resource_server_id + "/"
+    return " ".join(
+        s
+        if s in _OIDC_STANDARD_SCOPES or s.startswith(prefix)
+        else f"{resource_server_id}/{s}"
+        for s in scopes.split()
+    )
 
 
 async def _get_cached_discovery(url: str) -> dict[str, Any]:
@@ -345,12 +371,21 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
                 f"Rewrote authorization endpoint for browser access: {authorization_endpoint}"
             )
 
+    # Prefix resource scopes with the resource server identifier if configured.
+    # Required for IdPs like Cognito that use {identifier}/{scope} format.
+    resource_server_id = (
+        (get_settings().oidc_resource_server_id or "").strip().rstrip("/")
+    )
+    idp_scope_str = _transform_scopes_for_idp(scopes, resource_server_id)
+    if resource_server_id:
+        logger.info(f"  IdP scopes (prefixed): {idp_scope_str}")
+
     # Redirect to Nextcloud with MCP server's own client_id (no PKCE — confidential client)
     idp_params = {
         "client_id": mcp_server_client_id,
         "redirect_uri": callback_uri,
         "response_type": "code",
-        "scope": scopes,
+        "scope": idp_scope_str,
         "state": server_state,
         "prompt": "consent",
         "resource": f"{mcp_server_url}/mcp",  # MCP server audience

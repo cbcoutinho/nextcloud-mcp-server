@@ -123,6 +123,7 @@ NEXTCLOUD_PASSWORD=
 | `NEXTCLOUD_OIDC_CLIENT_ID` | ⚠️ Optional | - | OAuth client ID (auto-registers if empty) |
 | `NEXTCLOUD_OIDC_CLIENT_SECRET` | ⚠️ Optional | - | OAuth client secret (auto-registers if empty) |
 | `NEXTCLOUD_MCP_SERVER_URL` | ⚠️ Optional | `http://localhost:8000` | MCP server URL for OAuth callbacks |
+| `OIDC_RESOURCE_SERVER_ID` | ⚠️ Optional | - | Resource server identifier for IdPs that require prefixed scopes (e.g., AWS Cognito). When set, resource scopes are sent as `{id}/{scope}` |
 | `NEXTCLOUD_USERNAME` | ❌ Must be empty | - | Leave empty to enable OAuth mode |
 | `NEXTCLOUD_PASSWORD` | ❌ Must be empty | - | Leave empty to enable OAuth mode |
 

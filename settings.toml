@@ -37,6 +37,7 @@ oidc_issuer = "@none"
 jwks_uri = "@none"
 introspection_uri = "@none"
 userinfo_uri = "@none"
+oidc_resource_server_id = "@none"
 
 # --- Mode flags ---
 enable_multi_user_basic_auth = false
