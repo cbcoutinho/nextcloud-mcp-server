@@ -17,6 +17,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, validate_configuration
+from nextcloud_mcp_server.context import BasicAuthLifespanContext
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
 from nextcloud_mcp_server.server import AVAILABLE_APPS
 
@@ -24,12 +25,12 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class StdioContext:
+class StdioContext(BasicAuthLifespanContext):
     """Minimal lifespan context for stdio transport.
 
-    Carries only the shared :class:`NextcloudClient`.  The ``client``
-    attribute satisfies the duck-type check in
-    :func:`nextcloud_mcp_server.context.get_client`.
+    Implements :class:`~nextcloud_mcp_server.context.BasicAuthLifespanContext`
+    so that :func:`~nextcloud_mcp_server.context.get_client` recognises it
+    as a single-user BasicAuth context.
     """
 
     client: NextcloudClient
@@ -79,6 +80,9 @@ def get_stdio_mcp(enabled_apps: list[str] | None = None) -> FastMCP:
     mcp = FastMCP("Nextcloud MCP", lifespan=stdio_lifespan)
 
     # --- capabilities resource (mirrors app.py) ---
+    # NOTE: mcp.get_context() is required here because FastMCP's
+    # FunctionResource (non-template resources) does not support
+    # context parameter injection — only template resources do.
     @mcp.resource("nc://capabilities")
     async def nc_get_capabilities():
         """Get the Nextcloud Host capabilities"""

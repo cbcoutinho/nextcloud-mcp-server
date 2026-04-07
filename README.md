@@ -85,13 +85,13 @@ docker compose --profile login-flow up -d         # Port 8004
 
 ## Key Features
 
-- **90+ MCP Tools** - Comprehensive API coverage across 8 Nextcloud apps
+- **110+ MCP Tools** - Comprehensive API coverage across 10 Nextcloud apps
 - **MCP Resources** - Structured data URIs for browsing Nextcloud data
 - **Semantic Search (Experimental)** - Optional vector-powered search for Notes, Files, News items, and Deck cards (requires Qdrant + Ollama)
 - **Document Processing** - OCR and text extraction from PDFs, DOCX, images with progress notifications
 - **Flexible Deployment** - Docker, Kubernetes ([Helm chart](https://github.com/cbcoutinho/helm-charts)), VM, or local installation
 - **Production-Ready Auth** - Basic Auth with app passwords (recommended) or OAuth2/OIDC (experimental)
-- **Multiple Transports** - stdio (default) and streamable-http
+- **Multiple Transports** - streamable-http (default) and stdio
 
 ## Supported Apps
 
@@ -105,6 +105,8 @@ docker compose --profile login-flow up -d         # Port 8004
 | **Cookbook** | 13 | Recipe management, URL import (schema.org) |
 | **Tables** | 5 | Row operations on Nextcloud Tables |
 | **Sharing** | 10+ | Create and manage shares |
+| **News** | 8 | Feeds, folders, items, feed health monitoring |
+| **Collectives** | 16 | Full CRUD on collectives, pages, and tags |
 | **Semantic Search** | 2+ | Vector search for Notes, Files, News items, and Deck cards (experimental, opt-in, requires infrastructure) |
 
 Want to see another Nextcloud app supported? [Open an issue](https://github.com/cbcoutinho/nextcloud-mcp-server/issues) or contribute a pull request!
