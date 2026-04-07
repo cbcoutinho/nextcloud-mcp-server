@@ -9,7 +9,12 @@ import certifi
 import httpx
 import pytest
 
-from nextcloud_mcp_server.config import Settings, get_nextcloud_ssl_verify, get_settings
+from nextcloud_mcp_server.config import (
+    Settings,
+    _reload_config,
+    get_nextcloud_ssl_verify,
+    get_settings,
+)
 from nextcloud_mcp_server.http import nextcloud_httpx_client, nextcloud_httpx_transport
 
 
@@ -50,7 +55,7 @@ class TestGetNextcloudSSLVerify:
             "NEXTCLOUD_VERIFY_SSL": "true",
         }
         with patch.dict(os.environ, env, clear=False):
-            # Clear any cached settings
+            _reload_config()
             result = get_nextcloud_ssl_verify()
             assert result is True
 
@@ -110,12 +115,14 @@ class TestGetSettingsSSLEnvVars:
     def test_verify_ssl_env_true(self):
         env = {"NEXTCLOUD_VERIFY_SSL": "true"}
         with patch.dict(os.environ, env, clear=False):
+            _reload_config()
             settings = get_settings()
             assert settings.nextcloud_verify_ssl is True
 
     def test_verify_ssl_env_false(self):
         env = {"NEXTCLOUD_VERIFY_SSL": "false"}
         with patch.dict(os.environ, env, clear=False):
+            _reload_config()
             settings = get_settings()
             assert settings.nextcloud_verify_ssl is False
 
@@ -123,6 +130,7 @@ class TestGetSettingsSSLEnvVars:
         with patch.dict(os.environ, {}, clear=False):
             # Remove NEXTCLOUD_VERIFY_SSL if it exists
             os.environ.pop("NEXTCLOUD_VERIFY_SSL", None)
+            _reload_config()
             settings = get_settings()
             assert settings.nextcloud_verify_ssl is True
 
@@ -133,6 +141,7 @@ class TestGetSettingsSSLEnvVars:
         )
         env = {"NEXTCLOUD_CA_BUNDLE": str(ca_file)}
         with patch.dict(os.environ, env, clear=False):
+            _reload_config()
             settings = get_settings()
             assert settings.nextcloud_ca_bundle == str(ca_file)
 

@@ -5,6 +5,10 @@ __pycache__/
 .env.local
 .env.*.local
 
+# Dynaconf (ADR-024)
+.secrets.toml
+settings.local.toml
+
 # Git
 worktrees/
 

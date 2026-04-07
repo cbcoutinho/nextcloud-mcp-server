@@ -4,7 +4,64 @@ import os
 import socket
 import ssl
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+from dynaconf import Dynaconf, Validator
+
+# Dynaconf instance — loads settings.toml + .secrets.toml + env vars.
+# Env vars always win (12-factor). See ADR-024 for architecture.
+_dynaconf = Dynaconf(
+    settings_files=["settings.toml", ".secrets.toml"],
+    environments=True,
+    envvar_prefix=False,
+    env_switcher="MCP_DEPLOYMENT_MODE",
+    ignore_unknown_envvars=True,
+    root_path=str(Path(__file__).parent.parent),
+    load_dotenv=False,
+    validators=[
+        # Port ranges
+        Validator("METRICS_PORT", gte=1, lte=65535),
+        # Positive integers
+        Validator("VECTOR_SYNC_SCAN_INTERVAL", gte=1),
+        Validator("VECTOR_SYNC_PROCESSOR_WORKERS", gte=1),
+        Validator("VECTOR_SYNC_QUEUE_MAX_SIZE", gte=1),
+        Validator("VECTOR_SYNC_USER_POLL_INTERVAL", gte=1),
+        Validator("DOCUMENT_CHUNK_SIZE", gte=1),
+        # Non-negative
+        Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
+        # Enum constraints
+        Validator("LOG_FORMAT", is_in=["text", "json"]),
+        Validator(
+            "LOG_LEVEL",
+            is_in=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        ),
+        Validator(
+            "OTEL_TRACES_SAMPLER",
+            is_in=[
+                "always_on",
+                "always_off",
+                "traceidratio",
+                "parentbased_always_on",
+                "parentbased_always_off",
+                "parentbased_traceidratio",
+            ],
+        ),
+        # Float ranges
+        Validator("OTEL_TRACES_SAMPLER_ARG", gte=0.0, lte=1.0),
+    ],
+)
+
+
+def _reload_config():
+    """Reload dynaconf settings from files and environment.
+
+    Call this in tests after modifying os.environ to refresh the cache.
+    Re-validates all validators since reload() only checks unchecked ones.
+    """
+    _dynaconf.reload()
+    _dynaconf.validators.validate_all()
+
 
 LOGGING_CONFIG = {
     "version": 1,
@@ -63,7 +120,7 @@ def setup_logging():
 
 
 def get_document_processor_config() -> dict[str, Any]:
-    """Get document processor configuration from environment.
+    """Get document processor configuration from dynaconf.
 
     Returns:
         Dict with processor configs:
@@ -78,54 +135,54 @@ def get_document_processor_config() -> dict[str, Any]:
         }
     """
     config: dict[str, Any] = {
-        "enabled": os.getenv("ENABLE_DOCUMENT_PROCESSING", "false").lower() == "true",
-        "default_processor": os.getenv("DOCUMENT_PROCESSOR", "unstructured"),
+        "enabled": _dynaconf.get("ENABLE_DOCUMENT_PROCESSING"),
+        "default_processor": _dynaconf.get("DOCUMENT_PROCESSOR"),
         "processors": {},
     }
 
     # Unstructured configuration
-    if os.getenv("ENABLE_UNSTRUCTURED", "false").lower() == "true":
+    if _dynaconf.get("ENABLE_UNSTRUCTURED"):
+        languages_str = _dynaconf.get("UNSTRUCTURED_LANGUAGES")
         config["processors"]["unstructured"] = {
-            "api_url": os.getenv("UNSTRUCTURED_API_URL", "http://unstructured:8000"),
-            "timeout": int(os.getenv("UNSTRUCTURED_TIMEOUT", "120")),
-            "strategy": os.getenv("UNSTRUCTURED_STRATEGY", "auto"),
+            "api_url": _dynaconf.get("UNSTRUCTURED_API_URL"),
+            "timeout": _dynaconf.get("UNSTRUCTURED_TIMEOUT"),
+            "strategy": _dynaconf.get("UNSTRUCTURED_STRATEGY"),
             "languages": [
-                lang.strip()
-                for lang in os.getenv("UNSTRUCTURED_LANGUAGES", "eng,deu").split(",")
-                if lang.strip()
+                lang.strip() for lang in languages_str.split(",") if lang.strip()
             ],
-            "progress_interval": int(os.getenv("PROGRESS_INTERVAL", "10")),
+            "progress_interval": _dynaconf.get("PROGRESS_INTERVAL"),
         }
 
     # Tesseract configuration
-    if os.getenv("ENABLE_TESSERACT", "false").lower() == "true":
+    if _dynaconf.get("ENABLE_TESSERACT"):
         config["processors"]["tesseract"] = {
-            "tesseract_cmd": os.getenv("TESSERACT_CMD"),  # None = auto-detect
-            "lang": os.getenv("TESSERACT_LANG", "eng"),
+            "tesseract_cmd": _dynaconf.get("TESSERACT_CMD"),  # None = auto-detect
+            "lang": _dynaconf.get("TESSERACT_LANG"),
         }
 
     # PyMuPDF configuration (local PDF processing)
-    if os.getenv("ENABLE_PYMUPDF", "true").lower() == "true":  # Enabled by default
+    if _dynaconf.get("ENABLE_PYMUPDF"):  # Enabled by default
         config["processors"]["pymupdf"] = {
-            "extract_images": os.getenv("PYMUPDF_EXTRACT_IMAGES", "true").lower()
-            == "true",
-            "image_dir": os.getenv("PYMUPDF_IMAGE_DIR"),  # None = use temp directory
+            "extract_images": _dynaconf.get("PYMUPDF_EXTRACT_IMAGES"),
+            "image_dir": _dynaconf.get(
+                "PYMUPDF_IMAGE_DIR"
+            ),  # None = use temp directory
         }
 
     # Custom processor (via HTTP API)
-    if os.getenv("ENABLE_CUSTOM_PROCESSOR", "false").lower() == "true":
-        custom_url = os.getenv("CUSTOM_PROCESSOR_URL")
+    if _dynaconf.get("ENABLE_CUSTOM_PROCESSOR"):
+        custom_url = _dynaconf.get("CUSTOM_PROCESSOR_URL")
         if custom_url:
-            supported_types_str = os.getenv("CUSTOM_PROCESSOR_TYPES", "application/pdf")
+            supported_types_str = _dynaconf.get("CUSTOM_PROCESSOR_TYPES")
             supported_types = {
                 t.strip() for t in supported_types_str.split(",") if t.strip()
             }
 
             config["processors"]["custom"] = {
-                "name": os.getenv("CUSTOM_PROCESSOR_NAME", "custom"),
+                "name": _dynaconf.get("CUSTOM_PROCESSOR_NAME"),
                 "api_url": custom_url,
-                "api_key": os.getenv("CUSTOM_PROCESSOR_API_KEY"),
-                "timeout": int(os.getenv("CUSTOM_PROCESSOR_TIMEOUT", "60")),
+                "api_key": _dynaconf.get("CUSTOM_PROCESSOR_API_KEY"),
+                "timeout": _dynaconf.get("CUSTOM_PROCESSOR_TIMEOUT"),
                 "supported_types": supported_types,
             }
 
@@ -277,11 +334,6 @@ class Settings:
                 f"Smaller chunks may lose context. Consider using at least 1024 characters."
             )
 
-        if self.document_chunk_overlap < 0:
-            raise ValueError(
-                f"DOCUMENT_CHUNK_OVERLAP ({self.document_chunk_overlap}) cannot be negative."
-            )
-
     def get_embedding_model_name(self) -> str:
         """
         Get the active embedding model name based on provider priority.
@@ -371,8 +423,8 @@ def _get_semantic_search_enabled() -> bool:
     """
     logger = logging.getLogger(__name__)
 
-    new_value = os.getenv("ENABLE_SEMANTIC_SEARCH", "").lower() == "true"
-    old_value = os.getenv("VECTOR_SYNC_ENABLED", "").lower() == "true"
+    new_value = _dynaconf.get("ENABLE_SEMANTIC_SEARCH", False)
+    old_value = _dynaconf.get("VECTOR_SYNC_ENABLED", False)
 
     if new_value and old_value:
         logger.warning(
@@ -405,16 +457,16 @@ def _is_multi_user_mode() -> bool:
         True if multi-user mode detected
     """
     # Multi-user BasicAuth explicitly enabled
-    if os.getenv("ENABLE_MULTI_USER_BASIC_AUTH", "false").lower() == "true":
+    if _dynaconf.get("ENABLE_MULTI_USER_BASIC_AUTH", False):
         return True
 
     # Token exchange implies OAuth multi-user
-    if os.getenv("ENABLE_TOKEN_EXCHANGE", "false").lower() == "true":
+    if _dynaconf.get("ENABLE_TOKEN_EXCHANGE", False):
         return True
 
     # If both username and password are set, it's single-user BasicAuth
-    has_username = bool(os.getenv("NEXTCLOUD_USERNAME"))
-    has_password = bool(os.getenv("NEXTCLOUD_PASSWORD"))
+    has_username = bool(_dynaconf.get("NEXTCLOUD_USERNAME"))
+    has_password = bool(_dynaconf.get("NEXTCLOUD_PASSWORD"))
     if has_username and has_password:
         return False
 
@@ -436,8 +488,8 @@ def _get_background_operations_enabled() -> bool:
     logger = logging.getLogger(__name__)
 
     # Check new and old variable names
-    explicit = os.getenv("ENABLE_BACKGROUND_OPERATIONS", "").lower() == "true"
-    legacy = os.getenv("ENABLE_OFFLINE_ACCESS", "").lower() == "true"
+    explicit = _dynaconf.get("ENABLE_BACKGROUND_OPERATIONS", False)
+    legacy = _dynaconf.get("ENABLE_OFFLINE_ACCESS", False)
 
     if explicit and legacy:
         logger.warning(
@@ -467,7 +519,14 @@ def _get_background_operations_enabled() -> bool:
 
 
 def get_settings() -> Settings:
-    """Get application settings from environment variables.
+    """Get application settings from dynaconf configuration.
+
+    Settings are loaded from (last wins):
+    1. settings.toml [default] section
+    2. settings.toml [<mode>] section (via MCP_DEPLOYMENT_MODE)
+    3. .secrets.toml (if present)
+    4. settings.local.toml (if present)
+    5. Environment variables (highest priority)
 
     Returns:
         Settings object with configuration values
@@ -478,83 +537,69 @@ def get_settings() -> Settings:
 
     return Settings(
         # Deployment mode (ADR-021)
-        deployment_mode=os.getenv("MCP_DEPLOYMENT_MODE"),
+        deployment_mode=_dynaconf.get("MCP_DEPLOYMENT_MODE"),
         # OAuth/OIDC settings
-        oidc_discovery_url=os.getenv("OIDC_DISCOVERY_URL"),
-        oidc_client_id=os.getenv("NEXTCLOUD_OIDC_CLIENT_ID"),
-        oidc_client_secret=os.getenv("NEXTCLOUD_OIDC_CLIENT_SECRET"),
-        oidc_issuer=os.getenv("OIDC_ISSUER"),
+        oidc_discovery_url=_dynaconf.get("OIDC_DISCOVERY_URL"),
+        oidc_client_id=_dynaconf.get("NEXTCLOUD_OIDC_CLIENT_ID"),
+        oidc_client_secret=_dynaconf.get("NEXTCLOUD_OIDC_CLIENT_SECRET"),
+        oidc_issuer=_dynaconf.get("OIDC_ISSUER"),
         # Nextcloud settings
-        nextcloud_host=os.getenv("NEXTCLOUD_HOST"),
-        nextcloud_username=os.getenv("NEXTCLOUD_USERNAME"),
-        nextcloud_password=os.getenv("NEXTCLOUD_PASSWORD"),
-        nextcloud_app_password=os.getenv("NEXTCLOUD_APP_PASSWORD"),
+        nextcloud_host=_dynaconf.get("NEXTCLOUD_HOST"),
+        nextcloud_username=_dynaconf.get("NEXTCLOUD_USERNAME"),
+        nextcloud_password=_dynaconf.get("NEXTCLOUD_PASSWORD"),
+        nextcloud_app_password=_dynaconf.get("NEXTCLOUD_APP_PASSWORD"),
         # Nextcloud SSL/TLS settings
-        nextcloud_verify_ssl=(
-            os.getenv("NEXTCLOUD_VERIFY_SSL", "true").lower() == "true"
-        ),
-        nextcloud_ca_bundle=os.getenv("NEXTCLOUD_CA_BUNDLE"),
+        nextcloud_verify_ssl=_dynaconf.get("NEXTCLOUD_VERIFY_SSL"),
+        nextcloud_ca_bundle=_dynaconf.get("NEXTCLOUD_CA_BUNDLE"),
         # ADR-005: Token Audience Validation
-        nextcloud_mcp_server_url=os.getenv("NEXTCLOUD_MCP_SERVER_URL"),
-        nextcloud_resource_uri=os.getenv("NEXTCLOUD_RESOURCE_URI"),
+        nextcloud_mcp_server_url=_dynaconf.get("NEXTCLOUD_MCP_SERVER_URL"),
+        nextcloud_resource_uri=_dynaconf.get("NEXTCLOUD_RESOURCE_URI"),
         # Token verification endpoints
-        jwks_uri=os.getenv("JWKS_URI"),
-        introspection_uri=os.getenv("INTROSPECTION_URI"),
-        userinfo_uri=os.getenv("USERINFO_URI"),
+        jwks_uri=_dynaconf.get("JWKS_URI"),
+        introspection_uri=_dynaconf.get("INTROSPECTION_URI"),
+        userinfo_uri=_dynaconf.get("USERINFO_URI"),
         # Progressive Consent settings (always enabled)
         enable_offline_access=enable_background_operations,  # Smart dependency resolution
         # Multi-user BasicAuth pass-through mode
-        enable_multi_user_basic_auth=(
-            os.getenv("ENABLE_MULTI_USER_BASIC_AUTH", "false").lower() == "true"
-        ),
+        enable_multi_user_basic_auth=_dynaconf.get("ENABLE_MULTI_USER_BASIC_AUTH"),
         # Login Flow v2 settings (ADR-022)
-        enable_login_flow=(os.getenv("ENABLE_LOGIN_FLOW", "false").lower() == "true"),
+        enable_login_flow=_dynaconf.get("ENABLE_LOGIN_FLOW"),
         # Token and webhook storage settings (encryption key optional for webhook-only usage)
-        token_encryption_key=os.getenv("TOKEN_ENCRYPTION_KEY"),
-        token_storage_db=os.getenv("TOKEN_STORAGE_DB", "/tmp/tokens.db"),
+        token_encryption_key=_dynaconf.get("TOKEN_ENCRYPTION_KEY"),
+        token_storage_db=_dynaconf.get("TOKEN_STORAGE_DB"),
         # Vector sync settings (ADR-007)
         vector_sync_enabled=enable_semantic_search,  # Smart dependency resolution
-        vector_sync_scan_interval=int(os.getenv("VECTOR_SYNC_SCAN_INTERVAL", "300")),
-        vector_sync_processor_workers=int(
-            os.getenv("VECTOR_SYNC_PROCESSOR_WORKERS", "3")
-        ),
-        vector_sync_queue_max_size=int(
-            os.getenv("VECTOR_SYNC_QUEUE_MAX_SIZE", "10000")
-        ),
-        vector_sync_user_poll_interval=int(
-            os.getenv("VECTOR_SYNC_USER_POLL_INTERVAL", "60")
-        ),
+        vector_sync_scan_interval=_dynaconf.get("VECTOR_SYNC_SCAN_INTERVAL"),
+        vector_sync_processor_workers=_dynaconf.get("VECTOR_SYNC_PROCESSOR_WORKERS"),
+        vector_sync_queue_max_size=_dynaconf.get("VECTOR_SYNC_QUEUE_MAX_SIZE"),
+        vector_sync_user_poll_interval=_dynaconf.get("VECTOR_SYNC_USER_POLL_INTERVAL"),
         # Qdrant settings
-        qdrant_url=os.getenv("QDRANT_URL"),
-        qdrant_location=os.getenv("QDRANT_LOCATION"),
-        qdrant_api_key=os.getenv("QDRANT_API_KEY"),
-        qdrant_collection=os.getenv("QDRANT_COLLECTION", "nextcloud_content"),
+        qdrant_url=_dynaconf.get("QDRANT_URL"),
+        qdrant_location=_dynaconf.get("QDRANT_LOCATION"),
+        qdrant_api_key=_dynaconf.get("QDRANT_API_KEY"),
+        qdrant_collection=_dynaconf.get("QDRANT_COLLECTION"),
         # Ollama settings
-        ollama_base_url=os.getenv("OLLAMA_BASE_URL"),
-        ollama_embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
-        ollama_verify_ssl=os.getenv("OLLAMA_VERIFY_SSL", "true").lower() == "true",
+        ollama_base_url=_dynaconf.get("OLLAMA_BASE_URL"),
+        ollama_embedding_model=_dynaconf.get("OLLAMA_EMBEDDING_MODEL"),
+        ollama_verify_ssl=_dynaconf.get("OLLAMA_VERIFY_SSL"),
         # OpenAI settings
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
-        openai_base_url=os.getenv("OPENAI_BASE_URL"),
-        openai_embedding_model=os.getenv(
-            "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
-        ),
+        openai_api_key=_dynaconf.get("OPENAI_API_KEY"),
+        openai_base_url=_dynaconf.get("OPENAI_BASE_URL"),
+        openai_embedding_model=_dynaconf.get("OPENAI_EMBEDDING_MODEL"),
         # Document chunking settings
-        document_chunk_size=int(os.getenv("DOCUMENT_CHUNK_SIZE", "2048")),
-        document_chunk_overlap=int(os.getenv("DOCUMENT_CHUNK_OVERLAP", "200")),
+        document_chunk_size=_dynaconf.get("DOCUMENT_CHUNK_SIZE"),
+        document_chunk_overlap=_dynaconf.get("DOCUMENT_CHUNK_OVERLAP"),
         # Observability settings
-        metrics_enabled=os.getenv("METRICS_ENABLED", "true").lower() == "true",
-        metrics_port=int(os.getenv("METRICS_PORT", "9090")),
-        otel_exporter_otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
-        otel_exporter_verify_ssl=os.getenv("OTEL_EXPORTER_VERIFY_SSL", "false").lower()
-        == "true",
-        otel_service_name=os.getenv("OTEL_SERVICE_NAME", "nextcloud-mcp-server"),
-        otel_traces_sampler=os.getenv("OTEL_TRACES_SAMPLER", "always_on"),
-        otel_traces_sampler_arg=float(os.getenv("OTEL_TRACES_SAMPLER_ARG", "1.0")),
-        log_format=os.getenv("LOG_FORMAT", "text"),
-        log_level=os.getenv("LOG_LEVEL", "INFO"),
-        log_include_trace_context=os.getenv("LOG_INCLUDE_TRACE_CONTEXT", "true").lower()
-        == "true",
+        metrics_enabled=_dynaconf.get("METRICS_ENABLED"),
+        metrics_port=_dynaconf.get("METRICS_PORT"),
+        otel_exporter_otlp_endpoint=_dynaconf.get("OTEL_EXPORTER_OTLP_ENDPOINT"),
+        otel_exporter_verify_ssl=_dynaconf.get("OTEL_EXPORTER_VERIFY_SSL"),
+        otel_service_name=_dynaconf.get("OTEL_SERVICE_NAME"),
+        otel_traces_sampler=_dynaconf.get("OTEL_TRACES_SAMPLER"),
+        otel_traces_sampler_arg=_dynaconf.get("OTEL_TRACES_SAMPLER_ARG"),
+        log_format=_dynaconf.get("LOG_FORMAT"),
+        log_level=_dynaconf.get("LOG_LEVEL"),
+        log_include_trace_context=_dynaconf.get("LOG_INCLUDE_TRACE_CONTEXT"),
     )
 
 
