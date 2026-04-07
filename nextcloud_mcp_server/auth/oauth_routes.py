@@ -345,12 +345,26 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
                 f"Rewrote authorization endpoint for browser access: {authorization_endpoint}"
             )
 
+    # Prefix resource scopes with the resource server identifier if configured.
+    # Required for IdPs like Cognito that use {identifier}/{scope} format.
+    # OIDC standard scopes are forwarded as-is.
+    oidc_scopes = {"openid", "profile", "email"}
+    resource_server_id = os.getenv("OIDC_RESOURCE_SERVER_ID", "")
+    if resource_server_id:
+        idp_scope_list = [
+            f"{resource_server_id}/{s}" if s not in oidc_scopes else s
+            for s in scopes.split()
+        ]
+        idp_scope_str = " ".join(idp_scope_list)
+    else:
+        idp_scope_str = scopes
+
     # Redirect to Nextcloud with MCP server's own client_id (no PKCE — confidential client)
     idp_params = {
         "client_id": mcp_server_client_id,
         "redirect_uri": callback_uri,
         "response_type": "code",
-        "scope": scopes,
+        "scope": idp_scope_str,
         "state": server_state,
         "prompt": "consent",
         "resource": f"{mcp_server_url}/mcp",  # MCP server audience
