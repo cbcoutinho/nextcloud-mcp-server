@@ -184,8 +184,8 @@ def require_scopes(*required_scopes: str):
                     )
                     return await func(*args, **kwargs)
 
-            # Extract scopes from access token
-            token_scopes = set(access_token.scopes or [])
+            # Extract scopes from access token (strip resource prefix if configured)
+            token_scopes = _strip_resource_prefix(set(access_token.scopes or []))
             required_scopes_set = set(required_scopes)
 
             # Check if offline access is enabled
@@ -263,12 +263,43 @@ def require_scopes(*required_scopes: str):
     return decorator
 
 
+def _strip_resource_prefix(scopes: set[str]) -> set[str]:
+    """Strip resource server URL prefix from scopes.
+
+    External IdPs like AWS Cognito return scopes prefixed with the resource
+    server identifier (e.g. ``https://mcp.example.com/notes.read``).  MCP
+    tools use bare scope names (``notes.read``), so we strip the prefix to
+    allow matching.
+
+    The prefix is read from ``OIDC_RESOURCE_SERVER_ID`` (set in settings).
+    Standard OIDC scopes (openid, profile, email, offline_access) are never
+    prefixed and are passed through unchanged.
+    """
+    settings = get_settings()
+    resource_server_id = getattr(settings, "oidc_resource_server_id", None)
+    if not resource_server_id:
+        return scopes
+
+    prefix = resource_server_id.rstrip("/") + "/"
+    stripped: set[str] = set()
+    for scope in scopes:
+        if scope.startswith(prefix):
+            stripped.add(scope[len(prefix) :])
+        else:
+            stripped.add(scope)
+    return stripped
+
+
 def get_access_token_scopes(ctx: Context | None = None) -> set[str]:
     """
     Extract scopes from the authenticated user's access token.
 
     This function uses MCP SDK's contextvar to access the token, which works
     across all request types including list_tools.
+
+    If ``OIDC_RESOURCE_SERVER_ID`` is configured, resource-prefixed scopes
+    (e.g. ``https://mcp.example.com/notes.read``) are stripped to bare names
+    (``notes.read``) so they match tool ``@require_scopes`` decorators.
 
     Args:
         ctx: FastMCP context object (unused, kept for compatibility)
@@ -285,6 +316,7 @@ def get_access_token_scopes(ctx: Context | None = None) -> set[str]:
         return set()
 
     scopes = set(access_token.scopes or [])
+    scopes = _strip_resource_prefix(scopes)
     logger.info(f"✅ Extracted scopes from access token: {scopes}")
     return scopes
 
