@@ -452,9 +452,11 @@ async def oauth_authorize_nextcloud(
     mcp_server_url = oauth_config["mcp_server_url"]
     callback_uri = f"{mcp_server_url}/oauth/callback"
 
-    # Flow 2: Server only needs identity + offline access (no resource scopes)
+    # Flow 2: Server only needs identity + optional offline access (no resource scopes)
     # Resource scopes are requested by client in Flow 1
-    scopes = "openid profile email offline_access"
+    scopes = "openid profile email"
+    if get_settings().enable_offline_access:
+        scopes += " offline_access"
 
     # Generate PKCE values (required by Nextcloud OIDC)
     code_verifier = secrets.token_urlsafe(32)
