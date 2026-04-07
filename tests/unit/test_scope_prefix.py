@@ -4,6 +4,8 @@ import pytest
 
 from nextcloud_mcp_server.auth.oauth_routes import _transform_scopes_for_idp
 
+pytestmark = pytest.mark.unit
+
 
 class TestTransformScopesForIdp:
     """Test _transform_scopes_for_idp scope transformation."""
@@ -70,3 +72,13 @@ class TestTransformScopesForIdp:
         """An empty scopes string returns empty."""
         result = _transform_scopes_for_idp("", "https://api.example.com")
         assert result == ""
+
+    def test_already_prefixed_scopes_not_double_prefixed(self):
+        """Scopes already carrying the resource server prefix are not prefixed again."""
+        result = _transform_scopes_for_idp(
+            "https://api.example.com/notes.read notes.write",
+            "https://api.example.com",
+        )
+        assert result == (
+            "https://api.example.com/notes.read https://api.example.com/notes.write"
+        )

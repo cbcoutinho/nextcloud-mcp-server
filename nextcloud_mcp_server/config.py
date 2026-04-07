@@ -213,6 +213,7 @@ class Settings:
     oidc_client_id: str | None = None
     oidc_client_secret: str | None = None
     oidc_issuer: str | None = None
+    oidc_resource_server_id: str | None = None
 
     # Nextcloud settings
     nextcloud_host: str | None = None
@@ -568,6 +569,7 @@ def get_settings() -> Settings:
         "oidc_client_id": "NEXTCLOUD_OIDC_CLIENT_ID",
         "oidc_client_secret": "NEXTCLOUD_OIDC_CLIENT_SECRET",
         "oidc_issuer": "OIDC_ISSUER",
+        "oidc_resource_server_id": "OIDC_RESOURCE_SERVER_ID",
         # Nextcloud settings
         "nextcloud_host": "NEXTCLOUD_HOST",
         "nextcloud_username": "NEXTCLOUD_USERNAME",

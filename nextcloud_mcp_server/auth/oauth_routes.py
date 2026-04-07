@@ -37,6 +37,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from nextcloud_mcp_server.auth.browser_oauth_routes import oauth_login_callback
 from nextcloud_mcp_server.auth.client_registry import get_client_registry
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+from nextcloud_mcp_server.config import get_settings
 
 from ..http import nextcloud_httpx_client
 
@@ -125,8 +126,11 @@ def _transform_scopes_for_idp(scopes: str, resource_server_id: str) -> str:
     """
     if not resource_server_id:
         return scopes
+    prefix = resource_server_id + "/"
     return " ".join(
-        f"{resource_server_id}/{s}" if s not in _OIDC_STANDARD_SCOPES else s
+        s
+        if s in _OIDC_STANDARD_SCOPES or s.startswith(prefix)
+        else f"{resource_server_id}/{s}"
         for s in scopes.split()
     )
 
@@ -369,7 +373,9 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
 
     # Prefix resource scopes with the resource server identifier if configured.
     # Required for IdPs like Cognito that use {identifier}/{scope} format.
-    resource_server_id = os.getenv("OIDC_RESOURCE_SERVER_ID", "").strip()
+    resource_server_id = (
+        (get_settings().oidc_resource_server_id or "").strip().rstrip("/")
+    )
     idp_scope_str = _transform_scopes_for_idp(scopes, resource_server_id)
     if resource_server_id:
         logger.info(f"  IdP scopes (prefixed): {idp_scope_str}")
