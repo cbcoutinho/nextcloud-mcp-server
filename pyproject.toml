@@ -93,21 +93,6 @@ version_provider = "uv"
 update_changelog_on_bump = true
 major_version_zero = true
 
-# MCP server version files + Helm appVersion
-version_files = [
-    "charts/nextcloud-mcp-server/Chart.yaml:^appVersion:",
-]
-
-# Ignore tags from other components
-ignored_tag_formats = [
-    "nextcloud-mcp-server-*",  # Helm chart tags
-]
-
-# Filter commits by scope (all scopes except helm)
-[tool.commitizen.customize]
-changelog_pattern = "^(feat|fix|docs|refactor|perf|test|build|ci|chore)(?!\\((?:helm)\\))(\\([^)]+\\))?(!)?:"
-schema_pattern = "^(feat|fix|docs|refactor|perf|test|build|ci|chore)(?!\\((?:helm)\\))(\\([^)]+\\))?(!)?:\\s.+"
-
 [tool.ruff.lint]
 extend-select = ["I", "PLC0415"]
 

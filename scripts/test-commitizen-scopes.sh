@@ -6,8 +6,7 @@ echo "Testing commitizen scope filtering patterns..."
 echo
 
 # Regex patterns from configs
-MCP_PATTERN='^(feat|fix|docs|refactor|perf|test|build|ci|chore)(?!\((?:helm|astrolabe)\))(\([^)]+\))?(!)?:'
-HELM_PATTERN='^(feat|fix|docs|refactor|perf|test|build|ci|chore)\(helm\)(!)?:'
+MCP_PATTERN='^(feat|fix|docs|refactor|perf|test|build|ci|chore)(?!\((?:astrolabe)\))(\([^)]+\))?(!)?:'
 ASTROLABE_PATTERN='^(feat|fix|docs|refactor|perf|test|build|ci|chore)\(astrolabe\)(!)?:'
 
 test_pattern() {
@@ -30,9 +29,6 @@ run_test() {
     # Check which components match
     if test_pattern "$message" "$MCP_PATTERN"; then
         matched_components+=("mcp")
-    fi
-    if test_pattern "$message" "$HELM_PATTERN"; then
-        matched_components+=("helm")
     fi
     if test_pattern "$message" "$ASTROLABE_PATTERN"; then
         matched_components+=("astrolabe")
@@ -62,7 +58,7 @@ run_test() {
 failed=0
 passed=0
 
-# MCP server commits (any scope except helm/astrolabe)
+# MCP server commits (any scope except astrolabe)
 run_test "feat: add new feature" "mcp" && passed=$((passed+1)) || failed=$((failed+1))
 run_test "feat(mcp): add API endpoint" "mcp" && passed=$((passed+1)) || failed=$((failed+1))
 run_test "fix(mcp): resolve authentication bug" "mcp" && passed=$((passed+1)) || failed=$((failed+1))
@@ -71,11 +67,6 @@ run_test "fix(ci): update workflow" "mcp" && passed=$((passed+1)) || failed=$((f
 run_test "feat(api): add endpoint" "mcp" && passed=$((passed+1)) || failed=$((failed+1))
 run_test "ci: configure GitHub Actions" "mcp" && passed=$((passed+1)) || failed=$((failed+1))
 
-# Helm chart commits
-run_test "feat(helm): add resource limits" "helm" && passed=$((passed+1)) || failed=$((failed+1))
-run_test "fix(helm): correct values schema" "helm" && passed=$((passed+1)) || failed=$((failed+1))
-run_test "docs(helm): update deployment guide" "helm" && passed=$((passed+1)) || failed=$((failed+1))
-
 # Astrolabe commits
 run_test "feat(astrolabe): add dark mode" "astrolabe" && passed=$((passed+1)) || failed=$((failed+1))
 run_test "fix(astrolabe): resolve UI bug" "astrolabe" && passed=$((passed+1)) || failed=$((failed+1))
@@ -83,11 +74,10 @@ run_test "perf(astrolabe): optimize rendering" "astrolabe" && passed=$((passed+1
 
 # Breaking changes
 run_test "feat(mcp)!: breaking API change" "mcp" && passed=$((passed+1)) || failed=$((failed+1))
-run_test "feat(helm)!: rename values" "helm" && passed=$((passed+1)) || failed=$((failed+1))
 run_test "feat(astrolabe)!: remove deprecated feature" "astrolabe" && passed=$((passed+1)) || failed=$((failed+1))
 
 # Edge cases
-run_test "feat(invalid): test" "mcp" && passed=$((passed+1)) || failed=$((failed+1))  # Any scope except helm/astrolabe → MCP
+run_test "feat(invalid): test" "mcp" && passed=$((passed+1)) || failed=$((failed+1))  # Any scope except astrolabe → MCP
 run_test "random commit message" "none" && passed=$((passed+1)) || failed=$((failed+1))  # Not conventional commit
 run_test "feat (mcp): space before scope" "none" && passed=$((passed+1)) || failed=$((failed+1))  # Invalid format
 

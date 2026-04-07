@@ -27,15 +27,7 @@ Access metrics at: `http://localhost:9090/metrics`
 
 ### Kubernetes Deployment
 
-Metrics are automatically scraped if you have Prometheus Operator installed:
-
-```bash
-helm install nextcloud-mcp charts/nextcloud-mcp-server \
-  --set observability.metrics.enabled=true \
-  --set observability.tracing.enabled=true \
-  --set observability.tracing.endpoint=http://opentelemetry-collector:4317 \
-  --set serviceMonitor.enabled=true
-```
+For Kubernetes deployments with Helm, see the [Helm chart repository](https://github.com/cbcoutinho/helm-charts) which includes ServiceMonitor and PrometheusRule support.
 
 ## Configuration
 
@@ -55,28 +47,7 @@ helm install nextcloud-mcp charts/nextcloud-mcp-server \
 
 ### Helm Chart Configuration
 
-```yaml
-observability:
-  metrics:
-    enabled: true
-    port: 9090
-    path: /metrics
-
-  tracing:
-    enabled: true
-    endpoint: "http://opentelemetry-collector:4317"
-    samplingRate: 1.0
-
-  logging:
-    format: json
-    level: INFO
-    includeTraceContext: true
-
-serviceMonitor:
-  enabled: true
-  interval: 30s
-  scrapeTimeout: 10s
-```
+The Helm chart has moved to a [separate repository](https://github.com/cbcoutinho/helm-charts). See its `values.yaml` for observability configuration options including metrics, tracing, logging, and ServiceMonitor settings.
 
 ## Metrics
 
@@ -206,7 +177,7 @@ sum(rate(mcp_nextcloud_api_requests_total{status_code!~"2.."}[5m])) by (app)
 - Vector sync queue >100 for >15min
 - Qdrant slow (p95 >500ms) for >10min
 
-See `charts/nextcloud-mcp-server/templates/prometheusrule.yaml` for complete definitions.
+See the [Helm chart repository](https://github.com/cbcoutinho/helm-charts) for PrometheusRule definitions.
 
 ## Troubleshooting
 

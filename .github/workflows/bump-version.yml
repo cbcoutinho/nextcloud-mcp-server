@@ -9,7 +9,7 @@ jobs:
   bump-version:
     if: "!startsWith(github.event.head_commit.message, 'bump:') && !startsWith(github.event.head_commit.message, 'chore(release):')"
     runs-on: ubuntu-latest
-    name: "Bump version and create changelog for monorepo components"
+    name: "Bump version and create changelog"
     permissions:
       contents: write
       packages: write
@@ -35,94 +35,33 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Detect and bump component versions
+      - name: Detect and bump version
         id: bump
         run: |
           set -euo pipefail
 
-          # Track which components were bumped
-          BUMPED_COMPONENTS=""
+          echo "Checking for version bump..."
 
-          # Helper function to check for commits with specific scope since last tag
-          has_commits_since_tag() {
-            local tag_pattern="$1"
-            local scope_pattern="$2"
+          # Get the most recent tag
+          last_tag=$(git tag --sort=-creatordate | grep -E "^v[0-9]" | head -n 1 || echo "")
 
-            # Get the most recent tag matching the pattern
-            local last_tag=$(git tag --sort=-creatordate | grep -E "^${tag_pattern}" | head -n 1 || echo "")
-
-            if [ -z "$last_tag" ]; then
-              # No previous tag, check all commits on master
-              local commit_range="master"
-            else
-              # Check commits since last tag
-              local commit_range="${last_tag}..HEAD"
-            fi
-
-            # Count commits matching the scope pattern
-            local commit_count=$(git log "$commit_range" --oneline --grep="^${scope_pattern}" -E | wc -l)
-
-            if [ "$commit_count" -gt 0 ]; then
-              echo "Found $commit_count commits for scope '$scope_pattern' since $last_tag"
-              return 0
-            else
-              echo "No commits found for scope '$scope_pattern' since $last_tag"
-              return 1
-            fi
-          }
-
-          # Bump MCP server (default - all commits except helm scope)
-          echo "Checking MCP server for version bump..."
-
-          # Get the most recent MCP tag
-          last_mcp_tag=$(git tag --sort=-creatordate | grep -E "^v[0-9]" | head -n 1 || echo "")
-
-          if [ -z "$last_mcp_tag" ]; then
+          if [ -z "$last_tag" ]; then
             commit_range="master"
           else
-            commit_range="${last_mcp_tag}..HEAD"
+            commit_range="${last_tag}..HEAD"
           fi
 
-          # Count conventional commits that are NOT scoped to helm
-          mcp_commit_count=$(git log "$commit_range" --oneline --grep="^(feat|fix|docs|refactor|perf|test|build|ci|chore)" -E | \
-            { grep -v "(helm)" || true; } | wc -l)
+          # Count conventional commits
+          commit_count=$(git log "$commit_range" --oneline --grep="^(feat|fix|docs|refactor|perf|test|build|ci|chore)" -E | wc -l)
 
-          MCP_BUMPED=false
-          if [ "$mcp_commit_count" -gt 0 ]; then
-            echo "Found $mcp_commit_count commits for MCP server since $last_mcp_tag"
-            echo "Bumping MCP server version..."
+          if [ "$commit_count" -gt 0 ]; then
+            echo "Found $commit_count commits since $last_tag"
+            echo "Bumping version..."
             ./scripts/bump-mcp.sh
-            BUMPED_COMPONENTS="$BUMPED_COMPONENTS mcp"
-            MCP_BUMPED=true
-          else
-            echo "No commits found for MCP server since $last_mcp_tag"
-          fi
-
-          # Bump Helm chart (scope: helm OR when MCP appVersion changes)
-          echo "Checking Helm chart for version bump..."
-          HELM_HAS_COMMITS=false
-          if has_commits_since_tag "nextcloud-mcp-server-" "(feat|fix|docs|refactor|perf|test|build|ci|chore)\(helm\)(!)?:"; then
-            HELM_HAS_COMMITS=true
-          fi
-
-          if [ "$HELM_HAS_COMMITS" = true ]; then
-            echo "Bumping Helm chart version (helm-scoped commits)..."
-            ./scripts/bump-helm.sh
-            BUMPED_COMPONENTS="$BUMPED_COMPONENTS helm"
-          elif [ "$MCP_BUMPED" = true ]; then
-            echo "Bumping Helm chart version (appVersion changed)..."
-            ./scripts/bump-helm.sh --increment PATCH
-            BUMPED_COMPONENTS="$BUMPED_COMPONENTS helm"
-          fi
-
-          # Output summary
-          if [ -z "$BUMPED_COMPONENTS" ]; then
-            echo "No components required version bumps"
-            echo "bumped=false" >> $GITHUB_OUTPUT
-          else
-            echo "Bumped components:$BUMPED_COMPONENTS"
             echo "bumped=true" >> $GITHUB_OUTPUT
-            echo "components=$BUMPED_COMPONENTS" >> $GITHUB_OUTPUT
+          else
+            echo "No commits found since $last_tag"
+            echo "bumped=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Push tags
@@ -130,35 +69,19 @@ jobs:
         run: |
           git push
           git push --tags
-          echo "Pushed tags for components:${{ steps.bump.outputs.components }}"
+          echo "Pushed version tags"
 
       - name: Summary
         run: |
           if [ "${{ steps.bump.outputs.bumped }}" == "true" ]; then
+            tag=$(git tag --sort=-creatordate | grep -E '^v[0-9]' | head -n 1)
             echo "## Version Bump Summary" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "The following components were bumped:" >> $GITHUB_STEP_SUMMARY
+            echo "- **MCP Server**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-
-            for component in ${{ steps.bump.outputs.components }}; do
-              case $component in
-                mcp)
-                  tag=$(git tag --sort=-creatordate | grep -E '^v[0-9]' | head -n 1)
-                  echo "- **MCP Server**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
-                  ;;
-                helm)
-                  tag=$(git tag --sort=-creatordate | grep -E '^nextcloud-mcp-server-' | head -n 1)
-                  echo "- **Helm Chart**: \`$tag\`" >> $GITHUB_STEP_SUMMARY
-                  ;;
-              esac
-            done
-
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Tags have been pushed and release workflows will trigger automatically." >> $GITHUB_STEP_SUMMARY
+            echo "Tag has been pushed and release workflows will trigger automatically." >> $GITHUB_STEP_SUMMARY
           else
             echo "## Version Bump Summary" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "✅ No version bumps required - no relevant commits found since last release." >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "The workflow completed successfully with no changes." >> $GITHUB_STEP_SUMMARY
+            echo "No version bump required - no relevant commits found since last release." >> $GITHUB_STEP_SUMMARY
           fi

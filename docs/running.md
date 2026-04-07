@@ -385,7 +385,7 @@ services:
 
 ### Scaling with Multiple Replicas
 
-For higher load, use Docker Swarm or Kubernetes. See the [Helm Chart](../helm/) for Kubernetes deployments.
+For higher load, use Docker Swarm or Kubernetes. See the [Helm chart](https://github.com/cbcoutinho/helm-charts) for Kubernetes deployments.
 
 ---
 

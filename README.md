@@ -52,7 +52,7 @@ docker compose --profile login-flow up -d         # Port 8004
 
 **Next Steps:**
 - Connect your MCP client (Claude Desktop, IDEs, `mcp dev`, etc.)
-- See [docs/installation.md](docs/installation.md) for other deployment options (local, Kubernetes)
+- See [docs/installation.md](docs/installation.md) for other deployment options. For Kubernetes (Helm), see [cbcoutinho/helm-charts](https://github.com/cbcoutinho/helm-charts)
 
 ## Key Features
 
@@ -60,7 +60,7 @@ docker compose --profile login-flow up -d         # Port 8004
 - **MCP Resources** - Structured data URIs for browsing Nextcloud data
 - **Semantic Search (Experimental)** - Optional vector-powered search for Notes, Files, News items, and Deck cards (requires Qdrant + Ollama)
 - **Document Processing** - OCR and text extraction from PDFs, DOCX, images with progress notifications
-- **Flexible Deployment** - Docker, Kubernetes (Helm), VM, or local installation
+- **Flexible Deployment** - Docker, Kubernetes ([Helm chart](https://github.com/cbcoutinho/helm-charts)), VM, or local installation
 - **Production-Ready Auth** - Basic Auth with app passwords (recommended) or OAuth2/OIDC (experimental)
 - **Multiple Transports** - SSE, HTTP, and streamable-http support
 
@@ -146,7 +146,7 @@ This enables natural language queries and helps discover related content across 
 ## Documentation
 
 ### Getting Started
-- **[Installation](docs/installation.md)** - Docker, Kubernetes, local, or VM deployment
+- **[Installation](docs/installation.md)** - Docker, local, or VM deployment. [Helm chart](https://github.com/cbcoutinho/helm-charts) for Kubernetes
 - **[Configuration](docs/configuration.md)** - Environment variables and advanced options
 - **[Authentication](docs/authentication.md)** - Basic Auth vs OAuth2/OIDC setup
 - **[Running the Server](docs/running.md)** - Start, manage, and troubleshoot
