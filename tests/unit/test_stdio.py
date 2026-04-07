@@ -17,6 +17,8 @@ def single_user_env(monkeypatch):
     # Ensure multi-user mode is off (may leak from other tests)
     monkeypatch.delenv("ENABLE_MULTI_USER_BASIC_AUTH", raising=False)
     _reload_config()
+    yield
+    _reload_config()
 
 
 @pytest.mark.unit

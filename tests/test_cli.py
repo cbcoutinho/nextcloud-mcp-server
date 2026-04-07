@@ -318,10 +318,6 @@ def test_stdio_calls_get_stdio_mcp(runner, clean_env, monkeypatch):
         called_with["enabled_apps"] = enabled_apps
         return FakeMcp()
 
-    monkeypatch.setattr(
-        "nextcloud_mcp_server.cli.get_stdio_mcp", mock_get_stdio_mcp, raising=False
-    )
-    # The lazy import means we need to patch at the module level it imports from
     monkeypatch.setattr("nextcloud_mcp_server.stdio.get_stdio_mcp", mock_get_stdio_mcp)
 
     result = runner.invoke(run, ["--transport", "stdio"])

@@ -1,4 +1,6 @@
-from typing import Callable
+from collections.abc import Callable
+
+from mcp.server.fastmcp import FastMCP
 
 from .calendar import configure_calendar_tools
 from .collectives import configure_collectives_tools
@@ -16,7 +18,7 @@ from .webdav import configure_webdav_tools
 # Used by app.py (HTTP), stdio.py (stdio), and cli.py (--enable-app choices).
 # Semantic search is excluded here because it is a cross-app feature gated
 # by VECTOR_SYNC_ENABLED, not an individual Nextcloud app.
-AVAILABLE_APPS: dict[str, Callable] = {
+AVAILABLE_APPS: dict[str, Callable[[FastMCP], None]] = {
     "notes": configure_notes_tools,
     "tables": configure_tables_tools,
     "webdav": configure_webdav_tools,
