@@ -10,7 +10,7 @@ Tests cover:
 import os
 from unittest.mock import patch
 
-from nextcloud_mcp_server.config import Settings
+from nextcloud_mcp_server.config import Settings, _reload_config
 from nextcloud_mcp_server.config_validators import (
     AuthMode,
     detect_auth_mode,
@@ -274,6 +274,7 @@ class TestMultiUserBasicValidation:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
             mode, errors = validate_configuration(settings)
 
@@ -372,6 +373,7 @@ class TestOAuthSingleAudienceValidation:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
             mode, errors = validate_configuration(settings)
 
@@ -459,6 +461,7 @@ class TestConfigurationConsolidation:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
             assert settings.vector_sync_enabled is True
 
@@ -474,6 +477,7 @@ class TestConfigurationConsolidation:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
             assert settings.vector_sync_enabled is True
 
@@ -490,6 +494,7 @@ class TestConfigurationConsolidation:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
             assert settings.enable_offline_access is True
 
@@ -506,6 +511,7 @@ class TestConfigurationConsolidation:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
             assert settings.enable_offline_access is True
 
@@ -525,6 +531,7 @@ class TestConfigurationConsolidation:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
 
             # Semantic search enabled
@@ -549,6 +556,7 @@ class TestConfigurationConsolidation:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
 
             # Semantic search enabled
@@ -572,6 +580,7 @@ class TestConfigurationConsolidation:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
 
             # Semantic search NOT enabled
@@ -593,6 +602,7 @@ class TestConfigurationConsolidation:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
 
             # Should use new name value (true)
@@ -612,6 +622,7 @@ class TestConfigurationConsolidation:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
 
             # Should use new name value (true)
@@ -637,6 +648,7 @@ class TestConfigurationConsolidation:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
             mode, errors = validate_configuration(settings)
 
@@ -671,6 +683,7 @@ class TestExplicitModeSelection:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
             mode = detect_auth_mode(settings)
 
@@ -688,6 +701,7 @@ class TestExplicitModeSelection:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
             mode = detect_auth_mode(settings)
 
@@ -705,6 +719,7 @@ class TestExplicitModeSelection:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
             mode = detect_auth_mode(settings)
 
@@ -722,6 +737,7 @@ class TestExplicitModeSelection:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
 
             # Should raise ValueError with clear message
@@ -747,6 +763,7 @@ class TestExplicitModeSelection:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
             mode = detect_auth_mode(settings)
 
@@ -765,6 +782,7 @@ class TestExplicitModeSelection:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
             mode = detect_auth_mode(settings)
 
@@ -782,6 +800,7 @@ class TestExplicitModeSelection:
         ):
             from nextcloud_mcp_server.config import get_settings
 
+            _reload_config()
             settings = get_settings()
             mode = detect_auth_mode(settings)
 

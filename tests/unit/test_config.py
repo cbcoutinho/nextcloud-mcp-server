@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from nextcloud_mcp_server.config import Settings, get_settings
+from nextcloud_mcp_server.config import Settings, _reload_config, get_settings
 
 
 class TestQdrantConfigValidation:
@@ -74,6 +74,7 @@ class TestGetSettings:
     @patch.dict(os.environ, {}, clear=True)
     def test_get_settings_defaults_to_memory(self):
         """Test get_settings() defaults to :memory: when no env vars set."""
+        _reload_config()
         settings = get_settings()
         assert settings.qdrant_location == ":memory:"
         assert settings.qdrant_url is None
@@ -88,6 +89,7 @@ class TestGetSettings:
     )
     def test_get_settings_network_mode(self):
         """Test get_settings() with network mode env vars."""
+        _reload_config()
         settings = get_settings()
         assert settings.qdrant_url == "http://qdrant:6333"
         assert settings.qdrant_api_key == "test-key"
@@ -100,6 +102,7 @@ class TestGetSettings:
     )
     def test_get_settings_persistent_mode(self):
         """Test get_settings() with persistent local mode env vars."""
+        _reload_config()
         settings = get_settings()
         assert settings.qdrant_location == "/app/data/qdrant"
         assert settings.qdrant_url is None
@@ -111,6 +114,7 @@ class TestGetSettings:
     )
     def test_get_settings_explicit_memory(self):
         """Test get_settings() with explicit :memory: env var."""
+        _reload_config()
         settings = get_settings()
         assert settings.qdrant_location == ":memory:"
         assert settings.qdrant_url is None
@@ -125,6 +129,7 @@ class TestGetSettings:
     )
     def test_get_settings_mutual_exclusion_error(self):
         """Test get_settings() raises error when both URL and location set."""
+        _reload_config()
         with pytest.raises(
             ValueError,
             match="Cannot set both QDRANT_URL and QDRANT_LOCATION",
@@ -144,6 +149,7 @@ class TestGetSettings:
     )
     def test_get_settings_vector_sync_config(self):
         """Test get_settings() with vector sync configuration."""
+        _reload_config()
         settings = get_settings()
         assert settings.qdrant_collection == "test_collection"
         assert settings.vector_sync_enabled is True
@@ -192,16 +198,17 @@ class TestChunkConfigValidation:
                 document_chunk_overlap=300,
             )
 
+    @patch.dict(
+        os.environ,
+        {"DOCUMENT_CHUNK_OVERLAP": "-10"},
+        clear=True,
+    )
     def test_negative_overlap_raises_error(self):
-        """Test that negative overlap raises ValueError."""
-        with pytest.raises(
-            ValueError,
-            match="DOCUMENT_CHUNK_OVERLAP .* cannot be negative",
-        ):
-            Settings(
-                document_chunk_size=512,
-                document_chunk_overlap=-10,
-            )
+        """Test that negative overlap raises ValidationError via dynaconf."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="DOCUMENT_CHUNK_OVERLAP"):
+            _reload_config()
 
     def test_small_chunk_size_warning(self, caplog):
         """Test that chunk size < 512 triggers warning."""
@@ -237,6 +244,7 @@ class TestChunkConfigValidation:
     )
     def test_get_settings_chunk_config(self):
         """Test get_settings() with chunk configuration."""
+        _reload_config()
         settings = get_settings()
         assert settings.document_chunk_size == 1024
         assert settings.document_chunk_overlap == 102
@@ -251,6 +259,7 @@ class TestChunkConfigValidation:
     )
     def test_get_settings_invalid_chunk_config_raises_error(self):
         """Test get_settings() raises error for invalid chunk config."""
+        _reload_config()
         with pytest.raises(
             ValueError,
             match="DOCUMENT_CHUNK_OVERLAP .* must be less than DOCUMENT_CHUNK_SIZE",
@@ -294,6 +303,7 @@ class TestEmbeddingModelName:
     )
     def test_get_settings_openai_model(self):
         """Test get_settings() loads OpenAI embedding model."""
+        _reload_config()
         settings = get_settings()
         assert settings.openai_api_key == "test-openai-key"
         assert settings.openai_embedding_model == "openai/text-embedding-3-small"
@@ -342,3 +352,85 @@ class TestCollectionNameWithProviders:
             openai_embedding_model="text-embedding-3-large",
         )
         assert settings.get_collection_name() == "custom-collection"
+
+
+class TestDynaconfValidators:
+    """Test dynaconf declarative validators (ADR-024 Phase 3)."""
+
+    @patch.dict(os.environ, {"METRICS_PORT": "0"}, clear=True)
+    def test_metrics_port_too_low(self):
+        """Test METRICS_PORT below minimum raises ValidationError."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="METRICS_PORT"):
+            _reload_config()
+
+    @patch.dict(os.environ, {"METRICS_PORT": "99999"}, clear=True)
+    def test_metrics_port_too_high(self):
+        """Test METRICS_PORT above maximum raises ValidationError."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="METRICS_PORT"):
+            _reload_config()
+
+    @patch.dict(os.environ, {"LOG_FORMAT": "xml"}, clear=True)
+    def test_invalid_log_format(self):
+        """Test invalid LOG_FORMAT raises ValidationError."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="LOG_FORMAT"):
+            _reload_config()
+
+    @patch.dict(os.environ, {"LOG_LEVEL": "VERBOSE"}, clear=True)
+    def test_invalid_log_level(self):
+        """Test invalid LOG_LEVEL raises ValidationError."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="LOG_LEVEL"):
+            _reload_config()
+
+    @patch.dict(os.environ, {"OTEL_TRACES_SAMPLER": "random"}, clear=True)
+    def test_invalid_otel_sampler(self):
+        """Test invalid OTEL_TRACES_SAMPLER raises ValidationError."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="OTEL_TRACES_SAMPLER"):
+            _reload_config()
+
+    @patch.dict(os.environ, {"OTEL_TRACES_SAMPLER_ARG": "2.0"}, clear=True)
+    def test_sampler_arg_too_high(self):
+        """Test OTEL_TRACES_SAMPLER_ARG above 1.0 raises ValidationError."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="OTEL_TRACES_SAMPLER_ARG"):
+            _reload_config()
+
+    @patch.dict(os.environ, {"VECTOR_SYNC_SCAN_INTERVAL": "0"}, clear=True)
+    def test_vector_sync_interval_zero(self):
+        """Test zero VECTOR_SYNC_SCAN_INTERVAL raises ValidationError."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="VECTOR_SYNC_SCAN_INTERVAL"):
+            _reload_config()
+
+    @patch.dict(os.environ, {"DOCUMENT_CHUNK_SIZE": "0"}, clear=True)
+    def test_chunk_size_zero(self):
+        """Test zero DOCUMENT_CHUNK_SIZE raises ValidationError."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="DOCUMENT_CHUNK_SIZE"):
+            _reload_config()
+
+    @patch.dict(os.environ, {"METRICS_PORT": "8080"}, clear=True)
+    def test_valid_metrics_port(self):
+        """Test valid METRICS_PORT passes validation."""
+        _reload_config()
+        settings = get_settings()
+        assert settings.metrics_port == 8080
+
+    @patch.dict(os.environ, {"LOG_FORMAT": "json"}, clear=True)
+    def test_valid_log_format_json(self):
+        """Test valid LOG_FORMAT=json passes validation."""
+        _reload_config()
+        settings = get_settings()
+        assert settings.log_format == "json"

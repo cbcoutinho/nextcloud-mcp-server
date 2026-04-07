@@ -1,0 +1,131 @@
+# Nextcloud MCP Server Configuration
+# This file defines all configuration keys with their default values.
+# Environment variables always override values from this file.
+#
+# Loading priority (last wins):
+#   1. settings.toml [default] section
+#   2. settings.toml [<mode>] section (via MCP_DEPLOYMENT_MODE)
+#   3. .secrets.toml [default] section
+#   4. .secrets.toml [<mode>] section
+#   5. settings.local.toml (all sections, gitignored)
+#   6. Environment variables (highest priority)
+#
+# See docs/ADR-024-dynaconf-configuration-management.md for details.
+
+[default]
+
+# --- Deployment mode (ADR-021) ---
+# Valid: single_user_basic, multi_user_basic, login_flow, keycloak, oauth_single_audience
+# If unset, mode is auto-detected from other settings.
+mcp_deployment_mode = "@none"
+
+# --- Nextcloud core ---
+nextcloud_host = "@none"
+nextcloud_username = "@none"
+nextcloud_password = "@none"
+nextcloud_app_password = "@none"
+nextcloud_verify_ssl = true
+nextcloud_ca_bundle = "@none"
+nextcloud_mcp_server_url = "@none"
+nextcloud_resource_uri = "@none"
+
+# --- OAuth/OIDC ---
+oidc_discovery_url = "@none"
+nextcloud_oidc_client_id = "@none"
+nextcloud_oidc_client_secret = "@none"
+oidc_issuer = "@none"
+jwks_uri = "@none"
+introspection_uri = "@none"
+userinfo_uri = "@none"
+
+# --- Mode flags ---
+enable_multi_user_basic_auth = false
+enable_login_flow = false
+enable_semantic_search = false
+enable_background_operations = false
+
+# Deprecated aliases (declared so env var overrides work)
+vector_sync_enabled = false
+enable_offline_access = false
+enable_token_exchange = false
+
+# --- Token storage ---
+token_encryption_key = "@none"
+token_storage_db = "/tmp/tokens.db"
+
+# --- Vector sync ---
+vector_sync_scan_interval = 300
+vector_sync_processor_workers = 3
+vector_sync_queue_max_size = 10000
+vector_sync_user_poll_interval = 60
+
+# --- Qdrant ---
+# No default for qdrant_location — conditional default (:memory:) is in Settings.__post_init__
+qdrant_url = "@none"
+qdrant_location = "@none"
+qdrant_api_key = "@none"
+qdrant_collection = "nextcloud_content"
+
+# --- Ollama ---
+ollama_base_url = "@none"
+ollama_embedding_model = "nomic-embed-text"
+ollama_verify_ssl = true
+
+# --- OpenAI ---
+openai_api_key = "@none"
+openai_base_url = "@none"
+openai_embedding_model = "text-embedding-3-small"
+
+# --- Document chunking ---
+document_chunk_size = 2048
+document_chunk_overlap = 200
+
+# --- Observability ---
+metrics_enabled = true
+metrics_port = 9090
+otel_exporter_otlp_endpoint = "@none"
+otel_exporter_verify_ssl = false
+otel_service_name = "nextcloud-mcp-server"
+otel_traces_sampler = "always_on"
+otel_traces_sampler_arg = 1.0
+log_format = "text"
+log_level = "INFO"
+log_include_trace_context = true
+
+# --- Document processing ---
+enable_document_processing = false
+document_processor = "unstructured"
+enable_unstructured = false
+unstructured_api_url = "http://unstructured:8000"
+unstructured_timeout = 120
+unstructured_strategy = "auto"
+unstructured_languages = "eng,deu"
+progress_interval = 10
+enable_tesseract = false
+tesseract_cmd = "@none"
+tesseract_lang = "eng"
+enable_pymupdf = true
+pymupdf_extract_images = true
+pymupdf_image_dir = "@none"
+enable_custom_processor = false
+custom_processor_url = "@none"
+custom_processor_types = "application/pdf"
+custom_processor_name = "custom"
+custom_processor_api_key = "@none"
+custom_processor_timeout = 60
+
+
+# --- Deployment mode sections ---
+# Keys here override [default] when MCP_DEPLOYMENT_MODE matches.
+
+[single_user_basic]
+
+[multi_user_basic]
+enable_multi_user_basic_auth = true
+
+[login_flow]
+enable_login_flow = true
+
+[keycloak]
+
+[oauth_single_audience]

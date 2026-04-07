@@ -4,6 +4,8 @@ import os
 
 import pytest
 
+from nextcloud_mcp_server.config import _reload_config, get_document_processor_config
+
 pytestmark = pytest.mark.unit
 
 
@@ -12,18 +14,16 @@ class TestDocumentProcessorConfig:
 
     def test_config_disabled_by_default(self):
         """Test that document processing is disabled by default."""
-        from nextcloud_mcp_server.config import get_document_processor_config
-
         os.environ.pop("ENABLE_DOCUMENT_PROCESSING", None)
+        _reload_config()
         config = get_document_processor_config()
         assert config["enabled"] is False
 
     def test_config_enabled(self):
         """Test enabling document processing."""
-        from nextcloud_mcp_server.config import get_document_processor_config
-
         os.environ["ENABLE_DOCUMENT_PROCESSING"] = "true"
         try:
+            _reload_config()
             config = get_document_processor_config()
             assert config["enabled"] is True
         finally:
@@ -31,8 +31,6 @@ class TestDocumentProcessorConfig:
 
     def test_unstructured_processor_config(self):
         """Test Unstructured processor configuration."""
-        from nextcloud_mcp_server.config import get_document_processor_config
-
         os.environ["ENABLE_UNSTRUCTURED"] = "true"
         os.environ["UNSTRUCTURED_API_URL"] = "http://test:8000"
         os.environ["UNSTRUCTURED_STRATEGY"] = "hi_res"
@@ -40,6 +38,7 @@ class TestDocumentProcessorConfig:
         os.environ["UNSTRUCTURED_TIMEOUT"] = "60"
 
         try:
+            _reload_config()
             config = get_document_processor_config()
             assert "unstructured" in config["processors"]
             unst_config = config["processors"]["unstructured"]
@@ -56,13 +55,12 @@ class TestDocumentProcessorConfig:
 
     def test_tesseract_processor_config(self):
         """Test Tesseract processor configuration."""
-        from nextcloud_mcp_server.config import get_document_processor_config
-
         os.environ["ENABLE_TESSERACT"] = "true"
         os.environ["TESSERACT_LANG"] = "eng+deu"
         os.environ["TESSERACT_CMD"] = "/usr/local/bin/tesseract"
 
         try:
+            _reload_config()
             config = get_document_processor_config()
             assert "tesseract" in config["processors"]
             tess_config = config["processors"]["tesseract"]
@@ -75,8 +73,6 @@ class TestDocumentProcessorConfig:
 
     def test_custom_processor_config(self):
         """Test custom processor configuration."""
-        from nextcloud_mcp_server.config import get_document_processor_config
-
         os.environ["ENABLE_CUSTOM_PROCESSOR"] = "true"
         os.environ["CUSTOM_PROCESSOR_NAME"] = "my_ocr"
         os.environ["CUSTOM_PROCESSOR_URL"] = "http://localhost:9000/process"
@@ -85,6 +81,7 @@ class TestDocumentProcessorConfig:
         os.environ["CUSTOM_PROCESSOR_TYPES"] = "application/pdf,image/jpeg"
 
         try:
+            _reload_config()
             config = get_document_processor_config()
             assert "custom" in config["processors"]
             custom_config = config["processors"]["custom"]
@@ -104,13 +101,12 @@ class TestDocumentProcessorConfig:
 
     def test_multiple_processors(self):
         """Test configuration with multiple processors enabled."""
-        from nextcloud_mcp_server.config import get_document_processor_config
-
         os.environ["ENABLE_DOCUMENT_PROCESSING"] = "true"
         os.environ["ENABLE_UNSTRUCTURED"] = "true"
         os.environ["ENABLE_TESSERACT"] = "true"
 
         try:
+            _reload_config()
             config = get_document_processor_config()
             assert config["enabled"] is True
             assert "unstructured" in config["processors"]
@@ -122,14 +118,14 @@ class TestDocumentProcessorConfig:
 
     def test_default_processor_selection(self):
         """Test default processor configuration."""
-        from nextcloud_mcp_server.config import get_document_processor_config
-
         os.environ.pop("DOCUMENT_PROCESSOR", None)
+        _reload_config()
         config = get_document_processor_config()
         assert config["default_processor"] == "unstructured"
 
         os.environ["DOCUMENT_PROCESSOR"] = "tesseract"
         try:
+            _reload_config()
             config = get_document_processor_config()
             assert config["default_processor"] == "tesseract"
         finally:
