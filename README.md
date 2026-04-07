@@ -23,7 +23,7 @@ Run the server locally with [uvx](https://docs.astral.sh/uv/) (no installation r
 NEXTCLOUD_HOST=https://your.nextcloud.instance.com \
 NEXTCLOUD_USERNAME=your_username \
 NEXTCLOUD_PASSWORD=your_app_password \
-  uvx nextcloud-mcp-server run
+  uvx nextcloud-mcp-server run --transport stdio
 ```
 
 Or add it directly to your MCP client configuration (e.g. `claude_desktop_config.json` or `.claude/settings.json`):
@@ -33,7 +33,7 @@ Or add it directly to your MCP client configuration (e.g. `claude_desktop_config
   "mcpServers": {
     "nextcloud": {
       "command": "uvx",
-      "args": ["nextcloud-mcp-server", "run"],
+      "args": ["nextcloud-mcp-server", "run", "--transport", "stdio"],
       "env": {
         "NEXTCLOUD_HOST": "https://your.nextcloud.instance.com",
         "NEXTCLOUD_USERNAME": "your_username",

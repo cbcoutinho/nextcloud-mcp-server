@@ -3,6 +3,7 @@
 import pytest
 from mcp.server.fastmcp import FastMCP
 
+from nextcloud_mcp_server.config import _reload_config
 from nextcloud_mcp_server.config_validators import AuthMode
 from nextcloud_mcp_server.stdio import get_stdio_mcp
 
@@ -13,6 +14,9 @@ def single_user_env(monkeypatch):
     monkeypatch.setenv("NEXTCLOUD_HOST", "https://cloud.example.com")
     monkeypatch.setenv("NEXTCLOUD_USERNAME", "admin")
     monkeypatch.setenv("NEXTCLOUD_PASSWORD", "secret")
+    # Ensure multi-user mode is off (may leak from other tests)
+    monkeypatch.delenv("ENABLE_MULTI_USER_BASIC_AUTH", raising=False)
+    _reload_config()
 
 
 @pytest.mark.unit
@@ -48,6 +52,7 @@ def test_get_stdio_mcp_rejects_non_single_user_mode(monkeypatch):
 def test_get_stdio_mcp_registers_all_apps_by_default(single_user_env):
     """All app tool groups are registered when no filter is specified."""
     mcp = get_stdio_mcp()
+    # NOTE: _tool_manager is a FastMCP internal; may break on SDK upgrades
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
 
@@ -68,6 +73,7 @@ def test_get_stdio_mcp_registers_all_apps_by_default(single_user_env):
 def test_get_stdio_mcp_respects_enabled_apps(single_user_env):
     """Only specified apps have their tools registered."""
     mcp = get_stdio_mcp(enabled_apps=["notes"])
+    # NOTE: _tool_manager is a FastMCP internal; may break on SDK upgrades
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
 
@@ -81,6 +87,7 @@ def test_get_stdio_mcp_respects_enabled_apps(single_user_env):
 def test_get_stdio_mcp_no_semantic_tools(single_user_env):
     """Semantic search tools are never registered in stdio mode."""
     mcp = get_stdio_mcp()
+    # NOTE: _tool_manager is a FastMCP internal; may break on SDK upgrades
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
 
@@ -92,5 +99,6 @@ def test_get_stdio_mcp_no_semantic_tools(single_user_env):
 def test_get_stdio_mcp_registers_capabilities_resource(single_user_env):
     """The nc://capabilities resource is registered."""
     mcp = get_stdio_mcp()
+    # NOTE: _resource_manager._resources is a FastMCP internal; may break on SDK upgrades
     resources = mcp._resource_manager._resources
     assert "nc://capabilities" in resources

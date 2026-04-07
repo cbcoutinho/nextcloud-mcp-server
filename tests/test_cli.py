@@ -108,8 +108,6 @@ def test_cli_options_set_environment_variables(runner, clean_env, monkeypatch):
     _ = runner.invoke(
         run,
         [
-            "--transport",
-            "streamable-http",
             "--nextcloud-host",
             "https://test.example.com",
             "--nextcloud-username",
@@ -166,8 +164,6 @@ def test_cli_options_override_environment_variables(runner, monkeypatch):
     _ = runner.invoke(
         run,
         [
-            "--transport",
-            "streamable-http",
             "--nextcloud-host",
             "https://from-cli.example.com",
             "--nextcloud-username",
@@ -218,7 +214,7 @@ def test_environment_variables_used_when_cli_not_provided(runner, monkeypatch):
     monkeypatch.setattr("nextcloud_mcp_server.cli.get_app", mock_get_app)
 
     # Don't provide any CLI options - should use env vars
-    _ = runner.invoke(run, ["--transport", "streamable-http"])
+    _ = runner.invoke(run, [])
 
     # Verify env vars were used
     assert captured_env["NEXTCLOUD_HOST"] == "https://from-env.example.com"
@@ -250,7 +246,7 @@ def test_default_values(runner, clean_env, monkeypatch):
     monkeypatch.setattr("nextcloud_mcp_server.cli.get_app", mock_get_app)
 
     # Don't provide CLI options or env vars - should use defaults
-    _ = runner.invoke(run, ["--transport", "streamable-http"])
+    _ = runner.invoke(run, [])
 
     # Verify default values
     assert captured_env["NEXTCLOUD_OIDC_SCOPES"] == (
@@ -282,14 +278,12 @@ def test_oauth_token_type_case_normalization(runner, clean_env, monkeypatch):
     monkeypatch.setattr("nextcloud_mcp_server.cli.get_app", mock_get_app)
 
     # Test uppercase JWT
-    runner.invoke(run, ["--transport", "streamable-http", "--oauth-token-type", "JWT"])
+    runner.invoke(run, ["--oauth-token-type", "JWT"])
     assert captured_env["NEXTCLOUD_OIDC_TOKEN_TYPE"] in ["JWT", "jwt"]
 
     # Test mixed case Bearer
     captured_env.clear()
-    runner.invoke(
-        run, ["--transport", "streamable-http", "--oauth-token-type", "Bearer"]
-    )
+    runner.invoke(run, ["--oauth-token-type", "Bearer"])
     assert captured_env["NEXTCLOUD_OIDC_TOKEN_TYPE"] in ["Bearer", "bearer"]
 
 

@@ -119,17 +119,8 @@ from nextcloud_mcp_server.observability.metrics import (
     set_dependency_health,
 )
 from nextcloud_mcp_server.server import (
-    configure_calendar_tools,
-    configure_collectives_tools,
-    configure_contacts_tools,
-    configure_cookbook_tools,
-    configure_deck_tools,
-    configure_news_tools,
-    configure_notes_tools,
+    AVAILABLE_APPS,
     configure_semantic_tools,
-    configure_sharing_tools,
-    configure_tables_tools,
-    configure_webdav_tools,
 )
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
@@ -1232,32 +1223,18 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         client = await get_nextcloud_client(ctx)
         return await client.capabilities()
 
-    # Define available apps and their configuration functions
-    available_apps = {
-        "notes": configure_notes_tools,
-        "tables": configure_tables_tools,
-        "webdav": configure_webdav_tools,
-        "sharing": configure_sharing_tools,
-        "calendar": configure_calendar_tools,
-        "collectives": configure_collectives_tools,
-        "contacts": configure_contacts_tools,
-        "cookbook": configure_cookbook_tools,
-        "deck": configure_deck_tools,
-        "news": configure_news_tools,
-    }
-
     # If no specific apps are specified, enable all
     if enabled_apps is None:
-        enabled_apps = list(available_apps.keys())
+        enabled_apps = list(AVAILABLE_APPS.keys())
 
     # Configure only the enabled apps
     for app_name in enabled_apps:
-        if app_name in available_apps:
+        if app_name in AVAILABLE_APPS:
             logger.info(f"Configuring {app_name} tools")
-            available_apps[app_name](mcp)
+            AVAILABLE_APPS[app_name](mcp)
         else:
             logger.warning(
-                f"Unknown app: {app_name}. Available apps: {list(available_apps.keys())}"
+                f"Unknown app: {app_name}. Available apps: {list(AVAILABLE_APPS.keys())}"
             )
 
     # Register semantic search tools (cross-app feature)

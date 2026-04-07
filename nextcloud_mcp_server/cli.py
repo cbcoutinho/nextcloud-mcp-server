@@ -14,6 +14,7 @@ from nextcloud_mcp_server.migrations import (
     upgrade_database,
 )
 from nextcloud_mcp_server.observability import get_uvicorn_logging_config
+from nextcloud_mcp_server.server import AVAILABLE_APPS
 
 from .app import get_app
 
@@ -36,29 +37,16 @@ from .app import get_app
 @click.option(
     "--transport",
     "-t",
-    default="stdio",
+    default="streamable-http",
     show_default=True,
-    type=click.Choice(["stdio", "streamable-http", "http"]),
+    type=click.Choice(["streamable-http", "http", "stdio"]),
     help="MCP transport protocol",
 )
 @click.option(
     "--enable-app",
     "-e",
     multiple=True,
-    type=click.Choice(
-        [
-            "notes",
-            "tables",
-            "webdav",
-            "calendar",
-            "contacts",
-            "cookbook",
-            "deck",
-            "news",
-            "collectives",
-            "sharing",
-        ]
-    ),
+    type=click.Choice(sorted(AVAILABLE_APPS.keys())),
     help="Enable specific Nextcloud app APIs. Can be specified multiple times. If not specified, all apps are enabled.",
 )
 @click.option(
@@ -264,7 +252,10 @@ def run(
             )
         from .stdio import get_stdio_mcp  # noqa: PLC0415
 
-        mcp = get_stdio_mcp(enabled_apps=enabled_apps)
+        try:
+            mcp = get_stdio_mcp(enabled_apps=enabled_apps)
+        except ValueError as e:
+            raise click.ClickException(str(e)) from e
         mcp.run(transport="stdio")
         return
 
