@@ -55,7 +55,7 @@ def configure_calendar_tools(mcp: FastMCP):
         title="List Calendars",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("calendar:read")
+    @require_scopes("calendar.read")
     @instrument_tool
     async def nc_calendar_list_calendars(ctx: Context) -> ListCalendarsResponse:
         """List all available calendars for the user"""
@@ -69,7 +69,7 @@ def configure_calendar_tools(mcp: FastMCP):
         title="Create Calendar Event",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("calendar:write")
+    @require_scopes("calendar.write")
     @instrument_tool
     async def nc_calendar_create_event(
         calendar_name: str,
@@ -149,7 +149,7 @@ def configure_calendar_tools(mcp: FastMCP):
         title="List Calendar Events",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("calendar:read")
+    @require_scopes("calendar.read")
     @instrument_tool
     async def nc_calendar_list_events(
         calendar_name: str,
@@ -269,7 +269,7 @@ def configure_calendar_tools(mcp: FastMCP):
         title="Get Calendar Event",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("calendar:read")
+    @require_scopes("calendar.read")
     @instrument_tool
     async def nc_calendar_get_event(
         calendar_name: str,
@@ -285,7 +285,7 @@ def configure_calendar_tools(mcp: FastMCP):
         title="Update Calendar Event",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("calendar:write")
+    @require_scopes("calendar.write")
     @instrument_tool
     async def nc_calendar_update_event(
         calendar_name: str,
@@ -364,7 +364,7 @@ def configure_calendar_tools(mcp: FastMCP):
             destructiveHint=True, idempotentHint=True, openWorldHint=True
         ),
     )
-    @require_scopes("calendar:write")
+    @require_scopes("calendar.write")
     @instrument_tool
     async def nc_calendar_delete_event(
         calendar_name: str,
@@ -379,7 +379,7 @@ def configure_calendar_tools(mcp: FastMCP):
         title="Create Meeting",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("calendar:write")
+    @require_scopes("calendar.write")
     @instrument_tool
     async def nc_calendar_create_meeting(
         title: str,
@@ -449,7 +449,7 @@ def configure_calendar_tools(mcp: FastMCP):
         title="Get Upcoming Events",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("calendar:read")
+    @require_scopes("calendar.read")
     @instrument_tool
     async def nc_calendar_get_upcoming_events(
         ctx: Context,
@@ -512,7 +512,7 @@ def configure_calendar_tools(mcp: FastMCP):
         title="Find Availability",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("calendar:read")
+    @require_scopes("calendar.read")
     @instrument_tool
     async def nc_calendar_find_availability(
         duration_minutes: int,
@@ -596,7 +596,7 @@ def configure_calendar_tools(mcp: FastMCP):
         title="Bulk Calendar Operations",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("calendar:write")
+    @require_scopes("calendar.write")
     @instrument_tool
     async def nc_calendar_bulk_operations(
         operation: str,  # "update", "delete", "move"
@@ -849,7 +849,7 @@ def configure_calendar_tools(mcp: FastMCP):
         title="Manage Calendar",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("calendar:write")
+    @require_scopes("calendar.write")
     @instrument_tool
     async def nc_calendar_manage_calendar(
         action: str,  # "create", "delete", "update", "list"
@@ -922,7 +922,7 @@ def configure_calendar_tools(mcp: FastMCP):
         title="List Todo Tasks",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("todo:read", "calendar:read")
+    @require_scopes("todo.read", "calendar.read")
     @instrument_tool
     async def nc_calendar_list_todos(
         calendar_name: str,
@@ -971,7 +971,7 @@ def configure_calendar_tools(mcp: FastMCP):
         title="Create Todo Task",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("todo:write", "calendar:read")
+    @require_scopes("todo.write", "calendar.read")
     @instrument_tool
     async def nc_calendar_create_todo(
         calendar_name: str,
@@ -1018,7 +1018,7 @@ def configure_calendar_tools(mcp: FastMCP):
         title="Update Todo Task",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("todo:write", "calendar:read")
+    @require_scopes("todo.write", "calendar.read")
     @instrument_tool
     async def nc_calendar_update_todo(
         calendar_name: str,
@@ -1084,7 +1084,7 @@ def configure_calendar_tools(mcp: FastMCP):
             destructiveHint=True, idempotentHint=True, openWorldHint=True
         ),
     )
-    @require_scopes("todo:write", "calendar:read")
+    @require_scopes("todo.write", "calendar.read")
     @instrument_tool
     async def nc_calendar_delete_todo(
         calendar_name: str,
@@ -1108,7 +1108,7 @@ def configure_calendar_tools(mcp: FastMCP):
         title="Search Todo Tasks",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("todo:read", "calendar:read")
+    @require_scopes("todo.read", "calendar.read")
     @instrument_tool
     async def nc_calendar_search_todos(
         ctx: Context,

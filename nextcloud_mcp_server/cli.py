@@ -90,7 +90,7 @@ from .app import get_app
 @click.option(
     "--oauth-scopes",
     envvar="NEXTCLOUD_OIDC_SCOPES",
-    default="openid profile email notes:read notes:write calendar:read calendar:write todo:read todo:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write",
+    default="openid profile email notes.read notes.write calendar.read calendar.write todo.read todo.write contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write tables.read tables.write files.read files.write sharing.read sharing.write",
     show_default=True,
     help="OAuth scopes to request during client registration. These define the maximum allowed scopes for the client. Note: Actual supported scopes are discovered dynamically from MCP tools at runtime. (can also use NEXTCLOUD_OIDC_SCOPES env var)",
 )
@@ -153,7 +153,7 @@ def run(
 
       # OAuth mode with custom scopes and JWT tokens
       $ nextcloud-mcp-server --nextcloud-host=https://cloud.example.com --oauth \\
-          --oauth-scopes="openid notes:read notes:write" --oauth-token-type=jwt
+          --oauth-scopes="openid notes.read notes.write" --oauth-token-type=jwt
 
       # OAuth with public issuer URL (for Docker/proxy setups)
       $ nextcloud-mcp-server --nextcloud-host=http://app --oauth \\

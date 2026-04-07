@@ -40,7 +40,7 @@ CLIENT_ID="astrolabeMcpClientOAuth00000000000"
 REDIRECT_URI="${NC_EXTERNAL_URL}/apps/astrolabe/oauth/callback"
 
 # All scopes the MCP server supports (must match DCR scopes in app.py)
-ALLOWED_SCOPES="openid profile email offline_access notes:read notes:write calendar:read calendar:write todo:read todo:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write sharing:read sharing:write news:read news:write collectives:read collectives:write semantic:read"
+ALLOWED_SCOPES="openid profile email offline_access notes.read notes.write calendar.read calendar.write todo.read todo.write contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write tables.read tables.write files.read files.write sharing.read sharing.write news.read news.write collectives.read collectives.write semantic.read"
 
 # Create OAuth client
 CLIENT_JSON=$(php occ oidc:create "Astrolabe" \

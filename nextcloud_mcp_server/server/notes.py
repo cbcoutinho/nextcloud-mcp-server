@@ -92,12 +92,12 @@ def configure_notes_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("notes:write")
+    @require_scopes("notes.write")
     @instrument_tool
     async def nc_notes_create_note(
         title: str, content: str, category: str, ctx: Context
     ) -> CreateNoteResponse:
-        """Create a new note (requires notes:write scope)"""
+        """Create a new note (requires notes.write scope)"""
         client = await get_client(ctx)
         try:
             note_data = await client.notes.create_note(
@@ -145,7 +145,7 @@ def configure_notes_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("notes:write")
+    @require_scopes("notes.write")
     @instrument_tool
     async def nc_notes_update_note(
         note_id: int,
@@ -155,7 +155,7 @@ def configure_notes_tools(mcp: FastMCP):
         category: str | None,
         ctx: Context,
     ) -> UpdateNoteResponse:
-        """Update an existing note's title, content, or category (requires notes:write scope).
+        """Update an existing note's title, content, or category (requires notes.write scope).
 
         REQUIRED: etag parameter must be provided to prevent overwriting concurrent changes.
         Get the current ETag by first retrieving the note using nc_notes_get_note tool.
@@ -217,7 +217,7 @@ def configure_notes_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("notes:write")
+    @require_scopes("notes.write")
     @instrument_tool
     async def nc_notes_append_content(
         note_id: int, content: str, ctx: Context
@@ -274,10 +274,10 @@ def configure_notes_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("notes:read")
+    @require_scopes("notes.read")
     @instrument_tool
     async def nc_notes_search_notes(query: str, ctx: Context) -> SearchNotesResponse:
-        """Search notes by title or content, returning only id, title, and category (requires notes:read scope)."""
+        """Search notes by title or content, returning only id, title, and category (requires notes.read scope)."""
         client = await get_client(ctx)
         try:
             search_results_raw = await client.notes_search_notes(query=query)
@@ -327,10 +327,10 @@ def configure_notes_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("notes:read")
+    @require_scopes("notes.read")
     @instrument_tool
     async def nc_notes_get_note(note_id: int, ctx: Context) -> Note:
-        """Get a specific note by its ID (requires notes:read scope)"""
+        """Get a specific note by its ID (requires notes.read scope)"""
         client = await get_client(ctx)
         try:
             note_data = await client.notes.get_note(note_id)
@@ -363,7 +363,7 @@ def configure_notes_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("notes:read")
+    @require_scopes("notes.read")
     @instrument_tool
     async def nc_notes_get_attachment(
         note_id: int, attachment_filename: str, ctx: Context
@@ -417,7 +417,7 @@ def configure_notes_tools(mcp: FastMCP):
             openWorldHint=True,
         ),
     )
-    @require_scopes("notes:write")
+    @require_scopes("notes.write")
     @instrument_tool
     async def nc_notes_delete_note(note_id: int, ctx: Context) -> DeleteNoteResponse:
         """Delete a note permanently"""

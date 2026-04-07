@@ -34,10 +34,10 @@ def configure_news_tools(mcp: FastMCP):
         title="List News Folders",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("news:read")
+    @require_scopes("news.read")
     @instrument_tool
     async def nc_news_list_folders(ctx: Context) -> ListFoldersResponse:
-        """List all News folders (requires news:read scope)."""
+        """List all News folders (requires news.read scope)."""
         client = await get_client(ctx)
         try:
             folders_data = await client.news.get_folders()
@@ -59,10 +59,10 @@ def configure_news_tools(mcp: FastMCP):
         title="List News Feeds",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("news:read")
+    @require_scopes("news.read")
     @instrument_tool
     async def nc_news_list_feeds(ctx: Context) -> ListFeedsResponse:
-        """List all News feeds with metadata (requires news:read scope).
+        """List all News feeds with metadata (requires news.read scope).
 
         Returns feeds with unread counts, error status, and overall starred count.
         """
@@ -92,7 +92,7 @@ def configure_news_tools(mcp: FastMCP):
         title="List News Items",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("news:read")
+    @require_scopes("news.read")
     @instrument_tool
     async def nc_news_list_items(
         ctx: Context,
@@ -103,7 +103,7 @@ def configure_news_tools(mcp: FastMCP):
         limit: int = 50,
         offset: int = 0,
     ) -> ListItemsResponse:
-        """List News items (articles) with optional filtering (requires news:read scope).
+        """List News items (articles) with optional filtering (requires news.read scope).
 
         Args:
             feed_id: Filter by specific feed ID
@@ -166,10 +166,10 @@ def configure_news_tools(mcp: FastMCP):
         title="Get News Item",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("news:read")
+    @require_scopes("news.read")
     @instrument_tool
     async def nc_news_get_item(item_id: int, ctx: Context) -> GetItemResponse:
-        """Get a specific News item by ID with full content (requires news:read scope).
+        """Get a specific News item by ID with full content (requires news.read scope).
 
         Args:
             item_id: Item ID
@@ -204,12 +204,12 @@ def configure_news_tools(mcp: FastMCP):
         title="Get Starred News Items",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("news:read")
+    @require_scopes("news.read")
     @instrument_tool
     async def nc_news_get_starred_items(
         ctx: Context, limit: int = 50, offset: int = 0
     ) -> ListItemsResponse:
-        """Get starred (favorited) News items (requires news:read scope).
+        """Get starred (favorited) News items (requires news.read scope).
 
         Convenience method for retrieving user's starred articles.
 
@@ -257,12 +257,12 @@ def configure_news_tools(mcp: FastMCP):
         title="Get Unread News Items",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("news:read")
+    @require_scopes("news.read")
     @instrument_tool
     async def nc_news_get_unread_items(
         ctx: Context, limit: int = 50, offset: int = 0
     ) -> ListItemsResponse:
-        """Get unread News items (requires news:read scope).
+        """Get unread News items (requires news.read scope).
 
         Convenience method for retrieving unread articles across all feeds.
 
@@ -310,10 +310,10 @@ def configure_news_tools(mcp: FastMCP):
         title="Get News Feed Health",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("news:read")
+    @require_scopes("news.read")
     @instrument_tool
     async def nc_news_get_feed_health(feed_id: int, ctx: Context) -> FeedHealthResponse:
-        """Get health status for a specific feed (requires news:read scope).
+        """Get health status for a specific feed (requires news.read scope).
 
         Returns error count and last error message if the feed has update issues.
 
@@ -357,10 +357,10 @@ def configure_news_tools(mcp: FastMCP):
         title="Get News App Status",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
     )
-    @require_scopes("news:read")
+    @require_scopes("news.read")
     @instrument_tool
     async def nc_news_get_status(ctx: Context) -> GetStatusResponse:
-        """Get News app status and version (requires news:read scope).
+        """Get News app status and version (requires news.read scope).
 
         Returns version information and any configuration warnings.
         """

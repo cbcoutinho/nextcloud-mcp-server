@@ -29,43 +29,43 @@ logger = logging.getLogger(__name__)
 # Default scopes for OAuth testing - all app-specific read/write scopes
 DEFAULT_FULL_SCOPES = (
     "openid profile email "
-    "notes:read notes:write "
-    "calendar:read calendar:write "
-    "todo:read todo:write "
-    "contacts:read contacts:write "
-    "cookbook:read cookbook:write "
-    "deck:read deck:write "
-    "tables:read tables:write "
-    "files:read files:write "
-    "sharing:read sharing:write"
+    "notes.read notes.write "
+    "calendar.read calendar.write "
+    "todo.read todo.write "
+    "contacts.read contacts.write "
+    "cookbook.read cookbook.write "
+    "deck.read deck.write "
+    "tables.read tables.write "
+    "files.read files.write "
+    "sharing.read sharing.write"
 )
 
 # Read-only scopes (all read scopes across apps) - should match DEFAULT_FULL_SCOPES read portion
 DEFAULT_READ_SCOPES = (
     "openid profile email "
-    "notes:read "
-    "calendar:read "
-    "todo:read "
-    "contacts:read "
-    "cookbook:read "
-    "deck:read "
-    "tables:read "
-    "files:read "
-    "sharing:read"
+    "notes.read "
+    "calendar.read "
+    "todo.read "
+    "contacts.read "
+    "cookbook.read "
+    "deck.read "
+    "tables.read "
+    "files.read "
+    "sharing.read"
 )
 
 # Write-only scopes (all write scopes across apps) - should match DEFAULT_FULL_SCOPES write portion
 DEFAULT_WRITE_SCOPES = (
     "openid profile email "
-    "notes:write "
-    "calendar:write "
-    "todo:write "
-    "contacts:write "
-    "cookbook:write "
-    "deck:write "
-    "tables:write "
-    "files:write "
-    "sharing:write"
+    "notes.write "
+    "calendar.write "
+    "todo.write "
+    "contacts.write "
+    "cookbook.write "
+    "deck.write "
+    "tables.write "
+    "files.write "
+    "sharing.write"
 )
 
 
@@ -545,7 +545,7 @@ async def nc_mcp_oauth_client_no_custom_scopes(
     Connects to the OAuth-enabled MCP server on port 8001.
 
     This client has only OIDC default scopes (openid, profile, email) without
-    application-specific scopes (notes:read, notes:write, etc.).
+    application-specific scopes (notes.read, notes.write, etc.).
 
     Expected behavior: Should see 0 tools (all tools require custom scopes).
 
@@ -1671,7 +1671,7 @@ async def no_custom_scopes_oauth_client_credentials(
     Fixture for OAuth client with NO custom scopes (only OIDC defaults).
 
     Tests the security behavior when a user grants only the default OIDC scopes
-    (openid, profile, email) but declines custom application scopes (notes:read, notes:write, etc.).
+    (openid, profile, email) but declines custom application scopes (notes.read, notes.write, etc.).
 
     The client is automatically deleted from Nextcloud after the test session completes.
 
@@ -1808,7 +1808,7 @@ async def playwright_oauth_token(
         f"client_id={client_id}&"
         f"redirect_uri={quote(callback_url, safe='')}&"
         f"state={state}&"
-        f"scope=openid%20profile%20email%20notes:read%20notes:write%20calendar:read%20calendar:write%20contacts:read%20contacts:write%20cookbook:read%20cookbook:write%20deck:read%20deck:write%20tables:read%20tables:write%20files:read%20files:write%20sharing:read%20sharing:write"
+        f"scope=openid%20profile%20email%20notes.read%20notes.write%20calendar.read%20calendar.write%20contacts.read%20contacts.write%20cookbook.read%20cookbook.write%20deck.read%20deck.write%20tables.read%20tables.write%20files.read%20files.write%20sharing.read%20sharing.write"
     )
 
     # Add resource parameter (RFC 8707) if available
@@ -2060,7 +2060,7 @@ async def _get_oauth_token_with_scopes(
         browser: Playwright browser instance
         shared_oauth_client_credentials: Tuple of OAuth client credentials
         oauth_callback_server: OAuth callback server fixture
-        scopes: Space-separated list of scopes (e.g., "openid profile email notes:read")
+        scopes: Space-separated list of scopes (e.g., "openid profile email notes.read")
         resource: Optional resource parameter (RFC 8707) for token audience
         mcp_server_base_url: Base URL of the MCP server for resource metadata discovery
 
@@ -2521,7 +2521,7 @@ async def _get_oauth_token_for_user(
         f"redirect_uri={quote(callback_url, safe='')}&"
         f"state={state}&"
         f"resource={quote(mcp_server_resource, safe='')}&"  # Resource URI from PRM
-        f"scope=openid%20profile%20email%20notes:read%20notes:write%20calendar:read%20calendar:write%20contacts:read%20contacts:write%20cookbook:read%20cookbook:write%20deck:read%20deck:write%20tables:read%20tables:write%20files:read%20files:write%20sharing:read%20sharing:write"
+        f"scope=openid%20profile%20email%20notes.read%20notes.write%20calendar.read%20calendar.write%20contacts.read%20contacts.write%20cookbook.read%20cookbook.write%20deck.read%20deck.write%20tables.read%20tables.write%20files.read%20files.write%20sharing.read%20sharing.write"
     )
 
     logger.info(f"Performing browser OAuth flow for {username}...")
@@ -3038,7 +3038,7 @@ async def configure_astrolabe_for_mcp_server(nc_client):
                 "--resource_url",
                 mcp_server_public_url,
                 "--allowed_scopes",
-                "openid profile email offline_access notes:read notes:write calendar:read calendar:write contacts:read contacts:write cookbook:read cookbook:write deck:read deck:write tables:read tables:write files:read files:write",
+                "openid profile email offline_access notes.read notes.write calendar.read calendar.write contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write tables.read tables.write files.read files.write",
             ],
             check=True,
             capture_output=True,

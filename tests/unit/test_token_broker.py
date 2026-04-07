@@ -379,7 +379,7 @@ class TestRefreshTokenRotation:
                     expires_in,
                 ) = await broker._refresh_access_token_with_scopes(
                     refresh_token="old_refresh_token_123",
-                    required_scopes=["notes:read"],
+                    required_scopes=["notes.read"],
                     user_id="admin",
                 )
 
@@ -424,7 +424,7 @@ class TestRefreshTokenRotation:
             ):
                 await broker._refresh_access_token_with_scopes(
                     refresh_token="same_refresh_token",
-                    required_scopes=["notes:read"],
+                    required_scopes=["notes.read"],
                     user_id="admin",
                 )
 
@@ -460,7 +460,7 @@ class TestRefreshTokenRotation:
             ):
                 await broker._refresh_access_token_with_scopes(
                     refresh_token="old_token",
-                    required_scopes=["notes:read"],
+                    required_scopes=["notes.read"],
                     user_id=None,  # No user_id
                 )
 

@@ -412,7 +412,7 @@ http://localhost:8000/oauth/callback
 **Symptoms**:
 - MCP client (e.g., Claude Code) successfully connects via OAuth
 - Only Notes tools are available (7 tools instead of 90+)
-- Token scopes show only `mcp:notes:read` and `mcp:notes:write`
+- Token scopes show only `mcp:notes.read` and `mcp:notes.write`
 
 **Cause**: During the OAuth consent flow, the user only granted access to Notes scopes, or the client only requested those scopes.
 
@@ -449,7 +449,7 @@ When reconnecting, you'll see a consent screen listing all available scopes. Mak
 ```bash
 # Update allowed scopes for an existing client
 php occ oidc:update <client_id> \
-  --allowed-scopes "openid profile email mcp:notes:read mcp:notes:write mcp:calendar:read mcp:calendar:write mcp:contacts:read mcp:contacts:write mcp:cookbook:read mcp:cookbook:write mcp:deck:read mcp:deck:write mcp:tables:read mcp:tables:write mcp:files:read mcp:files:write mcp:sharing:read mcp:sharing:write"
+  --allowed-scopes "openid profile email mcp:notes.read mcp:notes.write mcp:calendar.read mcp:calendar.write mcp:contacts.read mcp:contacts.write mcp:cookbook.read mcp:cookbook.write mcp:deck.read mcp:deck.write mcp:tables.read mcp:tables.write mcp:files.read mcp:files.write mcp:sharing.read mcp:sharing.write"
 
 # User will need to reconnect to get new token with updated scopes
 ```
@@ -463,14 +463,14 @@ curl http://localhost:8001/.well-known/oauth-protected-resource | jq '.scopes_su
 
 # Should show all 16 scope categories:
 # - openid
-# - mcp:notes:read, mcp:notes:write
-# - mcp:calendar:read, mcp:calendar:write
-# - mcp:contacts:read, mcp:contacts:write
-# - mcp:cookbook:read, mcp:cookbook:write
-# - mcp:deck:read, mcp:deck:write
-# - mcp:tables:read, mcp:tables:write
-# - mcp:files:read, mcp:files:write
-# - mcp:sharing:read, mcp:sharing:write
+# - mcp:notes.read, mcp:notes.write
+# - mcp:calendar.read, mcp:calendar.write
+# - mcp:contacts.read, mcp:contacts.write
+# - mcp:cookbook.read, mcp:cookbook.write
+# - mcp:deck.read, mcp:deck.write
+# - mcp:tables.read, mcp:tables.write
+# - mcp:files.read, mcp:files.write
+# - mcp:sharing.read, mcp:sharing.write
 ```
 
 **Understanding Scope Filtering**:

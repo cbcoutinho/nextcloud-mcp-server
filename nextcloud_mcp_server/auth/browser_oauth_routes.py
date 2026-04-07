@@ -86,7 +86,7 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
     callback_uri = f"{mcp_server_url}/oauth/callback"
 
     # Request only basic OIDC scopes for browser session
-    # Note: Nextcloud app scopes (notes:read, etc.) are for MCP client access tokens,
+    # Note: Nextcloud app scopes (notes.read, etc.) are for MCP client access tokens,
     # not for the MCP server's own browser authentication
     scopes = "openid profile email offline_access"
 

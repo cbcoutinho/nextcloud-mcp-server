@@ -383,24 +383,24 @@
         "phone",
         "offline_access",
         "microprofile-jwt",
-        "notes:read",
-        "notes:write",
-        "calendar:read",
-        "calendar:write",
-        "contacts:read",
-        "contacts:write",
-        "cookbook:read",
-        "cookbook:write",
-        "deck:read",
-        "deck:write",
-        "tables:read",
-        "tables:write",
-        "files:read",
-        "files:write",
-        "sharing:read",
-        "sharing:write",
-        "todo:read",
-        "todo:write"
+        "notes.read",
+        "notes.write",
+        "calendar.read",
+        "calendar.write",
+        "contacts.read",
+        "contacts.write",
+        "cookbook.read",
+        "cookbook.write",
+        "deck.read",
+        "deck.write",
+        "tables.read",
+        "tables.write",
+        "files.read",
+        "files.write",
+        "sharing.read",
+        "sharing.write",
+        "todo.read",
+        "todo.write"
       ]
     }
   ],
@@ -573,7 +573,7 @@
       ]
     },
     {
-      "name": "notes:read",
+      "name": "notes.read",
       "description": "Nextcloud Notes read access",
       "protocol": "openid-connect",
       "attributes": {
@@ -583,7 +583,7 @@
       }
     },
     {
-      "name": "notes:write",
+      "name": "notes.write",
       "description": "Nextcloud Notes write access",
       "protocol": "openid-connect",
       "attributes": {
@@ -593,7 +593,7 @@
       }
     },
     {
-      "name": "calendar:read",
+      "name": "calendar.read",
       "description": "Nextcloud Calendar read access",
       "protocol": "openid-connect",
       "attributes": {
@@ -603,7 +603,7 @@
       }
     },
     {
-      "name": "calendar:write",
+      "name": "calendar.write",
       "description": "Nextcloud Calendar write access",
       "protocol": "openid-connect",
       "attributes": {
@@ -613,7 +613,7 @@
       }
     },
     {
-      "name": "contacts:read",
+      "name": "contacts.read",
       "description": "Nextcloud Contacts read access",
       "protocol": "openid-connect",
       "attributes": {
@@ -623,7 +623,7 @@
       }
     },
     {
-      "name": "contacts:write",
+      "name": "contacts.write",
       "description": "Nextcloud Contacts write access",
       "protocol": "openid-connect",
       "attributes": {
@@ -633,7 +633,7 @@
       }
     },
     {
-      "name": "cookbook:read",
+      "name": "cookbook.read",
       "description": "Nextcloud Cookbook read access",
       "protocol": "openid-connect",
       "attributes": {
@@ -643,7 +643,7 @@
       }
     },
     {
-      "name": "cookbook:write",
+      "name": "cookbook.write",
       "description": "Nextcloud Cookbook write access",
       "protocol": "openid-connect",
       "attributes": {
@@ -653,7 +653,7 @@
       }
     },
     {
-      "name": "deck:read",
+      "name": "deck.read",
       "description": "Nextcloud Deck read access",
       "protocol": "openid-connect",
       "attributes": {
@@ -663,7 +663,7 @@
       }
     },
     {
-      "name": "deck:write",
+      "name": "deck.write",
       "description": "Nextcloud Deck write access",
       "protocol": "openid-connect",
       "attributes": {
@@ -673,7 +673,7 @@
       }
     },
     {
-      "name": "tables:read",
+      "name": "tables.read",
       "description": "Nextcloud Tables read access",
       "protocol": "openid-connect",
       "attributes": {
@@ -683,7 +683,7 @@
       }
     },
     {
-      "name": "tables:write",
+      "name": "tables.write",
       "description": "Nextcloud Tables write access",
       "protocol": "openid-connect",
       "attributes": {
@@ -693,7 +693,7 @@
       }
     },
     {
-      "name": "files:read",
+      "name": "files.read",
       "description": "Nextcloud Files read access",
       "protocol": "openid-connect",
       "attributes": {
@@ -703,7 +703,7 @@
       }
     },
     {
-      "name": "files:write",
+      "name": "files.write",
       "description": "Nextcloud Files write access",
       "protocol": "openid-connect",
       "attributes": {
@@ -713,7 +713,7 @@
       }
     },
     {
-      "name": "sharing:read",
+      "name": "sharing.read",
       "description": "Nextcloud Sharing read access",
       "protocol": "openid-connect",
       "attributes": {
@@ -723,7 +723,7 @@
       }
     },
     {
-      "name": "sharing:write",
+      "name": "sharing.write",
       "description": "Nextcloud Sharing write access",
       "protocol": "openid-connect",
       "attributes": {
@@ -733,7 +733,7 @@
       }
     },
     {
-      "name": "todo:read",
+      "name": "todo.read",
       "description": "Nextcloud Tasks/Todo read access",
       "protocol": "openid-connect",
       "attributes": {
@@ -743,7 +743,7 @@
       }
     },
     {
-      "name": "todo:write",
+      "name": "todo.write",
       "description": "Nextcloud Tasks/Todo write access",
       "protocol": "openid-connect",
       "attributes": {
@@ -830,23 +830,23 @@
   ],
   "defaultOptionalClientScopes": [
     "offline_access",
-    "notes:read",
-    "notes:write",
-    "calendar:read",
-    "calendar:write",
-    "contacts:read",
-    "contacts:write",
-    "cookbook:read",
-    "cookbook:write",
-    "deck:read",
-    "deck:write",
-    "tables:read",
-    "tables:write",
-    "files:read",
-    "files:write",
-    "sharing:read",
-    "sharing:write",
-    "todo:read",
-    "todo:write"
+    "notes.read",
+    "notes.write",
+    "calendar.read",
+    "calendar.write",
+    "contacts.read",
+    "contacts.write",
+    "cookbook.read",
+    "cookbook.write",
+    "deck.read",
+    "deck.write",
+    "tables.read",
+    "tables.write",
+    "files.read",
+    "files.write",
+    "sharing.read",
+    "sharing.write",
+    "todo.read",
+    "todo.write"
   ]
 }

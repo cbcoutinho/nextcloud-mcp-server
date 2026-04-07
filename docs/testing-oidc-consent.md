@@ -190,7 +190,7 @@ docker compose logs -f mcp-oauth
 1. Get client_id from the JWT client JSON
 2. Visit in browser:
 ```
-http://localhost:8080/apps/oidc/authorize?client_id=YOUR_CLIENT_ID&response_type=code&redirect_uri=http://localhost:8001/oauth/callback&scope=openid+profile+email+mcp:notes:read+mcp:notes:write&state=test123
+http://localhost:8080/apps/oidc/authorize?client_id=YOUR_CLIENT_ID&response_type=code&redirect_uri=http://localhost:8001/oauth/callback&scope=openid+profile+email+mcp:notes.read+mcp:notes.write&state=test123
 ```
 
 ### 3. Expected Behavior
@@ -203,8 +203,8 @@ http://localhost:8080/apps/oidc/authorize?client_id=YOUR_CLIENT_ID&response_type
      - ✓ Basic authentication (openid) - required, cannot deselect
      - ✓ Profile information (profile)
      - ✓ Email address (email)
-     - ✓ mcp:notes:read (custom scope, shown as-is)
-     - ✓ mcp:notes:write (custom scope, shown as-is)
+     - ✓ mcp:notes.read (custom scope, shown as-is)
+     - ✓ mcp:notes.write (custom scope, shown as-is)
    - "Allow" and "Deny" buttons
 3. User selects scopes and clicks "Allow"
 4. Authorization proceeds with selected scopes
