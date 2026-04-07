@@ -1,6 +1,6 @@
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.58.31"
+version = "0.58.32"
 tag_format = "nextcloud-mcp-server-$version"
 version_scheme = "semver"
 update_changelog_on_bump = true

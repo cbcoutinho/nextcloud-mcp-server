@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable resource limits
 - Grafana dashboard annotations
 
+## nextcloud-mcp-server-0.58.32 (2026-04-07)
+
+### Feat
+
+- implement dynaconf configuration management (ADR-024 phases 1-3)
+
+### Fix
+
+- resolve dynaconf settings.toml not found in non-editable installs
+
 ## nextcloud-mcp-server-0.58.31 (2026-04-07)
 
 ### Refactor
