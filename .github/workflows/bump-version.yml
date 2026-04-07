@@ -12,13 +12,14 @@ jobs:
     name: "Bump version and create changelog"
     permissions:
       contents: write
-      packages: write
+    outputs:
+      bumped: ${{ steps.bump.outputs.bumped }}
+      tag: ${{ steps.bump.outputs.tag }}
     steps:
       - name: Check out
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-          token: "${{ secrets.PERSONAL_ACCESS_TOKEN }}"
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -59,6 +60,8 @@ jobs:
             echo "Bumping version..."
             ./scripts/bump-mcp.sh
             echo "bumped=true" >> $GITHUB_OUTPUT
+            tag=$(git tag --sort=-creatordate | grep -E '^v[0-9]' | head -n 1)
+            echo "tag=$tag" >> $GITHUB_OUTPUT
           else
             echo "No commits found since $last_tag"
             echo "bumped=false" >> $GITHUB_OUTPUT
@@ -69,7 +72,6 @@ jobs:
         run: |
           git push
           git push --tags
-          echo "Pushed version tags"
 
       - name: Summary
         run: |
@@ -85,3 +87,23 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "No version bump required - no relevant commits found since last release." >> $GITHUB_STEP_SUMMARY
           fi
+
+  release:
+    needs: bump-version
+    if: needs.bump-version.outputs.bumped == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.bump-version.outputs.tag }}
+    permissions:
+      id-token: write
+      contents: read
+
+  docker:
+    needs: bump-version
+    if: needs.bump-version.outputs.bumped == 'true'
+    uses: ./.github/workflows/docker-build-publish.yml
+    with:
+      tag: ${{ needs.bump-version.outputs.tag }}
+    permissions:
+      contents: read
+      packages: write
