@@ -65,7 +65,7 @@ fi
 echo "$output"
 echo ""
 echo "✓ MCP server version bumped successfully"
-echo "  Updated: pyproject.toml, Chart.yaml:appVersion"
+echo "  Updated: pyproject.toml"
 echo "  Tag format: v\${version}"
 echo ""
 echo "Next steps:"
