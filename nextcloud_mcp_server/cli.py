@@ -14,6 +14,7 @@ from nextcloud_mcp_server.migrations import (
     upgrade_database,
 )
 from nextcloud_mcp_server.observability import get_uvicorn_logging_config
+from nextcloud_mcp_server.server import AVAILABLE_APPS
 
 from .app import get_app
 
@@ -38,16 +39,14 @@ from .app import get_app
     "-t",
     default="streamable-http",
     show_default=True,
-    type=click.Choice(["streamable-http", "http"]),
+    type=click.Choice(["streamable-http", "http", "stdio"]),
     help="MCP transport protocol",
 )
 @click.option(
     "--enable-app",
     "-e",
     multiple=True,
-    type=click.Choice(
-        ["notes", "tables", "webdav", "calendar", "contacts", "cookbook", "deck"]
-    ),
+    type=click.Choice(sorted(AVAILABLE_APPS.keys())),
     help="Enable specific Nextcloud app APIs. Can be specified multiple times. If not specified, all apps are enabled.",
 )
 @click.option(
@@ -158,6 +157,9 @@ def run(
       # OAuth with public issuer URL (for Docker/proxy setups)
       $ nextcloud-mcp-server --nextcloud-host=http://app --oauth \\
           --public-issuer-url=http://localhost:8080
+
+      # stdio transport for local use (e.g. Claude Code)
+      $ nextcloud-mcp-server run --transport stdio
     """
     # Set env vars from CLI options if provided
     if nextcloud_host:
@@ -240,6 +242,22 @@ def run(
             )
 
     enabled_apps = list(enable_app) if enable_app else None
+
+    if transport == "stdio":
+        if oauth is True:
+            raise click.ClickException(
+                "stdio transport does not support OAuth mode. "
+                "Use single-user BasicAuth with NEXTCLOUD_HOST, "
+                "NEXTCLOUD_USERNAME, and NEXTCLOUD_PASSWORD."
+            )
+        from .stdio import get_stdio_mcp  # noqa: PLC0415
+
+        try:
+            mcp = get_stdio_mcp(enabled_apps=enabled_apps)
+        except ValueError as e:
+            raise click.ClickException(str(e)) from e
+        mcp.run(transport="stdio")
+        return
 
     app = get_app(transport=transport, enabled_apps=enabled_apps)
 

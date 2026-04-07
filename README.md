@@ -15,7 +15,39 @@ This is a **dedicated standalone MCP server** designed for external MCP clients 
 > [!NOTE]
 > **Looking for AI features inside Nextcloud?** Nextcloud also provides [Context Agent](https://github.com/nextcloud/context_agent), which powers the Assistant app and runs as an ExApp inside Nextcloud. See [docs/comparison-context-agent.md](docs/comparison-context-agent.md) for a detailed comparison of use cases.
 
-## Quick Start (Docker)
+## Quick Start
+
+Run the server locally with [uvx](https://docs.astral.sh/uv/) (no installation required):
+
+```bash
+NEXTCLOUD_HOST=https://your.nextcloud.instance.com \
+NEXTCLOUD_USERNAME=your_username \
+NEXTCLOUD_PASSWORD=your_app_password \
+  uvx nextcloud-mcp-server run --transport stdio
+```
+
+Or add it directly to your MCP client configuration (e.g. `claude_desktop_config.json` or `.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "nextcloud": {
+      "command": "uvx",
+      "args": ["nextcloud-mcp-server", "run", "--transport", "stdio"],
+      "env": {
+        "NEXTCLOUD_HOST": "https://your.nextcloud.instance.com",
+        "NEXTCLOUD_USERNAME": "your_username",
+        "NEXTCLOUD_PASSWORD": "your_app_password"
+      }
+    }
+  }
+}
+```
+
+> [!TIP]
+> Generate an [app password](https://docs.nextcloud.com/server/latest/user_manual/en/session_management.html#managing-devices) in Nextcloud under **Settings > Security > Devices & sessions** instead of using your login password.
+
+### Docker
 
 For full features including semantic search, run with Docker:
 
@@ -35,9 +67,6 @@ docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
 curl http://127.0.0.1:8000/health/ready
 
 # 4. Connect to the endpoint
-http://127.0.0.1:8000/sse
-
-# Or with --transport streamable-http
 http://127.0.0.1:8000/mcp
 ```
 
@@ -56,13 +85,13 @@ docker compose --profile login-flow up -d         # Port 8004
 
 ## Key Features
 
-- **90+ MCP Tools** - Comprehensive API coverage across 8 Nextcloud apps
+- **110+ MCP Tools** - Comprehensive API coverage across 10 Nextcloud apps
 - **MCP Resources** - Structured data URIs for browsing Nextcloud data
 - **Semantic Search (Experimental)** - Optional vector-powered search for Notes, Files, News items, and Deck cards (requires Qdrant + Ollama)
 - **Document Processing** - OCR and text extraction from PDFs, DOCX, images with progress notifications
 - **Flexible Deployment** - Docker, Kubernetes ([Helm chart](https://github.com/cbcoutinho/helm-charts)), VM, or local installation
 - **Production-Ready Auth** - Basic Auth with app passwords (recommended) or OAuth2/OIDC (experimental)
-- **Multiple Transports** - SSE, HTTP, and streamable-http support
+- **Multiple Transports** - streamable-http (default) and stdio
 
 ## Supported Apps
 
@@ -76,6 +105,8 @@ docker compose --profile login-flow up -d         # Port 8004
 | **Cookbook** | 13 | Recipe management, URL import (schema.org) |
 | **Tables** | 5 | Row operations on Nextcloud Tables |
 | **Sharing** | 10+ | Create and manage shares |
+| **News** | 8 | Feeds, folders, items, feed health monitoring |
+| **Collectives** | 16 | Full CRUD on collectives, pages, and tags |
 | **Semantic Search** | 2+ | Vector search for Notes, Files, News items, and Deck cards (experimental, opt-in, requires infrastructure) |
 
 Want to see another Nextcloud app supported? [Open an issue](https://github.com/cbcoutinho/nextcloud-mcp-server/issues) or contribute a pull request!

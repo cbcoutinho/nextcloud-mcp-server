@@ -285,3 +285,42 @@ def test_oauth_token_type_case_normalization(runner, clean_env, monkeypatch):
     captured_env.clear()
     runner.invoke(run, ["--oauth-token-type", "Bearer"])
     assert captured_env["NEXTCLOUD_OIDC_TOKEN_TYPE"] in ["Bearer", "bearer"]
+
+
+def test_help_includes_stdio_transport(runner):
+    """Test that stdio appears as a transport option in help output."""
+    result = runner.invoke(run, ["--help"])
+    assert result.exit_code == 0
+    assert "stdio" in result.output
+
+
+def test_stdio_rejects_oauth_flag(runner, clean_env, monkeypatch):
+    """Test that --transport stdio --oauth raises an error."""
+    monkeypatch.setenv("NEXTCLOUD_HOST", "https://cloud.example.com")
+    result = runner.invoke(run, ["--transport", "stdio", "--oauth"])
+    assert result.exit_code != 0
+    assert "stdio transport does not support OAuth mode" in result.output
+
+
+def test_stdio_calls_get_stdio_mcp(runner, clean_env, monkeypatch):
+    """Test that --transport stdio invokes the stdio code path."""
+    monkeypatch.setenv("NEXTCLOUD_HOST", "https://cloud.example.com")
+    monkeypatch.setenv("NEXTCLOUD_USERNAME", "admin")
+    monkeypatch.setenv("NEXTCLOUD_PASSWORD", "secret")
+
+    called_with = {}
+
+    class FakeMcp:
+        def run(self, transport):
+            called_with["transport"] = transport
+
+    def mock_get_stdio_mcp(enabled_apps=None):
+        called_with["enabled_apps"] = enabled_apps
+        return FakeMcp()
+
+    monkeypatch.setattr("nextcloud_mcp_server.stdio.get_stdio_mcp", mock_get_stdio_mcp)
+
+    result = runner.invoke(run, ["--transport", "stdio"])
+    assert result.exit_code == 0, result.output
+    assert called_with.get("transport") == "stdio"
+    assert called_with.get("enabled_apps") is None

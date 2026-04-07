@@ -1,3 +1,7 @@
+from collections.abc import Callable
+
+from mcp.server.fastmcp import FastMCP
+
 from .calendar import configure_calendar_tools
 from .collectives import configure_collectives_tools
 from .contacts import configure_contacts_tools
@@ -10,7 +14,25 @@ from .sharing import configure_sharing_tools
 from .tables import configure_tables_tools
 from .webdav import configure_webdav_tools
 
+# Canonical mapping of app name → tool registration function.
+# Used by app.py (HTTP), stdio.py (stdio), and cli.py (--enable-app choices).
+# Semantic search is excluded here because it is a cross-app feature gated
+# by VECTOR_SYNC_ENABLED, not an individual Nextcloud app.
+AVAILABLE_APPS: dict[str, Callable[[FastMCP], None]] = {
+    "notes": configure_notes_tools,
+    "tables": configure_tables_tools,
+    "webdav": configure_webdav_tools,
+    "sharing": configure_sharing_tools,
+    "calendar": configure_calendar_tools,
+    "collectives": configure_collectives_tools,
+    "contacts": configure_contacts_tools,
+    "cookbook": configure_cookbook_tools,
+    "deck": configure_deck_tools,
+    "news": configure_news_tools,
+}
+
 __all__ = [
+    "AVAILABLE_APPS",
     "configure_calendar_tools",
     "configure_collectives_tools",
     "configure_contacts_tools",

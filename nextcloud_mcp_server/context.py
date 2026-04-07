@@ -1,6 +1,7 @@
 """Helper functions for accessing context in MCP tools."""
 
 import logging
+from typing import Protocol, runtime_checkable
 
 from httpx import BasicAuth
 from mcp.server.fastmcp import Context
@@ -12,6 +13,17 @@ from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class BasicAuthLifespanContext(Protocol):
+    """Protocol for lifespan contexts that carry a shared NextcloudClient.
+
+    Implemented by :class:`~nextcloud_mcp_server.stdio.StdioContext` and
+    the single-user lifespan context in ``app.py``.
+    """
+
+    client: NextcloudClient
 
 
 async def get_client(ctx: Context) -> NextcloudClient:
@@ -59,7 +71,7 @@ async def get_client(ctx: Context) -> NextcloudClient:
         return await _get_client_from_login_flow(ctx, lifespan_ctx.nextcloud_host)
 
     # BasicAuth mode - use shared client (no token exchange)
-    if hasattr(lifespan_ctx, "client"):
+    if isinstance(lifespan_ctx, BasicAuthLifespanContext):
         return lifespan_ctx.client
 
     # OAuth multi-audience mode (has 'nextcloud_host' attribute)
