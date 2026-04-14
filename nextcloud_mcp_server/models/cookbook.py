@@ -63,6 +63,8 @@ class Nutrition(BaseModel):
         strings (e.g. '650 kcal') or numbers (e.g. 650). Nextcloud Cookbook
         stores whatever the source provided.
         """
+        if isinstance(v, bool):
+            return v
         if isinstance(v, (int, float)):
             return str(v)
         return v
