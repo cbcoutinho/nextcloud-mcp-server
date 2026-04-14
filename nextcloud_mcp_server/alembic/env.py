@@ -51,8 +51,14 @@ def get_database_url() -> str:
         url = config.get_main_option("sqlalchemy.url")
 
     if not url:
-        # Default to /app/data/tokens.db for Docker deployments
-        db_path = Path("/app/data/tokens.db")
+        # Fall back to the same resolver the runtime uses (ephemeral tempfile
+        # unless TOKEN_STORAGE_DB is set). Imported lazily to avoid pulling
+        # the full config module into offline alembic invocations.
+        from nextcloud_mcp_server.config import (  # noqa: PLC0415
+            get_token_db_path,
+        )
+
+        db_path = Path(get_token_db_path())
         url = f"sqlite+aiosqlite:///{db_path}"
         logger.warning(
             f"No database URL configured, using default: {url}. "

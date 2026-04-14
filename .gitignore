@@ -7,6 +7,7 @@ __pycache__/
 
 # Dynaconf (ADR-024)
 .secrets.toml
+settings.toml
 settings.local.toml
 
 # Git

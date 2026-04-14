@@ -39,6 +39,7 @@ import httpx
 from anyio import to_thread
 from cryptography.fernet import Fernet
 
+from nextcloud_mcp_server.config import get_token_db_path, is_ephemeral_token_db
 from nextcloud_mcp_server.migrations import stamp_database, upgrade_database
 from nextcloud_mcp_server.observability.metrics import record_db_operation
 
@@ -82,7 +83,10 @@ class RefreshTokenStorage:
         Create storage instance from environment variables.
 
         Environment variables:
-            TOKEN_STORAGE_DB: Path to database file (default: /app/data/tokens.db)
+            TOKEN_STORAGE_DB: Path to database file. If unset, a per-process
+                tempfile is allocated and deleted at interpreter exit —
+                tokens are ephemeral and wiped on restart. Set this to a
+                filesystem path to persist tokens across restarts.
             TOKEN_ENCRYPTION_KEY: Optional base64-encoded Fernet key (required for token storage)
 
         Returns:
@@ -92,7 +96,13 @@ class RefreshTokenStorage:
             If TOKEN_ENCRYPTION_KEY is not set, token storage operations will fail,
             but webhook tracking will still work.
         """
-        db_path = os.getenv("TOKEN_STORAGE_DB", "/app/data/tokens.db")
+        db_path = get_token_db_path()
+        if is_ephemeral_token_db(db_path):
+            logger.info(
+                "Using ephemeral token storage at %s "
+                "(set TOKEN_STORAGE_DB to persist tokens across restarts)",
+                db_path,
+            )
         encryption_key_b64 = os.getenv("TOKEN_ENCRYPTION_KEY")
 
         encryption_key = None
