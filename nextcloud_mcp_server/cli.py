@@ -6,6 +6,8 @@ import uvicorn
 
 from nextcloud_mcp_server.config import (
     get_settings,
+    get_token_db_path,
+    is_ephemeral_token_db,
 )
 from nextcloud_mcp_server.migrations import (
     create_migration,
@@ -285,13 +287,25 @@ def db():
     pass
 
 
+def _warn_if_ephemeral(database_path: str) -> None:
+    if is_ephemeral_token_db(database_path):
+        click.echo(
+            click.style(
+                f"⚠ Using ephemeral tempfile {database_path}; changes "
+                "will be lost on exit. Pass --database-path or set "
+                "TOKEN_STORAGE_DB to operate on a persistent database.",
+                fg="yellow",
+            ),
+            err=True,
+        )
+
+
 @db.command()
 @click.option(
     "--database-path",
     "-d",
     envvar="TOKEN_STORAGE_DB",
-    default="/app/data/tokens.db",
-    show_default=True,
+    default=None,
     help="Path to token storage database (can also use TOKEN_STORAGE_DB env var)",
 )
 @click.option(
@@ -301,7 +315,7 @@ def db():
     show_default=True,
     help="Target revision (default: head for latest)",
 )
-def upgrade(database_path: str, revision: str):
+def upgrade(database_path: str | None, revision: str):
     """Upgrade database to a specific revision.
 
     \b
@@ -315,6 +329,8 @@ def upgrade(database_path: str, revision: str):
       # Use custom database path
       $ nextcloud-mcp-server db upgrade -d /path/to/tokens.db
     """
+    database_path = database_path or get_token_db_path()
+    _warn_if_ephemeral(database_path)
     try:
         click.echo(f"Upgrading database to revision: {revision}")
         upgrade_database(database_path, revision)
@@ -329,8 +345,7 @@ def upgrade(database_path: str, revision: str):
     "--database-path",
     "-d",
     envvar="TOKEN_STORAGE_DB",
-    default="/app/data/tokens.db",
-    show_default=True,
+    default=None,
     help="Path to token storage database",
 )
 @click.option(
@@ -343,7 +358,7 @@ def upgrade(database_path: str, revision: str):
 @click.confirmation_option(
     prompt="Are you sure you want to downgrade the database? This may result in data loss."
 )
-def downgrade(database_path: str, revision: str):
+def downgrade(database_path: str | None, revision: str):
     """Downgrade database to a specific revision.
 
     WARNING: This may result in data loss! Use with caution.
@@ -359,6 +374,8 @@ def downgrade(database_path: str, revision: str):
       # Downgrade to base (empty database)
       $ nextcloud-mcp-server db downgrade --revision base
     """
+    database_path = database_path or get_token_db_path()
+    _warn_if_ephemeral(database_path)
     try:
         click.echo(f"Downgrading database to revision: {revision}")
         downgrade_database(database_path, revision)
@@ -373,17 +390,18 @@ def downgrade(database_path: str, revision: str):
     "--database-path",
     "-d",
     envvar="TOKEN_STORAGE_DB",
-    default="/app/data/tokens.db",
-    show_default=True,
+    default=None,
     help="Path to token storage database",
 )
-def current(database_path: str):
+def current(database_path: str | None):
     """Show current database revision.
 
     \b
     Example:
       $ nextcloud-mcp-server db current
     """
+    database_path = database_path or get_token_db_path()
+    _warn_if_ephemeral(database_path)
     try:
         revision = get_current_revision(database_path)
         if revision:
@@ -406,17 +424,18 @@ def current(database_path: str):
     "--database-path",
     "-d",
     envvar="TOKEN_STORAGE_DB",
-    default="/app/data/tokens.db",
-    show_default=True,
+    default=None,
     help="Path to token storage database",
 )
-def history(database_path: str):
+def history(database_path: str | None):
     """Show migration history.
 
     \b
     Example:
       $ nextcloud-mcp-server db history
     """
+    database_path = database_path or get_token_db_path()
+    _warn_if_ephemeral(database_path)
     try:
         click.echo("Migration history:")
         show_migration_history(database_path)

@@ -86,12 +86,16 @@ services:
       - 127.0.0.1:9090:9090
     volumes:
       - mcp-data:/app/data
-      - ./settings.toml:/app/settings.toml:ro
+      - ./settings.toml.example:/app/settings.toml:ro
     environment:
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_USERNAME=admin
       - NEXTCLOUD_PASSWORD=admin
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
+
+      # Pin the token DB inside the mcp-data volume so the runtime default
+      # (ephemeral tempfile) doesn't silently apply inside containers.
+      - TOKEN_STORAGE_DB=/app/data/tokens.db
 
       # Semantic search configuration (ADR-007, ADR-021)
       - ENABLE_SEMANTIC_SEARCH=true
@@ -167,7 +171,7 @@ services:
       # NO admin credentials - credentials come from client Authorization header
     volumes:
       - multi-user-basic-data:/app/data
-      - ./settings.toml:/app/settings.toml:ro
+      - ./settings.toml.example:/app/settings.toml:ro
     profiles:
       - multi-user-basic
 
@@ -243,7 +247,7 @@ services:
     volumes:
       - keycloak-tokens:/app/data
       - keycloak-oauth-storage:/app/.oauth
-      - ./settings.toml:/app/settings.toml:ro
+      - ./settings.toml.example:/app/settings.toml:ro
     profiles:
       - keycloak
 
@@ -282,7 +286,7 @@ services:
     volumes:
       - login-flow-data:/app/data
       - login-flow-oauth-storage:/app/.oauth
-      - ./settings.toml:/app/settings.toml:ro
+      - ./settings.toml.example:/app/settings.toml:ro
     profiles:
       - login-flow
 

@@ -1,34 +1,160 @@
+import atexit
 import logging
 import logging.config
 import os
 import socket
 import ssl
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from dynaconf import Dynaconf, Validator
 
-# Resolve root_path for dynaconf settings files.
-# Editable installs: parent.parent is the project root (has settings.toml).
-# Non-editable installs (Docker): settings.toml is mounted at WORKDIR (/app/).
-_config_root = Path(__file__).parent.parent
-if not (_config_root / "settings.toml").exists():
-    _config_root = Path.cwd()
-
 # Sentinel for "key not in dynaconf at all" vs "explicitly set to None".
 _UNSET = object()
 
-# Dynaconf instance — loads settings.toml + .secrets.toml + env vars.
-# Env vars always win (12-factor). See ADR-024 for architecture.
+# Built-in defaults — declared in Python so env vars work without any settings
+# file being present (e.g., `uvx` / `pip install` deployments). Mirrors the
+# [default] section that used to live in settings.toml. Keys set here are
+# "known" to dynaconf, which is required because we run with
+# ignore_unknown_envvars=True. See ADR-024/025.
+_DEFAULTS: dict[str, Any] = {
+    # Deployment mode (ADR-021)
+    "mcp_deployment_mode": None,
+    # Nextcloud core
+    "nextcloud_host": None,
+    "nextcloud_username": None,
+    "nextcloud_password": None,
+    "nextcloud_app_password": None,
+    "nextcloud_verify_ssl": True,
+    "nextcloud_ca_bundle": None,
+    "nextcloud_mcp_server_url": None,
+    "nextcloud_resource_uri": None,
+    # OAuth/OIDC
+    "oidc_discovery_url": None,
+    "nextcloud_oidc_client_id": None,
+    "nextcloud_oidc_client_secret": None,
+    "oidc_issuer": None,
+    "jwks_uri": None,
+    "introspection_uri": None,
+    "userinfo_uri": None,
+    "oidc_resource_server_id": None,
+    # Mode flags
+    "enable_multi_user_basic_auth": False,
+    "enable_login_flow": False,
+    "enable_semantic_search": False,
+    "enable_background_operations": False,
+    "vector_sync_enabled": False,
+    "enable_offline_access": False,
+    "enable_token_exchange": False,
+    # Token storage
+    "token_encryption_key": None,
+    # None = ephemeral per-process tempfile (see get_token_db_path()).
+    # Set TOKEN_STORAGE_DB to persist tokens across restarts.
+    "token_storage_db": None,
+    # Vector sync
+    "vector_sync_scan_interval": 300,
+    "vector_sync_processor_workers": 3,
+    "vector_sync_queue_max_size": 10000,
+    "vector_sync_user_poll_interval": 60,
+    # Qdrant
+    "qdrant_url": None,
+    "qdrant_location": None,
+    "qdrant_api_key": None,
+    "qdrant_collection": "nextcloud_content",
+    # Ollama
+    "ollama_base_url": None,
+    "ollama_embedding_model": "nomic-embed-text",
+    "ollama_verify_ssl": True,
+    # OpenAI
+    "openai_api_key": None,
+    "openai_base_url": None,
+    "openai_embedding_model": "text-embedding-3-small",
+    # Document chunking
+    "document_chunk_size": 2048,
+    "document_chunk_overlap": 200,
+    # Observability
+    "metrics_enabled": True,
+    "metrics_port": 9090,
+    "otel_exporter_otlp_endpoint": None,
+    "otel_exporter_verify_ssl": False,
+    "otel_service_name": "nextcloud-mcp-server",
+    "otel_traces_sampler": "always_on",
+    "otel_traces_sampler_arg": 1.0,
+    "log_format": "text",
+    "log_level": "INFO",
+    "log_include_trace_context": True,
+    # Document processing
+    "enable_document_processing": False,
+    "document_processor": "unstructured",
+    "enable_unstructured": False,
+    "unstructured_api_url": "http://unstructured:8000",
+    "unstructured_timeout": 120,
+    "unstructured_strategy": "auto",
+    "unstructured_languages": "eng,deu",
+    "progress_interval": 10,
+    "enable_tesseract": False,
+    "tesseract_cmd": None,
+    "tesseract_lang": "eng",
+    "enable_pymupdf": True,
+    "pymupdf_extract_images": True,
+    "pymupdf_image_dir": None,
+    "enable_custom_processor": False,
+    "custom_processor_url": None,
+    "custom_processor_types": "application/pdf",
+    "custom_processor_name": "custom",
+    "custom_processor_api_key": None,
+    "custom_processor_timeout": 60,
+}
+
+
+def _resolve_settings_files() -> list[str]:
+    """Find optional external settings files.
+
+    Priority:
+      1. NEXTCLOUD_MCP_SETTINGS_FILE env var (absolute or relative path).
+         If set but the file does not exist, raise FileNotFoundError —
+         silently falling back to defaults on a typo would be a footgun.
+         .secrets.toml is looked for alongside the explicit file.
+      2. Otherwise ./settings.toml in cwd (for docker / dev workflows),
+         with .secrets.toml also looked for in cwd.
+
+    Returns an empty list if nothing is configured — that's fine, defaults
+    and env vars still apply.
+    """
+    files: list[str] = []
+    explicit = os.environ.get("NEXTCLOUD_MCP_SETTINGS_FILE")
+    if explicit:
+        p = Path(explicit)
+        if not p.exists():
+            raise FileNotFoundError(
+                f"NEXTCLOUD_MCP_SETTINGS_FILE points to a file that does "
+                f"not exist: {explicit}"
+            )
+        files.append(str(p))
+        secrets = p.parent / ".secrets.toml"
+    else:
+        cwd_settings = Path.cwd() / "settings.toml"
+        if cwd_settings.exists():
+            files.append(str(cwd_settings))
+        secrets = Path.cwd() / ".secrets.toml"
+    if secrets.exists():
+        files.append(str(secrets))
+    return files
+
+
+# Dynaconf instance — env vars always win (12-factor). Settings files are
+# optional; when absent the defaults above provide the full key schema so
+# env vars still override correctly. See ADR-024/025 for architecture.
 _dynaconf = Dynaconf(
-    settings_files=["settings.toml", ".secrets.toml"],
+    settings_files=_resolve_settings_files(),
     environments=True,
     envvar_prefix=False,
     env_switcher="MCP_DEPLOYMENT_MODE",
     ignore_unknown_envvars=True,
-    root_path=str(_config_root),
     load_dotenv=False,
+    **_DEFAULTS,
     validators=[
         # Port ranges
         Validator("METRICS_PORT", gte=1, lte=65535),
@@ -71,6 +197,55 @@ def _reload_config():
     """
     _dynaconf.reload()
     _dynaconf.validators.validate_all()
+
+
+_ephemeral_db_path: str | None = None
+
+
+def get_token_db_path() -> str:
+    """Resolve the token SQLite database path.
+
+    Priority:
+    1. TOKEN_STORAGE_DB if explicitly set — docker-compose pins
+       /app/data/tokens.db this way. Read via dynaconf, which picks up
+       the env var because TOKEN_STORAGE_DB is declared in _DEFAULTS.
+    2. Otherwise a per-process tempfile under tempfile.gettempdir(),
+       allocated lazily and deleted at interpreter exit via atexit.
+       Ephemeral: tokens are wiped on restart, matching the Qdrant
+       ":memory:" default pattern used elsewhere in this project.
+    """
+    explicit = _dynaconf.get("TOKEN_STORAGE_DB")
+    if explicit:
+        return str(explicit)
+    global _ephemeral_db_path
+    if _ephemeral_db_path is None:
+        fd, path = tempfile.mkstemp(
+            prefix=f"nextcloud-mcp-tokens-{os.getpid()}-", suffix=".db"
+        )
+        os.close(fd)
+        _ephemeral_db_path = path
+
+        def _cleanup(p: str = path) -> None:
+            try:
+                if os.path.exists(p):
+                    os.unlink(p)
+            except OSError:
+                pass
+
+        atexit.register(_cleanup)
+    return _ephemeral_db_path
+
+
+def is_ephemeral_token_db(path: str) -> bool:
+    """Return True if the given path is the process-local ephemeral tempfile.
+
+    Precondition: `get_token_db_path()` must have been called at least once
+    in this process to allocate the tempfile. If called before allocation,
+    this returns False for any input (including the eventual tempfile path),
+    because there is nothing to compare against yet. In practice every call
+    site in this repo resolves the path via `get_token_db_path()` first.
+    """
+    return path == _ephemeral_db_path
 
 
 LOGGING_CONFIG = {

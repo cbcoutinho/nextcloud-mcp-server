@@ -13,6 +13,7 @@ from alembic.config import Config
 
 import nextcloud_mcp_server.alembic as alembic_package
 from alembic import command
+from nextcloud_mcp_server.config import get_token_db_path
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +26,9 @@ def get_alembic_config(database_path: str | Path | None = None) -> Config:
     package location instead of alembic.ini file.
 
     Args:
-        database_path: Path to SQLite database file. If None, uses default
-                      (/app/data/tokens.db for Docker)
+        database_path: Path to SQLite database file. If None, resolves via
+                      config.get_token_db_path() (ephemeral tempfile unless
+                      TOKEN_STORAGE_DB is set).
 
     Returns:
         Alembic Config object configured for the specified database
@@ -45,7 +47,7 @@ def get_alembic_config(database_path: str | Path | None = None) -> Config:
     if database_path:
         db_path = Path(database_path).resolve()
     else:
-        db_path = Path("/app/data/tokens.db")  # Default for Docker
+        db_path = Path(get_token_db_path()).resolve()
 
     url = f"sqlite+aiosqlite:///{db_path}"
     config.set_main_option("sqlalchemy.url", url)
@@ -100,7 +102,7 @@ def get_current_revision(database_path: str | Path | None = None) -> str | None:
     """
 
     if database_path is None:
-        database_path = "/app/data/tokens.db"
+        database_path = get_token_db_path()
 
     db_path = Path(database_path).resolve()
 
