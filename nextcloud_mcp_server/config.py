@@ -113,26 +113,34 @@ def _resolve_settings_files() -> list[str]:
     """Find optional external settings files.
 
     Priority:
-      1. NEXTCLOUD_MCP_SETTINGS_FILE env var (absolute or relative path)
-      2. ./settings.toml in cwd (for docker / dev workflows)
-      3. .secrets.toml alongside whichever settings.toml was found
+      1. NEXTCLOUD_MCP_SETTINGS_FILE env var (absolute or relative path).
+         If set but the file does not exist, raise FileNotFoundError —
+         silently falling back to defaults on a typo would be a footgun.
+         .secrets.toml is looked for alongside the explicit file.
+      2. Otherwise ./settings.toml in cwd (for docker / dev workflows),
+         with .secrets.toml also looked for in cwd.
 
-    Returns an empty list if no files are present — that's fine, defaults and
-    env vars still apply.
+    Returns an empty list if nothing is configured — that's fine, defaults
+    and env vars still apply.
     """
     files: list[str] = []
     explicit = os.environ.get("NEXTCLOUD_MCP_SETTINGS_FILE")
     if explicit:
         p = Path(explicit)
-        if p.exists():
-            files.append(str(p))
+        if not p.exists():
+            raise FileNotFoundError(
+                f"NEXTCLOUD_MCP_SETTINGS_FILE points to a file that does "
+                f"not exist: {explicit}"
+            )
+        files.append(str(p))
+        secrets = p.parent / ".secrets.toml"
     else:
         cwd_settings = Path.cwd() / "settings.toml"
         if cwd_settings.exists():
             files.append(str(cwd_settings))
-    cwd_secrets = Path.cwd() / ".secrets.toml"
-    if cwd_secrets.exists():
-        files.append(str(cwd_secrets))
+        secrets = Path.cwd() / ".secrets.toml"
+    if secrets.exists():
+        files.append(str(secrets))
     return files
 
 
@@ -198,14 +206,15 @@ def get_token_db_path() -> str:
     """Resolve the token SQLite database path.
 
     Priority:
-    1. TOKEN_STORAGE_DB env var / dynaconf setting if explicitly set —
-       docker-compose pins /app/data/tokens.db this way.
+    1. TOKEN_STORAGE_DB if explicitly set — docker-compose pins
+       /app/data/tokens.db this way. Read via dynaconf, which picks up
+       the env var because TOKEN_STORAGE_DB is declared in _DEFAULTS.
     2. Otherwise a per-process tempfile under tempfile.gettempdir(),
        allocated lazily and deleted at interpreter exit via atexit.
        Ephemeral: tokens are wiped on restart, matching the Qdrant
        ":memory:" default pattern used elsewhere in this project.
     """
-    explicit = os.environ.get("TOKEN_STORAGE_DB") or _dynaconf.get("TOKEN_STORAGE_DB")
+    explicit = _dynaconf.get("TOKEN_STORAGE_DB")
     if explicit:
         return str(explicit)
     global _ephemeral_db_path
@@ -228,7 +237,14 @@ def get_token_db_path() -> str:
 
 
 def is_ephemeral_token_db(path: str) -> bool:
-    """Return True if the given path is the process-local ephemeral tempfile."""
+    """Return True if the given path is the process-local ephemeral tempfile.
+
+    Precondition: `get_token_db_path()` must have been called at least once
+    in this process to allocate the tempfile. If called before allocation,
+    this returns False for any input (including the eventual tempfile path),
+    because there is nothing to compare against yet. In practice every call
+    site in this repo resolves the path via `get_token_db_path()` first.
+    """
     return path == _ephemeral_db_path
 
 
