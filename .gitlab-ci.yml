@@ -1,0 +1,32 @@
+stages:
+  - build
+  - publish
+
+variables:
+  UV_VERSION: "0.7"
+  PYTHON_VERSION: "3.11"
+
+build:
+  stage: build
+  image: ghcr.io/astral-sh/uv:${UV_VERSION}-python${PYTHON_VERSION}-bookworm-slim
+  script:
+    - uv build
+    - uv run --isolated --no-project --with dist/*.whl nextcloud-mcp-server --help
+    - uv run --isolated --no-project --with dist/*.tar.gz nextcloud-mcp-server --help
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+
+publish:
+  stage: publish
+  image: ghcr.io/astral-sh/uv:${UV_VERSION}-python${PYTHON_VERSION}-bookworm-slim
+  needs: [build]
+  script:
+    - uv publish
+        --publish-url "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/pypi"
+        --username gitlab-ci-token
+        --password "${CI_JOB_TOKEN}"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
