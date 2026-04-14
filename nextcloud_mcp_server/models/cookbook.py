@@ -64,7 +64,8 @@ class Nutrition(BaseModel):
         stores whatever the source provided.
         """
         if isinstance(v, bool):
-            return v
+            msg = "boolean values are not valid for nutrition fields"
+            raise ValueError(msg)
         if isinstance(v, (int, float)):
             return str(v)
         return v
