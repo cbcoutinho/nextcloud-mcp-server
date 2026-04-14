@@ -10,11 +10,17 @@ from typing import Any
 from dynaconf import Dynaconf, Validator
 
 # Resolve root_path for dynaconf settings files.
-# Editable installs: parent.parent is the project root (has settings.toml).
-# Non-editable installs (Docker): settings.toml is mounted at WORKDIR (/app/).
-_config_root = Path(__file__).parent.parent
+# Priority:
+# 1. Package-bundled settings.toml (same dir as this file) — always present in
+#    installed distributions (uvx, pip install, Docker).
+# 2. Project root (parent.parent) — editable installs / local development.
+# 3. CWD fallback — Docker with settings.toml mounted at WORKDIR.
+_pkg_dir = Path(__file__).parent
+_config_root = _pkg_dir  # bundled settings.toml inside the package
 if not (_config_root / "settings.toml").exists():
-    _config_root = Path.cwd()
+    _config_root = _pkg_dir.parent  # project root (editable install)
+if not (_config_root / "settings.toml").exists():
+    _config_root = Path.cwd()  # CWD fallback (Docker mounted config)
 
 # Sentinel for "key not in dynaconf at all" vs "explicitly set to None".
 _UNSET = object()
