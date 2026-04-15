@@ -2,7 +2,7 @@
 
 from typing import List, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .base import BaseResponse, IdResponse, StatusResponse
 
@@ -39,6 +39,36 @@ class Nutrition(BaseModel):
     )
 
     model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator(
+        "calories",
+        "carbohydrateContent",
+        "cholesterolContent",
+        "fatContent",
+        "fiberContent",
+        "proteinContent",
+        "saturatedFatContent",
+        "servingSize",
+        "sodiumContent",
+        "sugarContent",
+        "transFatContent",
+        "unsaturatedFatContent",
+        mode="before",
+    )
+    @classmethod
+    def coerce_to_str(cls, v: object) -> object:
+        """Coerce numeric values to strings.
+
+        The schema.org/NutritionInformation spec allows values as either
+        strings (e.g. '650 kcal') or numbers (e.g. 650). Nextcloud Cookbook
+        stores whatever the source provided.
+        """
+        if isinstance(v, bool):
+            msg = "boolean values are not valid for nutrition fields"
+            raise ValueError(msg)
+        if isinstance(v, (int, float)):
+            return str(v)
+        return v
 
 
 class RecipeStub(BaseModel):
