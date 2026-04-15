@@ -8,8 +8,9 @@ import subprocess
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, AsyncIterator
 from urllib.parse import parse_qs, quote, urlparse
 
 import anyio
@@ -118,6 +119,7 @@ async def wait_for_nextcloud(
     return False
 
 
+@asynccontextmanager
 async def create_mcp_client_session(
     url: str,
     token: str | None = None,
@@ -125,7 +127,7 @@ async def create_mcp_client_session(
     elicitation_callback: Any = None,
     sampling_callback: Any = None,
     headers: dict[str, str] | None = None,
-) -> AsyncGenerator[ClientSession, Any]:
+) -> AsyncIterator[ClientSession]:
     """
     Factory function to create an MCP client session with proper lifecycle management.
 
@@ -227,10 +229,10 @@ async def nc_mcp_client(anyio_backend) -> AsyncGenerator[ClientSession, Any]:
 
     Uses anyio pytest plugin for proper async fixture handling.
     """
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url="http://localhost:8000/mcp",
         client_name="Basic MCP (HTTP)",
-    ):
+    ) as session:
         yield session
 
 
@@ -246,11 +248,11 @@ async def nc_mcp_oauth_client(
     Uses headless browser automation suitable for CI/CD.
     Uses anyio pytest plugin for proper async fixture handling.
     """
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url="http://localhost:8001/mcp",
         token=playwright_oauth_token,
         client_name="OAuth MCP (Playwright)",
-    ):
+    ) as session:
         yield session
 
 
@@ -271,11 +273,11 @@ async def nc_mcp_basic_auth_client(
     credentials = base64.b64encode(b"admin:admin").decode("utf-8")
     auth_header = f"Basic {credentials}"
 
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url="http://localhost:8003/mcp",
         headers={"Authorization": auth_header},
         client_name="BasicAuth MCP (Multi-User)",
-    ):
+    ) as session:
         yield session
 
 
@@ -296,11 +298,11 @@ async def nc_mcp_oauth_jwt_client(
     Uses headless browser automation suitable for CI/CD.
     Uses anyio pytest plugin for proper async fixture handling.
     """
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url="http://localhost:8001/mcp",
         token=playwright_oauth_token_jwt,
         client_name="OAuth JWT MCP (Playwright)",
-    ):
+    ) as session:
         yield session
 
 
@@ -456,12 +458,12 @@ async def nc_mcp_oauth_client_with_elicitation(
             await page.close()
 
     # Create client session with elicitation callback
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url="http://localhost:8001/mcp",
         token=playwright_oauth_token,
         client_name="OAuth MCP with Elicitation",
         elicitation_callback=elicitation_callback,
-    ):
+    ) as session:
         # Attach elicitation metadata for test validation
         session.elicitation_triggered = elicitation_triggered
         yield session
@@ -482,11 +484,11 @@ async def nc_mcp_oauth_client_read_only(
     Uses JWT tokens because they embed scope information in claims,
     enabling proper scope-based tool filtering.
     """
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url="http://localhost:8001/mcp",
         token=playwright_oauth_token_read_only,
         client_name="OAuth JWT MCP Read-Only (Playwright)",
-    ):
+    ) as session:
         yield session
 
 
@@ -505,11 +507,11 @@ async def nc_mcp_oauth_client_write_only(
     Uses JWT tokens because they embed scope information in claims,
     enabling proper scope-based tool filtering.
     """
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url="http://localhost:8001/mcp",
         token=playwright_oauth_token_write_only,
         client_name="OAuth JWT MCP Write-Only (Playwright)",
-    ):
+    ) as session:
         yield session
 
 
@@ -527,11 +529,11 @@ async def nc_mcp_oauth_client_full_access(
     Uses JWT tokens because they embed scope information in claims,
     enabling proper scope-based tool filtering.
     """
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url="http://localhost:8001/mcp",
         token=playwright_oauth_token_full_access,
         client_name="OAuth JWT MCP Full Access (Playwright)",
-    ):
+    ) as session:
         yield session
 
 
@@ -552,11 +554,11 @@ async def nc_mcp_oauth_client_no_custom_scopes(
     Uses JWT tokens because they embed scope information in claims,
     enabling proper scope-based tool filtering.
     """
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url="http://localhost:8001/mcp",
         token=playwright_oauth_token_no_custom_scopes,
         client_name="OAuth JWT MCP No Custom Scopes (Playwright)",
-    ):
+    ) as session:
         yield session
 
 
@@ -2726,11 +2728,11 @@ async def alice_mcp_client(
     alice_oauth_token: str,
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as alice (owner role)."""
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url="http://localhost:8001/mcp",
         token=alice_oauth_token,
         client_name="Alice MCP",
-    ):
+    ) as session:
         yield session
 
 
@@ -2739,11 +2741,11 @@ async def bob_mcp_client(
     anyio_backend, bob_oauth_token: str
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as bob (viewer role)."""
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url="http://localhost:8001/mcp",
         token=bob_oauth_token,
         client_name="Bob MCP",
-    ):
+    ) as session:
         yield session
 
 
@@ -2753,11 +2755,11 @@ async def charlie_mcp_client(
     charlie_oauth_token: str,
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as charlie (editor role, in 'editors' group)."""
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url="http://localhost:8001/mcp",
         token=charlie_oauth_token,
         client_name="Charlie MCP",
-    ):
+    ) as session:
         yield session
 
 
@@ -2767,11 +2769,11 @@ async def diana_mcp_client(
     diana_oauth_token: str,
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client authenticated as diana (no-access role)."""
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url="http://localhost:8001/mcp",
         token=diana_oauth_token,
         client_name="Diana MCP",
-    ):
+    ) as session:
         yield session
 
 

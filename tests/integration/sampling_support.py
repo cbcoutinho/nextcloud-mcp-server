@@ -39,10 +39,10 @@ def create_sampling_callback(provider: Provider):
         if provider.supports_generation:
             callback = create_sampling_callback(provider)
 
-            async for session in create_mcp_client_session(
+            async with create_mcp_client_session(
                 url="http://localhost:8000/mcp",
                 sampling_callback=callback,
-            ):
+            ) as session:
                 # Session now supports sampling
                 pass
         ```
