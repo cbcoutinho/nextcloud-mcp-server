@@ -227,11 +227,11 @@ async def nc_mcp_client_with_sampling(
     """
     sampling_callback = create_sampling_callback(generation_provider)
 
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url="http://localhost:8000/mcp",
         client_name=f"Sampling MCP ({provider_name})",
         sampling_callback=sampling_callback,
-    ):
+    ) as session:
         yield session
 
 

@@ -145,11 +145,11 @@ async def test_astrolabe_plotly_visualization_with_basic_auth(
         logger.info(f"Authorization result: {auth_result}")
 
         # Create MCP client session as alice - all MCP operations inside this block
-        async for alice_mcp_client in create_mcp_client_session(
+        async with create_mcp_client_session(
             url="http://localhost:8003/mcp",
             headers={"Authorization": auth_header},
             client_name="Alice BasicAuth MCP",
-        ):
+        ) as alice_mcp_client:
             # Phase 3: Get initial indexed count
             initial_sync = await alice_mcp_client.call_tool(
                 "nc_get_vector_sync_status", {}
@@ -355,11 +355,11 @@ The visualization should show this document as a point in PCA-reduced space.
         # Cleanup note if not already cleaned (create new client for cleanup)
         if note_id:
             try:
-                async for cleanup_client in create_mcp_client_session(
+                async with create_mcp_client_session(
                     url="http://localhost:8003/mcp",
                     headers={"Authorization": auth_header},
                     client_name="Cleanup MCP",
-                ):
+                ) as cleanup_client:
                     delete_response = await cleanup_client.call_tool(
                         "nc_notes_delete_note", {"note_id": note_id}
                     )

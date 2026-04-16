@@ -367,12 +367,12 @@ async def nc_mcp_login_flow_client(
             content={"acknowledged": True},
         )
 
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url=LOGIN_FLOW_MCP_URL,
         token=login_flow_oauth_token,
         client_name="Login Flow MCP",
         elicitation_callback=elicitation_callback,
-    ):
+    ) as session:
         # Step 1: Provision access via Login Flow v2
         logger.info("Starting Login Flow v2 provisioning...")
         provision_result = await session.call_tool(
@@ -499,11 +499,11 @@ async def nc_mcp_login_flow_client_read_only(
     anyio_backend, login_flow_read_only_token: str
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client with read-only scopes on the login-flow server."""
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url=LOGIN_FLOW_MCP_URL,
         token=login_flow_read_only_token,
         client_name="Login Flow MCP Read-Only",
-    ):
+    ) as session:
         yield session
 
 
@@ -512,11 +512,11 @@ async def nc_mcp_login_flow_client_write_only(
     anyio_backend, login_flow_write_only_token: str
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client with write-only scopes on the login-flow server."""
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url=LOGIN_FLOW_MCP_URL,
         token=login_flow_write_only_token,
         client_name="Login Flow MCP Write-Only",
-    ):
+    ) as session:
         yield session
 
 
@@ -525,11 +525,11 @@ async def nc_mcp_login_flow_client_full_access(
     anyio_backend, login_flow_full_access_token: str
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client with full access scopes on the login-flow server."""
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url=LOGIN_FLOW_MCP_URL,
         token=login_flow_full_access_token,
         client_name="Login Flow MCP Full Access",
-    ):
+    ) as session:
         yield session
 
 
@@ -538,11 +538,11 @@ async def nc_mcp_login_flow_client_no_custom_scopes(
     anyio_backend, login_flow_no_custom_scopes_token: str
 ) -> AsyncGenerator[ClientSession, Any]:
     """MCP client with no custom scopes on the login-flow server."""
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url=LOGIN_FLOW_MCP_URL,
         token=login_flow_no_custom_scopes_token,
         client_name="Login Flow MCP No Custom Scopes",
-    ):
+    ) as session:
         yield session
 
 
@@ -724,12 +724,12 @@ async def _provision_login_flow_mcp_client(
 
         return ElicitResult(action="accept", content={"acknowledged": True})
 
-    async for session in create_mcp_client_session(
+    async with create_mcp_client_session(
         url=LOGIN_FLOW_MCP_URL,
         token=token,
         client_name=f"Login Flow MCP ({username})",
         elicitation_callback=elicitation_callback,
-    ):
+    ) as session:
         # Provision access
         provision_result = await session.call_tool(
             "nc_auth_provision_access", {"scopes": None}
