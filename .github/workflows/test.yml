@@ -131,7 +131,7 @@ jobs:
 
       # Start services with the appropriate profile
       - name: Run docker compose
-        uses: hoverkraft-tech/compose-action@4894d2492015c1774ee5a13a95b1072093087ec3 # v2.5.0
+        uses: hoverkraft-tech/compose-action@d2bee4f07e8ca410d6b196d00f90c12e7d48c33a # v2.6.0
         with:
           compose-file: "./docker-compose.yml"
           compose-flags: "--profile ${{ matrix.profile }}"
