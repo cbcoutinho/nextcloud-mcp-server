@@ -116,10 +116,24 @@ async def test_chunk_context_endpoint_uses_app_password(
 
         # Use the browser's session to drive Astrolabe end-to-end, the way a
         # real user would: this exercises astrolabe's OAuth token retrieval
-        # and the MCP server's handler under a real bearer.
+        # and the MCP server's handler under a real bearer. Nextcloud's
+        # controllers require a CSRF token (`requesttoken` header) that the
+        # rendered SPA picks up from `OC.requestToken`; direct page.request
+        # calls don't get it for free, so we load an Astrolabe page and
+        # forward the token on each subsequent API call.
+        await page.goto(
+            "http://localhost:8080/apps/astrolabe/", wait_until="networkidle"
+        )
+        request_token = await page.evaluate("window.OC && OC.requestToken")
+        assert request_token, (
+            "Could not read OC.requestToken from Astrolabe page — is the user logged in?"
+        )
+        csrf_headers = {"requesttoken": request_token}
+
         search_resp = await page.request.get(
             f"http://localhost:8080/apps/astrolabe/api/search"
-            f"?query={unique_term}&algorithm=hybrid&limit=5&include_pca=false"
+            f"?query={unique_term}&algorithm=hybrid&limit=5&include_pca=false",
+            headers=csrf_headers,
         )
         assert search_resp.ok, (
             f"Astrolabe search failed: {search_resp.status} {await search_resp.text()}"
@@ -153,6 +167,7 @@ async def test_chunk_context_endpoint_uses_app_password(
                 "start": str(start),
                 "end": str(end),
             },
+            headers=csrf_headers,
         )
         assert chunk_resp.status == 200, (
             f"chunk-context returned {chunk_resp.status}, body: "
