@@ -23,10 +23,8 @@ from nextcloud_mcp_server.api.management import (
     _parse_int_param,
     _sanitize_error_for_client,
     _validate_query_string,
-    extract_bearer_token,
     validate_token_and_get_user,
 )
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding.service import get_embedding_service
 from nextcloud_mcp_server.search import (
@@ -34,6 +32,10 @@ from nextcloud_mcp_server.search import (
     SemanticSearchAlgorithm,
 )
 from nextcloud_mcp_server.search.context import get_chunk_with_context
+from nextcloud_mcp_server.vector.oauth_sync import (
+    NotProvisionedError,
+    get_user_client_basic_auth,
+)
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 from nextcloud_mcp_server.vector.visualization import compute_pca_coordinates
@@ -512,11 +514,6 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         # Convert doc_id to int if possible (most IDs are int)
         doc_id_val: str | int = int(doc_id) if doc_id.isdigit() else doc_id
 
-        # Get bearer token for client initialization
-        token = extract_bearer_token(request)
-        if not token:
-            raise ValueError("Missing token")
-
         # Get Nextcloud host from OAuth context
         oauth_ctx = request.app.state.oauth_context
         nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
@@ -524,10 +521,19 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         if not nextcloud_host:
             raise ValueError("Nextcloud host not configured")
 
-        # Initialize authenticated Nextcloud client
-        async with NextcloudClient.from_token(
-            base_url=nextcloud_host, token=token, username=user_id
-        ) as nc_client:
+        # Use the user's stored app password for Nextcloud calls.
+        # The OAuth bearer is only used to authenticate Astrolabe → MCP Server;
+        # MCP Server → Nextcloud always uses the app password provisioned
+        # during the authorization step.
+        try:
+            nc_client = await get_user_client_basic_auth(user_id, nextcloud_host)
+        except NotProvisionedError as e:
+            return JSONResponse(
+                {"success": False, "error": str(e)},
+                status_code=401,
+            )
+
+        async with nc_client:
             chunk_context = await get_chunk_with_context(
                 nc_client=nc_client,
                 user_id=user_id,
@@ -687,11 +693,6 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
         except ValueError as e:
             return JSONResponse({"success": False, "error": str(e)}, status_code=400)
 
-        # Get bearer token for WebDAV authentication
-        token = extract_bearer_token(request)
-        if not token:
-            raise ValueError("Missing token")
-
         # Get Nextcloud host from OAuth context
         oauth_ctx = request.app.state.oauth_context
         nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
@@ -699,10 +700,19 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
         if not nextcloud_host:
             raise ValueError("Nextcloud host not configured")
 
-        # Download PDF via WebDAV using user's token
-        async with NextcloudClient.from_token(
-            base_url=nextcloud_host, token=token, username=user_id
-        ) as nc_client:
+        # Use the user's stored app password for Nextcloud calls.
+        # The OAuth bearer is only used to authenticate Astrolabe → MCP Server;
+        # MCP Server → Nextcloud always uses the app password provisioned
+        # during the authorization step.
+        try:
+            nc_client = await get_user_client_basic_auth(user_id, nextcloud_host)
+        except NotProvisionedError as e:
+            return JSONResponse(
+                {"success": False, "error": str(e)},
+                status_code=401,
+            )
+
+        async with nc_client:
             pdf_bytes, _ = await nc_client.webdav.read_file(file_path)
 
         # Check file size limit (50 MB)
