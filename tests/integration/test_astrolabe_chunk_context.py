@@ -19,6 +19,7 @@ so a regression to from_token-style auth would surface as a 500/404 from
 Astrolabe instead of a 200 with chunk_text.
 """
 
+import base64
 import json
 import logging
 import re
@@ -39,8 +40,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.multi_user_basic]
 
 
 def _build_basic_auth_header(username: str, password: str) -> str:
-    import base64
-
     credentials = base64.b64encode(f"{username}:{password}".encode()).decode("utf-8")
     return f"Basic {credentials}"
 
@@ -227,14 +226,14 @@ async def test_chunk_context_endpoint_requires_authentication():
 
 
 @pytest.mark.timeout(60)
-async def test_chunk_context_endpoint_handles_missing_app_password():
-    """Bearer token for a user with no provisioned app password must produce a
-    clean 401 (NotProvisionedError path), not a 500 or opaque upstream error.
+async def test_chunk_context_endpoint_rejects_invalid_bearer():
+    """A syntactically-valid-but-unverifiable bearer must not 500.
 
-    We simulate "user has not provisioned" by sending a syntactically valid
-    bearer that the token verifier will reject. The exact error class doesn't
-    matter for this check — what matters is the handler never 500s on the
-    missing-credential path.
+    The NotProvisionedError path (handler reached but no stored app password)
+    is covered by the corresponding unit test. This check guards the other
+    rejection path: token validation fails upfront at
+    `validate_token_and_get_user`, which must turn into a clean 401/404 from
+    the HTTP layer, not an opaque 500.
     """
     import httpx
 
@@ -249,7 +248,6 @@ async def test_chunk_context_endpoint_handles_missing_app_password():
             },
             headers={"Authorization": "Bearer invalid.token.value"},
         )
-        # Must be 401 (unauthorized) or 404 (route guard), not 500.
         assert response.status_code in (401, 404), (
             f"Expected 401/404 for invalid bearer, got {response.status_code}: "
             f"{response.text}"
