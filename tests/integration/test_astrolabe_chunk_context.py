@@ -23,8 +23,10 @@ import base64
 import json
 import logging
 import re
+import time
 import uuid
 
+import anyio
 import httpx
 import pytest
 
@@ -43,6 +45,63 @@ pytestmark = [pytest.mark.integration, pytest.mark.multi_user_basic]
 def _build_basic_auth_header(username: str, password: str) -> str:
     credentials = base64.b64encode(f"{username}:{password}".encode()).decode("utf-8")
     return f"Basic {credentials}"
+
+
+async def _poll_astrolabe_search_for_note(
+    page,
+    unique_term: str,
+    note_id,
+    csrf_headers: dict,
+    timeout_seconds: int = 60,
+) -> dict:
+    """Poll Astrolabe's search endpoint until `note_id` shows up in results.
+
+    `wait_for_vector_sync` only waits for the total indexed count to grow —
+    it does not guarantee that *this specific* document is visible yet
+    (observed on nc32 where deck-card seed data indexes first and the new
+    note arrives in Qdrant a few seconds later). Poll until the unique term
+    returns our note, or fail loudly with the last response we saw.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    last_results: list | None = None
+    attempts = 0
+    while time.monotonic() < deadline:
+        attempts += 1
+        search_resp = await page.request.get(
+            f"http://localhost:8080/apps/astrolabe/api/search"
+            f"?query={unique_term}&algorithm=hybrid&limit=5&include_pca=false",
+            headers=csrf_headers,
+        )
+        assert search_resp.ok, (
+            f"Astrolabe search failed on attempt {attempts}: "
+            f"{search_resp.status} {await search_resp.text()}"
+        )
+        search_data = await search_resp.json()
+        assert search_data.get("success"), (
+            f"Astrolabe search returned error on attempt {attempts}: {search_data}"
+        )
+        last_results = search_data.get("results") or []
+        note_result = next(
+            (
+                r
+                for r in last_results
+                if r.get("doc_type") == "note" and str(r.get("id")) == str(note_id)
+            ),
+            None,
+        )
+        if note_result is not None:
+            logger.info(
+                f"Note {note_id} surfaced in Astrolabe search after {attempts} "
+                f"attempts (~{attempts * 2}s)"
+            )
+            return note_result
+        await anyio.sleep(2)
+
+    raise AssertionError(
+        f"Note {note_id} with unique term '{unique_term}' did not surface in "
+        f"Astrolabe search within {timeout_seconds}s ({attempts} attempts). "
+        f"Last {len(last_results or [])} results: {last_results}"
+    )
 
 
 @pytest.mark.timeout(300)
@@ -130,28 +189,12 @@ async def test_chunk_context_endpoint_uses_app_password(
         )
         csrf_headers = {"requesttoken": request_token}
 
-        search_resp = await page.request.get(
-            f"http://localhost:8080/apps/astrolabe/api/search"
-            f"?query={unique_term}&algorithm=hybrid&limit=5&include_pca=false",
-            headers=csrf_headers,
-        )
-        assert search_resp.ok, (
-            f"Astrolabe search failed: {search_resp.status} {await search_resp.text()}"
-        )
-        search_data = await search_resp.json()
-        assert search_data.get("success"), f"Search returned error: {search_data}"
-        results = search_data.get("results") or []
-        note_result = next(
-            (
-                r
-                for r in results
-                if r.get("doc_type") == "note" and str(r.get("id")) == str(note_id)
-            ),
-            None,
-        )
-        assert note_result is not None, (
-            f"Note {note_id} with term '{unique_term}' not found in search results: "
-            f"{results}"
+        note_result = await _poll_astrolabe_search_for_note(
+            page=page,
+            unique_term=unique_term,
+            note_id=note_id,
+            csrf_headers=csrf_headers,
+            timeout_seconds=60,
         )
         start = note_result.get("chunk_start_offset")
         end = note_result.get("chunk_end_offset")
