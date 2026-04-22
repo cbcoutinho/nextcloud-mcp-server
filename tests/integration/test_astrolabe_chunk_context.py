@@ -25,6 +25,7 @@ import logging
 import re
 import uuid
 
+import httpx
 import pytest
 
 from tests.conftest import create_mcp_client_session
@@ -208,8 +209,6 @@ async def test_chunk_context_endpoint_uses_app_password(
 @pytest.mark.timeout(60)
 async def test_chunk_context_endpoint_requires_authentication():
     """Direct HTTP hit at /api/v1/chunk-context without a bearer must 401."""
-    import httpx
-
     async with httpx.AsyncClient() as client:
         response = await client.get(
             "http://localhost:8003/api/v1/chunk-context",
@@ -235,8 +234,6 @@ async def test_chunk_context_endpoint_rejects_invalid_bearer():
     `validate_token_and_get_user`, which must turn into a clean 401/404 from
     the HTTP layer, not an opaque 500.
     """
-    import httpx
-
     async with httpx.AsyncClient() as client:
         response = await client.get(
             "http://localhost:8003/api/v1/chunk-context",

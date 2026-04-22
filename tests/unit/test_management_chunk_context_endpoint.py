@@ -193,12 +193,9 @@ class TestChunkContextCredentialPath:
 
             # Regression guard: credential resolution must go through the
             # app-password helper, not NextcloudClient.from_token.
-            mock_basic_auth.assert_awaited_once()
-            args, kwargs = mock_basic_auth.call_args
-            positional = list(args)
-            if "user_id" in kwargs:
-                positional.insert(0, kwargs["user_id"])
-            assert positional[0] == "testuser"
+            mock_basic_auth.assert_awaited_once_with(
+                "testuser", "http://localhost:8080"
+            )
 
     def test_not_provisioned_returns_401(self):
         """If the user has no stored app password, the handler must surface
