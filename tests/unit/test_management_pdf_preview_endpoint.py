@@ -72,10 +72,6 @@ class TestPdfPreviewParameterValidation:
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
-            patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
-            ),
         ):
             app = create_test_app()
             client = TestClient(app)
@@ -96,10 +92,6 @@ class TestPdfPreviewParameterValidation:
                 "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
-            ),
-            patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
             ),
         ):
             app = create_test_app()
@@ -130,10 +122,6 @@ class TestPdfPreviewParameterValidation:
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
             ),
-            patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
-            ),
         ):
             app = create_test_app()
             client = TestClient(app)
@@ -162,10 +150,6 @@ class TestPdfPreviewParameterValidation:
                 "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
-            ),
-            patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
             ),
         ):
             app = create_test_app()
@@ -240,11 +224,8 @@ class TestPdfPreviewRendering:
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
-            ),
-            patch(
-                "nextcloud_mcp_server.client.NextcloudClient.from_token",
+                "nextcloud_mcp_server.api.visualization.get_user_client_basic_auth",
+                new_callable=AsyncMock,
                 return_value=mock_nc_client,
             ),
         ):
@@ -289,11 +270,8 @@ class TestPdfPreviewRendering:
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
-            ),
-            patch(
-                "nextcloud_mcp_server.client.NextcloudClient.from_token",
+                "nextcloud_mcp_server.api.visualization.get_user_client_basic_auth",
+                new_callable=AsyncMock,
                 return_value=mock_nc_client,
             ),
         ):
@@ -329,11 +307,8 @@ class TestPdfPreviewRendering:
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
-            ),
-            patch(
-                "nextcloud_mcp_server.client.NextcloudClient.from_token",
+                "nextcloud_mcp_server.api.visualization.get_user_client_basic_auth",
+                new_callable=AsyncMock,
                 return_value=mock_nc_client,
             ),
         ):
@@ -368,11 +343,8 @@ class TestPdfPreviewRendering:
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
-            ),
-            patch(
-                "nextcloud_mcp_server.client.NextcloudClient.from_token",
+                "nextcloud_mcp_server.api.visualization.get_user_client_basic_auth",
+                new_callable=AsyncMock,
                 return_value=mock_nc_client,
             ),
         ):
@@ -412,11 +384,8 @@ class TestPdfPreviewEdgeCases:
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
-            ),
-            patch(
-                "nextcloud_mcp_server.client.NextcloudClient.from_token",
+                "nextcloud_mcp_server.api.visualization.get_user_client_basic_auth",
+                new_callable=AsyncMock,
                 return_value=mock_nc_client,
             ),
         ):
@@ -441,10 +410,6 @@ class TestPdfPreviewEdgeCases:
                 "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
-            ),
-            patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
             ),
         ):
             app = create_test_app()
@@ -481,11 +446,8 @@ class TestPdfPreviewEdgeCases:
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
-            ),
-            patch(
-                "nextcloud_mcp_server.client.NextcloudClient.from_token",
+                "nextcloud_mcp_server.api.visualization.get_user_client_basic_auth",
+                new_callable=AsyncMock,
                 return_value=mock_nc_client,
             ),
         ):
@@ -523,11 +485,8 @@ class TestPdfPreviewEdgeCases:
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
-            ),
-            patch(
-                "nextcloud_mcp_server.client.NextcloudClient.from_token",
+                "nextcloud_mcp_server.api.visualization.get_user_client_basic_auth",
+                new_callable=AsyncMock,
                 return_value=mock_nc_client,
             ),
         ):
@@ -559,10 +518,6 @@ class TestPdfPreviewSecurityValidation:
                 "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
                 new_callable=AsyncMock,
                 return_value=("testuser", True),
-            ),
-            patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
             ),
         ):
             app = create_test_app()
@@ -610,11 +565,8 @@ class TestPdfPreviewSecurityValidation:
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
-            ),
-            patch(
-                "nextcloud_mcp_server.client.NextcloudClient.from_token",
+                "nextcloud_mcp_server.api.visualization.get_user_client_basic_auth",
+                new_callable=AsyncMock,
                 return_value=mock_nc_client,
             ),
         ):
@@ -652,11 +604,8 @@ class TestPdfPreviewSecurityValidation:
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
-            ),
-            patch(
-                "nextcloud_mcp_server.client.NextcloudClient.from_token",
+                "nextcloud_mcp_server.api.visualization.get_user_client_basic_auth",
+                new_callable=AsyncMock,
                 return_value=mock_nc_client,
             ),
         ):
@@ -696,11 +645,8 @@ class TestPdfPreviewSecurityValidation:
                 return_value=("testuser", True),
             ),
             patch(
-                "nextcloud_mcp_server.api.visualization.extract_bearer_token",
-                return_value="test-token",
-            ),
-            patch(
-                "nextcloud_mcp_server.client.NextcloudClient.from_token",
+                "nextcloud_mcp_server.api.visualization.get_user_client_basic_auth",
+                new_callable=AsyncMock,
                 return_value=mock_nc_client,
             ),
         ):
