@@ -24,6 +24,9 @@ async def test_mcp_contacts_workflow(
         "fn": f"MCP Contact {unique_suffix}",
         "email": f"mcp.contact.{unique_suffix}@example.com",
         "tel": "1234567890",
+        # Regression for issue #716 — these were silently dropped before
+        "organization": "MCP Test Corp",
+        "note": f"Created by test {unique_suffix}",
     }
 
     try:
@@ -51,9 +54,13 @@ async def test_mcp_contacts_workflow(
         )
         assert create_c_result.isError is False
 
-        # 4. Verify contact creation
+        # 4. Verify contact creation (and that all fields — #716 — actually persisted)
         contacts = await nc_client.contacts.list_contacts(addressbook=addressbook_name)
-        assert any(c["vcard_id"] == contact_uid for c in contacts)
+        created = next((c for c in contacts if c["vcard_id"] == contact_uid), None)
+        assert created is not None
+        raw_vcard = created.get("addressdata", "")
+        assert "ORG:MCP Test Corp" in raw_vcard
+        assert f"NOTE:Created by test {unique_suffix}" in raw_vcard
 
         # 5. Delete contact via MCP
         logger.info(f"Deleting contact {contact_uid} via MCP")

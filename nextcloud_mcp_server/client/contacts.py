@@ -11,6 +11,108 @@ from .base import BaseNextcloudClient
 logger = logging.getLogger(__name__)
 
 
+# Keys that _build_contact_from_data consumes. Used to warn (not error) on unknown keys.
+_SUPPORTED_CONTACT_KEYS = frozenset(
+    {
+        "fn",
+        "email",
+        "tel",
+        "phone",
+        "org",
+        "organization",
+        "note",
+        "title",
+        "nickname",
+        "bday",
+        "categories",
+        "url",
+    }
+)
+
+
+def _wrap_contact_field(value) -> list[dict]:
+    """Normalize an email/tel/url input into pythonvCard4's list-of-dicts shape.
+
+    Accepts a plain string, a dict already in ``{value, type}`` form, or a list of
+    either. Empty strings are dropped. Always returns a list (possibly empty).
+    """
+    if value is None or value == "":
+        return []
+    items = value if isinstance(value, list) else [value]
+    out: list[dict] = []
+    for item in items:
+        if isinstance(item, dict) and item.get("value"):
+            types = item.get("type") or ["HOME"]
+            out.append({"value": item["value"], "type": list(types)})
+        elif isinstance(item, str) and item:
+            out.append({"value": item, "type": ["HOME"]})
+    return out
+
+
+def _build_contact_from_data(contact_data: dict, uid: str) -> Contact:
+    """Build a pythonvCard4 Contact from an MCP ``contact_data`` dict.
+
+    Maps every key documented on ``nc_contacts_create_contact`` onto the underlying
+    library, normalising shapes (list/str) to avoid pythonvCard4's char-by-char
+    iteration of bare strings — see issue #716.
+    """
+
+    # pythonvCard4 iterates bare strings character-by-character for list-typed fields
+    # (ORG, NICKNAME, CATEGORIES, URL), producing garbage like ``ORG:A;c;m;e``. Wrap
+    # single strings in a list to keep the vCard well-formed.
+    def _as_list(value):
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str) and "," in value:
+            return [v.strip() for v in value.split(",") if v.strip()]
+        return [value]
+
+    kwargs: dict = {"fn": contact_data.get("fn"), "uid": uid}
+
+    emails = _wrap_contact_field(contact_data.get("email"))
+    if emails:
+        kwargs["email"] = emails
+
+    tels = _wrap_contact_field(contact_data.get("tel") or contact_data.get("phone"))
+    if tels:
+        kwargs["tel"] = tels
+
+    org_value = contact_data.get("org") or contact_data.get("organization")
+    if org_value:
+        kwargs["org"] = _as_list(org_value)
+
+    if contact_data.get("note"):
+        kwargs["note"] = contact_data["note"]
+
+    if contact_data.get("title"):
+        kwargs["title"] = contact_data["title"]
+
+    if contact_data.get("nickname"):
+        kwargs["nickname"] = _as_list(contact_data["nickname"])
+
+    if contact_data.get("categories"):
+        kwargs["categories"] = _as_list(contact_data["categories"])
+
+    if contact_data.get("url"):
+        kwargs["url"] = _as_list(contact_data["url"])
+
+    bday = contact_data.get("bday")
+    if bday:
+        if isinstance(bday, date):
+            kwargs["bday"] = bday
+        elif isinstance(bday, str):
+            try:
+                kwargs["bday"] = date.fromisoformat(bday)
+            except ValueError:
+                logger.warning("Ignoring non-ISO bday value: %r", bday)
+
+    unknown = set(contact_data) - _SUPPORTED_CONTACT_KEYS
+    if unknown:
+        logger.debug("Ignoring unknown contact_data keys: %s", sorted(unknown))
+
+    return Contact(**kwargs)  # type: ignore[arg-type]
+
+
 class ContactsClient(BaseNextcloudClient):
     """Client for NextCloud CardDAV contact operations."""
 
@@ -127,13 +229,7 @@ class ContactsClient(BaseNextcloudClient):
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{uid}.vcf"
 
-        contact = Contact(fn=contact_data.get("fn"), uid=uid)  # type: ignore
-        if "email" in contact_data:
-            contact.email = [{"value": contact_data["email"], "type": ["HOME"]}]
-        if "tel" in contact_data:
-            contact.tel = [{"value": contact_data["tel"], "type": ["HOME"]}]
-
-        vcard = contact.to_vcard()
+        vcard = _build_contact_from_data(contact_data, uid).to_vcard()
 
         headers = {
             "Content-Type": "text/vcard; charset=utf-8",
@@ -177,12 +273,7 @@ class ContactsClient(BaseNextcloudClient):
             )
         else:
             # Fallback to creating new vCard if we couldn't get existing
-            contact = Contact(fn=contact_data.get("fn"), uid=uid)  # type: ignore
-            if "email" in contact_data:
-                contact.email = [{"value": contact_data["email"], "type": ["HOME"]}]
-            if "tel" in contact_data:
-                contact.tel = [{"value": contact_data["tel"], "type": ["HOME"]}]
-            vcard_content = contact.to_vcard()
+            vcard_content = _build_contact_from_data(contact_data, uid).to_vcard()
 
         headers = {
             "Content-Type": "text/vcard; charset=utf-8",
