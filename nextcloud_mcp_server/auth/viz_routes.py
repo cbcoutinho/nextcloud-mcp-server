@@ -34,6 +34,10 @@ from nextcloud_mcp_server.search import (
     SemanticSearchAlgorithm,
 )
 from nextcloud_mcp_server.search.context import get_chunk_with_context
+from nextcloud_mcp_server.vector.oauth_sync import (
+    NotProvisionedError,
+    get_user_client_basic_auth,
+)
 from nextcloud_mcp_server.vector.pca import PCA
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
@@ -554,12 +558,28 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
         # Convert doc_id to int (all document types use int IDs)
         doc_id_int = int(doc_id)
 
-        # Get authenticated Nextcloud client
-        # Use context expansion module to fetch chunk with surrounding context
-        async with await _get_authenticated_client_for_userinfo(request) as nc_client:
+        user_id = request.user.display_name
+        settings = get_settings()
+        nextcloud_host = settings.nextcloud_host
+        if not nextcloud_host:
+            raise RuntimeError("Nextcloud host not configured")
+
+        # Use the user's stored app password for Nextcloud calls.
+        # The session cookie only authenticates the browser → MCP Server hop;
+        # MCP Server → Nextcloud always uses the app password provisioned
+        # during the authorization step.
+        try:
+            nc_client = await get_user_client_basic_auth(user_id, nextcloud_host)
+        except NotProvisionedError as e:
+            return JSONResponse(
+                {"success": False, "error": str(e)},
+                status_code=401,
+            )
+
+        async with nc_client:
             chunk_context = await get_chunk_with_context(
                 nc_client=nc_client,
-                user_id=request.user.display_name,  # User ID from auth
+                user_id=user_id,
                 doc_id=doc_id_int,
                 doc_type=doc_type,
                 chunk_start=start,
