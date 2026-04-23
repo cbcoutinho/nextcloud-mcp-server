@@ -667,7 +667,14 @@ async def all_login_flow_user_tokens(
 
     results: dict[str, str | Exception] = {}
 
-    async def _fetch(username: str, config: dict) -> None:
+    # Stagger per-user starts so parallel Playwright OAuth flows don't all hit
+    # Nextcloud's OIDC consent rendering at once — CI under load needs a wider
+    # gap (see tests/conftest.py:all_oauth_tokens).
+    scale = 0.5 if "GITHUB_ACTIONS" not in os.environ else 10
+
+    async def _fetch(username: str, config: dict, delay: float) -> None:
+        if delay > 0:
+            await anyio.sleep(delay)
         try:
             token = await _get_login_flow_token_for_user(
                 browser,
@@ -682,8 +689,8 @@ async def all_login_flow_user_tokens(
 
     user_list = list(test_users_setup.items())
     async with anyio.create_task_group() as tg:
-        for username, config in user_list:
-            tg.start_soon(_fetch, username, config)
+        for idx, (username, config) in enumerate(user_list):
+            tg.start_soon(_fetch, username, config, idx * scale)
 
     for username, result in results.items():
         if isinstance(result, Exception):
