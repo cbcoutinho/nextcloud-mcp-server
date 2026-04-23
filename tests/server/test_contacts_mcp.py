@@ -62,6 +62,24 @@ async def test_mcp_contacts_workflow(
         assert "ORG:MCP Test Corp" in raw_vcard
         assert f"NOTE:Created by test {unique_suffix}" in raw_vcard
 
+        # 4b. Update with a URL — regression guard for PR #719 review:
+        # _merge_vcard_properties previously had no URL handler, silently dropping it.
+        update_result = await nc_mcp_client.call_tool(
+            "nc_contacts_update_contact",
+            {
+                "addressbook": addressbook_name,
+                "uid": contact_uid,
+                "contact_data": {"url": "https://mcp-test.example.com"},
+            },
+        )
+        assert update_result.isError is False
+        contacts = await nc_client.contacts.list_contacts(addressbook=addressbook_name)
+        updated = next(c for c in contacts if c["vcard_id"] == contact_uid)
+        updated_vcard = updated.get("addressdata", "")
+        assert "mcp-test.example.com" in updated_vcard
+        # Prior properties must not have been clobbered by the merge.
+        assert "ORG:MCP Test Corp" in updated_vcard
+
         # 5. Delete contact via MCP
         logger.info(f"Deleting contact {contact_uid} via MCP")
         delete_c_result = await nc_mcp_client.call_tool(

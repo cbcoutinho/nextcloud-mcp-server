@@ -11,7 +11,8 @@ from .base import BaseNextcloudClient
 logger = logging.getLogger(__name__)
 
 
-# Keys that _build_contact_from_data consumes. Used to warn (not error) on unknown keys.
+# Canonical keys that _build_contact_from_data consumes. Aliases (``phone``, ``organization``)
+# are normalised to their canonical form by _normalize_contact_data before lookup.
 _SUPPORTED_CONTACT_KEYS = frozenset(
     {
         "fn",
@@ -30,8 +31,27 @@ _SUPPORTED_CONTACT_KEYS = frozenset(
 )
 
 
-def _wrap_contact_field(value) -> list[dict]:
-    """Normalize an email/tel/url input into pythonvCard4's list-of-dicts shape.
+def _normalize_contact_data(contact_data: dict) -> dict:
+    """Map documented aliases to canonical keys.
+
+    ``phone`` → ``tel``, ``organization`` → ``org``. The canonical key wins if both
+    are supplied, so callers who set ``tel`` don't lose it to a stray ``phone`` entry.
+    Returns a new dict — does not mutate the caller's argument.
+    """
+    normalised = dict(contact_data)
+    if "phone" in normalised and "tel" not in normalised:
+        normalised["tel"] = normalised.pop("phone")
+    else:
+        normalised.pop("phone", None)
+    if "organization" in normalised and "org" not in normalised:
+        normalised["org"] = normalised.pop("organization")
+    else:
+        normalised.pop("organization", None)
+    return normalised
+
+
+def _wrap_contact_field(value: str | dict | list | None) -> list[dict]:
+    """Normalize an email/tel input into pythonvCard4's list-of-dicts shape.
 
     Accepts a plain string, a dict already in ``{value, type}`` form, or a list of
     either. Empty strings are dropped. Always returns a list (possibly empty).
@@ -49,6 +69,29 @@ def _wrap_contact_field(value) -> list[dict]:
     return out
 
 
+def _as_str_list(value: str | list) -> list[str]:
+    """Wrap a bare string in a list. Does NOT split on commas.
+
+    Used for ORG/NICKNAME/URL where commas are part of the value (e.g.
+    ``"Smith, Jones & Associates"``) and only the list wrapper is needed to
+    prevent pythonvCard4 from iterating the string character-by-character.
+    """
+    return value if isinstance(value, list) else [value]
+
+
+def _split_categories(value: str | list) -> list[str]:
+    """Normalise CATEGORIES input: a comma-separated string is split into a list.
+
+    Unlike ORG/NICKNAME, CATEGORIES is canonically comma-separated in vCards
+    (``CATEGORIES:a,b,c``) so splitting a bare string is the expected shape.
+    Lists pass through unchanged — callers that already provide ``["a,b"]`` keep
+    their exact item, no double-splitting.
+    """
+    if isinstance(value, list):
+        return value
+    return [v.strip() for v in value.split(",") if v.strip()]
+
+
 def _build_contact_from_data(contact_data: dict, uid: str) -> Contact:
     """Build a pythonvCard4 Contact from an MCP ``contact_data`` dict.
 
@@ -56,47 +99,37 @@ def _build_contact_from_data(contact_data: dict, uid: str) -> Contact:
     library, normalising shapes (list/str) to avoid pythonvCard4's char-by-char
     iteration of bare strings — see issue #716.
     """
+    data = _normalize_contact_data(contact_data)
 
-    # pythonvCard4 iterates bare strings character-by-character for list-typed fields
-    # (ORG, NICKNAME, CATEGORIES, URL), producing garbage like ``ORG:A;c;m;e``. Wrap
-    # single strings in a list to keep the vCard well-formed.
-    def _as_list(value):
-        if isinstance(value, list):
-            return value
-        if isinstance(value, str) and "," in value:
-            return [v.strip() for v in value.split(",") if v.strip()]
-        return [value]
+    kwargs: dict = {"fn": data.get("fn"), "uid": uid}
 
-    kwargs: dict = {"fn": contact_data.get("fn"), "uid": uid}
-
-    emails = _wrap_contact_field(contact_data.get("email"))
+    emails = _wrap_contact_field(data.get("email"))
     if emails:
         kwargs["email"] = emails
 
-    tels = _wrap_contact_field(contact_data.get("tel") or contact_data.get("phone"))
+    tels = _wrap_contact_field(data.get("tel"))
     if tels:
         kwargs["tel"] = tels
 
-    org_value = contact_data.get("org") or contact_data.get("organization")
-    if org_value:
-        kwargs["org"] = _as_list(org_value)
+    if data.get("org"):
+        kwargs["org"] = _as_str_list(data["org"])
 
-    if contact_data.get("note"):
-        kwargs["note"] = contact_data["note"]
+    if data.get("note"):
+        kwargs["note"] = data["note"]
 
-    if contact_data.get("title"):
-        kwargs["title"] = contact_data["title"]
+    if data.get("title"):
+        kwargs["title"] = data["title"]
 
-    if contact_data.get("nickname"):
-        kwargs["nickname"] = _as_list(contact_data["nickname"])
+    if data.get("nickname"):
+        kwargs["nickname"] = _as_str_list(data["nickname"])
 
-    if contact_data.get("categories"):
-        kwargs["categories"] = _as_list(contact_data["categories"])
+    if data.get("categories"):
+        kwargs["categories"] = _split_categories(data["categories"])
 
-    if contact_data.get("url"):
-        kwargs["url"] = _as_list(contact_data["url"])
+    if data.get("url"):
+        kwargs["url"] = _as_str_list(data["url"])
 
-    bday = contact_data.get("bday")
+    bday = data.get("bday")
     if bday:
         if isinstance(bday, date):
             kwargs["bday"] = bday
@@ -106,10 +139,12 @@ def _build_contact_from_data(contact_data: dict, uid: str) -> Contact:
             except ValueError:
                 logger.warning("Ignoring non-ISO bday value: %r", bday)
 
-    unknown = set(contact_data) - _SUPPORTED_CONTACT_KEYS
+    unknown = set(data) - _SUPPORTED_CONTACT_KEYS
     if unknown:
         logger.debug("Ignoring unknown contact_data keys: %s", sorted(unknown))
 
+    # kwargs built dynamically from contact_data; pythonvCard4's Contact typeshed
+    # has specific typed params and doesn't accept **dict[str, Any].
     return Contact(**kwargs)  # type: ignore[arg-type]
 
 
@@ -250,6 +285,9 @@ class ContactsClient(BaseNextcloudClient):
         """Update an existing contact while preserving all existing properties."""
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{uid}.vcf"
+
+        # Canonicalise aliases up front so both code paths (merge + fallback) agree.
+        contact_data = _normalize_contact_data(contact_data)
 
         # Get raw vCard content to preserve all properties including extended ones
         raw_vcard_content = ""
@@ -480,6 +518,17 @@ class ContactsClient(BaseNextcloudClient):
                 elif property_name == "TITLE" and "title" in contact_data:
                     updated_lines.append(f"TITLE:{contact_data['title']}")
                     updated_properties.add("title")
+                elif property_name == "URL" and "url" in contact_data:
+                    if "url" not in updated_properties:
+                        url_value = contact_data["url"]
+                        if isinstance(url_value, list):
+                            url_value = url_value[0] if url_value else ""
+                        if url_value:
+                            updated_lines.append(f"URL:{url_value}")
+                        updated_properties.add("url")
+                    else:
+                        # Keep additional URLs unchanged
+                        updated_lines.append(line)
                 else:
                     # Keep all other properties unchanged (preserves all extended/custom fields)
                     updated_lines.append(line)
@@ -511,6 +560,12 @@ class ContactsClient(BaseNextcloudClient):
                         updated_lines.append(f"ORG:{value}")
                     elif key == "title":
                         updated_lines.append(f"TITLE:{value}")
+                    elif key == "url":
+                        url_value = (
+                            value[0] if isinstance(value, list) and value else value
+                        )
+                        if url_value:
+                            updated_lines.append(f"URL:{url_value}")
 
             # Add the END:VCARD line
             updated_lines.append("END:VCARD")
