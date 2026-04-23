@@ -177,3 +177,66 @@ class TestNormalizeContactData:
 
     def test_passthrough_for_unknown_keys(self):
         assert _normalize_contact_data({"foo": "bar"}) == {"foo": "bar"}
+
+
+class TestMergeVcardProperties:
+    """Direct tests for ``_merge_vcard_properties`` — the primary update path.
+
+    Written in response to PR #719 review claiming NICKNAME/BDAY/CATEGORIES are not
+    updatable via this function. These tests pin the actual behaviour so future
+    regressions (or claims) can be answered in one line.
+    """
+
+    @staticmethod
+    def _merge(raw: str, data: dict) -> str:
+        from nextcloud_mcp_server.client.contacts import ContactsClient
+
+        client = ContactsClient.__new__(ContactsClient)  # no HTTP / no __init__
+        return client._merge_vcard_properties(raw, data, uid="merge-test")
+
+    def test_nickname_overwrites_existing_line(self):
+        """Existing NICKNAME must be replaced with the new value, not preserved."""
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\nNICKNAME:Bob\nEND:VCARD\n"
+        result = self._merge(existing, {"nickname": "Robert"})
+        assert "NICKNAME:Robert" in result
+        assert "NICKNAME:Bob" not in result
+
+    def test_bday_overwrites_existing_line(self):
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\nBDAY:1990-05-01\nEND:VCARD\n"
+        result = self._merge(existing, {"bday": "1991-06-02"})
+        assert "BDAY:1991-06-02" in result
+        assert "BDAY:1990-05-01" not in result
+
+    def test_categories_overwrites_existing_line(self):
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\nCATEGORIES:old,stale\nEND:VCARD\n"
+        result = self._merge(existing, {"categories": ["vip", "new"]})
+        assert "CATEGORIES:vip,new" in result
+        assert "old,stale" not in result
+
+    def test_nickname_added_when_not_in_existing_vcard(self):
+        """If the existing vCard has no NICKNAME line, update must append one."""
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\nEND:VCARD\n"
+        result = self._merge(existing, {"nickname": "Bob"})
+        assert "NICKNAME:Bob" in result
+
+    def test_bday_added_when_not_in_existing_vcard(self):
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\nEND:VCARD\n"
+        result = self._merge(existing, {"bday": "1990-05-01"})
+        assert "BDAY:1990-05-01" in result
+
+    def test_categories_added_when_not_in_existing_vcard(self):
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\nEND:VCARD\n"
+        result = self._merge(existing, {"categories": "a,b,c"})
+        assert "CATEGORIES:a,b,c" in result
+
+    def test_url_update_preserves_unrelated_properties(self):
+        """A URL update must not clobber ORG / NOTE / TEL from the existing vCard."""
+        existing = (
+            "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\n"
+            "ORG:Acme\nTEL:555-1234\nNOTE:keep me\nEND:VCARD\n"
+        )
+        result = self._merge(existing, {"url": "https://example.com"})
+        assert "URL:https://example.com" in result
+        assert "ORG:Acme" in result
+        assert "TEL:555-1234" in result
+        assert "NOTE:keep me" in result
