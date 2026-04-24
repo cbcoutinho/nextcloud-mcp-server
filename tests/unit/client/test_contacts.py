@@ -12,14 +12,20 @@ import pytest
 from nextcloud_mcp_server.client.contacts import (
     _build_contact_from_data,
     _normalize_contact_data,
+    _wrap_contact_field,
 )
 
 pytestmark = pytest.mark.unit
 
 
 def _vcard(**kwargs) -> str:
-    """Build a vCard from ``contact_data`` with a fixed uid, return the serialised text."""
-    return _build_contact_from_data(kwargs, uid="unit-test-uid").to_vcard()
+    """Build a vCard from ``contact_data`` with a fixed uid, return the serialised text.
+
+    Mirrors ``create_contact``'s real call chain: normalise aliases first, then hand
+    canonical keys to ``_build_contact_from_data``.
+    """
+    data = _normalize_contact_data(kwargs)
+    return _build_contact_from_data(data, uid="unit-test-uid").to_vcard()
 
 
 def test_issue_716_minimal_payload_keeps_all_fields():
@@ -152,6 +158,33 @@ def test_dict_form_email_preserves_custom_type():
         email={"value": "work@example.com", "type": ["WORK"]},
     )
     assert "EMAIL;TYPE=WORK:work@example.com" in vcard
+
+
+def test_wrap_field_dict_without_value_is_dropped():
+    """Dict inputs lacking the ``value`` key are silently dropped so malformed
+    payloads don't emit an EMAIL/TEL line pointing at nothing.
+    """
+    assert _wrap_contact_field({"type": ["WORK"]}) == []
+    # Mixed list: the valid entry survives, the value-less dict is omitted.
+    out = _wrap_contact_field(
+        [{"value": "ok@example.com", "type": ["WORK"]}, {"type": ["HOME"]}]
+    )
+    assert out == [{"value": "ok@example.com", "type": ["WORK"]}]
+
+
+def test_missing_fn_logs_warning(caplog):
+    """A missing ``fn`` should log a warning so operators notice malformed payloads."""
+    import logging
+
+    with caplog.at_level(
+        logging.WARNING, logger="nextcloud_mcp_server.client.contacts"
+    ):
+        try:
+            _build_contact_from_data({"email": "x@example.com"}, uid="no-fn-uid")
+        except Exception:
+            # pythonvCard4 may raise on missing fn; we only care about the warning log.
+            pass
+    assert any("fn" in r.message.lower() for r in caplog.records)
 
 
 class TestNormalizeContactData:
