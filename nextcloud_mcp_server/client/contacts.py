@@ -3,12 +3,161 @@
 import logging
 import xml.etree.ElementTree as ET
 from datetime import date
+from typing import Any
 
 from pythonvCard4.vcard import Contact
 
 from .base import BaseNextcloudClient
 
 logger = logging.getLogger(__name__)
+
+
+# Canonical keys accepted by _build_contact_from_data. Callers normalise aliases
+# (``phone``→``tel``, ``organization``→``org``) via _normalize_contact_data beforehand
+# so the set never needs to list them.
+_SUPPORTED_CONTACT_KEYS = frozenset(
+    {
+        "fn",
+        "email",
+        "tel",
+        "org",
+        "note",
+        "title",
+        "nickname",
+        "bday",
+        "categories",
+        "url",
+    }
+)
+
+
+def _normalize_contact_data(contact_data: dict[str, Any]) -> dict[str, Any]:
+    """Map documented aliases to canonical keys.
+
+    ``phone`` → ``tel``, ``organization`` → ``org``. The canonical key wins if both
+    are supplied, so callers who set ``tel`` don't lose it to a stray ``phone`` entry.
+    Returns a new dict — does not mutate the caller's argument.
+    """
+    normalised = dict(contact_data)
+    if "phone" in normalised and "tel" not in normalised:
+        normalised["tel"] = normalised.pop("phone")
+    else:
+        normalised.pop("phone", None)
+    if "organization" in normalised and "org" not in normalised:
+        normalised["org"] = normalised.pop("organization")
+    else:
+        normalised.pop("organization", None)
+    return normalised
+
+
+def _wrap_contact_field(
+    value: str | dict[str, Any] | list[str | dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Normalize an email/tel input into pythonvCard4's list-of-dicts shape.
+
+    Accepts a plain string, a dict already in ``{value, type}`` form, or a list of
+    either. Empty strings and dicts without a ``value`` key are dropped. Always
+    returns a list (possibly empty).
+    """
+    if value is None or value == "":
+        return []
+    items = value if isinstance(value, list) else [value]
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, dict) and item.get("value"):
+            types = item.get("type") or ["HOME"]
+            out.append({"value": item["value"], "type": list(types)})
+        elif isinstance(item, str) and item:
+            out.append({"value": item, "type": ["HOME"]})
+    return out
+
+
+def _as_str_list(value: str | list[str]) -> list[str]:
+    """Wrap a bare string in a list. Does NOT split on commas.
+
+    Used for ORG/NICKNAME/URL where commas are part of the value (e.g.
+    ``"Smith, Jones & Associates"``) and only the list wrapper is needed to
+    prevent pythonvCard4 from iterating the string character-by-character.
+    """
+    return value if isinstance(value, list) else [value]
+
+
+def _split_categories(value: str | list[str]) -> list[str]:
+    """Normalise CATEGORIES input: a comma-separated string is split into a list.
+
+    Unlike ORG/NICKNAME, CATEGORIES is canonically comma-separated in vCards
+    (``CATEGORIES:a,b,c``) so splitting a bare string is the expected shape.
+    Lists pass through unchanged — callers that already provide ``["a,b"]`` keep
+    their exact item, no double-splitting.
+    """
+    if isinstance(value, list):
+        return value
+    return [v.strip() for v in value.split(",") if v.strip()]
+
+
+def _build_contact_from_data(contact_data: dict[str, Any], uid: str) -> Contact:
+    """Build a pythonvCard4 Contact from an MCP ``contact_data`` dict.
+
+    Maps every key documented on ``nc_contacts_create_contact`` onto the underlying
+    library, normalising shapes (list/str) to avoid pythonvCard4's char-by-char
+    iteration of bare strings — see issue #716.
+
+    Callers must pre-normalise aliases via ``_normalize_contact_data`` before
+    invoking this helper; it assumes canonical keys only.
+    """
+    data = contact_data
+
+    if not data.get("fn"):
+        logger.warning(
+            "contact_data missing required 'fn' field; pythonvCard4 may reject or "
+            "produce an invalid vCard"
+        )
+
+    kwargs: dict[str, Any] = {"fn": data.get("fn"), "uid": uid}
+
+    emails = _wrap_contact_field(data.get("email"))
+    if emails:
+        kwargs["email"] = emails
+
+    tels = _wrap_contact_field(data.get("tel"))
+    if tels:
+        kwargs["tel"] = tels
+
+    if data.get("org"):
+        kwargs["org"] = _as_str_list(data["org"])
+
+    if data.get("note"):
+        kwargs["note"] = data["note"]
+
+    if data.get("title"):
+        kwargs["title"] = data["title"]
+
+    if data.get("nickname"):
+        kwargs["nickname"] = _as_str_list(data["nickname"])
+
+    if data.get("categories"):
+        kwargs["categories"] = _split_categories(data["categories"])
+
+    if data.get("url"):
+        kwargs["url"] = _as_str_list(data["url"])
+
+    bday = data.get("bday")
+    if bday:
+        if isinstance(bday, date):
+            kwargs["bday"] = bday
+        elif isinstance(bday, str):
+            try:
+                kwargs["bday"] = date.fromisoformat(bday)
+            except ValueError:
+                logger.warning("Ignoring non-ISO bday value: %r", bday)
+
+    unknown = set(data) - _SUPPORTED_CONTACT_KEYS
+    if unknown:
+        logger.debug("Ignoring unknown contact_data keys: %s", sorted(unknown))
+
+    # kwargs built dynamically from contact_data; pythonvCard4's Contact typeshed
+    # has specific typed params and doesn't accept **dict[str, Any].
+    return Contact(**kwargs)  # type: ignore[arg-type]
 
 
 class ContactsClient(BaseNextcloudClient):
@@ -122,18 +271,16 @@ class ContactsClient(BaseNextcloudClient):
         url = f"{carddav_path}/{name}/"
         await self._make_request("DELETE", url)
 
-    async def create_contact(self, *, addressbook: str, uid: str, contact_data: dict):
+    async def create_contact(
+        self, *, addressbook: str, uid: str, contact_data: dict[str, Any]
+    ):
         """Create a new contact."""
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{uid}.vcf"
 
-        contact = Contact(fn=contact_data.get("fn"), uid=uid)  # type: ignore
-        if "email" in contact_data:
-            contact.email = [{"value": contact_data["email"], "type": ["HOME"]}]
-        if "tel" in contact_data:
-            contact.tel = [{"value": contact_data["tel"], "type": ["HOME"]}]
-
-        vcard = contact.to_vcard()
+        # Normalise aliases here so the helper's invariant (canonical keys only) holds.
+        contact_data = _normalize_contact_data(contact_data)
+        vcard = _build_contact_from_data(contact_data, uid).to_vcard()
 
         headers = {
             "Content-Type": "text/vcard; charset=utf-8",
@@ -149,11 +296,19 @@ class ContactsClient(BaseNextcloudClient):
         await self._make_request("DELETE", url)
 
     async def update_contact(
-        self, *, addressbook: str, uid: str, contact_data: dict, etag: str = ""
+        self,
+        *,
+        addressbook: str,
+        uid: str,
+        contact_data: dict[str, Any],
+        etag: str = "",
     ):
         """Update an existing contact while preserving all existing properties."""
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{uid}.vcf"
+
+        # Canonicalise aliases up front so both code paths (merge + fallback) agree.
+        contact_data = _normalize_contact_data(contact_data)
 
         # Get raw vCard content to preserve all properties including extended ones
         raw_vcard_content = ""
@@ -177,12 +332,7 @@ class ContactsClient(BaseNextcloudClient):
             )
         else:
             # Fallback to creating new vCard if we couldn't get existing
-            contact = Contact(fn=contact_data.get("fn"), uid=uid)  # type: ignore
-            if "email" in contact_data:
-                contact.email = [{"value": contact_data["email"], "type": ["HOME"]}]
-            if "tel" in contact_data:
-                contact.tel = [{"value": contact_data["tel"], "type": ["HOME"]}]
-            vcard_content = contact.to_vcard()
+            vcard_content = _build_contact_from_data(contact_data, uid).to_vcard()
 
         headers = {
             "Content-Type": "text/vcard; charset=utf-8",
@@ -300,7 +450,7 @@ class ContactsClient(BaseNextcloudClient):
             raise
 
     def _merge_vcard_properties(
-        self, raw_vcard: str, contact_data: dict, uid: str
+        self, raw_vcard: str, contact_data: dict[str, Any], uid: str
     ) -> str:
         """Merge new contact data into existing raw vCard while preserving all properties."""
         try:
@@ -389,6 +539,20 @@ class ContactsClient(BaseNextcloudClient):
                 elif property_name == "TITLE" and "title" in contact_data:
                     updated_lines.append(f"TITLE:{contact_data['title']}")
                     updated_properties.add("title")
+                elif property_name == "URL" and "url" in contact_data:
+                    if "url" not in updated_properties:
+                        url_value = contact_data["url"]
+                        # Only the first URL from a list is written; multi-URL
+                        # contacts are rare and this text merge doesn't attempt
+                        # position-stable mapping to existing URL lines.
+                        if isinstance(url_value, list):
+                            url_value = url_value[0] if url_value else ""
+                        if url_value:
+                            updated_lines.append(f"URL:{url_value}")
+                        updated_properties.add("url")
+                    else:
+                        # Keep additional URLs unchanged
+                        updated_lines.append(line)
                 else:
                     # Keep all other properties unchanged (preserves all extended/custom fields)
                     updated_lines.append(line)
@@ -420,6 +584,14 @@ class ContactsClient(BaseNextcloudClient):
                         updated_lines.append(f"ORG:{value}")
                     elif key == "title":
                         updated_lines.append(f"TITLE:{value}")
+                    elif key == "url":
+                        # Only the first URL is written on add-new; see note in the
+                        # update-existing branch above.
+                        url_value = (
+                            value[0] if isinstance(value, list) and value else value
+                        )
+                        if url_value:
+                            updated_lines.append(f"URL:{url_value}")
 
             # Add the END:VCARD line
             updated_lines.append("END:VCARD")

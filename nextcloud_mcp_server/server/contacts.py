@@ -191,7 +191,23 @@ def configure_contacts_tools(mcp: FastMCP):
                 not the display name. Use nc_contacts_list_addressbooks to
                 find available URI slugs.
             uid: The unique ID for the contact.
-            contact_data: A dictionary with the contact's details, e.g. {"fn": "John Doe", "email": "john.doe@example.com"}.
+            contact_data: A dictionary with the contact's details. Supported keys:
+
+                - ``fn`` (str, required): Formatted full name.
+                - ``email`` (str or list of str/dicts): Email address(es).
+                - ``tel`` / ``phone`` (str or list): Phone number(s).
+                - ``org`` / ``organization`` (str or list of str): Organization.
+                  Lists become semicolon-separated ORG components per RFC 6350.
+                - ``title`` (str): Job title.
+                - ``note`` (str): Free-form note.
+                - ``nickname`` (str or list of str).
+                - ``bday`` (ISO date str ``"YYYY-MM-DD"`` or ``datetime.date``).
+                - ``categories`` (list of str, or comma-separated str).
+                - ``url`` (str or list of str).
+
+                Unknown keys are ignored. Example:
+                ``{"fn": "John Doe", "email": "john@example.com",
+                "organization": "Acme", "note": "Met at conference"}``.
         """
         client = await get_client(ctx)
         return await client.contacts.create_contact(
