@@ -10,5 +10,14 @@ for candidate in \
     fi
 done
 
-# Fall back to whatever is in PATH
-exec uvx nextcloud-mcp-server run --transport stdio
+# Fall back to uvx on PATH if found
+if command -v uvx > /dev/null 2>&1; then
+    exec uvx nextcloud-mcp-server run --transport stdio
+fi
+
+# uvx not found — print actionable error and exit
+echo "Error: 'uvx' was not found in any expected location." >&2
+echo "Install uv (which provides uvx) from: https://docs.astral.sh/uv/getting-started/installation/" >&2
+echo "  macOS/Linux: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+echo "  Homebrew:    brew install uv" >&2
+exit 1
