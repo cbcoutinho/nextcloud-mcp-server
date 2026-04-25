@@ -1,5 +1,10 @@
 import base64
+import io
 import logging
+import mimetypes
+import os
+import tempfile
+import zipfile
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
@@ -14,6 +19,33 @@ from nextcloud_mcp_server.utils.document_parser import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Registry of local temp paths created by nc_webdav_download_to_temp.
+# Used to prevent nc_webdav_cleanup_temp from deleting arbitrary paths.
+# Plain set is safe: asyncio is single-threaded and GIL protects simple ops.
+_temp_registry: set[str] = set()
+
+# MIME types whose files are ZIP archives and can be introspected with zipfile.
+_ZIP_MIME_TYPES: frozenset[str] = frozenset(
+    {
+        # OpenDocument formats
+        "application/vnd.oasis.opendocument.spreadsheet",  # .ods
+        "application/vnd.oasis.opendocument.text",  # .odt
+        "application/vnd.oasis.opendocument.presentation",  # .odp
+        "application/vnd.oasis.opendocument.graphics",  # .odg
+        "application/vnd.oasis.opendocument.formula",  # .odf
+        "application/vnd.oasis.opendocument.database",  # .odb
+        # OOXML formats
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # .xlsx
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
+        # Generic ZIP
+        "application/zip",
+        "application/x-zip-compressed",
+        "application/java-archive",  # .jar
+        "application/epub+zip",  # .epub
+    }
+)
 
 
 def configure_webdav_tools(mcp: FastMCP):
@@ -68,16 +100,43 @@ def configure_webdav_tools(mcp: FastMCP):
     @require_scopes("files.read")
     @instrument_tool
     async def nc_webdav_read_file(path: str, ctx: Context):
-        """Read the content of a file from NextCloud.
+        """Read a file from Nextcloud and return its content inline.
+
+        IMPORTANT — choose the right tool for the file type:
+
+        ✅ Use THIS tool for:
+          - Plain text files (Markdown, CSV, JSON, XML, YAML, source code, logs)
+            that fit in the context window (roughly < 1 MB of text).
+          - PDFs, when the document-processing feature is enabled server-side
+            (text is extracted automatically).
+
+        ❌ Do NOT use this tool for:
+          - ZIP-based office formats (ODS, ODT, ODP, DOCX, XLSX, PPTX, EPUB …).
+            The raw archive bytes are meaningless in context. Use
+            nc_webdav_list_archive_members + nc_webdav_read_archive_member instead.
+          - Images (PNG, JPEG, GIF, TIFF, HEIC, RAW …).
+            Binary image data cannot be interpreted here. Use
+            nc_webdav_download_to_temp and process locally with tools such as
+            `convert`, `exiftool`, or `ffmpeg` — only if you have local shell access.
+          - Audio or video files (MP4, MKV, MP3, FLAC …).
+            Use nc_webdav_download_to_temp + `ffmpeg`/`ffprobe` if you have shell
+            access; otherwise these files cannot be processed via MCP.
+          - Any binary file larger than ~1 MB. The file will be returned as a
+            base64 blob that wastes the entire context without yielding useful
+            information. Check the file size with nc_webdav_list_directory first.
+
+        Fallback behaviour (binary files not covered above):
+          The raw bytes are base64-encoded and returned. This is rarely useful
+          — prefer the dedicated tools described above.
 
         Args:
             path: Full path to the file to read
 
         Returns:
             Dict with path, content, content_type, size, and optional parsing metadata
-            - Text files are decoded to UTF-8
-            - Documents (PDF, DOCX, etc.) are parsed and text is extracted
-            - Other binary files are base64 encoded
+            - Text files: content decoded to UTF-8 string
+            - PDFs (doc-processing enabled): extracted plain text
+            - Other binary files: content base64-encoded (avoid for large files)
         """
         client = await get_client(ctx)
         content, content_type = await client.webdav.read_file(path)
@@ -481,3 +540,291 @@ def configure_webdav_tools(mcp: FastMCP):
             scope=scope,
             filters_applied={"only_favorites": True},
         )
+
+    @mcp.tool(
+        title="List Archive Members",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_list_archive_members(path: str, ctx: Context) -> dict:
+        """List the files contained inside a ZIP-based archive stored in Nextcloud.
+
+        Supported archive formats (all are ZIP-based):
+          Office: ODS, ODT, ODP, ODG, DOCX, XLSX, PPTX
+          Other:  ZIP, JAR, EPUB
+
+        Use this tool first to discover the internal structure of an archive,
+        then call nc_webdav_read_archive_member to read a specific member.
+
+        Typical ODF layout:
+          mimetype          — identifies the ODF sub-type
+          content.xml       — document content
+          styles.xml        — formatting styles
+          meta.xml          — document metadata
+          settings.xml      — application settings
+          META-INF/manifest.xml — archive manifest
+
+        Args:
+            path: Nextcloud path to the archive file (e.g. "Documents/report.ods")
+
+        Returns:
+            Dict with path, content_type, archive_size, member_count, and a
+            members list. Each member has: name, size (uncompressed),
+            compressed_size, is_dir.
+
+        Raises:
+            ValueError: if the file is not a valid ZIP archive
+        """
+        client = await get_client(ctx)
+        content, content_type = await client.webdav.read_file(path)
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                members = [
+                    {
+                        "name": info.filename,
+                        "size": info.file_size,
+                        "compressed_size": info.compress_size,
+                        "is_dir": info.is_dir(),
+                    }
+                    for info in zf.infolist()
+                ]
+        except zipfile.BadZipFile as exc:
+            raise ValueError(
+                f"'{path}' (content-type: {content_type}) is not a valid ZIP archive. "
+                f"For plain text files use nc_webdav_read_file; for images/video/audio "
+                f"use nc_webdav_download_to_temp."
+            ) from exc
+
+        return {
+            "path": path,
+            "content_type": content_type,
+            "archive_size": len(content),
+            "member_count": len(members),
+            "members": members,
+        }
+
+    @mcp.tool(
+        title="Read Archive Member",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_read_archive_member(
+        path: str, member_path: str, ctx: Context
+    ) -> dict:
+        """Extract and return a single file from inside a ZIP-based archive in Nextcloud.
+
+        The whole archive is downloaded, but only the requested member is
+        returned — it never appears in the context as a base64 blob.
+
+        Supported archive formats: ODS, ODT, ODP, ODG, DOCX, XLSX, PPTX,
+        ZIP, JAR, EPUB (anything that Python's zipfile module can open).
+
+        Typical use-cases:
+          - Read content.xml from an ODS/ODT/ODP to get document content
+          - Read word/document.xml from a DOCX
+          - Read xl/worksheets/sheet1.xml from an XLSX
+          - Inspect META-INF/manifest.xml to understand archive structure
+
+        Use nc_webdav_list_archive_members first to discover available member paths.
+
+        Args:
+            path: Nextcloud path to the archive (e.g. "Documents/budget.ods")
+            member_path: Path of the member inside the archive
+                         (e.g. "content.xml" or "META-INF/manifest.xml")
+
+        Returns:
+            Dict with archive_path, member_path, content, content_type, size.
+            Text members (XML, HTML, JSON, plain text …) are returned as UTF-8
+            strings. Binary members are base64-encoded with encoding="base64".
+
+        Raises:
+            ValueError: if the archive is not valid ZIP, or the member is not found
+        """
+        client = await get_client(ctx)
+        content, content_type = await client.webdav.read_file(path)
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                try:
+                    member_bytes = zf.read(member_path)
+                except KeyError as exc:
+                    available = [i.filename for i in zf.infolist() if not i.is_dir()]
+                    raise ValueError(
+                        f"Member '{member_path}' not found in '{path}'. "
+                        f"Available files: {available[:30]}"
+                        + (" (truncated)" if len(available) > 30 else "")
+                    ) from exc
+        except zipfile.BadZipFile as exc:
+            raise ValueError(f"'{path}' is not a valid ZIP archive.") from exc
+
+        member_mime = mimetypes.guess_type(member_path)[0] or "application/octet-stream"
+
+        # Return text members decoded; XML files are always text even without
+        # an explicit text/* MIME type.
+        is_text = (
+            member_mime.startswith("text/")
+            or member_mime
+            in {
+                "application/xml",
+                "application/json",
+                "application/javascript",
+            }
+            or member_path.endswith((".xml", ".json", ".html", ".css", ".js", ".svg"))
+        )
+
+        if is_text:
+            try:
+                return {
+                    "archive_path": path,
+                    "member_path": member_path,
+                    "content": member_bytes.decode("utf-8"),
+                    "content_type": member_mime,
+                    "size": len(member_bytes),
+                }
+            except UnicodeDecodeError:
+                pass  # fall through to base64
+
+        return {
+            "archive_path": path,
+            "member_path": member_path,
+            "content": base64.b64encode(member_bytes).decode("ascii"),
+            "content_type": member_mime,
+            "size": len(member_bytes),
+            "encoding": "base64",
+        }
+
+    @mcp.tool(
+        title="Download File to Temp",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_download_to_temp(path: str, ctx: Context) -> dict:
+        """Download a Nextcloud file to a local temporary path and return that path.
+
+        IMPORTANT — this tool is only useful when you have access to local shell
+        tools (e.g. Claude Code's Bash tool). In Claude Desktop without shell
+        access the returned path cannot be acted upon and you should not call
+        this tool.
+
+        Use this tool for file types that require native processing:
+          Images   — then use: convert, exiftool, ffmpeg, identify
+          Video    — then use: ffmpeg, ffprobe, mediainfo
+          Audio    — then use: ffmpeg, ffprobe, sox
+          PDFs     — then use: pdftotext, pdfinfo, pdftk, mutool
+          Archives — for formats NOT supported by nc_webdav_list_archive_members
+                     (e.g. .tar.gz, .7z, .rar): use tar, 7z, unrar
+          Any large binary that requires local tooling
+
+        For ZIP-based office formats (ODS, DOCX, XLSX …) prefer
+        nc_webdav_list_archive_members + nc_webdav_read_archive_member —
+        they avoid creating temp files entirely.
+
+        Cleanup: always call nc_webdav_cleanup_temp when finished to free disk
+        space. The temp file is also removed when the MCP server process exits.
+
+        Args:
+            path: Nextcloud path to the file (e.g. "Videos/holiday.mp4")
+
+        Returns:
+            Dict with:
+              local_path    — absolute path on the local filesystem
+              original_path — original Nextcloud path
+              filename      — basename of the original file
+              content_type  — MIME type reported by Nextcloud
+              size          — file size in bytes
+        """
+        client = await get_client(ctx)
+        content, content_type = await client.webdav.read_file(path)
+
+        filename = os.path.basename(path.rstrip("/"))
+        _root, suffix = os.path.splitext(filename)
+
+        fd, local_path = tempfile.mkstemp(suffix=suffix, prefix="nc_download_")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(content)
+        except Exception:
+            try:
+                os.unlink(local_path)
+            except OSError:
+                pass
+            raise
+
+        _temp_registry.add(local_path)
+        logger.debug(
+            "Downloaded '%s' to temp path '%s' (%d bytes)",
+            path,
+            local_path,
+            len(content),
+        )
+
+        return {
+            "local_path": local_path,
+            "original_path": path,
+            "filename": filename,
+            "content_type": content_type,
+            "size": len(content),
+        }
+
+    @mcp.tool(
+        title="Remove Temp File",
+        annotations=ToolAnnotations(
+            destructiveHint=True,
+            idempotentHint=True,
+            openWorldHint=False,  # operates on local filesystem only
+        ),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_cleanup_temp(local_path: str, ctx: Context) -> dict:
+        """Remove a temporary file created by nc_webdav_download_to_temp.
+
+        Only paths that were created by nc_webdav_download_to_temp in this
+        server session can be removed — arbitrary filesystem paths are rejected.
+
+        Call this when you are done processing a downloaded file to free
+        disk space.
+
+        Args:
+            local_path: The local_path value returned by nc_webdav_download_to_temp
+
+        Returns:
+            Dict with status ("ok" or "error") and the local_path.
+        """
+        if local_path not in _temp_registry:
+            return {
+                "status": "error",
+                "local_path": local_path,
+                "message": (
+                    "Path was not created by nc_webdav_download_to_temp in this "
+                    "session, or has already been cleaned up."
+                ),
+            }
+
+        _temp_registry.discard(local_path)
+
+        try:
+            os.unlink(local_path)
+            logger.debug("Removed temp file '%s'", local_path)
+            return {"status": "ok", "local_path": local_path}
+        except FileNotFoundError:
+            return {
+                "status": "ok",
+                "local_path": local_path,
+                "note": "File was already removed.",
+            }
+        except OSError as exc:
+            return {"status": "error", "local_path": local_path, "message": str(exc)}
