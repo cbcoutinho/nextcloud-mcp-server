@@ -45,6 +45,161 @@ def _cleanup_temp_files_on_exit() -> None:
 
 atexit.register(_cleanup_temp_files_on_exit)
 
+# ---------------------------------------------------------------------------
+# Pure helpers — no MCP context required, fully unit-testable
+# ---------------------------------------------------------------------------
+
+# Extensions always treated as UTF-8 text regardless of MIME type.
+# Covers XML-based OOXML internals (.rels, .opf, .xhtml, .ncx) that
+# mimetypes.guess_type() returns None or application/octet-stream for.
+_TEXT_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".xml",
+        ".json",
+        ".html",
+        ".xhtml",
+        ".css",
+        ".js",
+        ".svg",
+        ".txt",
+        ".md",
+        ".rels",  # OOXML relationship files
+        ".opf",  # EPUB Open Packaging Format
+        ".ncx",  # EPUB Navigation Control
+        ".rdf",  # RDF/XML metadata
+        ".plist",  # Apple property list (XML form)
+    }
+)
+
+# MIME types treated as text even when the extension doesn't match.
+_TEXT_MIME_TYPES: frozenset[str] = frozenset(
+    {
+        "application/xml",
+        "application/json",
+        "application/javascript",
+        "application/xhtml+xml",
+    }
+)
+
+
+def _list_zip_members(content: bytes, path: str, content_type: str) -> dict:
+    """Return the member listing of a ZIP archive as a plain dict.
+
+    Args:
+        content:      Raw bytes of the archive.
+        path:         Nextcloud path (used only in error messages).
+        content_type: MIME type reported by Nextcloud (included in result).
+
+    Returns:
+        Dict with path, content_type, archive_size, member_count, members.
+
+    Raises:
+        ValueError: if *content* is not a valid ZIP archive.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            members = [
+                {
+                    "name": info.filename,
+                    "size": info.file_size,
+                    "compressed_size": info.compress_size,
+                    "is_dir": info.is_dir(),
+                }
+                for info in zf.infolist()
+            ]
+    except zipfile.BadZipFile as exc:
+        raise ValueError(
+            f"'{path}' (content-type: {content_type}) is not a valid ZIP archive. "
+            f"For plain text files use nc_webdav_read_file; for images/video/audio "
+            f"use nc_webdav_download_to_temp."
+        ) from exc
+
+    return {
+        "path": path,
+        "content_type": content_type,
+        "archive_size": len(content),
+        "member_count": len(members),
+        "members": members,
+    }
+
+
+def _read_zip_member(content: bytes, path: str, member_path: str) -> dict:
+    """Extract and return a single member from a ZIP archive.
+
+    Text members (detected by MIME type or file extension) are returned as
+    UTF-8 strings.  Binary members are base64-encoded.
+
+    Args:
+        content:     Raw bytes of the archive.
+        path:        Nextcloud path (used only in error messages).
+        member_path: Path of the member inside the archive.
+
+    Returns:
+        Dict with archive_path, member_path, content, content_type, size,
+        and optionally encoding="base64" for binary members.
+
+    Raises:
+        ValueError: if the archive is invalid, the member is missing, or
+                    the uncompressed member size exceeds _MAX_MEMBER_BYTES.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            try:
+                info = zf.getinfo(member_path)
+            except KeyError as exc:
+                available = [i.filename for i in zf.infolist() if not i.is_dir()]
+                raise ValueError(
+                    f"Member '{member_path}' not found in '{path}'. "
+                    f"Available files: {available[:30]}"
+                    + (" (truncated)" if len(available) > 30 else "")
+                ) from exc
+
+            if info.file_size > _MAX_MEMBER_BYTES:
+                raise ValueError(
+                    f"Member '{member_path}' uncompressed size "
+                    f"({info.file_size:,} bytes) exceeds the "
+                    f"{_MAX_MEMBER_BYTES // (1024 * 1024)} MB limit. "
+                    f"Use nc_webdav_download_to_temp and extract locally."
+                )
+
+            member_bytes = zf.read(member_path)
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"'{path}' is not a valid ZIP archive.") from exc
+
+    member_mime = mimetypes.guess_type(member_path)[0] or "application/octet-stream"
+    basename = os.path.basename(member_path)
+    ext = os.path.splitext(basename)[1].lower()
+    # Dotfiles like ".rels" have no extension per splitext; treat the whole name as the extension.
+    if not ext and basename.startswith("."):
+        ext = basename.lower()
+
+    is_text = (
+        member_mime.startswith("text/")
+        or member_mime in _TEXT_MIME_TYPES
+        or ext in _TEXT_EXTENSIONS
+    )
+
+    if is_text:
+        try:
+            return {
+                "archive_path": path,
+                "member_path": member_path,
+                "content": member_bytes.decode("utf-8"),
+                "content_type": member_mime,
+                "size": len(member_bytes),
+            }
+        except UnicodeDecodeError:
+            pass  # fall through to base64
+
+    return {
+        "archive_path": path,
+        "member_path": member_path,
+        "content": base64.b64encode(member_bytes).decode("ascii"),
+        "content_type": member_mime,
+        "size": len(member_bytes),
+        "encoding": "base64",
+    }
+
 
 def configure_webdav_tools(mcp: FastMCP):
     # WebDAV file system tools
@@ -583,32 +738,7 @@ def configure_webdav_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         content, content_type = await client.webdav.read_file(path)
-
-        try:
-            with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                members = [
-                    {
-                        "name": info.filename,
-                        "size": info.file_size,
-                        "compressed_size": info.compress_size,
-                        "is_dir": info.is_dir(),
-                    }
-                    for info in zf.infolist()
-                ]
-        except zipfile.BadZipFile as exc:
-            raise ValueError(
-                f"'{path}' (content-type: {content_type}) is not a valid ZIP archive. "
-                f"For plain text files use nc_webdav_read_file; for images/video/audio "
-                f"use nc_webdav_download_to_temp."
-            ) from exc
-
-        return {
-            "path": path,
-            "content_type": content_type,
-            "archive_size": len(content),
-            "member_count": len(members),
-            "members": members,
-        }
+        return _list_zip_members(content, path, content_type)
 
     @mcp.tool(
         title="Read Archive Member",
@@ -653,66 +783,7 @@ def configure_webdav_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         content, _ = await client.webdav.read_file(path)
-
-        try:
-            with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                try:
-                    info = zf.getinfo(member_path)
-                except KeyError as exc:
-                    available = [i.filename for i in zf.infolist() if not i.is_dir()]
-                    raise ValueError(
-                        f"Member '{member_path}' not found in '{path}'. "
-                        f"Available files: {available[:30]}"
-                        + (" (truncated)" if len(available) > 30 else "")
-                    ) from exc
-
-                if info.file_size > _MAX_MEMBER_BYTES:
-                    raise ValueError(
-                        f"Member '{member_path}' uncompressed size "
-                        f"({info.file_size:,} bytes) exceeds the "
-                        f"{_MAX_MEMBER_BYTES // (1024 * 1024)} MB limit. "
-                        f"Use nc_webdav_download_to_temp and extract locally."
-                    )
-
-                member_bytes = zf.read(member_path)
-        except zipfile.BadZipFile as exc:
-            raise ValueError(f"'{path}' is not a valid ZIP archive.") from exc
-
-        member_mime = mimetypes.guess_type(member_path)[0] or "application/octet-stream"
-
-        # Return text members decoded; XML files are always text even without
-        # an explicit text/* MIME type.
-        is_text = (
-            member_mime.startswith("text/")
-            or member_mime
-            in {
-                "application/xml",
-                "application/json",
-                "application/javascript",
-            }
-            or member_path.endswith((".xml", ".json", ".html", ".css", ".js", ".svg"))
-        )
-
-        if is_text:
-            try:
-                return {
-                    "archive_path": path,
-                    "member_path": member_path,
-                    "content": member_bytes.decode("utf-8"),
-                    "content_type": member_mime,
-                    "size": len(member_bytes),
-                }
-            except UnicodeDecodeError:
-                pass  # fall through to base64
-
-        return {
-            "archive_path": path,
-            "member_path": member_path,
-            "content": base64.b64encode(member_bytes).decode("ascii"),
-            "content_type": member_mime,
-            "size": len(member_bytes),
-            "encoding": "base64",
-        }
+        return _read_zip_member(content, path, member_path)
 
     @mcp.tool(
         title="Download File to Temp",
