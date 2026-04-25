@@ -1,0 +1,53 @@
+{
+  "manifest_version": "0.2",
+  "name": "nextcloud-mcp",
+  "version": "0.72.4",
+  "display_name": "Nextcloud MCP",
+  "description": "Access your Nextcloud instance (Notes, Calendar, Contacts, Files, Deck, Tables) from Claude Desktop.",
+  "long_description": "Connects Claude Desktop to your Nextcloud server via stdio transport. Supports Notes, Calendar (CalDAV), Contacts (CardDAV), Files (WebDAV), Deck, Tables, and Cookbook. Requires uv (https://docs.astral.sh/uv/) to be installed.",
+  "author": {
+    "name": "nextcloud-mcp-server contributors"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cbcoutinho/nextcloud-mcp-server"
+  },
+  "homepage": "https://github.com/cbcoutinho/nextcloud-mcp-server",
+  "license": "AGPL-3.0",
+  "keywords": ["nextcloud", "notes", "calendar", "contacts", "files", "deck"],
+  "server": {
+    "type": "python",
+    "entry_point": ".",
+    "mcp_config": {
+      "command": "/bin/sh",
+      "args": ["${__dirname}/run.sh"],
+      "env": {
+        "NEXTCLOUD_HOST": "${user_config.nextcloud_host}",
+        "NEXTCLOUD_USERNAME": "${user_config.nextcloud_username}",
+        "NEXTCLOUD_PASSWORD": "${user_config.nextcloud_password}"
+      }
+    }
+  },
+  "tools_generated": true,
+  "user_config": {
+    "nextcloud_host": {
+      "type": "string",
+      "title": "Nextcloud URL",
+      "description": "Your Nextcloud instance URL, e.g. https://cloud.example.com",
+      "required": true
+    },
+    "nextcloud_username": {
+      "type": "string",
+      "title": "Username",
+      "description": "Your Nextcloud username",
+      "required": true
+    },
+    "nextcloud_password": {
+      "type": "string",
+      "title": "App Password",
+      "description": "A Nextcloud app password (Settings \u2192 Security \u2192 App passwords). Stored securely in the OS keychain.",
+      "sensitive": true,
+      "required": true
+    }
+  }
+}
