@@ -1,3 +1,4 @@
+import atexit
 import base64
 import io
 import logging
@@ -25,27 +26,18 @@ logger = logging.getLogger(__name__)
 # Plain set is safe: asyncio is single-threaded and GIL protects simple ops.
 _temp_registry: set[str] = set()
 
-# MIME types whose files are ZIP archives and can be introspected with zipfile.
-_ZIP_MIME_TYPES: frozenset[str] = frozenset(
-    {
-        # OpenDocument formats
-        "application/vnd.oasis.opendocument.spreadsheet",  # .ods
-        "application/vnd.oasis.opendocument.text",  # .odt
-        "application/vnd.oasis.opendocument.presentation",  # .odp
-        "application/vnd.oasis.opendocument.graphics",  # .odg
-        "application/vnd.oasis.opendocument.formula",  # .odf
-        "application/vnd.oasis.opendocument.database",  # .odb
-        # OOXML formats
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # .xlsx
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
-        # Generic ZIP
-        "application/zip",
-        "application/x-zip-compressed",
-        "application/java-archive",  # .jar
-        "application/epub+zip",  # .epub
-    }
-)
+
+def _cleanup_temp_files_on_exit() -> None:
+    """Remove all temp files registered by nc_webdav_download_to_temp on process exit."""
+    for path in list(_temp_registry):
+        try:
+            os.unlink(path)
+            logger.debug("atexit: removed temp file '%s'", path)
+        except OSError:
+            pass
+
+
+atexit.register(_cleanup_temp_files_on_exit)
 
 
 def configure_webdav_tools(mcp: FastMCP):
@@ -112,7 +104,11 @@ def configure_webdav_tools(mcp: FastMCP):
 
         ❌ Do NOT use this tool for:
           - ZIP-based office formats (ODS, ODT, ODP, DOCX, XLSX, PPTX, EPUB …).
-            The raw archive bytes are meaningless in context. Use
+            If server-side document processing is enabled (ENABLE_DOCUMENT_PROCESSING=true)
+            and a processor supports the type (e.g. Unstructured handles DOCX/XLSX),
+            text is extracted automatically — check the server configuration.
+            When doc-processing is disabled or unsupported for the type, the raw
+            archive bytes are meaningless in context; use
             nc_webdav_list_archive_members + nc_webdav_read_archive_member instead.
           - Images (PNG, JPEG, GIF, TIFF, HEIC, RAW …).
             Binary image data cannot be interpreted here. Use
@@ -733,7 +729,8 @@ def configure_webdav_tools(mcp: FastMCP):
         they avoid creating temp files entirely.
 
         Cleanup: always call nc_webdav_cleanup_temp when finished to free disk
-        space. The temp file is also removed when the MCP server process exits.
+        space. All remaining temp files are also removed automatically when the
+        MCP server process exits (via an atexit handler).
 
         Args:
             path: Nextcloud path to the file (e.g. "Videos/holiday.mp4")
@@ -783,7 +780,7 @@ def configure_webdav_tools(mcp: FastMCP):
         title="Remove Temp File",
         annotations=ToolAnnotations(
             destructiveHint=True,
-            idempotentHint=True,
+            idempotentHint=False,  # errors on second call (path no longer in registry)
             openWorldHint=False,  # operates on local filesystem only
         ),
     )
@@ -814,17 +811,19 @@ def configure_webdav_tools(mcp: FastMCP):
                 ),
             }
 
-        _temp_registry.discard(local_path)
-
         try:
             os.unlink(local_path)
+            _temp_registry.discard(local_path)
             logger.debug("Removed temp file '%s'", local_path)
             return {"status": "ok", "local_path": local_path}
         except FileNotFoundError:
+            # File already gone — treat as success and clean up registry.
+            _temp_registry.discard(local_path)
             return {
                 "status": "ok",
                 "local_path": local_path,
                 "note": "File was already removed.",
             }
         except OSError as exc:
+            # Do NOT discard — leave in registry so the caller can retry.
             return {"status": "error", "local_path": local_path, "message": str(exc)}
