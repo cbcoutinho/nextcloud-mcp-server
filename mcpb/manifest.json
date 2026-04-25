@@ -25,11 +25,17 @@
         "NEXTCLOUD_HOST": "${user_config.nextcloud_host}",
         "NEXTCLOUD_USERNAME": "${user_config.nextcloud_username}",
         "NEXTCLOUD_PASSWORD": "${user_config.nextcloud_password}"
+      },
+      "platform_overrides": {
+        "win32": {
+          "command": "cmd",
+          "args": ["/c", "${__dirname}/run.cmd"]
+        }
       }
     }
   },
   "compatibility": {
-    "platforms": ["darwin", "linux"]
+    "platforms": ["darwin", "linux", "win32"]
   },
   "tools_generated": true,
   "user_config": {
