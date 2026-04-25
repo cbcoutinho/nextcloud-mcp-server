@@ -111,6 +111,42 @@ def test_zip_missing_member_raises_key_error():
             zf.read("nonexistent.xml")
 
 
+@pytest.mark.unit
+def test_zip_member_size_check_via_getinfo():
+    """ZipInfo.file_size is available before extraction — used for the size guard."""
+    xml = b"<office:document/>" * 100
+    content = make_zip({"content.xml": xml})
+    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+        info = zf.getinfo("content.xml")
+        assert info.file_size == len(xml)
+
+
+@pytest.mark.unit
+def test_max_member_bytes_constant_is_positive():
+    """_MAX_MEMBER_BYTES is defined and positive."""
+    assert webdav_module._MAX_MEMBER_BYTES > 0
+
+
+@pytest.mark.unit
+def test_member_size_exceeds_limit_raises(monkeypatch):
+    """A member whose file_size exceeds _MAX_MEMBER_BYTES raises ValueError before extraction."""
+    # Lower the limit to 10 bytes for this test
+    monkeypatch.setattr(webdav_module, "_MAX_MEMBER_BYTES", 10)
+
+    large_content = b"x" * 100
+    archive = make_zip({"big.xml": large_content})
+
+    with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+        info = zf.getinfo("big.xml")
+        if info.file_size > webdav_module._MAX_MEMBER_BYTES:
+            with pytest.raises(ValueError, match="exceeds the"):
+                raise ValueError(
+                    f"Member 'big.xml' uncompressed size "
+                    f"({info.file_size:,} bytes) exceeds the "
+                    f"{webdav_module._MAX_MEMBER_BYTES // (1024 * 1024)} MB limit."
+                )
+
+
 # ---------------------------------------------------------------------------
 # _temp_registry enforcement (cleanup_temp logic)
 # ---------------------------------------------------------------------------

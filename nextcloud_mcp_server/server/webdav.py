@@ -21,6 +21,12 @@ from nextcloud_mcp_server.utils.document_parser import (
 
 logger = logging.getLogger(__name__)
 
+# Maximum uncompressed size (bytes) allowed when extracting a single archive
+# member. Guards against zip-bomb attacks where a tiny compressed archive
+# expands to an enormous member in memory.  50 MB is generous for XML/text
+# content while still bounding worst-case memory use.
+_MAX_MEMBER_BYTES: int = 50 * 1024 * 1024  # 50 MB
+
 # Registry of local temp paths created by nc_webdav_download_to_temp.
 # Used to prevent nc_webdav_cleanup_temp from deleting arbitrary paths.
 # Plain set is safe: asyncio is single-threaded and GIL protects simple ops.
@@ -646,12 +652,12 @@ def configure_webdav_tools(mcp: FastMCP):
             ValueError: if the archive is not valid ZIP, or the member is not found
         """
         client = await get_client(ctx)
-        content, content_type = await client.webdav.read_file(path)
+        content, _ = await client.webdav.read_file(path)
 
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as zf:
                 try:
-                    member_bytes = zf.read(member_path)
+                    info = zf.getinfo(member_path)
                 except KeyError as exc:
                     available = [i.filename for i in zf.infolist() if not i.is_dir()]
                     raise ValueError(
@@ -659,6 +665,16 @@ def configure_webdav_tools(mcp: FastMCP):
                         f"Available files: {available[:30]}"
                         + (" (truncated)" if len(available) > 30 else "")
                     ) from exc
+
+                if info.file_size > _MAX_MEMBER_BYTES:
+                    raise ValueError(
+                        f"Member '{member_path}' uncompressed size "
+                        f"({info.file_size:,} bytes) exceeds the "
+                        f"{_MAX_MEMBER_BYTES // (1024 * 1024)} MB limit. "
+                        f"Use nc_webdav_download_to_temp and extract locally."
+                    )
+
+                member_bytes = zf.read(member_path)
         except zipfile.BadZipFile as exc:
             raise ValueError(f"'{path}' is not a valid ZIP archive.") from exc
 
