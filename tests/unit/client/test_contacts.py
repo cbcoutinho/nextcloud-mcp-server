@@ -160,6 +160,20 @@ def test_dict_form_email_preserves_custom_type():
     assert "EMAIL;TYPE=WORK:work@example.com" in vcard
 
 
+def test_dict_form_email_with_bare_string_type():
+    """Regression: a dict with ``type="WORK"`` (bare string) used to be
+    char-iterated into ``["W","O","R","K"]`` because of an unguarded ``list()``
+    call inside ``_wrap_contact_field``.
+    """
+    vcard = _vcard(
+        fn="Alice",
+        email={"value": "work@example.com", "type": "WORK"},
+    )
+    assert "EMAIL;TYPE=WORK:work@example.com" in vcard
+    # The bug would emit something like ``EMAIL;TYPE=W,O,R,K:`` — guard against it.
+    assert "TYPE=W," not in vcard
+
+
 def test_wrap_field_dict_without_value_is_dropped():
     """Dict inputs lacking the ``value`` key are silently dropped so malformed
     payloads don't emit an EMAIL/TEL line pointing at nothing.
@@ -332,3 +346,25 @@ class TestMergeVcardProperties:
         assert "EMAIL:attacker@evil.example" not in lines
         # The note value is preserved with newlines escaped per RFC 6350.
         assert any(line.startswith("NOTE:") and "\\n" in line for line in lines)
+
+    def test_list_org_overwrites_with_semicolon_join(self):
+        """Regression: list-form ORG used to fall through ``_safe_vcard_value``
+        unchanged and emit a Python ``repr`` like ``ORG:['Acme', 'Engineering']``.
+        Per RFC 6350 §6.6.4 components are ``;``-separated.
+        """
+        existing = (
+            "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\nORG:OldCo\nEND:VCARD\n"
+        )
+        result = self._merge(existing, {"org": ["Acme", "Engineering"]})
+        assert "ORG:Acme;Engineering" in result
+        assert "ORG:OldCo" not in result
+        assert "[" not in result and "'Acme'" not in result
+
+    def test_list_org_added_with_semicolon_join(self):
+        """Add-new branch: list ORG without an existing line still serialises
+        with ``;`` rather than as a Python list repr.
+        """
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\nEND:VCARD\n"
+        result = self._merge(existing, {"org": ["Acme", "Engineering"]})
+        assert "ORG:Acme;Engineering" in result
+        assert "[" not in result

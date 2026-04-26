@@ -66,6 +66,11 @@ def _wrap_contact_field(
     for item in items:
         if isinstance(item, dict) and item.get("value"):
             types = item.get("type") or ["HOME"]
+            # Wrap a bare string so ``list("WORK")`` doesn't iterate it into
+            # ``["W", "O", "R", "K"]`` — same char-iteration footgun this whole
+            # helper exists to avoid for the outer ``value``.
+            if isinstance(types, str):
+                types = [types]
             out.append({"value": item["value"], "type": list(types)})
         elif isinstance(item, str) and item:
             out.append({"value": item, "type": ["HOME"]})
@@ -576,9 +581,13 @@ class ContactsClient(BaseNextcloudClient):
                     )
                     updated_properties.add("categories")
                 elif property_name == "ORG" and "org" in contact_data:
-                    updated_lines.append(
-                        f"ORG:{_safe_vcard_value(contact_data['org'])}"
-                    )
+                    org_value = contact_data["org"]
+                    # ORG is structured (Company;Department;…) per RFC 6350 §6.6.4;
+                    # join list components with ';' so callers using the same shape
+                    # ``_build_contact_from_data`` accepts don't get a Python repr.
+                    if isinstance(org_value, list):
+                        org_value = ";".join(org_value)
+                    updated_lines.append(f"ORG:{_safe_vcard_value(org_value)}")
                     updated_properties.add("org")
                 elif property_name == "TITLE" and "title" in contact_data:
                     updated_lines.append(
@@ -633,7 +642,11 @@ class ContactsClient(BaseNextcloudClient):
                             f"CATEGORIES:{_safe_vcard_value(categories_value)}"
                         )
                     elif key == "org":
-                        updated_lines.append(f"ORG:{_safe_vcard_value(value)}")
+                        # See ORG note in update-existing branch above.
+                        org_value = (
+                            ";".join(value) if isinstance(value, list) else value
+                        )
+                        updated_lines.append(f"ORG:{_safe_vcard_value(org_value)}")
                     elif key == "title":
                         updated_lines.append(f"TITLE:{_safe_vcard_value(value)}")
                     elif key == "url":
