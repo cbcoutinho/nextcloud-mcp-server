@@ -273,3 +273,62 @@ class TestMergeVcardProperties:
         assert "ORG:Acme" in result
         assert "TEL:555-1234" in result
         assert "NOTE:keep me" in result
+
+    def test_dict_email_input_preserves_existing_line(self):
+        """Regression: a dict-form email on update used to consume the existing
+        EMAIL: line and write nothing, silently deleting the contact's email.
+        Now the original line is preserved when the input shape isn't a plain str.
+        """
+        existing = (
+            "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\n"
+            "EMAIL;TYPE=HOME:alice@example.com\nEND:VCARD\n"
+        )
+        result = self._merge(
+            existing, {"email": {"value": "work@example.com", "type": ["WORK"]}}
+        )
+        assert "EMAIL;TYPE=HOME:alice@example.com" in result
+
+    def test_list_tel_input_preserves_existing_line(self):
+        """Same regression as the email branch but for TEL — a list-shaped tel
+        input must not silently drop the existing phone number.
+        """
+        existing = (
+            "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\n"
+            "TEL;TYPE=HOME:555-0001\nEND:VCARD\n"
+        )
+        result = self._merge(
+            existing, {"tel": [{"value": "555-9999", "type": ["WORK"]}]}
+        )
+        assert "TEL;TYPE=HOME:555-0001" in result
+
+    def test_invalid_bday_on_update_preserves_existing_line(self):
+        """A non-ISO BDAY string must not produce a malformed vCard line on update.
+        We share validation with the create path; invalid → keep the existing line.
+        """
+        existing = (
+            "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\n"
+            "BDAY:1990-05-01\nEND:VCARD\n"
+        )
+        result = self._merge(existing, {"bday": "not-a-date"})
+        assert "BDAY:1990-05-01" in result
+        assert "BDAY:not-a-date" not in result
+
+    def test_invalid_bday_on_add_new_is_dropped(self):
+        """No existing BDAY + invalid input → no BDAY line appended (vs. raw write)."""
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\nEND:VCARD\n"
+        result = self._merge(existing, {"bday": "not-a-date"})
+        assert "BDAY" not in result
+
+    def test_newline_in_note_does_not_inject_property(self):
+        """Regression: a literal newline in a value must not terminate the line
+        and inject a fresh vCard property.
+        """
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\nEND:VCARD\n"
+        result = self._merge(
+            existing, {"note": "harmless\nEMAIL:attacker@evil.example"}
+        )
+        # The injected property must not appear as a real EMAIL line.
+        lines = result.splitlines()
+        assert "EMAIL:attacker@evil.example" not in lines
+        # The note value is preserved with newlines escaped per RFC 6350.
+        assert any(line.startswith("NOTE:") and "\\n" in line for line in lines)

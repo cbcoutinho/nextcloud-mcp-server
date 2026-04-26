@@ -95,6 +95,37 @@ def _split_categories(value: str | list[str]) -> list[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
+def _parse_bday(value: str | date | None) -> date | None:
+    """Parse a BDAY input to a ``date``. Logs and returns ``None`` if unparseable.
+
+    Shared by the create path (``_build_contact_from_data``) and the update path
+    (``_merge_vcard_properties``) so a non-ISO BDAY is rejected consistently
+    instead of being written raw on update.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            logger.warning("Ignoring non-ISO bday value: %r", value)
+    return None
+
+
+def _safe_vcard_value(value: Any) -> Any:
+    """Escape newlines in a value so it can't inject additional vCard properties.
+
+    Per RFC 6350 §3.4 newlines inside a property value are encoded as ``\\n``.
+    Unfolding this on the read side is pythonvCard4's job; we only need to make
+    sure ``contact_data`` strings don't terminate the line on the way out.
+    """
+    if isinstance(value, str):
+        return value.replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "\\n")
+    return value
+
+
 def _build_contact_from_data(contact_data: dict[str, Any], uid: str) -> Contact:
     """Build a pythonvCard4 Contact from an MCP ``contact_data`` dict.
 
@@ -141,15 +172,9 @@ def _build_contact_from_data(contact_data: dict[str, Any], uid: str) -> Contact:
     if data.get("url"):
         kwargs["url"] = _as_str_list(data["url"])
 
-    bday = data.get("bday")
-    if bday:
-        if isinstance(bday, date):
-            kwargs["bday"] = bday
-        elif isinstance(bday, str):
-            try:
-                kwargs["bday"] = date.fromisoformat(bday)
-            except ValueError:
-                logger.warning("Ignoring non-ISO bday value: %r", bday)
+    bday = _parse_bday(data.get("bday"))
+    if bday is not None:
+        kwargs["bday"] = bday
 
     unknown = set(data) - _SUPPORTED_CONTACT_KEYS
     if unknown:
@@ -477,21 +502,27 @@ class ContactsClient(BaseNextcloudClient):
 
                 # Handle updates for specific properties
                 if property_name == "FN" and "fn" in contact_data:
-                    updated_lines.append(f"FN:{contact_data['fn']}")
+                    updated_lines.append(f"FN:{_safe_vcard_value(contact_data['fn'])}")
                     updated_properties.add("fn")
                 elif property_name == "EMAIL" and "email" in contact_data:
                     # Replace first email with new one, preserve others
                     if "email" not in updated_properties:
                         if isinstance(contact_data["email"], str):
+                            email_value = _safe_vcard_value(contact_data["email"])
                             # Try to preserve the original format as much as possible
                             if ";TYPE=" in line:
                                 type_part = line.split(";TYPE=")[1].split(":")[0]
                                 updated_lines.append(
-                                    f"EMAIL;TYPE={type_part}:{contact_data['email']}"
+                                    f"EMAIL;TYPE={type_part}:{email_value}"
                                 )
                             else:
-                                updated_lines.append(f"EMAIL:{contact_data['email']}")
-                        updated_properties.add("email")
+                                updated_lines.append(f"EMAIL:{email_value}")
+                            updated_properties.add("email")
+                        else:
+                            # Dict / list inputs aren't translatable to a single
+                            # text-merge replacement; keep the original line so we
+                            # don't silently drop the contact's email.
+                            updated_lines.append(line)
                     else:
                         # Keep additional emails unchanged
                         updated_lines.append(line)
@@ -499,45 +530,60 @@ class ContactsClient(BaseNextcloudClient):
                     # Similar handling for phone numbers
                     if "tel" not in updated_properties:
                         if isinstance(contact_data["tel"], str):
+                            tel_value = _safe_vcard_value(contact_data["tel"])
                             if ";TYPE=" in line:
                                 type_part = line.split(";TYPE=")[1].split(":")[0]
                                 updated_lines.append(
-                                    f"TEL;TYPE={type_part}:{contact_data['tel']}"
+                                    f"TEL;TYPE={type_part}:{tel_value}"
                                 )
                             else:
-                                updated_lines.append(f"TEL:{contact_data['tel']}")
-                        updated_properties.add("tel")
+                                updated_lines.append(f"TEL:{tel_value}")
+                            updated_properties.add("tel")
+                        else:
+                            # Same reasoning as the EMAIL branch above: don't drop.
+                            updated_lines.append(line)
                     else:
                         # Keep additional phone numbers unchanged
                         updated_lines.append(line)
                 elif property_name == "NOTE" and "note" in contact_data:
-                    updated_lines.append(f"NOTE:{contact_data['note']}")
+                    updated_lines.append(
+                        f"NOTE:{_safe_vcard_value(contact_data['note'])}"
+                    )
                     updated_properties.add("note")
                 elif property_name == "NICKNAME" and "nickname" in contact_data:
                     nickname_value = contact_data["nickname"]
                     if isinstance(nickname_value, list):
                         nickname_value = ",".join(nickname_value)
-                    updated_lines.append(f"NICKNAME:{nickname_value}")
+                    updated_lines.append(
+                        f"NICKNAME:{_safe_vcard_value(nickname_value)}"
+                    )
                     updated_properties.add("nickname")
                 elif property_name == "BDAY" and "bday" in contact_data:
-                    updated_lines.append(f"BDAY:{contact_data['bday']}")
-                    updated_properties.add("bday")
+                    parsed_bday = _parse_bday(contact_data["bday"])
+                    if parsed_bday is not None:
+                        updated_lines.append(f"BDAY:{parsed_bday.isoformat()}")
+                        updated_properties.add("bday")
+                    else:
+                        # Invalid input — keep the existing BDAY rather than
+                        # writing a malformed line or silently dropping it.
+                        updated_lines.append(line)
                 elif property_name == "CATEGORIES" and "categories" in contact_data:
                     categories_value = contact_data["categories"]
                     if isinstance(categories_value, list):
                         categories_value = ",".join(categories_value)
-                    updated_lines.append(f"CATEGORIES:{categories_value}")
-                    updated_properties.add("categories")
-                elif property_name == "ORG" and (
-                    "org" in contact_data or "organization" in contact_data
-                ):
-                    org_value = contact_data.get("org") or contact_data.get(
-                        "organization"
+                    updated_lines.append(
+                        f"CATEGORIES:{_safe_vcard_value(categories_value)}"
                     )
-                    updated_lines.append(f"ORG:{org_value}")
+                    updated_properties.add("categories")
+                elif property_name == "ORG" and "org" in contact_data:
+                    updated_lines.append(
+                        f"ORG:{_safe_vcard_value(contact_data['org'])}"
+                    )
                     updated_properties.add("org")
                 elif property_name == "TITLE" and "title" in contact_data:
-                    updated_lines.append(f"TITLE:{contact_data['title']}")
+                    updated_lines.append(
+                        f"TITLE:{_safe_vcard_value(contact_data['title'])}"
+                    )
                     updated_properties.add("title")
                 elif property_name == "URL" and "url" in contact_data:
                     if "url" not in updated_properties:
@@ -548,7 +594,7 @@ class ContactsClient(BaseNextcloudClient):
                         if isinstance(url_value, list):
                             url_value = url_value[0] if url_value else ""
                         if url_value:
-                            updated_lines.append(f"URL:{url_value}")
+                            updated_lines.append(f"URL:{_safe_vcard_value(url_value)}")
                         updated_properties.add("url")
                     else:
                         # Keep additional URLs unchanged
@@ -561,29 +607,35 @@ class ContactsClient(BaseNextcloudClient):
             for key, value in contact_data.items():
                 if key not in updated_properties:
                     if key == "fn":
-                        updated_lines.append(f"FN:{value}")
+                        updated_lines.append(f"FN:{_safe_vcard_value(value)}")
                     elif key == "email" and isinstance(value, str):
-                        updated_lines.append(f"EMAIL:{value}")
+                        updated_lines.append(f"EMAIL:{_safe_vcard_value(value)}")
                     elif key == "tel" and isinstance(value, str):
-                        updated_lines.append(f"TEL:{value}")
+                        updated_lines.append(f"TEL:{_safe_vcard_value(value)}")
                     elif key == "note":
-                        updated_lines.append(f"NOTE:{value}")
+                        updated_lines.append(f"NOTE:{_safe_vcard_value(value)}")
                     elif key == "nickname":
                         nickname_value = (
                             value if isinstance(value, str) else ",".join(value)
                         )
-                        updated_lines.append(f"NICKNAME:{nickname_value}")
+                        updated_lines.append(
+                            f"NICKNAME:{_safe_vcard_value(nickname_value)}"
+                        )
                     elif key == "bday":
-                        updated_lines.append(f"BDAY:{value}")
+                        parsed_bday = _parse_bday(value)
+                        if parsed_bday is not None:
+                            updated_lines.append(f"BDAY:{parsed_bday.isoformat()}")
                     elif key == "categories":
                         categories_value = (
                             value if isinstance(value, str) else ",".join(value)
                         )
-                        updated_lines.append(f"CATEGORIES:{categories_value}")
-                    elif key in ["org", "organization"]:
-                        updated_lines.append(f"ORG:{value}")
+                        updated_lines.append(
+                            f"CATEGORIES:{_safe_vcard_value(categories_value)}"
+                        )
+                    elif key == "org":
+                        updated_lines.append(f"ORG:{_safe_vcard_value(value)}")
                     elif key == "title":
-                        updated_lines.append(f"TITLE:{value}")
+                        updated_lines.append(f"TITLE:{_safe_vcard_value(value)}")
                     elif key == "url":
                         # Only the first URL is written on add-new; see note in the
                         # update-existing branch above.
@@ -591,7 +643,7 @@ class ContactsClient(BaseNextcloudClient):
                             value[0] if isinstance(value, list) and value else value
                         )
                         if url_value:
-                            updated_lines.append(f"URL:{url_value}")
+                            updated_lines.append(f"URL:{_safe_vcard_value(url_value)}")
 
             # Add the END:VCARD line
             updated_lines.append("END:VCARD")
