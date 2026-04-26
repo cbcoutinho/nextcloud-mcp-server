@@ -482,7 +482,29 @@ class ContactsClient(BaseNextcloudClient):
     def _merge_vcard_properties(
         self, raw_vcard: str, contact_data: dict[str, Any], uid: str
     ) -> str:
-        """Merge new contact data into existing raw vCard while preserving all properties."""
+        """Merge new contact data into existing raw vCard while preserving all properties.
+
+        Limitation: dict / list-form ``email`` and ``tel`` inputs are not applied
+        by this text-merge path. Existing EMAIL/TEL lines are preserved unchanged,
+        and no new lines are written for the dict/list inputs. Pass plain strings
+        to update EMAIL/TEL here, or recreate via ``create_contact`` for full
+        multi-entry support with TYPE annotations.
+        """
+        # Surface dict/list email/tel up front rather than silently no-op in the
+        # add-new loop below (where the isinstance(value, str) guard skips them).
+        for _key in ("email", "tel"):
+            _value = contact_data.get(_key)
+            if _value is not None and not isinstance(_value, str):
+                logger.warning(
+                    "update_contact: %s=%r (dict/list shape) is not applied via "
+                    "the text-merge update path; existing %s lines are preserved "
+                    "unchanged. Use a plain string to update %s here, or recreate "
+                    "via create_contact for multi-entry support.",
+                    _key,
+                    _value,
+                    _key.upper(),
+                    _key.upper(),
+                )
         try:
             # Instead of using pythonvCard4 which has formatting issues,
             # let's do a simple text-based merge to preserve exact formatting

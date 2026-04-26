@@ -368,3 +368,44 @@ class TestMergeVcardProperties:
         result = self._merge(existing, {"org": ["Acme", "Engineering"]})
         assert "ORG:Acme;Engineering" in result
         assert "[" not in result
+
+    def test_dict_email_on_no_existing_line_warns(self, caplog):
+        """No existing EMAIL + dict input is a known limitation of the text-merge
+        path. Surface it as a warning so the silent no-op is at least observable.
+        """
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\nEND:VCARD\n"
+        with caplog.at_level("WARNING"):
+            result = self._merge(
+                existing, {"email": {"value": "alice@work.com", "type": ["WORK"]}}
+            )
+        # The dict input is not applied; no EMAIL line is added.
+        assert "EMAIL" not in result
+        # A warning specifically calls out the dict/list shape and recommends
+        # plain str / create_contact as alternatives.
+        assert any(
+            "email" in r.message and "dict/list shape" in r.message
+            for r in caplog.records
+        )
+
+    def test_list_tel_on_no_existing_line_warns(self, caplog):
+        """Same warning behaviour for TEL — list input on a contact without an
+        existing TEL line must not silently disappear.
+        """
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\nEND:VCARD\n"
+        with caplog.at_level("WARNING"):
+            result = self._merge(
+                existing, {"tel": [{"value": "555-9999", "type": ["WORK"]}]}
+            )
+        assert "TEL" not in result
+        assert any(
+            "tel" in r.message and "dict/list shape" in r.message
+            for r in caplog.records
+        )
+
+    def test_str_email_does_not_warn(self, caplog):
+        """Plain string email is the supported shape — no warning should fire."""
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:merge-test\nFN:Alice\nEND:VCARD\n"
+        with caplog.at_level("WARNING"):
+            result = self._merge(existing, {"email": "alice@work.com"})
+        assert "EMAIL:alice@work.com" in result
+        assert not any("dict/list shape" in r.message for r in caplog.records)
