@@ -1,0 +1,52 @@
+name: License check
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".licenses/**"
+      - "scripts/check-licenses.py"
+      - ".github/workflows/license-check.yml"
+  push:
+    branches:
+      - master
+
+jobs:
+  licenses:
+    name: Audit dependency licenses
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      - name: Sync dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Check licenses
+        id: check
+        run: |
+          uv run --frozen scripts/check-licenses.py \
+            --markdown "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload license report
+        if: always()
+        run: |
+          uv run --frozen scripts/check-licenses.py --json > license-report.json || true
+        shell: bash
+
+      - name: Save report artifact
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: license-report
+          path: license-report.json
+          retention-days: 30
+          if-no-files-found: warn

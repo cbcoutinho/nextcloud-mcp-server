@@ -30,6 +30,32 @@ that you are permitted to contribute under the CLA. For larger organizations,
 a separate Corporate CLA may be required — open an issue if this applies to
 you.
 
+## Adding a Dependency
+
+The project distributes under AGPL-3.0 today and Astrolabe Cloud intends to
+offer commercial dual-licensed builds in the future, so every direct or
+transitive dependency must be licensed under terms that allow both. The
+allowlist and per-package exceptions live in
+[`.licenses/policy.toml`](./.licenses/policy.toml) and are enforced by the
+**License check** workflow on every PR.
+
+Before opening a PR that adds or upgrades a dependency:
+
+```bash
+uv run scripts/check-licenses.py
+```
+
+If the script flags a new package, either:
+
+- the package is permissively licensed → add the license string to the
+  `[allowed]` block in `.licenses/policy.toml`, **or**
+- the package is copyleft / dual-licensed and you have a justification → add
+  it under `[exceptions]` with `rationale`, `allowed_for`, and
+  `review_required_for` fields, **or**
+- the metadata is wrong → add an `[overrides]` entry pointing at the actual
+  license file shipped in the wheel, **or**
+- replace the dep with a permissively-licensed alternative.
+
 ## Version Management
 
 This project uses [commitizen](https://commitizen-tools.github.io/commitizen/) for version management following PEP 440 (`major_version_zero = true`, 0.x.x for pre-1.0).
