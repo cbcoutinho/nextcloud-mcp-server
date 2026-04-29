@@ -797,7 +797,14 @@ def configure_webdav_tools(mcp: FastMCP):
     async def nc_webdav_download_to_temp(path: str, ctx: Context) -> dict:
         """Download a Nextcloud file to a local temporary path and return that path.
 
-        IMPORTANT — this tool is only useful when you have access to local shell
+        IMPORTANT — this tool only makes sense when the MCP server is running as
+        a local process on the same machine as the client (stdio transport or
+        localhost SSE). Over a remote streamable-HTTP connection the temp file is
+        written to the *server's* filesystem, where local shell tools cannot
+        reach it. In that case use nc_webdav_read_file or the archive member
+        tools instead.
+
+        Even in local mode this tool is only useful when you have access to shell
         tools (e.g. Claude Code's Bash tool). In Claude Desktop without shell
         access the returned path cannot be acted upon and you should not call
         this tool.
