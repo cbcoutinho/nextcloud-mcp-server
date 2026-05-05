@@ -157,6 +157,20 @@ def test_read_member_binary_returned_as_base64():
 
 
 @pytest.mark.unit
+def test_read_member_directory_entry_raises_value_error():
+    """Passing a directory member path raises ValueError, not a stdlib error."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        # ZipFile.mkdir creates a directory entry
+        zf.mkdir("subdir/")
+        zf.writestr("subdir/content.xml", b"<x/>")
+    content = buf.getvalue()
+
+    with pytest.raises(ValueError, match="directory entry"):
+        _read_zip_member(content, "test.ods", "subdir/")
+
+
+@pytest.mark.unit
 def test_read_member_missing_member_raises_value_error():
     """Missing member raises ValueError with the available file list."""
     content = make_zip({"content.xml": b"<x/>"})
@@ -462,6 +476,27 @@ async def test_tool_cleanup_temp_passes_owner_from_client(mocker, tmp_path):
         _temp_registry.pop(path, None)
         if p.exists():
             p.unlink()
+
+
+@pytest.mark.unit
+async def test_tool_download_to_temp_rejects_oversized_file(mocker):
+    """nc_webdav_download_to_temp raises ValueError when the file exceeds _MAX_TEMP_DOWNLOAD_BYTES."""
+    oversized = b"x" * 100
+    mock_client = mocker.AsyncMock()
+    mock_client.webdav.read_file = mocker.AsyncMock(
+        return_value=(oversized, "application/octet-stream")
+    )
+    mock_client.username = "alice"
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.get_client", return_value=mock_client
+    )
+    mocker.patch("nextcloud_mcp_server.server.webdav._MAX_TEMP_DOWNLOAD_BYTES", 10)
+
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    tools = _make_tool_map()
+    with pytest.raises(ToolError, match="exceeds the"):
+        await tools["nc_webdav_download_to_temp"].run({"path": "big.bin"}, context=None)
 
 
 @pytest.mark.unit

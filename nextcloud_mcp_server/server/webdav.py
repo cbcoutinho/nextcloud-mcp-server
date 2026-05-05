@@ -47,6 +47,11 @@ def _cleanup_temp_files_on_exit() -> None:
 
 atexit.register(_cleanup_temp_files_on_exit)
 
+# Maximum file size accepted by nc_webdav_download_to_temp.
+# Prevents unbounded disk writes, especially in remote-HTTP deployments where
+# the caller cannot use the local path anyway.
+_MAX_TEMP_DOWNLOAD_BYTES: int = 500 * 1024 * 1024  # 500 MB
+
 # ---------------------------------------------------------------------------
 # Pure helpers — no MCP context required, fully unit-testable
 # ---------------------------------------------------------------------------
@@ -155,6 +160,12 @@ def _read_zip_member(content: bytes, path: str, member_path: str) -> dict:
                     f"Available files: {available[:30]}"
                     + (" (truncated)" if len(available) > 30 else "")
                 ) from exc
+
+            if info.is_dir():
+                raise ValueError(
+                    f"Member '{member_path}' is a directory entry; "
+                    f"only file members can be read."
+                )
 
             if info.file_size > _MAX_MEMBER_BYTES:
                 raise ValueError(
@@ -907,6 +918,13 @@ def configure_webdav_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         content, content_type = await client.webdav.read_file(path)
+
+        if len(content) > _MAX_TEMP_DOWNLOAD_BYTES:
+            raise ValueError(
+                f"File '{path}' is {len(content):,} bytes, which exceeds the "
+                f"{_MAX_TEMP_DOWNLOAD_BYTES // (1024 * 1024)} MB limit for "
+                f"nc_webdav_download_to_temp."
+            )
 
         filename = os.path.basename(path.rstrip("/"))
         _root, suffix = os.path.splitext(filename)
