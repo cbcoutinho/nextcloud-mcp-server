@@ -28,9 +28,11 @@ logger = logging.getLogger(__name__)
 _MAX_MEMBER_BYTES: int = 50 * 1024 * 1024  # 50 MB
 
 # Registry of local temp paths created by nc_webdav_download_to_temp.
-# Used to prevent nc_webdav_cleanup_temp from deleting arbitrary paths.
-# Plain set is safe: asyncio is single-threaded and GIL protects simple ops.
-_temp_registry: set[str] = set()
+# Maps local_path -> owning_username so nc_webdav_cleanup_temp can verify
+# that the caller is the same user who created the file, preventing one
+# multi-user session from deleting another session's temp files.
+# Dict mutation is safe in asyncio: single-threaded, GIL protects simple ops.
+_temp_registry: dict[str, str] = {}
 
 
 def _cleanup_temp_files_on_exit() -> None:
@@ -211,22 +213,28 @@ def _read_zip_member(content: bytes, path: str, member_path: str) -> dict:
     }
 
 
-def _cleanup_temp_path(local_path: str) -> dict:
+def _cleanup_temp_path(local_path: str, owner: str | None = None) -> dict:
     """Remove a temp file that was registered by nc_webdav_download_to_temp.
 
-    Only paths present in *_temp_registry* may be removed; any other path is
-    rejected.  The registry entry is discarded only after a successful unlink
-    (or when the file is already gone); it is retained on OSError so the caller
-    can retry.
+    Only paths present in *_temp_registry* may be removed.  When *owner* is
+    supplied (the Nextcloud username of the calling session) the registry entry
+    must also match that username, preventing one multi-user session from
+    deleting another session's temp files.
+
+    The registry entry is discarded only after a successful unlink (or when the
+    file is already gone); it is retained on OSError so the caller can retry.
 
     Args:
         local_path: The path previously returned by nc_webdav_download_to_temp.
+        owner:      Username of the requesting session.  Pass ``None`` only in
+                    contexts where ownership cannot be determined (e.g. atexit).
 
     Returns:
         Dict with ``status`` ("ok" or "error"), ``local_path``, and an optional
         ``message`` / ``note`` field.
     """
-    if local_path not in _temp_registry:
+    registered_owner = _temp_registry.get(local_path)
+    if registered_owner is None:
         return {
             "status": "error",
             "local_path": local_path,
@@ -236,21 +244,28 @@ def _cleanup_temp_path(local_path: str) -> dict:
             ),
         }
 
+    if owner is not None and registered_owner != owner:
+        return {
+            "status": "error",
+            "local_path": local_path,
+            "message": "Permission denied: this temp file belongs to a different session.",
+        }
+
     try:
         os.unlink(local_path)
-        _temp_registry.discard(local_path)
+        del _temp_registry[local_path]
         logger.debug("Removed temp file '%s'", local_path)
         return {"status": "ok", "local_path": local_path}
     except FileNotFoundError:
         # File already gone — treat as success and clean up registry.
-        _temp_registry.discard(local_path)
+        _temp_registry.pop(local_path, None)
         return {
             "status": "ok",
             "local_path": local_path,
             "note": "File was already removed.",
         }
     except OSError as exc:
-        # Do NOT discard — leave in registry so the caller can retry.
+        # Do NOT remove from registry — leave so the caller can retry.
         return {"status": "error", "local_path": local_path, "message": str(exc)}
 
 
@@ -907,7 +922,7 @@ def configure_webdav_tools(mcp: FastMCP):
                 pass
             raise
 
-        _temp_registry.add(local_path)
+        _temp_registry[local_path] = client.username
         logger.debug(
             "Downloaded '%s' to temp path '%s' (%d bytes)",
             path,
@@ -948,4 +963,5 @@ def configure_webdav_tools(mcp: FastMCP):
         Returns:
             Dict with status ("ok" or "error") and the local_path.
         """
-        return _cleanup_temp_path(local_path)
+        client = await get_client(ctx)
+        return _cleanup_temp_path(local_path, owner=client.username)

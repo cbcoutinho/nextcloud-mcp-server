@@ -208,7 +208,7 @@ def test_atexit_handler_removes_registered_files(tmp_path):
         p = tmp_path / f"nc_download_test_{i}.bin"
         p.write_bytes(b"data")
         paths.append(str(p))
-        _temp_registry.add(str(p))
+        _temp_registry[str(p)] = "testuser"
 
     try:
         webdav_module._cleanup_temp_files_on_exit()
@@ -216,18 +216,18 @@ def test_atexit_handler_removes_registered_files(tmp_path):
             assert not os.path.exists(path)
     finally:
         for path in paths:
-            _temp_registry.discard(path)
+            _temp_registry.pop(path, None)
 
 
 @pytest.mark.unit
 def test_atexit_handler_tolerates_already_deleted_files(tmp_path):
     """atexit handler does not raise if a registered file was already removed."""
     p = tmp_path / "nc_download_gone.bin"
-    _temp_registry.add(str(p))
+    _temp_registry[str(p)] = "testuser"
     try:
         webdav_module._cleanup_temp_files_on_exit()  # must not raise
     finally:
-        _temp_registry.discard(str(p))
+        _temp_registry.pop(str(p), None)
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +244,7 @@ def test_cleanup_temp_rejects_unregistered_path(tmp_path):
 
     assert path not in _temp_registry
 
-    result = _cleanup_temp_path(path)
+    result = _cleanup_temp_path(path, owner="alice")
 
     assert result["status"] == "error"
     assert "session" in result["message"].lower()
@@ -253,22 +253,44 @@ def test_cleanup_temp_rejects_unregistered_path(tmp_path):
 
 
 @pytest.mark.unit
+def test_cleanup_temp_rejects_wrong_owner(tmp_path):
+    """_cleanup_temp_path rejects callers who don't own the file."""
+    p = tmp_path / "nc_download_alice.bin"
+    p.write_bytes(b"payload")
+    path = str(p)
+    _temp_registry[path] = "alice"
+
+    try:
+        result = _cleanup_temp_path(path, owner="bob")
+
+        assert result["status"] == "error"
+        assert "permission" in result["message"].lower()
+        # File must be untouched
+        assert os.path.exists(path)
+        assert path in _temp_registry
+    finally:
+        _temp_registry.pop(path, None)
+        if p.exists():
+            p.unlink()
+
+
+@pytest.mark.unit
 def test_cleanup_temp_success(tmp_path):
     """_cleanup_temp_path deletes the file and removes it from the registry."""
     p = tmp_path / "nc_download_test.bin"
     p.write_bytes(b"payload")
     path = str(p)
-    _temp_registry.add(path)
+    _temp_registry[path] = "alice"
 
     try:
-        result = _cleanup_temp_path(path)
+        result = _cleanup_temp_path(path, owner="alice")
 
         assert result["status"] == "ok"
         assert result["local_path"] == path
         assert not os.path.exists(path)
         assert path not in _temp_registry
     finally:
-        _temp_registry.discard(path)
+        _temp_registry.pop(path, None)
 
 
 @pytest.mark.unit
@@ -277,7 +299,7 @@ def test_cleanup_temp_registry_preserved_on_oserror(tmp_path, monkeypatch):
     p = tmp_path / "nc_download_locked.bin"
     p.write_bytes(b"payload")
     path = str(p)
-    _temp_registry.add(path)
+    _temp_registry[path] = "alice"
 
     def _raise(*_a, **_kw):
         raise OSError("permission denied")
@@ -285,14 +307,14 @@ def test_cleanup_temp_registry_preserved_on_oserror(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "unlink", _raise)
 
     try:
-        result = _cleanup_temp_path(path)
+        result = _cleanup_temp_path(path, owner="alice")
 
         assert result["status"] == "error"
         assert "permission denied" in result["message"]
         # Entry must remain so the caller can retry.
         assert path in _temp_registry
     finally:
-        _temp_registry.discard(path)
+        _temp_registry.pop(path, None)
         monkeypatch.undo()
         if p.exists():
             p.unlink()
@@ -303,12 +325,12 @@ def test_cleanup_temp_file_not_found_discards_registry(tmp_path):
     """FileNotFoundError (file already gone) still removes the registry entry."""
     path = str(tmp_path / "nc_download_gone.bin")
     # Register a path for a file that does NOT exist on disk.
-    _temp_registry.add(path)
+    _temp_registry[path] = "alice"
 
     try:
-        result = _cleanup_temp_path(path)
+        result = _cleanup_temp_path(path, owner="alice")
 
         assert result["status"] == "ok"
         assert path not in _temp_registry
     finally:
-        _temp_registry.discard(path)
+        _temp_registry.pop(path, None)
