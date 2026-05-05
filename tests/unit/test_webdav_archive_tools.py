@@ -1,9 +1,9 @@
 """Unit tests for WebDAV archive-member and temp-download tools.
 
 All tests call the real production functions (_list_zip_members,
-_read_zip_member, _cleanup_temp_files_on_exit, _temp_registry) so that
-regressions in the implementation are caught rather than just verifying
-stdlib zipfile behaviour.
+_read_zip_member, _cleanup_temp_path, _cleanup_temp_files_on_exit,
+_temp_registry) so that regressions in the implementation are caught rather
+than just verifying stdlib zipfile behaviour.
 """
 
 import io
@@ -14,6 +14,7 @@ import pytest
 
 import nextcloud_mcp_server.server.webdav as webdav_module
 from nextcloud_mcp_server.server.webdav import (
+    _cleanup_temp_path,
     _list_zip_members,
     _read_zip_member,
     _temp_registry,
@@ -219,32 +220,41 @@ def test_atexit_handler_tolerates_already_deleted_files(tmp_path):
         _temp_registry.discard(str(p))
 
 
+# ---------------------------------------------------------------------------
+# _cleanup_temp_path — calls real production helper
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.unit
 def test_cleanup_temp_rejects_unregistered_path(tmp_path):
-    """Paths not in _temp_registry must not be removed."""
+    """_cleanup_temp_path returns an error dict for paths not in _temp_registry."""
     p = tmp_path / "arbitrary.bin"
     p.write_bytes(b"secret")
     path = str(p)
 
     assert path not in _temp_registry
-    # Verify the guard condition the tool uses
-    assert path not in _temp_registry
-    # File is untouched
+
+    result = _cleanup_temp_path(path)
+
+    assert result["status"] == "error"
+    assert "session" in result["message"].lower()
+    # File must be untouched
     assert os.path.exists(path)
 
 
 @pytest.mark.unit
-def test_cleanup_temp_discard_only_after_successful_unlink(tmp_path):
-    """Registry entry is removed only after os.unlink() succeeds."""
+def test_cleanup_temp_success(tmp_path):
+    """_cleanup_temp_path deletes the file and removes it from the registry."""
     p = tmp_path / "nc_download_test.bin"
     p.write_bytes(b"payload")
     path = str(p)
     _temp_registry.add(path)
 
     try:
-        os.unlink(path)
-        _temp_registry.discard(path)
+        result = _cleanup_temp_path(path)
 
+        assert result["status"] == "ok"
+        assert result["local_path"] == path
         assert not os.path.exists(path)
         assert path not in _temp_registry
     finally:
@@ -265,12 +275,11 @@ def test_cleanup_temp_registry_preserved_on_oserror(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "unlink", _raise)
 
     try:
-        try:
-            os.unlink(path)
-            _temp_registry.discard(path)
-        except OSError:
-            pass  # do NOT discard
+        result = _cleanup_temp_path(path)
 
+        assert result["status"] == "error"
+        assert "permission denied" in result["message"]
+        # Entry must remain so the caller can retry.
         assert path in _temp_registry
     finally:
         _temp_registry.discard(path)
@@ -283,15 +292,13 @@ def test_cleanup_temp_registry_preserved_on_oserror(tmp_path, monkeypatch):
 def test_cleanup_temp_file_not_found_discards_registry(tmp_path):
     """FileNotFoundError (file already gone) still removes the registry entry."""
     path = str(tmp_path / "nc_download_gone.bin")
+    # Register a path for a file that does NOT exist on disk.
     _temp_registry.add(path)
 
     try:
-        try:
-            os.unlink(path)
-            _temp_registry.discard(path)
-        except FileNotFoundError:
-            _temp_registry.discard(path)
+        result = _cleanup_temp_path(path)
 
+        assert result["status"] == "ok"
         assert path not in _temp_registry
     finally:
         _temp_registry.discard(path)

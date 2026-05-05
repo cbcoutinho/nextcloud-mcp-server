@@ -201,6 +201,49 @@ def _read_zip_member(content: bytes, path: str, member_path: str) -> dict:
     }
 
 
+def _cleanup_temp_path(local_path: str) -> dict:
+    """Remove a temp file that was registered by nc_webdav_download_to_temp.
+
+    Only paths present in *_temp_registry* may be removed; any other path is
+    rejected.  The registry entry is discarded only after a successful unlink
+    (or when the file is already gone); it is retained on OSError so the caller
+    can retry.
+
+    Args:
+        local_path: The path previously returned by nc_webdav_download_to_temp.
+
+    Returns:
+        Dict with ``status`` ("ok" or "error"), ``local_path``, and an optional
+        ``message`` / ``note`` field.
+    """
+    if local_path not in _temp_registry:
+        return {
+            "status": "error",
+            "local_path": local_path,
+            "message": (
+                "Path was not created by nc_webdav_download_to_temp in this "
+                "session, or has already been cleaned up."
+            ),
+        }
+
+    try:
+        os.unlink(local_path)
+        _temp_registry.discard(local_path)
+        logger.debug("Removed temp file '%s'", local_path)
+        return {"status": "ok", "local_path": local_path}
+    except FileNotFoundError:
+        # File already gone — treat as success and clean up registry.
+        _temp_registry.discard(local_path)
+        return {
+            "status": "ok",
+            "local_path": local_path,
+            "note": "File was already removed.",
+        }
+    except OSError as exc:
+        # Do NOT discard — leave in registry so the caller can retry.
+        return {"status": "error", "local_path": local_path, "message": str(exc)}
+
+
 def configure_webdav_tools(mcp: FastMCP):
     # WebDAV file system tools
     @mcp.tool(
@@ -895,29 +938,4 @@ def configure_webdav_tools(mcp: FastMCP):
         Returns:
             Dict with status ("ok" or "error") and the local_path.
         """
-        if local_path not in _temp_registry:
-            return {
-                "status": "error",
-                "local_path": local_path,
-                "message": (
-                    "Path was not created by nc_webdav_download_to_temp in this "
-                    "session, or has already been cleaned up."
-                ),
-            }
-
-        try:
-            os.unlink(local_path)
-            _temp_registry.discard(local_path)
-            logger.debug("Removed temp file '%s'", local_path)
-            return {"status": "ok", "local_path": local_path}
-        except FileNotFoundError:
-            # File already gone — treat as success and clean up registry.
-            _temp_registry.discard(local_path)
-            return {
-                "status": "ok",
-                "local_path": local_path,
-                "note": "File was already removed.",
-            }
-        except OSError as exc:
-            # Do NOT discard — leave in registry so the caller can retry.
-            return {"status": "error", "local_path": local_path, "message": str(exc)}
+        return _cleanup_temp_path(local_path)
