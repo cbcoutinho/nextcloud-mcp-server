@@ -334,3 +334,160 @@ def test_cleanup_temp_file_not_found_discards_registry(tmp_path):
         assert path not in _temp_registry
     finally:
         _temp_registry.pop(path, None)
+
+
+# ---------------------------------------------------------------------------
+# MCP tool wiring — invoke real tool closures via FastMCP tool.run()
+#
+# tool.run(args_dict, context=None) passes ctx=None to the tool function.
+# require_scopes treats ctx=None as BasicAuth mode and skips scope checks,
+# so we can test the full wiring (get_client → read_file → helper → result)
+# by mocking get_client at the module level.
+# ---------------------------------------------------------------------------
+
+
+def _make_tool_map():
+    """Build a FastMCP instance and return its tool map (name → Tool)."""
+    from mcp.server.fastmcp import FastMCP
+
+    from nextcloud_mcp_server.server.webdav import configure_webdav_tools
+
+    mcp = FastMCP("test")
+    configure_webdav_tools(mcp)
+    return {t.name: t for t in mcp._tool_manager.list_tools()}
+
+
+@pytest.mark.unit
+async def test_tool_list_archive_members_wiring(mocker):
+    """nc_webdav_list_archive_members calls read_file and delegates to _list_zip_members."""
+    zip_bytes = make_zip({"content.xml": b"<root/>", "mimetype": b"application/ods"})
+    mock_client = mocker.AsyncMock()
+    mock_client.webdav.read_file = mocker.AsyncMock(
+        return_value=(zip_bytes, "application/vnd.oasis.opendocument.spreadsheet")
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.get_client", return_value=mock_client
+    )
+
+    tools = _make_tool_map()
+    result = await tools["nc_webdav_list_archive_members"].run(
+        {"path": "docs/test.ods"}, context=None
+    )
+
+    mock_client.webdav.read_file.assert_awaited_once_with("docs/test.ods")
+    assert result["path"] == "docs/test.ods"
+    assert result["member_count"] == 2
+    assert result["content_type"] == "application/vnd.oasis.opendocument.spreadsheet"
+
+
+@pytest.mark.unit
+async def test_tool_read_archive_member_wiring(mocker):
+    """nc_webdav_read_archive_member calls read_file and delegates to _read_zip_member."""
+    xml = b"<office:document/>"
+    zip_bytes = make_zip({"content.xml": xml})
+    mock_client = mocker.AsyncMock()
+    mock_client.webdav.read_file = mocker.AsyncMock(
+        return_value=(zip_bytes, "application/zip")
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.get_client", return_value=mock_client
+    )
+
+    tools = _make_tool_map()
+    result = await tools["nc_webdav_read_archive_member"].run(
+        {"path": "docs/test.ods", "member_path": "content.xml"}, context=None
+    )
+
+    mock_client.webdav.read_file.assert_awaited_once_with("docs/test.ods")
+    assert result["content"] == xml.decode("utf-8")
+    assert "encoding" not in result
+
+
+@pytest.mark.unit
+async def test_tool_download_to_temp_writes_file_and_registers_owner(mocker):
+    """nc_webdav_download_to_temp writes bytes to disk and records username in registry."""
+    file_content = b"binary payload"
+    mock_client = mocker.AsyncMock()
+    mock_client.webdav.read_file = mocker.AsyncMock(
+        return_value=(file_content, "application/octet-stream")
+    )
+    mock_client.username = "alice"
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.get_client", return_value=mock_client
+    )
+
+    tools = _make_tool_map()
+    result = await tools["nc_webdav_download_to_temp"].run(
+        {"path": "Videos/clip.mp4"}, context=None
+    )
+
+    local_path = result["local_path"]
+    try:
+        assert result["filename"] == "clip.mp4"
+        assert result["size"] == len(file_content)
+        assert os.path.exists(local_path)
+        assert open(local_path, "rb").read() == file_content
+        # Ownership must be recorded under alice's username
+        assert _temp_registry.get(local_path) == "alice"
+    finally:
+        _temp_registry.pop(local_path, None)
+        if os.path.exists(local_path):
+            os.unlink(local_path)
+
+
+@pytest.mark.unit
+async def test_tool_cleanup_temp_passes_owner_from_client(mocker, tmp_path):
+    """nc_webdav_cleanup_temp passes client.username as owner to _cleanup_temp_path."""
+    p = tmp_path / "nc_download_wiring.bin"
+    p.write_bytes(b"data")
+    path = str(p)
+    _temp_registry[path] = "alice"
+
+    mock_client = mocker.AsyncMock()
+    mock_client.username = "alice"
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.get_client", return_value=mock_client
+    )
+
+    try:
+        tools = _make_tool_map()
+        result = await tools["nc_webdav_cleanup_temp"].run(
+            {"local_path": path}, context=None
+        )
+
+        assert result["status"] == "ok"
+        assert not os.path.exists(path)
+        assert path not in _temp_registry
+    finally:
+        _temp_registry.pop(path, None)
+        if p.exists():
+            p.unlink()
+
+
+@pytest.mark.unit
+async def test_tool_cleanup_temp_rejects_wrong_owner(mocker, tmp_path):
+    """nc_webdav_cleanup_temp rejects a caller whose username doesn't match the registry."""
+    p = tmp_path / "nc_download_wiring2.bin"
+    p.write_bytes(b"data")
+    path = str(p)
+    _temp_registry[path] = "alice"
+
+    mock_client = mocker.AsyncMock()
+    mock_client.username = "bob"
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.get_client", return_value=mock_client
+    )
+
+    try:
+        tools = _make_tool_map()
+        result = await tools["nc_webdav_cleanup_temp"].run(
+            {"local_path": path}, context=None
+        )
+
+        assert result["status"] == "error"
+        assert "permission" in result["message"].lower()
+        assert os.path.exists(path)
+    finally:
+        _temp_registry.pop(path, None)
+        if p.exists():
+            p.unlink()
