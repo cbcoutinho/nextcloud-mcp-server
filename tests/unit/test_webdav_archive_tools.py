@@ -129,6 +129,16 @@ def test_read_member_opf_returned_as_utf8():
 
 
 @pytest.mark.unit
+def test_read_member_extensionless_text_returned_as_utf8():
+    """Extensionless text members (e.g. ODF 'mimetype') are detected via content sniff."""
+    mime_content = b"application/vnd.oasis.opendocument.spreadsheet"
+    content = make_zip({"mimetype": mime_content})
+    result = _read_zip_member(content, "test.ods", "mimetype")
+    assert result["content"] == mime_content.decode("utf-8")
+    assert "encoding" not in result
+
+
+@pytest.mark.unit
 def test_read_member_binary_returned_as_base64():
     """Binary members (e.g. embedded images) are base64-encoded."""
     import base64

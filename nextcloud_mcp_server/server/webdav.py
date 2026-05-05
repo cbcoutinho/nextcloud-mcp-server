@@ -179,6 +179,16 @@ def _read_zip_member(content: bytes, path: str, member_path: str) -> dict:
         or ext in _TEXT_EXTENSIONS
     )
 
+    # Content-sniff fallback: if the extension/MIME heuristics didn't fire
+    # (e.g. extensionless members like ODF's "mimetype"), try UTF-8 decoding
+    # and reject if null bytes are present (the classic binary-vs-text probe).
+    if not is_text and b"\x00" not in member_bytes:
+        try:
+            member_bytes.decode("utf-8")
+            is_text = True
+        except UnicodeDecodeError:
+            pass
+
     if is_text:
         try:
             return {
