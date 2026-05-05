@@ -226,7 +226,6 @@ def test_cleanup_temp_rejects_unregistered_path(tmp_path):
     p.write_bytes(b"secret")
     path = str(p)
 
-    assert path not in _temp_registry
     # Verify the guard condition the tool uses
     assert path not in _temp_registry
     # File is untouched
