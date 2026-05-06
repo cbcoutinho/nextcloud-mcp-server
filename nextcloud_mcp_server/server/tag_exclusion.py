@@ -42,13 +42,15 @@ def get_excluded_tag_names() -> list[str]:
 async def _resolve_one_tag(
     tag_name: str,
     webdav: WebDAVClient,
-    excluded: set[str],
-    lock: anyio.Lock,
+    results: list[set[str]],
 ) -> None:
-    """Resolve a single tag's paths and merge into *excluded* under *lock*.
+    """Resolve a single tag's paths and append them as a set to *results*.
 
-    Swallows its own exceptions so a failure for one tag does not abort
-    the surrounding task group (preserves fail-open per-tag semantics).
+    Each task writes to a distinct slot in the shared list — append from
+    cooperative tasks is safe under anyio (single-threaded between
+    awaits) without an explicit lock. Swallows its own exceptions so a
+    failure for one tag does not abort the surrounding task group
+    (preserves fail-open per-tag semantics).
     """
     try:
         tag = await webdav.get_tag_by_name(tag_name)
@@ -76,16 +78,17 @@ async def _resolve_one_tag(
         )
         return
 
-    async with lock:
-        for f in files:
-            path = _normalise_path(f["path"])
-            excluded.add(path)
-            if f.get("is_directory"):
-                logger.debug(
-                    "Excluding directory %r (tag %r) — descendants will be hidden",
-                    path,
-                    tag_name,
-                )
+    paths: set[str] = set()
+    for f in files:
+        path = _normalise_path(f["path"])
+        paths.add(path)
+        if f.get("is_directory"):
+            logger.debug(
+                "Excluding directory %r (tag %r) — descendants will be hidden",
+                path,
+                tag_name,
+            )
+    results.append(paths)
 
 
 async def get_excluded_file_paths(webdav: WebDAVClient) -> set[str]:
@@ -96,7 +99,9 @@ async def get_excluded_file_paths(webdav: WebDAVClient) -> set[str]:
 
     Per-tag resolution is fanned out via ``anyio.create_task_group`` so
     that the 2N network calls (1 PROPFIND + 1 REPORT per tag) run
-    concurrently rather than serially.
+    concurrently rather than serially. No lock is needed: each task
+    appends its own ``set`` to a shared list, and append is atomic
+    between awaits under anyio's cooperative single-threaded model.
 
     **Failure mode is fail-open per tag**: if the systemtags endpoint is
     unreachable or returns an error for a given tag, that tag is skipped
@@ -110,12 +115,12 @@ async def get_excluded_file_paths(webdav: WebDAVClient) -> set[str]:
     if not tag_names:
         return set()
 
-    excluded: set[str] = set()
-    lock = anyio.Lock()
+    results: list[set[str]] = []
     async with anyio.create_task_group() as tg:
         for tag_name in tag_names:
-            tg.start_soon(_resolve_one_tag, tag_name, webdav, excluded, lock)
+            tg.start_soon(_resolve_one_tag, tag_name, webdav, results)
 
+    excluded: set[str] = set().union(*results)
     if excluded:
         # `len(excluded)` counts directly-tagged entries — descendants of
         # tagged directories are hidden too but resolved at check time.
