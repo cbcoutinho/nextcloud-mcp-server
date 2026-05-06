@@ -52,6 +52,16 @@ atexit.register(_cleanup_temp_files_on_exit)
 # the caller cannot use the local path anyway.
 _MAX_TEMP_DOWNLOAD_BYTES: int = 500 * 1024 * 1024  # 500 MB
 
+# Maximum archive size for in-memory ZIP operations (list/read member).
+# read_file() buffers the full archive in RAM; reject oversized archives
+# before attempting extraction so workers don't OOM on huge ZIPs.
+_MAX_ARCHIVE_BYTES: int = 100 * 1024 * 1024  # 100 MB
+
+# Maximum number of members returned by nc_webdav_list_archive_members.
+# Large ZIP/JAR files can have thousands of entries; truncate to avoid
+# flooding the MCP response and exhausting the context window.
+_MAX_ARCHIVE_MEMBERS: int = 500
+
 # ---------------------------------------------------------------------------
 # Pure helpers — no MCP context required, fully unit-testable
 # ---------------------------------------------------------------------------
@@ -89,22 +99,29 @@ _TEXT_MIME_TYPES: frozenset[str] = frozenset(
 )
 
 
-def _list_zip_members(content: bytes, path: str, content_type: str) -> dict:
+def _list_zip_members(
+    content: bytes, path: str, content_type: str, max_members: int = 500
+) -> dict:
     """Return the member listing of a ZIP archive as a plain dict.
 
     Args:
         content:      Raw bytes of the archive.
         path:         Nextcloud path (used only in error messages).
         content_type: MIME type reported by Nextcloud (included in result).
+        max_members:  Maximum number of members to include in the result.
+                      The total member count is always reported; a
+                      ``truncated`` flag is set when the list is cut.
 
     Returns:
-        Dict with path, content_type, archive_size, member_count, members.
+        Dict with path, content_type, archive_size, member_count, members,
+        and an optional truncated=True when the list exceeds max_members.
 
     Raises:
         ValueError: if *content* is not a valid ZIP archive.
     """
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            all_infos = zf.infolist()
             members = [
                 {
                     "name": info.filename,
@@ -112,7 +129,7 @@ def _list_zip_members(content: bytes, path: str, content_type: str) -> dict:
                     "compressed_size": info.compress_size,
                     "is_dir": info.is_dir(),
                 }
-                for info in zf.infolist()
+                for info in all_infos[:max_members]
             ]
     except zipfile.BadZipFile as exc:
         raise ValueError(
@@ -121,13 +138,18 @@ def _list_zip_members(content: bytes, path: str, content_type: str) -> dict:
             f"use nc_webdav_download_to_temp."
         ) from exc
 
-    return {
+    total = len(all_infos)
+    result: dict = {
         "path": path,
         "content_type": content_type,
         "archive_size": len(content),
-        "member_count": len(members),
+        "member_count": total,
         "members": members,
     }
+    if total > max_members:
+        result["truncated"] = True
+        result["truncated_at"] = max_members
+    return result
 
 
 def _read_zip_member(content: bytes, path: str, member_path: str) -> dict:
@@ -809,15 +831,25 @@ def configure_webdav_tools(mcp: FastMCP):
 
         Returns:
             Dict with path, content_type, archive_size, member_count, and a
-            members list. Each member has: name, size (uncompressed),
-            compressed_size, is_dir.
+            members list (capped at 500 entries). Each member has: name,
+            size (uncompressed), compressed_size, is_dir. If the archive
+            has more than 500 members the result also contains
+            truncated=True and truncated_at=500.
 
         Raises:
-            ValueError: if the file is not a valid ZIP archive
+            ValueError: if the archive exceeds 100 MB or is not valid ZIP
         """
         client = await get_client(ctx)
         content, content_type = await client.webdav.read_file(path)
-        return _list_zip_members(content, path, content_type)
+        if len(content) > _MAX_ARCHIVE_BYTES:
+            raise ValueError(
+                f"Archive '{path}' is {len(content):,} bytes, which exceeds the "
+                f"{_MAX_ARCHIVE_BYTES // (1024 * 1024)} MB in-memory limit. "
+                f"Use nc_webdav_download_to_temp to work with it locally."
+            )
+        return _list_zip_members(
+            content, path, content_type, max_members=_MAX_ARCHIVE_MEMBERS
+        )
 
     @mcp.tool(
         title="Read Archive Member",
@@ -862,12 +894,19 @@ def configure_webdav_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         content, _ = await client.webdav.read_file(path)
+        if len(content) > _MAX_ARCHIVE_BYTES:
+            raise ValueError(
+                f"Archive '{path}' is {len(content):,} bytes, which exceeds the "
+                f"{_MAX_ARCHIVE_BYTES // (1024 * 1024)} MB in-memory limit. "
+                f"Use nc_webdav_download_to_temp to work with it locally."
+            )
         return _read_zip_member(content, path, member_path)
 
     @mcp.tool(
         title="Download File to Temp",
         annotations=ToolAnnotations(
-            readOnlyHint=True,
+            # Not read-only: creates a temp file on disk and mutates _temp_registry.
+            idempotentHint=False,
             openWorldHint=True,
         ),
     )

@@ -73,6 +73,30 @@ def test_list_members_bad_zip_raises_value_error():
 
 
 @pytest.mark.unit
+def test_list_members_truncated_when_over_limit():
+    """_list_zip_members truncates results and sets truncated=True when limit exceeded."""
+    members = {f"file_{i}.xml": b"<x/>" for i in range(10)}
+    content = make_zip(members)
+    result = _list_zip_members(content, "big.zip", "application/zip", max_members=3)
+
+    assert result["member_count"] == 10
+    assert len(result["members"]) == 3
+    assert result["truncated"] is True
+    assert result["truncated_at"] == 3
+
+
+@pytest.mark.unit
+def test_list_members_no_truncation_flag_when_within_limit():
+    """_list_zip_members does not set truncated when all members fit."""
+    content = make_zip({"a.xml": b"<x/>", "b.xml": b"<y/>"})
+    result = _list_zip_members(content, "small.zip", "application/zip", max_members=10)
+
+    assert result["member_count"] == 2
+    assert len(result["members"]) == 2
+    assert "truncated" not in result
+
+
+@pytest.mark.unit
 def test_list_members_includes_content_type_in_result():
     """content_type from Nextcloud is passed through to the result dict."""
     content = make_zip({"x.xml": b"<x/>"})
@@ -476,6 +500,50 @@ async def test_tool_cleanup_temp_passes_owner_from_client(mocker, tmp_path):
         _temp_registry.pop(path, None)
         if p.exists():
             p.unlink()
+
+
+@pytest.mark.unit
+async def test_tool_list_archive_members_rejects_oversized_archive(mocker):
+    """nc_webdav_list_archive_members raises ToolError when archive exceeds _MAX_ARCHIVE_BYTES."""
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    oversized = b"x" * 200
+    mock_client = mocker.AsyncMock()
+    mock_client.webdav.read_file = mocker.AsyncMock(
+        return_value=(oversized, "application/zip")
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.get_client", return_value=mock_client
+    )
+    mocker.patch("nextcloud_mcp_server.server.webdav._MAX_ARCHIVE_BYTES", 100)
+
+    tools = _make_tool_map()
+    with pytest.raises(ToolError, match="exceeds the"):
+        await tools["nc_webdav_list_archive_members"].run(
+            {"path": "huge.zip"}, context=None
+        )
+
+
+@pytest.mark.unit
+async def test_tool_read_archive_member_rejects_oversized_archive(mocker):
+    """nc_webdav_read_archive_member raises ToolError when archive exceeds _MAX_ARCHIVE_BYTES."""
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    oversized = b"x" * 200
+    mock_client = mocker.AsyncMock()
+    mock_client.webdav.read_file = mocker.AsyncMock(
+        return_value=(oversized, "application/zip")
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.webdav.get_client", return_value=mock_client
+    )
+    mocker.patch("nextcloud_mcp_server.server.webdav._MAX_ARCHIVE_BYTES", 100)
+
+    tools = _make_tool_map()
+    with pytest.raises(ToolError, match="exceeds the"):
+        await tools["nc_webdav_read_archive_member"].run(
+            {"path": "huge.zip", "member_path": "content.xml"}, context=None
+        )
 
 
 @pytest.mark.unit
