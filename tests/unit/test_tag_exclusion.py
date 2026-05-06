@@ -128,6 +128,32 @@ class TestGetExcludedFilePaths:
         webdav.get_files_by_tag.assert_not_called()
 
     @pytest.mark.unit
+    async def test_skips_tag_with_missing_id(self, mocker):
+        """If get_tag_by_name returns a dict with id=None (malformed
+        PROPFIND response — <oc:systemtag> entry without <oc:id/>), skip
+        the tag rather than dispatching <oc:systemtag>None</oc:systemtag>
+        to get_files_by_tag (PR #764 review round 4)."""
+        mocker.patch(
+            "nextcloud_mcp_server.server.tag_exclusion.get_excluded_tag_names",
+            return_value=["malformed"],
+        )
+        webdav = AsyncMock()
+        webdav.get_tag_by_name = AsyncMock(
+            return_value={
+                "id": None,
+                "name": "malformed",
+                "userVisible": True,
+                "userAssignable": True,
+            }
+        )
+
+        result = await get_excluded_file_paths(webdav)
+
+        assert result == set()
+        webdav.get_tag_by_name.assert_awaited_once_with("malformed")
+        webdav.get_files_by_tag.assert_not_called()
+
+    @pytest.mark.unit
     async def test_fail_open_when_tag_lookup_raises(self, mocker, caplog):
         """If get_tag_by_name raises (e.g. 5xx from systemtags endpoint),
         the offending tag is skipped with a warning rather than the error

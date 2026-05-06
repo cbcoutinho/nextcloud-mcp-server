@@ -194,6 +194,23 @@ async def test_move_resource_blocks_excluded_destination_exact_match(
         )
 
 
+async def test_copy_resource_blocks_excluded_source(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    patch_get_client(fake_client)
+    patch_excluded({"Secret.txt"})
+
+    fn = webdav_tools["nc_webdav_copy_resource"].fn
+    with pytest.raises(ToolError, match="source"):
+        await fn(
+            source_path="/Secret.txt",
+            destination_path="/Public/copy.txt",
+            ctx=_mock_ctx(fake_client),
+        )
+
+    fake_client.webdav.copy_resource.assert_not_called()
+
+
 async def test_copy_resource_blocks_excluded_destination_descendant(
     webdav_tools, fake_client, patch_get_client, patch_excluded
 ):

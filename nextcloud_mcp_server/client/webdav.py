@@ -1135,7 +1135,11 @@ class WebDAVClient(BaseNextcloudClient):
         response = await self._make_request(
             "PROPFIND",
             "/remote.php/dav/systemtags/",
-            headers={"Depth": "1", "Content-Type": "text/xml"},
+            headers={
+                "Depth": "1",
+                "Content-Type": "text/xml",
+                "OCS-APIRequest": "true",
+            },
             content=propfind_body,
         )
         # Redundant after _make_request (which raises on non-2xx) but
@@ -1223,7 +1227,7 @@ class WebDAVClient(BaseNextcloudClient):
         response = await self._make_request(
             "REPORT",
             f"{self._get_webdav_base_path()}/",
-            headers={"Content-Type": "text/xml"},
+            headers={"Content-Type": "text/xml", "OCS-APIRequest": "true"},
             content=report_body,
         )
         # Redundant after _make_request (which raises on non-2xx) but

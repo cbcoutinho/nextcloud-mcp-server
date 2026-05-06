@@ -46,11 +46,11 @@ async def _resolve_one_tag(
 ) -> None:
     """Resolve a single tag's paths and append them as a set to *results*.
 
-    Each task writes to a distinct slot in the shared list — append from
-    cooperative tasks is safe under anyio (single-threaded between
-    awaits) without an explicit lock. Swallows its own exceptions so a
-    failure for one tag does not abort the surrounding task group
-    (preserves fail-open per-tag semantics).
+    Each task appends its own set to the shared list; ``list.append`` is
+    atomic between cooperative yields under anyio (single-threaded
+    between awaits) so no explicit lock is needed. Swallows its own
+    exceptions so a failure for one tag does not abort the surrounding
+    task group (preserves fail-open per-tag semantics).
     """
     try:
         tag = await webdav.get_tag_by_name(tag_name)
@@ -65,6 +65,15 @@ async def _resolve_one_tag(
 
     if tag is None:
         logger.debug("Excluded tag %r does not exist — skipping", tag_name)
+        return
+
+    if tag.get("id") is None:
+        # Malformed PROPFIND response: <oc:systemtag> entry without
+        # <oc:id/>. Skip rather than dispatch <oc:systemtag>None</oc:systemtag>.
+        logger.debug(
+            "Excluded tag %r has no id in PROPFIND response — skipping",
+            tag_name,
+        )
         return
 
     try:
