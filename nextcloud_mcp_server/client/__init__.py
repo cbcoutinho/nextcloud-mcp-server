@@ -1,5 +1,6 @@
 import logging
 import os
+from email.utils import parsedate_to_datetime
 
 from httpx import (
     AsyncBaseTransport,
@@ -44,6 +45,44 @@ async def log_request(request: Request):
 async def log_response(response: Response):
     await response.aread()
     logger.debug("Response [%s] %s", response.status_code, response.text)
+
+
+def _normalise_search_result(item: dict) -> dict:
+    """Normalise a webdav.search_files item to the get_files_by_tag shape.
+
+    ``WebDAVClient.search_files`` and ``WebDAVClient.get_files_by_tag`` both
+    return per-file dicts but with subtly different keys (``file_id`` vs
+    ``id``) and path conventions (no leading slash vs leading slash). This
+    helper makes a search result interchangeable with a tagged-file result
+    so callers (notably the vector scanner) can consume both via one shape.
+    """
+    path = item.get("path", "")
+    if path and not path.startswith("/"):
+        path = "/" + path
+
+    last_modified_timestamp = item.get("last_modified_timestamp")
+    last_modified = item.get("last_modified")
+    if last_modified_timestamp is None and last_modified:
+        try:
+            last_modified_timestamp = int(
+                parsedate_to_datetime(last_modified).timestamp()
+            )
+        except (TypeError, ValueError):
+            last_modified_timestamp = None
+
+    file_id = item.get("file_id") if item.get("file_id") is not None else item.get("id")
+
+    return {
+        "id": file_id,
+        "path": path,
+        "name": item.get("name") or (path.rsplit("/", 1)[-1] if path else ""),
+        "size": item.get("size", 0),
+        "content_type": item.get("content_type", ""),
+        "last_modified": last_modified,
+        "last_modified_timestamp": last_modified_timestamp,
+        "etag": item.get("etag"),
+        "is_directory": item.get("is_directory", False),
+    }
 
 
 class AsyncDisableCookieTransport(AsyncBaseTransport):
@@ -164,53 +203,123 @@ class NextcloudClient:
 
         This method coordinates tag lookup and file retrieval via WebDAV:
         1. Look up the tag ID by name
-        2. Get all files with that tag (via REPORT with full metadata)
-        3. Optionally filter by MIME type
+        2. Get all entries (files and directories) with that tag via REPORT
+        3. For each tagged directory, walk descendants matching ``mime_type_filter``
+           via WebDAV SEARCH (``Depth: infinity``) so a tag on a folder applies
+           to every matching file beneath it. Mirrors the directory semantics
+           of :mod:`nextcloud_mcp_server.server.tag_exclusion` (issue #710).
+        4. Dedupe by file id — a file directly tagged AND living under a
+           tagged ancestor is returned once.
+
+        Directory expansion only runs when ``mime_type_filter`` is set:
+        without it, expanding a tagged folder would dump the user's entire
+        tree into the caller, which is almost never what the operator
+        wanted.
 
         Args:
             tag_name: Name of the system tag to search for (e.g., "vector-index")
-            mime_type_filter: Optional MIME type filter (e.g., "application/pdf")
+            mime_type_filter: Optional MIME type filter (e.g., "application/pdf").
+                When set, also enables directory expansion.
 
         Returns:
             List of file dictionaries with WebDAV properties (path, size, content_type, etc.)
 
         Raises:
-            RuntimeError: If tag lookup or file query fails
+            RuntimeError: If tag lookup or the initial file query fails. A
+            failure walking one tagged directory is logged and skipped — other
+            directly-tagged files are still returned.
 
         Examples:
-            # Find all files with "vector-index" tag
+            # Find all files with "vector-index" tag (no directory expansion)
             files = await nc_client.find_files_by_tag("vector-index")
 
-            # Find only PDFs with the tag
+            # Find only PDFs with the tag, including PDFs under any folder
+            # that carries the tag
             pdfs = await nc_client.find_files_by_tag("vector-index", "application/pdf")
         """
-        # Look up tag by name using WebDAV
         tag = await self.webdav.get_tag_by_name(tag_name)
         if not tag:
-            logger.debug(f"Tag '{tag_name}' not found, returning empty list")
+            logger.debug("Tag %r not found, returning empty list", tag_name)
             return []
 
-        # Get files with this tag (returns full file info from REPORT)
-        files = await self.webdav.get_files_by_tag(tag["id"])
-        if not files:
-            logger.debug(f"No files found with tag '{tag_name}'")
+        items = await self.webdav.get_files_by_tag(tag["id"])
+        if not items:
+            logger.debug("No items found with tag %r", tag_name)
             return []
 
-        logger.debug(f"Found {len(files)} files with tag '{tag_name}'")
+        logger.debug(
+            "Found %d directly-tagged item(s) with tag %r", len(items), tag_name
+        )
 
-        # Apply MIME type filter if specified
+        # Split into directly-tagged files vs tagged directories.
+        by_id: dict[int, dict] = {}
+        tagged_dirs: list[dict] = []
+        for item in items:
+            if item.get("is_directory"):
+                tagged_dirs.append(item)
+                continue
+            if mime_type_filter and not item.get("content_type", "").startswith(
+                mime_type_filter
+            ):
+                continue
+            file_id = item.get("id")
+            if file_id is None:
+                continue
+            by_id[file_id] = item
+
+        # Expand each tagged directory into its descendant files matching
+        # the MIME filter. Skip when no MIME filter is set — see docstring.
+        if mime_type_filter and tagged_dirs:
+            for dir_info in tagged_dirs:
+                dir_path = dir_info.get("path", "").strip("/")
+                try:
+                    descendants = await self.webdav.find_by_type(
+                        mime_type_filter, scope=dir_path
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Tag-based directory walk failed for %r (tag %r): %s; "
+                        "skipping descendants",
+                        dir_path,
+                        tag_name,
+                        e,
+                    )
+                    continue
+
+                added = 0
+                for d in descendants:
+                    if d.get("is_directory"):
+                        continue
+                    file_id = d.get("file_id") or d.get("id")
+                    if file_id is None:
+                        continue
+                    if file_id in by_id:
+                        # Directly-tagged entry already wins; keeps the
+                        # canonical shape from get_files_by_tag.
+                        continue
+                    by_id[file_id] = _normalise_search_result(d)
+                    added += 1
+
+                logger.debug(
+                    "Tag %r: directory %r expanded to %d descendant %s file(s)",
+                    tag_name,
+                    dir_path,
+                    added,
+                    mime_type_filter,
+                )
+
+        files = list(by_id.values())
         if mime_type_filter:
-            filtered_files = [
-                f
-                for f in files
-                if f.get("content_type", "").startswith(mime_type_filter)
-            ]
             logger.info(
-                f"Returning {len(filtered_files)} files with tag '{tag_name}' (filtered by {mime_type_filter})"
+                "Returning %d file(s) with tag %r (mime_type=%s, "
+                "%d directly-tagged folder(s) expanded)",
+                len(files),
+                tag_name,
+                mime_type_filter,
+                len(tagged_dirs),
             )
-            return filtered_files
-
-        logger.info(f"Returning {len(files)} files with tag '{tag_name}'")
+        else:
+            logger.info("Returning %d file(s) with tag %r", len(files), tag_name)
         return files
 
     def _get_webdav_base_path(self) -> str:
