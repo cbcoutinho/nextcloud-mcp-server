@@ -1132,12 +1132,20 @@ class WebDAVClient(BaseNextcloudClient):
   </d:prop>
 </d:propfind>"""
 
-        response = await self._client.request(
+        response = await self._make_request(
             "PROPFIND",
             "/remote.php/dav/systemtags/",
-            headers={"Depth": "1"},
+            headers={
+                "Depth": "1",
+                "Content-Type": "text/xml",
+                "OCS-APIRequest": "true",
+            },
             content=propfind_body,
         )
+        # Redundant after _make_request (which raises on non-2xx) but
+        # makes the contract explicit at the call site so a future
+        # refactor of _make_request cannot silently feed an error body
+        # into ET.fromstring below.
         response.raise_for_status()
 
         # Parse XML response
@@ -1182,10 +1190,10 @@ class WebDAVClient(BaseNextcloudClient):
                     and user_assignable_elem.text is not None
                     else True,
                 }
-                logger.debug(f"Found tag '{tag_name}' with ID {tag_info['id']}")
+                logger.debug("Found tag %r with ID %s", tag_name, tag_info["id"])
                 return tag_info
 
-        logger.debug(f"Tag '{tag_name}' not found")
+        logger.debug("Tag %r not found", tag_name)
         return None
 
     async def get_files_by_tag(self, tag_id: int) -> list[dict[str, Any]]:
@@ -1197,7 +1205,9 @@ class WebDAVClient(BaseNextcloudClient):
         Returns:
             List of file info dictionaries with path, size, content_type, etc.
         """
-        # Use WebDAV REPORT method with systemtag filter, requesting all properties
+        # Use WebDAV REPORT method with systemtag filter. resourcetype is
+        # included so callers can distinguish folders from files (needed for
+        # recursive exclusion of tagged directories — see issue #710).
         report_body = f"""<?xml version="1.0"?>
 <oc:filter-files xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
   <d:prop>
@@ -1207,17 +1217,22 @@ class WebDAVClient(BaseNextcloudClient):
     <d:getcontenttype/>
     <d:getlastmodified/>
     <d:getetag/>
+    <d:resourcetype/>
   </d:prop>
   <oc:filter-rules>
     <oc:systemtag>{tag_id}</oc:systemtag>
   </oc:filter-rules>
 </oc:filter-files>"""
 
-        response = await self._client.request(
+        response = await self._make_request(
             "REPORT",
             f"{self._get_webdav_base_path()}/",
+            headers={"Content-Type": "text/xml", "OCS-APIRequest": "true"},
             content=report_body,
         )
+        # Redundant after _make_request (which raises on non-2xx) but
+        # makes the contract explicit at the call site — see the same
+        # rationale in get_tag_by_name.
         response.raise_for_status()
 
         # Parse XML response
@@ -1249,15 +1264,27 @@ class WebDAVClient(BaseNextcloudClient):
             contenttype_elem = prop.find("d:getcontenttype", ns)
             lastmodified_elem = prop.find("d:getlastmodified", ns)
             etag_elem = prop.find("d:getetag", ns)
+            resourcetype_elem = prop.find("d:resourcetype", ns)
 
             if fileid_elem is None or not fileid_elem.text:
                 continue
 
-            # Decode href path and extract the file path
+            # A resourcetype with a <d:collection/> child indicates a folder.
+            is_directory = (
+                resourcetype_elem is not None
+                and resourcetype_elem.find("d:collection", ns) is not None
+            )
+
+            # Decode href path and extract the user-relative file path.
+            # str.replace() would strip every occurrence of the prefix,
+            # so an adversarially-named directory could collide; strip
+            # only the leading occurrence via startswith + slice.
             href_path = unquote(href_elem.text)
-            # Remove WebDAV prefix to get user-relative path
             webdav_prefix = f"/remote.php/dav/files/{self.username}/"
-            file_path = href_path.replace(webdav_prefix, "/")
+            if href_path.startswith(webdav_prefix):
+                file_path = "/" + href_path[len(webdav_prefix) :]
+            else:
+                file_path = href_path
 
             # Parse last modified timestamp
             last_modified_timestamp = None
@@ -1285,10 +1312,11 @@ class WebDAVClient(BaseNextcloudClient):
                 else None,
                 "last_modified_timestamp": last_modified_timestamp,
                 "etag": etag_elem.text if etag_elem is not None else None,
+                "is_directory": is_directory,
             }
             files.append(file_info)
 
-        logger.debug(f"Found {len(files)} files with tag ID {tag_id}")
+        logger.debug("Found %d files with tag ID %s", len(files), tag_id)
         return files
 
     async def get_file_info(self, path: str) -> dict[str, Any] | None:

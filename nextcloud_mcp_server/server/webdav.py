@@ -2,12 +2,17 @@ import base64
 import logging
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models import DirectoryListing, FileInfo, SearchFilesResponse
 from nextcloud_mcp_server.observability.metrics import instrument_tool
+from nextcloud_mcp_server.server.tag_exclusion import (
+    get_excluded_file_paths,
+    is_path_excluded,
+)
 from nextcloud_mcp_server.utils.document_parser import (
     is_parseable_document,
     parse_document,
@@ -32,6 +37,12 @@ def configure_webdav_tools(mcp: FastMCP):
     ) -> DirectoryListing:
         """List files and directories in the specified NextCloud path.
 
+        When ``EXCLUDED_TAGS`` is configured: raises ``ToolError`` if the
+        listed path itself is tagged (or sits inside a tagged folder),
+        and otherwise omits any tagged children from the listing. The
+        early guard is consistent with the mutating tools and avoids a
+        round-trip to Nextcloud for a known-excluded path.
+
         Args:
             path: Directory path to list (empty string for root directory)
 
@@ -39,7 +50,20 @@ def configure_webdav_tools(mcp: FastMCP):
             DirectoryListing with files, total_count, directories_count, files_count, and total_size
         """
         client = await get_client(ctx)
+
+        # Resolve once and use for both the path-itself guard and the
+        # children filter below.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if is_path_excluded(path, excluded):
+            raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+
         items = await client.webdav.list_directory(path)
+
+        # Filter out child files/folders carrying an excluded tag.
+        if excluded:
+            items = [
+                i for i in items if not is_path_excluded(i.get("path", ""), excluded)
+            ]
 
         # Convert to FileInfo models
         file_infos = [FileInfo(**item) for item in items]
@@ -70,6 +94,9 @@ def configure_webdav_tools(mcp: FastMCP):
     async def nc_webdav_read_file(path: str, ctx: Context):
         """Read the content of a file from NextCloud.
 
+        Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and the
+        file (or an ancestor folder) carries an excluded system tag.
+
         Args:
             path: Full path to the file to read
 
@@ -80,13 +107,19 @@ def configure_webdav_tools(mcp: FastMCP):
             - Other binary files are base64 encoded
         """
         client = await get_client(ctx)
+
+        # Block reads of paths carrying an excluded tag.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if is_path_excluded(path, excluded):
+            raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+
         content, content_type = await client.webdav.read_file(path)
 
         # Check if this is a parseable document (PDF, DOCX, etc.)
         # is_parseable_document() checks if document processing is enabled
         if is_parseable_document(content_type):
             try:
-                logger.info(f"Parsing document '{path}' of type '{content_type}'")
+                logger.info("Parsing document %r of type %r", path, content_type)
                 parsed_text, metadata = await parse_document(
                     content,
                     content_type,
@@ -103,7 +136,9 @@ def configure_webdav_tools(mcp: FastMCP):
                 }
             except Exception as e:
                 logger.warning(
-                    f"Failed to parse document '{path}', falling back to base64: {e}"
+                    "Failed to parse document %r, falling back to base64: %s",
+                    path,
+                    e,
                 )
                 # Fall through to base64 encoding on parse failure
 
@@ -144,6 +179,9 @@ def configure_webdav_tools(mcp: FastMCP):
     ):
         """Write content to a file in NextCloud.
 
+        Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and the
+        target path (or an ancestor folder) carries an excluded system tag.
+
         Args:
             path: Full path where to write the file
             content: File content (text or base64 for binary)
@@ -153,6 +191,11 @@ def configure_webdav_tools(mcp: FastMCP):
             Dict with status_code indicating success
         """
         client = await get_client(ctx)
+
+        # Block writes to excluded paths.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if is_path_excluded(path, excluded):
+            raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
 
         # Handle base64 encoded content
         if content_type and "base64" in content_type.lower():
@@ -175,6 +218,9 @@ def configure_webdav_tools(mcp: FastMCP):
     async def nc_webdav_create_directory(path: str, ctx: Context):
         """Create a directory in NextCloud.
 
+        Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and the
+        target path lies inside a folder carrying an excluded system tag.
+
         Args:
             path: Full path of the directory to create
 
@@ -182,6 +228,15 @@ def configure_webdav_tools(mcp: FastMCP):
             Dict with status_code (201 for created, 405 if already exists)
         """
         client = await get_client(ctx)
+
+        # Block directory creation at or inside excluded paths.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if is_path_excluded(path, excluded):
+            raise ToolError(
+                f"Access denied: {path!r} is or is inside a path tagged "
+                "with an excluded tag"
+            )
+
         return await client.webdav.create_directory(path)
 
     @mcp.tool(
@@ -197,6 +252,9 @@ def configure_webdav_tools(mcp: FastMCP):
     async def nc_webdav_delete_resource(path: str, ctx: Context):
         """Delete a file or directory in NextCloud.
 
+        Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and the
+        target path (or an ancestor folder) carries an excluded system tag.
+
         Args:
             path: Full path of the file or directory to delete
 
@@ -204,6 +262,12 @@ def configure_webdav_tools(mcp: FastMCP):
             Dict with status_code indicating result (404 if not found)
         """
         client = await get_client(ctx)
+
+        # Block deletion of excluded files/directories.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if is_path_excluded(path, excluded):
+            raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+
         return await client.webdav.delete_resource(path)
 
     @mcp.tool(
@@ -220,6 +284,10 @@ def configure_webdav_tools(mcp: FastMCP):
     ):
         """Move or rename a file or directory in NextCloud.
 
+        Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and either
+        the source or destination path (or one of their ancestor folders)
+        carries an excluded system tag.
+
         Args:
             source_path: Full path of the file or directory to move
             destination_path: New path for the file or directory
@@ -229,6 +297,19 @@ def configure_webdav_tools(mcp: FastMCP):
             Dict with status_code indicating result (404 if source not found, 412 if destination exists and overwrite is False)
         """
         client = await get_client(ctx)
+
+        # Block moves involving excluded paths on either side.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if is_path_excluded(source_path, excluded):
+            raise ToolError(
+                f"Access denied: source {source_path!r} is tagged with an excluded tag"
+            )
+        if is_path_excluded(destination_path, excluded):
+            raise ToolError(
+                f"Access denied: destination {destination_path!r} is or is "
+                "inside a path tagged with an excluded tag"
+            )
+
         return await client.webdav.move_resource(
             source_path, destination_path, overwrite
         )
@@ -247,6 +328,10 @@ def configure_webdav_tools(mcp: FastMCP):
     ):
         """Copy a file or directory in NextCloud.
 
+        Raises ``ToolError`` when ``EXCLUDED_TAGS`` is configured and either
+        the source or destination path (or one of their ancestor folders)
+        carries an excluded system tag.
+
         Args:
             source_path: Full path of the file or directory to copy
             destination_path: Destination path for the copy
@@ -256,6 +341,19 @@ def configure_webdav_tools(mcp: FastMCP):
             Dict with status_code indicating result (404 if source not found, 412 if destination exists and overwrite is False)
         """
         client = await get_client(ctx)
+
+        # Block copies involving excluded paths on either side.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if is_path_excluded(source_path, excluded):
+            raise ToolError(
+                f"Access denied: source {source_path!r} is tagged with an excluded tag"
+            )
+        if is_path_excluded(destination_path, excluded):
+            raise ToolError(
+                f"Access denied: destination {destination_path!r} is or is "
+                "inside a path tagged with an excluded tag"
+            )
+
         return await client.webdav.copy_resource(
             source_path, destination_path, overwrite
         )
@@ -293,6 +391,13 @@ def configure_webdav_tools(mcp: FastMCP):
             SearchFilesResponse with list of matching files
         """
         client = await get_client(ctx)
+
+        # Resolve once and use for both the scope guard and the result filter.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if scope and is_path_excluded(scope, excluded):
+            raise ToolError(
+                f"Access denied: scope {scope!r} is tagged with an excluded tag"
+            )
 
         # Build where conditions based on filters
         conditions = []
@@ -364,6 +469,12 @@ def configure_webdav_tools(mcp: FastMCP):
             limit=limit,
         )
 
+        # Filter out tagged-excluded paths from the result set.
+        if excluded:
+            results = [
+                r for r in results if not is_path_excluded(r.get("path", ""), excluded)
+            ]
+
         # Convert to FileInfo models
         file_infos = [FileInfo(**result) for result in results]
 
@@ -406,9 +517,18 @@ def configure_webdav_tools(mcp: FastMCP):
             SearchFilesResponse with list of matching files
         """
         client = await get_client(ctx)
+        excluded = await get_excluded_file_paths(client.webdav)
+        if scope and is_path_excluded(scope, excluded):
+            raise ToolError(
+                f"Access denied: scope {scope!r} is tagged with an excluded tag"
+            )
         results = await client.webdav.find_by_name(
             pattern=pattern, scope=scope, limit=limit
         )
+        if excluded:
+            results = [
+                r for r in results if not is_path_excluded(r.get("path", ""), excluded)
+            ]
         file_infos = [FileInfo(**result) for result in results]
         return SearchFilesResponse(
             results=file_infos,
@@ -440,9 +560,18 @@ def configure_webdav_tools(mcp: FastMCP):
             SearchFilesResponse with list of matching files
         """
         client = await get_client(ctx)
+        excluded = await get_excluded_file_paths(client.webdav)
+        if scope and is_path_excluded(scope, excluded):
+            raise ToolError(
+                f"Access denied: scope {scope!r} is tagged with an excluded tag"
+            )
         results = await client.webdav.find_by_type(
             mime_type=mime_type, scope=scope, limit=limit
         )
+        if excluded:
+            results = [
+                r for r in results if not is_path_excluded(r.get("path", ""), excluded)
+            ]
         file_infos = [FileInfo(**result) for result in results]
         return SearchFilesResponse(
             results=file_infos,
@@ -473,7 +602,16 @@ def configure_webdav_tools(mcp: FastMCP):
             SearchFilesResponse with list of favorite files
         """
         client = await get_client(ctx)
+        excluded = await get_excluded_file_paths(client.webdav)
+        if scope and is_path_excluded(scope, excluded):
+            raise ToolError(
+                f"Access denied: scope {scope!r} is tagged with an excluded tag"
+            )
         results = await client.webdav.list_favorites(scope=scope, limit=limit)
+        if excluded:
+            results = [
+                r for r in results if not is_path_excluded(r.get("path", ""), excluded)
+            ]
         file_infos = [FileInfo(**result) for result in results]
         return SearchFilesResponse(
             results=file_infos,

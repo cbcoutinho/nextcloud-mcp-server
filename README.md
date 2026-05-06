@@ -74,6 +74,7 @@ For Kubernetes, see [cbcoutinho/helm-charts](https://github.com/cbcoutinho/helm-
 - **Document Processing** - OCR and text extraction from PDFs, DOCX, images with progress notifications
 - **Flexible Deployment** - Docker, Kubernetes ([Helm chart](https://github.com/cbcoutinho/helm-charts)), VM, or local installation
 - **Production-Ready Auth** - Basic Auth with app passwords; multi-user via Login Flow v2 — MCP clients authenticate via OAuth, the server handles Nextcloud app passwords transparently
+- **Tag-Based File Exclusion** - Hide sensitive files/folders from MCP file tools by tagging them with a configured Nextcloud system tag (`EXCLUDED_TAGS`). See [docs/configuration.md](docs/configuration.md#tag-based-file-exclusion-optional)
 - **Multiple Transports** - streamable-http (default) and stdio
 
 ## Supported Apps

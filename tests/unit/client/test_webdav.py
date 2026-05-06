@@ -354,3 +354,63 @@ async def test_remove_tag_from_file_not_assigned(mocker):
 
     # Verify result (should succeed even with 404)
     assert result is True
+
+
+@pytest.mark.unit
+async def test_get_files_by_tag_detects_directories(mocker):
+    """get_files_by_tag must flag tagged folders via <d:resourcetype/>.
+
+    Tagged folders need ``is_directory=True`` so the tag-exclusion layer
+    (issue #710) can hide their descendants.
+    """
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    # Two-entry response: one regular file, one collection (folder).
+    xml_content = b"""<?xml version="1.0"?>
+    <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+        <d:response>
+            <d:href>/remote.php/dav/files/testuser/Secret.txt</d:href>
+            <d:propstat>
+                <d:prop>
+                    <oc:fileid>101</oc:fileid>
+                    <d:displayname>Secret.txt</d:displayname>
+                    <d:getcontentlength>42</d:getcontentlength>
+                    <d:getcontenttype>text/plain</d:getcontenttype>
+                    <d:getlastmodified>Wed, 01 Jan 2025 00:00:00 GMT</d:getlastmodified>
+                    <d:getetag>"abc"</d:getetag>
+                    <d:resourcetype/>
+                </d:prop>
+            </d:propstat>
+        </d:response>
+        <d:response>
+            <d:href>/remote.php/dav/files/testuser/Private/</d:href>
+            <d:propstat>
+                <d:prop>
+                    <oc:fileid>102</oc:fileid>
+                    <d:displayname>Private</d:displayname>
+                    <d:getlastmodified>Wed, 01 Jan 2025 00:00:00 GMT</d:getlastmodified>
+                    <d:getetag>"def"</d:getetag>
+                    <d:resourcetype><d:collection/></d:resourcetype>
+                </d:prop>
+            </d:propstat>
+        </d:response>
+    </d:multistatus>"""
+
+    mock_response = AsyncMock()
+    mock_response.content = xml_content
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    files = await client.get_files_by_tag(42)
+
+    assert len(files) == 2
+    by_path = {f["path"]: f for f in files}
+
+    assert by_path["/Secret.txt"]["is_directory"] is False
+    assert by_path["/Private/"]["is_directory"] is True
+
+    # Sanity-check the REPORT body asks for resourcetype.
+    call_args = mock_http_client.request.call_args
+    assert "<d:resourcetype/>" in call_args.kwargs["content"]
+    assert "<oc:systemtag>42</oc:systemtag>" in call_args.kwargs["content"]

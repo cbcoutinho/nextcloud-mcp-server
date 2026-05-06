@@ -117,6 +117,10 @@ _DEFAULTS: dict[str, Any] = {
     "custom_processor_name": "custom",
     "custom_processor_api_key": None,
     "custom_processor_timeout": 60,
+    # Tag-based file exclusion (issue #710): comma-separated list of
+    # Nextcloud system tag names. Files/folders carrying any of these tags
+    # are hidden from WebDAV MCP tools. Empty = feature off.
+    "excluded_tags": "",
 }
 
 
@@ -508,6 +512,11 @@ class Settings:
     log_level: str = "INFO"
     log_include_trace_context: bool = True
 
+    # Tag-based file exclusion (issue #710): comma-separated list of
+    # Nextcloud system tag names. Files/folders carrying any of these tags
+    # are hidden from WebDAV MCP tools.
+    excluded_tags: str = ""
+
     def __post_init__(self):
         """Validate configuration and set defaults."""
         logger = logging.getLogger(__name__)
@@ -845,6 +854,7 @@ def get_settings() -> Settings:
         "log_format": "LOG_FORMAT",
         "log_level": "LOG_LEVEL",
         "log_include_trace_context": "LOG_INCLUDE_TRACE_CONTEXT",
+        "excluded_tags": "EXCLUDED_TAGS",
     }
 
     # Only pass values that dynaconf actually has; omit unset keys so
