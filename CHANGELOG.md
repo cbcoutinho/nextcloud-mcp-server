@@ -5,6 +5,21 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.80.0 (2026-05-06)
+
+### Feat
+
+- **webdav**: add tag-based file exclusion (#710)
+
+### Fix
+
+- **webdav**: finish lazy-logging conversion in get_tag_by_name
+- **webdav**: address PR #764 review round 4
+- **webdav**: address PR #764 review round 3
+- **webdav**: drop anyio.Lock and add integration tests for tag exclusion
+- **webdav**: address PR #764 review round 2
+- **webdav**: address PR #764 review
+
 ## v0.79.3 (2026-05-03)
 
 ### Fix
