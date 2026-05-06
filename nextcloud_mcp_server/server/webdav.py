@@ -37,9 +37,11 @@ def configure_webdav_tools(mcp: FastMCP):
     ) -> DirectoryListing:
         """List files and directories in the specified NextCloud path.
 
-        When ``EXCLUDED_TAGS`` is configured, entries tagged (or whose
-        ancestor folders are tagged) with an excluded system tag are
-        omitted from the result.
+        When ``EXCLUDED_TAGS`` is configured: raises ``ToolError`` if the
+        listed path itself is tagged (or sits inside a tagged folder),
+        and otherwise omits any tagged children from the listing. The
+        early guard is consistent with the mutating tools and avoids a
+        round-trip to Nextcloud for a known-excluded path.
 
         Args:
             path: Directory path to list (empty string for root directory)
@@ -48,10 +50,16 @@ def configure_webdav_tools(mcp: FastMCP):
             DirectoryListing with files, total_count, directories_count, files_count, and total_size
         """
         client = await get_client(ctx)
+
+        # Resolve once and use for both the path-itself guard and the
+        # children filter below.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if is_path_excluded(path, excluded):
+            raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+
         items = await client.webdav.list_directory(path)
 
-        # Filter out files/folders carrying an excluded tag.
-        excluded = await get_excluded_file_paths(client.webdav)
+        # Filter out child files/folders carrying an excluded tag.
         if excluded:
             items = [
                 i for i in items if not is_path_excluded(i.get("path", ""), excluded)
@@ -221,11 +229,12 @@ def configure_webdav_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
 
-        # Block directory creation inside excluded paths.
+        # Block directory creation at or inside excluded paths.
         excluded = await get_excluded_file_paths(client.webdav)
         if is_path_excluded(path, excluded):
             raise ToolError(
-                f"Access denied: {path!r} is inside a path tagged with an excluded tag"
+                f"Access denied: {path!r} is or is inside a path tagged "
+                "with an excluded tag"
             )
 
         return await client.webdav.create_directory(path)
@@ -297,8 +306,8 @@ def configure_webdav_tools(mcp: FastMCP):
             )
         if is_path_excluded(destination_path, excluded):
             raise ToolError(
-                f"Access denied: destination {destination_path!r} is inside a "
-                "path tagged with an excluded tag"
+                f"Access denied: destination {destination_path!r} is or is "
+                "inside a path tagged with an excluded tag"
             )
 
         return await client.webdav.move_resource(
@@ -341,8 +350,8 @@ def configure_webdav_tools(mcp: FastMCP):
             )
         if is_path_excluded(destination_path, excluded):
             raise ToolError(
-                f"Access denied: destination {destination_path!r} is inside a "
-                "path tagged with an excluded tag"
+                f"Access denied: destination {destination_path!r} is or is "
+                "inside a path tagged with an excluded tag"
             )
 
         return await client.webdav.copy_resource(

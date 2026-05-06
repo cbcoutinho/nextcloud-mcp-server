@@ -42,6 +42,14 @@ async def get_excluded_file_paths(webdav: WebDAVClient) -> set[str]:
 
     Tagged directories are added as their own normalised path; descendants
     are blocked via prefix match in :func:`is_path_excluded`.
+
+    **Failure mode is fail-open per tag**: if the systemtags endpoint is
+    unreachable or returns an error for a given tag, that tag is skipped
+    with a warning rather than propagating the error. Reasoning: the
+    threat model is preventing *accidental* exfiltration via the LLM tool
+    surface; a Nextcloud-side outage of the systemtags API should not
+    take down all WebDAV tools. Operators relying on this for stronger
+    guarantees should monitor the warning logs.
     """
     tag_names = get_excluded_tag_names()
     if not tag_names:
@@ -49,12 +57,32 @@ async def get_excluded_file_paths(webdav: WebDAVClient) -> set[str]:
 
     excluded: set[str] = set()
     for tag_name in tag_names:
-        tag = await webdav.get_tag_by_name(tag_name)
+        try:
+            tag = await webdav.get_tag_by_name(tag_name)
+        except Exception as e:
+            logger.warning(
+                "Tag exclusion lookup failed for tag %r (%s); "
+                "skipping — files tagged with this tag will be visible",
+                tag_name,
+                e,
+            )
+            continue
+
         if tag is None:
             logger.debug("Excluded tag %r does not exist — skipping", tag_name)
             continue
 
-        files = await webdav.get_files_by_tag(tag["id"])
+        try:
+            files = await webdav.get_files_by_tag(tag["id"])
+        except Exception as e:
+            logger.warning(
+                "Tag exclusion file enumeration failed for tag %r (%s); "
+                "skipping — files tagged with this tag will be visible",
+                tag_name,
+                e,
+            )
+            continue
+
         for f in files:
             path = _normalise_path(f["path"])
             excluded.add(path)
@@ -66,8 +94,11 @@ async def get_excluded_file_paths(webdav: WebDAVClient) -> set[str]:
                 )
 
     if excluded:
+        # `len(excluded)` counts directly-tagged entries — descendants of
+        # tagged directories are hidden too but resolved at check time.
         logger.info(
-            "Tag-based exclusion: hiding %d path(s) matching tags: %s",
+            "Tag-based exclusion resolved to %d directly-tagged path(s) "
+            "for tags: %s (descendants of tagged directories also hidden)",
             len(excluded),
             ", ".join(tag_names),
         )

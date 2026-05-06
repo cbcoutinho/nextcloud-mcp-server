@@ -1,5 +1,12 @@
-"""Unit tests for tag-based file exclusion (issue #710)."""
+"""Unit tests for tag-based file exclusion (issue #710).
 
+Tests in :class:`TestGetExcludedTagNames` patch ``os.environ`` and call
+``_reload_config()`` to make dynaconf observe the patched value. Cleanup
+is handled by the autouse ``_reload_dynaconf_after_test`` fixture in
+``tests/unit/conftest.py``, which reloads dynaconf after every test.
+"""
+
+import logging
 import os
 from unittest.mock import AsyncMock, patch
 
@@ -118,6 +125,67 @@ class TestGetExcludedFilePaths:
         assert result == set()
         webdav.get_tag_by_name.assert_awaited_once_with("does-not-exist")
         webdav.get_files_by_tag.assert_not_called()
+
+    @pytest.mark.unit
+    async def test_fail_open_when_tag_lookup_raises(self, mocker, caplog):
+        """If get_tag_by_name raises (e.g. 5xx from systemtags endpoint),
+        the offending tag is skipped with a warning rather than the error
+        propagating and disabling all WebDAV tools (PR review #764)."""
+        mocker.patch(
+            "nextcloud_mcp_server.server.tag_exclusion.get_excluded_tag_names",
+            return_value=["broken", "ok"],
+        )
+        webdav = AsyncMock()
+        webdav.get_tag_by_name = AsyncMock(
+            side_effect=[
+                RuntimeError("upstream 503"),
+                {"id": 7, "name": "ok"},
+            ]
+        )
+        webdav.get_files_by_tag = AsyncMock(
+            return_value=[{"path": "/ok.txt", "is_directory": False}]
+        )
+
+        caplog.set_level(
+            logging.WARNING, logger="nextcloud_mcp_server.server.tag_exclusion"
+        )
+        result = await get_excluded_file_paths(webdav)
+
+        assert result == {"ok.txt"}
+        assert "Tag exclusion lookup failed" in caplog.text
+        assert "broken" in caplog.text
+
+    @pytest.mark.unit
+    async def test_fail_open_when_file_enumeration_raises(self, mocker, caplog):
+        """If get_files_by_tag raises (e.g. REPORT timeout), the
+        offending tag is skipped with a warning. Other tags are still
+        resolved (PR review #764)."""
+        mocker.patch(
+            "nextcloud_mcp_server.server.tag_exclusion.get_excluded_tag_names",
+            return_value=["broken", "ok"],
+        )
+        webdav = AsyncMock()
+        webdav.get_tag_by_name = AsyncMock(
+            side_effect=[
+                {"id": 1, "name": "broken"},
+                {"id": 2, "name": "ok"},
+            ]
+        )
+        webdav.get_files_by_tag = AsyncMock(
+            side_effect=[
+                RuntimeError("REPORT timeout"),
+                [{"path": "/ok.txt", "is_directory": False}],
+            ]
+        )
+
+        caplog.set_level(
+            logging.WARNING, logger="nextcloud_mcp_server.server.tag_exclusion"
+        )
+        result = await get_excluded_file_paths(webdav)
+
+        assert result == {"ok.txt"}
+        assert "Tag exclusion file enumeration failed" in caplog.text
+        assert "broken" in caplog.text
 
     @pytest.mark.unit
     async def test_collects_paths_from_multiple_tags(self, mocker):
