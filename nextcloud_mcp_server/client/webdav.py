@@ -1132,13 +1132,12 @@ class WebDAVClient(BaseNextcloudClient):
   </d:prop>
 </d:propfind>"""
 
-        response = await self._client.request(
+        response = await self._make_request(
             "PROPFIND",
             "/remote.php/dav/systemtags/",
             headers={"Depth": "1"},
             content=propfind_body,
         )
-        response.raise_for_status()
 
         # Parse XML response
         root = ET.fromstring(response.content)
@@ -1216,12 +1215,11 @@ class WebDAVClient(BaseNextcloudClient):
   </oc:filter-rules>
 </oc:filter-files>"""
 
-        response = await self._client.request(
+        response = await self._make_request(
             "REPORT",
             f"{self._get_webdav_base_path()}/",
             content=report_body,
         )
-        response.raise_for_status()
 
         # Parse XML response
         root = ET.fromstring(response.content)

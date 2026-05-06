@@ -392,6 +392,13 @@ def configure_webdav_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
 
+        # Resolve once and use for both the scope guard and the result filter.
+        excluded = await get_excluded_file_paths(client.webdav)
+        if scope and is_path_excluded(scope, excluded):
+            raise ToolError(
+                f"Access denied: scope {scope!r} is tagged with an excluded tag"
+            )
+
         # Build where conditions based on filters
         conditions = []
 
@@ -462,8 +469,7 @@ def configure_webdav_tools(mcp: FastMCP):
             limit=limit,
         )
 
-        # Filter out tagged-excluded paths.
-        excluded = await get_excluded_file_paths(client.webdav)
+        # Filter out tagged-excluded paths from the result set.
         if excluded:
             results = [
                 r for r in results if not is_path_excluded(r.get("path", ""), excluded)
@@ -511,10 +517,14 @@ def configure_webdav_tools(mcp: FastMCP):
             SearchFilesResponse with list of matching files
         """
         client = await get_client(ctx)
+        excluded = await get_excluded_file_paths(client.webdav)
+        if scope and is_path_excluded(scope, excluded):
+            raise ToolError(
+                f"Access denied: scope {scope!r} is tagged with an excluded tag"
+            )
         results = await client.webdav.find_by_name(
             pattern=pattern, scope=scope, limit=limit
         )
-        excluded = await get_excluded_file_paths(client.webdav)
         if excluded:
             results = [
                 r for r in results if not is_path_excluded(r.get("path", ""), excluded)
@@ -550,10 +560,14 @@ def configure_webdav_tools(mcp: FastMCP):
             SearchFilesResponse with list of matching files
         """
         client = await get_client(ctx)
+        excluded = await get_excluded_file_paths(client.webdav)
+        if scope and is_path_excluded(scope, excluded):
+            raise ToolError(
+                f"Access denied: scope {scope!r} is tagged with an excluded tag"
+            )
         results = await client.webdav.find_by_type(
             mime_type=mime_type, scope=scope, limit=limit
         )
-        excluded = await get_excluded_file_paths(client.webdav)
         if excluded:
             results = [
                 r for r in results if not is_path_excluded(r.get("path", ""), excluded)
@@ -588,8 +602,12 @@ def configure_webdav_tools(mcp: FastMCP):
             SearchFilesResponse with list of favorite files
         """
         client = await get_client(ctx)
-        results = await client.webdav.list_favorites(scope=scope, limit=limit)
         excluded = await get_excluded_file_paths(client.webdav)
+        if scope and is_path_excluded(scope, excluded):
+            raise ToolError(
+                f"Access denied: scope {scope!r} is tagged with an excluded tag"
+            )
+        results = await client.webdav.list_favorites(scope=scope, limit=limit)
         if excluded:
             results = [
                 r for r in results if not is_path_excluded(r.get("path", ""), excluded)

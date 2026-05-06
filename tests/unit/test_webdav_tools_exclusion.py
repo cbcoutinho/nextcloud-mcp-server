@@ -288,3 +288,96 @@ async def test_find_by_name_filters_excluded(
     result = await fn(pattern="%.txt", ctx=_mock_ctx(fake_client))
 
     assert [r.path for r in result.results] == ["/visible.txt"]
+
+
+async def test_find_by_type_filters_excluded(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    patch_get_client(fake_client)
+    patch_excluded({"Secret.txt"})
+    fake_client.webdav.find_by_type = AsyncMock(
+        return_value=[
+            {"path": "/Secret.txt", "name": "Secret.txt", "is_directory": False},
+            {"path": "/visible.txt", "name": "visible.txt", "is_directory": False},
+        ]
+    )
+
+    fn = webdav_tools["nc_webdav_find_by_type"].fn
+    result = await fn(mime_type="text/plain", ctx=_mock_ctx(fake_client))
+
+    assert [r.path for r in result.results] == ["/visible.txt"]
+
+
+async def test_list_favorites_filters_excluded(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    patch_get_client(fake_client)
+    patch_excluded({"Secret.txt"})
+    fake_client.webdav.list_favorites = AsyncMock(
+        return_value=[
+            {"path": "/Secret.txt", "name": "Secret.txt", "is_directory": False},
+            {"path": "/visible.txt", "name": "visible.txt", "is_directory": False},
+        ]
+    )
+
+    fn = webdav_tools["nc_webdav_list_favorites"].fn
+    result = await fn(ctx=_mock_ctx(fake_client))
+
+    assert [r.path for r in result.results] == ["/visible.txt"]
+
+
+# ── Search-tool scope guards (review #764) ──────────────────────────────
+
+
+async def test_search_files_raises_when_scope_excluded(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    """Mirror the ``list_directory`` early guard so the four search tools
+    cannot silently return an empty result for an excluded ``scope``."""
+    patch_get_client(fake_client)
+    patch_excluded({"Private"})
+
+    fn = webdav_tools["nc_webdav_search_files"].fn
+    with pytest.raises(ToolError, match="excluded tag"):
+        await fn(ctx=_mock_ctx(fake_client), scope="/Private", name_pattern="%.txt")
+
+    fake_client.webdav.search_files.assert_not_called()
+
+
+async def test_find_by_name_raises_when_scope_excluded(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    patch_get_client(fake_client)
+    patch_excluded({"Private"})
+
+    fn = webdav_tools["nc_webdav_find_by_name"].fn
+    with pytest.raises(ToolError, match="excluded tag"):
+        await fn(pattern="%.txt", scope="/Private", ctx=_mock_ctx(fake_client))
+
+    fake_client.webdav.find_by_name.assert_not_called()
+
+
+async def test_find_by_type_raises_when_scope_excluded(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    patch_get_client(fake_client)
+    patch_excluded({"Private"})
+
+    fn = webdav_tools["nc_webdav_find_by_type"].fn
+    with pytest.raises(ToolError, match="excluded tag"):
+        await fn(mime_type="text/plain", scope="/Private", ctx=_mock_ctx(fake_client))
+
+    fake_client.webdav.find_by_type.assert_not_called()
+
+
+async def test_list_favorites_raises_when_scope_excluded(
+    webdav_tools, fake_client, patch_get_client, patch_excluded
+):
+    patch_get_client(fake_client)
+    patch_excluded({"Private"})
+
+    fn = webdav_tools["nc_webdav_list_favorites"].fn
+    with pytest.raises(ToolError, match="excluded tag"):
+        await fn(ctx=_mock_ctx(fake_client), scope="/Private")
+
+    fake_client.webdav.list_favorites.assert_not_called()

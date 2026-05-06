@@ -23,6 +23,8 @@ is created with ``user_assignable=false``.
 
 import logging
 
+import anyio
+
 from nextcloud_mcp_server.client.webdav import WebDAVClient
 from nextcloud_mcp_server.config import get_settings
 
@@ -37,11 +39,64 @@ def get_excluded_tag_names() -> list[str]:
     return [t.strip() for t in raw.split(",") if t.strip()]
 
 
+async def _resolve_one_tag(
+    tag_name: str,
+    webdav: WebDAVClient,
+    excluded: set[str],
+    lock: anyio.Lock,
+) -> None:
+    """Resolve a single tag's paths and merge into *excluded* under *lock*.
+
+    Swallows its own exceptions so a failure for one tag does not abort
+    the surrounding task group (preserves fail-open per-tag semantics).
+    """
+    try:
+        tag = await webdav.get_tag_by_name(tag_name)
+    except Exception as e:
+        logger.warning(
+            "Tag exclusion lookup failed for tag %r (%s); "
+            "skipping — files tagged with this tag will be visible",
+            tag_name,
+            e,
+        )
+        return
+
+    if tag is None:
+        logger.debug("Excluded tag %r does not exist — skipping", tag_name)
+        return
+
+    try:
+        files = await webdav.get_files_by_tag(tag["id"])
+    except Exception as e:
+        logger.warning(
+            "Tag exclusion file enumeration failed for tag %r (%s); "
+            "skipping — files tagged with this tag will be visible",
+            tag_name,
+            e,
+        )
+        return
+
+    async with lock:
+        for f in files:
+            path = _normalise_path(f["path"])
+            excluded.add(path)
+            if f.get("is_directory"):
+                logger.debug(
+                    "Excluding directory %r (tag %r) — descendants will be hidden",
+                    path,
+                    tag_name,
+                )
+
+
 async def get_excluded_file_paths(webdav: WebDAVClient) -> set[str]:
     """Resolve excluded tags to the set of paths they cover.
 
     Tagged directories are added as their own normalised path; descendants
     are blocked via prefix match in :func:`is_path_excluded`.
+
+    Per-tag resolution is fanned out via ``anyio.create_task_group`` so
+    that the 2N network calls (1 PROPFIND + 1 REPORT per tag) run
+    concurrently rather than serially.
 
     **Failure mode is fail-open per tag**: if the systemtags endpoint is
     unreachable or returns an error for a given tag, that tag is skipped
@@ -56,42 +111,10 @@ async def get_excluded_file_paths(webdav: WebDAVClient) -> set[str]:
         return set()
 
     excluded: set[str] = set()
-    for tag_name in tag_names:
-        try:
-            tag = await webdav.get_tag_by_name(tag_name)
-        except Exception as e:
-            logger.warning(
-                "Tag exclusion lookup failed for tag %r (%s); "
-                "skipping — files tagged with this tag will be visible",
-                tag_name,
-                e,
-            )
-            continue
-
-        if tag is None:
-            logger.debug("Excluded tag %r does not exist — skipping", tag_name)
-            continue
-
-        try:
-            files = await webdav.get_files_by_tag(tag["id"])
-        except Exception as e:
-            logger.warning(
-                "Tag exclusion file enumeration failed for tag %r (%s); "
-                "skipping — files tagged with this tag will be visible",
-                tag_name,
-                e,
-            )
-            continue
-
-        for f in files:
-            path = _normalise_path(f["path"])
-            excluded.add(path)
-            if f.get("is_directory"):
-                logger.debug(
-                    "Excluding directory %r (tag %r) — descendants will be hidden",
-                    path,
-                    tag_name,
-                )
+    lock = anyio.Lock()
+    async with anyio.create_task_group() as tg:
+        for tag_name in tag_names:
+            tg.start_soon(_resolve_one_tag, tag_name, webdav, excluded, lock)
 
     if excluded:
         # `len(excluded)` counts directly-tagged entries — descendants of
