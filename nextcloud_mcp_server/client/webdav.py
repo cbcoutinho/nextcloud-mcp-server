@@ -1135,9 +1135,14 @@ class WebDAVClient(BaseNextcloudClient):
         response = await self._make_request(
             "PROPFIND",
             "/remote.php/dav/systemtags/",
-            headers={"Depth": "1"},
+            headers={"Depth": "1", "Content-Type": "text/xml"},
             content=propfind_body,
         )
+        # Redundant after _make_request (which raises on non-2xx) but
+        # makes the contract explicit at the call site so a future
+        # refactor of _make_request cannot silently feed an error body
+        # into ET.fromstring below.
+        response.raise_for_status()
 
         # Parse XML response
         root = ET.fromstring(response.content)
@@ -1218,8 +1223,13 @@ class WebDAVClient(BaseNextcloudClient):
         response = await self._make_request(
             "REPORT",
             f"{self._get_webdav_base_path()}/",
+            headers={"Content-Type": "text/xml"},
             content=report_body,
         )
+        # Redundant after _make_request (which raises on non-2xx) but
+        # makes the contract explicit at the call site — see the same
+        # rationale in get_tag_by_name.
+        response.raise_for_status()
 
         # Parse XML response
         root = ET.fromstring(response.content)
@@ -1261,11 +1271,16 @@ class WebDAVClient(BaseNextcloudClient):
                 and resourcetype_elem.find("d:collection", ns) is not None
             )
 
-            # Decode href path and extract the file path
+            # Decode href path and extract the user-relative file path.
+            # str.replace() would strip every occurrence of the prefix,
+            # so an adversarially-named directory could collide; strip
+            # only the leading occurrence via startswith + slice.
             href_path = unquote(href_elem.text)
-            # Remove WebDAV prefix to get user-relative path
             webdav_prefix = f"/remote.php/dav/files/{self.username}/"
-            file_path = href_path.replace(webdav_prefix, "/")
+            if href_path.startswith(webdav_prefix):
+                file_path = "/" + href_path[len(webdav_prefix) :]
+            else:
+                file_path = href_path
 
             # Parse last modified timestamp
             last_modified_timestamp = None
