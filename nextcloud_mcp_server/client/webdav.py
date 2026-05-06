@@ -1190,10 +1190,10 @@ class WebDAVClient(BaseNextcloudClient):
                     and user_assignable_elem.text is not None
                     else True,
                 }
-                logger.debug(f"Found tag '{tag_name}' with ID {tag_info['id']}")
+                logger.debug("Found tag %r with ID %s", tag_name, tag_info["id"])
                 return tag_info
 
-        logger.debug(f"Tag '{tag_name}' not found")
+        logger.debug("Tag %r not found", tag_name)
         return None
 
     async def get_files_by_tag(self, tag_id: int) -> list[dict[str, Any]]:
