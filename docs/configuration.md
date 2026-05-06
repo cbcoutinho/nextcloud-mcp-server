@@ -576,6 +576,87 @@ docker-compose up
 
 ---
 
+## Tag-Based File Exclusion (Optional)
+
+Some files (contracts, medical records, credentials, private notes) should
+never be exposed to an LLM, even when the assistant has valid credentials
+for the account. The MCP server can hide such files from all WebDAV tools
+based on **Nextcloud system tags** (the same collaborative tags users
+manage from the Nextcloud UI).
+
+### Setup
+
+Set `EXCLUDED_TAGS` to a comma-separated list of system tag names:
+
+```bash
+EXCLUDED_TAGS=confidential,no-ai,private
+```
+
+Then create the tags in Nextcloud (one-time, as admin):
+
+```bash
+docker compose exec app php occ tag:add 'no-ai' --user-visible=true --user-assignable=false
+```
+
+`--user-assignable=false` is **strongly recommended** for the threat model
+this feature is designed to address — see *Security considerations* below.
+Tag any file or folder with one of these tags from the Nextcloud UI to
+hide it from the MCP tools.
+
+Empty (`EXCLUDED_TAGS=""`, the default) disables the feature entirely.
+
+### Behaviour
+
+When `EXCLUDED_TAGS` is set, every WebDAV MCP tool resolves the configured
+tag names to file paths and applies the following:
+
+| Tool | Effect on tagged paths |
+|------|------------------------|
+| `nc_webdav_list_directory` | Excluded files/folders are omitted from listings |
+| `nc_webdav_read_file` | Raises `ToolError` (access denied) |
+| `nc_webdav_write_file` | Raises `ToolError` (access denied) |
+| `nc_webdav_create_directory` | Blocked inside excluded paths |
+| `nc_webdav_delete_resource` | Raises `ToolError` (access denied) |
+| `nc_webdav_move_resource` | Blocked when source **or** destination is excluded |
+| `nc_webdav_copy_resource` | Blocked when source **or** destination is excluded |
+| `nc_webdav_search_files` | Excluded files are filtered from results |
+| `nc_webdav_find_by_name` | Excluded files are filtered from results |
+| `nc_webdav_find_by_type` | Excluded files are filtered from results |
+| `nc_webdav_list_favorites` | Excluded files are filtered from results |
+
+Tagging a **folder** hides the folder itself **and** every descendant
+recursively, via path-prefix match.
+
+### Security considerations
+
+The threat model is **preventing accidental data exfiltration via the LLM
+tool surface**, not hiding files from a determined operator. Specifically:
+
+- Create exclusion tags with `user_assignable=false` so the credentials
+  the MCP server uses cannot remove the tag from a file (and thereby
+  bypass the exclusion). With `user_assignable=true`, any user — including
+  the one whose credentials the MCP server uses — can untag a file.
+- Optionally set `user_visible=false` if the exclusion tag itself is
+  sensitive metadata.
+- The exclusion is enforced at the MCP tool layer only. Direct WebDAV /
+  Nextcloud client access still sees the files; this feature does not
+  alter Nextcloud's underlying access control.
+
+### Performance note
+
+The excluded path set is resolved per WebDAV tool call (1 PROPFIND for
+each tag name + 1 REPORT per tag). For typical setups (a handful of
+tagged files under one or two tag names) the overhead is negligible.
+Caching may be added in a future release.
+
+### Scope
+
+This feature only covers WebDAV file operations. Notes, Calendar,
+Contacts, Deck, etc. are not filtered, because they use ID-based APIs
+rather than file paths.
+
+---
+
 ## Loading Environment Variables
 
 After creating your `.env` file, load the environment variables:

@@ -1197,7 +1197,9 @@ class WebDAVClient(BaseNextcloudClient):
         Returns:
             List of file info dictionaries with path, size, content_type, etc.
         """
-        # Use WebDAV REPORT method with systemtag filter, requesting all properties
+        # Use WebDAV REPORT method with systemtag filter. resourcetype is
+        # included so callers can distinguish folders from files (needed for
+        # recursive exclusion of tagged directories — see issue #710).
         report_body = f"""<?xml version="1.0"?>
 <oc:filter-files xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
   <d:prop>
@@ -1207,6 +1209,7 @@ class WebDAVClient(BaseNextcloudClient):
     <d:getcontenttype/>
     <d:getlastmodified/>
     <d:getetag/>
+    <d:resourcetype/>
   </d:prop>
   <oc:filter-rules>
     <oc:systemtag>{tag_id}</oc:systemtag>
@@ -1249,9 +1252,16 @@ class WebDAVClient(BaseNextcloudClient):
             contenttype_elem = prop.find("d:getcontenttype", ns)
             lastmodified_elem = prop.find("d:getlastmodified", ns)
             etag_elem = prop.find("d:getetag", ns)
+            resourcetype_elem = prop.find("d:resourcetype", ns)
 
             if fileid_elem is None or not fileid_elem.text:
                 continue
+
+            # A resourcetype with a <d:collection/> child indicates a folder.
+            is_directory = (
+                resourcetype_elem is not None
+                and resourcetype_elem.find("d:collection", ns) is not None
+            )
 
             # Decode href path and extract the file path
             href_path = unquote(href_elem.text)
@@ -1285,10 +1295,11 @@ class WebDAVClient(BaseNextcloudClient):
                 else None,
                 "last_modified_timestamp": last_modified_timestamp,
                 "etag": etag_elem.text if etag_elem is not None else None,
+                "is_directory": is_directory,
             }
             files.append(file_info)
 
-        logger.debug(f"Found {len(files)} files with tag ID {tag_id}")
+        logger.debug("Found %d files with tag ID %s", len(files), tag_id)
         return files
 
     async def get_file_info(self, path: str) -> dict[str, Any] | None:
