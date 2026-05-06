@@ -48,14 +48,7 @@ async def log_response(response: Response):
 
 
 def _normalise_search_result(item: dict) -> dict:
-    """Normalise a webdav.search_files item to the get_files_by_tag shape.
-
-    ``WebDAVClient.search_files`` and ``WebDAVClient.get_files_by_tag`` both
-    return per-file dicts but with subtly different keys (``file_id`` vs
-    ``id``) and path conventions (no leading slash vs leading slash). This
-    helper makes a search result interchangeable with a tagged-file result
-    so callers (notably the vector scanner) can consume both via one shape.
-    """
+    """Normalise a webdav.search_files item to the get_files_by_tag shape."""
     path = item.get("path", "")
     if path and not path.startswith("/"):
         path = "/" + path
@@ -199,44 +192,7 @@ class NextcloudClient:
     async def find_files_by_tag(
         self, tag_name: str, mime_type_filter: str | None = None
     ) -> list[dict]:
-        """Find files by system tag name, optionally filtered by MIME type.
-
-        This method coordinates tag lookup and file retrieval via WebDAV:
-        1. Look up the tag ID by name
-        2. Get all entries (files and directories) with that tag via REPORT
-        3. For each tagged directory, walk descendants matching ``mime_type_filter``
-           via WebDAV SEARCH (``Depth: infinity``) so a tag on a folder applies
-           to every matching file beneath it. Mirrors the directory semantics
-           of :mod:`nextcloud_mcp_server.server.tag_exclusion` (issue #710).
-        4. Dedupe by file id — a file directly tagged AND living under a
-           tagged ancestor is returned once.
-
-        Directory expansion only runs when ``mime_type_filter`` is set:
-        without it, expanding a tagged folder would dump the user's entire
-        tree into the caller, which is almost never what the operator
-        wanted.
-
-        Args:
-            tag_name: Name of the system tag to search for (e.g., "vector-index")
-            mime_type_filter: Optional MIME type filter (e.g., "application/pdf").
-                When set, also enables directory expansion.
-
-        Returns:
-            List of file dictionaries with WebDAV properties (path, size, content_type, etc.)
-
-        Raises:
-            RuntimeError: If tag lookup or the initial file query fails. A
-            failure walking one tagged directory is logged and skipped — other
-            directly-tagged files are still returned.
-
-        Examples:
-            # Find all files with "vector-index" tag (no directory expansion)
-            files = await nc_client.find_files_by_tag("vector-index")
-
-            # Find only PDFs with the tag, including PDFs under any folder
-            # that carries the tag
-            pdfs = await nc_client.find_files_by_tag("vector-index", "application/pdf")
-        """
+        """Return files carrying ``tag_name``, expanding tagged folders into matching descendants when ``mime_type_filter`` is set."""
         tag = await self.webdav.get_tag_by_name(tag_name)
         if not tag:
             logger.debug("Tag %r not found, returning empty list", tag_name)
@@ -290,7 +246,11 @@ class NextcloudClient:
                 for d in descendants:
                     if d.get("is_directory"):
                         continue
-                    file_id = d.get("file_id") or d.get("id")
+                    file_id = (
+                        d.get("file_id")
+                        if d.get("file_id") is not None
+                        else d.get("id")
+                    )
                     if file_id is None:
                         continue
                     if file_id in by_id:

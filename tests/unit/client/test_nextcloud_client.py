@@ -172,10 +172,12 @@ class TestFindFilesByTag:
         for f in result:
             assert f["path"].startswith("/")
             assert f["last_modified_timestamp"] is not None
-        # SEARCH was scoped to the tagged folder (no leading slash).
+        # SEARCH was scoped to the tagged folder (no leading slash) and
+        # forwarded the requested MIME type as the positional first arg.
         client.webdav.find_by_type.assert_awaited_once()
-        call_kwargs = client.webdav.find_by_type.await_args.kwargs
-        assert call_kwargs["scope"] == "corpus"
+        call_args = client.webdav.find_by_type.await_args
+        assert call_args.args[0] == "application/pdf"
+        assert call_args.kwargs["scope"] == "corpus"
 
     async def test_dedupes_when_file_directly_tagged_and_under_tagged_folder(self):
         client = _make_client()
