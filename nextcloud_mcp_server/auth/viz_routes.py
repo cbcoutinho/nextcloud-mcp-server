@@ -535,6 +535,8 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
         doc_id = request.query_params.get("doc_id")
         start_str = request.query_params.get("start")
         end_str = request.query_params.get("end")
+        chunk_index_str = request.query_params.get("chunk_index")
+        total_chunks_str = request.query_params.get("total_chunks")
         context_chars = int(request.query_params.get("context", "500"))
 
         # Validate required parameters
@@ -555,6 +557,10 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
 
         start = int(start_str)
         end = int(end_str)
+        chunk_index: int | None = (
+            int(chunk_index_str) if chunk_index_str is not None else None
+        )
+        total_chunks = int(total_chunks_str) if total_chunks_str is not None else 1
         # Convert doc_id to int (all document types use int IDs)
         doc_id_int = int(doc_id)
 
@@ -584,6 +590,8 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
                 doc_type=doc_type,
                 chunk_start=start,
                 chunk_end=end,
+                chunk_index=chunk_index,
+                total_chunks=total_chunks,
                 context_chars=context_chars,
             )
 
@@ -613,30 +621,56 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
                 qdrant_client = await get_qdrant_client()
                 username = request.user.display_name
 
-                # Query for this specific chunk's highlighted image
-                points_response = await qdrant_client.scroll(
-                    collection_name=settings.get_collection_name(),
-                    scroll_filter=Filter(
-                        must=[
-                            get_placeholder_filter(),
-                            FieldCondition(
-                                key="doc_id", match=MatchValue(value=doc_id_int)
-                            ),
-                            FieldCondition(
-                                key="user_id", match=MatchValue(value=username)
-                            ),
-                            FieldCondition(
-                                key="chunk_start_offset", match=MatchValue(value=start)
-                            ),
-                            FieldCondition(
-                                key="chunk_end_offset", match=MatchValue(value=end)
-                            ),
-                        ]
-                    ),
-                    limit=1,
-                    with_vectors=False,
-                    with_payload=["highlighted_page_image", "page_number"],
-                )
+                # Prefer chunk_index for the highlighted-image lookup (always indexed);
+                # fall back to (chunk_start_offset, chunk_end_offset) when not provided.
+                if chunk_index is not None:
+                    points_response = await qdrant_client.scroll(
+                        collection_name=settings.get_collection_name(),
+                        scroll_filter=Filter(
+                            must=[
+                                get_placeholder_filter(),
+                                FieldCondition(
+                                    key="doc_id", match=MatchValue(value=doc_id_int)
+                                ),
+                                FieldCondition(
+                                    key="user_id", match=MatchValue(value=username)
+                                ),
+                                FieldCondition(
+                                    key="chunk_index",
+                                    match=MatchValue(value=chunk_index),
+                                ),
+                            ]
+                        ),
+                        limit=1,
+                        with_vectors=False,
+                        with_payload=["highlighted_page_image", "page_number"],
+                    )
+                else:
+                    points_response = await qdrant_client.scroll(
+                        collection_name=settings.get_collection_name(),
+                        scroll_filter=Filter(
+                            must=[
+                                get_placeholder_filter(),
+                                FieldCondition(
+                                    key="doc_id", match=MatchValue(value=doc_id_int)
+                                ),
+                                FieldCondition(
+                                    key="user_id", match=MatchValue(value=username)
+                                ),
+                                FieldCondition(
+                                    key="chunk_start_offset",
+                                    match=MatchValue(value=start),
+                                ),
+                                FieldCondition(
+                                    key="chunk_end_offset",
+                                    match=MatchValue(value=end),
+                                ),
+                            ]
+                        ),
+                        limit=1,
+                        with_vectors=False,
+                        with_payload=["highlighted_page_image", "page_number"],
+                    )
 
                 points = points_response[0]
                 if points and points[0].payload:
