@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.81.0 (2026-05-07)
+
+### Feat
+
+- **vector**: expand tagged directories for include + apply EXCLUDED_TAGS in scanner
+
+### Fix
+
+- **webdav**: include fileid in find_by_type SEARCH + address PR #765 review
+
 ## v0.80.0 (2026-05-06)
 
 ### Feat
