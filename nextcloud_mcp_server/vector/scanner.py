@@ -20,6 +20,10 @@ from nextcloud_mcp_server.client.news import NewsItemType
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.observability.metrics import record_vector_sync_scan
 from nextcloud_mcp_server.observability.tracing import trace_operation
+from nextcloud_mcp_server.server.tag_exclusion import (
+    get_excluded_file_paths,
+    is_path_excluded,
+)
 from nextcloud_mcp_server.vector.placeholder import (
     query_document_metadata,
     write_placeholder_point,
@@ -410,14 +414,44 @@ async def scan_user_documents(
         nextcloud_file_ids = set()
 
         try:
-            # Find files with vector-index tag using OCS Tags API
+            # Find files with vector-index tag using OCS Tags API.
+            # find_files_by_tag also expands tagged directories into their
+            # PDF descendants (Depth: infinity SEARCH), so a tag on a
+            # folder applies to every PDF beneath it.
             settings = get_settings()
             tag_name = os.getenv("VECTOR_SYNC_PDF_TAG", "vector-index")
-            # Use NextcloudClient.find_files_by_tag() which uses proper OCS API
-            # and filters by PDF MIME type
             tagged_files = await nc_client.find_files_by_tag(
                 tag_name, mime_type_filter="application/pdf"
             )
+
+            # Apply EXCLUDED_TAGS as defense-in-depth: a folder marked
+            # off-limits via the exclusion tag must not be indexed even if
+            # it (or an ancestor) also carries the include tag. Mirrors the
+            # "exclusion wins" contract enforced by the MCP file tools.
+            try:
+                excluded_paths = await get_excluded_file_paths(nc_client.webdav)
+            except Exception as e:
+                logger.warning(
+                    "[SCAN-%s] EXCLUDED_TAGS lookup failed (%s); "
+                    "proceeding without exclusion filter",
+                    scan_id,
+                    e,
+                )
+                excluded_paths = set()
+            if excluded_paths:
+                before = len(tagged_files)
+                tagged_files = [
+                    f
+                    for f in tagged_files
+                    if not is_path_excluded(f.get("path", ""), excluded_paths)
+                ]
+                skipped = before - len(tagged_files)
+                if skipped:
+                    logger.info(
+                        "[SCAN-%s] Skipped %d tagged file(s) under EXCLUDED_TAGS paths",
+                        scan_id,
+                        skipped,
+                    )
 
             for file_info in tagged_files:
                 # Files are already filtered by MIME type in find_files_by_tag()

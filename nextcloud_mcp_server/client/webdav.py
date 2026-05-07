@@ -905,8 +905,24 @@ class WebDAVClient(BaseNextcloudClient):
             </d:like>
         """
 
+        # fileid is required by callers like NextcloudClient.find_files_by_tag
+        # that dedupe results by id; the default property set in search_files
+        # omits it.
+        properties = [
+            "displayname",
+            "getcontentlength",
+            "getcontenttype",
+            "getlastmodified",
+            "resourcetype",
+            "getetag",
+            "fileid",
+        ]
+
         return await self.search_files(
-            scope=scope, where_conditions=where_conditions, limit=limit
+            scope=scope,
+            where_conditions=where_conditions,
+            properties=properties,
+            limit=limit,
         )
 
     async def list_favorites(
