@@ -23,7 +23,7 @@ def _make_point(point_id, payload, score=0.5):
 def test_search_result_rrf_score_in_range():
     """Test SearchResult accepts RRF scores in [0.0, 1.0] range."""
     result = SearchResult(
-        id=1,
+        id="1",
         doc_type="note",
         title="Test Note",
         excerpt="Test excerpt",
@@ -37,7 +37,7 @@ def test_search_result_rrf_score_in_range():
 def test_search_result_rrf_score_at_lower_bound():
     """Test SearchResult accepts RRF score at lower bound (0.0)."""
     result = SearchResult(
-        id=1,
+        id="1",
         doc_type="note",
         title="Test Note",
         excerpt="Test excerpt",
@@ -51,7 +51,7 @@ def test_search_result_rrf_score_at_lower_bound():
 def test_search_result_rrf_score_at_upper_bound():
     """Test SearchResult accepts RRF score at upper bound (1.0)."""
     result = SearchResult(
-        id=1,
+        id="1",
         doc_type="note",
         title="Test Note",
         excerpt="Test excerpt",
@@ -71,7 +71,7 @@ def test_search_result_dbsf_score_above_one():
     """
     # Typical DBSF score when both systems agree
     result = SearchResult(
-        id=1,
+        id="1",
         doc_type="note",
         title="Highly Relevant Note",
         excerpt="Contains keywords and is semantically similar",
@@ -88,7 +88,7 @@ def test_search_result_dbsf_score_edge_case():
     Maximum DBSF score with 2 systems: 1.0 (dense) + 1.0 (sparse) = 2.0
     """
     result = SearchResult(
-        id=1,
+        id="1",
         doc_type="note",
         title="Perfect Match",
         excerpt="Perfect semantic and keyword match",
@@ -103,7 +103,7 @@ def test_search_result_negative_score_raises_error():
     """Test SearchResult rejects negative scores."""
     with pytest.raises(ValueError) as exc_info:
         SearchResult(
-            id=1,
+            id="1",
             doc_type="note",
             title="Test Note",
             excerpt="Test excerpt",
@@ -118,7 +118,7 @@ def test_search_result_negative_score_raises_error():
 def test_search_result_with_metadata():
     """Test SearchResult with optional metadata field."""
     result = SearchResult(
-        id=1,
+        id="1",
         doc_type="note",
         title="Test Note",
         excerpt="Test excerpt",
@@ -136,7 +136,7 @@ def test_search_result_with_metadata():
 def test_search_result_with_chunk_offsets():
     """Test SearchResult with chunk offset information."""
     result = SearchResult(
-        id=1,
+        id="1",
         doc_type="note",
         title="Test Note",
         excerpt="matching chunk text",

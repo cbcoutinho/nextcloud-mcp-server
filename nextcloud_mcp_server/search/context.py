@@ -151,7 +151,8 @@ async def _get_file_path_from_qdrant(
 
     Args:
         user_id: User ID who owns the file
-        file_id: Numeric file ID
+        file_id: Stringified file ID (Qdrant payload value, post-doc_id
+            normalization — see vector/qdrant_client.py)
         chunk_start: Character offset where chunk starts
         chunk_end: Character offset where chunk ends
 

@@ -5,7 +5,12 @@ from typing import Any
 
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
-from qdrant_client.models import Distance, PayloadSchemaType, VectorParams
+from qdrant_client.models import (
+    Distance,
+    PayloadSchemaType,
+    PointStruct,
+    VectorParams,
+)
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_embedding_service
@@ -20,6 +25,14 @@ logger = logging.getLogger(__name__)
 # correct schema (see ADR notes in commit message).
 _KEYWORD_PAYLOAD_FIELDS: tuple[str, ...] = ("doc_id", "user_id", "doc_type")
 
+# Sentinel point that records "this collection has been backfilled to str
+# doc_id". Written after a successful pass of _backfill_doc_id_to_string so
+# subsequent restarts can short-circuit the O(N) scroll. Carries no
+# user_id/doc_id/doc_type, so production search filters (which always
+# require user_id) never see it.
+_DOC_ID_BACKFILL_SENTINEL_ID: str = "00000000-0000-0000-0000-d0c1d0d1d0c1"
+_DOC_ID_BACKFILL_SENTINEL_PAYLOAD: dict[str, str] = {"_migration_marker": "doc_id_v1"}
+
 # Singleton instance
 _qdrant_client: AsyncQdrantClient | None = None
 
@@ -29,12 +42,22 @@ async def _ensure_keyword_payload_indexes(
 ) -> None:
     """Create KEYWORD payload indexes for fields used in exact-match filters.
 
-    Idempotent at the Qdrant layer: re-creating an identical index returns
-    200, so this can run on every startup. Schema conflicts (a pre-existing
-    index with a different type) surface as a 400 — log loudly so operators
-    can intervene, but keep going so the remaining fields still get indexed.
+    Pre-fetches the existing payload schema and skips fields that are
+    already indexed, so routine restarts make no Qdrant write round-trips
+    and emit no INFO log lines. Schema conflicts (a pre-existing index
+    with a different type) still surface as a 400 — log loudly so
+    operators can intervene, but keep going so the remaining fields still
+    get indexed.
     """
+    collection_info = await client.get_collection(collection_name)
+    existing_schema = collection_info.payload_schema or {}
+
     for field in _KEYWORD_PAYLOAD_FIELDS:
+        if field in existing_schema:
+            # Index already present — silent skip. Logging here on every
+            # restart would be noise that hides the genuinely interesting
+            # "first-time creation" line below.
+            continue
         try:
             await client.create_payload_index(
                 collection_name=collection_name,
@@ -64,22 +87,48 @@ async def _ensure_keyword_payload_indexes(
 
 
 async def _backfill_doc_id_to_string(
-    client: AsyncQdrantClient, collection_name: str
+    client: AsyncQdrantClient, collection_name: str, dimension: int
 ) -> None:
     """Rewrite legacy integer doc_id payloads to strings.
 
     Producers now uniformly write str(doc_id), but historical points may carry
     int values from before normalization. A KEYWORD index does not match int
     payloads, so any leftover int doc_ids would be silently invisible to
-    filters. Scrolls all points once and converts in-place; idempotent (a
-    second pass over the same collection performs zero writes).
+    filters. Scrolls all points once, converts in-place, and writes a
+    sentinel point on success; subsequent restarts retrieve the sentinel
+    and skip the scroll entirely. Idempotent in both directions (a second
+    pass on a migrated collection short-circuits via the sentinel; a
+    second pass with the sentinel manually deleted is the same zero-write
+    scroll the first pass would do on an already-clean collection).
 
     Within each scroll batch, points sharing the same int doc_id are batched
     into a single ``set_payload`` call to minimize Qdrant round-trips.
+
+    Args:
+        client: Qdrant client instance.
+        collection_name: Target collection.
+        dimension: Dense-vector dimension for the sentinel point's vector
+            (forwarded by ``get_qdrant_client`` from the embedding model).
     """
+    # Sentinel guard: if the migration ran successfully against this
+    # collection on a previous start, retrieve() returns the marker point
+    # and we skip the scroll. Cheap single-key lookup vs. an O(N) scroll.
+    sentinel = await client.retrieve(
+        collection_name=collection_name,
+        ids=[_DOC_ID_BACKFILL_SENTINEL_ID],
+        with_payload=False,
+        with_vectors=False,
+    )
+    if sentinel:
+        logger.debug(
+            "doc_id backfill sentinel found on '%s'; skipping scroll",
+            collection_name,
+        )
+        return
+
     logger.info(
-        "Scanning '%s' for legacy int doc_id payloads (this is a one-time "
-        "migration on first start after upgrade)",
+        "Running doc_id backfill on '%s' (one-time migration on first "
+        "start after upgrade; subsequent restarts skip via sentinel)",
         collection_name,
     )
 
@@ -117,10 +166,11 @@ async def _backfill_doc_id_to_string(
             by_value.setdefault(str(value), []).append(point.id)
 
         for str_val, point_ids in by_value.items():
-            # wait=True is required: _ensure_keyword_payload_indexes runs
-            # immediately after this function and only indexes committed
-            # data — fire-and-forget writes would leave int payloads
-            # invisible to KEYWORD filters.
+            # wait=True is required because _ensure_keyword_payload_indexes
+            # runs immediately after this function (see get_qdrant_client
+            # near the call site) and only indexes committed data —
+            # fire-and-forget writes would leave int payloads invisible
+            # to KEYWORD filters.
             await client.set_payload(
                 collection_name=collection_name,
                 payload={"doc_id": str_val},
@@ -131,6 +181,25 @@ async def _backfill_doc_id_to_string(
 
         if next_offset is None:
             break
+
+    # Write the sentinel after a successful scroll so a future restart can
+    # short-circuit. Empty sparse vector mirrors the placeholder.py
+    # convention (vector/placeholder.py); zero dense vector is fine
+    # because the sentinel never participates in a search (no user_id /
+    # doc_id / doc_type payload to match).
+    sentinel_point = PointStruct(
+        id=_DOC_ID_BACKFILL_SENTINEL_ID,
+        vector={
+            "dense": [0.0] * dimension,
+            "sparse": models.SparseVector(indices=[], values=[]),
+        },
+        payload=dict(_DOC_ID_BACKFILL_SENTINEL_PAYLOAD),
+    )
+    await client.upsert(
+        collection_name=collection_name,
+        points=[sentinel_point],
+        wait=True,
+    )
 
     logger.info(
         "doc_id backfill complete: rewrote %d/%d payloads from int to str",
@@ -237,7 +306,9 @@ async def get_qdrant_client() -> AsyncQdrantClient:
             # Existing collections may pre-date the doc_id normalization /
             # payload-index work. Backfill before creating the index so the
             # index covers every point.
-            await _backfill_doc_id_to_string(_qdrant_client, collection_name)
+            await _backfill_doc_id_to_string(
+                _qdrant_client, collection_name, expected_dimension
+            )
             await _ensure_keyword_payload_indexes(_qdrant_client, collection_name)
 
         else:
