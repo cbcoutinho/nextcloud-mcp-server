@@ -283,12 +283,13 @@ async def get_chunk_with_context(
             chunk_text = await _get_chunk_by_index_from_qdrant(
                 user_id, doc_id_int, doc_type, chunk_index
             )
-        # Skip the offset fallback for files when the indexed lookup was
-        # already attempted: Qdrant Cloud's strict mode requires an index on
-        # filtered fields, and chunk_start/end_offset aren't indexed there, so
-        # the call returns 400 and surfaces a misleading logger.error. The
-        # file fast-fail below correctly handles the miss without it.
-        if chunk_text is None and not (chunk_index is not None and doc_type == "file"):
+        # Skip the offset fallback for files when the indexed chunk_index
+        # lookup already ran: chunk_start/end_offset aren't indexed in Qdrant
+        # Cloud strict mode, so the call returns 400 and surfaces a misleading
+        # logger.error. The file fast-fail below correctly handles the miss
+        # without it.
+        skip_offset_lookup = chunk_index is not None and doc_type == "file"
+        if chunk_text is None and not skip_offset_lookup:
             chunk_text = await _get_chunk_from_qdrant(
                 user_id, doc_id_int, doc_type, chunk_start, chunk_end
             )
@@ -394,9 +395,12 @@ async def get_chunk_with_context(
     # (the chunk has been removed or re-indexed with different offsets).
     if doc_type == "file":
         logger.warning(
-            f"Chunk not found in Qdrant for file {doc_id} "
-            f"(chunk_index={chunk_index}, offsets={chunk_start}-{chunk_end}); "
-            "skipping slow PDF re-parse fallback"
+            "Chunk not found in Qdrant for file %s (chunk_index=%s, "
+            "offsets=%s-%s); skipping slow PDF re-parse fallback",
+            doc_id,
+            chunk_index,
+            chunk_start,
+            chunk_end,
         )
         return None
 

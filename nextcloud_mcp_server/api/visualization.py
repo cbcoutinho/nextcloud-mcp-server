@@ -601,6 +601,12 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                         with_payload=["chunk_bbox", "page_number"],
                     )
                 else:
+                    # Legacy fallback for clients that don't send chunk_index
+                    # (pre-cbcoutinho/astrolabe#75). chunk_start/end_offset
+                    # aren't indexed in Qdrant Cloud strict mode, so this
+                    # call may fail with HTTP 400 there; the outer except
+                    # logs a warning and the response degrades gracefully
+                    # (no chunk_bbox).
                     points_response = await qdrant_client.scroll(
                         collection_name=settings.get_collection_name(),
                         scroll_filter=Filter(
