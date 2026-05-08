@@ -208,7 +208,10 @@ class ChunkContext:
         chunk_start_offset: Character position where chunk starts in document
         chunk_end_offset: Character position where chunk ends in document
         page_number: Page number for PDFs (None for other doc types)
-        chunk_index: Zero-based chunk index (N in "chunk N of M")
+        chunk_index: Zero-based chunk index (N in "chunk N of M"). None when
+            the caller didn't supply chunk_index and we couldn't determine it
+            from the lookup path — distinguishes "unknown position" from
+            "actually chunk 0".
         total_chunks: Total number of chunks in document
         marked_text: Full text with position markers around the chunk
         has_before_truncation: True if before_context was truncated
@@ -221,7 +224,7 @@ class ChunkContext:
     chunk_start_offset: int
     chunk_end_offset: int
     page_number: int | None
-    chunk_index: int
+    chunk_index: int | None
     total_chunks: int
     marked_text: str
     has_before_truncation: bool
@@ -271,16 +274,6 @@ async def get_chunk_with_context(
         else (doc_id if isinstance(doc_id, int) else None)
     )
 
-    # Effective chunk_index for adjacent lookups, marker insertion, and the
-    # response payload — keep `chunk_index is not None` distinct from this so
-    # the gate at line ~280 still controls *whether* to take the indexed path.
-    # NOTE: when the caller doesn't supply chunk_index, this defaults to 0, so
-    # the doc-text fallback path will report the chunk as "0/N" in markers and
-    # the response payload regardless of its actual position. Callers that
-    # need accurate position metadata in the fallback path must pass
-    # chunk_index. See PR #767 review.
-    effective_chunk_index = chunk_index if chunk_index is not None else 0
-
     # Try to get chunk from Qdrant (fast path).
     # Prefer chunk_index lookup (always-indexed field) when caller supplied it;
     # fall back to (chunk_start, chunk_end) lookup otherwise.
@@ -319,54 +312,63 @@ async def get_chunk_with_context(
         has_before_truncation = False
         has_after_truncation = False
 
-        # Fetch previous chunk if not first chunk
-        if effective_chunk_index > 0:
-            before_chunk = await _get_chunk_by_index_from_qdrant(
-                user_id, doc_id_int, doc_type, effective_chunk_index - 1
-            )
-            if before_chunk:
-                # Remove overlap: the last chunk_overlap chars of previous chunk
-                # overlap with the first chunk_overlap chars of current chunk
-                before_context = (
-                    before_chunk[:-chunk_overlap]
-                    if len(before_chunk) > chunk_overlap
-                    else ""
+        if chunk_index is not None:
+            # Fetch previous chunk if not first chunk
+            if chunk_index > 0:
+                before_chunk = await _get_chunk_by_index_from_qdrant(
+                    user_id, doc_id_int, doc_type, chunk_index - 1
                 )
-                # Truncate if requested context_chars < remaining length
-                if before_context and len(before_context) > context_chars:
-                    before_context = before_context[-context_chars:]
+                if before_chunk:
+                    # Remove overlap: the last chunk_overlap chars of previous chunk
+                    # overlap with the first chunk_overlap chars of current chunk
+                    before_context = (
+                        before_chunk[:-chunk_overlap]
+                        if len(before_chunk) > chunk_overlap
+                        else ""
+                    )
+                    # Truncate if requested context_chars < remaining length
+                    if before_context and len(before_context) > context_chars:
+                        before_context = before_context[-context_chars:]
+                        has_before_truncation = True
+                else:
+                    # Could not fetch previous chunk, but we're not at start
                     has_before_truncation = True
-            else:
-                # Could not fetch previous chunk, but we're not at start
-                has_before_truncation = True
 
-        # Fetch next chunk if not last chunk
-        if effective_chunk_index < total_chunks - 1:
-            after_chunk = await _get_chunk_by_index_from_qdrant(
-                user_id, doc_id_int, doc_type, effective_chunk_index + 1
-            )
-            if after_chunk:
-                # Remove overlap: the first chunk_overlap chars of next chunk
-                # overlap with the last chunk_overlap chars of current chunk
-                after_context = (
-                    after_chunk[chunk_overlap:]
-                    if len(after_chunk) > chunk_overlap
-                    else ""
+            # Fetch next chunk if not last chunk
+            if chunk_index < total_chunks - 1:
+                after_chunk = await _get_chunk_by_index_from_qdrant(
+                    user_id, doc_id_int, doc_type, chunk_index + 1
                 )
-                # Truncate if requested context_chars < remaining length
-                if after_context and len(after_context) > context_chars:
-                    after_context = after_context[:context_chars]
+                if after_chunk:
+                    # Remove overlap: the first chunk_overlap chars of next chunk
+                    # overlap with the last chunk_overlap chars of current chunk
+                    after_context = (
+                        after_chunk[chunk_overlap:]
+                        if len(after_chunk) > chunk_overlap
+                        else ""
+                    )
+                    # Truncate if requested context_chars < remaining length
+                    if after_context and len(after_context) > context_chars:
+                        after_context = after_context[:context_chars]
+                        has_after_truncation = True
+                else:
+                    # Could not fetch next chunk, but we're not at end
                     has_after_truncation = True
-            else:
-                # Could not fetch next chunk, but we're not at end
-                has_after_truncation = True
+        else:
+            # No chunk_index → can't fetch adjacent chunks via index arithmetic
+            # without risking wrong neighbours (a default of 0 would query the
+            # chunks at positions -1 and 1 even when the actual chunk is, say,
+            # 5/20). Mark both sides as truncated so the caller knows context
+            # wasn't expanded.
+            has_before_truncation = True
+            has_after_truncation = True
 
         marked_text = _insert_position_markers(
             before_context=before_context,
             chunk_text=chunk_text,
             after_context=after_context,
             page_number=page_number,
-            chunk_index=effective_chunk_index,
+            chunk_index=chunk_index,
             total_chunks=total_chunks,
             has_before_truncation=has_before_truncation,
             has_after_truncation=has_after_truncation,
@@ -378,7 +380,7 @@ async def get_chunk_with_context(
             chunk_start_offset=chunk_start,
             chunk_end_offset=chunk_end,
             page_number=page_number,
-            chunk_index=effective_chunk_index,
+            chunk_index=chunk_index,
             total_chunks=total_chunks,
             marked_text=marked_text,
             has_before_truncation=has_before_truncation,
@@ -402,16 +404,6 @@ async def get_chunk_with_context(
         f"Falling back to document fetch for {doc_type} {doc_id} "
         f"(Qdrant cache miss, possibly legacy data)"
     )
-
-    # When chunk_index isn't supplied, the response and markers will report
-    # this chunk as 0/N regardless of its actual position (effective_chunk_index
-    # defaulted to 0 above). Surface this so callers can detect the inaccuracy.
-    if chunk_index is None:
-        logger.warning(
-            f"chunk_index not supplied for {doc_type} {doc_id} doc-text "
-            f"fallback; position metadata in response will default to "
-            f"0/{total_chunks}"
-        )
 
     # Fetch full document text (notes, deck cards, news items, etc.)
     full_text = await _fetch_document_text(nc_client, doc_id, doc_type, user_id)
@@ -451,7 +443,7 @@ async def get_chunk_with_context(
         chunk_text=chunk_text,
         after_context=after_context,
         page_number=page_number,
-        chunk_index=effective_chunk_index,
+        chunk_index=chunk_index,
         total_chunks=total_chunks,
         has_before_truncation=has_before_truncation,
         has_after_truncation=has_after_truncation,
@@ -464,7 +456,7 @@ async def get_chunk_with_context(
         chunk_start_offset=chunk_start,
         chunk_end_offset=chunk_end,
         page_number=page_number,
-        chunk_index=effective_chunk_index,
+        chunk_index=chunk_index,
         total_chunks=total_chunks,
         marked_text=marked_text,
         has_before_truncation=has_before_truncation,
@@ -644,7 +636,7 @@ def _insert_position_markers(
     chunk_text: str,
     after_context: str,
     page_number: int | None,
-    chunk_index: int,
+    chunk_index: int | None,
     total_chunks: int,
     has_before_truncation: bool,
     has_after_truncation: bool,
@@ -659,7 +651,8 @@ def _insert_position_markers(
         chunk_text: The matched chunk
         after_context: Text after chunk
         page_number: Optional page number
-        chunk_index: Zero-based chunk index
+        chunk_index: Zero-based chunk index, or None when the caller didn't
+            supply it (rendered as "Chunk ?/N" instead of "Chunk 0/N").
         total_chunks: Total chunks in document
         has_before_truncation: Whether before_context is truncated
         has_after_truncation: Whether after_context is truncated
@@ -671,7 +664,10 @@ def _insert_position_markers(
     position_parts = []
     if page_number is not None:
         position_parts.append(f"Page {page_number}")
-    position_parts.append(f"Chunk {chunk_index + 1} of {total_chunks}")
+    if chunk_index is None:
+        position_parts.append(f"Chunk ?/{total_chunks}")
+    else:
+        position_parts.append(f"Chunk {chunk_index + 1} of {total_chunks}")
     position_metadata = ", ".join(position_parts)
 
     # Build marked text
