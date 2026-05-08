@@ -108,8 +108,11 @@ def test_registry_openai_wins_over_mistral_and_ollama(clean_provider_env):
 
 
 @pytest.mark.unit
-def test_registry_mistral_wins_over_ollama(clean_provider_env):
+def test_registry_mistral_wins_over_ollama(clean_provider_env, mocker):
     """Mistral takes priority over Ollama when both are configured."""
+    # Stub the Mistral SDK constructor for the same reason as the sibling
+    # picker test — keeps the registry test independent of SDK key validation.
+    mocker.patch("nextcloud_mcp_server.providers.mistral.Mistral")
     clean_provider_env.setenv("MISTRAL_API_KEY", "mistral-key")
     clean_provider_env.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
     _reload_config()

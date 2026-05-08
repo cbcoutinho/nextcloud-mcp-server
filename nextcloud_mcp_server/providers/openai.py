@@ -77,9 +77,12 @@ class OpenAIProvider(Provider):
             self._dimension = OPENAI_EMBEDDING_DIMENSIONS[embedding_model]
 
         logger.info(
-            f"Initialized OpenAI provider: base_url={base_url or 'default'} "
-            f"(embedding_model={embedding_model}, generation_model={generation_model}, "
-            f"dimension={self._dimension})"
+            "Initialized OpenAI provider: base_url=%s "
+            "(embedding_model=%s, generation_model=%s, dimension=%s)",
+            base_url or "default",
+            embedding_model,
+            generation_model,
+            self._dimension,
         )
 
     @property
@@ -123,8 +126,9 @@ class OpenAIProvider(Provider):
         if self._dimension is None:
             self._dimension = len(embedding)
             logger.info(
-                f"Detected embedding dimension: {self._dimension} "
-                f"for model {self.embedding_model}"
+                "Detected embedding dimension: %d for model %s",
+                self._dimension,
+                self.embedding_model,
             )
 
         return embedding
@@ -167,8 +171,9 @@ class OpenAIProvider(Provider):
             if self._dimension is None and batch_embeddings:
                 self._dimension = len(batch_embeddings[0])
                 logger.info(
-                    f"Detected embedding dimension: {self._dimension} "
-                    f"for model {self.embedding_model}"
+                    "Detected embedding dimension: %d for model %s",
+                    self._dimension,
+                    self.embedding_model,
                 )
 
         return all_embeddings

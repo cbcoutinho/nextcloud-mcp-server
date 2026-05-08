@@ -201,6 +201,61 @@ async def test_mistral_base_url_passed_to_sdk(mocker):
 
 
 @pytest.mark.unit
+async def test_mistral_embed_raises_on_empty_response_data(mock_mistral_client):
+    """embed(): empty response.data triggers the defensive RuntimeError guard."""
+    empty_response = MagicMock()
+    empty_response.data = []
+    mock_mistral_client.embeddings.create_async = AsyncMock(return_value=empty_response)
+
+    provider = MistralProvider(api_key="test-key", embedding_model="mistral-embed")
+    with pytest.raises(RuntimeError, match="returned no embedding"):
+        await provider.embed("test")
+
+
+@pytest.mark.unit
+async def test_mistral_embed_raises_on_null_embedding(mock_mistral_client):
+    """embed(): a single response item with embedding=None is rejected."""
+    null_item = MagicMock()
+    null_item.embedding = None
+    null_item.index = 0
+    null_response = MagicMock()
+    null_response.data = [null_item]
+    mock_mistral_client.embeddings.create_async = AsyncMock(return_value=null_response)
+
+    provider = MistralProvider(api_key="test-key", embedding_model="mistral-embed")
+    with pytest.raises(RuntimeError, match="returned no embedding"):
+        await provider.embed("test")
+
+
+@pytest.mark.unit
+async def test_mistral_batch_raises_on_null_embedding(mock_mistral_client):
+    """_embed_batch_request: a null embedding inside a batch raises explicitly."""
+    good = _make_data([0.1, 0.2], 0)
+    bad = MagicMock()
+    bad.embedding = None
+    bad.index = 1
+    response = MagicMock()
+    response.data = [good, bad]
+    mock_mistral_client.embeddings.create_async = AsyncMock(return_value=response)
+
+    provider = MistralProvider(api_key="test-key", embedding_model="mistral-embed")
+    with pytest.raises(RuntimeError, match="null embedding"):
+        await provider.embed_batch(["a", "b"])
+
+
+@pytest.mark.unit
+async def test_mistral_batch_raises_on_count_mismatch(mock_mistral_client):
+    """_embed_batch_request: fewer embeddings returned than inputs sent."""
+    # Two inputs sent, one embedding returned.
+    response = _make_response([[0.1, 0.2]])
+    mock_mistral_client.embeddings.create_async = AsyncMock(return_value=response)
+
+    provider = MistralProvider(api_key="test-key", embedding_model="mistral-embed")
+    with pytest.raises(RuntimeError, match="returned 1 embeddings for 2 inputs"):
+        await provider.embed_batch(["a", "b"])
+
+
+@pytest.mark.unit
 def test_mistral_is_rate_limit_predicate():
     """_is_rate_limit returns True only for SDKErrors with status_code == 429."""
     err_429 = MagicMock(spec=SDKError)

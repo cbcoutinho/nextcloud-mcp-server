@@ -593,6 +593,8 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `MISTRAL_EMBEDDING_MODEL` | ⚠️ Optional | `mistral-embed` | Mistral embedding model (1024-dim) |
 | `MISTRAL_BASE_URL` | ⚠️ Optional | - | Mistral base URL override (proxies, on-prem) |
 | `AWS_REGION` | ⚠️ Optional | - | AWS region (selects Bedrock provider) |
+| `AWS_ACCESS_KEY_ID` | ⚠️ Optional | - | AWS access key (boto3 credential chain fallback) |
+| `AWS_SECRET_ACCESS_KEY` | ⚠️ Optional | - | AWS secret key (boto3 credential chain fallback) |
 | `BEDROCK_EMBEDDING_MODEL` | ⚠️ Optional | - | Bedrock embedding model ID |
 | `BEDROCK_GENERATION_MODEL` | ⚠️ Optional | - | Bedrock generation model ID |
 | `SIMPLE_EMBEDDING_DIMENSION` | ⚠️ Optional | `384` | Dimension for the fallback Simple provider |
