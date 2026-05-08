@@ -51,7 +51,22 @@ async def _ensure_keyword_payload_indexes(
     operators can intervene, but keep going so the remaining fields still
     get indexed.
     """
-    collection_info = await client.get_collection(collection_name)
+    # Mirror the broad swallow in `_backfill_doc_id_to_string`: the singleton
+    # in `get_qdrant_client` is already assigned by the time this function
+    # runs, so a transient `get_collection` failure (timeout, DNS blip)
+    # propagating out would leave the process holding a usable client with
+    # the migration silently skipped on every subsequent call. Log ERROR
+    # with exc_info and return; the next process restart retries from scratch.
+    try:
+        collection_info = await client.get_collection(collection_name)
+    except Exception:
+        logger.error(
+            "Failed to fetch collection info for '%s'; payload indexes not "
+            "created. Will retry on next restart.",
+            collection_name,
+            exc_info=True,
+        )
+        return
     existing_schema = collection_info.payload_schema or {}
     failed_fields: list[str] = []
 
@@ -103,6 +118,56 @@ async def _ensure_keyword_payload_indexes(
         )
 
 
+def _group_int_doc_ids(points: list[Any]) -> tuple[dict[str, list[Any]], int]:
+    """Group point IDs whose payload carries an int doc_id, keyed by str(doc_id).
+
+    Returns ``(by_value, scanned)`` where ``scanned`` is the total number of
+    points inspected (str / missing payloads count toward scanned but are not
+    grouped). Pulled out of ``_backfill_doc_id_to_string`` to keep that
+    function's cognitive complexity within the project's limit.
+
+    Point IDs widen to ``Any`` to satisfy the qdrant client's
+    ``PointsSelector`` signature (UUID / int / str unions) without re-spelling
+    the full type union here.
+    """
+    by_value: dict[str, list[Any]] = {}
+    scanned = 0
+    for point in points:
+        scanned += 1
+        # Qdrant client typing allows None payload even when with_payload was
+        # requested; defensive default so the type checker is happy.
+        payload = point.payload or {}
+        value = payload.get("doc_id")
+        if value is None or isinstance(value, str):
+            continue
+        by_value.setdefault(str(value), []).append(point.id)
+    return by_value, scanned
+
+
+async def _apply_backfill_writes(
+    client: AsyncQdrantClient,
+    collection_name: str,
+    by_value: dict[str, list[Any]],
+) -> int:
+    """Apply one ``set_payload`` per stringified doc_id; return rewritten count.
+
+    ``wait=True`` is required because ``_ensure_keyword_payload_indexes`` runs
+    immediately after this function (see ``get_qdrant_client`` near the call
+    site) and only indexes committed data — fire-and-forget writes would
+    leave int payloads invisible to KEYWORD filters.
+    """
+    rewritten = 0
+    for str_val, point_ids in by_value.items():
+        await client.set_payload(
+            collection_name=collection_name,
+            payload={"doc_id": str_val},
+            points=point_ids,
+            wait=True,
+        )
+        rewritten += len(point_ids)
+    return rewritten
+
+
 async def _backfill_doc_id_to_string(
     client: AsyncQdrantClient, collection_name: str, dimension: int
 ) -> None:
@@ -121,11 +186,18 @@ async def _backfill_doc_id_to_string(
     Within each scroll batch, points sharing the same int doc_id are batched
     into a single ``set_payload`` call to minimize Qdrant round-trips.
 
+    Only called for **existing** collections (see the
+    ``if collection_name in collection_names`` branch in
+    ``get_qdrant_client``); brand-new collections skip the backfill since
+    there can be no legacy int payloads in a freshly created collection.
+
     Args:
         client: Qdrant client instance.
         collection_name: Target collection.
-        dimension: Dense-vector dimension for the sentinel point's vector
-            (forwarded by ``get_qdrant_client`` from the embedding model).
+        dimension: Dense-vector dimension for the sentinel point's vector,
+            forwarded by ``get_qdrant_client`` from the embedding model.
+            Required because the sentinel is upserted into an existing
+            collection and must match the collection's vector schema.
     """
     # Sentinel guard: if the migration ran successfully against this
     # collection on a previous start, retrieve() returns the marker point
@@ -184,35 +256,9 @@ async def _backfill_doc_id_to_string(
                 break
 
             batch_num += 1
-
-            # Group by stringified value so points sharing a doc_id (one document
-            # → many chunks) collapse into a single set_payload call. Point IDs
-            # can be int/str/UUID, so widen the value type to satisfy the qdrant
-            # client's PointsSelector signature without re-spelling the union.
-            by_value: dict[str, list[Any]] = {}
-            for point in points:
-                scanned += 1
-                # Qdrant client typing allows None payload even when with_payload
-                # was requested; defensive default so the type checker is happy.
-                payload = point.payload or {}
-                value = payload.get("doc_id")
-                if value is None or isinstance(value, str):
-                    continue
-                by_value.setdefault(str(value), []).append(point.id)
-
-            for str_val, point_ids in by_value.items():
-                # wait=True is required because _ensure_keyword_payload_indexes
-                # runs immediately after this function (see get_qdrant_client
-                # near the call site) and only indexes committed data —
-                # fire-and-forget writes would leave int payloads invisible
-                # to KEYWORD filters.
-                await client.set_payload(
-                    collection_name=collection_name,
-                    payload={"doc_id": str_val},
-                    points=point_ids,
-                    wait=True,
-                )
-                rewritten += len(point_ids)
+            by_value, batch_scanned = _group_int_doc_ids(points)
+            scanned += batch_scanned
+            rewritten += await _apply_backfill_writes(client, collection_name, by_value)
 
             if batch_num % progress_log_every == 0:
                 logger.info(
@@ -264,11 +310,20 @@ async def _backfill_doc_id_to_string(
         )
         return
 
-    logger.info(
-        "doc_id backfill complete: rewrote %d/%d payloads from int to str",
-        rewritten,
-        scanned,
-    )
+    if rewritten:
+        logger.info(
+            "doc_id backfill complete on '%s': rewrote %d/%d int payloads to str",
+            collection_name,
+            rewritten,
+            scanned,
+        )
+    else:
+        logger.info(
+            "doc_id backfill complete on '%s': %d points scanned, none required "
+            "rewriting (collection already in str form)",
+            collection_name,
+            scanned,
+        )
 
 
 async def get_qdrant_client() -> AsyncQdrantClient:

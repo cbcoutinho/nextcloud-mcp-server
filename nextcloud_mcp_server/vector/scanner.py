@@ -230,7 +230,7 @@ async def scan_user_documents(
             indexed_doc_ids = {
                 str(point.payload["doc_id"])
                 for point in (scroll_result[0] or [])
-                if point.payload is not None
+                if point.payload is not None and "doc_id" in point.payload
             }
 
             logger.debug(f"Found {len(indexed_doc_ids)} indexed documents in Qdrant")
@@ -403,7 +403,7 @@ async def scan_user_documents(
             indexed_file_ids = {
                 str(point.payload["doc_id"])
                 for point in (file_scroll_result[0] or [])
-                if point.payload is not None
+                if point.payload is not None and "doc_id" in point.payload
             }
 
             logger.debug(f"Found {len(indexed_file_ids)} indexed files in Qdrant")
@@ -683,7 +683,7 @@ async def scan_news_items(
         indexed_item_ids = {
             str(point.payload["doc_id"])
             for point in (scroll_result[0] or [])
-            if point.payload is not None
+            if point.payload is not None and "doc_id" in point.payload
         }
         logger.debug(f"Found {len(indexed_item_ids)} indexed news items in Qdrant")
 
@@ -862,7 +862,7 @@ async def scan_deck_cards(
         indexed_card_ids = {
             str(point.payload["doc_id"])
             for point in (scroll_result[0] or [])
-            if point.payload is not None
+            if point.payload is not None and "doc_id" in point.payload
         }
         logger.debug(f"Found {len(indexed_card_ids)} indexed deck cards in Qdrant")
 

@@ -14,6 +14,7 @@ run at startup. Producer-side normalization is exercised by the existing
 scanner tests.
 """
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import call
 
@@ -152,7 +153,12 @@ async def test_ensure_keyword_payload_indexes_logs_400_as_warning(mocker, caplog
     # Loop continued past the failing field; all three were attempted.
     assert client.create_payload_index.await_count == len(_KEYWORD_PAYLOAD_FIELDS)
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    # 400s do not contribute to the partial-failure summary (which fires
+    # only for non-400 errors), so this is the per-field warning, not the
+    # summary. Match the message prefix exactly so a future change adding
+    # 400s to the summary would surface here as a count mismatch.
     assert len(warnings) == 1
+    assert warnings[0].getMessage().startswith("Schema conflict on payload index")
     assert "different schema" in warnings[0].getMessage()
 
 
@@ -181,6 +187,42 @@ async def test_ensure_keyword_payload_indexes_logs_non_400_as_error(mocker, capl
     msg = errors[0].getMessage()
     assert "500" in msg
     assert "internal server error" in msg
+
+
+@pytest.mark.unit
+async def test_ensure_keyword_payload_indexes_logs_and_returns_when_get_collection_raises(
+    mocker, caplog
+):
+    """A get_collection failure is logged and swallowed; no indexes are attempted.
+
+    Mirrors the broad swallow in `_backfill_doc_id_to_string`. The
+    qdrant_client singleton is already assigned by the time this
+    function runs, so re-raising would leave the process holding a
+    usable client with the migration silently skipped on every
+    subsequent call. Catching, logging, and returning preserves the
+    retry-on-next-restart behavior.
+    """
+    client = mocker.AsyncMock()
+
+    async def _get_collection_raises(*args, **kwargs):
+        # See _scroll_raises in the backfill section for why this is async.
+        await asyncio.sleep(0)
+        raise RuntimeError("connection refused")
+
+    client.get_collection.side_effect = _get_collection_raises
+
+    with caplog.at_level("ERROR", logger="nextcloud_mcp_server.vector.qdrant_client"):
+        await _ensure_keyword_payload_indexes(client, "test-collection")
+
+    # No index creation was attempted — the function returned early.
+    client.create_payload_index.assert_not_awaited()
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    msg = errors[0].getMessage()
+    assert "Failed to fetch collection info for 'test-collection'" in msg
+    assert "Will retry on next restart" in msg
+    assert errors[0].exc_info is not None
+    assert errors[0].exc_info[0] is RuntimeError
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +254,10 @@ async def test_backfill_clean_collection_makes_no_writes(mocker, caplog):
         r.getMessage() for r in caplog.records if "backfill complete" in r.getMessage()
     ]
     assert completion_logs, "expected an INFO log line for backfill completion"
-    assert "0/2" in completion_logs[0]
+    # rewritten=0 → human-readable wording instead of the misleading
+    # "rewrote 0/N from int to str" formula.
+    assert "2 points scanned" in completion_logs[0]
+    assert "none required rewriting" in completion_logs[0]
 
 
 @pytest.mark.unit
@@ -405,7 +450,11 @@ async def test_backfill_logs_and_returns_when_scroll_raises(mocker, caplog):
     # An async-callable side_effect lets AsyncMock await the coroutine
     # before the exception propagates; assigning a bare exception class
     # leaks an un-awaited coroutine and trips RuntimeWarning at gc time.
+    # The `await asyncio.sleep(0)` is a no-op event-loop yield that
+    # satisfies static analysis ("async function uses no async features")
+    # without changing observable behavior.
     async def _scroll_raises(*args, **kwargs):
+        await asyncio.sleep(0)
         raise RuntimeError("boom")
 
     client.scroll.side_effect = _scroll_raises
@@ -444,6 +493,8 @@ async def test_backfill_logs_warning_when_sentinel_upsert_fails(mocker, caplog):
     client.scroll.return_value = ([], None)  # Empty scroll — clean collection
 
     async def _upsert_raises(*args, **kwargs):
+        # See _scroll_raises above for why this is async + sleep(0).
+        await asyncio.sleep(0)
         raise RuntimeError("sentinel write blip")
 
     client.upsert.side_effect = _upsert_raises
@@ -517,6 +568,8 @@ async def test_ensure_keyword_payload_indexes_summarises_failed_fields(mocker, c
     call_count = {"n": 0}
 
     async def _create_index(*args, **kwargs):
+        # See _scroll_raises above for why this is async + sleep(0).
+        await asyncio.sleep(0)
         call_count["n"] += 1
         if call_count["n"] != 2:
             raise _make_unexpected(500, b'{"status":{"error":"boom"}}')
