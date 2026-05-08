@@ -7,6 +7,7 @@ description: |
   in this repo's automated PR reviews. Use when the user is about to push, says "ready
   to push", "review my work", "check before PR", or invokes /pre-push-review.
   Report-only — does not modify code.
+model: sonnet
 allowed-tools:
   - Bash
   - Read

@@ -565,9 +565,10 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                 status_code=404,
             )
 
-        # For PDF files, also fetch the highlighted page image from Qdrant if available
-        # This is useful for clients that want to show a pre-rendered image
-        highlighted_page_image = None
+        # For PDF files, also fetch the chunk's bounding box from Qdrant if
+        # available so the client can overlay a highlight on top of a
+        # render-on-demand page image (Deck #76).
+        chunk_bbox = None
         page_number = chunk_context.page_number
 
         if doc_type == "file":
@@ -575,7 +576,7 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                 settings = get_settings()
                 qdrant_client = await get_qdrant_client()
 
-                # Prefer chunk_index for the highlighted-image lookup (always indexed);
+                # Prefer chunk_index for the chunk-bbox lookup (always indexed);
                 # fall back to (chunk_start_offset, chunk_end_offset) when not provided.
                 if chunk_index is not None:
                     points_response = await qdrant_client.scroll(
@@ -590,10 +591,6 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                                     key="user_id", match=MatchValue(value=user_id)
                                 ),
                                 FieldCondition(
-                                    key="doc_type",
-                                    match=MatchValue(value=doc_type),
-                                ),
-                                FieldCondition(
                                     key="chunk_index",
                                     match=MatchValue(value=chunk_index),
                                 ),
@@ -601,7 +598,7 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                         ),
                         limit=1,
                         with_vectors=False,
-                        with_payload=["highlighted_page_image", "page_number"],
+                        with_payload=["chunk_bbox", "page_number"],
                     )
                 else:
                     points_response = await qdrant_client.scroll(
@@ -616,10 +613,6 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                                     key="user_id", match=MatchValue(value=user_id)
                                 ),
                                 FieldCondition(
-                                    key="doc_type",
-                                    match=MatchValue(value=doc_type),
-                                ),
-                                FieldCondition(
                                     key="chunk_start_offset",
                                     match=MatchValue(value=start),
                                 ),
@@ -631,19 +624,19 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                         ),
                         limit=1,
                         with_vectors=False,
-                        with_payload=["highlighted_page_image", "page_number"],
+                        with_payload=["chunk_bbox", "page_number"],
                     )
 
                 if points_response[0]:
                     payload = points_response[0][0].payload
                     if payload:
-                        highlighted_page_image = payload.get("highlighted_page_image")
+                        chunk_bbox = payload.get("chunk_bbox")
                         # Trust Qdrant page number if available (might be more accurate than context expansion logic)
                         if payload.get("page_number") is not None:
                             page_number = payload.get("page_number")
 
             except Exception as e:
-                logger.warning(f"Failed to fetch highlighted image: {e}")
+                logger.warning(f"Failed to fetch chunk bbox: {e}")
 
         # Build response
         response_data = {
@@ -658,8 +651,8 @@ async def get_chunk_context(request: Request) -> JSONResponse:
             "total_chunks": chunk_context.total_chunks,
         }
 
-        if highlighted_page_image:
-            response_data["highlighted_page_image"] = highlighted_page_image
+        if chunk_bbox:
+            response_data["chunk_bbox"] = chunk_bbox
 
         return JSONResponse(response_data)
 
