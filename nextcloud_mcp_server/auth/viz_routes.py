@@ -538,7 +538,6 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
         end_str = request.query_params.get("end")
         chunk_index_str = request.query_params.get("chunk_index")
         total_chunks_str = request.query_params.get("total_chunks")
-        context_chars = int(request.query_params.get("context", "500"))
 
         # Validate required parameters
         if not all([doc_type, doc_id, start_str, end_str]):
@@ -556,8 +555,17 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
         assert start_str is not None
         assert end_str is not None
 
-        start = int(start_str)
-        end = int(end_str)
+        context_chars = _parse_int_param(
+            request.query_params.get("context"),
+            500,
+            0,
+            10000,
+            "context_chars",
+        )
+        start = _parse_int_param(start_str, 0, 0, 10000000, "start")
+        end = _parse_int_param(end_str, 0, 0, 10000000, "end")
+        if end <= start:
+            raise ValueError("end must be greater than start")
         chunk_index: int | None = None
         if chunk_index_str is not None:
             chunk_index = _parse_int_param(
@@ -617,7 +625,7 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
 
         # For PDF files, also fetch the highlighted page image from Qdrant
         highlighted_page_image = None
-        page_number = None
+        page_number = chunk_context.page_number
         if doc_type == "file":
             try:
                 settings = get_settings()
@@ -697,12 +705,13 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
             "after_context": chunk_context.after_context,
             "has_more_before": chunk_context.has_before_truncation,
             "has_more_after": chunk_context.has_after_truncation,
+            "page_number": page_number,
+            "chunk_index": chunk_context.chunk_index,
+            "total_chunks": chunk_context.total_chunks,
         }
 
-        # Add image data if available
         if highlighted_page_image:
             response_data["highlighted_page_image"] = highlighted_page_image
-            response_data["page_number"] = page_number
 
         return JSONResponse(response_data)
 
