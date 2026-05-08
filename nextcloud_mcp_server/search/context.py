@@ -271,6 +271,11 @@ async def get_chunk_with_context(
         else (doc_id if isinstance(doc_id, int) else None)
     )
 
+    # Effective chunk_index for adjacent lookups, marker insertion, and the
+    # response payload — keep `chunk_index is not None` distinct from this so
+    # the gate at line ~280 still controls *whether* to take the indexed path.
+    effective_chunk_index = chunk_index if chunk_index is not None else 0
+
     # Try to get chunk from Qdrant (fast path).
     # Prefer chunk_index lookup (always-indexed field) when caller supplied it;
     # fall back to (chunk_start, chunk_end) lookup otherwise.
@@ -295,9 +300,6 @@ async def get_chunk_with_context(
         # Get chunk overlap from config to remove duplicate text
         settings = get_settings()
         chunk_overlap = settings.document_chunk_overlap
-
-        # Effective chunk_index for adjacent lookups and response (default to 0)
-        effective_chunk_index = chunk_index if chunk_index is not None else 0
 
         before_context = ""
         after_context = ""
@@ -419,9 +421,6 @@ async def get_chunk_with_context(
     # Check for truncation
     has_before_truncation = context_start > 0
     has_after_truncation = context_end < len(full_text)
-
-    # Effective chunk_index for response (default to 0 when caller didn't supply)
-    effective_chunk_index = chunk_index if chunk_index is not None else 0
 
     # Create marked text with position markers
     marked_text = _insert_position_markers(

@@ -647,6 +647,10 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
                                     key="user_id", match=MatchValue(value=username)
                                 ),
                                 FieldCondition(
+                                    key="doc_type",
+                                    match=MatchValue(value=doc_type),
+                                ),
+                                FieldCondition(
                                     key="chunk_index",
                                     match=MatchValue(value=chunk_index),
                                 ),
@@ -716,7 +720,8 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
         return JSONResponse(response_data)
 
     except ValueError as e:
-        logger.error(f"Invalid parameter format: {e}")
+        # User-supplied bad input → 400, not a server error.
+        logger.warning("Invalid parameter format: %s", e)
         return JSONResponse(
             {"success": False, "error": f"Invalid parameter format: {e}"},
             status_code=400,

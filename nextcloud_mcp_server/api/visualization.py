@@ -592,6 +592,10 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                                 FieldCondition(
                                     key="user_id", match=MatchValue(value=user_id)
                                 ),
+                                FieldCondition(
+                                    key="doc_type",
+                                    match=MatchValue(value=doc_type),
+                                ),
                                 chunk_filter,
                             ]
                         ),

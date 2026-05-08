@@ -258,6 +258,49 @@ class TestChunkContextCredentialPath:
             assert data["success"] is False
             assert "failed to fetch chunk context" in data["error"].lower()
 
+    def test_file_doc_type_qdrant_miss_yields_fast_404(self):
+        """For doc_type=file, a Qdrant miss must surface as 404 immediately
+        (no slow PDF re-parse fallback). Locks the proxy-timeout fix in.
+
+        At the unit level we only assert the response shape; the
+        no-fallback contract itself lives in `search/context.py` and is
+        exercised by chunk-context tests there.
+        """
+        mock_nc_client = _make_mock_nc_client()
+
+        with (
+            patch(
+                "nextcloud_mcp_server.api.visualization.validate_token_and_get_user",
+                new_callable=AsyncMock,
+                return_value=("testuser", True),
+            ),
+            patch(
+                "nextcloud_mcp_server.api.visualization.get_user_client_basic_auth",
+                new_callable=AsyncMock,
+                return_value=mock_nc_client,
+            ),
+            patch(
+                "nextcloud_mcp_server.api.visualization.get_chunk_with_context",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as mock_get_chunk,
+        ):
+            app = create_test_app()
+            client = TestClient(app)
+            response = client.get(
+                "/api/v1/chunk-context?doc_type=file&doc_id=12345"
+                "&start=0&end=10&chunk_index=3&total_chunks=20",
+                headers={"Authorization": "Bearer test-token"},
+            )
+            assert response.status_code == 404
+            data = response.json()
+            assert data["success"] is False
+            # Confirm the handler called the resolver with doc_type=file
+            # (not a coerced/normalized value) so the fast-fail path engages.
+            kwargs = mock_get_chunk.await_args.kwargs
+            assert kwargs["doc_type"] == "file"
+            assert kwargs["chunk_index"] == 3
+
 
 class TestChunkContextParameterForwarding:
     """Verify new chunk_index / total_chunks query params reach the lookup.
