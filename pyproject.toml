@@ -1,6 +1,6 @@
 [project]
 name = "nextcloud-mcp-server"
-version = "0.81.0"
+version = "0.83.0"
 description = "Model Context Protocol (MCP) server for Nextcloud integration - enables AI assistants to interact with Nextcloud data"
 authors = [
     {name = "Chris Coutinho", email = "chris@coutinho.io"}
@@ -43,6 +43,7 @@ dependencies = [
     "pymupdf4llm>=0.2.2",
     "openai>=2.8.1",
     "dynaconf>=3.2.13,<4.0",
+    "mistralai>=2.4.5",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

@@ -607,8 +607,10 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
             f"after_len={len(chunk_context.after_context)}"
         )
 
-        # For PDF files, also fetch the highlighted page image from Qdrant
-        highlighted_page_image = None
+        # For PDF files, also fetch the chunk bbox from Qdrant so the client
+        # can overlay a highlight on top of a render-on-demand page image
+        # (Deck #76).
+        chunk_bbox = None
         page_number = None
         if doc_type == "file":
             try:
@@ -616,7 +618,6 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
                 qdrant_client = await get_qdrant_client()
                 username = request.user.display_name
 
-                # Query for this specific chunk's highlighted image
                 points_response = await qdrant_client.scroll(
                     collection_name=settings.get_collection_name(),
                     scroll_filter=Filter(
@@ -638,22 +639,20 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
                     ),
                     limit=1,
                     with_vectors=False,
-                    with_payload=["highlighted_page_image", "page_number"],
+                    with_payload=["chunk_bbox", "page_number"],
                 )
 
                 points = points_response[0]
                 if points and points[0].payload:
-                    highlighted_page_image = points[0].payload.get(
-                        "highlighted_page_image"
-                    )
+                    chunk_bbox = points[0].payload.get("chunk_bbox")
                     page_number = points[0].payload.get("page_number")
-                    if highlighted_page_image:
+                    if chunk_bbox:
                         logger.info(
-                            f"Found highlighted image for chunk: "
-                            f"page={page_number}, image_size={len(highlighted_page_image)}"
+                            f"Found chunk bbox: page={page_number}, "
+                            f"rects={len(chunk_bbox)}"
                         )
             except Exception as e:
-                logger.warning(f"Failed to fetch highlighted image: {e}")
+                logger.warning(f"Failed to fetch chunk bbox: {e}")
 
         # Return response compatible with frontend expectations
         response_data: dict = {
@@ -665,9 +664,8 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
             "has_more_after": chunk_context.has_after_truncation,
         }
 
-        # Add image data if available
-        if highlighted_page_image:
-            response_data["highlighted_page_image"] = highlighted_page_image
+        if chunk_bbox:
+            response_data["chunk_bbox"] = chunk_bbox
             response_data["page_number"] = page_number
 
         return JSONResponse(response_data)

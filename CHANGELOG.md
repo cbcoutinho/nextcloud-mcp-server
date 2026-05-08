@@ -5,6 +5,30 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.83.0 (2026-05-08)
+
+### Feat
+
+- **vector**: replace inline page-image payloads with chunk_bbox (Deck #76)
+
+### Refactor
+
+- **vector**: address PR #775 review round 3 — fix unused var, harden boundary lookup, rename trace span
+- **vector**: address PR #775 review round 2 — drop dead page field, add omission tests
+- **vector**: address PR #775 review — drop unused payload key, fix resource leaks
+
+## v0.82.0 (2026-05-08)
+
+### Feat
+
+- **providers**: add Mistral embedding provider, route registry through dynaconf
+
+### Refactor
+
+- **providers**: address PR #772 review round 3 — hermetic test, lazy logging, defensive-guard tests
+- **providers**: address PR #772 review round 2 — guard, naming, docs, tests
+- **providers**: address PR #772 review — shared retry, cleaner imports, no-op close
+
 ## v0.81.0 (2026-05-07)
 
 ### Feat

@@ -1,10 +1,11 @@
 """Provider registry and factory for auto-detection and instantiation."""
 
 import logging
-import os
 
+from ..config import get_settings
 from .base import Provider
 from .bedrock import BedrockProvider
+from .mistral import MistralProvider
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 from .simple import SimpleProvider
@@ -16,117 +17,112 @@ class ProviderRegistry:
     """
     Registry for provider auto-detection and instantiation.
 
-    Checks environment variables in priority order and creates appropriate provider:
-    1. Bedrock (AWS_REGION + BEDROCK_*_MODEL)
-    2. OpenAI (OPENAI_API_KEY)
-    3. Ollama (OLLAMA_BASE_URL)
-    4. Simple (fallback for testing/development)
+    Reads configuration via dynaconf-backed Settings (see ``config.py``).
+    Checks provider settings in priority order and creates the appropriate
+    provider:
+
+    1. Bedrock (``AWS_REGION`` or ``BEDROCK_*_MODEL``)
+    2. OpenAI (``OPENAI_API_KEY``)
+    3. Mistral (``MISTRAL_API_KEY``)
+    4. Ollama (``OLLAMA_BASE_URL``)
+    5. Simple (fallback for testing/development)
     """
 
     @staticmethod
     def create_provider() -> Provider:
         """
-        Auto-detect and create provider based on environment variables.
+        Auto-detect and create provider based on configured settings.
+
+        Settings are sourced via :func:`nextcloud_mcp_server.config.get_settings`,
+        which reads from settings files and environment variables (env vars
+        always win, see ADR-024/025).
 
         Priority order:
-        1. Bedrock - if AWS_REGION or BEDROCK_EMBEDDING_MODEL is set
-        2. OpenAI - if OPENAI_API_KEY is set
-        3. Ollama - if OLLAMA_BASE_URL is set
-        4. Simple - fallback for testing/development
+
+        1. Bedrock - if ``aws_region`` or ``bedrock_embedding_model`` is set
+        2. OpenAI - if ``openai_api_key`` is set
+        3. Mistral - if ``mistral_api_key`` is set
+        4. Ollama - if ``ollama_base_url`` is set
+        5. Simple - fallback for testing/development
 
         Returns:
             Provider instance
-
-        Environment Variables:
-            Bedrock:
-                - AWS_REGION: AWS region (e.g., "us-east-1")
-                - AWS_ACCESS_KEY_ID: AWS access key (optional, uses credential chain)
-                - AWS_SECRET_ACCESS_KEY: AWS secret key (optional)
-                - BEDROCK_EMBEDDING_MODEL: Model ID for embeddings (e.g., "amazon.titan-embed-text-v2:0")
-                - BEDROCK_GENERATION_MODEL: Model ID for text generation (e.g., "anthropic.claude-3-sonnet-20240229-v1:0")
-
-            OpenAI:
-                - OPENAI_API_KEY: OpenAI API key (or GITHUB_TOKEN for GitHub Models)
-                - OPENAI_BASE_URL: Base URL override (e.g., "https://models.github.ai/inference")
-                - OPENAI_EMBEDDING_MODEL: Model for embeddings (default: "text-embedding-3-small")
-                - OPENAI_GENERATION_MODEL: Model for text generation (e.g., "gpt-4o-mini")
-
-            Ollama:
-                - OLLAMA_BASE_URL: Ollama API base URL (e.g., "http://localhost:11434")
-                - OLLAMA_EMBEDDING_MODEL: Model for embeddings (default: "nomic-embed-text")
-                - OLLAMA_GENERATION_MODEL: Model for text generation (e.g., "llama3.2:1b")
-                - OLLAMA_VERIFY_SSL: Verify SSL certificates (default: "true")
-
-            Simple (no configuration needed, fallback):
-                - SIMPLE_EMBEDDING_DIMENSION: Embedding dimension (default: 384)
         """
-        # 1. Check for Bedrock
-        aws_region = os.getenv("AWS_REGION")
-        bedrock_embedding_model = os.getenv("BEDROCK_EMBEDDING_MODEL")
-        bedrock_generation_model = os.getenv("BEDROCK_GENERATION_MODEL")
+        settings = get_settings()
 
-        if aws_region or bedrock_embedding_model or bedrock_generation_model:
+        # 1. Bedrock
+        if (
+            settings.aws_region
+            or settings.bedrock_embedding_model
+            or settings.bedrock_generation_model
+        ):
             logger.info(
-                f"Using Bedrock provider: region={aws_region}, "
-                f"embedding_model={bedrock_embedding_model}, "
-                f"generation_model={bedrock_generation_model}"
+                "Using Bedrock provider: region=%s, embedding_model=%s, "
+                "generation_model=%s",
+                settings.aws_region,
+                settings.bedrock_embedding_model,
+                settings.bedrock_generation_model,
             )
             return BedrockProvider(
-                region_name=aws_region,
-                embedding_model=bedrock_embedding_model,
-                generation_model=bedrock_generation_model,
-                aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-                aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+                region_name=settings.aws_region,
+                embedding_model=settings.bedrock_embedding_model,
+                generation_model=settings.bedrock_generation_model,
+                aws_access_key_id=settings.aws_access_key_id,
+                aws_secret_access_key=settings.aws_secret_access_key,
             )
 
-        # 2. Check for OpenAI
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        if openai_api_key:
-            base_url = os.getenv("OPENAI_BASE_URL")
-            embedding_model = os.getenv(
-                "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
-            )
-            generation_model = os.getenv("OPENAI_GENERATION_MODEL")
-
+        # 2. OpenAI
+        if settings.openai_api_key:
             logger.info(
-                f"Using OpenAI provider: base_url={base_url or 'default'}, "
-                f"embedding_model={embedding_model}, "
-                f"generation_model={generation_model}"
+                "Using OpenAI provider: base_url=%s, embedding_model=%s, "
+                "generation_model=%s",
+                settings.openai_base_url or "default",
+                settings.openai_embedding_model,
+                settings.openai_generation_model,
             )
             return OpenAIProvider(
-                api_key=openai_api_key,
-                base_url=base_url,
-                embedding_model=embedding_model,
-                generation_model=generation_model,
+                api_key=settings.openai_api_key,
+                base_url=settings.openai_base_url,
+                embedding_model=settings.openai_embedding_model,
+                generation_model=settings.openai_generation_model,
             )
 
-        # 3. Check for Ollama (local LLM)
-        ollama_url = os.getenv("OLLAMA_BASE_URL")
-        if ollama_url:
-            embedding_model = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
-            generation_model = os.getenv("OLLAMA_GENERATION_MODEL")
-            verify_ssl = os.getenv("OLLAMA_VERIFY_SSL", "true").lower() == "true"
-
+        # 3. Mistral
+        if settings.mistral_api_key:
             logger.info(
-                f"Using Ollama provider: {ollama_url}, "
-                f"embedding_model={embedding_model}, "
-                f"generation_model={generation_model}"
+                "Using Mistral provider: base_url=%s, embedding_model=%s",
+                settings.mistral_base_url or "default",
+                settings.mistral_embedding_model,
+            )
+            return MistralProvider(
+                api_key=settings.mistral_api_key,
+                base_url=settings.mistral_base_url,
+                embedding_model=settings.mistral_embedding_model,
+            )
+
+        # 4. Ollama
+        if settings.ollama_base_url:
+            logger.info(
+                "Using Ollama provider: %s, embedding_model=%s, generation_model=%s",
+                settings.ollama_base_url,
+                settings.ollama_embedding_model,
+                settings.ollama_generation_model,
             )
             return OllamaProvider(
-                base_url=ollama_url,
-                embedding_model=embedding_model,
-                generation_model=generation_model,
-                verify_ssl=verify_ssl,
+                base_url=settings.ollama_base_url,
+                embedding_model=settings.ollama_embedding_model,
+                generation_model=settings.ollama_generation_model,
+                verify_ssl=settings.ollama_verify_ssl,
             )
 
-        # 4. Fallback to Simple provider for development/testing
-        dimension = int(os.getenv("SIMPLE_EMBEDDING_DIMENSION", "384"))
+        # 5. Simple (fallback)
         logger.warning(
-            "No provider configured (AWS_REGION, OPENAI_API_KEY, OLLAMA_BASE_URL not set). "
+            "No provider configured (AWS_REGION, OPENAI_API_KEY, "
+            "MISTRAL_API_KEY, OLLAMA_BASE_URL not set). "
             "Using SimpleProvider for testing/development. "
-            "For production, configure Bedrock, OpenAI, or Ollama."
+            "For production, configure Bedrock, OpenAI, Mistral, or Ollama."
         )
-        return SimpleProvider(dimension=dimension)
+        return SimpleProvider(dimension=settings.simple_embedding_dimension)
 
 
 # Singleton instance
