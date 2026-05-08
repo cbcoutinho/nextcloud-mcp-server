@@ -125,12 +125,13 @@ from nextcloud_mcp_server.server import (
 )
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
-from nextcloud_mcp_server.vector import processor_task, scanner_task
 from nextcloud_mcp_server.vector.oauth_sync import (
     oauth_processor_task,
     user_manager_task,
 )
+from nextcloud_mcp_server.vector.processor import processor_task
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+from nextcloud_mcp_server.vector.scanner import scanner_task
 from nextcloud_mcp_server.vector.webhook_receiver import handle_nextcloud_webhook
 
 logger = logging.getLogger(__name__)
