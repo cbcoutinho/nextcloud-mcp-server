@@ -23,6 +23,7 @@ from starlette.authentication import requires
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
+from nextcloud_mcp_server.api.management import _parse_int_param
 from nextcloud_mcp_server.auth.userinfo_routes import (
     _get_authenticated_client_for_userinfo,
 )
@@ -557,10 +558,12 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
 
         start = int(start_str)
         end = int(end_str)
-        chunk_index: int | None = (
-            int(chunk_index_str) if chunk_index_str is not None else None
-        )
-        total_chunks = int(total_chunks_str) if total_chunks_str is not None else 1
+        chunk_index: int | None = None
+        if chunk_index_str is not None:
+            chunk_index = _parse_int_param(
+                chunk_index_str, 0, 0, 1000000, "chunk_index"
+            )
+        total_chunks = _parse_int_param(total_chunks_str, 1, 1, 1000000, "total_chunks")
         # Convert doc_id to int (all document types use int IDs)
         doc_id_int = int(doc_id)
 
