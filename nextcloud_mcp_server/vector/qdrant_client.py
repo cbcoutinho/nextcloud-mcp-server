@@ -29,7 +29,9 @@ _KEYWORD_PAYLOAD_FIELDS: tuple[str, ...] = ("doc_id", "user_id", "doc_type")
 # doc_id". Written after a successful pass of _backfill_doc_id_to_string so
 # subsequent restarts can short-circuit the O(N) scroll. Carries no
 # user_id/doc_id/doc_type, so production search filters (which always
-# require user_id) never see it.
+# require user_id) never see it. In :memory: mode the sentinel does not
+# survive a restart — the scroll runs every start, but is a no-op against
+# an empty in-memory collection.
 _DOC_ID_BACKFILL_SENTINEL_ID: str = "00000000-0000-0000-0000-d0c1d0d1d0c1"
 _DOC_ID_BACKFILL_SENTINEL_PAYLOAD: dict[str, str] = {"_migration_marker": "doc_id_v1"}
 
@@ -139,73 +141,88 @@ async def _backfill_doc_id_to_string(
     next_offset = None
     batch_size = 256
 
-    while True:
-        points, next_offset = await client.scroll(
-            collection_name=collection_name,
-            limit=batch_size,
-            offset=next_offset,
-            with_payload=["doc_id"],
-            with_vectors=False,
-        )
-        if not points:
-            break
-
-        # Group by stringified value so points sharing a doc_id (one document
-        # → many chunks) collapse into a single set_payload call. Point IDs
-        # can be int/str/UUID, so widen the value type to satisfy the qdrant
-        # client's PointsSelector signature without re-spelling the union.
-        by_value: dict[str, list[Any]] = {}
-        for point in points:
-            scanned += 1
-            # Qdrant client typing allows None payload even when with_payload
-            # was requested; defensive default so the type checker is happy.
-            payload = point.payload or {}
-            value = payload.get("doc_id")
-            if value is None or isinstance(value, str):
-                continue
-            by_value.setdefault(str(value), []).append(point.id)
-
-        for str_val, point_ids in by_value.items():
-            # wait=True is required because _ensure_keyword_payload_indexes
-            # runs immediately after this function (see get_qdrant_client
-            # near the call site) and only indexes committed data —
-            # fire-and-forget writes would leave int payloads invisible
-            # to KEYWORD filters.
-            await client.set_payload(
+    # A transient Qdrant failure mid-scroll (network blip, timeout) must not
+    # crash startup. The singleton in get_qdrant_client is already assigned
+    # by the time this runs, so re-raising here would leave the process in
+    # a half-initialized state where the next call returns the cached
+    # client and skips this migration entirely. Catch broadly, log with
+    # exc_info, and return without writing the sentinel — the next process
+    # restart will retry from scratch.
+    try:
+        while True:
+            points, next_offset = await client.scroll(
                 collection_name=collection_name,
-                payload={"doc_id": str_val},
-                points=point_ids,
-                wait=True,
+                limit=batch_size,
+                offset=next_offset,
+                with_payload=["doc_id"],
+                with_vectors=False,
             )
-            rewritten += len(point_ids)
+            if not points:
+                break
 
-        if next_offset is None:
-            break
+            # Group by stringified value so points sharing a doc_id (one document
+            # → many chunks) collapse into a single set_payload call. Point IDs
+            # can be int/str/UUID, so widen the value type to satisfy the qdrant
+            # client's PointsSelector signature without re-spelling the union.
+            by_value: dict[str, list[Any]] = {}
+            for point in points:
+                scanned += 1
+                # Qdrant client typing allows None payload even when with_payload
+                # was requested; defensive default so the type checker is happy.
+                payload = point.payload or {}
+                value = payload.get("doc_id")
+                if value is None or isinstance(value, str):
+                    continue
+                by_value.setdefault(str(value), []).append(point.id)
 
-    # Write the sentinel after a successful scroll so a future restart can
-    # short-circuit. Empty sparse vector mirrors the placeholder.py
-    # convention (vector/placeholder.py); zero dense vector is fine
-    # because the sentinel never participates in a search (no user_id /
-    # doc_id / doc_type payload to match).
-    sentinel_point = PointStruct(
-        id=_DOC_ID_BACKFILL_SENTINEL_ID,
-        vector={
-            "dense": [0.0] * dimension,
-            "sparse": models.SparseVector(indices=[], values=[]),
-        },
-        payload=dict(_DOC_ID_BACKFILL_SENTINEL_PAYLOAD),
-    )
-    await client.upsert(
-        collection_name=collection_name,
-        points=[sentinel_point],
-        wait=True,
-    )
+            for str_val, point_ids in by_value.items():
+                # wait=True is required because _ensure_keyword_payload_indexes
+                # runs immediately after this function (see get_qdrant_client
+                # near the call site) and only indexes committed data —
+                # fire-and-forget writes would leave int payloads invisible
+                # to KEYWORD filters.
+                await client.set_payload(
+                    collection_name=collection_name,
+                    payload={"doc_id": str_val},
+                    points=point_ids,
+                    wait=True,
+                )
+                rewritten += len(point_ids)
 
-    logger.info(
-        "doc_id backfill complete: rewrote %d/%d payloads from int to str",
-        rewritten,
-        scanned,
-    )
+            if next_offset is None:
+                break
+
+        # Write the sentinel after a successful scroll so a future restart can
+        # short-circuit. Empty sparse vector mirrors the placeholder.py
+        # convention (vector/placeholder.py); zero dense vector is fine
+        # because the sentinel never participates in a search (no user_id /
+        # doc_id / doc_type payload to match).
+        sentinel_point = PointStruct(
+            id=_DOC_ID_BACKFILL_SENTINEL_ID,
+            vector={
+                "dense": [0.0] * dimension,
+                "sparse": models.SparseVector(indices=[], values=[]),
+            },
+            payload=dict(_DOC_ID_BACKFILL_SENTINEL_PAYLOAD),
+        )
+        await client.upsert(
+            collection_name=collection_name,
+            points=[sentinel_point],
+            wait=True,
+        )
+
+        logger.info(
+            "doc_id backfill complete: rewrote %d/%d payloads from int to str",
+            rewritten,
+            scanned,
+        )
+    except Exception:
+        logger.error(
+            "doc_id backfill failed on '%s'; will retry on next restart",
+            collection_name,
+            exc_info=True,
+        )
+        return
 
 
 async def get_qdrant_client() -> AsyncQdrantClient:

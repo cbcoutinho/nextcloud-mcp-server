@@ -355,6 +355,23 @@ Both steps emit INFO-level log lines so operators can track progress.
 > caught early. Either widen the public model's `id` field or convert the
 > id at the verifier layer.
 
+> **Degraded-migration signals:** both startup steps swallow non-fatal
+> failures so the server still starts, but each leaves a distinct ERROR
+> log line that operators should treat as a "restart needed" signal:
+>
+> - `Unexpected error creating payload index on '<field>' (status 5xx)` —
+>   the index was not created. Searches filtering on that field will keep
+>   returning HTTP 400 (`Index required but not found`) until a subsequent
+>   restart succeeds in creating it.
+> - `doc_id backfill failed on '<collection>'; will retry on next restart` —
+>   the migration sentinel was not written. Legacy integer `doc_id`
+>   payloads remain invisible to the keyword index in the meantime; the
+>   scroll re-runs from scratch on the next process start.
+>
+> Neither prevents the server from accepting requests, but both indicate
+> that vector search is operating in a degraded state on the affected
+> collection until the next clean restart.
+
 #### Explicit Override
 
 Set `QDRANT_COLLECTION` to use a specific collection name:

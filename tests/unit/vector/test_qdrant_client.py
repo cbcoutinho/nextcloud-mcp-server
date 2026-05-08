@@ -387,3 +387,34 @@ async def test_backfill_handles_payload_with_explicit_none_doc_id(mocker):
         points=[2],
         wait=True,
     )
+
+
+@pytest.mark.unit
+async def test_backfill_logs_and_returns_when_scroll_raises(mocker, caplog):
+    """A scroll-time exception is logged and swallowed; sentinel is not written.
+
+    The singleton client in get_qdrant_client is already assigned by the
+    time _backfill_doc_id_to_string runs, so re-raising here would leave
+    the process holding a usable client with the migration silently
+    skipped on every subsequent call. Catching, logging, and returning
+    without writing the sentinel preserves retry-on-next-restart behavior.
+    """
+    client = mocker.AsyncMock()
+    client.retrieve.return_value = []  # No sentinel — backfill must run
+    client.scroll.side_effect = RuntimeError("boom")
+
+    with caplog.at_level("ERROR", logger="nextcloud_mcp_server.vector.qdrant_client"):
+        await _backfill_doc_id_to_string(
+            client, "test-collection", _backfill_dimension()
+        )
+
+    # No sentinel written — next process restart will retry from scratch.
+    client.upsert.assert_not_awaited()
+    client.set_payload.assert_not_awaited()
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "doc_id backfill failed" in errors[0].getMessage()
+    assert "test-collection" in errors[0].getMessage()
+    # exc_info=True attaches the original exception to the log record.
+    assert errors[0].exc_info is not None
+    assert errors[0].exc_info[0] is RuntimeError

@@ -484,11 +484,11 @@ async def scan_user_documents(
                     await send_stream.send(
                         DocumentTask(
                             user_id=user_id,
-                            doc_id=file_id,  # Use numeric file ID
+                            doc_id=file_id,
                             doc_type="file",
                             operation="index",
                             modified_at=modified_at,
-                            file_path=file_path,  # Pass file path for content retrieval
+                            file_path=file_path,
                         )
                     )
                     file_queued += 1
@@ -547,11 +547,11 @@ async def scan_user_documents(
                         await send_stream.send(
                             DocumentTask(
                                 user_id=user_id,
-                                doc_id=file_id,  # Use numeric file ID
+                                doc_id=file_id,
                                 doc_type="file",
                                 operation="index",
                                 modified_at=modified_at,
-                                file_path=file_path,  # Pass file path for content retrieval
+                                file_path=file_path,
                             )
                         )
                         file_queued += 1
@@ -581,7 +581,7 @@ async def scan_user_documents(
                                 await send_stream.send(
                                     DocumentTask(
                                         user_id=user_id,
-                                        doc_id=file_id,  # Use numeric file ID
+                                        doc_id=file_id,
                                         doc_type="file",
                                         operation="delete",
                                         modified_at=0,
