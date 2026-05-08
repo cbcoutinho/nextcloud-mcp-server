@@ -143,6 +143,84 @@ def configure_contacts_tools(mcp: FastMCP):
         )
 
     @mcp.tool(
+        title="Search Contacts",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("contacts.read")
+    @instrument_tool
+    async def nc_contacts_search_contacts(
+        ctx: Context, *, query: str, addressbook: str | None = None
+    ) -> ListContactsResponse:
+        """Search contacts by free-text query across name, nickname, email, and phone.
+
+        The query is matched case-insensitively as a substring against:
+        - the contact's full name (FN)
+        - any nickname
+        - every email address
+        - every phone number (digits only — formatting is stripped before
+          comparison so '+1 234 567 890' matches '2345678' and '234.567.890')
+
+        Args:
+            query: Free-text search string (case-insensitive substring match).
+                An empty query returns no results — use list_contacts for that.
+            addressbook: Optional URI slug of a specific addressbook to search.
+                When omitted, every addressbook for the user is searched.
+
+        Returns:
+            ListContactsResponse with matching contacts. The ``addressbook``
+            field is set to the searched addressbook, or ``"*"`` when all
+            addressbooks were searched.
+        """
+        client = await get_client(ctx)
+        needle = (query or "").strip().lower()
+        if not needle:
+            return ListContactsResponse(
+                contacts=[], addressbook=addressbook or "*", total_count=0
+            )
+
+        # Phone numbers are normalised to digits-only for comparison so that
+        # users can search for "2345678" and find "+1 234-567-8" etc.
+        digits_needle = "".join(ch for ch in needle if ch.isdigit())
+
+        if addressbook:
+            address_books = [addressbook]
+        else:
+            address_books = [
+                ab["name"] for ab in await client.contacts.list_addressbooks()
+            ]
+
+        matches: list[Contact] = []
+        for ab_slug in address_books:
+            raw_contacts = await client.contacts.list_contacts(addressbook=ab_slug)
+            for raw in raw_contacts:
+                contact = _raw_contact_to_model(raw)
+                hay_parts: list[str] = []
+                if contact.fn:
+                    hay_parts.append(contact.fn.lower())
+                nickname = contact.custom_fields.get("nickname") if contact.custom_fields else None
+                if nickname:
+                    hay_parts.append(str(nickname).lower())
+                for e in contact.emails:
+                    hay_parts.append(e.value.lower())
+                hay = " ".join(hay_parts)
+
+                phone_digits = "".join(
+                    "".join(ch for ch in p.value if ch.isdigit())
+                    for p in contact.phones
+                )
+
+                if needle in hay:
+                    matches.append(contact)
+                elif digits_needle and digits_needle in phone_digits:
+                    matches.append(contact)
+
+        return ListContactsResponse(
+            contacts=matches,
+            addressbook=addressbook or "*",
+            total_count=len(matches),
+        )
+
+    @mcp.tool(
         title="Create Address Book",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
