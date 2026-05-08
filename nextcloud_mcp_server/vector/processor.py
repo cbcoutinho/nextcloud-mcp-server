@@ -3,7 +3,6 @@
 Processes documents from stream: fetches content, generates embeddings, stores in Qdrant.
 """
 
-import base64
 import logging
 import time
 import uuid
@@ -538,7 +537,9 @@ async def _index_document(
     # Initialize results containers
     dense_embeddings: list = []
     sparse_embeddings: list = []
-    chunk_images: dict[int, dict] = {}
+    # chunk_index -> {"bbox": list[(x0,y0,x1,y1)], "page": int}
+    # Bboxes are normalized to [0, 1] relative to page width/height.
+    chunk_bboxes: dict[int, dict] = {}
 
     # Determine if we need PDF highlighting
     is_pdf = doc_task.doc_type == "file" and content_type == "application/pdf"
@@ -570,8 +571,8 @@ async def _index_document(
             sparse_embeddings = await bm25_service.encode_batch(chunk_texts)
 
     async def generate_highlights():
-        """Generate highlighted page images for PDF chunks (CPU-bound)."""
-        nonlocal chunk_images
+        """Compute chunk bounding boxes for PDF chunks (CPU-bound, no rendering)."""
+        nonlocal chunk_bboxes
         if not is_pdf:
             return
 
@@ -585,58 +586,39 @@ async def _index_document(
                 "vector_sync.pdf_size": len(content_bytes),
             },
         ):
-            # Build chunk data for batch processing
-            # Format: (chunk_index, start_offset, end_offset, page_number, chunk_text)
             chunk_data: list[tuple[int, int, int, int | None, str]] = [
                 (i, chunk.start_offset, chunk.end_offset, chunk.page_number, chunk.text)
                 for i, chunk in enumerate(chunks)
                 if chunk.page_number is not None
             ]
 
-            # Get pre-computed page boundaries from document processor
             page_boundaries = file_metadata.get("page_boundaries")
             if not page_boundaries:
-                logger.warning("No page boundaries available, skipping highlighting")
+                logger.warning(
+                    "No page boundaries available, skipping bbox computation"
+                )
                 return
 
-            # Type narrowing: page_boundaries is guaranteed to be list[dict] here
             page_boundaries_list = cast(list[dict[str, Any]], page_boundaries)
 
-            logger.info(
-                f"Batch generating highlighted page images for {len(chunk_data)} PDF chunks"
-            )
+            logger.info(f"Computing chunk bboxes for {len(chunk_data)} PDF chunks")
 
-            # Run CPU-bound highlighting in thread pool
-            # Pass pre-computed page boundaries and full text to avoid re-processing the PDF
             batch_results = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
-                lambda: PDFHighlighter.highlight_chunks_batch(
+                lambda: PDFHighlighter.compute_chunk_bboxes_batch(
                     pdf_bytes=content_bytes,
                     chunks=chunk_data,
                     page_boundaries=page_boundaries_list,
                     full_text=content,
-                    color="yellow",
-                    zoom=2.0,
                 )
             )
 
-            # Convert results to storage format
-            for chunk_index, (
-                png_bytes,
-                actual_page_num,
-                highlight_count,
-            ) in batch_results.items():
-                image_base64 = base64.b64encode(png_bytes).decode("utf-8")
-                chunk_images[chunk_index] = {
-                    "image": image_base64,
+            for chunk_index, (bboxes, actual_page_num) in batch_results.items():
+                chunk_bboxes[chunk_index] = {
+                    "bbox": bboxes,
                     "page": actual_page_num,
-                    "highlights": highlight_count,
-                    "size": len(png_bytes),
                 }
 
-            logger.info(
-                f"Generated {len(chunk_images)}/{len(chunks)} highlighted page images "
-                f"(avg {sum(img['size'] for img in chunk_images.values()) // max(len(chunk_images), 1):,} bytes)"
-            )
+            logger.info(f"Computed bboxes for {len(chunk_bboxes)}/{len(chunks)} chunks")
 
     # Run all embedding/highlighting operations in parallel
     # - Dense embeddings: I/O bound (API call)
@@ -752,14 +734,15 @@ async def _index_document(
                         if doc_task.doc_type == "deck_card"
                         else {}
                     ),
-                    # Highlighted page image (PDF only)
+                    # Chunk bbox (PDF only) — normalized rectangles in [0,1]
+                    # relative to page width/height. Replaces the legacy
+                    # `highlighted_page_image` (Deck #76).
                     **(
                         {
-                            "highlighted_page_image": chunk_images[i]["image"],
-                            "highlighted_page_number": chunk_images[i]["page"],
-                            "highlight_count": chunk_images[i]["highlights"],
+                            "chunk_bbox": chunk_bboxes[i]["bbox"],
+                            "chunk_bbox_page": chunk_bboxes[i]["page"],
                         }
-                        if i in chunk_images
+                        if i in chunk_bboxes
                         else {}
                     ),
                 },
@@ -781,14 +764,14 @@ async def _index_document(
         )
 
     # Upsert to Qdrant in batches to avoid timeout with large payloads
-    # Each batch is limited to avoid WriteTimeout when sending large image payloads
-    BATCH_SIZE = 10  # ~2MB per batch with images
+    # Batch size kept small for safety; payloads are now small (no inline images).
+    BATCH_SIZE = 10
     with trace_operation(
         "vector_sync.qdrant_upsert",
         attributes={
             "vector_sync.point_count": len(points),
             "vector_sync.collection": settings.get_collection_name(),
-            "vector_sync.images_count": len(chunk_images),
+            "vector_sync.bboxes_count": len(chunk_bboxes),
             "vector_sync.batch_size": BATCH_SIZE,
         },
     ):

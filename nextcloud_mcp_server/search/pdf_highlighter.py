@@ -692,6 +692,111 @@ class PDFHighlighter:
                     )
 
     @staticmethod
+    def compute_chunk_bboxes_batch(
+        pdf_bytes: bytes,
+        chunks: list[tuple[int, int, int, int | None, str]],
+        page_boundaries: list[dict],
+        full_text: str,
+    ) -> dict[int, tuple[list[tuple[float, float, float, float]], int]]:
+        """Compute normalized bounding boxes for chunks without rendering.
+
+        Lightweight alternative to highlight_chunks_batch — opens the PDF,
+        locates each chunk on its assigned page using the same text-search
+        path as the highlighter (`_find_chunk_bbox`), and returns
+        page-normalized rectangles. Skips the get_pixmap + PIL pipeline
+        entirely, so no PNG bytes are produced.
+
+        Args:
+            pdf_bytes: PDF file bytes.
+            chunks: List of (chunk_index, start_offset, end_offset,
+                stored_page_number, chunk_text). chunk_index is the dict key.
+            page_boundaries: Pre-computed page boundaries from the document
+                processor; each entry is {"page", "start_offset", "end_offset"}.
+            full_text: Full document text (for cross-page chunk handling).
+
+        Returns:
+            dict mapping chunk_index to (normalized_bboxes, page_number).
+            Each bbox is (x0, y0, x1, y1) in [0, 1] relative to page width
+            and height, top-left origin. Chunks whose bbox cannot be located
+            are omitted from the result.
+        """
+        results: dict[int, tuple[list[tuple[float, float, float, float]], int]] = {}
+
+        if not chunks:
+            return results
+
+        temp_pdf_path = None
+        try:
+            temp_dir = Path(tempfile.mkdtemp(prefix="pdf_bbox_batch_"))
+            temp_pdf_path = temp_dir / "pdf.pdf"
+            temp_pdf_path.write_bytes(pdf_bytes)
+
+            doc = pymupdf.open(temp_pdf_path)
+
+            for (
+                chunk_index,
+                start_offset,
+                end_offset,
+                stored_page_num,
+                chunk_text,
+            ) in chunks:
+                chunk_page_info = PDFHighlighter.find_chunk_page(
+                    start_offset, end_offset, page_boundaries
+                )
+                if not chunk_page_info:
+                    logger.debug(f"Chunk {chunk_index}: not found on any page")
+                    continue
+
+                page_num = chunk_page_info["page_num"]
+                page_boundary = page_boundaries[page_num - 1]
+                page_text_length = (
+                    page_boundary["end_offset"] - page_boundary["start_offset"]
+                )
+
+                # Page-relative slice (handles chunks that span page boundaries)
+                chunk_start_on_page = max(start_offset, page_boundary["start_offset"])
+                chunk_end_on_page = min(end_offset, page_boundary["end_offset"])
+                page_relative_text = full_text[chunk_start_on_page:chunk_end_on_page]
+
+                page = doc[page_num - 1]
+                bbox = PDFHighlighter._find_chunk_bbox(
+                    page,
+                    page_relative_text,
+                    chunk_page_info["page_relative_start"],
+                    chunk_page_info["page_relative_end"],
+                    page_text_length,
+                )
+
+                if bbox is None:
+                    continue
+
+                page_rect = page.rect
+                w = page_rect.width or 1.0
+                h = page_rect.height or 1.0
+                normalized = (
+                    bbox[0] / w,
+                    bbox[1] / h,
+                    bbox[2] / w,
+                    bbox[3] / h,
+                )
+                results[chunk_index] = ([normalized], page_num)
+
+            doc.close()
+            logger.info(f"Computed bboxes for {len(results)}/{len(chunks)} chunks")
+            return results
+
+        except Exception as e:
+            logger.error(f"Error computing chunk bboxes: {e}", exc_info=True)
+            return results
+
+        finally:
+            if temp_pdf_path and temp_pdf_path.parent.exists():
+                try:
+                    shutil.rmtree(temp_pdf_path.parent)
+                except Exception as e:
+                    logger.warning(f"Failed to clean up temp dir: {e}")
+
+    @staticmethod
     def highlight_chunks_batch(
         pdf_bytes: bytes,
         chunks: list[tuple[int, int, int, int | None, str]],
