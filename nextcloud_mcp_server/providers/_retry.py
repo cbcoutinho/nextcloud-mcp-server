@@ -69,7 +69,8 @@ def retry_on_rate_limit(
             logger.error(
                 "%s rate limit exceeded after %d attempts", provider_name, MAX_RETRIES
             )
-            assert last_error is not None  # The loop above always assigns it.
+            if last_error is None:  # pragma: no cover — loop above always sets this
+                raise RuntimeError("retry loop exited without capturing an error")
             raise last_error
 
         return wrapper

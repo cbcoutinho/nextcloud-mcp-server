@@ -6,6 +6,10 @@ can be added later if needed; see ADR-015.
 
 import logging
 
+# mistralai 2.x ships no top-level __init__.py, so `from mistralai import …`
+# raises ImportError. The canonical public paths are `mistralai.client` (which
+# re-exports the SDK class via `client/__init__.py`) and `mistralai.client.errors`
+# (which lazy-loads SDKError). There is no `mistralai.models` subpackage either.
 from mistralai.client import Mistral
 from mistralai.client.errors import SDKError
 

@@ -583,10 +583,12 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `VECTOR_SYNC_QUEUE_MAX_SIZE` | ⚠️ Optional | `10000` | Max queued documents |
 | `OLLAMA_BASE_URL` | ⚠️ Optional | - | Ollama API endpoint for embeddings |
 | `OLLAMA_EMBEDDING_MODEL` | ⚠️ Optional | `nomic-embed-text` | Embedding model to use |
+| `OLLAMA_GENERATION_MODEL` | ⚠️ Optional | - | Ollama model for text generation |
 | `OLLAMA_VERIFY_SSL` | ⚠️ Optional | `true` | Verify SSL certificates |
 | `OPENAI_API_KEY` | ⚠️ Optional | - | OpenAI API key (selects OpenAI provider) |
 | `OPENAI_BASE_URL` | ⚠️ Optional | - | OpenAI base URL override (for compatible APIs) |
 | `OPENAI_EMBEDDING_MODEL` | ⚠️ Optional | `text-embedding-3-small` | OpenAI embedding model |
+| `OPENAI_GENERATION_MODEL` | ⚠️ Optional | - | OpenAI model for text generation |
 | `MISTRAL_API_KEY` | ⚠️ Optional | - | Mistral API key (selects Mistral provider) |
 | `MISTRAL_EMBEDDING_MODEL` | ⚠️ Optional | `mistral-embed` | Mistral embedding model (1024-dim) |
 | `MISTRAL_BASE_URL` | ⚠️ Optional | - | Mistral base URL override (proxies, on-prem) |

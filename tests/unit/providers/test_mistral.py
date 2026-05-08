@@ -3,11 +3,13 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from mistralai.client.errors import SDKError
 
 from nextcloud_mcp_server.providers.mistral import (
     BATCH_SIZE,
     MISTRAL_EMBEDDING_DIMENSIONS,
     MistralProvider,
+    _is_rate_limit,
 )
 
 
@@ -196,3 +198,17 @@ async def test_mistral_base_url_passed_to_sdk(mocker):
         api_key="test-key",
         server_url="https://example.com/mistral",
     )
+
+
+@pytest.mark.unit
+def test_mistral_is_rate_limit_predicate():
+    """_is_rate_limit returns True only for SDKErrors with status_code == 429."""
+    err_429 = MagicMock(spec=SDKError)
+    err_429.status_code = 429
+    err_500 = MagicMock(spec=SDKError)
+    err_500.status_code = 500
+
+    assert _is_rate_limit(err_429) is True
+    assert _is_rate_limit(err_500) is False
+    # ValueError has no status_code attr → getattr returns None → False.
+    assert _is_rate_limit(ValueError()) is False

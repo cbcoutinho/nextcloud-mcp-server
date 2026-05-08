@@ -10,14 +10,14 @@ import logging
 
 from openai import AsyncOpenAI, RateLimitError
 
-from ._retry import retry_on_rate_limit as _retry_factory
+from ._retry import retry_on_rate_limit
 from .base import Provider
 
 logger = logging.getLogger(__name__)
 
 # OpenAI's RateLimitError is itself a 429-specific class, so the default
 # is_rate_limit predicate ("always True") matches the previous behavior.
-retry_on_rate_limit = _retry_factory(RateLimitError, provider_name="OpenAI")
+_retry_429 = retry_on_rate_limit(RateLimitError, provider_name="OpenAI")
 
 
 # Well-known embedding dimensions for OpenAI models
@@ -92,7 +92,7 @@ class OpenAIProvider(Provider):
         """Whether this provider supports text generation."""
         return self.generation_model is not None
 
-    @retry_on_rate_limit
+    @_retry_429
     async def embed(self, text: str) -> list[float]:
         """
         Generate embedding vector for text.
@@ -173,7 +173,7 @@ class OpenAIProvider(Provider):
 
         return all_embeddings
 
-    @retry_on_rate_limit
+    @_retry_429
     async def _embed_batch_request(self, batch: list[str]) -> list[list[float]]:
         """Make a single batch embedding request with retry logic."""
         assert self.embedding_model is not None  # Type narrowing
@@ -208,7 +208,7 @@ class OpenAIProvider(Provider):
             )
         return self._dimension
 
-    @retry_on_rate_limit
+    @_retry_429
     async def generate(self, prompt: str, max_tokens: int = 500) -> str:
         """
         Generate text from a prompt.

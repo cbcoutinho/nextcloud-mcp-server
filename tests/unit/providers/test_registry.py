@@ -69,8 +69,11 @@ def test_registry_picks_simple_with_custom_dimension(clean_provider_env):
 
 
 @pytest.mark.unit
-def test_registry_picks_mistral_when_api_key_set(clean_provider_env):
+def test_registry_picks_mistral_when_api_key_set(clean_provider_env, mocker):
     """MISTRAL_API_KEY alone is enough to select MistralProvider."""
+    # MistralProvider eagerly constructs the SDK client in __init__; stub it
+    # so the test doesn't depend on the SDK accepting arbitrary keys.
+    mocker.patch("nextcloud_mcp_server.providers.mistral.Mistral")
     clean_provider_env.setenv("MISTRAL_API_KEY", "test-key")
     _reload_config()
 
