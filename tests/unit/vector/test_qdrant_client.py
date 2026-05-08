@@ -401,7 +401,14 @@ async def test_backfill_logs_and_returns_when_scroll_raises(mocker, caplog):
     """
     client = mocker.AsyncMock()
     client.retrieve.return_value = []  # No sentinel — backfill must run
-    client.scroll.side_effect = RuntimeError("boom")
+
+    # An async-callable side_effect lets AsyncMock await the coroutine
+    # before the exception propagates; assigning a bare exception class
+    # leaks an un-awaited coroutine and trips RuntimeWarning at gc time.
+    async def _scroll_raises(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    client.scroll.side_effect = _scroll_raises
 
     with caplog.at_level("ERROR", logger="nextcloud_mcp_server.vector.qdrant_client"):
         await _backfill_doc_id_to_string(
@@ -413,8 +420,121 @@ async def test_backfill_logs_and_returns_when_scroll_raises(mocker, caplog):
     client.set_payload.assert_not_awaited()
     errors = [r for r in caplog.records if r.levelname == "ERROR"]
     assert len(errors) == 1
-    assert "doc_id backfill failed" in errors[0].getMessage()
+    assert "doc_id backfill scroll failed" in errors[0].getMessage()
     assert "test-collection" in errors[0].getMessage()
     # exc_info=True attaches the original exception to the log record.
     assert errors[0].exc_info is not None
     assert errors[0].exc_info[0] is RuntimeError
+
+
+@pytest.mark.unit
+async def test_backfill_logs_warning_when_sentinel_upsert_fails(mocker, caplog):
+    """Sentinel-write failure after a successful scroll logs WARNING, not ERROR.
+
+    A failure here means the data migration succeeded but the
+    short-circuit marker is missing. The data is correct; only the
+    marker is absent, so the next restart will re-scroll an
+    already-clean collection (idempotent zero-write) and retry the
+    upsert. Differentiating this from a genuine scroll failure prevents
+    an "ERROR — backfill failed" log line that contradicts the
+    successful data state.
+    """
+    client = mocker.AsyncMock()
+    client.retrieve.return_value = []  # No sentinel — backfill must run
+    client.scroll.return_value = ([], None)  # Empty scroll — clean collection
+
+    async def _upsert_raises(*args, **kwargs):
+        raise RuntimeError("sentinel write blip")
+
+    client.upsert.side_effect = _upsert_raises
+
+    with caplog.at_level("WARNING", logger="nextcloud_mcp_server.vector.qdrant_client"):
+        await _backfill_doc_id_to_string(
+            client, "test-collection", _backfill_dimension()
+        )
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "sentinel write failed" in warnings[0].getMessage()
+    assert "test-collection" in warnings[0].getMessage()
+    assert warnings[0].exc_info is not None
+    assert warnings[0].exc_info[0] is RuntimeError
+    # No ERROR — data state is correct, not a backfill failure.
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+
+@pytest.mark.unit
+async def test_backfill_emits_progress_log_every_20_batches(mocker, caplog):
+    """Long scrolls emit a progress INFO line every 20 batches.
+
+    Operators auditing a 50k+ point collection's startup migration need
+    proof the server isn't hung; a single start/end pair leaves a
+    minutes-long silence in the log. The progress line carries the
+    collection name, scanned count, and rewritten count so the same
+    log message also acts as a heartbeat.
+    """
+    client = mocker.AsyncMock()
+    client.retrieve.return_value = []
+
+    # Return 21 non-empty batches followed by an empty one to terminate
+    # the loop; every batch contains points already in str form so no
+    # set_payload calls happen — the test focuses on the progress log
+    # cadence, not the rewrite path.
+    str_point = SimpleNamespace(id=1, payload={"doc_id": "abc"})
+    batches: list[tuple[list[SimpleNamespace], int | None]] = [
+        ([str_point], 1) for _ in range(21)
+    ] + [([], None)]
+    client.scroll.side_effect = batches
+
+    with caplog.at_level("INFO", logger="nextcloud_mcp_server.vector.qdrant_client"):
+        await _backfill_doc_id_to_string(
+            client, "test-collection", _backfill_dimension()
+        )
+
+    progress_messages = [
+        r.getMessage()
+        for r in caplog.records
+        if "doc_id backfill progress on" in r.getMessage()
+    ]
+    # 21 batches → exactly one progress line at batch 20.
+    assert len(progress_messages) == 1
+    assert "scanned 20 points" in progress_messages[0]
+    assert "test-collection" in progress_messages[0]
+
+
+@pytest.mark.unit
+async def test_ensure_keyword_payload_indexes_summarises_failed_fields(mocker, caplog):
+    """A non-400 failure surfaces both as ERROR and a WARNING summary.
+
+    Per-field ERROR lines are easy to miss in startup noise; the
+    WARNING summary at the end of the loop names every field that
+    didn't get an index, so operators auditing the log can spot the
+    degraded state at a glance.
+    """
+    client = mocker.AsyncMock()
+    client.get_collection.return_value = SimpleNamespace(payload_schema={})
+    # Two of the three fields fail with 5xx; one succeeds.
+    call_count = {"n": 0}
+
+    async def _create_index(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] != 2:
+            raise _make_unexpected(500, b'{"status":{"error":"boom"}}')
+        return None
+
+    client.create_payload_index.side_effect = _create_index
+
+    with caplog.at_level("WARNING", logger="nextcloud_mcp_server.vector.qdrant_client"):
+        await _ensure_keyword_payload_indexes(client, "test-collection")
+
+    summary = [
+        r.getMessage()
+        for r in caplog.records
+        if "Payload index creation incomplete" in r.getMessage()
+    ]
+    assert len(summary) == 1
+    # Field order matches _KEYWORD_PAYLOAD_FIELDS = ("doc_id", "user_id", "doc_type")
+    assert "doc_id" in summary[0]
+    assert "doc_type" in summary[0]
+    assert "user_id" not in summary[0]  # The one that succeeded.
+    assert "test-collection" in summary[0]

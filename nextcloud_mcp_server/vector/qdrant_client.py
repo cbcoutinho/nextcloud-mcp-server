@@ -53,6 +53,7 @@ async def _ensure_keyword_payload_indexes(
     """
     collection_info = await client.get_collection(collection_name)
     existing_schema = collection_info.payload_schema or {}
+    failed_fields: list[str] = []
 
     for field in _KEYWORD_PAYLOAD_FIELDS:
         if field in existing_schema:
@@ -86,6 +87,20 @@ async def _ensure_keyword_payload_indexes(
                     e.status_code,
                     body_text,
                 )
+                failed_fields.append(field)
+
+    # A single per-field ERROR line is easy to miss in startup noise. Surface
+    # the partial-failure summary at WARNING so operators auditing the log
+    # for the post-startup state see a single line listing every missing
+    # index. See docs/configuration.md for the recovery procedure.
+    if failed_fields:
+        logger.warning(
+            "Payload index creation incomplete on '%s' — fields without indexes: %s. "
+            "Searches filtering on these fields will fail with HTTP 400 "
+            "(`Index required but not found`) until the next successful restart.",
+            collection_name,
+            ", ".join(failed_fields),
+        )
 
 
 async def _backfill_doc_id_to_string(
@@ -136,10 +151,15 @@ async def _backfill_doc_id_to_string(
 
     rewritten = 0
     scanned = 0
+    batch_num = 0
     # Qdrant scroll returns next_offset as PointId | None — keep it untyped here
     # so the qdrant client's full union (UUID/int/str/PointId) flows through.
     next_offset = None
     batch_size = 256
+    # Log progress every N batches so a long-running migration on a large
+    # collection (≥ 50k points) doesn't look like a startup hang. At batch
+    # size 256, every 20 batches ≈ 5 120 points scanned.
+    progress_log_every = 20
 
     # A transient Qdrant failure mid-scroll (network blip, timeout) must not
     # crash startup. The singleton in get_qdrant_client is already assigned
@@ -147,7 +167,10 @@ async def _backfill_doc_id_to_string(
     # a half-initialized state where the next call returns the cached
     # client and skips this migration entirely. Catch broadly, log with
     # exc_info, and return without writing the sentinel — the next process
-    # restart will retry from scratch.
+    # restart will retry from scratch. The sentinel write is NOT covered by
+    # this try/except: a failure there means the data migration succeeded
+    # and only the short-circuit marker is missing, which is a different
+    # (and milder) condition than a scroll failure.
     try:
         while True:
             points, next_offset = await client.scroll(
@@ -159,6 +182,8 @@ async def _backfill_doc_id_to_string(
             )
             if not points:
                 break
+
+            batch_num += 1
 
             # Group by stringified value so points sharing a doc_id (one document
             # → many chunks) collapse into a single set_payload call. Point IDs
@@ -189,40 +214,61 @@ async def _backfill_doc_id_to_string(
                 )
                 rewritten += len(point_ids)
 
+            if batch_num % progress_log_every == 0:
+                logger.info(
+                    "doc_id backfill progress on '%s': scanned %d points, "
+                    "rewrote %d so far",
+                    collection_name,
+                    scanned,
+                    rewritten,
+                )
+
             if next_offset is None:
                 break
-
-        # Write the sentinel after a successful scroll so a future restart can
-        # short-circuit. Empty sparse vector mirrors the placeholder.py
-        # convention (vector/placeholder.py); zero dense vector is fine
-        # because the sentinel never participates in a search (no user_id /
-        # doc_id / doc_type payload to match).
-        sentinel_point = PointStruct(
-            id=_DOC_ID_BACKFILL_SENTINEL_ID,
-            vector={
-                "dense": [0.0] * dimension,
-                "sparse": models.SparseVector(indices=[], values=[]),
-            },
-            payload=dict(_DOC_ID_BACKFILL_SENTINEL_PAYLOAD),
+    except Exception:
+        logger.error(
+            "doc_id backfill scroll failed on '%s'; will retry on next restart",
+            collection_name,
+            exc_info=True,
         )
+        return
+
+    # Data backfill succeeded — write the sentinel so a future restart can
+    # short-circuit. Empty sparse vector mirrors the placeholder.py
+    # convention (vector/placeholder.py); zero dense vector is fine
+    # because the sentinel never participates in a search (no user_id /
+    # doc_id / doc_type payload to match). A failure here is non-fatal:
+    # the data is correct; only the short-circuit marker is missing, so
+    # the next restart will re-scroll an already-clean collection (idempotent
+    # zero-write) before retrying the upsert.
+    sentinel_point = PointStruct(
+        id=_DOC_ID_BACKFILL_SENTINEL_ID,
+        vector={
+            "dense": [0.0] * dimension,
+            "sparse": models.SparseVector(indices=[], values=[]),
+        },
+        payload=dict(_DOC_ID_BACKFILL_SENTINEL_PAYLOAD),
+    )
+    try:
         await client.upsert(
             collection_name=collection_name,
             points=[sentinel_point],
             wait=True,
         )
-
-        logger.info(
-            "doc_id backfill complete: rewrote %d/%d payloads from int to str",
-            rewritten,
-            scanned,
-        )
     except Exception:
-        logger.error(
-            "doc_id backfill failed on '%s'; will retry on next restart",
+        logger.warning(
+            "doc_id backfill data succeeded on '%s' but sentinel write failed; "
+            "next restart will re-scroll (idempotent zero-write on clean collection)",
             collection_name,
             exc_info=True,
         )
         return
+
+    logger.info(
+        "doc_id backfill complete: rewrote %d/%d payloads from int to str",
+        rewritten,
+        scanned,
+    )
 
 
 async def get_qdrant_client() -> AsyncQdrantClient:
