@@ -7,46 +7,17 @@ Supports:
 """
 
 import logging
-from functools import wraps
 
-import anyio
 from openai import AsyncOpenAI, RateLimitError
 
+from ._retry import retry_on_rate_limit
 from .base import Provider
 
 logger = logging.getLogger(__name__)
 
-# Rate limit retry configuration
-MAX_RETRIES = 5
-INITIAL_RETRY_DELAY = 2.0  # seconds
-MAX_RETRY_DELAY = 60.0  # seconds
-
-
-def retry_on_rate_limit(func):
-    """Decorator to retry on OpenAI rate limit errors with exponential backoff."""
-
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        retry_delay = INITIAL_RETRY_DELAY
-        last_error: Exception | None = None
-
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                return await func(*args, **kwargs)
-            except RateLimitError as e:
-                last_error = e
-                if attempt < MAX_RETRIES:
-                    logger.warning(
-                        f"Rate limit hit (attempt {attempt}/{MAX_RETRIES}), "
-                        f"retrying in {retry_delay:.1f}s..."
-                    )
-                    await anyio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, MAX_RETRY_DELAY)
-
-        logger.error(f"Rate limit exceeded after {MAX_RETRIES} attempts")
-        raise last_error  # type: ignore[misc]
-
-    return wrapper
+# OpenAI's RateLimitError is itself a 429-specific class, so the default
+# is_rate_limit predicate ("always True") matches the previous behavior.
+_retry_429 = retry_on_rate_limit(RateLimitError, provider_name="OpenAI")
 
 
 # Well-known embedding dimensions for OpenAI models
@@ -106,9 +77,12 @@ class OpenAIProvider(Provider):
             self._dimension = OPENAI_EMBEDDING_DIMENSIONS[embedding_model]
 
         logger.info(
-            f"Initialized OpenAI provider: base_url={base_url or 'default'} "
-            f"(embedding_model={embedding_model}, generation_model={generation_model}, "
-            f"dimension={self._dimension})"
+            "Initialized OpenAI provider: base_url=%s "
+            "(embedding_model=%s, generation_model=%s, dimension=%s)",
+            base_url or "default",
+            embedding_model,
+            generation_model,
+            self._dimension,
         )
 
     @property
@@ -121,7 +95,7 @@ class OpenAIProvider(Provider):
         """Whether this provider supports text generation."""
         return self.generation_model is not None
 
-    @retry_on_rate_limit
+    @_retry_429
     async def embed(self, text: str) -> list[float]:
         """
         Generate embedding vector for text.
@@ -152,8 +126,9 @@ class OpenAIProvider(Provider):
         if self._dimension is None:
             self._dimension = len(embedding)
             logger.info(
-                f"Detected embedding dimension: {self._dimension} "
-                f"for model {self.embedding_model}"
+                "Detected embedding dimension: %d for model %s",
+                self._dimension,
+                self.embedding_model,
             )
 
         return embedding
@@ -196,13 +171,14 @@ class OpenAIProvider(Provider):
             if self._dimension is None and batch_embeddings:
                 self._dimension = len(batch_embeddings[0])
                 logger.info(
-                    f"Detected embedding dimension: {self._dimension} "
-                    f"for model {self.embedding_model}"
+                    "Detected embedding dimension: %d for model %s",
+                    self._dimension,
+                    self.embedding_model,
                 )
 
         return all_embeddings
 
-    @retry_on_rate_limit
+    @_retry_429
     async def _embed_batch_request(self, batch: list[str]) -> list[list[float]]:
         """Make a single batch embedding request with retry logic."""
         assert self.embedding_model is not None  # Type narrowing
@@ -237,7 +213,7 @@ class OpenAIProvider(Provider):
             )
         return self._dimension
 
-    @retry_on_rate_limit
+    @_retry_429
     async def generate(self, prompt: str, max_tokens: int = 500) -> str:
         """
         Generate text from a prompt.

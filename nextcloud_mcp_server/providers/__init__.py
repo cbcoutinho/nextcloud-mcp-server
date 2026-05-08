@@ -3,6 +3,7 @@
 from .anthropic import AnthropicProvider
 from .base import Provider
 from .bedrock import BedrockProvider
+from .mistral import MistralProvider
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 from .registry import get_provider, reset_provider
@@ -13,6 +14,7 @@ __all__ = [
     "OllamaProvider",
     "OpenAIProvider",
     "AnthropicProvider",
+    "MistralProvider",
     "SimpleProvider",
     "BedrockProvider",
     "get_provider",

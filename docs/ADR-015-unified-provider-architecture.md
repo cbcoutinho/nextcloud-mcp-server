@@ -118,9 +118,15 @@ class ProviderRegistry:
     @staticmethod
     def create_provider() -> Provider:
         # 1. Bedrock (AWS_REGION or BEDROCK_*_MODEL)
-        # 2. Ollama (OLLAMA_BASE_URL)
-        # 3. Simple (fallback)
+        # 2. OpenAI (OPENAI_API_KEY)
+        # 3. Mistral (MISTRAL_API_KEY)
+        # 4. Ollama (OLLAMA_BASE_URL)
+        # 5. Simple (fallback)
 ```
+
+Configuration is sourced via the dynaconf-backed `Settings` dataclass in
+`config.py`; the registry reads `get_settings()` rather than `os.getenv`
+directly, so settings files and env vars share one resolution path.
 
 **Environment Variables:**
 
@@ -130,6 +136,17 @@ class ProviderRegistry:
 - `AWS_SECRET_ACCESS_KEY`: AWS secret key (optional)
 - `BEDROCK_EMBEDDING_MODEL`: Model ID for embeddings (e.g., "amazon.titan-embed-text-v2:0")
 - `BEDROCK_GENERATION_MODEL`: Model ID for text generation (e.g., "anthropic.claude-3-sonnet-20240229-v1:0")
+
+**OpenAI:**
+- `OPENAI_API_KEY`: OpenAI API key (or `GITHUB_TOKEN` for GitHub Models)
+- `OPENAI_BASE_URL`: Optional base URL override for OpenAI-compatible APIs
+- `OPENAI_EMBEDDING_MODEL`: Embedding model (default: "text-embedding-3-small")
+- `OPENAI_GENERATION_MODEL`: Generation model (e.g., "gpt-4o-mini")
+
+**Mistral (embeddings only):**
+- `MISTRAL_API_KEY`: Mistral API key from console.mistral.ai
+- `MISTRAL_EMBEDDING_MODEL`: Embedding model (default: "mistral-embed", 1024-dim)
+- `MISTRAL_BASE_URL`: Optional server URL override (proxies, on-prem)
 
 **Ollama:**
 - `OLLAMA_BASE_URL`: Ollama API base URL (e.g., "http://localhost:11434")
