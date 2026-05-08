@@ -578,9 +578,6 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                 # Prefer chunk_index for the highlighted-image lookup (always indexed);
                 # fall back to (chunk_start_offset, chunk_end_offset) when not provided.
                 if chunk_index is not None:
-                    chunk_filter = FieldCondition(
-                        key="chunk_index", match=MatchValue(value=chunk_index)
-                    )
                     points_response = await qdrant_client.scroll(
                         collection_name=settings.get_collection_name(),
                         scroll_filter=Filter(
@@ -596,7 +593,10 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                                     key="doc_type",
                                     match=MatchValue(value=doc_type),
                                 ),
-                                chunk_filter,
+                                FieldCondition(
+                                    key="chunk_index",
+                                    match=MatchValue(value=chunk_index),
+                                ),
                             ]
                         ),
                         limit=1,
@@ -614,6 +614,10 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                                 ),
                                 FieldCondition(
                                     key="user_id", match=MatchValue(value=user_id)
+                                ),
+                                FieldCondition(
+                                    key="doc_type",
+                                    match=MatchValue(value=doc_type),
                                 ),
                                 FieldCondition(
                                     key="chunk_start_offset",

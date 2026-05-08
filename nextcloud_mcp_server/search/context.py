@@ -274,6 +274,11 @@ async def get_chunk_with_context(
     # Effective chunk_index for adjacent lookups, marker insertion, and the
     # response payload — keep `chunk_index is not None` distinct from this so
     # the gate at line ~280 still controls *whether* to take the indexed path.
+    # NOTE: when the caller doesn't supply chunk_index, this defaults to 0, so
+    # the doc-text fallback path will report the chunk as "0/N" in markers and
+    # the response payload regardless of its actual position. Callers that
+    # need accurate position metadata in the fallback path must pass
+    # chunk_index. See PR #767 review.
     effective_chunk_index = chunk_index if chunk_index is not None else 0
 
     # Try to get chunk from Qdrant (fast path).
@@ -285,12 +290,20 @@ async def get_chunk_with_context(
             chunk_text = await _get_chunk_by_index_from_qdrant(
                 user_id, doc_id_int, doc_type, chunk_index
             )
-        if chunk_text is None:
+        # Skip the offset fallback for files when the indexed lookup was
+        # already attempted: Qdrant Cloud's strict mode requires an index on
+        # filtered fields, and chunk_start/end_offset aren't indexed there, so
+        # the call returns 400 and surfaces a misleading logger.error. The
+        # file fast-fail below correctly handles the miss without it.
+        if chunk_text is None and not (chunk_index is not None and doc_type == "file"):
             chunk_text = await _get_chunk_from_qdrant(
                 user_id, doc_id_int, doc_type, chunk_start, chunk_end
             )
 
-    if chunk_text and doc_id_int is not None:
+    if chunk_text:
+        # chunk_text can only be non-None inside the `if doc_id_int is not None:`
+        # block above, so doc_id_int is guaranteed non-None here. Narrow for ty.
+        assert doc_id_int is not None
         logger.info(
             f"Retrieved chunk from Qdrant cache for {doc_type} {doc_id} "
             f"(avoids document re-fetch/re-parse)"
@@ -389,6 +402,16 @@ async def get_chunk_with_context(
         f"Falling back to document fetch for {doc_type} {doc_id} "
         f"(Qdrant cache miss, possibly legacy data)"
     )
+
+    # When chunk_index isn't supplied, the response and markers will report
+    # this chunk as 0/N regardless of its actual position (effective_chunk_index
+    # defaulted to 0 above). Surface this so callers can detect the inaccuracy.
+    if chunk_index is None:
+        logger.warning(
+            f"chunk_index not supplied for {doc_type} {doc_id} doc-text "
+            f"fallback; position metadata in response will default to "
+            f"0/{total_chunks}"
+        )
 
     # Fetch full document text (notes, deck cards, news items, etc.)
     full_text = await _fetch_document_text(nc_client, doc_id, doc_type, user_id)

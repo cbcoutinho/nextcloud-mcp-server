@@ -673,6 +673,10 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
                                     key="user_id", match=MatchValue(value=username)
                                 ),
                                 FieldCondition(
+                                    key="doc_type",
+                                    match=MatchValue(value=doc_type),
+                                ),
+                                FieldCondition(
                                     key="chunk_start_offset",
                                     match=MatchValue(value=start),
                                 ),
