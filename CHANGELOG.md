@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.82.0 (2026-05-08)
+
+### Feat
+
+- **providers**: add Mistral embedding provider, route registry through dynaconf
+
+### Refactor
+
+- **providers**: address PR #772 review round 3 — hermetic test, lazy logging, defensive-guard tests
+- **providers**: address PR #772 review round 2 — guard, naming, docs, tests
+- **providers**: address PR #772 review — shared retry, cleaner imports, no-op close
+
 ## v0.81.0 (2026-05-07)
 
 ### Feat
