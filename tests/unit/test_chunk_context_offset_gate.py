@@ -269,6 +269,95 @@ class TestNullableChunkIndexPropagation:
         assert "Chunk ?/10" in result.marked_text
 
 
+class TestAdjacentChunkBoundary:
+    """Boundary cases for the `chunk_index > 0` / `chunk_index < total_chunks - 1`
+    gates that decide whether to fetch the previous / next chunk via Qdrant.
+    See PR #767 review (🟡 missing boundary tests).
+    """
+
+    async def test_first_chunk_skips_before_fetch_only(self, mock_nc_client):
+        """At chunk_index=0 the before-fetch gate is closed (no previous
+        chunk exists) but the after-fetch still runs.
+        """
+        with (
+            patch.object(
+                context_module,
+                "_get_chunk_by_index_from_qdrant",
+                new_callable=AsyncMock,
+                side_effect=[
+                    "current chunk text",  # primary lookup
+                    "next chunk text",  # adjacent after only
+                ],
+            ) as mock_indexed,
+            patch.object(
+                context_module,
+                "_get_chunk_from_qdrant",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            result = await get_chunk_with_context(
+                nc_client=mock_nc_client,
+                user_id="alice",
+                doc_id=42,
+                doc_type="note",
+                chunk_start=0,
+                chunk_end=10,
+                chunk_index=0,
+                total_chunks=10,
+            )
+
+        assert result is not None
+        assert result.chunk_index == 0
+        assert result.has_before_truncation is False
+        assert result.has_after_truncation is False
+        assert mock_indexed.await_count == 2, (
+            "expected primary lookup + after-fetch only (no before-fetch at index 0)"
+        )
+        assert "Chunk 1 of 10" in result.marked_text
+
+    async def test_last_chunk_skips_after_fetch_only(self, mock_nc_client):
+        """At chunk_index=total_chunks-1 the after-fetch gate is closed (no
+        next chunk exists) but the before-fetch still runs.
+        """
+        with (
+            patch.object(
+                context_module,
+                "_get_chunk_by_index_from_qdrant",
+                new_callable=AsyncMock,
+                side_effect=[
+                    "current chunk text",  # primary lookup
+                    "previous chunk text",  # adjacent before only
+                ],
+            ) as mock_indexed,
+            patch.object(
+                context_module,
+                "_get_chunk_from_qdrant",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            result = await get_chunk_with_context(
+                nc_client=mock_nc_client,
+                user_id="alice",
+                doc_id=42,
+                doc_type="note",
+                chunk_start=0,
+                chunk_end=10,
+                chunk_index=9,
+                total_chunks=10,
+            )
+
+        assert result is not None
+        assert result.chunk_index == 9
+        assert result.has_before_truncation is False
+        assert result.has_after_truncation is False
+        assert mock_indexed.await_count == 2, (
+            "expected primary lookup + before-fetch only (no after-fetch at last index)"
+        )
+        assert "Chunk 10 of 10" in result.marked_text
+
+
 class TestPositionMarkers:
     """Direct tests for `_insert_position_markers` rendering when chunk_index
     is None vs explicit.

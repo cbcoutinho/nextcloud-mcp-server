@@ -7,8 +7,6 @@ position markers for better visualization and understanding of search results.
 import logging
 from dataclasses import dataclass
 
-import pymupdf
-import pymupdf4llm
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.client import NextcloudClient
@@ -473,10 +471,14 @@ async def _fetch_document_text(
 ) -> str | None:
     """Fetch full text content of a document.
 
+    Note: doc_type=="file" is short-circuited in get_chunk_with_context before
+    this function is called (re-parsing PDFs is too slow for the request
+    timeout), so no file branch exists here.
+
     Args:
         nc_client: Authenticated Nextcloud client
-        doc_id: Document ID (note ID or file path)
-        doc_type: Type of document ("note", "file", etc.)
+        doc_id: Document ID
+        doc_type: Type of document ("note", "news_item", "deck_card")
 
     Returns:
         Full document text, or None if document cannot be retrieved
@@ -490,55 +492,6 @@ async def _fetch_document_text(
             title = note.get("title", "")
             content = note.get("content", "")
             return f"{title}\n\n{content}"
-        elif doc_type == "file":
-            # Fetch file content via WebDAV
-            try:
-                file_path = str(doc_id)
-                file_content, content_type = await nc_client.webdav.read_file(file_path)
-
-                # Check if it's a PDF (by content type or file extension)
-                is_pdf = (
-                    content_type and "pdf" in content_type.lower()
-                ) or file_path.lower().endswith(".pdf")
-
-                if is_pdf:
-                    # Extract text from PDF using PyMuPDF
-                    # IMPORTANT: Use pymupdf4llm.to_markdown() to match indexing extraction
-                    # This ensures character offsets align between indexed chunks and retrieval
-
-                    logger.debug(f"Extracting text from PDF: {file_path}")
-                    pdf_doc = pymupdf.open(stream=file_content, filetype="pdf")
-                    text_parts = []
-                    page_count = pdf_doc.page_count
-
-                    # Extract each page as markdown (same as indexing)
-                    for page_num in range(page_count):
-                        page_md = pymupdf4llm.to_markdown(
-                            pdf_doc,
-                            pages=[page_num],
-                            write_images=False,  # Don't need images for context
-                            page_chunks=False,
-                        )
-                        text_parts.append(page_md)
-
-                    pdf_doc.close()
-
-                    # Join pages (no separator - matches indexing)
-                    full_text = "".join(text_parts)
-                    logger.debug(
-                        f"Extracted {len(full_text)} characters from "
-                        f"{page_count} pages in {file_path}"
-                    )
-                    return full_text
-                else:
-                    # Assume it's a text file, decode to string
-                    logger.debug(f"Decoding text file: {file_path}")
-                    return file_content.decode("utf-8", errors="replace")
-            except Exception as e:
-                logger.error(
-                    f"Error fetching file content for {doc_id}: {e}", exc_info=True
-                )
-                return None
         elif doc_type == "news_item":
             # Fetch news item by ID
             item = await nc_client.news.get_item(int(doc_id))

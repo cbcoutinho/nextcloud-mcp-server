@@ -632,7 +632,6 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
             try:
                 settings = get_settings()
                 qdrant_client = await get_qdrant_client()
-                username = request.user.display_name
 
                 # Prefer chunk_index for the chunk-bbox lookup (always indexed);
                 # fall back to (chunk_start_offset, chunk_end_offset) when not provided.
@@ -646,7 +645,7 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
                                     key="doc_id", match=MatchValue(value=doc_id_int)
                                 ),
                                 FieldCondition(
-                                    key="user_id", match=MatchValue(value=username)
+                                    key="user_id", match=MatchValue(value=user_id)
                                 ),
                                 FieldCondition(
                                     key="chunk_index",
@@ -674,7 +673,7 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
                                     key="doc_id", match=MatchValue(value=doc_id_int)
                                 ),
                                 FieldCondition(
-                                    key="user_id", match=MatchValue(value=username)
+                                    key="user_id", match=MatchValue(value=user_id)
                                 ),
                                 FieldCondition(
                                     key="chunk_start_offset",
