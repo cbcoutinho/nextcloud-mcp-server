@@ -151,7 +151,7 @@ async def test_mistral_get_dimension_unknown_model_detected(mock_mistral_client)
 
 
 @pytest.mark.unit
-async def test_mistral_no_embeddings_disabled():
+async def test_mistral_no_embeddings_disabled(mock_mistral_client):
     """Setting embedding_model=None disables the embedding capability."""
     provider = MistralProvider(api_key="test-key", embedding_model=None)
     assert provider.supports_embeddings is False

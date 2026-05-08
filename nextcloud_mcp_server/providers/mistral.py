@@ -5,54 +5,14 @@ can be added later if needed; see ADR-015.
 """
 
 import logging
-from functools import wraps
 
-import anyio
 from mistralai.client import Mistral
-from mistralai.client.errors.sdkerror import SDKError
+from mistralai.client.errors import SDKError
 
+from ._retry import retry_on_rate_limit
 from .base import Provider
 
 logger = logging.getLogger(__name__)
-
-MAX_RETRIES = 5
-INITIAL_RETRY_DELAY = 2.0
-MAX_RETRY_DELAY = 60.0
-
-
-def retry_on_rate_limit(func):
-    """Retry on Mistral 429 (rate limit) responses with exponential backoff."""
-
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        retry_delay = INITIAL_RETRY_DELAY
-        last_error: Exception | None = None
-
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                return await func(*args, **kwargs)
-            except SDKError as e:
-                # SDKError carries a status_code attribute populated from the
-                # raw response. Only 429 is retryable here.
-                status = getattr(e, "status_code", None)
-                if status != 429:
-                    raise
-                last_error = e
-                if attempt < MAX_RETRIES:
-                    logger.warning(
-                        "Mistral rate limit hit (attempt %d/%d), retrying in %.1fs...",
-                        attempt,
-                        MAX_RETRIES,
-                        retry_delay,
-                    )
-                    await anyio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, MAX_RETRY_DELAY)
-
-        logger.error("Mistral rate limit exceeded after %d attempts", MAX_RETRIES)
-        raise last_error  # type: ignore[misc]
-
-    return wrapper
-
 
 # Well-known Mistral embedding model dimensions
 MISTRAL_EMBEDDING_DIMENSIONS: dict[str, int] = {
@@ -62,6 +22,18 @@ MISTRAL_EMBEDDING_DIMENSIONS: dict[str, int] = {
 # Conservative chunk size for batch embeddings. Mistral allows large batches,
 # but we keep this in line with sibling providers (OpenAI=100, Ollama=32).
 BATCH_SIZE = 64
+
+_NO_EMBEDDING_MODEL_MSG = "Embedding not supported - no embedding_model configured"
+
+
+def _is_rate_limit(exc: BaseException) -> bool:
+    """True only for HTTP 429 SDKErrors."""
+    return getattr(exc, "status_code", None) == 429
+
+
+_retry_429 = retry_on_rate_limit(
+    SDKError, is_rate_limit=_is_rate_limit, provider_name="Mistral"
+)
 
 
 class MistralProvider(Provider):
@@ -114,13 +86,11 @@ class MistralProvider(Provider):
     def supports_generation(self) -> bool:
         return False
 
-    @retry_on_rate_limit
+    @_retry_429
     async def embed(self, text: str) -> list[float]:
         """Generate an embedding for a single text."""
         if not self.supports_embeddings:
-            raise NotImplementedError(
-                "Embedding not supported - no embedding_model configured"
-            )
+            raise NotImplementedError(_NO_EMBEDDING_MODEL_MSG)
 
         assert self.embedding_model is not None
         response = await self.client.embeddings.create_async(
@@ -149,9 +119,7 @@ class MistralProvider(Provider):
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for multiple texts, chunking by ``BATCH_SIZE``."""
         if not self.supports_embeddings:
-            raise NotImplementedError(
-                "Embedding not supported - no embedding_model configured"
-            )
+            raise NotImplementedError(_NO_EMBEDDING_MODEL_MSG)
 
         if not texts:
             return []
@@ -172,7 +140,7 @@ class MistralProvider(Provider):
 
         return all_embeddings
 
-    @retry_on_rate_limit
+    @_retry_429
     async def _embed_batch_request(self, batch: list[str]) -> list[list[float]]:
         """Single batch request with rate-limit retry."""
         assert self.embedding_model is not None
@@ -202,9 +170,7 @@ class MistralProvider(Provider):
 
     def get_dimension(self) -> int:
         if not self.supports_embeddings:
-            raise NotImplementedError(
-                "Embedding not supported - no embedding_model configured"
-            )
+            raise NotImplementedError(_NO_EMBEDDING_MODEL_MSG)
 
         if self._dimension is None:
             raise RuntimeError(
@@ -221,11 +187,9 @@ class MistralProvider(Provider):
         )
 
     async def close(self) -> None:
-        # The Mistral SDK manages its own httpx client lifecycle; close it
-        # via the SDK's context-manager hook if present, otherwise no-op.
-        close = getattr(self.client, "__aexit__", None)
-        if close is not None:
-            try:
-                await close(None, None, None)
-            except Exception:  # pragma: no cover - best-effort cleanup
-                logger.debug("Mistral client close raised; ignoring", exc_info=True)
+        # The mistralai 2.x client (Speakeasy-generated) does not expose a
+        # public close()/aclose() — only the async-context-manager protocol
+        # (__aenter__/__aexit__). Calling __aexit__ directly is internal API
+        # and brittle across SDK patch versions; the underlying httpx client
+        # is closed during garbage collection, so we leave this as a no-op.
+        return None

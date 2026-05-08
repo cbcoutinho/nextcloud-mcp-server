@@ -7,46 +7,17 @@ Supports:
 """
 
 import logging
-from functools import wraps
 
-import anyio
 from openai import AsyncOpenAI, RateLimitError
 
+from ._retry import retry_on_rate_limit as _retry_factory
 from .base import Provider
 
 logger = logging.getLogger(__name__)
 
-# Rate limit retry configuration
-MAX_RETRIES = 5
-INITIAL_RETRY_DELAY = 2.0  # seconds
-MAX_RETRY_DELAY = 60.0  # seconds
-
-
-def retry_on_rate_limit(func):
-    """Decorator to retry on OpenAI rate limit errors with exponential backoff."""
-
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        retry_delay = INITIAL_RETRY_DELAY
-        last_error: Exception | None = None
-
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                return await func(*args, **kwargs)
-            except RateLimitError as e:
-                last_error = e
-                if attempt < MAX_RETRIES:
-                    logger.warning(
-                        f"Rate limit hit (attempt {attempt}/{MAX_RETRIES}), "
-                        f"retrying in {retry_delay:.1f}s..."
-                    )
-                    await anyio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, MAX_RETRY_DELAY)
-
-        logger.error(f"Rate limit exceeded after {MAX_RETRIES} attempts")
-        raise last_error  # type: ignore[misc]
-
-    return wrapper
+# OpenAI's RateLimitError is itself a 429-specific class, so the default
+# is_rate_limit predicate ("always True") matches the previous behavior.
+retry_on_rate_limit = _retry_factory(RateLimitError, provider_name="OpenAI")
 
 
 # Well-known embedding dimensions for OpenAI models

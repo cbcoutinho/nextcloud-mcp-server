@@ -613,7 +613,11 @@ class Settings:
         Returns:
             Active embedding model name
         """
-        if self.aws_region or self.bedrock_embedding_model:
+        if (
+            self.aws_region
+            or self.bedrock_embedding_model
+            or self.bedrock_generation_model
+        ):
             return self.bedrock_embedding_model or "bedrock-default"
 
         if self.openai_api_key:
