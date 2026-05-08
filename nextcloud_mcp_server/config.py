@@ -77,11 +77,25 @@ _DEFAULTS: dict[str, Any] = {
     # Ollama
     "ollama_base_url": None,
     "ollama_embedding_model": "nomic-embed-text",
+    "ollama_generation_model": None,
     "ollama_verify_ssl": True,
     # OpenAI
     "openai_api_key": None,
     "openai_base_url": None,
     "openai_embedding_model": "text-embedding-3-small",
+    "openai_generation_model": None,
+    # Bedrock (AWS)
+    "aws_region": None,
+    "aws_access_key_id": None,
+    "aws_secret_access_key": None,
+    "bedrock_embedding_model": None,
+    "bedrock_generation_model": None,
+    # Mistral
+    "mistral_api_key": None,
+    "mistral_embedding_model": "mistral-embed",
+    "mistral_base_url": None,
+    # Simple (fallback) embedding dimension
+    "simple_embedding_dimension": 384,
     # Document chunking
     "document_chunk_size": 2048,
     "document_chunk_overlap": 200,
@@ -486,15 +500,32 @@ class Settings:
     qdrant_api_key: str | None = None
     qdrant_collection: str = "nextcloud_content"
 
-    # Ollama settings (for embeddings)
+    # Ollama settings (embeddings + optional generation)
     ollama_base_url: str | None = None
     ollama_embedding_model: str = "nomic-embed-text"
+    ollama_generation_model: str | None = None
     ollama_verify_ssl: bool = True
 
-    # OpenAI settings (for embeddings)
+    # OpenAI settings (embeddings + optional generation)
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     openai_embedding_model: str = "text-embedding-3-small"
+    openai_generation_model: str | None = None
+
+    # Bedrock (AWS) settings — boto3 also reads these from its credential chain
+    aws_region: str | None = None
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    bedrock_embedding_model: str | None = None
+    bedrock_generation_model: str | None = None
+
+    # Mistral settings (embeddings only)
+    mistral_api_key: str | None = None
+    mistral_embedding_model: str = "mistral-embed"
+    mistral_base_url: str | None = None
+
+    # Simple (fallback) provider — dimension when no real provider configured
+    simple_embedding_dimension: int = 384
 
     # Document chunking settings (for vector embeddings)
     document_chunk_size: int = 2048  # Characters per chunk
@@ -573,23 +604,28 @@ class Settings:
         Get the active embedding model name based on provider priority.
 
         Priority order (same as ProviderRegistry):
-        1. OpenAI - if OPENAI_API_KEY is set
-        2. Ollama - if OLLAMA_BASE_URL is set
-        3. Simple - fallback (returns "simple-384")
+        1. Bedrock - if AWS_REGION or BEDROCK_EMBEDDING_MODEL is set
+        2. OpenAI - if OPENAI_API_KEY is set
+        3. Mistral - if MISTRAL_API_KEY is set
+        4. Ollama - if OLLAMA_BASE_URL is set
+        5. Simple - fallback (returns "simple-{dimension}")
 
         Returns:
             Active embedding model name
         """
-        # Check OpenAI first (higher priority than Ollama in registry)
+        if self.aws_region or self.bedrock_embedding_model:
+            return self.bedrock_embedding_model or "bedrock-default"
+
         if self.openai_api_key:
             return self.openai_embedding_model
 
-        # Check Ollama
+        if self.mistral_api_key:
+            return self.mistral_embedding_model
+
         if self.ollama_base_url:
             return self.ollama_embedding_model
 
-        # Fallback to simple provider indicator
-        return "simple-384"
+        return f"simple-{self.simple_embedding_dimension}"
 
     def get_collection_name(self) -> str:
         """
@@ -835,11 +871,25 @@ def get_settings() -> Settings:
         # Ollama settings
         "ollama_base_url": "OLLAMA_BASE_URL",
         "ollama_embedding_model": "OLLAMA_EMBEDDING_MODEL",
+        "ollama_generation_model": "OLLAMA_GENERATION_MODEL",
         "ollama_verify_ssl": "OLLAMA_VERIFY_SSL",
         # OpenAI settings
         "openai_api_key": "OPENAI_API_KEY",
         "openai_base_url": "OPENAI_BASE_URL",
         "openai_embedding_model": "OPENAI_EMBEDDING_MODEL",
+        "openai_generation_model": "OPENAI_GENERATION_MODEL",
+        # Bedrock (AWS) settings
+        "aws_region": "AWS_REGION",
+        "aws_access_key_id": "AWS_ACCESS_KEY_ID",
+        "aws_secret_access_key": "AWS_SECRET_ACCESS_KEY",
+        "bedrock_embedding_model": "BEDROCK_EMBEDDING_MODEL",
+        "bedrock_generation_model": "BEDROCK_GENERATION_MODEL",
+        # Mistral settings
+        "mistral_api_key": "MISTRAL_API_KEY",
+        "mistral_embedding_model": "MISTRAL_EMBEDDING_MODEL",
+        "mistral_base_url": "MISTRAL_BASE_URL",
+        # Simple provider
+        "simple_embedding_dimension": "SIMPLE_EMBEDDING_DIMENSION",
         # Document chunking settings
         "document_chunk_size": "DOCUMENT_CHUNK_SIZE",
         "document_chunk_overlap": "DOCUMENT_CHUNK_OVERLAP",
