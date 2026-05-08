@@ -103,6 +103,32 @@ async def test_ensure_keyword_payload_indexes_logs_400_as_warning(mocker, caplog
     assert "different schema" in warnings[0].getMessage()
 
 
+@pytest.mark.unit
+async def test_ensure_keyword_payload_indexes_logs_non_400_as_error(mocker, caplog):
+    """A non-400 status from create_payload_index escalates to ERROR.
+
+    A 5xx response (e.g., Qdrant temporarily unavailable) should not be
+    silently downgraded to a warning the way a 400 schema-conflict is.
+    The loop still continues so the remaining fields get attempted.
+    """
+    client = mocker.AsyncMock()
+    client.create_payload_index.side_effect = [
+        _make_unexpected(500, b'{"status":{"error":"internal server error"}}'),
+        None,
+        None,
+    ]
+
+    with caplog.at_level("ERROR", logger="nextcloud_mcp_server.vector.qdrant_client"):
+        await _ensure_keyword_payload_indexes(client, "test-collection")
+
+    assert client.create_payload_index.await_count == len(_KEYWORD_PAYLOAD_FIELDS)
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    msg = errors[0].getMessage()
+    assert "500" in msg
+    assert "internal server error" in msg
+
+
 # ---------------------------------------------------------------------------
 # _backfill_doc_id_to_string
 # ---------------------------------------------------------------------------
@@ -224,6 +250,30 @@ async def test_backfill_handles_none_payload(mocker):
     await _backfill_doc_id_to_string(client, "test-collection")
 
     # Only the int doc_id at point 2 was rewritten; the None-payload point was skipped.
+    assert client.set_payload.await_count == 1
+    client.set_payload.assert_awaited_with(
+        collection_name="test-collection",
+        payload={"doc_id": "99"},
+        points=[2],
+        wait=True,
+    )
+
+
+@pytest.mark.unit
+async def test_backfill_handles_payload_with_explicit_none_doc_id(mocker):
+    """A payload of {doc_id: None, ...} is skipped just like payload=None."""
+    client = mocker.AsyncMock()
+    # Build the record manually to distinguish payload=None from payload={"doc_id": None}.
+    point_with_explicit_none = SimpleNamespace(
+        id=1, payload={"doc_id": None, "doc_type": "file"}
+    )
+    client.scroll.side_effect = [
+        ([point_with_explicit_none, _record(2, 99)], None),
+    ]
+
+    await _backfill_doc_id_to_string(client, "test-collection")
+
+    # Only the int doc_id at point 2 was rewritten; the explicit-None payload was skipped.
     assert client.set_payload.await_count == 1
     client.set_payload.assert_awaited_with(
         collection_name="test-collection",

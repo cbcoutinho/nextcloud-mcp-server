@@ -337,13 +337,23 @@ server runs two idempotent migrations:
 1. **Payload-index creation** — adds `KEYWORD` payload indexes for `doc_id`,
    `user_id`, and `doc_type`. Required by Qdrant for any `FieldCondition`
    filter. Cheap; runs even on healthy collections.
-2. **`doc_id` backfill** — rewrites any legacy integer `doc_id` payloads to
-   strings so they match the keyword index. Skipped after a quick sample
-   shows the collection is already clean. On a dirty collection, the full
-   scroll runs once and writes are emitted point-by-point — expect a delay
-   proportional to point count on the first startup after the upgrade.
+2. **`doc_id` backfill** — scans the collection once and rewrites any
+   legacy integer `doc_id` payloads to strings so they match the keyword
+   index. Idempotent: on a clean collection (all `doc_id` values already
+   `str`), the scroll runs but emits zero writes. On the first start after
+   the upgrade, expect a delay proportional to point count while writes
+   are issued.
 
 Both steps emit INFO-level log lines so operators can track progress.
+
+> **Operator note:** if the server logs `TypeError: SemanticSearchResult.id
+> must be int-convertible` after upgrading, this indicates a `doc_type`
+> with non-numeric ids has been indexed but the public response model
+> (`SemanticSearchResult.id: int`) has not been widened to accept strings.
+> Semantic search itself is not broken — the boundary cast in
+> `server/semantic.py` is failing loudly on purpose so the discrepancy is
+> caught early. Either widen the public model's `id` field or convert the
+> id at the verifier layer.
 
 #### Explicit Override
 
@@ -426,9 +436,16 @@ DOCUMENT_CHUNK_OVERLAP=50             # Overlapping words between chunks (defaul
 
 ### Embedding Service Configuration
 
-The server uses an embedding service to generate vector representations. Two options are available:
+The server picks an embedding provider via auto-detection. Priority order
+(see `nextcloud_mcp_server/providers/registry.py`):
 
-#### Ollama (Recommended)
+1. **Bedrock** — if `AWS_REGION` or `BEDROCK_EMBEDDING_MODEL` is set
+2. **OpenAI** — if `OPENAI_API_KEY` is set
+3. **Mistral** — if `MISTRAL_API_KEY` is set
+4. **Ollama** — if `OLLAMA_BASE_URL` is set
+5. **Simple** — fallback when nothing else is configured
+
+#### Ollama (Recommended for self-hosted)
 
 Use a local Ollama instance for embeddings:
 
@@ -438,9 +455,52 @@ OLLAMA_EMBEDDING_MODEL=nomic-embed-text  # Default model
 OLLAMA_VERIFY_SSL=true                   # Verify SSL certificates
 ```
 
+#### OpenAI
+
+Hosted OpenAI embeddings (or any OpenAI-compatible API via `OPENAI_BASE_URL`):
+
+```dotenv
+OPENAI_API_KEY=sk-...
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small  # default
+# OPENAI_BASE_URL=https://models.github.ai/inference  # optional
+```
+
+#### Mistral
+
+Hosted Mistral embeddings. Requires a Mistral API key from
+[console.mistral.ai](https://console.mistral.ai). Currently embeddings only
+(no text generation).
+
+```dotenv
+MISTRAL_API_KEY=...
+MISTRAL_EMBEDDING_MODEL=mistral-embed   # default; produces 1024-dim vectors
+# MISTRAL_BASE_URL=https://api.mistral.ai  # optional override (proxies, on-prem)
+```
+
+Switching to or from Mistral forces a new Qdrant collection because the
+collection name encodes the model (see "Qdrant Collection Naming" above).
+
+#### Amazon Bedrock
+
+Bedrock provides hosted embedding models (Titan, Cohere) and uses the AWS
+credential chain (env vars, profiles, or IAM role):
+
+```dotenv
+AWS_REGION=us-east-1
+BEDROCK_EMBEDDING_MODEL=amazon.titan-embed-text-v2:0
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are optional — boto3 will use
+# the standard credential chain if not set.
+```
+
 #### Simple Embedding Provider (Fallback)
 
-If `OLLAMA_BASE_URL` is not set, the server uses a simple random embedding provider for testing. This is **not suitable for production** as it generates random embeddings with no semantic meaning.
+If no provider env var is set, the server falls back to a simple deterministic
+embedding provider for testing. This is **not suitable for production** as
+its embeddings have no semantic meaning.
+
+```dotenv
+SIMPLE_EMBEDDING_DIMENSION=384  # optional; default 384
+```
 
 ### Document Chunking Configuration
 
@@ -549,7 +609,21 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `VECTOR_SYNC_QUEUE_MAX_SIZE` | ⚠️ Optional | `10000` | Max queued documents |
 | `OLLAMA_BASE_URL` | ⚠️ Optional | - | Ollama API endpoint for embeddings |
 | `OLLAMA_EMBEDDING_MODEL` | ⚠️ Optional | `nomic-embed-text` | Embedding model to use |
+| `OLLAMA_GENERATION_MODEL` | ⚠️ Optional | - | Ollama model for text generation |
 | `OLLAMA_VERIFY_SSL` | ⚠️ Optional | `true` | Verify SSL certificates |
+| `OPENAI_API_KEY` | ⚠️ Optional | - | OpenAI API key (selects OpenAI provider) |
+| `OPENAI_BASE_URL` | ⚠️ Optional | - | OpenAI base URL override (for compatible APIs) |
+| `OPENAI_EMBEDDING_MODEL` | ⚠️ Optional | `text-embedding-3-small` | OpenAI embedding model |
+| `OPENAI_GENERATION_MODEL` | ⚠️ Optional | - | OpenAI model for text generation |
+| `MISTRAL_API_KEY` | ⚠️ Optional | - | Mistral API key (selects Mistral provider) |
+| `MISTRAL_EMBEDDING_MODEL` | ⚠️ Optional | `mistral-embed` | Mistral embedding model (1024-dim) |
+| `MISTRAL_BASE_URL` | ⚠️ Optional | - | Mistral base URL override (proxies, on-prem) |
+| `AWS_REGION` | ⚠️ Optional | - | AWS region (selects Bedrock provider) |
+| `AWS_ACCESS_KEY_ID` | ⚠️ Optional | - | AWS access key (boto3 credential chain fallback) |
+| `AWS_SECRET_ACCESS_KEY` | ⚠️ Optional | - | AWS secret key (boto3 credential chain fallback) |
+| `BEDROCK_EMBEDDING_MODEL` | ⚠️ Optional | - | Bedrock embedding model ID |
+| `BEDROCK_GENERATION_MODEL` | ⚠️ Optional | - | Bedrock generation model ID |
+| `SIMPLE_EMBEDDING_DIMENSION` | ⚠️ Optional | `384` | Dimension for the fallback Simple provider |
 | `DOCUMENT_CHUNK_SIZE` | ⚠️ Optional | `512` | Words per chunk for document embedding |
 | `DOCUMENT_CHUNK_OVERLAP` | ⚠️ Optional | `50` | Overlapping words between chunks (must be < chunk size) |
 

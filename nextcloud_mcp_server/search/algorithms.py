@@ -11,6 +11,8 @@ from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
+logger = logging.getLogger(__name__)
+
 
 @runtime_checkable
 class NextcloudClientProtocol(Protocol):
@@ -91,7 +93,6 @@ async def get_indexed_doc_types(user_id: str) -> set[str]:
         ...     # Search notes
     """
 
-    logger = logging.getLogger(__name__)
     settings = get_settings()
 
     qdrant_client = await get_qdrant_client()
@@ -205,15 +206,19 @@ def build_search_result_from_point(
     if point.payload is None:
         return None
 
-    doc_id = str(point.payload["doc_id"])
+    raw_doc_id = point.payload.get("doc_id")
+    if raw_doc_id is None:
+        logger.warning("Skipping point %s: missing doc_id in payload", point.id)
+        return None
+    doc_id = str(raw_doc_id)
     doc_type = point.payload.get("doc_type", "note")
 
-    metadata: dict[str, Any] = {
-        "chunk_index": point.payload.get("chunk_index"),
-        "total_chunks": point.payload.get("total_chunks"),
-    }
-    if metadata_extras:
-        metadata.update(metadata_extras)
+    # Caller-supplied metadata is merged first; payload-derived common fields
+    # (chunk_index, total_chunks) win in case of key collisions so they always
+    # reflect the actual point.
+    metadata: dict[str, Any] = dict(metadata_extras) if metadata_extras else {}
+    metadata["chunk_index"] = point.payload.get("chunk_index")
+    metadata["total_chunks"] = point.payload.get("total_chunks")
 
     # File-specific metadata for PDF viewer
     if doc_type == "file" and (path := point.payload.get("file_path")):

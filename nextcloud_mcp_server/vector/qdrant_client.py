@@ -46,9 +46,21 @@ async def _ensure_keyword_payload_indexes(
         except UnexpectedResponse as e:
             body = getattr(e, "content", b"") or b""
             body_text = body.decode("utf-8", errors="replace")
-            logger.warning(
-                "Failed to create payload index on '%s': %s", field, body_text
-            )
+            # 400 is the expected schema-conflict path (index already exists
+            # with a different type). 5xx / network-shaped errors should not
+            # be silently downgraded — keep the loop going so the remaining
+            # fields still get attempted, but log at error so operators see it.
+            if e.status_code == 400:
+                logger.warning(
+                    "Schema conflict on payload index '%s': %s", field, body_text
+                )
+            else:
+                logger.error(
+                    "Unexpected error creating payload index on '%s' (status %s): %s",
+                    field,
+                    e.status_code,
+                    body_text,
+                )
 
 
 async def _backfill_doc_id_to_string(

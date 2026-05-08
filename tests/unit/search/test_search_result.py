@@ -163,6 +163,14 @@ def test_build_search_result_from_point_returns_none_when_payload_missing():
 
 
 @pytest.mark.unit
+def test_build_search_result_from_point_returns_none_when_doc_id_missing():
+    """A payload without a doc_id key is skipped instead of raising KeyError."""
+    point = _make_point(point_id="p-bad", payload={"doc_type": "note"})
+
+    assert build_search_result_from_point(point) is None
+
+
+@pytest.mark.unit
 def test_build_search_result_from_point_note_payload():
     """Note-type payload populates the SearchResult fields without metadata extras."""
     point = _make_point(
@@ -187,7 +195,7 @@ def test_build_search_result_from_point_note_payload():
     assert sr.doc_type == "note"
     assert sr.title == "Hello"
     assert sr.excerpt == "world"
-    assert sr.score == 0.91
+    assert sr.score == pytest.approx(0.91)
     assert sr.chunk_start_offset == 0
     assert sr.chunk_end_offset == 100
     assert sr.chunk_index == 0
@@ -257,21 +265,34 @@ def test_build_search_result_from_point_deck_card_metadata():
 
 @pytest.mark.unit
 def test_build_search_result_from_point_merges_metadata_extras():
-    """metadata_extras override/augment the helper's computed metadata dict."""
+    """metadata_extras augment the helper's computed metadata dict.
+
+    Common fields (chunk_index, total_chunks) win over caller-supplied
+    extras to keep them tied to the actual point.
+    """
     point = _make_point(
         point_id="p-4",
-        payload={"doc_id": "1", "doc_type": "note"},
+        payload={
+            "doc_id": "1",
+            "doc_type": "note",
+            "chunk_index": 3,
+            "total_chunks": 9,
+        },
     )
 
     sr = build_search_result_from_point(
-        point, metadata_extras={"search_method": "bm25_hybrid_rrf"}
+        point,
+        metadata_extras={
+            "search_method": "bm25_hybrid_rrf",
+            # Caller tries to override a common field — should be ignored.
+            "chunk_index": "should-be-overwritten",
+        },
     )
 
     assert sr is not None
     assert sr.metadata["search_method"] == "bm25_hybrid_rrf"
-    # Common fields still present
-    assert "chunk_index" in sr.metadata
-    assert "total_chunks" in sr.metadata
+    assert sr.metadata["chunk_index"] == 3
+    assert sr.metadata["total_chunks"] == 9
 
 
 @pytest.mark.unit
