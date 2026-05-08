@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+from qdrant_client.models import FieldCondition, Filter, MatchValue, ScoredPoint
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
@@ -179,6 +179,70 @@ class SearchResult:
         """
         if self.score < 0.0:
             raise ValueError(f"Score must be non-negative, got {self.score}")
+
+
+def build_search_result_from_point(
+    point: ScoredPoint,
+    *,
+    metadata_extras: dict[str, Any] | None = None,
+) -> SearchResult | None:
+    """Construct a SearchResult from a Qdrant ScoredPoint payload.
+
+    Returns ``None`` when the payload is missing — callers should skip the
+    point. The defensive ``str()`` coercion on ``doc_id`` covers legacy int
+    payloads until the startup backfill has run everywhere (see
+    ``vector/qdrant_client.py:_backfill_doc_id_to_string``).
+
+    Args:
+        point: A Qdrant ``ScoredPoint`` from a search response.
+        metadata_extras: Algorithm-specific metadata merged into the result's
+            ``metadata`` dict (e.g., ``{"search_method": "bm25_hybrid_rrf"}``).
+
+    Returns:
+        A populated ``SearchResult``, or ``None`` if ``point.payload`` is
+        missing.
+    """
+    if point.payload is None:
+        return None
+
+    doc_id = str(point.payload["doc_id"])
+    doc_type = point.payload.get("doc_type", "note")
+
+    metadata: dict[str, Any] = {
+        "chunk_index": point.payload.get("chunk_index"),
+        "total_chunks": point.payload.get("total_chunks"),
+    }
+    if metadata_extras:
+        metadata.update(metadata_extras)
+
+    # File-specific metadata for PDF viewer
+    if doc_type == "file" and (path := point.payload.get("file_path")):
+        metadata["path"] = path
+
+    # Deck-card metadata for frontend URL construction and verify-on-read
+    # (ADR-019) — both board_id and stack_id are required to call
+    # deck.get_card without an O(boards × stacks) iteration fallback.
+    if doc_type == "deck_card":
+        if board_id := point.payload.get("board_id"):
+            metadata["board_id"] = board_id
+        if stack_id := point.payload.get("stack_id"):
+            metadata["stack_id"] = stack_id
+
+    return SearchResult(
+        id=doc_id,
+        doc_type=doc_type,
+        title=point.payload.get("title", "Untitled"),
+        excerpt=point.payload.get("excerpt", ""),
+        score=point.score,
+        metadata=metadata,
+        chunk_start_offset=point.payload.get("chunk_start_offset"),
+        chunk_end_offset=point.payload.get("chunk_end_offset"),
+        page_number=point.payload.get("page_number"),
+        page_count=point.payload.get("page_count"),
+        chunk_index=point.payload.get("chunk_index", 0),
+        total_chunks=point.payload.get("total_chunks", 1),
+        point_id=str(point.id),
+    )
 
 
 class SearchAlgorithm(ABC):

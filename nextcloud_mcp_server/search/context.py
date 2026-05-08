@@ -415,8 +415,13 @@ async def get_chunk_with_context(
         f"(Qdrant cache miss, possibly legacy data)"
     )
 
-    # For files, the doc_id is the numeric file ID (as a string) — resolve it
-    # to a WebDAV path so _fetch_document_text can retrieve the binary content.
+    # For files, doc_id is always the stringified numeric file ID after
+    # producer normalization — resolve it to a WebDAV path so
+    # _fetch_document_text can retrieve the binary content. The previous
+    # `isinstance(doc_id, int)` guard is no longer needed: file producers
+    # write str(file_id) and the startup backfill rewrites legacy int
+    # payloads. If lookup fails (e.g. truly malformed legacy data), the
+    # caller logs and returns None below — a re-index is the recovery path.
     resolved_doc_id = doc_id
     if doc_type == "file":
         file_path = await _get_file_path_from_qdrant(
@@ -506,6 +511,15 @@ async def _fetch_document_text(
     """
     try:
         if doc_type == "note":
+            # Note IDs are integers in the Nextcloud API; reject non-numeric
+            # doc_ids explicitly so a malformed payload surfaces in logs
+            # rather than getting silently swallowed by `except Exception`.
+            if not doc_id.isdigit():
+                logger.warning(
+                    "Expected numeric note doc_id, got %r — skipping document fetch",
+                    doc_id,
+                )
+                return None
             # Fetch note by ID
             note = await nc_client.notes.get_note(note_id=int(doc_id))
             # Reconstruct full content as indexed: title + "\n\n" + content
@@ -562,6 +576,15 @@ async def _fetch_document_text(
                 )
                 return None
         elif doc_type == "news_item":
+            # News item IDs are integers in the Nextcloud News API; reject
+            # non-numeric doc_ids explicitly so malformed payloads surface
+            # rather than getting swallowed by the broad except below.
+            if not doc_id.isdigit():
+                logger.warning(
+                    "Expected numeric news_item doc_id, got %r — skipping document fetch",
+                    doc_id,
+                )
+                return None
             # Fetch news item by ID
             item = await nc_client.news.get_item(int(doc_id))
             # Reconstruct full content as indexed: title + source + URL + body
@@ -580,6 +603,17 @@ async def _fetch_document_text(
             content_parts.append(body_markdown)
             return "\n".join(content_parts)
         elif doc_type == "deck_card":
+            # Deck card IDs are integers in the Nextcloud Deck API; reject
+            # non-numeric doc_ids explicitly so malformed payloads surface
+            # rather than getting swallowed by the broad except below. The
+            # numeric check covers both the metadata-fast-path (line ~600)
+            # and the iteration fallback (line ~635).
+            if not doc_id.isdigit():
+                logger.warning(
+                    "Expected numeric deck_card doc_id, got %r — skipping document fetch",
+                    doc_id,
+                )
+                return None
             # Fetch card from Deck API
             # Try to get board_id/stack_id from Qdrant metadata (O(1) lookup)
             # Otherwise fall back to iteration (legacy data)

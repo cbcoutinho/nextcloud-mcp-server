@@ -1,6 +1,7 @@
 """Qdrant client wrapper."""
 
 import logging
+from typing import Any
 
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
@@ -28,8 +29,10 @@ async def _ensure_keyword_payload_indexes(
 ) -> None:
     """Create KEYWORD payload indexes for fields used in exact-match filters.
 
-    Idempotent: tolerates 'already exists' errors so it can run on every
-    startup against existing collections.
+    Idempotent at the Qdrant layer: re-creating an identical index returns
+    200, so this can run on every startup. Schema conflicts (a pre-existing
+    index with a different type) surface as a 400 — log loudly so operators
+    can intervene, but keep going so the remaining fields still get indexed.
     """
     for field in _KEYWORD_PAYLOAD_FIELDS:
         try:
@@ -41,39 +44,11 @@ async def _ensure_keyword_payload_indexes(
             )
             logger.info("Created KEYWORD payload index on '%s'", field)
         except UnexpectedResponse as e:
-            # Qdrant returns 400 if the index already exists with a different
-            # schema, or simply succeeds if it already matches. Treat
-            # already-exists as benign; surface schema conflicts loudly.
             body = getattr(e, "content", b"") or b""
             body_text = body.decode("utf-8", errors="replace")
-            if "already exists" in body_text.lower():
-                logger.debug("Payload index on '%s' already exists", field)
-            else:
-                logger.warning(
-                    "Failed to create payload index on '%s': %s", field, body_text
-                )
-
-
-async def _has_int_doc_id_sample(
-    client: AsyncQdrantClient, collection_name: str, sample_size: int = 256
-) -> bool:
-    """Quick sample to decide whether the full backfill scroll is needed.
-
-    Reading the first batch is cheap; if all sampled doc_ids are already str
-    (the steady-state on healthy collections), we skip the full pass.
-    """
-    points, _ = await client.scroll(
-        collection_name=collection_name,
-        limit=sample_size,
-        with_payload=["doc_id"],
-        with_vectors=False,
-    )
-    for point in points:
-        payload = point.payload or {}
-        value = payload.get("doc_id")
-        if value is not None and not isinstance(value, str):
-            return True
-    return False
+            logger.warning(
+                "Failed to create payload index on '%s': %s", field, body_text
+            )
 
 
 async def _backfill_doc_id_to_string(
@@ -84,18 +59,15 @@ async def _backfill_doc_id_to_string(
     Producers now uniformly write str(doc_id), but historical points may carry
     int values from before normalization. A KEYWORD index does not match int
     payloads, so any leftover int doc_ids would be silently invisible to
-    filters. Scroll all points and convert in-place. Idempotent.
+    filters. Scrolls all points once and converts in-place; idempotent (a
+    second pass over the same collection performs zero writes).
 
-    Skipped when the first sample batch already contains only str doc_ids.
+    Within each scroll batch, points sharing the same int doc_id are batched
+    into a single ``set_payload`` call to minimize Qdrant round-trips.
     """
-    if not await _has_int_doc_id_sample(client, collection_name):
-        logger.debug(
-            "doc_id backfill: sample shows no legacy int payloads; skipping full scan"
-        )
-        return
-
     logger.info(
-        "Running doc_id backfill on '%s' (this may take a moment for large collections)",
+        "Scanning '%s' for legacy int doc_id payloads (this is a one-time "
+        "migration on first start after upgrade)",
         collection_name,
     )
 
@@ -117,6 +89,11 @@ async def _backfill_doc_id_to_string(
         if not points:
             break
 
+        # Group by stringified value so points sharing a doc_id (one document
+        # → many chunks) collapse into a single set_payload call. Point IDs
+        # can be int/str/UUID, so widen the value type to satisfy the qdrant
+        # client's PointsSelector signature without re-spelling the union.
+        by_value: dict[str, list[Any]] = {}
         for point in points:
             scanned += 1
             # Qdrant client typing allows None payload even when with_payload
@@ -125,13 +102,20 @@ async def _backfill_doc_id_to_string(
             value = payload.get("doc_id")
             if value is None or isinstance(value, str):
                 continue
+            by_value.setdefault(str(value), []).append(point.id)
+
+        for str_val, point_ids in by_value.items():
+            # wait=True is required: _ensure_keyword_payload_indexes runs
+            # immediately after this function and only indexes committed
+            # data — fire-and-forget writes would leave int payloads
+            # invisible to KEYWORD filters.
             await client.set_payload(
                 collection_name=collection_name,
-                payload={"doc_id": str(value)},
-                points=[point.id],
-                wait=False,
+                payload={"doc_id": str_val},
+                points=point_ids,
+                wait=True,
             )
-            rewritten += 1
+            rewritten += len(point_ids)
 
         if next_offset is None:
             break

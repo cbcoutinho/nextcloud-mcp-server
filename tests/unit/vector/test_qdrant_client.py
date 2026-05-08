@@ -26,7 +26,6 @@ from nextcloud_mcp_server.vector.qdrant_client import (
     _KEYWORD_PAYLOAD_FIELDS,
     _backfill_doc_id_to_string,
     _ensure_keyword_payload_indexes,
-    _has_int_doc_id_sample,
 )
 
 
@@ -76,32 +75,14 @@ async def test_ensure_keyword_payload_indexes_creates_each_field(mocker):
 
 
 @pytest.mark.unit
-async def test_ensure_keyword_payload_indexes_swallows_already_exists(mocker, caplog):
-    """Idempotent: 'already exists' 400 is logged at debug, not raised."""
-    client = mocker.AsyncMock()
-    # First call succeeds, second raises "already exists", third succeeds —
-    # exercises the per-field exception handling.
-    client.create_payload_index.side_effect = [
-        None,
-        _make_unexpected(
-            400, b'{"status":{"error":"Index for \\"user_id\\" already exists"}}'
-        ),
-        None,
-    ]
+async def test_ensure_keyword_payload_indexes_logs_400_as_warning(mocker, caplog):
+    """Any 400 from create_payload_index is logged at WARNING and skipped.
 
-    with caplog.at_level("DEBUG", logger="nextcloud_mcp_server.vector.qdrant_client"):
-        await _ensure_keyword_payload_indexes(client, "test-collection")
-
-    assert client.create_payload_index.await_count == len(_KEYWORD_PAYLOAD_FIELDS)
-    # The "already exists" branch logs at DEBUG; nothing reaches WARNING.
-    assert not any(record.levelname == "WARNING" for record in caplog.records)
-
-
-@pytest.mark.unit
-async def test_ensure_keyword_payload_indexes_logs_unrelated_400_as_warning(
-    mocker, caplog
-):
-    """Schema conflicts and other 400s are surfaced as warnings, not silenced."""
+    Real Qdrant returns 200 when the index already exists with a matching
+    schema, so 400s indicate a genuine problem (e.g., schema conflict on a
+    pre-existing index). The loop continues past the failure so the
+    remaining fields still get indexed.
+    """
     client = mocker.AsyncMock()
     client.create_payload_index.side_effect = [
         _make_unexpected(
@@ -123,104 +104,93 @@ async def test_ensure_keyword_payload_indexes_logs_unrelated_400_as_warning(
 
 
 # ---------------------------------------------------------------------------
-# _has_int_doc_id_sample
+# _backfill_doc_id_to_string
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-async def test_has_int_doc_id_sample_returns_true_when_int_present(mocker):
-    """Sample finds an int — caller should run the full backfill."""
-    client = mocker.AsyncMock()
-    client.scroll.return_value = (
-        [_record(1, "abc"), _record(2, 42), _record(3, "xyz")],
-        None,
-    )
+async def test_backfill_clean_collection_makes_no_writes(mocker, caplog):
+    """A collection with only str doc_ids triggers zero set_payload calls.
 
-    assert await _has_int_doc_id_sample(client, "c") is True
-    client.scroll.assert_awaited_once()
-
-
-@pytest.mark.unit
-async def test_has_int_doc_id_sample_returns_false_when_all_str(mocker):
-    """Sample is clean — caller should skip the full scroll."""
+    Verifies idempotency: a second pass over an already-migrated collection
+    is a no-op modulo the read.
+    """
     client = mocker.AsyncMock()
     client.scroll.return_value = (
         [_record(1, "abc"), _record(2, "def")],
         None,
     )
 
-    assert await _has_int_doc_id_sample(client, "c") is False
+    with caplog.at_level("INFO", logger="nextcloud_mcp_server.vector.qdrant_client"):
+        await _backfill_doc_id_to_string(client, "test-collection")
 
-
-@pytest.mark.unit
-async def test_has_int_doc_id_sample_handles_empty_collection(mocker):
-    """Empty collection — nothing to backfill, return False."""
-    client = mocker.AsyncMock()
-    client.scroll.return_value = ([], None)
-
-    assert await _has_int_doc_id_sample(client, "c") is False
-
-
-@pytest.mark.unit
-async def test_has_int_doc_id_sample_ignores_missing_payload(mocker):
-    """Records with no payload don't count as int doc_ids."""
-    client = mocker.AsyncMock()
-    client.scroll.return_value = (
-        [_record(1, None), _record(2, "abc")],
-        None,
-    )
-
-    assert await _has_int_doc_id_sample(client, "c") is False
-
-
-# ---------------------------------------------------------------------------
-# _backfill_doc_id_to_string
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-async def test_backfill_skips_when_sample_is_clean(mocker):
-    """Short-circuit: clean sample → no full scroll, no set_payload calls."""
-    client = mocker.AsyncMock()
-    # Sample call returns only str payloads → backfill should not proceed.
-    client.scroll.return_value = ([_record(1, "abc"), _record(2, "def")], None)
-
-    await _backfill_doc_id_to_string(client, "test-collection")
-
-    # Exactly one scroll (the sample) and zero rewrites.
-    assert client.scroll.await_count == 1
     client.set_payload.assert_not_awaited()
+    completion_logs = [
+        r.getMessage() for r in caplog.records if "backfill complete" in r.getMessage()
+    ]
+    assert completion_logs, "expected an INFO log line for backfill completion"
+    assert "0/2" in completion_logs[0]
 
 
 @pytest.mark.unit
 async def test_backfill_rewrites_int_doc_ids_to_str(mocker):
     """Mixed int/str payload across two scroll pages: only ints get rewritten."""
     client = mocker.AsyncMock()
-    # Three scroll calls:
-    #   1. sample → finds an int, triggers the full pass
-    #   2. first batch of full scroll → mixed int/str
-    #   3. second batch → all str, with next_offset=None to terminate
+    # Two scroll calls: batch 1 is mixed and reports a next_offset; batch 2
+    # is mixed with next_offset=None to terminate.
     client.scroll.side_effect = [
-        ([_record(1, 100), _record(2, "abc")], None),  # sample
-        ([_record(1, 100), _record(2, "abc")], "next-offset-123"),  # batch 1
-        ([_record(3, 200), _record(4, "def")], None),  # batch 2 (terminal)
+        ([_record(1, 100), _record(2, "abc")], "next-offset-123"),
+        ([_record(3, 200), _record(4, "def")], None),
     ]
 
     await _backfill_doc_id_to_string(client, "test-collection")
 
-    # Two rewrites: point 1 (int 100) in batch 1, point 3 (int 200) in batch 2.
+    # One set_payload per *unique* int value — point 1 (100) and point 3
+    # (200) are in different batches with different values, so two calls.
     assert client.set_payload.await_count == 2
     client.set_payload.assert_any_await(
         collection_name="test-collection",
         payload={"doc_id": "100"},
         points=[1],
-        wait=False,
+        wait=True,
     )
     client.set_payload.assert_any_await(
         collection_name="test-collection",
         payload={"doc_id": "200"},
         points=[3],
-        wait=False,
+        wait=True,
+    )
+
+
+@pytest.mark.unit
+async def test_backfill_batches_points_with_same_doc_id(mocker):
+    """Multiple points sharing the same int doc_id collapse to one set_payload.
+
+    A single document indexed as multiple chunks all share its doc_id; the
+    backfill should issue one set_payload call covering the chunk batch.
+    """
+    client = mocker.AsyncMock()
+    client.scroll.side_effect = [
+        (
+            [
+                _record(10, 42),
+                _record(11, 42),
+                _record(12, 42),
+                _record(13, "already-str"),
+            ],
+            None,
+        ),
+    ]
+
+    await _backfill_doc_id_to_string(client, "test-collection")
+
+    # All three int-payload points share doc_id=42, so a single call covers them.
+    assert client.set_payload.await_count == 1
+    client.set_payload.assert_awaited_with(
+        collection_name="test-collection",
+        payload={"doc_id": "42"},
+        points=[10, 11, 12],
+        wait=True,
     )
 
 
@@ -229,8 +199,7 @@ async def test_backfill_emits_completion_log(mocker, caplog):
     """Backfill logs final rewritten/scanned counts at INFO."""
     client = mocker.AsyncMock()
     client.scroll.side_effect = [
-        ([_record(1, 7)], None),  # sample triggers full pass
-        ([_record(1, 7), _record(2, "x")], None),  # single batch, terminal
+        ([_record(1, 7), _record(2, "x")], None),
     ]
 
     with caplog.at_level("INFO", logger="nextcloud_mcp_server.vector.qdrant_client"):
@@ -249,8 +218,7 @@ async def test_backfill_handles_none_payload(mocker):
     """A point with payload=None is skipped without crashing."""
     client = mocker.AsyncMock()
     client.scroll.side_effect = [
-        ([_record(1, 99)], None),  # sample triggers full pass
-        ([_record(1, None), _record(2, 99)], None),  # batch with one None payload
+        ([_record(1, None), _record(2, 99)], None),
     ]
 
     await _backfill_doc_id_to_string(client, "test-collection")
@@ -261,5 +229,5 @@ async def test_backfill_handles_none_payload(mocker):
         collection_name="test-collection",
         payload={"doc_id": "99"},
         points=[2],
-        wait=False,
+        wait=True,
     )
