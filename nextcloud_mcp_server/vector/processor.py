@@ -582,7 +582,7 @@ async def _index_document(
         assert content_bytes is not None
 
         with trace_operation(
-            "vector_sync.generate_highlights",
+            "vector_sync.compute_chunk_bboxes",
             attributes={
                 "vector_sync.chunk_count": len(chunks),
                 "vector_sync.pdf_size": len(content_bytes),

@@ -185,3 +185,48 @@ def test_compute_chunk_bboxes_assigns_correct_page(page_index: int):
     assert results, "expected a bbox for the chunk"
     _, page_num = results[0]
     assert page_num == page_index + 1
+
+
+@pytest.mark.unit
+def test_compute_chunk_bboxes_handles_unordered_page_boundaries():
+    """Page lookup must match by ``page`` key, not by list position.
+
+    Regression guard: an earlier implementation indexed
+    ``page_boundaries[page_num - 1]``, which silently produces a wrong
+    bbox if boundaries are passed out of order. Reverse the boundaries
+    and assert the result is identical to the in-order case.
+    """
+    pages = [
+        "Page one talks about apples and oranges in detail.",
+        "Page two discusses bananas and grapes thoroughly.",
+    ]
+    pdf_bytes = _make_pdf(pages)
+    boundaries, full_text = _page_boundaries(pages)
+
+    chunks = [
+        (0, 0, len(pages[0]), 1, "apples and oranges"),
+        (
+            1,
+            len(pages[0]),
+            len(pages[0]) + len(pages[1]),
+            2,
+            "bananas and grapes",
+        ),
+    ]
+
+    in_order = PDFHighlighter.compute_chunk_bboxes_batch(
+        pdf_bytes=pdf_bytes,
+        chunks=chunks,
+        page_boundaries=boundaries,
+        full_text=full_text,
+    )
+    reversed_order = PDFHighlighter.compute_chunk_bboxes_batch(
+        pdf_bytes=pdf_bytes,
+        chunks=chunks,
+        page_boundaries=list(reversed(boundaries)),
+        full_text=full_text,
+    )
+
+    assert in_order == reversed_order
+    assert reversed_order[0][1] == 1
+    assert reversed_order[1][1] == 2

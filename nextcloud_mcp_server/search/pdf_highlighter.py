@@ -739,17 +739,26 @@ class PDFHighlighter:
                 start_offset,
                 end_offset,
                 _,
-                chunk_text,
+                _,
             ) in chunks:
                 chunk_page_info = PDFHighlighter.find_chunk_page(
                     start_offset, end_offset, page_boundaries
                 )
                 if not chunk_page_info:
-                    logger.debug(f"Chunk {chunk_index}: not found on any page")
+                    logger.debug("Chunk %s: not found on any page", chunk_index)
                     continue
 
                 page_num = chunk_page_info["page_num"]
-                page_boundary = page_boundaries[page_num - 1]
+                page_boundary = next(
+                    (b for b in page_boundaries if b["page"] == page_num), None
+                )
+                if page_boundary is None:
+                    logger.debug(
+                        "Chunk %s: page %s not found in boundaries",
+                        chunk_index,
+                        page_num,
+                    )
+                    continue
                 page_text_length = (
                     page_boundary["end_offset"] - page_boundary["start_offset"]
                 )
