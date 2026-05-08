@@ -37,6 +37,7 @@ def _page_boundaries(pages: list[str]) -> tuple[list[dict], str]:
     return boundaries, "".join(parts)
 
 
+@pytest.mark.unit
 def test_compute_chunk_bboxes_returns_normalized_rects():
     """Each returned bbox should be 4 floats in [0, 1] tagged with the page."""
     pages = [
@@ -89,6 +90,7 @@ def test_compute_chunk_bboxes_returns_normalized_rects():
             assert 0.0 <= y0 < y1 <= 1.0
 
 
+@pytest.mark.unit
 def test_compute_chunk_bboxes_empty_input():
     assert (
         PDFHighlighter.compute_chunk_bboxes_batch(
@@ -101,6 +103,7 @@ def test_compute_chunk_bboxes_empty_input():
     )
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("page_index", [0, 1])
 def test_compute_chunk_bboxes_assigns_correct_page(page_index: int):
     """Verify the page number returned matches the page the chunk lives on."""

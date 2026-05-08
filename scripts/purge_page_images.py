@@ -18,10 +18,11 @@ the same `Settings` object the server uses.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import logging
 import sys
+from functools import partial
 
+import anyio
 from qdrant_client import AsyncQdrantClient
 
 from nextcloud_mcp_server.config import get_settings
@@ -35,74 +36,74 @@ LEGACY_FIELDS = [
 ]
 
 
-def make_client() -> AsyncQdrantClient:
+async def purge(dry_run: bool, batch_size: int) -> None:
     settings = get_settings()
     if not settings.qdrant_url:
         raise SystemExit(
             "qdrant_url is not configured. Set QDRANT_URL (and QDRANT_API_KEY "
             "if required) before running this script."
         )
-    return AsyncQdrantClient(
+    collection = settings.get_collection_name()
+
+    # AsyncQdrantClient doesn't implement __aenter__/__aexit__, so use
+    # try/finally to guarantee the underlying aiohttp session is closed.
+    client = AsyncQdrantClient(
         url=settings.qdrant_url,
         api_key=settings.qdrant_api_key,
         timeout=60,
     )
-
-
-async def purge(dry_run: bool, batch_size: int) -> None:
-    settings = get_settings()
-    collection = settings.get_collection_name()
-    client = make_client()
-
-    next_offset = None
-    total_seen = 0
-    total_updated = 0
-
-    logger.info(
-        "Scanning collection %s; will delete keys %s%s",
-        collection,
-        LEGACY_FIELDS,
-        " (dry run)" if dry_run else "",
-    )
-
-    while True:
-        points, next_offset = await client.scroll(
-            collection_name=collection,
-            limit=batch_size,
-            offset=next_offset,
-            with_payload=False,
-            with_vectors=False,
-        )
-        if not points:
-            break
-
-        ids = [p.id for p in points]
-        total_seen += len(ids)
-
-        if not dry_run:
-            await client.delete_payload(
-                collection_name=collection,
-                keys=LEGACY_FIELDS,
-                points=ids,
-            )
-            total_updated += len(ids)
+    try:
+        next_offset = None
+        total_seen = 0
+        total_updated = 0
 
         logger.info(
-            "Batch: ids=%d total_seen=%d total_updated=%d",
-            len(ids),
-            total_seen,
-            total_updated,
+            "Scanning collection %s; will delete keys %s%s",
+            collection,
+            LEGACY_FIELDS,
+            " (dry run)" if dry_run else "",
         )
 
-        if next_offset is None:
-            break
+        while True:
+            points, next_offset = await client.scroll(
+                collection_name=collection,
+                limit=batch_size,
+                offset=next_offset,
+                with_payload=False,
+                with_vectors=False,
+            )
+            if not points:
+                break
 
-    logger.info(
-        "Done. total_seen=%d total_updated=%d%s",
-        total_seen,
-        total_updated,
-        " (dry run, no writes)" if dry_run else "",
-    )
+            ids = [p.id for p in points]
+            total_seen += len(ids)
+
+            if not dry_run:
+                await client.delete_payload(
+                    collection_name=collection,
+                    keys=LEGACY_FIELDS,
+                    points=ids,
+                )
+                total_updated += len(ids)
+
+            logger.info(
+                "Batch: ids=%d total_seen=%d total_updated=%d",
+                len(ids),
+                total_seen,
+                total_updated,
+            )
+
+            if next_offset is None:
+                break
+
+        logger.info(
+            "Done. total_seen=%d total_updated=%d%s",
+            total_seen,
+            total_updated,
+            " (dry run, no writes)" if dry_run else "",
+        )
+    finally:
+        await client.close()
 
 
 def main() -> int:
@@ -128,7 +129,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    asyncio.run(purge(dry_run=args.dry_run, batch_size=args.batch_size))
+    anyio.run(partial(purge, dry_run=args.dry_run, batch_size=args.batch_size))
     return 0
 
 

@@ -736,12 +736,10 @@ async def _index_document(
                     ),
                     # Chunk bbox (PDF only) — normalized rectangles in [0,1]
                     # relative to page width/height. Replaces the legacy
-                    # `highlighted_page_image` (Deck #76).
+                    # `highlighted_page_image` (Deck #76). The page number
+                    # comes from `page_number` (set above for PDF chunks).
                     **(
-                        {
-                            "chunk_bbox": chunk_bboxes[i]["bbox"],
-                            "chunk_bbox_page": chunk_bboxes[i]["page"],
-                        }
+                        {"chunk_bbox": chunk_bboxes[i]["bbox"]}
                         if i in chunk_bboxes
                         else {}
                     ),
@@ -763,9 +761,10 @@ async def _index_document(
             f"Failed to delete placeholder for {doc_task.doc_type}_{doc_task.doc_id}: {e}"
         )
 
-    # Upsert to Qdrant in batches to avoid timeout with large payloads
-    # Batch size kept small for safety; payloads are now small (no inline images).
-    BATCH_SIZE = 10
+    # Upsert to Qdrant in batches. Now that we no longer embed PNG payloads,
+    # per-point payloads are small (chunk text + small metadata), so we can
+    # safely use a larger batch size.
+    BATCH_SIZE = 100
     with trace_operation(
         "vector_sync.qdrant_upsert",
         attributes={

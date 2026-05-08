@@ -726,6 +726,7 @@ class PDFHighlighter:
             return results
 
         temp_pdf_path = None
+        doc = None
         try:
             temp_dir = Path(tempfile.mkdtemp(prefix="pdf_bbox_batch_"))
             temp_pdf_path = temp_dir / "pdf.pdf"
@@ -737,7 +738,7 @@ class PDFHighlighter:
                 chunk_index,
                 start_offset,
                 end_offset,
-                stored_page_num,
+                _,
                 chunk_text,
             ) in chunks:
                 chunk_page_info = PDFHighlighter.find_chunk_page(
@@ -781,7 +782,6 @@ class PDFHighlighter:
                 )
                 results[chunk_index] = ([normalized], page_num)
 
-            doc.close()
             logger.info(f"Computed bboxes for {len(results)}/{len(chunks)} chunks")
             return results
 
@@ -790,6 +790,8 @@ class PDFHighlighter:
             return results
 
         finally:
+            if doc is not None:
+                doc.close()
             if temp_pdf_path and temp_pdf_path.parent.exists():
                 try:
                     shutil.rmtree(temp_pdf_path.parent)
