@@ -104,6 +104,58 @@ def test_compute_chunk_bboxes_empty_input():
 
 
 @pytest.mark.unit
+def test_compute_chunk_bboxes_omits_when_offsets_out_of_range():
+    """Chunks whose offsets fall outside every page boundary are omitted.
+
+    Verifies the docstring contract: *"Chunks whose bbox cannot be located
+    are omitted from the result."* (path: ``find_chunk_page`` returns None).
+    """
+    pages = ["Page one body text content here for the test."]
+    pdf_bytes = _make_pdf(pages)
+    boundaries, full_text = _page_boundaries(pages)
+
+    # Offsets way beyond the document end — no page boundary matches.
+    out_of_range_start = len(full_text) + 1000
+    out_of_range_end = out_of_range_start + 50
+    chunks = [(0, out_of_range_start, out_of_range_end, 1, "irrelevant")]
+
+    results = PDFHighlighter.compute_chunk_bboxes_batch(
+        pdf_bytes=pdf_bytes,
+        chunks=chunks,
+        page_boundaries=boundaries,
+        full_text=full_text,
+    )
+
+    assert results == {}
+
+
+@pytest.mark.unit
+def test_compute_chunk_bboxes_omits_when_text_not_in_pdf():
+    """Chunks whose page-relative text isn't on the page are omitted.
+
+    Verifies the second omission path: ``_find_chunk_bbox`` returns None
+    when the supplied text cannot be located on the rendered page.
+    """
+    pages = ["Hello world."]
+    pdf_bytes = _make_pdf(pages)
+    # Build boundaries from the real text but pass a *different* full_text
+    # so the page-relative slice is content that does not exist in the PDF.
+    boundaries, _ = _page_boundaries(pages)
+    bogus_full_text = "Z" * len(pages[0])
+
+    chunks = [(0, 0, len(pages[0]), 1, "ignored")]
+
+    results = PDFHighlighter.compute_chunk_bboxes_batch(
+        pdf_bytes=pdf_bytes,
+        chunks=chunks,
+        page_boundaries=boundaries,
+        full_text=bogus_full_text,
+    )
+
+    assert results == {}
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("page_index", [0, 1])
 def test_compute_chunk_bboxes_assigns_correct_page(page_index: int):
     """Verify the page number returned matches the page the chunk lives on."""

@@ -537,9 +537,11 @@ async def _index_document(
     # Initialize results containers
     dense_embeddings: list = []
     sparse_embeddings: list = []
-    # chunk_index -> {"bbox": list[(x0,y0,x1,y1)], "page": int}
-    # Bboxes are normalized to [0, 1] relative to page width/height.
-    chunk_bboxes: dict[int, dict] = {}
+    # chunk_index -> list[(x0, y0, x1, y1)] of normalized rectangles
+    # in [0, 1] relative to page width/height. The page is taken from
+    # `chunk.page_number` (offset-based) and stored as `page_number`
+    # in the Qdrant payload, so we don't carry an `actual_page_num` here.
+    chunk_bboxes: dict[int, list[tuple[float, float, float, float]]] = {}
 
     # Determine if we need PDF highlighting
     is_pdf = doc_task.doc_type == "file" and content_type == "application/pdf"
@@ -612,11 +614,8 @@ async def _index_document(
                 )
             )
 
-            for chunk_index, (bboxes, actual_page_num) in batch_results.items():
-                chunk_bboxes[chunk_index] = {
-                    "bbox": bboxes,
-                    "page": actual_page_num,
-                }
+            for chunk_index, (bboxes, _) in batch_results.items():
+                chunk_bboxes[chunk_index] = bboxes
 
             logger.info(f"Computed bboxes for {len(chunk_bboxes)}/{len(chunks)} chunks")
 
@@ -738,11 +737,7 @@ async def _index_document(
                     # relative to page width/height. Replaces the legacy
                     # `highlighted_page_image` (Deck #76). The page number
                     # comes from `page_number` (set above for PDF chunks).
-                    **(
-                        {"chunk_bbox": chunk_bboxes[i]["bbox"]}
-                        if i in chunk_bboxes
-                        else {}
-                    ),
+                    **({"chunk_bbox": chunk_bboxes[i]} if i in chunk_bboxes else {}),
                 },
             )
         )
