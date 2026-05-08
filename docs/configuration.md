@@ -329,6 +329,22 @@ OLLAMA_EMBEDDING_MODEL=all-minilm
 - **Switching models requires re-embedding** all documents (may take time for large note collections)
 - **Old collection remains** in Qdrant and can be deleted manually if no longer needed
 
+#### Startup migrations on existing collections
+
+On the first call to `get_qdrant_client()` against an existing collection, the
+server runs two idempotent migrations:
+
+1. **Payload-index creation** — adds `KEYWORD` payload indexes for `doc_id`,
+   `user_id`, and `doc_type`. Required by Qdrant for any `FieldCondition`
+   filter. Cheap; runs even on healthy collections.
+2. **`doc_id` backfill** — rewrites any legacy integer `doc_id` payloads to
+   strings so they match the keyword index. Skipped after a quick sample
+   shows the collection is already clean. On a dirty collection, the full
+   scroll runs once and writes are emitted point-by-point — expect a delay
+   proportional to point count on the first startup after the upgrade.
+
+Both steps emit INFO-level log lines so operators can track progress.
+
 #### Explicit Override
 
 Set `QDRANT_COLLECTION` to use a specific collection name:

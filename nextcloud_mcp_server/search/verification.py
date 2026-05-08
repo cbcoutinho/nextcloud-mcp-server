@@ -565,7 +565,7 @@ async def verify_search_results(
     # complete by the time `verify_search_results` returns.
     if evict_on_missing and inaccessible:
 
-        async def evict(doc_id: int | str, doc_type: str) -> None:
+        async def evict(doc_id: str, doc_type: str) -> None:
             try:
                 await delete_document_points(doc_id, doc_type, user_id)
             except Exception as e:

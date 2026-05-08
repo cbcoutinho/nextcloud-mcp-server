@@ -132,9 +132,12 @@ class SearchResult:
     """A single search result with metadata and score.
 
     Attributes:
-        id: Document ID. Numeric for indexed types today (notes, files,
-            deck cards, news items), but typed as ``int | str`` to allow
-            future doc types that use string identifiers (e.g., file paths).
+        id: Document ID — always a string. Producers stringify their native
+            ID before writing to Qdrant so the keyword payload index on
+            ``doc_id`` matches every point regardless of source doc_type.
+            Public response models (e.g. ``SemanticSearchResult``) re-narrow
+            this back to ``int`` at the MCP boundary via ``int(r.id)`` —
+            see ``server/semantic.py`` for the narrowing site.
         doc_type: Document type (note, file, calendar, contact, etc.)
         title: Document title
         excerpt: Content excerpt showing match context
@@ -151,7 +154,7 @@ class SearchResult:
         point_id: Qdrant point ID for batch vector retrieval (None if not from Qdrant)
     """
 
-    id: int | str
+    id: str
     doc_type: str
     title: str
     excerpt: str

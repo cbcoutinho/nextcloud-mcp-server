@@ -70,7 +70,10 @@ async def compute_pca_coordinates(
                 vector = point.vector
 
             if vector is not None and point.payload:
-                doc_id = point.payload.get("doc_id")
+                # SearchResult.id is str; coerce payload doc_id to match so the
+                # tuple lookup below succeeds even on legacy int-typed payloads.
+                raw_doc_id = point.payload.get("doc_id")
+                doc_id = None if raw_doc_id is None else str(raw_doc_id)
                 chunk_start = point.payload.get("chunk_start_offset")
                 chunk_end = point.payload.get("chunk_end_offset")
                 chunk_key = (doc_id, chunk_start, chunk_end)

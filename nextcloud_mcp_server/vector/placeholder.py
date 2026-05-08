@@ -31,7 +31,7 @@ from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 logger = logging.getLogger(__name__)
 
 
-def _generate_placeholder_id(doc_type: str, doc_id: str | int) -> str:
+def _generate_placeholder_id(doc_type: str, doc_id: str) -> str:
     """Generate deterministic UUID for placeholder point.
 
     Args:
@@ -46,7 +46,7 @@ def _generate_placeholder_id(doc_type: str, doc_id: str | int) -> str:
 
 
 async def write_placeholder_point(
-    doc_id: str | int,
+    doc_id: str,
     doc_type: str,
     user_id: str,
     modified_at: int,
@@ -60,7 +60,7 @@ async def write_placeholder_point(
     processing completes.
 
     Args:
-        doc_id: Document ID (int for notes/files)
+        doc_id: Document ID (always str — see DocumentTask)
         doc_type: Document type (note, file, etc.)
         user_id: User ID who owns the document
         modified_at: Document modification timestamp
@@ -135,7 +135,7 @@ async def write_placeholder_point(
 
 
 async def query_document_metadata(
-    doc_id: str | int,
+    doc_id: str,
     doc_type: str,
     user_id: str,
 ) -> dict | None:
@@ -185,7 +185,7 @@ async def query_document_metadata(
 
 
 async def delete_placeholder_point(
-    doc_id: str | int,
+    doc_id: str,
     doc_type: str,
     user_id: str,
 ) -> None:
@@ -230,7 +230,7 @@ async def delete_placeholder_point(
 
 
 async def update_placeholder_status(
-    doc_id: str | int,
+    doc_id: str,
     doc_type: str,
     user_id: str,
     status: str,

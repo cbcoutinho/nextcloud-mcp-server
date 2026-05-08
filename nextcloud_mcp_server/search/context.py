@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _get_chunk_from_qdrant(
-    user_id: str, doc_id: int, doc_type: str, chunk_start: int, chunk_end: int
+    user_id: str, doc_id: str, doc_type: str, chunk_start: int, chunk_end: int
 ) -> str | None:
     """Retrieve full chunk text from Qdrant payload.
 
@@ -87,7 +87,7 @@ async def _get_chunk_from_qdrant(
 
 
 async def _get_chunk_by_index_from_qdrant(
-    user_id: str, doc_id: int, doc_type: str, chunk_index: int
+    user_id: str, doc_id: str, doc_type: str, chunk_index: int
 ) -> str | None:
     """Retrieve chunk text by chunk_index from Qdrant payload.
 
@@ -145,7 +145,7 @@ async def _get_chunk_by_index_from_qdrant(
 
 
 async def _get_file_path_from_qdrant(
-    user_id: str, file_id: int, chunk_start: int, chunk_end: int
+    user_id: str, file_id: str, chunk_start: int, chunk_end: int
 ) -> str | None:
     """Resolve file_id to file_path by querying Qdrant payload.
 
@@ -202,7 +202,7 @@ async def _get_file_path_from_qdrant(
 
 
 async def _get_deck_metadata_from_qdrant(
-    user_id: str, card_id: int
+    user_id: str, card_id: str
 ) -> dict[str, int] | None:
     """Retrieve board_id and stack_id for a deck card from Qdrant payload.
 
@@ -288,7 +288,7 @@ class ChunkContext:
 async def get_chunk_with_context(
     nc_client: NextcloudClient,
     user_id: str,
-    doc_id: str | int,
+    doc_id: str,
     doc_type: str,
     chunk_start: int,
     chunk_end: int,
@@ -306,7 +306,7 @@ async def get_chunk_with_context(
     Args:
         nc_client: Authenticated Nextcloud client
         user_id: User ID who owns the document
-        doc_id: Document ID (int for notes/files)
+        doc_id: Document ID (str — keyword-indexed in Qdrant payload)
         doc_type: Type of document ("note", "file", etc.)
         chunk_start: Character offset where chunk starts
         chunk_end: Character offset where chunk ends
@@ -319,17 +319,10 @@ async def get_chunk_with_context(
         ChunkContext with expanded context and markers, or None if document
         cannot be retrieved
     """
-    # Convert doc_id to int for Qdrant query
-    doc_id_int = (
-        int(doc_id)
-        if isinstance(doc_id, str) and doc_id.isdigit()
-        else (doc_id if isinstance(doc_id, int) else None)
-    )
-
     # Try to get chunk from Qdrant first (fast path)
-    if doc_id_int is not None:
+    if doc_id:
         chunk_text = await _get_chunk_from_qdrant(
-            user_id, doc_id_int, doc_type, chunk_start, chunk_end
+            user_id, doc_id, doc_type, chunk_start, chunk_end
         )
         if chunk_text:
             logger.info(
@@ -350,7 +343,7 @@ async def get_chunk_with_context(
             # Fetch previous chunk if not first chunk
             if chunk_index > 0:
                 before_chunk = await _get_chunk_by_index_from_qdrant(
-                    user_id, doc_id_int, doc_type, chunk_index - 1
+                    user_id, doc_id, doc_type, chunk_index - 1
                 )
                 if before_chunk:
                     # Remove overlap: the last chunk_overlap chars of previous chunk
@@ -371,7 +364,7 @@ async def get_chunk_with_context(
             # Fetch next chunk if not last chunk
             if chunk_index < total_chunks - 1:
                 after_chunk = await _get_chunk_by_index_from_qdrant(
-                    user_id, doc_id_int, doc_type, chunk_index + 1
+                    user_id, doc_id, doc_type, chunk_index + 1
                 )
                 if after_chunk:
                     # Remove overlap: the first chunk_overlap chars of next chunk
@@ -422,9 +415,10 @@ async def get_chunk_with_context(
         f"(Qdrant cache miss, possibly legacy data)"
     )
 
-    # For files, retrieve file_path from Qdrant payload
+    # For files, the doc_id is the numeric file ID (as a string) — resolve it
+    # to a WebDAV path so _fetch_document_text can retrieve the binary content.
     resolved_doc_id = doc_id
-    if doc_type == "file" and isinstance(doc_id, int):
+    if doc_type == "file":
         file_path = await _get_file_path_from_qdrant(
             user_id, doc_id, chunk_start, chunk_end
         )
@@ -498,7 +492,7 @@ async def get_chunk_with_context(
 
 
 async def _fetch_document_text(
-    nc_client: NextcloudClient, doc_id: str | int, doc_type: str, user_id: str
+    nc_client: NextcloudClient, doc_id: str, doc_type: str, user_id: str
 ) -> str | None:
     """Fetch full text content of a document.
 
@@ -590,7 +584,7 @@ async def _fetch_document_text(
             # Try to get board_id/stack_id from Qdrant metadata (O(1) lookup)
             # Otherwise fall back to iteration (legacy data)
             card = None
-            deck_metadata = await _get_deck_metadata_from_qdrant(user_id, int(doc_id))
+            deck_metadata = await _get_deck_metadata_from_qdrant(user_id, doc_id)
 
             if deck_metadata:
                 # Fast path: Direct lookup with known board_id/stack_id

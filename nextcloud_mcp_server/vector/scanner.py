@@ -48,7 +48,7 @@ class DocumentTask:
     """Document task for processing queue."""
 
     user_id: str
-    doc_id: int | str  # int for files/notes, str for legacy
+    doc_id: str  # Always str — see vector/qdrant_client.py keyword index
     doc_type: str  # "note", "file", "calendar"
     operation: str  # "index" or "delete"
     modified_at: int
@@ -228,7 +228,7 @@ async def scan_user_documents(
             )
 
             indexed_doc_ids = {
-                point.payload["doc_id"]
+                str(point.payload["doc_id"])
                 for point in (scroll_result[0] or [])
                 if point.payload is not None
             }
@@ -401,7 +401,7 @@ async def scan_user_documents(
             )
 
             indexed_file_ids = {
-                point.payload["doc_id"]
+                str(point.payload["doc_id"])
                 for point in (file_scroll_result[0] or [])
                 if point.payload is not None
             }
@@ -456,7 +456,9 @@ async def scan_user_documents(
             for file_info in tagged_files:
                 # Files are already filtered by MIME type in find_files_by_tag()
                 file_count += 1
-                file_id = file_info["id"]  # Use numeric file ID, not path
+                # Normalize file ID to str — Qdrant doc_id payload is keyword-indexed
+                # and producers across doc_types must agree on a single type.
+                file_id = str(file_info["id"])
                 file_path = file_info["path"]  # Keep path for logging
                 nextcloud_file_ids.add(file_id)
 
@@ -679,7 +681,7 @@ async def scan_news_items(
             limit=10000,
         )
         indexed_item_ids = {
-            point.payload["doc_id"]
+            str(point.payload["doc_id"])
             for point in (scroll_result[0] or [])
             if point.payload is not None
         }
@@ -858,7 +860,7 @@ async def scan_deck_cards(
             limit=10000,
         )
         indexed_card_ids = {
-            point.payload["doc_id"]
+            str(point.payload["doc_id"])
             for point in (scroll_result[0] or [])
             if point.payload is not None
         }

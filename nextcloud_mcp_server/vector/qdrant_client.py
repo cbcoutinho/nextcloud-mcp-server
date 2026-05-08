@@ -3,7 +3,8 @@
 import logging
 
 from qdrant_client import AsyncQdrantClient, models
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client.http.exceptions import UnexpectedResponse
+from qdrant_client.models import Distance, PayloadSchemaType, VectorParams
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_embedding_service
@@ -11,8 +12,135 @@ from nextcloud_mcp_server.embedding import get_embedding_service
 logger = logging.getLogger(__name__)
 
 
+# Payload fields filtered by exact-match in scanner/processor/placeholder/eviction.
+# Qdrant requires a payload index for any field used in a FieldCondition; without
+# one, queries fail with HTTP 400 ("Index required but not found"). All three
+# carry string values after producer normalization, so a KEYWORD index is the
+# correct schema (see ADR notes in commit message).
+_KEYWORD_PAYLOAD_FIELDS: tuple[str, ...] = ("doc_id", "user_id", "doc_type")
+
 # Singleton instance
 _qdrant_client: AsyncQdrantClient | None = None
+
+
+async def _ensure_keyword_payload_indexes(
+    client: AsyncQdrantClient, collection_name: str
+) -> None:
+    """Create KEYWORD payload indexes for fields used in exact-match filters.
+
+    Idempotent: tolerates 'already exists' errors so it can run on every
+    startup against existing collections.
+    """
+    for field in _KEYWORD_PAYLOAD_FIELDS:
+        try:
+            await client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field,
+                field_schema=PayloadSchemaType.KEYWORD,
+                wait=True,
+            )
+            logger.info("Created KEYWORD payload index on '%s'", field)
+        except UnexpectedResponse as e:
+            # Qdrant returns 400 if the index already exists with a different
+            # schema, or simply succeeds if it already matches. Treat
+            # already-exists as benign; surface schema conflicts loudly.
+            body = getattr(e, "content", b"") or b""
+            body_text = body.decode("utf-8", errors="replace")
+            if "already exists" in body_text.lower():
+                logger.debug("Payload index on '%s' already exists", field)
+            else:
+                logger.warning(
+                    "Failed to create payload index on '%s': %s", field, body_text
+                )
+
+
+async def _has_int_doc_id_sample(
+    client: AsyncQdrantClient, collection_name: str, sample_size: int = 256
+) -> bool:
+    """Quick sample to decide whether the full backfill scroll is needed.
+
+    Reading the first batch is cheap; if all sampled doc_ids are already str
+    (the steady-state on healthy collections), we skip the full pass.
+    """
+    points, _ = await client.scroll(
+        collection_name=collection_name,
+        limit=sample_size,
+        with_payload=["doc_id"],
+        with_vectors=False,
+    )
+    for point in points:
+        payload = point.payload or {}
+        value = payload.get("doc_id")
+        if value is not None and not isinstance(value, str):
+            return True
+    return False
+
+
+async def _backfill_doc_id_to_string(
+    client: AsyncQdrantClient, collection_name: str
+) -> None:
+    """Rewrite legacy integer doc_id payloads to strings.
+
+    Producers now uniformly write str(doc_id), but historical points may carry
+    int values from before normalization. A KEYWORD index does not match int
+    payloads, so any leftover int doc_ids would be silently invisible to
+    filters. Scroll all points and convert in-place. Idempotent.
+
+    Skipped when the first sample batch already contains only str doc_ids.
+    """
+    if not await _has_int_doc_id_sample(client, collection_name):
+        logger.debug(
+            "doc_id backfill: sample shows no legacy int payloads; skipping full scan"
+        )
+        return
+
+    logger.info(
+        "Running doc_id backfill on '%s' (this may take a moment for large collections)",
+        collection_name,
+    )
+
+    rewritten = 0
+    scanned = 0
+    # Qdrant scroll returns next_offset as PointId | None — keep it untyped here
+    # so the qdrant client's full union (UUID/int/str/PointId) flows through.
+    next_offset = None
+    batch_size = 256
+
+    while True:
+        points, next_offset = await client.scroll(
+            collection_name=collection_name,
+            limit=batch_size,
+            offset=next_offset,
+            with_payload=["doc_id"],
+            with_vectors=False,
+        )
+        if not points:
+            break
+
+        for point in points:
+            scanned += 1
+            # Qdrant client typing allows None payload even when with_payload
+            # was requested; defensive default so the type checker is happy.
+            payload = point.payload or {}
+            value = payload.get("doc_id")
+            if value is None or isinstance(value, str):
+                continue
+            await client.set_payload(
+                collection_name=collection_name,
+                payload={"doc_id": str(value)},
+                points=[point.id],
+                wait=False,
+            )
+            rewritten += 1
+
+        if next_offset is None:
+            break
+
+    logger.info(
+        "doc_id backfill complete: rewrote %d/%d payloads from int to str",
+        rewritten,
+        scanned,
+    )
 
 
 async def get_qdrant_client() -> AsyncQdrantClient:
@@ -110,6 +238,12 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 f"(dimension={actual_dimension}, model={settings.get_embedding_model_name()})"
             )
 
+            # Existing collections may pre-date the doc_id normalization /
+            # payload-index work. Backfill before creating the index so the
+            # index covers every point.
+            await _backfill_doc_id_to_string(_qdrant_client, collection_name)
+            await _ensure_keyword_payload_indexes(_qdrant_client, collection_name)
+
         else:
             # Collection doesn't exist - create it
             embedding_model = settings.get_embedding_model_name()
@@ -141,5 +275,6 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 f"  Distance: COSINE\n"
                 f"Background sync will index all documents with dense + sparse vectors."
             )
+            await _ensure_keyword_payload_indexes(_qdrant_client, collection_name)
 
     return _qdrant_client

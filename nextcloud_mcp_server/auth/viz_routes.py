@@ -285,7 +285,11 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                         vector = point.vector
 
                     if vector is not None and point.payload:
-                        doc_id = point.payload.get("doc_id")
+                        # SearchResult.id is str; coerce payload doc_id to match
+                        # so the tuple lookup below succeeds even on legacy
+                        # int-typed payloads written before normalization.
+                        raw_doc_id = point.payload.get("doc_id")
+                        doc_id = None if raw_doc_id is None else str(raw_doc_id)
                         chunk_start = point.payload.get("chunk_start_offset")
                         chunk_end = point.payload.get("chunk_end_offset")
                         chunk_key = (doc_id, chunk_start, chunk_end)
@@ -555,8 +559,7 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
 
         start = int(start_str)
         end = int(end_str)
-        # Convert doc_id to int (all document types use int IDs)
-        doc_id_int = int(doc_id)
+        # doc_id is keyword-indexed in Qdrant as str — pass through verbatim.
 
         user_id = request.user.display_name
         settings = get_settings()
@@ -580,7 +583,7 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
             chunk_context = await get_chunk_with_context(
                 nc_client=nc_client,
                 user_id=user_id,
-                doc_id=doc_id_int,
+                doc_id=doc_id,
                 doc_type=doc_type,
                 chunk_start=start,
                 chunk_end=end,
@@ -620,7 +623,7 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
                         must=[
                             get_placeholder_filter(),
                             FieldCondition(
-                                key="doc_id", match=MatchValue(value=doc_id_int)
+                                key="doc_id", match=MatchValue(value=doc_id)
                             ),
                             FieldCondition(
                                 key="user_id", match=MatchValue(value=username)

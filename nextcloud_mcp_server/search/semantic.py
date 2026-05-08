@@ -140,8 +140,9 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         for result in search_response.points:
             if result.payload is None:
                 continue
-            # doc_id can be int (notes) or str (files - file paths)
-            doc_id = result.payload["doc_id"]
+            # doc_id is always str post-normalization, but defensively coerce
+            # legacy int payloads on read until the backfill has run everywhere.
+            doc_id = str(result.payload["doc_id"])
             doc_type = result.payload.get("doc_type", "note")
             chunk_start = result.payload.get("chunk_start_offset")
             chunk_end = result.payload.get("chunk_end_offset")

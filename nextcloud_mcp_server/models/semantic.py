@@ -11,10 +11,12 @@ class SemanticSearchResult(BaseModel):
     id: int = Field(
         description=(
             "Document ID. Numeric for all currently indexed types (notes, files, "
-            "deck cards, news items). The internal SearchResult.id is typed as "
-            "int|str to leave room for future doc types with string identifiers; "
-            "the MCP response narrows to int and a future widening here would be "
-            "a deliberate, breaking-by-design API change."
+            "deck cards, news items). The internal SearchResult.id is stringified "
+            "for Qdrant's keyword-indexed doc_id payload; the MCP response narrows "
+            "back to int via int(r.id). A future doc_type with non-numeric ids "
+            "would surface here as a TypeError at the narrowing boundary, "
+            "forcing a deliberate widening of this field rather than a silent "
+            "API change."
         )
     )
     doc_type: str = Field(

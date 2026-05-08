@@ -511,8 +511,8 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                 raise ValueError("end must be greater than start")
         except ValueError as e:
             return JSONResponse({"success": False, "error": str(e)}, status_code=400)
-        # Convert doc_id to int if possible (most IDs are int)
-        doc_id_val: str | int = int(doc_id) if doc_id.isdigit() else doc_id
+        # doc_id is keyword-indexed in Qdrant as str — pass through verbatim
+        # (no int coercion; producers always stringify on write).
 
         # Get Nextcloud host from OAuth context
         oauth_ctx = request.app.state.oauth_context
@@ -537,7 +537,7 @@ async def get_chunk_context(request: Request) -> JSONResponse:
             chunk_context = await get_chunk_with_context(
                 nc_client=nc_client,
                 user_id=user_id,
-                doc_id=doc_id_val,
+                doc_id=doc_id,
                 doc_type=doc_type,
                 chunk_start=start,
                 chunk_end=end,
@@ -570,7 +570,7 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                         must=[
                             get_placeholder_filter(),
                             FieldCondition(
-                                key="doc_id", match=MatchValue(value=doc_id_val)
+                                key="doc_id", match=MatchValue(value=doc_id)
                             ),
                             FieldCondition(
                                 key="user_id", match=MatchValue(value=user_id)
