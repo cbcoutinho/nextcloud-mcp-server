@@ -48,18 +48,28 @@ _qdrant_client: AsyncQdrantClient | None = None
 
 
 async def _ensure_payload_indexes(
-    client: AsyncQdrantClient, collection_name: str
+    client: AsyncQdrantClient,
+    collection_name: str,
+    existing_schema: dict[str, Any] | None = None,
 ) -> None:
     """Create payload indexes for fields used in exact-match filters.
 
     Each entry in ``_PAYLOAD_INDEX_FIELDS`` is created with its declared
     schema type (KEYWORD for string fields, BOOL for ``is_placeholder``).
-    Pre-fetches the existing payload schema and skips fields that are
-    already indexed, so routine restarts make no Qdrant write round-trips
-    and emit no INFO log lines. Schema conflicts (a pre-existing index
-    with a different type) still surface as a 400 — log loudly so
-    operators can intervene, but keep going so the remaining fields still
-    get indexed.
+    Skips fields that are already in ``existing_schema`` so routine
+    restarts make no Qdrant write round-trips and emit no INFO log lines.
+    Schema conflicts (a pre-existing index with a different type) still
+    surface as a 400 — log loudly so operators can intervene, but keep
+    going so the remaining fields still get indexed.
+
+    Args:
+        client: Qdrant client instance.
+        collection_name: Target collection.
+        existing_schema: The collection's current ``payload_schema``. If
+            ``None``, this function fetches it via ``get_collection``;
+            callers that have already fetched the collection info (e.g.
+            ``get_qdrant_client``'s dimension-validation step) should pass
+            it through to avoid a duplicate round-trip.
     """
     # Mirror the broad swallow in `_backfill_doc_id_to_string`: the singleton
     # in `get_qdrant_client` is already assigned by the time this function
@@ -67,17 +77,18 @@ async def _ensure_payload_indexes(
     # propagating out would leave the process holding a usable client with
     # the migration silently skipped on every subsequent call. Log ERROR
     # with exc_info and return; the next process restart retries from scratch.
-    try:
-        collection_info = await client.get_collection(collection_name)
-    except Exception:
-        logger.error(
-            "Failed to fetch collection info for '%s'; payload indexes not "
-            "created. Will retry on next restart.",
-            collection_name,
-            exc_info=True,
-        )
-        return
-    existing_schema = collection_info.payload_schema or {}
+    if existing_schema is None:
+        try:
+            collection_info = await client.get_collection(collection_name)
+        except Exception:
+            logger.error(
+                "Failed to fetch collection info for '%s'; payload indexes not "
+                "created. Will retry on next restart.",
+                collection_name,
+                exc_info=True,
+            )
+            return
+        existing_schema = collection_info.payload_schema or {}
     failed_fields: list[str] = []
 
     for field, schema_type in _PAYLOAD_INDEX_FIELDS.items():
@@ -301,16 +312,20 @@ async def _backfill_doc_id_to_string(
 
     # Data backfill succeeded — write the sentinel so a future restart can
     # short-circuit. Empty sparse vector mirrors the placeholder.py
-    # convention (vector/placeholder.py); zero dense vector is fine
-    # because the sentinel never participates in a search (no user_id /
-    # doc_id / doc_type payload to match). A failure here is non-fatal:
-    # the data is correct; only the short-circuit marker is missing, so
-    # the next restart will re-scroll an already-clean collection (idempotent
-    # zero-write) before retrying the upsert.
+    # convention (vector/placeholder.py). The dense vector uses a single
+    # non-zero element instead of all zeros: cosine distance is undefined
+    # for the zero vector and Qdrant Cloud's strict mode rejects zero-vector
+    # upserts. The sentinel still never participates in a search (no
+    # user_id / doc_id / doc_type payload to match), so the exact value
+    # doesn't matter — it just has to be normalisable.
+    # A failure here is non-fatal: the data is correct; only the short-circuit
+    # marker is missing, so the next restart will re-scroll an already-clean
+    # collection (idempotent zero-write) before retrying the upsert.
+    sentinel_dense = [1e-9] + [0.0] * (dimension - 1)
     sentinel_point = PointStruct(
         id=_DOC_ID_BACKFILL_SENTINEL_ID,
         vector={
-            "dense": [0.0] * dimension,
+            "dense": sentinel_dense,
             "sparse": models.SparseVector(indices=[], values=[]),
         },
         payload=dict(_DOC_ID_BACKFILL_SENTINEL_PAYLOAD),
@@ -443,11 +458,17 @@ async def get_qdrant_client() -> AsyncQdrantClient:
 
             # Existing collections may pre-date the doc_id normalization /
             # payload-index work. Backfill before creating the index so the
-            # index covers every point.
+            # index covers every point. Pass the already-fetched
+            # collection_info.payload_schema through to avoid a redundant
+            # get_collection round-trip on every restart.
             await _backfill_doc_id_to_string(
                 _qdrant_client, collection_name, expected_dimension
             )
-            await _ensure_payload_indexes(_qdrant_client, collection_name)
+            await _ensure_payload_indexes(
+                _qdrant_client,
+                collection_name,
+                existing_schema=collection_info.payload_schema or {},
+            )
 
         else:
             # Collection doesn't exist - create it
@@ -480,6 +501,10 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 f"  Distance: COSINE\n"
                 f"Background sync will index all documents with dense + sparse vectors."
             )
-            await _ensure_payload_indexes(_qdrant_client, collection_name)
+            # Freshly created collection has no payload schema yet; pass {}
+            # explicitly to skip the otherwise-redundant get_collection call.
+            await _ensure_payload_indexes(
+                _qdrant_client, collection_name, existing_schema={}
+            )
 
     return _qdrant_client
