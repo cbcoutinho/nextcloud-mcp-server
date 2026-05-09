@@ -335,25 +335,38 @@ async def test_backfill_writes_sentinel_after_successful_scroll(mocker):
 
 @pytest.mark.unit
 async def test_backfill_rewrites_int_doc_ids_to_str(mocker):
-    """Mixed int/str payload across two scroll pages: only ints get rewritten."""
+    """Mixed int/str payload across two scroll pages: only ints get rewritten.
+
+    Includes ``doc_id=0`` to guard against a future "early-exit on
+    falsy" refactor — the helper must rewrite zero alongside other
+    ints, not skip it.
+    """
     client = mocker.AsyncMock()
     client.retrieve.return_value = []
-    # Two scroll calls: batch 1 is mixed and reports a next_offset; batch 2
-    # is mixed with next_offset=None to terminate.
+    # Two scroll calls: batch 1 mixes int (incl. 0) + str and reports a
+    # next_offset; batch 2 mixes int + str with next_offset=None to terminate.
     client.scroll.side_effect = [
-        ([_record(1, 100), _record(2, "abc")], "next-offset-123"),
+        (
+            [_record(1, 100), _record(2, "abc"), _record(5, 0)],
+            "next-offset-123",
+        ),
         ([_record(3, 200), _record(4, "def")], None),
     ]
 
     await _backfill_doc_id_to_string(client, "test-collection", _backfill_dimension())
 
-    # One set_payload per *unique* int value — point 1 (100) and point 3
-    # (200) are in different batches with different values, so two calls.
-    assert client.set_payload.await_count == 2
+    # One set_payload per *unique* int value across all batches: 100, 0, 200.
+    assert client.set_payload.await_count == 3
     client.set_payload.assert_any_await(
         collection_name="test-collection",
         payload={"doc_id": "100"},
         points=[1],
+        wait=True,
+    )
+    client.set_payload.assert_any_await(
+        collection_name="test-collection",
+        payload={"doc_id": "0"},
+        points=[5],
         wait=True,
     )
     client.set_payload.assert_any_await(

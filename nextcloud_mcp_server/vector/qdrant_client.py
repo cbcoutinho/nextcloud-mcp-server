@@ -161,6 +161,18 @@ def _group_int_doc_ids(points: list[Any]) -> tuple[dict[str, list[Any]], int]:
         value = payload.get("doc_id")
         if value is None or isinstance(value, str):
             continue
+        if not isinstance(value, int):
+            # Producers only ever write int or str; anything else is a
+            # producer bug. Stringifying e.g. a float would write "3.0",
+            # which producers (str(int)) and the keyword index would
+            # never match, and which int() on the verification side
+            # would later reject. Skip and log loudly instead.
+            logger.warning(
+                "Unexpected doc_id type %s on point %s; skipping rewrite",
+                type(value).__name__,
+                point.id,
+            )
+            continue
         by_value.setdefault(str(value), []).append(point.id)
     return by_value, scanned
 
