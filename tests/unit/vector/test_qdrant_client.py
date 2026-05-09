@@ -25,16 +25,16 @@ from qdrant_client.models import PayloadSchemaType
 
 from nextcloud_mcp_server.vector.qdrant_client import (
     _DOC_ID_BACKFILL_SENTINEL_ID,
-    _KEYWORD_PAYLOAD_FIELDS,
+    _PAYLOAD_INDEX_FIELDS,
     _backfill_doc_id_to_string,
-    _ensure_keyword_payload_indexes,
+    _ensure_payload_indexes,
 )
 
 
 def _empty_collection_info() -> SimpleNamespace:
     """Stand-in for a CollectionInfo with no payload indexes yet.
 
-    Tests for _ensure_keyword_payload_indexes only read ``payload_schema``
+    Tests for _ensure_payload_indexes only read ``payload_schema``
     off the result. None / empty dict both signal "no indexes" — use {}
     here to match the production-code default.
     """
@@ -71,38 +71,66 @@ def _record(point_id: int | str, doc_id: int | str | None) -> SimpleNamespace:
 
 
 # ---------------------------------------------------------------------------
-# _ensure_keyword_payload_indexes
+# _ensure_payload_indexes
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-async def test_ensure_keyword_payload_indexes_creates_each_field(mocker):
-    """Happy path: every field in _KEYWORD_PAYLOAD_FIELDS gets a KEYWORD index."""
+async def test_ensure_payload_indexes_creates_each_field(mocker):
+    """Happy path: every field in _PAYLOAD_INDEX_FIELDS gets its declared schema.
+
+    The dict-of-(field, schema_type) registry pairs string fields with
+    KEYWORD and the boolean ``is_placeholder`` with BOOL — both are
+    required because Qdrant's strict-mode index-required filtering
+    enforces a payload index for any ``FieldCondition`` regardless of
+    value type.
+    """
     client = mocker.AsyncMock()
     client.get_collection.return_value = _empty_collection_info()
 
-    await _ensure_keyword_payload_indexes(client, "test-collection")
+    await _ensure_payload_indexes(client, "test-collection")
 
-    assert client.create_payload_index.await_count == len(_KEYWORD_PAYLOAD_FIELDS)
+    assert client.create_payload_index.await_count == len(_PAYLOAD_INDEX_FIELDS)
     expected_calls = [
         call(
             collection_name="test-collection",
             field_name=field,
-            field_schema=PayloadSchemaType.KEYWORD,
+            field_schema=schema_type,
             wait=True,
         )
-        for field in _KEYWORD_PAYLOAD_FIELDS
+        for field, schema_type in _PAYLOAD_INDEX_FIELDS.items()
     ]
     client.create_payload_index.assert_has_awaits(expected_calls, any_order=False)
 
 
 @pytest.mark.unit
-async def test_ensure_keyword_payload_indexes_skips_fields_already_indexed(
-    mocker, caplog
-):
+async def test_ensure_payload_indexes_includes_is_placeholder_as_bool(mocker):
+    """is_placeholder must be created with BOOL schema, not KEYWORD.
+
+    ``get_placeholder_filter`` and ``delete_placeholder_point`` filter on
+    ``is_placeholder`` (a bool); creating it with KEYWORD would still
+    fail strict-mode index-required filtering on Qdrant Cloud because
+    the index type wouldn't match the value type.
+    """
+    client = mocker.AsyncMock()
+    client.get_collection.return_value = _empty_collection_info()
+
+    await _ensure_payload_indexes(client, "test-collection")
+
+    bool_calls = [
+        c
+        for c in client.create_payload_index.await_args_list
+        if c.kwargs.get("field_name") == "is_placeholder"
+    ]
+    assert len(bool_calls) == 1, "is_placeholder must be created exactly once"
+    assert bool_calls[0].kwargs["field_schema"] is PayloadSchemaType.BOOL
+
+
+@pytest.mark.unit
+async def test_ensure_payload_indexes_skips_fields_already_indexed(mocker, caplog):
     """Routine restart path: existing payload indexes are silently skipped.
 
-    Without the pre-fetch, every restart logs `Created KEYWORD payload
+    Without the pre-fetch, every restart logs `Created <SCHEMA> payload
     index on '<field>'` for every field — noise that hides genuinely
     interesting first-time-creation lines. With the pre-fetch, no log
     fires and no Qdrant write round-trip happens for already-indexed
@@ -114,21 +142,23 @@ async def test_ensure_keyword_payload_indexes_skips_fields_already_indexed(
     )
 
     with caplog.at_level("INFO", logger="nextcloud_mcp_server.vector.qdrant_client"):
-        await _ensure_keyword_payload_indexes(client, "test-collection")
+        await _ensure_payload_indexes(client, "test-collection")
 
-    # Only the two missing fields are created.
-    assert client.create_payload_index.await_count == 2
+    # Only the missing fields are created — every entry in the registry
+    # other than the one already in the schema.
+    expected_missing = set(_PAYLOAD_INDEX_FIELDS) - {"doc_id"}
+    assert client.create_payload_index.await_count == len(expected_missing)
     created_fields = {
         c.kwargs["field_name"] for c in client.create_payload_index.await_args_list
     }
-    assert created_fields == {"user_id", "doc_type"}
+    assert created_fields == expected_missing
     # No INFO log fires for the already-indexed field.
     info_messages = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
     assert not any("doc_id" in m for m in info_messages), info_messages
 
 
 @pytest.mark.unit
-async def test_ensure_keyword_payload_indexes_logs_400_as_warning(mocker, caplog):
+async def test_ensure_payload_indexes_logs_400_as_warning(mocker, caplog):
     """Any 400 from create_payload_index is logged at WARNING and skipped.
 
     Real Qdrant returns 200 when the index already exists with a matching
@@ -138,20 +168,21 @@ async def test_ensure_keyword_payload_indexes_logs_400_as_warning(mocker, caplog
     """
     client = mocker.AsyncMock()
     client.get_collection.return_value = _empty_collection_info()
+    # First field fails with 400; remaining fields succeed. One side_effect
+    # entry per item in _PAYLOAD_INDEX_FIELDS so the iteration is exhaustive.
     client.create_payload_index.side_effect = [
         _make_unexpected(
             400,
             b'{"status":{"error":"field \\"doc_id\\" indexed with different schema"}}',
         ),
-        None,
-        None,
+        *([None] * (len(_PAYLOAD_INDEX_FIELDS) - 1)),
     ]
 
     with caplog.at_level("WARNING", logger="nextcloud_mcp_server.vector.qdrant_client"):
-        await _ensure_keyword_payload_indexes(client, "test-collection")
+        await _ensure_payload_indexes(client, "test-collection")
 
-    # Loop continued past the failing field; all three were attempted.
-    assert client.create_payload_index.await_count == len(_KEYWORD_PAYLOAD_FIELDS)
+    # Loop continued past the failing field; every field was attempted.
+    assert client.create_payload_index.await_count == len(_PAYLOAD_INDEX_FIELDS)
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     # 400s do not contribute to the partial-failure summary (which fires
     # only for non-400 errors), so this is the per-field warning, not the
@@ -163,7 +194,7 @@ async def test_ensure_keyword_payload_indexes_logs_400_as_warning(mocker, caplog
 
 
 @pytest.mark.unit
-async def test_ensure_keyword_payload_indexes_logs_non_400_as_error(mocker, caplog):
+async def test_ensure_payload_indexes_logs_non_400_as_error(mocker, caplog):
     """A non-400 status from create_payload_index escalates to ERROR.
 
     A 5xx response (e.g., Qdrant temporarily unavailable) should not be
@@ -172,16 +203,16 @@ async def test_ensure_keyword_payload_indexes_logs_non_400_as_error(mocker, capl
     """
     client = mocker.AsyncMock()
     client.get_collection.return_value = _empty_collection_info()
+    # First field fails with 500; remaining fields succeed.
     client.create_payload_index.side_effect = [
         _make_unexpected(500, b'{"status":{"error":"internal server error"}}'),
-        None,
-        None,
+        *([None] * (len(_PAYLOAD_INDEX_FIELDS) - 1)),
     ]
 
     with caplog.at_level("ERROR", logger="nextcloud_mcp_server.vector.qdrant_client"):
-        await _ensure_keyword_payload_indexes(client, "test-collection")
+        await _ensure_payload_indexes(client, "test-collection")
 
-    assert client.create_payload_index.await_count == len(_KEYWORD_PAYLOAD_FIELDS)
+    assert client.create_payload_index.await_count == len(_PAYLOAD_INDEX_FIELDS)
     errors = [r for r in caplog.records if r.levelname == "ERROR"]
     assert len(errors) == 1
     msg = errors[0].getMessage()
@@ -190,7 +221,7 @@ async def test_ensure_keyword_payload_indexes_logs_non_400_as_error(mocker, capl
 
 
 @pytest.mark.unit
-async def test_ensure_keyword_payload_indexes_logs_and_returns_when_get_collection_raises(
+async def test_ensure_payload_indexes_logs_and_returns_when_get_collection_raises(
     mocker, caplog
 ):
     """A get_collection failure is logged and swallowed; no indexes are attempted.
@@ -212,7 +243,7 @@ async def test_ensure_keyword_payload_indexes_logs_and_returns_when_get_collecti
     client.get_collection.side_effect = _get_collection_raises
 
     with caplog.at_level("ERROR", logger="nextcloud_mcp_server.vector.qdrant_client"):
-        await _ensure_keyword_payload_indexes(client, "test-collection")
+        await _ensure_payload_indexes(client, "test-collection")
 
     # No index creation was attempted — the function returned early.
     client.create_payload_index.assert_not_awaited()
@@ -554,7 +585,7 @@ async def test_backfill_emits_progress_log_every_20_batches(mocker, caplog):
 
 
 @pytest.mark.unit
-async def test_ensure_keyword_payload_indexes_summarises_failed_fields(mocker, caplog):
+async def test_ensure_payload_indexes_summarises_failed_fields(mocker, caplog):
     """A non-400 failure surfaces both as ERROR and a WARNING summary.
 
     Per-field ERROR lines are easy to miss in startup noise; the
@@ -564,7 +595,9 @@ async def test_ensure_keyword_payload_indexes_summarises_failed_fields(mocker, c
     """
     client = mocker.AsyncMock()
     client.get_collection.return_value = SimpleNamespace(payload_schema={})
-    # Two of the three fields fail with 5xx; one succeeds.
+    # All but the second field fail with 5xx. _PAYLOAD_INDEX_FIELDS has
+    # insertion-ordered keys (doc_id, user_id, doc_type, is_placeholder),
+    # so call #2 (user_id) is the success case.
     call_count = {"n": 0}
 
     async def _create_index(*args, **kwargs):
@@ -578,7 +611,7 @@ async def test_ensure_keyword_payload_indexes_summarises_failed_fields(mocker, c
     client.create_payload_index.side_effect = _create_index
 
     with caplog.at_level("WARNING", logger="nextcloud_mcp_server.vector.qdrant_client"):
-        await _ensure_keyword_payload_indexes(client, "test-collection")
+        await _ensure_payload_indexes(client, "test-collection")
 
     summary = [
         r.getMessage()
@@ -586,8 +619,9 @@ async def test_ensure_keyword_payload_indexes_summarises_failed_fields(mocker, c
         if "Payload index creation incomplete" in r.getMessage()
     ]
     assert len(summary) == 1
-    # Field order matches _KEYWORD_PAYLOAD_FIELDS = ("doc_id", "user_id", "doc_type")
+    # All fields except user_id should appear in the summary.
     assert "doc_id" in summary[0]
     assert "doc_type" in summary[0]
+    assert "is_placeholder" in summary[0]
     assert "user_id" not in summary[0]  # The one that succeeded.
     assert "test-collection" in summary[0]

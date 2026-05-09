@@ -20,10 +20,18 @@ logger = logging.getLogger(__name__)
 
 # Payload fields filtered by exact-match in scanner/processor/placeholder/eviction.
 # Qdrant requires a payload index for any field used in a FieldCondition; without
-# one, queries fail with HTTP 400 ("Index required but not found"). All three
-# carry string values after producer normalization, so a KEYWORD index is the
-# correct schema (see ADR notes in commit message).
-_KEYWORD_PAYLOAD_FIELDS: tuple[str, ...] = ("doc_id", "user_id", "doc_type")
+# one, queries fail with HTTP 400 ("Index required but not found") on instances
+# that enforce strict-mode index-required filtering (Qdrant Cloud, network mode
+# with strict settings). The three string fields (doc_id, user_id, doc_type)
+# carry str values after producer normalization, so KEYWORD is the correct
+# schema; is_placeholder is the bool used by ``get_placeholder_filter`` and
+# ``delete_placeholder_point`` (see vector/placeholder.py), so it gets BOOL.
+_PAYLOAD_INDEX_FIELDS: dict[str, PayloadSchemaType] = {
+    "doc_id": PayloadSchemaType.KEYWORD,
+    "user_id": PayloadSchemaType.KEYWORD,
+    "doc_type": PayloadSchemaType.KEYWORD,
+    "is_placeholder": PayloadSchemaType.BOOL,
+}
 
 # Sentinel point that records "this collection has been backfilled to str
 # doc_id". Written after a successful pass of _backfill_doc_id_to_string so
@@ -39,11 +47,13 @@ _DOC_ID_BACKFILL_SENTINEL_PAYLOAD: dict[str, str] = {"_migration_marker": "doc_i
 _qdrant_client: AsyncQdrantClient | None = None
 
 
-async def _ensure_keyword_payload_indexes(
+async def _ensure_payload_indexes(
     client: AsyncQdrantClient, collection_name: str
 ) -> None:
-    """Create KEYWORD payload indexes for fields used in exact-match filters.
+    """Create payload indexes for fields used in exact-match filters.
 
+    Each entry in ``_PAYLOAD_INDEX_FIELDS`` is created with its declared
+    schema type (KEYWORD for string fields, BOOL for ``is_placeholder``).
     Pre-fetches the existing payload schema and skips fields that are
     already indexed, so routine restarts make no Qdrant write round-trips
     and emit no INFO log lines. Schema conflicts (a pre-existing index
@@ -70,7 +80,7 @@ async def _ensure_keyword_payload_indexes(
     existing_schema = collection_info.payload_schema or {}
     failed_fields: list[str] = []
 
-    for field in _KEYWORD_PAYLOAD_FIELDS:
+    for field, schema_type in _PAYLOAD_INDEX_FIELDS.items():
         if field in existing_schema:
             # Index already present — silent skip. Logging here on every
             # restart would be noise that hides the genuinely interesting
@@ -80,10 +90,10 @@ async def _ensure_keyword_payload_indexes(
             await client.create_payload_index(
                 collection_name=collection_name,
                 field_name=field,
-                field_schema=PayloadSchemaType.KEYWORD,
+                field_schema=schema_type,
                 wait=True,
             )
-            logger.info("Created KEYWORD payload index on '%s'", field)
+            logger.info("Created %s payload index on '%s'", schema_type.name, field)
         except UnexpectedResponse as e:
             body = getattr(e, "content", b"") or b""
             body_text = body.decode("utf-8", errors="replace")
@@ -151,10 +161,20 @@ async def _apply_backfill_writes(
 ) -> int:
     """Apply one ``set_payload`` per stringified doc_id; return rewritten count.
 
-    ``wait=True`` is required because ``_ensure_keyword_payload_indexes`` runs
-    immediately after this function (see ``get_qdrant_client`` near the call
-    site) and only indexes committed data — fire-and-forget writes would
-    leave int payloads invisible to KEYWORD filters.
+    ``wait=True`` is load-bearing for two reasons:
+
+    1. It ensures each batch commits before the scroll loop advances to
+       the next page (and before the sentinel is written by the caller
+       after ``_backfill_doc_id_to_string`` returns). A crash mid-scroll
+       leaves no sentinel, so the next restart re-scrolls — and that
+       re-scroll only sees a deterministic, committed partial state when
+       each batch was committed synchronously. Fire-and-forget writes
+       would race the next scroll page against still-in-flight rewrites.
+    2. ``_ensure_payload_indexes`` runs after this backfill returns and
+       can only index already-committed payload values. Without
+       ``wait=True``, the keyword index could be built over points whose
+       payloads are still int values in flight to disk, leaving them
+       silently invisible to ``FieldCondition`` filters.
     """
     rewritten = 0
     for str_val, point_ids in by_value.items():
@@ -427,7 +447,7 @@ async def get_qdrant_client() -> AsyncQdrantClient:
             await _backfill_doc_id_to_string(
                 _qdrant_client, collection_name, expected_dimension
             )
-            await _ensure_keyword_payload_indexes(_qdrant_client, collection_name)
+            await _ensure_payload_indexes(_qdrant_client, collection_name)
 
         else:
             # Collection doesn't exist - create it
@@ -460,6 +480,6 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 f"  Distance: COSINE\n"
                 f"Background sync will index all documents with dense + sparse vectors."
             )
-            await _ensure_keyword_payload_indexes(_qdrant_client, collection_name)
+            await _ensure_payload_indexes(_qdrant_client, collection_name)
 
     return _qdrant_client
