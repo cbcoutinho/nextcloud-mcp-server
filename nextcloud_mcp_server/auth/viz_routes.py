@@ -37,6 +37,7 @@ from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
 )
+from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.oauth_sync import (
     NotProvisionedError,
     get_user_client_basic_auth,
@@ -564,8 +565,9 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
         # otherwise pass through to get_chunk_with_context and bottom out as a
         # 404 from deep inside, not a clear 400. Nextcloud IDs are unsigned
         # ints from MySQL auto_increment; doc_id stays a str downstream
-        # (Qdrant payload index is keyword-typed).
-        if not doc_id.isdigit():
+        # (Qdrant payload index is keyword-typed). is_valid_nextcloud_doc_id
+        # rejects "0", leading zeros, and Unicode digits that pass isdigit().
+        if not is_valid_nextcloud_doc_id(doc_id):
             return JSONResponse(
                 {
                     "success": False,

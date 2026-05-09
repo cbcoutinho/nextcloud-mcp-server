@@ -11,6 +11,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
@@ -577,10 +578,11 @@ async def _fetch_document_text(
     """
     try:
         if doc_type == "note":
-            # Note IDs are integers in the Nextcloud API; reject non-numeric
-            # doc_ids explicitly so a malformed payload surfaces in logs
-            # rather than getting silently swallowed by `except Exception`.
-            if not doc_id.isdigit():
+            # Note IDs are positive ASCII integers (MySQL AUTO_INCREMENT).
+            # is_valid_nextcloud_doc_id rejects "0", leading zeros, and Unicode
+            # digits that pass str.isdigit(); a malformed payload surfaces in
+            # logs rather than getting silently swallowed by `except Exception`.
+            if not is_valid_nextcloud_doc_id(doc_id):
                 logger.warning(
                     "Expected numeric note doc_id, got %r — skipping document fetch",
                     doc_id,
@@ -594,10 +596,11 @@ async def _fetch_document_text(
             content = note.get("content", "")
             return f"{title}\n\n{content}"
         elif doc_type == "news_item":
-            # News item IDs are integers in the Nextcloud News API; reject
-            # non-numeric doc_ids explicitly so malformed payloads surface
-            # rather than getting swallowed by the broad except below.
-            if not doc_id.isdigit():
+            # News item IDs are positive ASCII integers (MySQL AUTO_INCREMENT).
+            # is_valid_nextcloud_doc_id rejects "0", leading zeros, and Unicode
+            # digits that pass str.isdigit(); malformed payloads surface in
+            # logs rather than getting swallowed by the broad except below.
+            if not is_valid_nextcloud_doc_id(doc_id):
                 logger.warning(
                     "Expected numeric news_item doc_id, got %r — skipping document fetch",
                     doc_id,
@@ -621,12 +624,13 @@ async def _fetch_document_text(
             content_parts.append(body_markdown)
             return "\n".join(content_parts)
         elif doc_type == "deck_card":
-            # Deck card IDs are integers in the Nextcloud Deck API; reject
-            # non-numeric doc_ids explicitly so malformed payloads surface
-            # rather than getting swallowed by the broad except below. The
-            # numeric check covers both the metadata-fast-path (line ~600)
-            # and the iteration fallback (line ~635).
-            if not doc_id.isdigit():
+            # Deck card IDs are positive ASCII integers (MySQL AUTO_INCREMENT).
+            # is_valid_nextcloud_doc_id rejects "0", leading zeros, and Unicode
+            # digits that pass str.isdigit(); malformed payloads surface in
+            # logs rather than getting swallowed by the broad except below.
+            # The numeric check covers both the metadata-fast-path and the
+            # iteration fallback below.
+            if not is_valid_nextcloud_doc_id(doc_id):
                 logger.warning(
                     "Expected numeric deck_card doc_id, got %r — skipping document fetch",
                     doc_id,

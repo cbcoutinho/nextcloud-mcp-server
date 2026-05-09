@@ -679,6 +679,36 @@ def test_group_int_doc_ids_skips_float_and_warns(caplog):
 
 
 @pytest.mark.unit
+def test_group_int_doc_ids_skips_bool_and_warns(caplog):
+    """A bool doc_id is not stringified to "True"/"False"; it logs and skips.
+
+    ``isinstance(True, int)`` is ``True`` because ``bool`` is a subclass of
+    ``int`` in Python, so a naive ``isinstance(value, int)`` guard would let
+    a boolean payload through and write ``str(True)`` → ``"True"`` into
+    Qdrant. Producers never write bools, but the strict ``type(value) is
+    int`` guard ensures any future producer bug surfaces as a WARNING and is
+    not silently stringified.
+    """
+    bool_point = SimpleNamespace(id=33, payload={"doc_id": True})
+    int_point = SimpleNamespace(id=42, payload={"doc_id": 7})
+
+    with caplog.at_level("WARNING", logger="nextcloud_mcp_server.vector.qdrant_client"):
+        by_value, scanned = _group_int_doc_ids([bool_point, int_point])
+
+    # Only the int point made it into by_value — "True" is *not* a key.
+    assert by_value == {"7": [42]}
+    assert "True" not in by_value
+    assert "False" not in by_value
+    assert scanned == 2
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    msg = warnings[0].getMessage()
+    assert "bool" in msg
+    assert "33" in msg
+
+
+@pytest.mark.unit
 def test_group_int_doc_ids_handles_str_and_missing_silently(caplog):
     """str / missing doc_id payloads are skipped without warning.
 

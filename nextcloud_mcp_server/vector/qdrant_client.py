@@ -204,12 +204,14 @@ def _group_int_doc_ids(points: list[Any]) -> tuple[dict[str, list[Any]], int]:
         value = payload.get("doc_id")
         if value is None or isinstance(value, str):
             continue
-        if not isinstance(value, int):
-            # Producers only ever write int or str; anything else is a
-            # producer bug. Stringifying e.g. a float would write "3.0",
-            # which producers (str(int)) and the keyword index would
-            # never match, and which int() on the verification side
-            # would later reject. Skip and log loudly instead.
+        # Strict type check: bool is a subclass of int in Python, so an
+        # `isinstance(value, int)` guard would let `True`/`False` slip
+        # through and be stringified to `"True"`/`"False"` — which the
+        # keyword index would never match and the verification side
+        # would later reject. Producers only ever write int or str;
+        # anything else (bool, float, etc.) is a producer bug. Skip
+        # and log loudly instead.
+        if type(value) is not int:
             logger.warning(
                 "Unexpected doc_id type %s on point %s; skipping rewrite",
                 type(value).__name__,
