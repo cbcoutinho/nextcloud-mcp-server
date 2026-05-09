@@ -12,6 +12,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
+from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -193,6 +194,98 @@ async def _get_deck_metadata_from_qdrant(
     except Exception as e:
         logger.debug(f"Error querying Qdrant for deck metadata: {e}")
         return None
+
+
+async def get_chunk_bbox_and_page_from_qdrant(
+    user_id: str,
+    doc_id: int | str,
+    chunk_index: int | None,
+    chunk_start: int,
+    chunk_end: int,
+) -> tuple[list | None, int | None]:
+    """Fetch chunk_bbox and page_number for a chunk from Qdrant payload.
+
+    Prefers chunk_index for the lookup (always indexed); falls back to
+    (chunk_start_offset, chunk_end_offset) when chunk_index is not provided
+    — this is the legacy path for clients pre-cbcoutinho/astrolabe#75. The
+    fallback may 400 in Qdrant Cloud strict mode because those offset fields
+    aren't indexed there; that's logged as a warning and (None, None) is
+    returned so callers degrade gracefully.
+
+    Args:
+        user_id: User ID who owns the document
+        doc_id: Document ID (int for file/note, str for some doc types)
+        chunk_index: Zero-based chunk index, or None to use offset fallback
+        chunk_start: Character offset where chunk starts (used when
+            chunk_index is None)
+        chunk_end: Character offset where chunk ends (used when chunk_index
+            is None)
+
+    Returns:
+        Tuple of (chunk_bbox, page_number); either field may be None
+        independently if absent from the payload, or both may be None on
+        miss/error.
+    """
+    try:
+        settings = get_settings()
+        qdrant_client = await get_qdrant_client()
+
+        if chunk_index is not None:
+            points_response = await qdrant_client.scroll(
+                collection_name=settings.get_collection_name(),
+                scroll_filter=Filter(
+                    must=[
+                        get_placeholder_filter(),
+                        FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+                        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                        FieldCondition(
+                            key="chunk_index", match=MatchValue(value=chunk_index)
+                        ),
+                    ]
+                ),
+                limit=1,
+                with_vectors=False,
+                with_payload=["chunk_bbox", "page_number"],
+            )
+        else:
+            points_response = await qdrant_client.scroll(
+                collection_name=settings.get_collection_name(),
+                scroll_filter=Filter(
+                    must=[
+                        get_placeholder_filter(),
+                        FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+                        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                        FieldCondition(
+                            key="chunk_start_offset",
+                            match=MatchValue(value=chunk_start),
+                        ),
+                        FieldCondition(
+                            key="chunk_end_offset",
+                            match=MatchValue(value=chunk_end),
+                        ),
+                    ]
+                ),
+                limit=1,
+                with_vectors=False,
+                with_payload=["chunk_bbox", "page_number"],
+            )
+
+        points = points_response[0]
+        if not points or not points[0].payload:
+            return None, None
+
+        payload = points[0].payload
+        chunk_bbox = payload.get("chunk_bbox")
+        page_number = payload.get("page_number")
+        if chunk_bbox:
+            logger.info(
+                "Found chunk bbox: page=%s, rects=%d", page_number, len(chunk_bbox)
+            )
+        return chunk_bbox, page_number
+
+    except Exception as e:
+        logger.warning("Failed to fetch chunk bbox: %s", e)
+        return None, None
 
 
 @dataclass
