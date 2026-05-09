@@ -94,7 +94,9 @@ async def test_enable_semantic_search_completes_oauth_for_login_flow(browser):
     ``oauth-required.php`` template and the link reappears — making this
     test the canary for the drift class.
     """
-    admin_password = os.environ.get("NEXTCLOUD_PASSWORD", "admin")
+    admin_password = os.getenv("NEXTCLOUD_PASSWORD")
+    if admin_password is None:
+        raise RuntimeError("NEXTCLOUD_PASSWORD must be set")
     page = await browser.new_page()
     try:
         await login_to_nextcloud(page, "admin", admin_password)
