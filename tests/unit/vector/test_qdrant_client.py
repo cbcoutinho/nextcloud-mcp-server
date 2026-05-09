@@ -28,6 +28,7 @@ from nextcloud_mcp_server.vector.qdrant_client import (
     _PAYLOAD_INDEX_FIELDS,
     _backfill_doc_id_to_string,
     _ensure_payload_indexes,
+    _group_int_doc_ids,
 )
 
 
@@ -595,6 +596,83 @@ async def test_backfill_emits_progress_log_every_20_batches(mocker, caplog):
     assert len(progress_messages) == 1
     assert "scanned 20 points" in progress_messages[0]
     assert "test-collection" in progress_messages[0]
+
+
+# ---------------------------------------------------------------------------
+# _group_int_doc_ids
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_group_int_doc_ids_skips_float_and_warns(caplog):
+    """A float doc_id is not stringified; it logs WARNING and is skipped.
+
+    Producers always write int or str. A float would round-trip to e.g.
+    ``"3.0"``, which the keyword index and verification path
+    (``int(doc_id)``) would never match. Skipping with a loud warning is
+    the only safe choice.
+    """
+    float_point = SimpleNamespace(id=99, payload={"doc_id": 3.0})
+    int_point = SimpleNamespace(id=42, payload={"doc_id": 7})
+
+    with caplog.at_level("WARNING", logger="nextcloud_mcp_server.vector.qdrant_client"):
+        by_value, scanned = _group_int_doc_ids([float_point, int_point])
+
+    # Only the int point made it into by_value; float was dropped.
+    assert by_value == {"7": [42]}
+    # Both points still count toward the scanned total — the warning
+    # should not hide them from progress logs.
+    assert scanned == 2
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    msg = warnings[0].getMessage()
+    assert "float" in msg
+    assert "99" in msg
+
+
+@pytest.mark.unit
+def test_group_int_doc_ids_handles_str_and_missing_silently(caplog):
+    """str / missing doc_id payloads are skipped without warning.
+
+    These are the steady-state paths — already-migrated str values and
+    sentinel-style points without a doc_id key. Neither should noise up
+    the log on every restart.
+    """
+    str_point = SimpleNamespace(id=1, payload={"doc_id": "abc"})
+    none_payload_point = SimpleNamespace(id=2, payload=None)
+    missing_key_point = SimpleNamespace(id=3, payload={"other": "value"})
+    explicit_none_point = SimpleNamespace(id=4, payload={"doc_id": None})
+
+    with caplog.at_level("WARNING", logger="nextcloud_mcp_server.vector.qdrant_client"):
+        by_value, scanned = _group_int_doc_ids(
+            [str_point, none_payload_point, missing_key_point, explicit_none_point]
+        )
+
+    assert by_value == {}
+    assert scanned == 4
+    # No warnings — these paths are expected and silent.
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+@pytest.mark.unit
+def test_group_int_doc_ids_groups_ints_by_str_value():
+    """Multiple int-doc_id points sharing a value collapse into one entry.
+
+    Pins the chunk-batching contract: all chunks of one document share its
+    doc_id, so the helper hands ``_apply_backfill_writes`` a single key
+    with all chunk point-ids attached.
+    """
+    by_value, scanned = _group_int_doc_ids(
+        [
+            SimpleNamespace(id=10, payload={"doc_id": 42}),
+            SimpleNamespace(id=11, payload={"doc_id": 42}),
+            SimpleNamespace(id=12, payload={"doc_id": 7}),
+        ]
+    )
+
+    assert by_value == {"42": [10, 11], "7": [12]}
+    assert scanned == 3
 
 
 @pytest.mark.unit

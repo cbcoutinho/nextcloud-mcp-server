@@ -369,21 +369,20 @@ async def get_chunk_with_context(
     # Prefer chunk_index lookup (always-indexed field) when caller supplied it;
     # fall back to (chunk_start, chunk_end) lookup otherwise.
     chunk_text: str | None = None
-    if doc_id:
-        if chunk_index is not None:
-            chunk_text = await _get_chunk_by_index_from_qdrant(
-                user_id, doc_id, doc_type, chunk_index
-            )
-        # Skip the offset fallback for files when the indexed chunk_index
-        # lookup already ran: chunk_start/end_offset aren't indexed in Qdrant
-        # Cloud strict mode, so the call returns 400 and surfaces a misleading
-        # logger.error. The file fast-fail below correctly handles the miss
-        # without it.
-        skip_offset_lookup = chunk_index is not None and doc_type == "file"
-        if chunk_text is None and not skip_offset_lookup:
-            chunk_text = await _get_chunk_from_qdrant(
-                user_id, doc_id, doc_type, chunk_start, chunk_end
-            )
+    if chunk_index is not None:
+        chunk_text = await _get_chunk_by_index_from_qdrant(
+            user_id, doc_id, doc_type, chunk_index
+        )
+    # Skip the offset fallback for files when the indexed chunk_index
+    # lookup already ran: chunk_start/end_offset aren't indexed in Qdrant
+    # Cloud strict mode, so the call returns 400 and surfaces a misleading
+    # logger.error. The file fast-fail below correctly handles the miss
+    # without it.
+    skip_offset_lookup = chunk_index is not None and doc_type == "file"
+    if chunk_text is None and not skip_offset_lookup:
+        chunk_text = await _get_chunk_from_qdrant(
+            user_id, doc_id, doc_type, chunk_start, chunk_end
+        )
 
     if chunk_text:
         logger.info(

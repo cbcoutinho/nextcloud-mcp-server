@@ -3,6 +3,7 @@
 import logging
 from typing import Any
 
+import anyio
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.models import (
@@ -43,8 +44,13 @@ _PAYLOAD_INDEX_FIELDS: dict[str, PayloadSchemaType] = {
 _DOC_ID_BACKFILL_SENTINEL_ID: str = "00000000-0000-0000-0000-d0c1d0d1d0c1"
 _DOC_ID_BACKFILL_SENTINEL_PAYLOAD: dict[str, str] = {"_migration_marker": "doc_id_v1"}
 
-# Singleton instance
+# Singleton instance + init lock. The lock serialises concurrent first
+# callers so the idempotent-but-expensive startup migration
+# (``_backfill_doc_id_to_string`` + ``_ensure_payload_indexes``) only runs
+# once per process. Steady-state callers hit the fast path above the lock
+# and never acquire it.
 _qdrant_client: AsyncQdrantClient | None = None
+_qdrant_init_lock: anyio.Lock = anyio.Lock()
 
 
 async def _ensure_payload_indexes(
@@ -392,131 +398,151 @@ async def get_qdrant_client() -> AsyncQdrantClient:
     """
     global _qdrant_client
 
-    if _qdrant_client is None:
-        settings = get_settings()
+    # Fast path: already initialized — skip lock acquisition for the
+    # steady-state hot path (every MCP tool call after first start).
+    if _qdrant_client is not None:
+        return _qdrant_client
 
-        # Detect mode and initialize client accordingly
-        if settings.qdrant_url:
-            # Network mode
-            logger.info(f"Using Qdrant network mode: {settings.qdrant_url}")
-            _qdrant_client = AsyncQdrantClient(
-                url=settings.qdrant_url,
-                api_key=settings.qdrant_api_key,
-                timeout=30,
-            )
-        elif settings.qdrant_location:
-            # Local mode (either :memory: or persistent path)
-            if settings.qdrant_location == ":memory:":
-                logger.info("Using Qdrant in-memory mode: :memory:")
+    # Slow path: serialise concurrent first-callers so the idempotent-but-
+    # expensive startup migration (``_backfill_doc_id_to_string`` +
+    # ``_ensure_payload_indexes``) runs exactly once. Without this lock,
+    # parallel cold-start callers would all enter the init block, run the
+    # migration N times, and emit duplicate "skip-because-exists" warnings
+    # from the index helper — annoying log noise but not data corruption.
+    async with _qdrant_init_lock:
+        # Double-checked: another waiter may have initialized while we
+        # blocked on the lock.
+        if _qdrant_client is None:
+            settings = get_settings()
+
+            # Detect mode and initialize client accordingly
+            if settings.qdrant_url:
+                # Network mode
+                logger.info(f"Using Qdrant network mode: {settings.qdrant_url}")
+                _qdrant_client = AsyncQdrantClient(
+                    url=settings.qdrant_url,
+                    api_key=settings.qdrant_api_key,
+                    timeout=30,
+                )
+            elif settings.qdrant_location:
+                # Local mode (either :memory: or persistent path)
+                if settings.qdrant_location == ":memory:":
+                    logger.info("Using Qdrant in-memory mode: :memory:")
+                    _qdrant_client = AsyncQdrantClient(":memory:")
+                else:
+                    # Persistent local mode - use path parameter
+                    logger.info(
+                        f"Using Qdrant persistent mode: {settings.qdrant_location}"
+                    )
+                    _qdrant_client = AsyncQdrantClient(path=settings.qdrant_location)
+            else:
+                # Should not happen due to __post_init__ validation, but handle gracefully
+                logger.warning("No Qdrant mode configured, defaulting to :memory:")
                 _qdrant_client = AsyncQdrantClient(":memory:")
-            else:
-                # Persistent local mode - use path parameter
-                logger.info(f"Using Qdrant persistent mode: {settings.qdrant_location}")
-                _qdrant_client = AsyncQdrantClient(path=settings.qdrant_location)
-        else:
-            # Should not happen due to __post_init__ validation, but handle gracefully
-            logger.warning("No Qdrant mode configured, defaulting to :memory:")
-            _qdrant_client = AsyncQdrantClient(":memory:")
 
-        # Get collection name (auto-generated from deployment ID + model)
-        collection_name = settings.get_collection_name()
+            # Get collection name (auto-generated from deployment ID + model)
+            collection_name = settings.get_collection_name()
 
-        embedding_service = get_embedding_service()
+            embedding_service = get_embedding_service()
 
-        # Detect dimension dynamically (for OllamaEmbeddingProvider)
-        if hasattr(embedding_service.provider, "_detect_dimension"):
-            await embedding_service.provider._detect_dimension()  # type: ignore[call-non-callable]
+            # Detect dimension dynamically (for OllamaEmbeddingProvider)
+            if hasattr(embedding_service.provider, "_detect_dimension"):
+                await embedding_service.provider._detect_dimension()  # type: ignore[call-non-callable]
 
-        expected_dimension = embedding_service.get_dimension()
+            expected_dimension = embedding_service.get_dimension()
 
-        # Explicitly check if collection exists
-        logger.debug(f"Checking if collection '{collection_name}' exists...")
-        collections = await _qdrant_client.get_collections()
-        collection_names = [c.name for c in collections.collections]
+            # Explicitly check if collection exists
+            logger.debug(f"Checking if collection '{collection_name}' exists...")
+            collections = await _qdrant_client.get_collections()
+            collection_names = [c.name for c in collections.collections]
 
-        if collection_name in collection_names:
-            # Collection exists - validate dimensions
-            logger.debug(
-                f"Collection '{collection_name}' found, validating dimensions..."
-            )
-            collection_info = await _qdrant_client.get_collection(collection_name)
-            # Handle both named vectors (dict) and legacy single vector
-            vectors = collection_info.config.params.vectors
-            if isinstance(vectors, dict):
-                actual_dimension = vectors["dense"].size
-            else:
-                # Type narrowing: vectors must be VectorParams if not dict
-                assert isinstance(vectors, VectorParams)
-                actual_dimension = vectors.size
+            if collection_name in collection_names:
+                # Collection exists - validate dimensions
+                logger.debug(
+                    f"Collection '{collection_name}' found, validating dimensions..."
+                )
+                collection_info = await _qdrant_client.get_collection(collection_name)
+                # Handle both named vectors (dict) and legacy single vector
+                vectors = collection_info.config.params.vectors
+                if isinstance(vectors, dict):
+                    actual_dimension = vectors["dense"].size
+                else:
+                    # Type narrowing: vectors must be VectorParams if not dict
+                    assert isinstance(vectors, VectorParams)
+                    actual_dimension = vectors.size
 
-            # Validate dimension matches
-            if actual_dimension != expected_dimension:
-                embedding_model = settings.get_embedding_model_name()
-                raise ValueError(
-                    f"Dimension mismatch for collection '{collection_name}':\n"
-                    f"  Expected: {expected_dimension} (from embedding model '{embedding_model}')\n"
-                    f"  Found: {actual_dimension}\n"
-                    f"This usually means you changed the embedding model.\n"
-                    f"Solutions:\n"
-                    f"  1. Delete the old collection: Collection will be recreated with new dimensions\n"
-                    f"  2. Set QDRANT_COLLECTION to use a different collection name\n"
-                    f"  3. Revert to the original embedding model"
+                # Validate dimension matches
+                if actual_dimension != expected_dimension:
+                    embedding_model = settings.get_embedding_model_name()
+                    raise ValueError(
+                        f"Dimension mismatch for collection '{collection_name}':\n"
+                        f"  Expected: {expected_dimension} (from embedding model '{embedding_model}')\n"
+                        f"  Found: {actual_dimension}\n"
+                        f"This usually means you changed the embedding model.\n"
+                        f"Solutions:\n"
+                        f"  1. Delete the old collection: Collection will be recreated with new dimensions\n"
+                        f"  2. Set QDRANT_COLLECTION to use a different collection name\n"
+                        f"  3. Revert to the original embedding model"
+                    )
+
+                logger.info(
+                    f"Using existing Qdrant collection: {collection_name} "
+                    f"(dimension={actual_dimension}, model={settings.get_embedding_model_name()})"
                 )
 
-            logger.info(
-                f"Using existing Qdrant collection: {collection_name} "
-                f"(dimension={actual_dimension}, model={settings.get_embedding_model_name()})"
-            )
+                # Existing collections may pre-date the doc_id normalization /
+                # payload-index work. Backfill before creating the index so the
+                # index covers every point. Pass the already-fetched
+                # collection_info.payload_schema through to avoid a redundant
+                # get_collection round-trip on every restart.
+                await _backfill_doc_id_to_string(
+                    _qdrant_client, collection_name, expected_dimension
+                )
+                await _ensure_payload_indexes(
+                    _qdrant_client,
+                    collection_name,
+                    existing_schema=collection_info.payload_schema or {},
+                )
 
-            # Existing collections may pre-date the doc_id normalization /
-            # payload-index work. Backfill before creating the index so the
-            # index covers every point. Pass the already-fetched
-            # collection_info.payload_schema through to avoid a redundant
-            # get_collection round-trip on every restart.
-            await _backfill_doc_id_to_string(
-                _qdrant_client, collection_name, expected_dimension
-            )
-            await _ensure_payload_indexes(
-                _qdrant_client,
-                collection_name,
-                existing_schema=collection_info.payload_schema or {},
-            )
+            else:
+                # Collection doesn't exist - create it
+                embedding_model = settings.get_embedding_model_name()
+                logger.info(
+                    f"Collection '{collection_name}' not found, creating with "
+                    f"dimension={expected_dimension}, model={embedding_model}..."
+                )
+                await _qdrant_client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config={
+                        "dense": VectorParams(
+                            size=expected_dimension,
+                            distance=Distance.COSINE,
+                        ),
+                    },
+                    sparse_vectors_config={
+                        "sparse": models.SparseVectorParams(
+                            index=models.SparseIndexParams(
+                                on_disk=False,
+                            )
+                        ),
+                    },
+                )
+                logger.info(
+                    f"Created Qdrant collection: {collection_name}\n"
+                    f"  Dense vector dimension: {expected_dimension}\n"
+                    f"  Dense embedding model: {embedding_model}\n"
+                    f"  Sparse vectors: BM25 (for hybrid search)\n"
+                    f"  Distance: COSINE\n"
+                    f"Background sync will index all documents with dense + sparse vectors."
+                )
+                # Freshly created collection has no payload schema yet; pass {}
+                # explicitly to skip the otherwise-redundant get_collection call.
+                await _ensure_payload_indexes(
+                    _qdrant_client, collection_name, existing_schema={}
+                )
 
-        else:
-            # Collection doesn't exist - create it
-            embedding_model = settings.get_embedding_model_name()
-            logger.info(
-                f"Collection '{collection_name}' not found, creating with "
-                f"dimension={expected_dimension}, model={embedding_model}..."
-            )
-            await _qdrant_client.create_collection(
-                collection_name=collection_name,
-                vectors_config={
-                    "dense": VectorParams(
-                        size=expected_dimension,
-                        distance=Distance.COSINE,
-                    ),
-                },
-                sparse_vectors_config={
-                    "sparse": models.SparseVectorParams(
-                        index=models.SparseIndexParams(
-                            on_disk=False,
-                        )
-                    ),
-                },
-            )
-            logger.info(
-                f"Created Qdrant collection: {collection_name}\n"
-                f"  Dense vector dimension: {expected_dimension}\n"
-                f"  Dense embedding model: {embedding_model}\n"
-                f"  Sparse vectors: BM25 (for hybrid search)\n"
-                f"  Distance: COSINE\n"
-                f"Background sync will index all documents with dense + sparse vectors."
-            )
-            # Freshly created collection has no payload schema yet; pass {}
-            # explicitly to skip the otherwise-redundant get_collection call.
-            await _ensure_payload_indexes(
-                _qdrant_client, collection_name, existing_schema={}
-            )
-
+    # Lock released. ``_qdrant_client`` is guaranteed non-None here:
+    # either the fast path returned earlier, the lock-protected branch
+    # set it, or a sibling waiter set it before we got the lock.
+    assert _qdrant_client is not None
     return _qdrant_client
