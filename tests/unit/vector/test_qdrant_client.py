@@ -222,6 +222,50 @@ async def test_ensure_payload_indexes_logs_non_400_as_error(mocker, caplog):
 
 
 @pytest.mark.unit
+async def test_ensure_payload_indexes_continues_past_raw_network_error(mocker, caplog):
+    """A raw network error (e.g. ConnectError, TimeoutError) must not skip the rest.
+
+    UnexpectedResponse covers HTTP-shaped failures, but transport-level
+    failures (httpx.ConnectError, asyncio.TimeoutError) reach the loop as
+    bare Exceptions. Without a broad catch, the first network blip
+    propagates, leaves _qdrant_client assigned, and silently skips every
+    remaining field. The fix is per-field containment matching the 5xx
+    behaviour: log at ERROR with exc_info, append to failed_fields, and
+    continue.
+    """
+    client = mocker.AsyncMock()
+    client.get_collection.return_value = _empty_collection_info()
+    # First field hits a connection failure; remaining fields succeed.
+    client.create_payload_index.side_effect = [
+        ConnectionError("Connection refused"),
+        *([None] * (len(_PAYLOAD_INDEX_FIELDS) - 1)),
+    ]
+
+    with caplog.at_level("WARNING", logger="nextcloud_mcp_server.vector.qdrant_client"):
+        await _ensure_payload_indexes(client, "test-collection")
+
+    # Loop continued past the failing field; every field was attempted.
+    assert client.create_payload_index.await_count == len(_PAYLOAD_INDEX_FIELDS)
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "Network error creating payload index" in errors[0].getMessage()
+    # exc_info is preserved so operators can see the underlying cause.
+    assert errors[0].exc_info is not None
+    assert errors[0].exc_info[0] is ConnectionError
+    # The partial-failure summary surfaces the field as missing.
+    summary_warnings = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING"
+        and "Payload index creation incomplete" in r.getMessage()
+    ]
+    assert len(summary_warnings) == 1
+    # The first field in _PAYLOAD_INDEX_FIELDS is the one that raised.
+    failing_field = next(iter(_PAYLOAD_INDEX_FIELDS))
+    assert failing_field in summary_warnings[0].getMessage()
+
+
+@pytest.mark.unit
 async def test_ensure_payload_indexes_logs_and_returns_when_get_collection_raises(
     mocker, caplog
 ):

@@ -19,19 +19,25 @@ from nextcloud_mcp_server.embedding import get_embedding_service
 logger = logging.getLogger(__name__)
 
 
-# Payload fields filtered by exact-match in scanner/processor/placeholder/eviction.
-# Qdrant requires a payload index for any field used in a FieldCondition; without
-# one, queries fail with HTTP 400 ("Index required but not found") on instances
-# that enforce strict-mode index-required filtering (Qdrant Cloud, network mode
-# with strict settings). The three string fields (doc_id, user_id, doc_type)
-# carry str values after producer normalization, so KEYWORD is the correct
-# schema; is_placeholder is the bool used by ``get_placeholder_filter`` and
-# ``delete_placeholder_point`` (see vector/placeholder.py), so it gets BOOL.
+# Payload fields filtered by exact-match in scanner/processor/placeholder/eviction
+# and the chunk-context lookup path. Qdrant requires a payload index for any
+# field used in a FieldCondition; without one, queries fail with HTTP 400
+# ("Index required but not found") on instances that enforce strict-mode
+# index-required filtering (Qdrant Cloud, network mode with strict settings).
+# The three string fields (doc_id, user_id, doc_type) carry str values after
+# producer normalization, so KEYWORD is the correct schema. is_placeholder is
+# the bool used by ``get_placeholder_filter`` and ``delete_placeholder_point``
+# (see vector/placeholder.py), so it gets BOOL. chunk_index is the int used by
+# ``_get_chunk_by_index_from_qdrant`` and ``get_chunk_bbox_and_page_from_qdrant``
+# (see search/context.py) — the always-indexed fast path that the offset-based
+# fallback exists to avoid; it has to actually be indexed for that promise to
+# hold on Qdrant Cloud strict mode.
 _PAYLOAD_INDEX_FIELDS: dict[str, PayloadSchemaType] = {
     "doc_id": PayloadSchemaType.KEYWORD,
     "user_id": PayloadSchemaType.KEYWORD,
     "doc_type": PayloadSchemaType.KEYWORD,
     "is_placeholder": PayloadSchemaType.BOOL,
+    "chunk_index": PayloadSchemaType.INTEGER,
 }
 
 # Sentinel point that records "this collection has been backfilled to str
@@ -48,9 +54,16 @@ _DOC_ID_BACKFILL_SENTINEL_PAYLOAD: dict[str, str] = {"_migration_marker": "doc_i
 # callers so the idempotent-but-expensive startup migration
 # (``_backfill_doc_id_to_string`` + ``_ensure_payload_indexes``) only runs
 # once per process. Steady-state callers hit the fast path above the lock
-# and never acquire it.
+# and never acquire it. The lock is lazy-initialised inside
+# ``get_qdrant_client`` rather than constructed at module import time:
+# anyio's docs are explicit that synchronization primitives should be
+# instantiated within an async context, and ``anyio_mode = "auto"`` in
+# pyproject.toml means tests can run under trio where eager construction
+# would fail. Construction is safe under cooperative multitasking — there
+# is no ``await`` between the None-check and the assignment, so two
+# coroutines cannot both create a lock.
 _qdrant_client: AsyncQdrantClient | None = None
-_qdrant_init_lock: anyio.Lock = anyio.Lock()
+_qdrant_init_lock: anyio.Lock | None = None
 
 
 async def _ensure_payload_indexes(
@@ -61,12 +74,16 @@ async def _ensure_payload_indexes(
     """Create payload indexes for fields used in exact-match filters.
 
     Each entry in ``_PAYLOAD_INDEX_FIELDS`` is created with its declared
-    schema type (KEYWORD for string fields, BOOL for ``is_placeholder``).
-    Skips fields that are already in ``existing_schema`` so routine
-    restarts make no Qdrant write round-trips and emit no INFO log lines.
-    Schema conflicts (a pre-existing index with a different type) still
-    surface as a 400 — log loudly so operators can intervene, but keep
-    going so the remaining fields still get indexed.
+    schema type (KEYWORD for string fields, BOOL for ``is_placeholder``,
+    INTEGER for ``chunk_index``). Skips fields that are already in
+    ``existing_schema`` so routine restarts make no Qdrant write round-trips
+    and emit no INFO log lines. Schema conflicts (a pre-existing index with
+    a different type) still surface as a 400 — log loudly so operators can
+    intervene, but keep going so the remaining fields still get indexed.
+    The same per-field error containment applies to raw network errors
+    (e.g. ``httpx.ConnectError`` from a transient Qdrant unavailability):
+    log at ERROR with ``exc_info`` and continue, so a single transient
+    failure on one field does not skip the rest.
 
     Args:
         client: Qdrant client instance.
@@ -115,9 +132,9 @@ async def _ensure_payload_indexes(
             body = getattr(e, "content", b"") or b""
             body_text = body.decode("utf-8", errors="replace")
             # 400 is the expected schema-conflict path (index already exists
-            # with a different type). 5xx / network-shaped errors should not
-            # be silently downgraded — keep the loop going so the remaining
-            # fields still get attempted, but log at error so operators see it.
+            # with a different type). 5xx is unexpected — keep the loop going
+            # so the remaining fields still get attempted, but log at error
+            # so operators see it.
             if e.status_code == 400:
                 logger.warning(
                     "Schema conflict on payload index '%s': %s", field, body_text
@@ -130,6 +147,21 @@ async def _ensure_payload_indexes(
                     body_text,
                 )
                 failed_fields.append(field)
+        except Exception:
+            # Raw network / timeout failures (httpx.ConnectError,
+            # asyncio.TimeoutError, etc.) reach here — outside the HTTP-status
+            # taxonomy that UnexpectedResponse covers. Same containment
+            # rationale as above: one transient failure on one field must not
+            # skip the rest, and the singleton in get_qdrant_client is already
+            # assigned by this point so re-raising would leave the process
+            # holding a usable client with the migration silently incomplete.
+            logger.error(
+                "Network error creating payload index on '%s'; "
+                "field will remain unindexed until next successful restart",
+                field,
+                exc_info=True,
+            )
+            failed_fields.append(field)
 
     # A single per-field ERROR line is easy to miss in startup noise. Surface
     # the partial-failure summary at WARNING so operators auditing the log
@@ -396,12 +428,20 @@ async def get_qdrant_client() -> AsyncQdrantClient:
     Raises:
         Exception: If Qdrant connection fails or collection creation fails
     """
-    global _qdrant_client
+    global _qdrant_client, _qdrant_init_lock
 
     # Fast path: already initialized — skip lock acquisition for the
     # steady-state hot path (every MCP tool call after first start).
     if _qdrant_client is not None:
         return _qdrant_client
+
+    # Lazy-create the init lock on first cold-start. Safe under cooperative
+    # multitasking: there is no ``await`` between the None-check and the
+    # assignment, so two coroutines cannot both reach the construction.
+    # See the rationale on _qdrant_init_lock for why eager construction
+    # would break under the trio backend.
+    if _qdrant_init_lock is None:
+        _qdrant_init_lock = anyio.Lock()
 
     # Slow path: serialise concurrent first-callers so the idempotent-but-
     # expensive startup migration (``_backfill_doc_id_to_string`` +
