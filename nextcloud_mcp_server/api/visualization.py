@@ -14,7 +14,6 @@ import logging
 from typing import Any
 
 import pymupdf
-from qdrant_client.models import FieldCondition, Filter, MatchValue
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -31,13 +30,14 @@ from nextcloud_mcp_server.search import (
     BM25HybridSearchAlgorithm,
     SemanticSearchAlgorithm,
 )
-from nextcloud_mcp_server.search.context import get_chunk_with_context
+from nextcloud_mcp_server.search.context import (
+    get_chunk_bbox_and_page_from_qdrant,
+    get_chunk_with_context,
+)
 from nextcloud_mcp_server.vector.oauth_sync import (
     NotProvisionedError,
     get_user_client_basic_auth,
 )
-from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
-from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 from nextcloud_mcp_server.vector.visualization import compute_pca_coordinates
 
 logger = logging.getLogger(__name__)
@@ -479,6 +479,8 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         doc_id = request.query_params.get("doc_id")
         start_str = request.query_params.get("start")
         end_str = request.query_params.get("end")
+        chunk_index_str = request.query_params.get("chunk_index")
+        total_chunks_str = request.query_params.get("total_chunks")
 
         # Validate required parameters
         if not all([doc_type, doc_id, start_str, end_str]):
@@ -509,6 +511,14 @@ async def get_chunk_context(request: Request) -> JSONResponse:
             end = _parse_int_param(end_str, 0, 0, 10000000, "end")
             if end <= start:
                 raise ValueError("end must be greater than start")
+            chunk_index: int | None = None
+            if chunk_index_str is not None:
+                chunk_index = _parse_int_param(
+                    chunk_index_str, 0, 0, 1000000, "chunk_index"
+                )
+            total_chunks = _parse_int_param(
+                total_chunks_str, 1, 1, 1000000, "total_chunks"
+            )
         except ValueError as e:
             return JSONResponse({"success": False, "error": str(e)}, status_code=400)
         # doc_id is keyword-indexed in Qdrant as str — pass through verbatim
@@ -541,6 +551,8 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                 doc_type=doc_type,
                 chunk_start=start,
                 chunk_end=end,
+                chunk_index=chunk_index,
+                total_chunks=total_chunks,
                 context_chars=context_chars,
             )
 
@@ -555,49 +567,23 @@ async def get_chunk_context(request: Request) -> JSONResponse:
 
         # For PDF files, also fetch the chunk's bounding box from Qdrant if
         # available so the client can overlay a highlight on top of a
-        # render-on-demand page image (Deck #76).
+        # render-on-demand page image (Deck #76). Qdrant's page_number is
+        # trusted over the context-expansion fallback when present.
         chunk_bbox = None
         page_number = chunk_context.page_number
 
         if doc_type == "file":
-            try:
-                settings = get_settings()
-                qdrant_client = await get_qdrant_client()
-
-                points_response = await qdrant_client.scroll(
-                    collection_name=settings.get_collection_name(),
-                    scroll_filter=Filter(
-                        must=[
-                            get_placeholder_filter(),
-                            FieldCondition(
-                                key="doc_id", match=MatchValue(value=doc_id)
-                            ),
-                            FieldCondition(
-                                key="user_id", match=MatchValue(value=user_id)
-                            ),
-                            FieldCondition(
-                                key="chunk_start_offset", match=MatchValue(value=start)
-                            ),
-                            FieldCondition(
-                                key="chunk_end_offset", match=MatchValue(value=end)
-                            ),
-                        ]
-                    ),
-                    limit=1,
-                    with_vectors=False,
-                    with_payload=["chunk_bbox", "page_number"],
-                )
-
-                if points_response[0]:
-                    payload = points_response[0][0].payload
-                    if payload:
-                        chunk_bbox = payload.get("chunk_bbox")
-                        # Trust Qdrant page number if available (might be more accurate than context expansion logic)
-                        if payload.get("page_number") is not None:
-                            page_number = payload.get("page_number")
-
-            except Exception as e:
-                logger.warning(f"Failed to fetch chunk bbox: {e}")
+            qdrant_bbox, qdrant_page = await get_chunk_bbox_and_page_from_qdrant(
+                user_id=user_id,
+                doc_id=doc_id,
+                chunk_index=chunk_index,
+                chunk_start=start,
+                chunk_end=end,
+            )
+            if qdrant_bbox is not None:
+                chunk_bbox = qdrant_bbox
+            if qdrant_page is not None:
+                page_number = qdrant_page
 
         # Build response
         response_data = {

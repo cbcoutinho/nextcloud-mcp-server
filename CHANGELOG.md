@@ -5,6 +5,26 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.83.2 (2026-05-09)
+
+### Fix
+
+- **chunk-context**: address PR #767 review — extract bbox helper, fix page_number overwrite
+- **chunk-context**: address PR #767 review — drop dead PDF branch, redundant alias, add boundary tests
+- **chunk-context**: address PR #767 round-3 review — gate readability + legacy-fallback comment
+- **chunk-context**: propagate chunk_index=None through ChunkContext
+- **chunk-context**: address PR #767 round-2 review — gate, parity, doc
+- **chunk-context**: address PR #767 review — doc_type filter parity + tests
+- **viz_routes**: address PR #767 review — param parity + always-on page_number
+- **viz_routes**: validate chunk_index/total_chunks bounds in OAuth route
+- **chunk-context**: use indexed chunk_index lookup, fix close-after-use bug
+
+## v0.83.1 (2026-05-09)
+
+### Fix
+
+- **webdav**: decode percent-encoded names in PROPFIND/SEARCH responses
+
 ## v0.83.0 (2026-05-08)
 
 ### Feat
