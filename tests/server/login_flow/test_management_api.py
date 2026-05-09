@@ -1,9 +1,11 @@
 """Integration tests for the management API on the login-flow MCP server.
 
 These tests drive a real OAuth flow against Nextcloud's `oidc` app using the
-static `nextcloudMcpServerUIPublicClient` client (which is allowlisted on the
-`mcp-login-flow` container via `ALLOWED_MGMT_CLIENT`), then hit the
-management API endpoints with the resulting bearer token.
+static `astrolabeMcpClientOAuth00000000000` client (which is allowlisted on
+the `mcp-login-flow` container via `ALLOWED_MGMT_CLIENT` and matches the id
+provisioned by `app-hooks/before-starting/26-configure-astrolabe-oauth.sh`
+in real deployments), then hit the management API endpoints with the
+resulting bearer token.
 
 Regression coverage for the bug where /api/v1/apps proxied to OCS v1
 /cloud/apps and always 401'd. The handler now uses /ocs/v2.php/cloud/capabilities,
