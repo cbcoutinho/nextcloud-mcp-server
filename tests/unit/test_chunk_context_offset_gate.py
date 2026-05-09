@@ -28,8 +28,12 @@ def mock_nc_client() -> MagicMock:
 
 
 class TestOffsetFallbackGate:
-    """When chunk_index is provided AND doc_type=='file', the offset fallback
-    must be skipped — see PR #767 review (🟡 spurious Qdrant error log).
+    """When chunk_index is provided, the offset fallback must be skipped for
+    every doc_type. The original gate was file-only (PR #767 review, 🟡
+    spurious Qdrant error log); PR #773 round 11 broadened it to all
+    doc_types because chunk_start/end_offset aren't in
+    ``_PAYLOAD_INDEX_FIELDS`` and 400 in Qdrant Cloud strict mode for
+    notes / deck cards / news items the same way they do for files.
     """
 
     async def test_file_with_chunk_index_skips_offset_fallback_on_miss(
@@ -64,11 +68,15 @@ class TestOffsetFallbackGate:
         mock_indexed.assert_awaited_once()
         mock_offset.assert_not_awaited()
 
-    async def test_note_with_chunk_index_still_uses_offset_fallback(
+    async def test_note_with_chunk_index_skips_offset_fallback_on_miss(
         self, mock_nc_client
     ):
-        """Notes/deck cards keep the offset fallback (cheap, useful for legacy
-        data): the gate is file-specific.
+        """Notes (and other non-file doc_types) trust the indexed
+        chunk_index lookup as canonical too. A miss means absent — don't
+        hit the unindexed offset path that 400s in Qdrant Cloud strict
+        mode. Legacy data without chunk_index still uses the offset path
+        via the chunk_index=None branch (see
+        test_file_without_chunk_index_uses_offset_fallback).
         """
         with (
             patch.object(
@@ -81,7 +89,7 @@ class TestOffsetFallbackGate:
                 context_module,
                 "_get_chunk_from_qdrant",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value="should-not-be-returned",
             ) as mock_offset,
             patch.object(
                 context_module,
@@ -102,7 +110,7 @@ class TestOffsetFallbackGate:
             )
 
         mock_indexed.assert_awaited_once()
-        mock_offset.assert_awaited_once()
+        mock_offset.assert_not_awaited()
 
     async def test_file_without_chunk_index_uses_offset_fallback(self, mock_nc_client):
         """Files with no chunk_index supplied still use the offset path —

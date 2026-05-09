@@ -132,9 +132,14 @@ async def _ensure_payload_indexes(
             body = getattr(e, "content", b"") or b""
             body_text = body.decode("utf-8", errors="replace")
             # 400 is the expected schema-conflict path (index already exists
-            # with a different type). 5xx is unexpected — keep the loop going
-            # so the remaining fields still get attempted, but log at error
-            # so operators see it.
+            # with a different type). Verified for Qdrant OSS, where an
+            # idempotent re-create against a matching schema returns 200; if
+            # Qdrant Cloud diverges and returns 400 for benign re-creates,
+            # the WARNING below will fire on every restart against an
+            # already-indexed collection — read the response body before
+            # treating that as a real schema conflict. 5xx is unexpected —
+            # keep the loop going so the remaining fields still get
+            # attempted, but log at error so operators see it.
             if e.status_code == 400:
                 logger.warning(
                     "Schema conflict on payload index '%s': %s", field, body_text
@@ -534,7 +539,10 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 # payload-index work. Backfill before creating the index so the
                 # index covers every point. Pass the already-fetched
                 # collection_info.payload_schema through to avoid a redundant
-                # get_collection round-trip on every restart.
+                # get_collection round-trip on every restart — safe because
+                # _backfill_doc_id_to_string only rewrites payload *values*,
+                # never schema or indexes, so the snapshot remains accurate
+                # across the backfill call.
                 await _backfill_doc_id_to_string(
                     _qdrant_client, collection_name, expected_dimension
                 )
@@ -575,8 +583,16 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                     f"  Distance: COSINE\n"
                     f"Background sync will index all documents with dense + sparse vectors."
                 )
-                # Freshly created collection has no payload schema yet; pass {}
-                # explicitly to skip the otherwise-redundant get_collection call.
+                # Freshly created collection has no payload schema yet; pass
+                # {} explicitly to skip the otherwise-redundant
+                # get_collection call. Every field in _PAYLOAD_INDEX_FIELDS
+                # then goes through create_payload_index; on a brand-new
+                # collection none of them exist yet, so the WARNING in the
+                # 400-handler should *never* fire on this path. If it does
+                # on Qdrant Cloud first-start, that points at a
+                # deployment-level issue (race with a concurrent creator,
+                # implicit auto-indexes, etc.) worth investigating before
+                # suppressing.
                 await _ensure_payload_indexes(
                     _qdrant_client, collection_name, existing_schema={}
                 )

@@ -210,10 +210,16 @@ async def scan_user_documents(
             )
 
         # For deletion tracking, get all doc_ids in Qdrant (for incremental sync)
-        # Note: We no longer bulk-query indexed_at, instead check per-document
+        # Note: We no longer bulk-query indexed_at, instead check per-document.
+        # Hoisted to function scope so the file-scroll block below doesn't
+        # depend on a name bound inside the notes-scroll block; future
+        # refactors that add an early return between the two blocks would
+        # otherwise hit an UnboundLocalError. get_qdrant_client is a
+        # singleton call, so the cost is identical.
+        qdrant_client = await get_qdrant_client() if not initial_sync else None
         indexed_doc_ids = set()
         if not initial_sync:
-            qdrant_client = await get_qdrant_client()
+            assert qdrant_client is not None  # narrow for the type checker
             scroll_result = await qdrant_client.scroll(
                 collection_name=get_settings().get_collection_name(),
                 scroll_filter=Filter(
@@ -387,6 +393,7 @@ async def scan_user_documents(
         # Get indexed file IDs from Qdrant (for deletion tracking)
         indexed_file_ids = set()
         if not initial_sync:
+            assert qdrant_client is not None  # narrow for the type checker
             file_scroll_result = await qdrant_client.scroll(
                 collection_name=settings.get_collection_name(),
                 scroll_filter=Filter(

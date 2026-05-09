@@ -373,12 +373,15 @@ async def get_chunk_with_context(
         chunk_text = await _get_chunk_by_index_from_qdrant(
             user_id, doc_id, doc_type, chunk_index
         )
-    # Skip the offset fallback for files when the indexed chunk_index
-    # lookup already ran: chunk_start/end_offset aren't indexed in Qdrant
-    # Cloud strict mode, so the call returns 400 and surfaces a misleading
-    # logger.error. The file fast-fail below correctly handles the miss
-    # without it.
-    skip_offset_lookup = chunk_index is not None and doc_type == "file"
+    # When chunk_index is available, treat the indexed lookup as canonical
+    # for every doc_type. A miss means the chunk is genuinely absent, not
+    # "fall back to the unindexed slow path". chunk_start/end_offset aren't
+    # in _PAYLOAD_INDEX_FIELDS, so the offset filter 400s in Qdrant Cloud
+    # strict mode and surfaces a misleading logger.error. Legacy data
+    # without chunk_index (pre-cbcoutinho/astrolabe#75) still hits the
+    # offset path and degrades to a None chunk with a WARNING; that's the
+    # same behavior get_chunk_bbox_and_page_from_qdrant already documents.
+    skip_offset_lookup = chunk_index is not None
     if chunk_text is None and not skip_offset_lookup:
         chunk_text = await _get_chunk_from_qdrant(
             user_id, doc_id, doc_type, chunk_start, chunk_end
