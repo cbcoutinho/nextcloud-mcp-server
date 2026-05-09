@@ -237,7 +237,7 @@ async def test_ensure_payload_indexes_logs_and_returns_when_get_collection_raise
 
     async def _get_collection_raises(*args, **kwargs):
         # See _scroll_raises in the backfill section for why this is async.
-        await anyio.sleep(0)
+        await anyio.lowlevel.checkpoint()
         raise RuntimeError("connection refused")
 
     client.get_collection.side_effect = _get_collection_raises
@@ -494,11 +494,11 @@ async def test_backfill_logs_and_returns_when_scroll_raises(mocker, caplog):
     # An async-callable side_effect lets AsyncMock await the coroutine
     # before the exception propagates; assigning a bare exception class
     # leaks an un-awaited coroutine and trips RuntimeWarning at gc time.
-    # The `await anyio.sleep(0)` is a no-op event-loop yield that
+    # The `await anyio.lowlevel.checkpoint()` is a no-op event-loop yield that
     # satisfies static analysis ("async function uses no async features")
     # without changing observable behavior.
     async def _scroll_raises(*args, **kwargs):
-        await anyio.sleep(0)
+        await anyio.lowlevel.checkpoint()
         raise RuntimeError("boom")
 
     client.scroll.side_effect = _scroll_raises
@@ -538,7 +538,7 @@ async def test_backfill_logs_warning_when_sentinel_upsert_fails(mocker, caplog):
 
     async def _upsert_raises(*args, **kwargs):
         # See _scroll_raises above for why this is async + sleep(0).
-        await anyio.sleep(0)
+        await anyio.lowlevel.checkpoint()
         raise RuntimeError("sentinel write blip")
 
     client.upsert.side_effect = _upsert_raises
@@ -615,7 +615,7 @@ async def test_ensure_payload_indexes_summarises_failed_fields(mocker, caplog):
 
     async def _create_index(*args, **kwargs):
         # See _scroll_raises above for why this is async + sleep(0).
-        await anyio.sleep(0)
+        await anyio.lowlevel.checkpoint()
         call_count["n"] += 1
         if call_count["n"] != 2:
             raise _make_unexpected(500, b'{"status":{"error":"boom"}}')
