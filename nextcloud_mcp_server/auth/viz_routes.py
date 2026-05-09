@@ -18,11 +18,11 @@ from pathlib import Path
 import anyio
 import numpy as np
 from jinja2 import Environment, FileSystemLoader
-from qdrant_client.models import FieldCondition, Filter, MatchValue
 from starlette.authentication import requires
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
+from nextcloud_mcp_server.api.management import _parse_int_param
 from nextcloud_mcp_server.auth.userinfo_routes import (
     _get_authenticated_client_for_userinfo,
 )
@@ -33,13 +33,15 @@ from nextcloud_mcp_server.search import (
     BM25HybridSearchAlgorithm,
     SemanticSearchAlgorithm,
 )
-from nextcloud_mcp_server.search.context import get_chunk_with_context
+from nextcloud_mcp_server.search.context import (
+    get_chunk_bbox_and_page_from_qdrant,
+    get_chunk_with_context,
+)
 from nextcloud_mcp_server.vector.oauth_sync import (
     NotProvisionedError,
     get_user_client_basic_auth,
 )
 from nextcloud_mcp_server.vector.pca import PCA
-from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -535,7 +537,8 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
         doc_id = request.query_params.get("doc_id")
         start_str = request.query_params.get("start")
         end_str = request.query_params.get("end")
-        context_chars = int(request.query_params.get("context", "500"))
+        chunk_index_str = request.query_params.get("chunk_index")
+        total_chunks_str = request.query_params.get("total_chunks")
 
         # Validate required parameters
         if not all([doc_type, doc_id, start_str, end_str]):
@@ -553,8 +556,23 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
         assert start_str is not None
         assert end_str is not None
 
-        start = int(start_str)
-        end = int(end_str)
+        context_chars = _parse_int_param(
+            request.query_params.get("context"),
+            500,
+            0,
+            10000,
+            "context_chars",
+        )
+        start = _parse_int_param(start_str, 0, 0, 10000000, "start")
+        end = _parse_int_param(end_str, 0, 0, 10000000, "end")
+        if end <= start:
+            raise ValueError("end must be greater than start")
+        chunk_index: int | None = None
+        if chunk_index_str is not None:
+            chunk_index = _parse_int_param(
+                chunk_index_str, 0, 0, 1000000, "chunk_index"
+            )
+        total_chunks = _parse_int_param(total_chunks_str, 1, 1, 1000000, "total_chunks")
         # Convert doc_id to int (all document types use int IDs)
         doc_id_int = int(doc_id)
 
@@ -584,6 +602,8 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
                 doc_type=doc_type,
                 chunk_start=start,
                 chunk_end=end,
+                chunk_index=chunk_index,
+                total_chunks=total_chunks,
                 context_chars=context_chars,
             )
 
@@ -606,50 +626,22 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
 
         # For PDF files, also fetch the chunk bbox from Qdrant so the client
         # can overlay a highlight on top of a render-on-demand page image
-        # (Deck #76).
+        # (Deck #76). Qdrant's page_number is trusted over the
+        # context-expansion fallback when present.
         chunk_bbox = None
-        page_number = None
+        page_number = chunk_context.page_number
         if doc_type == "file":
-            try:
-                settings = get_settings()
-                qdrant_client = await get_qdrant_client()
-                username = request.user.display_name
-
-                points_response = await qdrant_client.scroll(
-                    collection_name=settings.get_collection_name(),
-                    scroll_filter=Filter(
-                        must=[
-                            get_placeholder_filter(),
-                            FieldCondition(
-                                key="doc_id", match=MatchValue(value=doc_id_int)
-                            ),
-                            FieldCondition(
-                                key="user_id", match=MatchValue(value=username)
-                            ),
-                            FieldCondition(
-                                key="chunk_start_offset", match=MatchValue(value=start)
-                            ),
-                            FieldCondition(
-                                key="chunk_end_offset", match=MatchValue(value=end)
-                            ),
-                        ]
-                    ),
-                    limit=1,
-                    with_vectors=False,
-                    with_payload=["chunk_bbox", "page_number"],
-                )
-
-                points = points_response[0]
-                if points and points[0].payload:
-                    chunk_bbox = points[0].payload.get("chunk_bbox")
-                    page_number = points[0].payload.get("page_number")
-                    if chunk_bbox:
-                        logger.info(
-                            f"Found chunk bbox: page={page_number}, "
-                            f"rects={len(chunk_bbox)}"
-                        )
-            except Exception as e:
-                logger.warning(f"Failed to fetch chunk bbox: {e}")
+            qdrant_bbox, qdrant_page = await get_chunk_bbox_and_page_from_qdrant(
+                user_id=user_id,
+                doc_id=doc_id_int,
+                chunk_index=chunk_index,
+                chunk_start=start,
+                chunk_end=end,
+            )
+            if qdrant_bbox is not None:
+                chunk_bbox = qdrant_bbox
+            if qdrant_page is not None:
+                page_number = qdrant_page
 
         # Return response compatible with frontend expectations
         response_data: dict = {
@@ -659,16 +651,19 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
             "after_context": chunk_context.after_context,
             "has_more_before": chunk_context.has_before_truncation,
             "has_more_after": chunk_context.has_after_truncation,
+            "page_number": page_number,
+            "chunk_index": chunk_context.chunk_index,
+            "total_chunks": chunk_context.total_chunks,
         }
 
         if chunk_bbox:
             response_data["chunk_bbox"] = chunk_bbox
-            response_data["page_number"] = page_number
 
         return JSONResponse(response_data)
 
     except ValueError as e:
-        logger.error(f"Invalid parameter format: {e}")
+        # User-supplied bad input → 400, not a server error.
+        logger.warning("Invalid parameter format: %s", e)
         return JSONResponse(
             {"success": False, "error": f"Invalid parameter format: {e}"},
             status_code=400,

@@ -7,13 +7,12 @@ position markers for better visualization and understanding of search results.
 import logging
 from dataclasses import dataclass
 
-import pymupdf
-import pymupdf4llm
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
+from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -144,63 +143,6 @@ async def _get_chunk_by_index_from_qdrant(
         return None
 
 
-async def _get_file_path_from_qdrant(
-    user_id: str, file_id: int, chunk_start: int, chunk_end: int
-) -> str | None:
-    """Resolve file_id to file_path by querying Qdrant payload.
-
-    Args:
-        user_id: User ID who owns the file
-        file_id: Numeric file ID
-        chunk_start: Character offset where chunk starts
-        chunk_end: Character offset where chunk ends
-
-    Returns:
-        File path string, or None if not found in Qdrant
-    """
-    try:
-        qdrant_client = await get_qdrant_client()
-        settings = get_settings()
-
-        # Query for the specific chunk
-        scroll_result = await qdrant_client.scroll(
-            collection_name=settings.get_collection_name(),
-            scroll_filter=Filter(
-                must=[
-                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-                    FieldCondition(key="doc_id", match=MatchValue(value=file_id)),
-                    FieldCondition(key="doc_type", match=MatchValue(value="file")),
-                    FieldCondition(
-                        key="chunk_start_offset", match=MatchValue(value=chunk_start)
-                    ),
-                    FieldCondition(
-                        key="chunk_end_offset", match=MatchValue(value=chunk_end)
-                    ),
-                ]
-            ),
-            limit=1,
-            with_payload=["file_path"],
-            with_vectors=False,
-        )
-
-        if scroll_result[0]:
-            point = scroll_result[0][0]
-            file_path = point.payload.get("file_path")
-            if file_path:
-                logger.debug(f"Resolved file_id {file_id} to file_path {file_path}")
-                return str(file_path)
-
-        logger.warning(
-            f"Could not find file_path in Qdrant for file_id {file_id}, "
-            f"chunk [{chunk_start}:{chunk_end}]"
-        )
-        return None
-
-    except Exception as e:
-        logger.error(f"Error querying Qdrant for file_path: {e}", exc_info=True)
-        return None
-
-
 async def _get_deck_metadata_from_qdrant(
     user_id: str, card_id: int
 ) -> dict[str, int] | None:
@@ -254,6 +196,98 @@ async def _get_deck_metadata_from_qdrant(
         return None
 
 
+async def get_chunk_bbox_and_page_from_qdrant(
+    user_id: str,
+    doc_id: int | str,
+    chunk_index: int | None,
+    chunk_start: int,
+    chunk_end: int,
+) -> tuple[list | None, int | None]:
+    """Fetch chunk_bbox and page_number for a chunk from Qdrant payload.
+
+    Prefers chunk_index for the lookup (always indexed); falls back to
+    (chunk_start_offset, chunk_end_offset) when chunk_index is not provided
+    — this is the legacy path for clients pre-cbcoutinho/astrolabe#75. The
+    fallback may 400 in Qdrant Cloud strict mode because those offset fields
+    aren't indexed there; that's logged as a warning and (None, None) is
+    returned so callers degrade gracefully.
+
+    Args:
+        user_id: User ID who owns the document
+        doc_id: Document ID (int for file/note, str for some doc types)
+        chunk_index: Zero-based chunk index, or None to use offset fallback
+        chunk_start: Character offset where chunk starts (used when
+            chunk_index is None)
+        chunk_end: Character offset where chunk ends (used when chunk_index
+            is None)
+
+    Returns:
+        Tuple of (chunk_bbox, page_number); either field may be None
+        independently if absent from the payload, or both may be None on
+        miss/error.
+    """
+    try:
+        settings = get_settings()
+        qdrant_client = await get_qdrant_client()
+
+        if chunk_index is not None:
+            points_response = await qdrant_client.scroll(
+                collection_name=settings.get_collection_name(),
+                scroll_filter=Filter(
+                    must=[
+                        get_placeholder_filter(),
+                        FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+                        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                        FieldCondition(
+                            key="chunk_index", match=MatchValue(value=chunk_index)
+                        ),
+                    ]
+                ),
+                limit=1,
+                with_vectors=False,
+                with_payload=["chunk_bbox", "page_number"],
+            )
+        else:
+            points_response = await qdrant_client.scroll(
+                collection_name=settings.get_collection_name(),
+                scroll_filter=Filter(
+                    must=[
+                        get_placeholder_filter(),
+                        FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+                        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                        FieldCondition(
+                            key="chunk_start_offset",
+                            match=MatchValue(value=chunk_start),
+                        ),
+                        FieldCondition(
+                            key="chunk_end_offset",
+                            match=MatchValue(value=chunk_end),
+                        ),
+                    ]
+                ),
+                limit=1,
+                with_vectors=False,
+                with_payload=["chunk_bbox", "page_number"],
+            )
+
+        points = points_response[0]
+        if not points or not points[0].payload:
+            return None, None
+
+        payload = points[0].payload
+        chunk_bbox = payload.get("chunk_bbox")
+        page_number = payload.get("page_number")
+        if chunk_bbox:
+            logger.info(
+                "Found chunk bbox: page=%s, rects=%d", page_number, len(chunk_bbox)
+            )
+        return chunk_bbox, page_number
+
+    except Exception as e:
+        logger.warning("Failed to fetch chunk bbox: %s", e)
+        return None, None
+
+
 @dataclass
 class ChunkContext:
     """Expanded chunk with surrounding context and position markers.
@@ -265,7 +299,10 @@ class ChunkContext:
         chunk_start_offset: Character position where chunk starts in document
         chunk_end_offset: Character position where chunk ends in document
         page_number: Page number for PDFs (None for other doc types)
-        chunk_index: Zero-based chunk index (N in "chunk N of M")
+        chunk_index: Zero-based chunk index (N in "chunk N of M"). None when
+            the caller didn't supply chunk_index and we couldn't determine it
+            from the lookup path — distinguishes "unknown position" from
+            "actually chunk 0".
         total_chunks: Total number of chunks in document
         marked_text: Full text with position markers around the chunk
         has_before_truncation: True if before_context was truncated
@@ -278,7 +315,7 @@ class ChunkContext:
     chunk_start_offset: int
     chunk_end_offset: int
     page_number: int | None
-    chunk_index: int
+    chunk_index: int | None
     total_chunks: int
     marked_text: str
     has_before_truncation: bool
@@ -293,7 +330,7 @@ async def get_chunk_with_context(
     chunk_start: int,
     chunk_end: int,
     page_number: int | None = None,
-    chunk_index: int = 0,
+    chunk_index: int | None = None,
     total_chunks: int = 1,
     context_chars: int = 300,
 ) -> ChunkContext | None:
@@ -311,7 +348,9 @@ async def get_chunk_with_context(
         chunk_start: Character offset where chunk starts
         chunk_end: Character offset where chunk ends
         page_number: Optional page number for PDFs
-        chunk_index: Zero-based chunk index in document
+        chunk_index: Zero-based chunk index in document. When provided, used as
+            the primary Qdrant lookup key (uses the always-indexed chunk_index
+            field). When None, falls back to the (chunk_start, chunk_end) lookup.
         total_chunks: Total number of chunks in document
         context_chars: Number of characters to include before/after chunk
 
@@ -326,27 +365,46 @@ async def get_chunk_with_context(
         else (doc_id if isinstance(doc_id, int) else None)
     )
 
-    # Try to get chunk from Qdrant first (fast path)
+    # Try to get chunk from Qdrant (fast path).
+    # Prefer chunk_index lookup (always-indexed field) when caller supplied it;
+    # fall back to (chunk_start, chunk_end) lookup otherwise.
+    chunk_text: str | None = None
     if doc_id_int is not None:
-        chunk_text = await _get_chunk_from_qdrant(
-            user_id, doc_id_int, doc_type, chunk_start, chunk_end
-        )
-        if chunk_text:
-            logger.info(
-                f"Retrieved chunk from Qdrant cache for {doc_type} {doc_id} "
-                f"(avoids document re-fetch/re-parse)"
+        if chunk_index is not None:
+            chunk_text = await _get_chunk_by_index_from_qdrant(
+                user_id, doc_id_int, doc_type, chunk_index
+            )
+        # Skip the offset fallback for files when the indexed chunk_index
+        # lookup already ran: chunk_start/end_offset aren't indexed in Qdrant
+        # Cloud strict mode, so the call returns 400 and surfaces a misleading
+        # logger.error. The file fast-fail below correctly handles the miss
+        # without it.
+        skip_offset_lookup = chunk_index is not None and doc_type == "file"
+        if chunk_text is None and not skip_offset_lookup:
+            chunk_text = await _get_chunk_from_qdrant(
+                user_id, doc_id_int, doc_type, chunk_start, chunk_end
             )
 
-            # Fetch adjacent chunks for context expansion
-            # Get chunk overlap from config to remove duplicate text
-            settings = get_settings()
-            chunk_overlap = settings.document_chunk_overlap
+    if chunk_text:
+        # chunk_text can only be non-None inside the `if doc_id_int is not None:`
+        # block above, so doc_id_int is guaranteed non-None here. Narrow for ty.
+        assert doc_id_int is not None
+        logger.info(
+            f"Retrieved chunk from Qdrant cache for {doc_type} {doc_id} "
+            f"(avoids document re-fetch/re-parse)"
+        )
 
-            before_context = ""
-            after_context = ""
-            has_before_truncation = False
-            has_after_truncation = False
+        # Fetch adjacent chunks for context expansion
+        # Get chunk overlap from config to remove duplicate text
+        settings = get_settings()
+        chunk_overlap = settings.document_chunk_overlap
 
+        before_context = ""
+        after_context = ""
+        has_before_truncation = False
+        has_after_truncation = False
+
+        if chunk_index is not None:
             # Fetch previous chunk if not first chunk
             if chunk_index > 0:
                 before_chunk = await _get_chunk_by_index_from_qdrant(
@@ -388,58 +446,62 @@ async def get_chunk_with_context(
                 else:
                     # Could not fetch next chunk, but we're not at end
                     has_after_truncation = True
+        else:
+            # No chunk_index → can't fetch adjacent chunks via index arithmetic
+            # without risking wrong neighbours (a default of 0 would query the
+            # chunks at positions -1 and 1 even when the actual chunk is, say,
+            # 5/20). Mark both sides as truncated so the caller knows context
+            # wasn't expanded.
+            has_before_truncation = True
+            has_after_truncation = True
 
-            marked_text = _insert_position_markers(
-                before_context=before_context,
-                chunk_text=chunk_text,
-                after_context=after_context,
-                page_number=page_number,
-                chunk_index=chunk_index,
-                total_chunks=total_chunks,
-                has_before_truncation=has_before_truncation,
-                has_after_truncation=has_after_truncation,
-            )
-            return ChunkContext(
-                chunk_text=chunk_text,
-                before_context=before_context,
-                after_context=after_context,
-                chunk_start_offset=chunk_start,
-                chunk_end_offset=chunk_end,
-                page_number=page_number,
-                chunk_index=chunk_index,
-                total_chunks=total_chunks,
-                marked_text=marked_text,
-                has_before_truncation=has_before_truncation,
-                has_after_truncation=has_after_truncation,
-            )
+        marked_text = _insert_position_markers(
+            before_context=before_context,
+            chunk_text=chunk_text,
+            after_context=after_context,
+            page_number=page_number,
+            chunk_index=chunk_index,
+            total_chunks=total_chunks,
+            has_before_truncation=has_before_truncation,
+            has_after_truncation=has_after_truncation,
+        )
+        return ChunkContext(
+            chunk_text=chunk_text,
+            before_context=before_context,
+            after_context=after_context,
+            chunk_start_offset=chunk_start,
+            chunk_end_offset=chunk_end,
+            page_number=page_number,
+            chunk_index=chunk_index,
+            total_chunks=total_chunks,
+            marked_text=marked_text,
+            has_before_truncation=has_before_truncation,
+            has_after_truncation=has_after_truncation,
+        )
 
-    # Fallback: Fetch full document and extract chunk with context
-    # This path is taken for:
-    # 1. Legacy data with truncated excerpts in Qdrant
-    # 2. Failed Qdrant queries
+    # Fallback: Fetch full document and extract chunk with context.
+    # For files this path requires downloading and re-parsing the PDF, which
+    # routinely exceeds 30s on large documents. Skip it: if the chunk wasn't
+    # found by chunk_index OR offsets, re-parsing the PDF won't find it either
+    # (the chunk has been removed or re-indexed with different offsets).
+    if doc_type == "file":
+        logger.warning(
+            "Chunk not found in Qdrant for file %s (chunk_index=%s, "
+            "offsets=%s-%s); skipping slow PDF re-parse fallback",
+            doc_id,
+            chunk_index,
+            chunk_start,
+            chunk_end,
+        )
+        return None
+
     logger.info(
         f"Falling back to document fetch for {doc_type} {doc_id} "
         f"(Qdrant cache miss, possibly legacy data)"
     )
 
-    # For files, retrieve file_path from Qdrant payload
-    resolved_doc_id = doc_id
-    if doc_type == "file" and isinstance(doc_id, int):
-        file_path = await _get_file_path_from_qdrant(
-            user_id, doc_id, chunk_start, chunk_end
-        )
-        if not file_path:
-            logger.warning(
-                f"Could not resolve file_id {doc_id} to file_path from Qdrant"
-            )
-            return None
-        resolved_doc_id = file_path
-        logger.debug(f"Resolved file_id {doc_id} to file_path {file_path}")
-
-    # Fetch full document text
-    full_text = await _fetch_document_text(
-        nc_client, resolved_doc_id, doc_type, user_id
-    )
+    # Fetch full document text (notes, deck cards, news items, etc.)
+    full_text = await _fetch_document_text(nc_client, doc_id, doc_type, user_id)
     if full_text is None:
         logger.warning(
             f"Could not fetch document text for {doc_type} {doc_id}, "
@@ -502,10 +564,14 @@ async def _fetch_document_text(
 ) -> str | None:
     """Fetch full text content of a document.
 
+    Note: doc_type=="file" is short-circuited in get_chunk_with_context before
+    this function is called (re-parsing PDFs is too slow for the request
+    timeout), so no file branch exists here.
+
     Args:
         nc_client: Authenticated Nextcloud client
-        doc_id: Document ID (note ID or file path)
-        doc_type: Type of document ("note", "file", etc.)
+        doc_id: Document ID
+        doc_type: Type of document ("note", "news_item", "deck_card")
 
     Returns:
         Full document text, or None if document cannot be retrieved
@@ -519,54 +585,6 @@ async def _fetch_document_text(
             title = note.get("title", "")
             content = note.get("content", "")
             return f"{title}\n\n{content}"
-        elif doc_type == "file":
-            # Fetch file content via WebDAV
-            try:
-                file_path = str(doc_id)
-                file_content, content_type = await nc_client.webdav.read_file(file_path)
-
-                # Check if it's a PDF (by content type or file extension)
-                is_pdf = (
-                    content_type and "pdf" in content_type.lower()
-                ) or file_path.lower().endswith(".pdf")
-
-                if is_pdf:
-                    # Extract text from PDF using PyMuPDF
-                    # IMPORTANT: Use pymupdf4llm.to_markdown() to match indexing extraction
-                    # This ensures character offsets align between indexed chunks and retrieval
-
-                    logger.debug(f"Extracting text from PDF: {file_path}")
-                    pdf_doc = pymupdf.open(stream=file_content, filetype="pdf")
-                    text_parts = []
-
-                    # Extract each page as markdown (same as indexing)
-                    for page_num in range(pdf_doc.page_count):
-                        page_md = pymupdf4llm.to_markdown(
-                            pdf_doc,
-                            pages=[page_num],
-                            write_images=False,  # Don't need images for context
-                            page_chunks=False,
-                        )
-                        text_parts.append(page_md)
-
-                    pdf_doc.close()
-
-                    # Join pages (no separator - matches indexing)
-                    full_text = "".join(text_parts)
-                    logger.debug(
-                        f"Extracted {len(full_text)} characters from "
-                        f"{pdf_doc.page_count} pages in {file_path}"
-                    )
-                    return full_text
-                else:
-                    # Assume it's a text file, decode to string
-                    logger.debug(f"Decoding text file: {file_path}")
-                    return file_content.decode("utf-8", errors="replace")
-            except Exception as e:
-                logger.error(
-                    f"Error fetching file content for {doc_id}: {e}", exc_info=True
-                )
-                return None
         elif doc_type == "news_item":
             # Fetch news item by ID
             item = await nc_client.news.get_item(int(doc_id))
@@ -668,7 +686,7 @@ def _insert_position_markers(
     chunk_text: str,
     after_context: str,
     page_number: int | None,
-    chunk_index: int,
+    chunk_index: int | None,
     total_chunks: int,
     has_before_truncation: bool,
     has_after_truncation: bool,
@@ -683,7 +701,8 @@ def _insert_position_markers(
         chunk_text: The matched chunk
         after_context: Text after chunk
         page_number: Optional page number
-        chunk_index: Zero-based chunk index
+        chunk_index: Zero-based chunk index, or None when the caller didn't
+            supply it (rendered as "Chunk ?/N" instead of "Chunk 0/N").
         total_chunks: Total chunks in document
         has_before_truncation: Whether before_context is truncated
         has_after_truncation: Whether after_context is truncated
@@ -695,7 +714,10 @@ def _insert_position_markers(
     position_parts = []
     if page_number is not None:
         position_parts.append(f"Page {page_number}")
-    position_parts.append(f"Chunk {chunk_index + 1} of {total_chunks}")
+    if chunk_index is None:
+        position_parts.append(f"Chunk ?/{total_chunks}")
+    else:
+        position_parts.append(f"Chunk {chunk_index + 1} of {total_chunks}")
     position_metadata = ", ".join(position_parts)
 
     # Build marked text
