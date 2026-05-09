@@ -498,6 +498,20 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         assert doc_id is not None
         assert doc_type is not None
 
+        # Validate doc_id at the handler boundary: a malformed doc_id would
+        # otherwise pass through to get_chunk_with_context and bottom out as a
+        # 404 from deep inside, not a clear 400. Nextcloud IDs are unsigned
+        # ints from MySQL auto_increment; doc_id stays a str downstream
+        # (Qdrant payload index is keyword-typed).
+        if not doc_id.isdigit():
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": f"doc_id must be numeric, got {doc_id!r}",
+                },
+                status_code=400,
+            )
+
         # Parse and validate integer parameters with bounds checking
         try:
             context_chars = _parse_int_param(

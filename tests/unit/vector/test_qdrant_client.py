@@ -577,8 +577,11 @@ async def test_backfill_emits_progress_log_every_20_batches(mocker, caplog):
     # set_payload calls happen — the test focuses on the progress log
     # cadence, not the rewrite path.
     str_point = SimpleNamespace(id=1, payload={"doc_id": "abc"})
-    batches: list[tuple[list[SimpleNamespace], int | None]] = [
-        ([str_point], 1) for _ in range(21)
+    # Real Qdrant returns next_offset as a UUID string (or None to terminate).
+    # Match that shape so the stub remains accurate if scroll's return type is
+    # ever tightened — and aligns with test_backfill_rewrites_int_doc_ids_to_str.
+    batches: list[tuple[list[SimpleNamespace], str | None]] = [
+        ([str_point], "next-1") for _ in range(21)
     ] + [([], None)]
     client.scroll.side_effect = batches
 
