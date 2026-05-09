@@ -257,9 +257,11 @@ class WebDAVClient(BaseNextcloudClient):
                 if href is None:
                     continue
 
-                # Extract file/directory name from href
+                # Extract file/directory name from href. <d:href> is required by
+                # RFC 3986 to be percent-encoded, so non-ASCII names arrive
+                # encoded — decode before exposing to callers (issue #776).
                 href_text = href.text or ""
-                name = href_text.rstrip("/").split("/")[-1]
+                name = unquote(href_text.rstrip("/").split("/")[-1])
                 if not name:
                     continue
 
@@ -767,8 +769,10 @@ class WebDAVClient(BaseNextcloudClient):
             if href is None:
                 continue
 
-            # Extract file/directory path from href
-            href_text = href.text or ""
+            # Extract file/directory path from href. <d:href> is required by
+            # RFC 3986 to be percent-encoded, so non-ASCII paths arrive
+            # encoded — decode before exposing to callers (issue #776).
+            href_text = unquote(href.text or "")
             # Remove the /remote.php/dav/files/username/ prefix to get relative path
             path_parts = href_text.split("/files/")
             if len(path_parts) > 1:

@@ -414,3 +414,99 @@ async def test_get_files_by_tag_detects_directories(mocker):
     call_args = mock_http_client.request.call_args
     assert "<d:resourcetype/>" in call_args.kwargs["content"]
     assert "<oc:systemtag>42</oc:systemtag>" in call_args.kwargs["content"]
+
+
+@pytest.mark.unit
+async def test_list_directory_decodes_non_ascii_names(mocker):
+    """list_directory must percent-decode <d:href> for non-ASCII filenames (issue #776).
+
+    RFC 3986 requires <d:href> to be percent-encoded, so a Chinese-named directory
+    arrives as e.g. "%e5%ad%a6%e7%94%9f%e9%82%ae%e7%ae%b1". The MCP response should
+    expose the decoded "学生邮箱", not the encoded form.
+    """
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    # PROPFIND response with one Chinese-named subdirectory and one ASCII file.
+    # The first <d:response> is the parent directory and is skipped by list_directory.
+    xml_content = b"""<?xml version="1.0"?>
+    <d:multistatus xmlns:d="DAV:">
+        <d:response>
+            <d:href>/remote.php/dav/files/testuser/</d:href>
+            <d:propstat>
+                <d:prop>
+                    <d:resourcetype><d:collection/></d:resourcetype>
+                </d:prop>
+            </d:propstat>
+        </d:response>
+        <d:response>
+            <d:href>/remote.php/dav/files/testuser/%e5%ad%a6%e7%94%9f%e9%82%ae%e7%ae%b1/</d:href>
+            <d:propstat>
+                <d:prop>
+                    <d:displayname>\xe5\xad\xa6\xe7\x94\x9f\xe9\x82\xae\xe7\xae\xb1</d:displayname>
+                    <d:resourcetype><d:collection/></d:resourcetype>
+                </d:prop>
+            </d:propstat>
+        </d:response>
+        <d:response>
+            <d:href>/remote.php/dav/files/testuser/notes.txt</d:href>
+            <d:propstat>
+                <d:prop>
+                    <d:displayname>notes.txt</d:displayname>
+                    <d:getcontentlength>10</d:getcontentlength>
+                    <d:getcontenttype>text/plain</d:getcontenttype>
+                    <d:resourcetype/>
+                </d:prop>
+            </d:propstat>
+        </d:response>
+    </d:multistatus>"""
+
+    mock_response = AsyncMock()
+    mock_response.content = xml_content
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    items = await client.list_directory("")
+
+    by_name = {item["name"]: item for item in items}
+    assert "学生邮箱" in by_name, f"expected decoded Chinese name, got: {list(by_name)}"
+    assert by_name["学生邮箱"]["is_directory"] is True
+    assert by_name["学生邮箱"]["path"] == "学生邮箱"
+
+    # ASCII entries must keep working.
+    assert "notes.txt" in by_name
+    assert by_name["notes.txt"]["is_directory"] is False
+
+
+@pytest.mark.unit
+def test_parse_search_response_decodes_non_ascii_paths(mocker):
+    """_parse_search_response must percent-decode <d:href> for non-ASCII paths (issue #776).
+
+    Affects find_by_name, find_by_type, list_favorites, and search_files: the `path`
+    and `href` fields would otherwise leak percent-encoded URL form to callers.
+    """
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    xml_content = b"""<?xml version="1.0"?>
+    <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+        <d:response>
+            <d:href>/remote.php/dav/files/testuser/%e5%ad%a6%e7%94%9f%e9%82%ae%e7%ae%b1/report.pdf</d:href>
+            <d:propstat>
+                <d:prop>
+                    <d:displayname>report.pdf</d:displayname>
+                    <d:getcontenttype>application/pdf</d:getcontenttype>
+                    <d:getcontentlength>1024</d:getcontentlength>
+                    <d:resourcetype/>
+                </d:prop>
+            </d:propstat>
+        </d:response>
+    </d:multistatus>"""
+
+    results = client._parse_search_response(xml_content, scope="")
+
+    assert len(results) == 1
+    assert results[0]["path"] == "学生邮箱/report.pdf"
+    assert results[0]["href"] == "/remote.php/dav/files/testuser/学生邮箱/report.pdf"
+    # name comes from <d:displayname>, which is not URL-encoded; sanity-check it.
+    assert results[0]["name"] == "report.pdf"
