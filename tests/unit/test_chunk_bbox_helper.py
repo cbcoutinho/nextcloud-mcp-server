@@ -58,7 +58,7 @@ class TestIndexedPath:
         with ctx:
             result = await get_chunk_bbox_and_page_from_qdrant(
                 user_id="alice",
-                doc_id=42,
+                doc_id="42",
                 chunk_index=3,
                 chunk_start=0,
                 chunk_end=100,
@@ -84,7 +84,7 @@ class TestOffsetFallbackPath:
         with ctx:
             result = await get_chunk_bbox_and_page_from_qdrant(
                 user_id="bob",
-                doc_id=99,
+                doc_id="99",
                 chunk_index=None,
                 chunk_start=500,
                 chunk_end=600,
@@ -105,7 +105,7 @@ class TestOffsetFallbackPath:
         with ctx, caplog.at_level("WARNING"):
             result = await get_chunk_bbox_and_page_from_qdrant(
                 user_id="bob",
-                doc_id=99,
+                doc_id="99",
                 chunk_index=None,
                 chunk_start=0,
                 chunk_end=100,
@@ -124,7 +124,7 @@ class TestPayloadShape:
         with ctx:
             result = await get_chunk_bbox_and_page_from_qdrant(
                 user_id="alice",
-                doc_id=1,
+                doc_id="1",
                 chunk_index=0,
                 chunk_start=0,
                 chunk_end=10,
@@ -143,7 +143,7 @@ class TestPayloadShape:
         with ctx:
             result = await get_chunk_bbox_and_page_from_qdrant(
                 user_id="alice",
-                doc_id=42,
+                doc_id="42",
                 chunk_index=3,
                 chunk_start=0,
                 chunk_end=100,
@@ -157,7 +157,7 @@ class TestPayloadShape:
         with ctx:
             result = await get_chunk_bbox_and_page_from_qdrant(
                 user_id="alice",
-                doc_id=42,
+                doc_id="42",
                 chunk_index=3,
                 chunk_start=0,
                 chunk_end=100,
@@ -171,7 +171,7 @@ class TestPayloadShape:
         with ctx:
             result = await get_chunk_bbox_and_page_from_qdrant(
                 user_id="alice",
-                doc_id=42,
+                doc_id="42",
                 chunk_index=3,
                 chunk_start=0,
                 chunk_end=100,
@@ -188,7 +188,7 @@ class TestPayloadShape:
         with ctx:
             result = await get_chunk_bbox_and_page_from_qdrant(
                 user_id="alice",
-                doc_id=42,
+                doc_id="42",
                 chunk_index=3,
                 chunk_start=0,
                 chunk_end=100,
@@ -205,7 +205,7 @@ class TestExceptionHandling:
         with ctx, caplog.at_level("WARNING"):
             result = await get_chunk_bbox_and_page_from_qdrant(
                 user_id="alice",
-                doc_id=42,
+                doc_id="42",
                 chunk_index=3,
                 chunk_start=0,
                 chunk_end=100,

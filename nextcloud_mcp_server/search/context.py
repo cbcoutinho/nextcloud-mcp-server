@@ -198,7 +198,7 @@ async def _get_deck_metadata_from_qdrant(
 
 async def get_chunk_bbox_and_page_from_qdrant(
     user_id: str,
-    doc_id: int | str,
+    doc_id: str,
     chunk_index: int | None,
     chunk_start: int,
     chunk_end: int,
@@ -214,7 +214,11 @@ async def get_chunk_bbox_and_page_from_qdrant(
 
     Args:
         user_id: User ID who owns the document
-        doc_id: Document ID (int for file/note, str for some doc types)
+        doc_id: Document ID — always a string. Producers stringify their
+            native ID before writing to Qdrant so the keyword payload
+            index on ``doc_id`` matches every point regardless of source
+            doc_type. An ``int`` filter against the str-indexed payload
+            would silently match zero points.
         chunk_index: Zero-based chunk index, or None to use offset fallback
         chunk_start: Character offset where chunk starts (used when
             chunk_index is None)
