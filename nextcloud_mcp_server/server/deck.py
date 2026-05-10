@@ -1,5 +1,6 @@
 import logging
 
+import anyio
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
@@ -137,8 +138,21 @@ async def _resolve_note_attach_path(client, note_id: int) -> str:
     notes location — that bug is exactly what this helper exists to make
     testable.
     """
-    settings = await client.notes.get_settings()
-    note = await client.notes.get_note(note_id)
+    async with anyio.create_task_group() as tg:
+        settings_holder: list[dict] = []
+        note_holder: list[dict] = []
+
+        async def _get_settings() -> None:
+            settings_holder.append(await client.notes.get_settings())
+
+        async def _get_note() -> None:
+            note_holder.append(await client.notes.get_note(note_id))
+
+        tg.start_soon(_get_settings)
+        tg.start_soon(_get_note)
+
+    settings = settings_holder[0]
+    note = note_holder[0]
     notes_folder = settings.get("notesPath") or "Notes"
     return _resolve_note_path(
         notes_folder=notes_folder,
@@ -1144,7 +1158,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Attach Note to Deck Card",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("deck.write", "notes.read")
+    @require_scopes("deck.write", "files.read", "notes.read")
     @instrument_tool
     async def deck_attach_note(
         ctx: Context, card_id: int, note_id: int
