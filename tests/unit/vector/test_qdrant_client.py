@@ -23,12 +23,14 @@ import pytest
 from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.models import PayloadSchemaType
 
+from nextcloud_mcp_server.vector import qdrant_client as qdrant_module
 from nextcloud_mcp_server.vector.qdrant_client import (
     _DOC_ID_BACKFILL_SENTINEL_ID,
     _PAYLOAD_INDEX_FIELDS,
     _backfill_doc_id_to_string,
     _ensure_payload_indexes,
     _group_int_doc_ids,
+    get_qdrant_client,
 )
 
 
@@ -203,12 +205,17 @@ async def test_ensure_payload_indexes_warns_on_wrong_schema_type(mocker, caplog)
 
 @pytest.mark.unit
 async def test_ensure_payload_indexes_logs_400_as_warning(mocker, caplog):
-    """Any 400 from create_payload_index is logged at WARNING and skipped.
+    """A 400 from create_payload_index logs WARNING *and* fires the summary.
 
     Real Qdrant returns 200 when the index already exists with a matching
     schema, so 400s indicate a genuine problem (e.g., schema conflict on a
     pre-existing index). The loop continues past the failure so the
-    remaining fields still get indexed.
+    remaining fields still get indexed, *and* the field accumulates into
+    ``failed_fields`` so the consolidated `Payload index creation
+    incomplete` summary fires — without this, tenants whose
+    ``payload_schema`` is hidden from their JWT (Qdrant Cloud
+    collection-scoped tokens) would only see the per-field warning and
+    miss the operator-level summary that `wrong_schema_type` paths emit.
     """
     client = mocker.AsyncMock()
     client.get_collection.return_value = _empty_collection_info()
@@ -227,14 +234,21 @@ async def test_ensure_payload_indexes_logs_400_as_warning(mocker, caplog):
 
     # Loop continued past the failing field; every field was attempted.
     assert client.create_payload_index.await_count == len(_PAYLOAD_INDEX_FIELDS)
-    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-    # 400s do not contribute to the partial-failure summary (which fires
-    # only for non-400 errors), so this is the per-field warning, not the
-    # summary. Match the message prefix exactly so a future change adding
-    # 400s to the summary would surface here as a count mismatch.
-    assert len(warnings) == 1
-    assert warnings[0].getMessage().startswith("Schema conflict on payload index")
-    assert "different schema" in warnings[0].getMessage()
+    warning_messages = [
+        r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+    ]
+    # Per-field warning describes the schema conflict.
+    assert any(
+        m.startswith("Schema conflict on payload index") and "different schema" in m
+        for m in warning_messages
+    ), warning_messages
+    # Consolidated summary names the failed field too — see the docstring
+    # for why this matters in tenant-scoped Qdrant Cloud setups.
+    first_field = next(iter(_PAYLOAD_INDEX_FIELDS))
+    assert any(
+        "Payload index creation incomplete" in m and first_field in m
+        for m in warning_messages
+    ), warning_messages
 
 
 @pytest.mark.unit
@@ -842,3 +856,135 @@ async def test_ensure_payload_indexes_summarises_failed_fields(mocker, caplog):
     assert "chunk_end_offset" in summary[0]
     assert "user_id" not in summary[0]  # The one that succeeded.
     assert "test-collection" in summary[0]
+
+
+# ---------------------------------------------------------------------------
+# get_qdrant_client — collection-existence probe across modes
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def reset_qdrant_singleton():
+    """Reset the module-level singleton + init lock around each test.
+
+    ``get_qdrant_client`` short-circuits on a non-None ``_qdrant_client``
+    via the unsynchronized fast path, so any prior test that initialised
+    the singleton would mask the cold-start logic these tests exercise.
+    Restore the original after the test so a leak doesn't bleed into
+    later tests in the same process.
+    """
+    original_client = qdrant_module._qdrant_client
+    original_lock = qdrant_module._qdrant_init_lock
+    qdrant_module._qdrant_client = None
+    qdrant_module._qdrant_init_lock = None
+    yield
+    qdrant_module._qdrant_client = original_client
+    qdrant_module._qdrant_init_lock = original_lock
+
+
+def _stub_provisional(mocker, get_collection_side_effect):
+    """Build a fake AsyncQdrantClient suitable for cold-start get_qdrant_client.
+
+    ``get_collection`` is wired up to ``get_collection_side_effect``;
+    every other awaited method returns an AsyncMock so the migration
+    helpers (``_ensure_payload_indexes`` etc.) don't blow up on the
+    create-collection path. Returns the mock so tests can assert against
+    the awaited methods.
+    """
+    provisional = mocker.AsyncMock()
+    provisional.get_collection.side_effect = get_collection_side_effect
+    # _ensure_payload_indexes pulls payload_schema off the freshly-created
+    # collection's get_collection result; on the create path it's passed
+    # an explicit {} so this branch isn't exercised, but make it safe
+    # anyway in case the order of init shifts.
+    provisional.create_payload_index.return_value = None
+    return provisional
+
+
+def _stub_settings_and_embedding(mocker, monkeypatch):
+    """Replace get_settings and the embedding service with deterministic stubs."""
+    from nextcloud_mcp_server.config import Settings
+
+    settings = Settings(
+        qdrant_location=":memory:",
+        ollama_embedding_model="nomic-embed-text",
+        vector_sync_enabled=False,
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.vector.qdrant_client.get_settings", lambda: settings
+    )
+
+    embedding_service = mocker.Mock()
+    # No _detect_dimension attribute → the dynamic-detection branch is
+    # skipped. Real Ollama provider has it, but tests don't need to.
+    embedding_service.provider = mocker.Mock(spec_set=[])
+    embedding_service.get_dimension = lambda: 4
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.embedding.get_embedding_service",
+        lambda: embedding_service,
+    )
+    return settings
+
+
+@pytest.mark.unit
+async def test_get_qdrant_client_creates_collection_on_local_mode_value_error(
+    mocker, monkeypatch, reset_qdrant_singleton
+):
+    """Local-mode `ValueError("Collection X not found")` must trigger create.
+
+    The local/in-memory ``AsyncQdrantClient`` raises ``ValueError`` (see
+    ``qdrant_client/local/async_qdrant_local.py``) where the HTTP-mode
+    client would raise ``UnexpectedResponse(status_code=404)``. Both must
+    be treated as "the collection doesn't exist yet — create it."
+    Without this dual-path catch, the ``mcp`` container fails on first
+    start with `Failed to initialize Qdrant collection: Collection X not
+    found` and the ``app.py`` lifespan re-raises as ``RuntimeError``,
+    crashing every single-user / login-flow / multi-user-basic CI job.
+    """
+    settings = _stub_settings_and_embedding(mocker, monkeypatch)
+    collection_name = settings.get_collection_name()
+
+    provisional = _stub_provisional(
+        mocker, ValueError(f"Collection {collection_name} not found")
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.vector.qdrant_client.AsyncQdrantClient",
+        lambda *a, **kw: provisional,
+    )
+
+    client = await get_qdrant_client()
+
+    assert client is provisional
+    provisional.create_collection.assert_awaited_once()
+    # The created collection should be the auto-generated name from
+    # settings — guards against accidental collection-name drift.
+    assert (
+        provisional.create_collection.await_args.kwargs["collection_name"]
+        == collection_name
+    )
+
+
+@pytest.mark.unit
+async def test_get_qdrant_client_propagates_unrelated_value_error(
+    mocker, monkeypatch, reset_qdrant_singleton
+):
+    """A ValueError that is *not* a missing-collection signal must propagate.
+
+    The ``except ValueError`` clause in ``get_qdrant_client`` matches on
+    the ``"not found"`` substring rather than catching every
+    ``ValueError`` so genuine programming bugs (bad ``collection_name``
+    validation, dimension assertions, etc.) still surface to the caller.
+    Loosening the guard to a bare ``except ValueError`` would silently
+    treat any of those as "create the collection" and mask the bug.
+    """
+    _stub_settings_and_embedding(mocker, monkeypatch)
+    provisional = _stub_provisional(mocker, ValueError("Bad collection_name"))
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.vector.qdrant_client.AsyncQdrantClient",
+        lambda *a, **kw: provisional,
+    )
+
+    with pytest.raises(ValueError, match="Bad collection_name"):
+        await get_qdrant_client()
+
+    provisional.create_collection.assert_not_awaited()

@@ -341,8 +341,9 @@ server runs two idempotent migrations:
    legacy integer `doc_id` payloads to strings so they match the keyword
    index. Idempotent: on a clean collection (all `doc_id` values already
    `str`), the scroll runs but emits zero writes. On the first start after
-   the upgrade, expect a delay proportional to point count while writes
-   are issued.
+   the upgrade, expect a delay proportional to total point count for the
+   scroll itself, plus an additional delay proportional to any `int`-typed
+   `doc_id` points found while their payloads are rewritten.
 
 Both steps emit INFO-level log lines so operators can track progress.
 
@@ -363,7 +364,7 @@ Both steps emit INFO-level log lines so operators can track progress.
 >   the index was not created. Searches filtering on that field will keep
 >   returning HTTP 400 (`Index required but not found`) until a subsequent
 >   restart succeeds in creating it.
-> - `doc_id backfill failed on '<collection>'; will retry on next restart` —
+> - `doc_id backfill scroll failed on '<collection>'; will retry on next restart` —
 >   the migration sentinel was not written. Legacy integer `doc_id`
 >   payloads remain invisible to the keyword index in the meantime; the
 >   scroll re-runs from scratch on the next process start.

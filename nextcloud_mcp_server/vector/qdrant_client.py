@@ -111,7 +111,15 @@ async def _create_one_payload_index(
             logger.warning(
                 "Schema conflict on payload index '%s': %s", field, body_text
             )
-            return True
+            # Treat schema conflict the same as a wrong-type index
+            # discovered via `existing_schema` in `_ensure_payload_indexes`
+            # (lines 195-206) — both are "the index present is not the
+            # one we'd build", so the consolidated `Payload index
+            # creation incomplete` summary should fire in both cases.
+            # Without this, tenants whose payload_schema is hidden from
+            # their JWT (Qdrant Cloud collection-scoped tokens) would
+            # only see the per-field WARNING and miss the summary.
+            return False
         logger.error(
             "Unexpected error creating payload index on '%s' (status %s): %s",
             field,
@@ -580,6 +588,21 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 if exc.status_code != 404:
                     raise
                 logger.debug(f"Collection '{collection_name}' not found (404).")
+            except ValueError as exc:
+                # Local/in-memory qdrant_client raises ValueError(f"Collection
+                # {name} not found") instead of UnexpectedResponse — see
+                # qdrant_client/local/async_qdrant_local.py. Match on the
+                # message rather than catching every ValueError so genuine
+                # programming bugs (bad collection_name validation, etc.)
+                # still propagate. PR #779 introduced this regression by
+                # switching the existence probe from `collection_exists()`
+                # (which returned a bool in both modes) to `get_collection`
+                # without accounting for the local-mode signalling
+                # convention; the failing single-user / login-flow /
+                # multi-user-basic CI jobs all exercise this path.
+                if "not found" not in str(exc):
+                    raise
+                logger.debug(f"Collection '{collection_name}' not found (local mode).")
 
             if collection_info is not None:
                 # Collection exists - validate dimensions
