@@ -144,6 +144,11 @@ class DeckAttachmentExtendedData(BaseModel):
     filesize: int
     mimetype: str
     info: Dict[str, str]
+    # Populated for type="file" (Files share) attachments via FilesAppService.
+    path: str | None = None
+    fileid: int | None = None
+    hasPreview: bool | None = None
+    permissions: int | None = None
 
 
 class DeckAttachment(BaseModel):
@@ -308,3 +313,37 @@ class CardCommentOperationResponse(StatusResponse):
 
     card_id: int = Field(description="ID of the card the comment belongs to")
     comment_id: int = Field(description="ID of the affected comment")
+
+
+# Attachment Response Models
+
+
+class AttachFileResponse(BaseResponse):
+    """Response model for attaching an existing Nextcloud file to a Deck card.
+
+    The attachment is created by sharing the file with the card via the standard
+    OCS Sharing API using ``shareType=12`` (``IShare::TYPE_DECK``). The returned
+    ``attachment_id`` is the share ID, which is also the Deck attachment ID.
+    """
+
+    attachment_id: int = Field(
+        description="ID of the created attachment (share ID)",
+    )
+    card_id: int = Field(description="ID of the card the file is attached to")
+    path: str = Field(description="Path of the shared file in the user's Files")
+
+
+class ListAttachmentsResponse(BaseResponse):
+    """Response model for listing card attachments."""
+
+    results: list[DeckAttachment] = Field(
+        description="Attachments on the card (both type='file' and type='deck_file')"
+    )
+    count: int = Field(description="Number of attachments returned")
+
+
+class AttachmentOperationResponse(StatusResponse):
+    """Response model for attachment operations that don't return data (e.g. delete)."""
+
+    card_id: int = Field(description="ID of the card the attachment belongs to")
+    attachment_id: int = Field(description="ID of the affected attachment")

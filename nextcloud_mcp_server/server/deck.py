@@ -1,11 +1,14 @@
 import logging
 
+import anyio
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.deck import (
+    AttachFileResponse,
+    AttachmentOperationResponse,
     CardCommentOperationResponse,
     CardCommentResponse,
     CardOperationResponse,
@@ -18,6 +21,7 @@ from nextcloud_mcp_server.models.deck import (
     DeckLabel,
     DeckStack,
     LabelOperationResponse,
+    ListAttachmentsResponse,
     ListBoardsResponse,
     ListCardCommentsResponse,
     ListCardsResponse,
@@ -99,6 +103,62 @@ def _apply_card_filters(
         cards = [c for c in cards if not c.archived]
     _truncate_card_descriptions(cards, description_max_length)
     return cards
+
+
+# Card attachments — file shares ("Share from Files" picker in the Deck UI).
+#
+# Mechanism: a Deck card attachment of type="file" is just a Nextcloud share
+# with shareType=12 (IShare::TYPE_DECK) and shareWith=<cardId>. The Deck UI
+# fires this exact request — see Deck app's
+# src/components/card/AttachmentList.vue:223-238 and lib/Service/FilesAppService.php.
+# The file is NOT copied; the share row binds the file's existing path to the card.
+_SHARE_TYPE_DECK = 12
+
+
+def _resolve_note_path(notes_folder: str, category: str, title: str) -> str:
+    """Reconstruct a note's file path from Notes API metadata.
+
+    Notes are stored as ``<notes_folder>/<category>/<title>.md`` in the
+    user's Files; ``<category>`` may be empty or nested (``"Foo/Bar"``).
+    """
+    parts = [notes_folder.strip("/")]
+    if category:
+        parts.append(category.strip("/"))
+    parts.append(f"{title}.md")
+    return "/" + "/".join(p for p in parts if p)
+
+
+async def _resolve_note_attach_path(client, note_id: int) -> str:
+    """Resolve a Notes-app note ID to its filesystem path for sharing.
+
+    Hits the Notes API twice (settings + note metadata) and reconstructs
+    the path. Encapsulates the camelCase key (``notesPath``, see
+    ``models/notes.py:43``) so a typo there can't silently route to the
+    default ``"Notes"`` folder for users who've configured a non-default
+    notes location — that bug is exactly what this helper exists to make
+    testable.
+    """
+    async with anyio.create_task_group() as tg:
+        settings_holder: list[dict] = []
+        note_holder: list[dict] = []
+
+        async def _get_settings() -> None:
+            settings_holder.append(await client.notes.get_settings())
+
+        async def _get_note() -> None:
+            note_holder.append(await client.notes.get_note(note_id))
+
+        tg.start_soon(_get_settings)
+        tg.start_soon(_get_note)
+
+    settings = settings_holder[0]
+    note = note_holder[0]
+    notes_folder = settings.get("notesPath") or "Notes"
+    return _resolve_note_path(
+        notes_folder=notes_folder,
+        category=note.get("category") or "",
+        title=note["title"],
+    )
 
 
 def configure_deck_tools(mcp: FastMCP):
@@ -1047,4 +1107,150 @@ def configure_deck_tools(mcp: FastMCP):
             message="Comment deleted successfully",
             card_id=card_id,
             comment_id=comment_id,
+        )
+
+    @mcp.tool(
+        title="Attach File to Deck Card",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
+    @require_scopes("deck.write", "files.read")
+    @instrument_tool
+    async def deck_attach_file(
+        ctx: Context, card_id: int, path: str
+    ) -> AttachFileResponse:
+        """Attach an existing Nextcloud file to a Deck card without copying.
+
+        Creates a share of ``path`` with the card (``shareType=12``,
+        ``shareWith=<card_id>``). The file stays in its original location;
+        clicking the attachment in the Deck UI opens the file in place.
+
+        Generic over the user's Files: works for any file the caller can
+        read — markdown notes, PDFs, images, spreadsheets, etc. Use
+        :func:`deck_attach_note` if you have a Notes-app note ID and want
+        the path resolved automatically. Calling twice with the same
+        ``path`` creates two distinct shares — caller is responsible for
+        de-duping.
+
+        Args:
+            card_id: The ID of the Deck card to attach to
+            path: Path to the file in the user's Nextcloud Files (must start
+                with "/", e.g. "/Documents/spec.pdf" or "/Notes/My Note.md")
+        """
+        if not path.startswith("/"):
+            raise ValueError(
+                f"path must start with '/', got: {path!r} "
+                "(paths are relative to the user's Files root)"
+            )
+        client = await get_client(ctx)
+        share = await client.sharing.create_share(
+            path=path,
+            share_with=str(card_id),
+            share_type=_SHARE_TYPE_DECK,
+            permissions=1,
+        )
+        return AttachFileResponse(
+            attachment_id=int(share["id"]),
+            card_id=card_id,
+            path=path,
+        )
+
+    @mcp.tool(
+        title="Attach Note to Deck Card",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
+    @require_scopes("deck.write", "files.read", "notes.read")
+    @instrument_tool
+    async def deck_attach_note(
+        ctx: Context, card_id: int, note_id: int
+    ) -> AttachFileResponse:
+        """Attach a Nextcloud Note to a Deck card without copying.
+
+        Convenience wrapper: looks up the note's filesystem path from the
+        Notes app settings + note metadata, then shares the file with the
+        card (same mechanism as :func:`deck_attach_file`). The note remains
+        editable in the Notes app; the card just shows a clickable link to
+        it.
+
+        Path is reconstructed as ``<notes_folder>/<category>/<title>.md``.
+        If the note's title contains characters that the Notes app sanitises
+        differently (rare), use :func:`deck_attach_file` with the explicit
+        path instead.
+
+        Args:
+            card_id: The ID of the Deck card to attach to
+            note_id: The ID of the Note to attach
+        """
+        client = await get_client(ctx)
+        path = await _resolve_note_attach_path(client, note_id)
+        share = await client.sharing.create_share(
+            path=path,
+            share_with=str(card_id),
+            share_type=_SHARE_TYPE_DECK,
+            permissions=1,
+        )
+        return AttachFileResponse(
+            attachment_id=int(share["id"]),
+            card_id=card_id,
+            path=path,
+        )
+
+    @mcp.tool(
+        title="List Deck Card Attachments",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("deck.read")
+    @instrument_tool
+    async def deck_list_attachments(
+        ctx: Context, board_id: int, stack_id: int, card_id: int
+    ) -> ListAttachmentsResponse:
+        """List attachments on a Nextcloud Deck card.
+
+        Returns both shared-file attachments (``type="file"``, created via
+        :func:`deck_attach_file` / :func:`deck_attach_note`) and uploaded
+        binary attachments (``type="deck_file"``).
+
+        Args:
+            board_id: The ID of the board
+            stack_id: The ID of the stack
+            card_id: The ID of the card
+        """
+        client = await get_client(ctx)
+        attachments = await client.deck.get_attachments(board_id, stack_id, card_id)
+        return ListAttachmentsResponse(results=attachments, count=len(attachments))
+
+    @mcp.tool(
+        title="Delete Deck Card Attachment",
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
+    )
+    @require_scopes("deck.write")
+    @instrument_tool
+    async def deck_delete_attachment(
+        ctx: Context,
+        board_id: int,
+        stack_id: int,
+        card_id: int,
+        attachment_id: int,
+    ) -> AttachmentOperationResponse:
+        """Delete an attachment from a Nextcloud Deck card.
+
+        For ``type="file"`` attachments this removes the share linking the
+        file to the card; the underlying file in the user's Files is left
+        untouched. For ``type="deck_file"`` blobs the binary is deleted from
+        Deck's storage.
+
+        Args:
+            board_id: The ID of the board
+            stack_id: The ID of the stack
+            card_id: The ID of the card
+            attachment_id: The ID of the attachment to delete
+        """
+        client = await get_client(ctx)
+        await client.deck.delete_attachment(board_id, stack_id, card_id, attachment_id)
+        return AttachmentOperationResponse(
+            success=True,
+            message="Attachment deleted successfully",
+            card_id=card_id,
+            attachment_id=attachment_id,
         )
