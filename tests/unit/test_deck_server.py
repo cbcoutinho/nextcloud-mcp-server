@@ -14,6 +14,7 @@ from nextcloud_mcp_server.server.deck import (
     _apply_board_filters,
     _apply_card_filters,
     _apply_stack_filters,
+    _resolve_note_attach_path,
     _resolve_note_path,
     _truncate_card_descriptions,
     _validate_description_max_length,
@@ -408,3 +409,62 @@ def test_resolve_note_path_custom_notes_folder():
 def test_share_type_deck_constant_matches_deck_app():
     """Deck UI uses shareType=12 (IShare::TYPE_DECK) — must not drift."""
     assert _SHARE_TYPE_DECK == 12
+
+
+# _resolve_note_attach_path (camelCase notesPath guard) ---------------------
+
+
+async def test_resolve_note_attach_path_honors_camelcase_notes_path(mocker):
+    """Custom notes folders configured in the Notes app must be honored.
+
+    Regression: the Notes API returns the folder under ``notesPath`` (camelCase,
+    see ``models/notes.py:43``). An earlier draft of this code looked up
+    ``notes_path`` (snake_case) and silently fell back to the default ``"Notes"``,
+    producing 404s for users with a non-default folder. This test pins the
+    correct key so that bug can't reappear.
+    """
+    client = mocker.AsyncMock()
+    client.notes.get_settings.return_value = {"notesPath": "Documents/MyNotes"}
+    client.notes.get_note.return_value = {
+        "id": 42,
+        "title": "Q4 Plan",
+        "category": "Work",
+    }
+
+    path = await _resolve_note_attach_path(client, note_id=42)
+
+    assert path == "/Documents/MyNotes/Work/Q4 Plan.md"
+    client.notes.get_settings.assert_awaited_once()
+    client.notes.get_note.assert_awaited_once_with(42)
+
+
+async def test_resolve_note_attach_path_falls_back_to_default_when_setting_missing(
+    mocker,
+):
+    """Missing/empty ``notesPath`` falls back to the documented default."""
+    client = mocker.AsyncMock()
+    client.notes.get_settings.return_value = {}
+    client.notes.get_note.return_value = {
+        "id": 1,
+        "title": "Idea",
+        "category": "",
+    }
+
+    path = await _resolve_note_attach_path(client, note_id=1)
+
+    assert path == "/Notes/Idea.md"
+
+
+async def test_resolve_note_attach_path_handles_null_category(mocker):
+    """A note with ``category=None`` (rather than ``""``) must not crash."""
+    client = mocker.AsyncMock()
+    client.notes.get_settings.return_value = {"notesPath": "Notes"}
+    client.notes.get_note.return_value = {
+        "id": 7,
+        "title": "Bare",
+        "category": None,
+    }
+
+    path = await _resolve_note_attach_path(client, note_id=7)
+
+    assert path == "/Notes/Bare.md"

@@ -11,6 +11,8 @@ from httpx import AsyncClient
 
 from nextcloud_mcp_server.client.sharing import SharingClient
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def sharing_client(mocker):
@@ -32,7 +34,6 @@ def _ok_share_response(mocker, share_id: int = 4242, **extra):
     return response
 
 
-@pytest.mark.unit
 async def test_create_share_deck_type_payload(sharing_client, mocker):
     """create_share(share_type=12) must POST exactly what the Deck UI does:
     {path, shareType: 12, shareWith: "<cardId>"} to /ocs/v2.php/apps/files_sharing/api/v1/shares.
@@ -65,7 +66,6 @@ async def test_create_share_deck_type_payload(sharing_client, mocker):
     assert call.kwargs["headers"]["OCS-APIRequest"] == "true"
 
 
-@pytest.mark.unit
 async def test_create_share_raises_on_ocs_failure(sharing_client, mocker):
     """OCS error responses (statuscode != 100/200) raise RuntimeError."""
     response = mocker.Mock()

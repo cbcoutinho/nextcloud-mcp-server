@@ -127,6 +127,26 @@ def _resolve_note_path(notes_folder: str, category: str, title: str) -> str:
     return "/" + "/".join(p for p in parts if p)
 
 
+async def _resolve_note_attach_path(client, note_id: int) -> str:
+    """Resolve a Notes-app note ID to its filesystem path for sharing.
+
+    Hits the Notes API twice (settings + note metadata) and reconstructs
+    the path. Encapsulates the camelCase key (``notesPath``, see
+    ``models/notes.py:43``) so a typo there can't silently route to the
+    default ``"Notes"`` folder for users who've configured a non-default
+    notes location — that bug is exactly what this helper exists to make
+    testable.
+    """
+    settings = await client.notes.get_settings()
+    note = await client.notes.get_note(note_id)
+    notes_folder = settings.get("notesPath") or "Notes"
+    return _resolve_note_path(
+        notes_folder=notes_folder,
+        category=note.get("category") or "",
+        title=note["title"],
+    )
+
+
 def configure_deck_tools(mcp: FastMCP):
     """Configure Nextcloud Deck tools and resources for the MCP server."""
 
@@ -1079,7 +1099,7 @@ def configure_deck_tools(mcp: FastMCP):
         title="Attach File to Deck Card",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
-    @require_scopes("deck.write")
+    @require_scopes("deck.write", "files.read")
     @instrument_tool
     async def deck_attach_file(
         ctx: Context, card_id: int, path: str
@@ -1090,15 +1110,17 @@ def configure_deck_tools(mcp: FastMCP):
         ``shareWith=<card_id>``). The file stays in its original location;
         clicking the attachment in the Deck UI opens the file in place.
 
-        Use this to link Notes (``/Notes/<title>.md``) or any Files entry to
-        a card as a discoverable attachment, replacing the older pattern of
-        long card comments. Calling twice with the same ``path`` creates two
-        distinct shares — caller is responsible for de-duping.
+        Generic over the user's Files: works for any file the caller can
+        read — markdown notes, PDFs, images, spreadsheets, etc. Use
+        :func:`deck_attach_note` if you have a Notes-app note ID and want
+        the path resolved automatically. Calling twice with the same
+        ``path`` creates two distinct shares — caller is responsible for
+        de-duping.
 
         Args:
             card_id: The ID of the Deck card to attach to
             path: Path to the file in the user's Nextcloud Files (must start
-                with "/", e.g. "/Notes/My Note.md")
+                with "/", e.g. "/Documents/spec.pdf" or "/Notes/My Note.md")
         """
         if not path.startswith("/"):
             raise ValueError(
@@ -1145,14 +1167,7 @@ def configure_deck_tools(mcp: FastMCP):
             note_id: The ID of the Note to attach
         """
         client = await get_client(ctx)
-        settings = await client.notes.get_settings()
-        note = await client.notes.get_note(note_id)
-        notes_folder = settings.get("notes_path") or "Notes"
-        path = _resolve_note_path(
-            notes_folder=notes_folder,
-            category=note.get("category") or "",
-            title=note["title"],
-        )
+        path = await _resolve_note_attach_path(client, note_id)
         share = await client.sharing.create_share(
             path=path,
             share_with=str(card_id),

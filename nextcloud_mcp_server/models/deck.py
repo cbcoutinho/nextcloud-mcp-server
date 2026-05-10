@@ -145,10 +145,10 @@ class DeckAttachmentExtendedData(BaseModel):
     mimetype: str
     info: Dict[str, str]
     # Populated for type="file" (Files share) attachments via FilesAppService.
-    path: Optional[str] = None
-    fileid: Optional[int] = None
-    hasPreview: Optional[bool] = None
-    permissions: Optional[int] = None
+    path: str | None = None
+    fileid: int | None = None
+    hasPreview: bool | None = None
+    permissions: int | None = None
 
 
 class DeckAttachment(BaseModel):
@@ -336,7 +336,7 @@ class AttachFileResponse(BaseResponse):
 class ListAttachmentsResponse(BaseResponse):
     """Response model for listing card attachments."""
 
-    results: list["DeckAttachment"] = Field(
+    results: list[DeckAttachment] = Field(
         description="Attachments on the card (both type='file' and type='deck_file')"
     )
     count: int = Field(description="Number of attachments returned")
