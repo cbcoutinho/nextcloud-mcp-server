@@ -1960,9 +1960,21 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
         if vector_sync_enabled and qdrant_url:
             start_time = time.time()
+            # Self-hosted Qdrant exposes /readyz unauthenticated, but
+            # Qdrant Cloud's auth gateway returns 403 for any
+            # unauthenticated request — so we have to forward the same
+            # api-key the configured AsyncQdrantClient uses (see
+            # vector/qdrant_client.py). Without this header, every
+            # readiness probe against a Cloud cluster returns 503,
+            # blocking the Pod from reaching Ready.
+            qdrant_headers = (
+                {"api-key": settings.qdrant_api_key} if settings.qdrant_api_key else {}
+            )
             try:
                 async with httpx.AsyncClient(timeout=2.0) as client:
-                    response = await client.get(f"{qdrant_url}/readyz")
+                    response = await client.get(
+                        f"{qdrant_url}/readyz", headers=qdrant_headers
+                    )
                     duration = time.time() - start_time
                     if response.status_code == 200:
                         checks["qdrant"] = "ok"
