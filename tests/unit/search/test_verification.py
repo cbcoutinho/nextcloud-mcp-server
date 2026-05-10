@@ -35,8 +35,11 @@ def _make_result(
     score: float = 0.9,
     metadata: dict | None = None,
 ) -> SearchResult:
+    # Mirror the producer-side stringification (scanner writes str(note["id"])
+    # etc. into Qdrant payloads). Tests pass int literals for readability;
+    # the SearchResult contract is ``id: str``.
     return SearchResult(
-        id=doc_id,
+        id=str(doc_id),
         doc_type=doc_type,
         title=f"{doc_type}_{doc_id}",
         excerpt="...",
@@ -84,7 +87,7 @@ async def test_verify_notes_200_keeps_all(mocker):
         client, [_make_result(1), _make_result(2), _make_result(3)], _sem()
     )
 
-    assert result == {1, 2, 3}
+    assert result == {"1", "2", "3"}
     assert notes_client.get_note.await_count == 3
 
 
@@ -122,7 +125,7 @@ async def test_verify_notes_transient_5xx_keeps(mocker):
 
     result = await _verify_notes(client, [_make_result(42)], _sem())
 
-    assert result == {42}
+    assert result == {"42"}
 
 
 @pytest.mark.unit
@@ -140,7 +143,7 @@ async def test_verify_notes_429_keeps_as_transient(mocker):
 
     result = await _verify_notes(client, [_make_result(42)], _sem())
 
-    assert result == {42}
+    assert result == {"42"}
 
 
 @pytest.mark.unit
@@ -152,7 +155,7 @@ async def test_verify_notes_unexpected_exception_keeps(mocker):
 
     result = await _verify_notes(client, [_make_result(7)], _sem())
 
-    assert result == {7}
+    assert result == {"7"}
 
 
 @pytest.mark.unit
@@ -193,7 +196,7 @@ async def test_verify_notes_mixed_outcomes(mocker):
         client, [_make_result(1), _make_result(2), _make_result(3)], _sem()
     )
 
-    assert result == {1, 3}
+    assert result == {"1", "3"}
 
 
 @pytest.mark.unit
@@ -242,7 +245,7 @@ async def test_verify_news_items_intersects_with_fetched_set(mocker):
         _sem(),
     )
 
-    assert result == {10, 20}
+    assert result == {"10", "20"}
     assert news_client.get_items.await_count == 1
 
 
@@ -304,7 +307,7 @@ async def test_verify_news_items_transient_keeps_all(mocker):
         _sem(),
     )
 
-    assert result == {1, 2, 3}
+    assert result == {"1", "2", "3"}
 
 
 @pytest.mark.unit
@@ -325,7 +328,7 @@ async def test_verify_news_items_429_keeps_as_transient(mocker):
         _sem(),
     )
 
-    assert result == {1, 2, 3}
+    assert result == {"1", "2", "3"}
 
 
 @pytest.mark.unit
@@ -350,7 +353,7 @@ async def test_verify_news_items_unexpected_exception_keeps_all(mocker):
         _sem(),
     )
 
-    assert result == {1, 2}
+    assert result == {"1", "2"}
 
 
 @pytest.mark.unit
@@ -377,7 +380,7 @@ async def test_verify_news_items_non_numeric_id_keeps_only_bad_item(mocker):
     )
 
     # 10 and 20 are verified present; "abc" is unverifiable so kept fail-open.
-    assert result == {10, 20, "abc"}
+    assert result == {"10", "20", "abc"}
 
 
 @pytest.mark.unit
@@ -402,7 +405,7 @@ async def test_verify_news_items_drops_missing_when_other_id_is_non_numeric(
     )
 
     # 10 verified present, 20 verified missing (dropped), "abc" unverifiable.
-    assert result == {10, "abc"}
+    assert result == {"10", "abc"}
 
 
 @pytest.mark.unit
@@ -426,7 +429,7 @@ async def test_verify_news_items_malformed_api_response_keeps_all(mocker):
     )
 
     # Batch fail-open: API broken, every requested id preserved.
-    assert result == {10, 20}
+    assert result == {"10", "20"}
 
 
 # ---------------------------------------------------------------------------
@@ -448,7 +451,7 @@ async def test_verify_files_uses_path_from_metadata(mocker):
         _sem(),
     )
 
-    assert result == {100}
+    assert result == {"100"}
     webdav_client.get_file_info.assert_awaited_once_with("Documents/foo.txt")
 
 
@@ -487,7 +490,7 @@ async def test_verify_files_malformed_propfind_keeps_result(mocker):
         _sem(),
     )
 
-    assert result == {123}, "ambiguous None must keep result, not evict"
+    assert result == {"123"}, "ambiguous None must keep result, not evict"
 
 
 @pytest.mark.unit
@@ -517,14 +520,14 @@ async def test_verify_files_missing_path_metadata_keeps_unverified(mocker):
 
     # No metadata at all
     result = await _verify_files(client, [_make_result(555, doc_type="file")], _sem())
-    assert result == {555}
+    assert result == {"555"}
     webdav_client.get_file_info.assert_not_awaited()
 
     # Metadata present but no "path" key
     result = await _verify_files(
         client, [_make_result(556, doc_type="file", metadata={})], _sem()
     )
-    assert result == {556}
+    assert result == {"556"}
     webdav_client.get_file_info.assert_not_awaited()
 
 
@@ -541,7 +544,7 @@ async def test_verify_files_transient_5xx_keeps(mocker):
         _sem(),
     )
 
-    assert result == {7}
+    assert result == {"7"}
 
 
 @pytest.mark.unit
@@ -558,7 +561,7 @@ async def test_verify_files_429_keeps_as_transient(mocker):
         _sem(),
     )
 
-    assert result == {7}
+    assert result == {"7"}
 
 
 @pytest.mark.unit
@@ -580,7 +583,7 @@ async def test_verify_files_unexpected_exception_keeps(mocker):
         _sem(),
     )
 
-    assert result == {8}
+    assert result == {"8"}
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +609,7 @@ async def test_verify_deck_cards_uses_metadata_fast_path(mocker):
         _sem(),
     )
 
-    assert result == {42}
+    assert result == {"42"}
     deck_client.get_card.assert_awaited_once_with(board_id=1, stack_id=2, card_id=42)
 
 
@@ -676,7 +679,7 @@ async def test_verify_deck_cards_transient_5xx_keeps(mocker):
         _sem(),
     )
 
-    assert result == {42}
+    assert result == {"42"}
 
 
 @pytest.mark.unit
@@ -699,7 +702,7 @@ async def test_verify_deck_cards_429_keeps_as_transient(mocker):
         _sem(),
     )
 
-    assert result == {42}
+    assert result == {"42"}
 
 
 @pytest.mark.unit
@@ -722,7 +725,7 @@ async def test_verify_deck_cards_unexpected_exception_keeps(mocker):
         _sem(),
     )
 
-    assert result == {42}
+    assert result == {"42"}
 
 
 @pytest.mark.unit
@@ -749,7 +752,7 @@ async def test_verify_deck_cards_non_numeric_metadata_keeps(mocker):
         ],
         _sem(),
     )
-    assert result == {42}
+    assert result == {"42"}
 
     # Non-numeric stack_id
     result = await _verify_deck_cards(
@@ -763,7 +766,7 @@ async def test_verify_deck_cards_non_numeric_metadata_keeps(mocker):
         ],
         _sem(),
     )
-    assert result == {43}
+    assert result == {"43"}
 
     # Non-numeric card_id (doc_id itself)
     result = await _verify_deck_cards(
@@ -794,7 +797,7 @@ async def test_verify_deck_cards_missing_metadata_keeps_unverified(mocker):
     result = await _verify_deck_cards(
         client, [_make_result(42, doc_type="deck_card")], _sem()
     )
-    assert result == {42}
+    assert result == {"42"}
 
     # Only board_id (stack_id missing)
     result = await _verify_deck_cards(
@@ -802,7 +805,7 @@ async def test_verify_deck_cards_missing_metadata_keeps_unverified(mocker):
         [_make_result(43, doc_type="deck_card", metadata={"board_id": 1})],
         _sem(),
     )
-    assert result == {43}
+    assert result == {"43"}
 
     # Only stack_id (board_id missing)
     result = await _verify_deck_cards(
@@ -810,7 +813,7 @@ async def test_verify_deck_cards_missing_metadata_keeps_unverified(mocker):
         [_make_result(44, doc_type="deck_card", metadata={"stack_id": 2})],
         _sem(),
     )
-    assert result == {44}
+    assert result == {"44"}
 
     deck_client.get_card.assert_not_awaited()
 
@@ -829,7 +832,7 @@ async def test_verify_search_results_empty_input_passthrough():
 @pytest.mark.unit
 async def test_verify_search_results_dedupes_chunks_per_document(mocker):
     """Two chunks of the same note → ONE call to the underlying verifier."""
-    spy = mocker.AsyncMock(return_value={1})
+    spy = mocker.AsyncMock(return_value={"1"})
     mocker.patch.dict(verification._VERIFIERS, {"note": spy}, clear=False)
     mocker.patch.object(verification, "delete_document_points", mocker.AsyncMock())
 
@@ -848,7 +851,7 @@ async def test_verify_search_results_dedupes_chunks_per_document(mocker):
     # Verifier received exactly one SearchResult (the deduplicated representative)
     args, _kwargs = spy.call_args
     assert len(args[1]) == 1
-    assert args[1][0].id == 1
+    assert args[1][0].id == "1"
     # And a semaphore as the third arg
     assert isinstance(args[2], anyio.Semaphore)
 
@@ -1035,7 +1038,7 @@ async def test_verify_search_results_verifier_blowup_keeps_all(mocker):
 
     kept, dropped_count = await verify_search_results(client, results)
 
-    assert [r.id for r in kept] == [1, 2]
+    assert [r.id for r in kept] == ["1", "2"]
     assert dropped_count == 0  # fail-open: nothing dropped
     spy_evict.assert_not_awaited()
 
@@ -1043,7 +1046,7 @@ async def test_verify_search_results_verifier_blowup_keeps_all(mocker):
 @pytest.mark.unit
 async def test_verify_search_results_preserves_order(mocker):
     """Order of original results must be preserved after filtering."""
-    note_verifier = mocker.AsyncMock(return_value={1, 3})
+    note_verifier = mocker.AsyncMock(return_value={"1", "3"})
     mocker.patch.dict(verification._VERIFIERS, {"note": note_verifier}, clear=False)
     mocker.patch.object(verification, "delete_document_points", mocker.AsyncMock())
 
@@ -1056,7 +1059,7 @@ async def test_verify_search_results_preserves_order(mocker):
 
     kept, dropped_count = await verify_search_results(client, results)
 
-    assert [r.id for r in kept] == [1, 3]
+    assert [r.id for r in kept] == ["1", "3"]
     assert dropped_count == 1
 
 
@@ -1083,8 +1086,8 @@ async def test_verify_search_results_eviction_failure_does_not_propagate(mocker)
 @pytest.mark.unit
 async def test_verify_search_results_dispatches_per_doc_type_concurrently(mocker):
     """Mixed doc_types must be routed to their respective verifiers."""
-    note_verifier = mocker.AsyncMock(return_value={1})
-    file_verifier = mocker.AsyncMock(return_value={500})
+    note_verifier = mocker.AsyncMock(return_value={"1"})
+    file_verifier = mocker.AsyncMock(return_value={"500"})
     mocker.patch.dict(
         verification._VERIFIERS,
         {"note": note_verifier, "file": file_verifier},
@@ -1101,7 +1104,7 @@ async def test_verify_search_results_dispatches_per_doc_type_concurrently(mocker
 
     kept, dropped_count = await verify_search_results(client, results)
 
-    assert {(r.id, r.doc_type) for r in kept} == {(1, "note"), (500, "file")}
+    assert {(r.id, r.doc_type) for r in kept} == {("1", "note"), ("500", "file")}
     assert dropped_count == 1
     note_verifier.assert_awaited_once()
     file_verifier.assert_awaited_once()

@@ -56,7 +56,7 @@ class TestOffsetFallbackGate:
             result = await get_chunk_with_context(
                 nc_client=mock_nc_client,
                 user_id="alice",
-                doc_id=12345,
+                doc_id="12345",
                 doc_type="file",
                 chunk_start=0,
                 chunk_end=100,
@@ -101,7 +101,7 @@ class TestOffsetFallbackGate:
             await get_chunk_with_context(
                 nc_client=mock_nc_client,
                 user_id="alice",
-                doc_id=42,
+                doc_id="42",
                 doc_type="note",
                 chunk_start=0,
                 chunk_end=10,
@@ -133,7 +133,7 @@ class TestOffsetFallbackGate:
             await get_chunk_with_context(
                 nc_client=mock_nc_client,
                 user_id="alice",
-                doc_id=12345,
+                doc_id="12345",
                 doc_type="file",
                 chunk_start=0,
                 chunk_end=100,
@@ -175,7 +175,7 @@ class TestNullableChunkIndexPropagation:
             result = await get_chunk_with_context(
                 nc_client=mock_nc_client,
                 user_id="alice",
-                doc_id=42,
+                doc_id="42",
                 doc_type="note",
                 chunk_start=100,
                 chunk_end=200,
@@ -222,7 +222,7 @@ class TestNullableChunkIndexPropagation:
             result = await get_chunk_with_context(
                 nc_client=mock_nc_client,
                 user_id="alice",
-                doc_id=42,
+                doc_id="42",
                 doc_type="note",
                 chunk_start=0,
                 chunk_end=10,
@@ -264,7 +264,7 @@ class TestNullableChunkIndexPropagation:
             result = await get_chunk_with_context(
                 nc_client=mock_nc_client,
                 user_id="alice",
-                doc_id=42,
+                doc_id="42",
                 doc_type="note",
                 chunk_start=100,
                 chunk_end=200,
@@ -307,7 +307,7 @@ class TestAdjacentChunkBoundary:
             result = await get_chunk_with_context(
                 nc_client=mock_nc_client,
                 user_id="alice",
-                doc_id=42,
+                doc_id="42",
                 doc_type="note",
                 chunk_start=0,
                 chunk_end=10,
@@ -348,7 +348,7 @@ class TestAdjacentChunkBoundary:
             result = await get_chunk_with_context(
                 nc_client=mock_nc_client,
                 user_id="alice",
-                doc_id=42,
+                doc_id="42",
                 doc_type="note",
                 chunk_start=0,
                 chunk_end=10,

@@ -71,6 +71,71 @@ _qdrant_client: AsyncQdrantClient | None = None
 _qdrant_init_lock: anyio.Lock | None = None
 
 
+async def _create_one_payload_index(
+    client: AsyncQdrantClient,
+    collection_name: str,
+    field: str,
+    schema_type: PayloadSchemaType,
+) -> bool:
+    """Create one payload index with per-field error containment.
+
+    Returns True on success or benign 400 schema-conflict (caller treats as
+    indexed). Returns False if the field should be added to the caller's
+    failed-fields list. Never re-raises: the singleton in
+    ``get_qdrant_client`` is already assigned by the time this runs, so
+    propagating a network blip would leave the process holding a usable
+    client with the migration silently incomplete.
+    """
+    try:
+        await client.create_payload_index(
+            collection_name=collection_name,
+            field_name=field,
+            field_schema=schema_type,
+            wait=True,
+        )
+        logger.info("Created %s payload index on '%s'", schema_type.name, field)
+        return True
+    except UnexpectedResponse as e:
+        body = getattr(e, "content", b"") or b""
+        body_text = body.decode("utf-8", errors="replace")
+        # 400 is the expected schema-conflict path (index already exists
+        # with a different type). Verified for Qdrant OSS, where an
+        # idempotent re-create against a matching schema returns 200; if
+        # Qdrant Cloud diverges and returns 400 for benign re-creates,
+        # the WARNING below will fire on every restart against an
+        # already-indexed collection — read the response body before
+        # treating that as a real schema conflict. 5xx is unexpected —
+        # keep the loop going so the remaining fields still get
+        # attempted, but log at error so operators see it.
+        if e.status_code == 400:
+            logger.warning(
+                "Schema conflict on payload index '%s': %s", field, body_text
+            )
+            return True
+        logger.error(
+            "Unexpected error creating payload index on '%s' (status %s): %s",
+            field,
+            e.status_code,
+            body_text,
+        )
+        return False
+    except Exception:
+        # Raw network / timeout failures (httpx.ConnectError,
+        # asyncio.TimeoutError, etc.) reach here — outside the HTTP-status
+        # taxonomy that UnexpectedResponse covers. Same containment
+        # rationale as above: one transient failure on one field must not
+        # skip the rest, and the singleton in get_qdrant_client is already
+        # assigned by this point so re-raising would leave the process
+        # holding a usable client with the migration silently incomplete.
+        logger.error(
+            "Network error creating payload index on '%s'; "
+            "field will remain unindexed until next successful restart",
+            field,
+            exc_info=True,
+        )
+        return False
+
+
 async def _ensure_payload_indexes(
     client: AsyncQdrantClient,
     collection_name: str,
@@ -82,13 +147,9 @@ async def _ensure_payload_indexes(
     schema type (KEYWORD for string fields, BOOL for ``is_placeholder``,
     INTEGER for ``chunk_index``). Skips fields that are already in
     ``existing_schema`` so routine restarts make no Qdrant write round-trips
-    and emit no INFO log lines. Schema conflicts (a pre-existing index with
-    a different type) still surface as a 400 — log loudly so operators can
-    intervene, but keep going so the remaining fields still get indexed.
-    The same per-field error containment applies to raw network errors
-    (e.g. ``httpx.ConnectError`` from a transient Qdrant unavailability):
-    log at ERROR with ``exc_info`` and continue, so a single transient
-    failure on one field does not skip the rest.
+    and emit no INFO log lines. Per-field error handling (schema conflicts,
+    network errors) lives in ``_create_one_payload_index``; this loop is
+    flat so a single transient failure on one field does not skip the rest.
 
     Args:
         client: Qdrant client instance.
@@ -117,60 +178,17 @@ async def _ensure_payload_indexes(
             )
             return
         existing_schema = collection_info.payload_schema or {}
-    failed_fields: list[str] = []
 
+    failed_fields: list[str] = []
     for field, schema_type in _PAYLOAD_INDEX_FIELDS.items():
         if field in existing_schema:
             # Index already present — silent skip. Logging here on every
             # restart would be noise that hides the genuinely interesting
-            # "first-time creation" line below.
+            # "first-time creation" line in _create_one_payload_index.
             continue
-        try:
-            await client.create_payload_index(
-                collection_name=collection_name,
-                field_name=field,
-                field_schema=schema_type,
-                wait=True,
-            )
-            logger.info("Created %s payload index on '%s'", schema_type.name, field)
-        except UnexpectedResponse as e:
-            body = getattr(e, "content", b"") or b""
-            body_text = body.decode("utf-8", errors="replace")
-            # 400 is the expected schema-conflict path (index already exists
-            # with a different type). Verified for Qdrant OSS, where an
-            # idempotent re-create against a matching schema returns 200; if
-            # Qdrant Cloud diverges and returns 400 for benign re-creates,
-            # the WARNING below will fire on every restart against an
-            # already-indexed collection — read the response body before
-            # treating that as a real schema conflict. 5xx is unexpected —
-            # keep the loop going so the remaining fields still get
-            # attempted, but log at error so operators see it.
-            if e.status_code == 400:
-                logger.warning(
-                    "Schema conflict on payload index '%s': %s", field, body_text
-                )
-            else:
-                logger.error(
-                    "Unexpected error creating payload index on '%s' (status %s): %s",
-                    field,
-                    e.status_code,
-                    body_text,
-                )
-                failed_fields.append(field)
-        except Exception:
-            # Raw network / timeout failures (httpx.ConnectError,
-            # asyncio.TimeoutError, etc.) reach here — outside the HTTP-status
-            # taxonomy that UnexpectedResponse covers. Same containment
-            # rationale as above: one transient failure on one field must not
-            # skip the rest, and the singleton in get_qdrant_client is already
-            # assigned by this point so re-raising would leave the process
-            # holding a usable client with the migration silently incomplete.
-            logger.error(
-                "Network error creating payload index on '%s'; "
-                "field will remain unindexed until next successful restart",
-                field,
-                exc_info=True,
-            )
+        if not await _create_one_payload_index(
+            client, collection_name, field, schema_type
+        ):
             failed_fields.append(field)
 
     # A single per-field ERROR line is easy to miss in startup noise. Surface
@@ -467,11 +485,21 @@ async def get_qdrant_client() -> AsyncQdrantClient:
         if _qdrant_client is None:
             settings = get_settings()
 
+            # Build the client into a local ``provisional`` and only publish
+            # it to the global ``_qdrant_client`` after the migration awaits
+            # below have all completed. The fast-path check at the top of
+            # this function reads ``_qdrant_client`` without the lock, so
+            # publishing the constructed-but-unmigrated client would let a
+            # concurrent caller short-circuit the lock and fire a filtered
+            # search before ``_ensure_payload_indexes`` runs — that search
+            # would 400 with "Index required but not found".
+            provisional: AsyncQdrantClient
+
             # Detect mode and initialize client accordingly
             if settings.qdrant_url:
                 # Network mode
                 logger.info(f"Using Qdrant network mode: {settings.qdrant_url}")
-                _qdrant_client = AsyncQdrantClient(
+                provisional = AsyncQdrantClient(
                     url=settings.qdrant_url,
                     api_key=settings.qdrant_api_key,
                     timeout=30,
@@ -480,17 +508,17 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 # Local mode (either :memory: or persistent path)
                 if settings.qdrant_location == ":memory:":
                     logger.info("Using Qdrant in-memory mode: :memory:")
-                    _qdrant_client = AsyncQdrantClient(":memory:")
+                    provisional = AsyncQdrantClient(":memory:")
                 else:
                     # Persistent local mode - use path parameter
                     logger.info(
                         f"Using Qdrant persistent mode: {settings.qdrant_location}"
                     )
-                    _qdrant_client = AsyncQdrantClient(path=settings.qdrant_location)
+                    provisional = AsyncQdrantClient(path=settings.qdrant_location)
             else:
                 # Should not happen due to __post_init__ validation, but handle gracefully
                 logger.warning("No Qdrant mode configured, defaulting to :memory:")
-                _qdrant_client = AsyncQdrantClient(":memory:")
+                provisional = AsyncQdrantClient(":memory:")
 
             # Get collection name (auto-generated from deployment ID + model)
             collection_name = settings.get_collection_name()
@@ -505,7 +533,7 @@ async def get_qdrant_client() -> AsyncQdrantClient:
 
             # Explicitly check if collection exists
             logger.debug(f"Checking if collection '{collection_name}' exists...")
-            collections = await _qdrant_client.get_collections()
+            collections = await provisional.get_collections()
             collection_names = [c.name for c in collections.collections]
 
             if collection_name in collection_names:
@@ -513,7 +541,7 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 logger.debug(
                     f"Collection '{collection_name}' found, validating dimensions..."
                 )
-                collection_info = await _qdrant_client.get_collection(collection_name)
+                collection_info = await provisional.get_collection(collection_name)
                 # Handle both named vectors (dict) and legacy single vector
                 vectors = collection_info.config.params.vectors
                 if isinstance(vectors, dict):
@@ -551,10 +579,10 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 # never schema or indexes, so the snapshot remains accurate
                 # across the backfill call.
                 await _backfill_doc_id_to_string(
-                    _qdrant_client, collection_name, expected_dimension
+                    provisional, collection_name, expected_dimension
                 )
                 await _ensure_payload_indexes(
-                    _qdrant_client,
+                    provisional,
                     collection_name,
                     existing_schema=collection_info.payload_schema or {},
                 )
@@ -566,7 +594,7 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                     f"Collection '{collection_name}' not found, creating with "
                     f"dimension={expected_dimension}, model={embedding_model}..."
                 )
-                await _qdrant_client.create_collection(
+                await provisional.create_collection(
                     collection_name=collection_name,
                     vectors_config={
                         "dense": VectorParams(
@@ -601,8 +629,14 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 # implicit auto-indexes, etc.) worth investigating before
                 # suppressing.
                 await _ensure_payload_indexes(
-                    _qdrant_client, collection_name, existing_schema={}
+                    provisional, collection_name, existing_schema={}
                 )
+
+            # Publish only after the migration awaits completed. From this
+            # point on, fast-path callers may short-circuit the lock and
+            # use the client; every payload index they could filter on now
+            # exists.
+            _qdrant_client = provisional
 
     # Lock released. ``_qdrant_client`` is guaranteed non-None here:
     # either the fast path returned earlier, the lock-protected branch

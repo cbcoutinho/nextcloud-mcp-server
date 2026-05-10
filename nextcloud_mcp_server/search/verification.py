@@ -389,9 +389,9 @@ async def _verify_news_items(
     # above for why this is narrower than the API-response failure path.
     accessible: set[str] = set()
     for d in doc_ids:
-        # SearchResult.id is `int | str` (D1: forward-compat widening). Coerce
-        # to str so the validator's regex applies consistently to both shapes.
-        if not is_valid_nextcloud_doc_id(str(d)):
+        # SearchResult.id is always str (Qdrant payload doc_id is keyword-
+        # indexed; producers stringify on write). Pass through verbatim.
+        if not is_valid_nextcloud_doc_id(d):
             logger.warning(
                 "Malformed news_item doc_id %r in verifier; keeping (cannot verify)",
                 d,

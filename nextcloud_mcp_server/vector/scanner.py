@@ -13,7 +13,8 @@ from email.utils import parsedate_to_datetime
 import anyio
 from anyio.abc import TaskStatus
 from anyio.streams.memory import MemoryObjectSendStream
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+from qdrant_client import AsyncQdrantClient
+from qdrant_client.models import FieldCondition, Filter, MatchValue, Record
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.client.news import NewsItemType
@@ -41,6 +42,49 @@ logger = logging.getLogger(__name__)
 INDEXED_DOC_TYPES: frozenset[str] = frozenset(
     {"note", "file", "deck_card", "news_item"}
 )
+
+
+# Page size for paginated deletion-tracking scrolls. Chosen to keep per-page
+# memory bounded while making the round-trip count manageable in the typical
+# < 100 k point per (user_id, doc_type) case. The previous single-page
+# ``limit=10_000`` silently truncated deletion sets for any user past the
+# cap, so anything indexed beyond the first 10 k was never reconciled.
+_DELETION_TRACKING_PAGE_SIZE: int = 1024
+
+
+async def _scroll_all_points(
+    qdrant_client: AsyncQdrantClient,
+    *,
+    collection_name: str,
+    scroll_filter: Filter,
+    payload_fields: list[str],
+    page_size: int = _DELETION_TRACKING_PAGE_SIZE,
+) -> list[Record]:
+    """Scroll every point matching the filter, paginating until exhausted.
+
+    Replaces the prior single-page ``limit=10_000`` calls that silently
+    dropped points beyond the first page. Pagination follows Qdrant's
+    documented contract: ``scroll`` returns ``(points, next_page_offset)``
+    and ``next_page_offset`` is ``None`` once the cursor reaches the end.
+    Errors propagate to the caller — the scanner's outer ``try`` already
+    handles them by skipping the deletion-tracking pass for this scan
+    (worse: extra-scan latency; never: bad data).
+    """
+    all_points: list[Record] = []
+    offset = None
+    while True:
+        points, offset = await qdrant_client.scroll(
+            collection_name=collection_name,
+            scroll_filter=scroll_filter,
+            with_payload=payload_fields,
+            with_vectors=False,
+            limit=page_size,
+            offset=offset,
+        )
+        all_points.extend(points)
+        if offset is None:
+            break
+    return all_points
 
 
 @dataclass
@@ -79,8 +123,11 @@ async def get_last_indexed_timestamp(user_id: str) -> int | None:
     try:
         qdrant_client = await get_qdrant_client()
 
-        # Query for user's notes, ordered by indexed_at descending, limit 1
-        scroll_result = await qdrant_client.scroll(
+        # Scroll across every indexed note for this user — paginated so users
+        # with > 10 k indexed notes still produce a correct max (the prior
+        # single-page ``limit=10_000`` would have silently undercounted).
+        points = await _scroll_all_points(
+            qdrant_client,
             collection_name=get_settings().get_collection_name(),
             scroll_filter=Filter(
                 must=[
@@ -88,19 +135,16 @@ async def get_last_indexed_timestamp(user_id: str) -> int | None:
                     FieldCondition(key="doc_type", match=MatchValue(value="note")),
                 ]
             ),
-            with_payload=["indexed_at"],
-            with_vectors=False,
-            limit=10000,  # Get all to find max
+            payload_fields=["indexed_at"],
         )
 
-        # Find max indexed_at across all results
-        num_points = len(scroll_result[0]) if scroll_result[0] else 0
+        num_points = len(points)
         logger.info(f"Found {num_points} indexed notes in Qdrant for user {user_id}")
 
-        if scroll_result[0]:
+        if points:
             timestamps = [
                 point.payload.get("indexed_at", 0)
-                for point in scroll_result[0]
+                for point in points
                 if point.payload is not None
             ]
             max_timestamp = max(timestamps) if timestamps else 0
@@ -220,7 +264,8 @@ async def scan_user_documents(
         indexed_doc_ids = set()
         if not initial_sync:
             assert qdrant_client is not None  # narrow for the type checker
-            scroll_result = await qdrant_client.scroll(
+            points = await _scroll_all_points(
+                qdrant_client,
                 collection_name=get_settings().get_collection_name(),
                 scroll_filter=Filter(
                     must=[
@@ -228,14 +273,12 @@ async def scan_user_documents(
                         FieldCondition(key="doc_type", match=MatchValue(value="note")),
                     ]
                 ),
-                with_payload=["doc_id"],
-                with_vectors=False,
-                limit=10000,
+                payload_fields=["doc_id"],
             )
 
             indexed_doc_ids = {
                 str(point.payload["doc_id"])
-                for point in (scroll_result[0] or [])
+                for point in points
                 if point.payload is not None and "doc_id" in point.payload
             }
 
@@ -394,7 +437,8 @@ async def scan_user_documents(
         indexed_file_ids = set()
         if not initial_sync:
             assert qdrant_client is not None  # narrow for the type checker
-            file_scroll_result = await qdrant_client.scroll(
+            points = await _scroll_all_points(
+                qdrant_client,
                 collection_name=settings.get_collection_name(),
                 scroll_filter=Filter(
                     must=[
@@ -402,14 +446,12 @@ async def scan_user_documents(
                         FieldCondition(key="doc_type", match=MatchValue(value="file")),
                     ]
                 ),
-                limit=10000,  # Reasonable limit for file count
-                with_payload=["doc_id"],
-                with_vectors=False,
+                payload_fields=["doc_id"],
             )
 
             indexed_file_ids = {
                 str(point.payload["doc_id"])
-                for point in (file_scroll_result[0] or [])
+                for point in points
                 if point.payload is not None and "doc_id" in point.payload
             }
 
@@ -675,7 +717,8 @@ async def scan_news_items(
     indexed_item_ids: set[str] = set()
     if not initial_sync:
         qdrant_client = await get_qdrant_client()
-        scroll_result = await qdrant_client.scroll(
+        points = await _scroll_all_points(
+            qdrant_client,
             collection_name=settings.get_collection_name(),
             scroll_filter=Filter(
                 must=[
@@ -683,13 +726,11 @@ async def scan_news_items(
                     FieldCondition(key="doc_type", match=MatchValue(value="news_item")),
                 ]
             ),
-            with_payload=["doc_id"],
-            with_vectors=False,
-            limit=10000,
+            payload_fields=["doc_id"],
         )
         indexed_item_ids = {
             str(point.payload["doc_id"])
-            for point in (scroll_result[0] or [])
+            for point in points
             if point.payload is not None and "doc_id" in point.payload
         }
         logger.debug(f"Found {len(indexed_item_ids)} indexed news items in Qdrant")
@@ -854,7 +895,8 @@ async def scan_deck_cards(
     indexed_card_ids: set[str] = set()
     if not initial_sync:
         qdrant_client = await get_qdrant_client()
-        scroll_result = await qdrant_client.scroll(
+        points = await _scroll_all_points(
+            qdrant_client,
             collection_name=settings.get_collection_name(),
             scroll_filter=Filter(
                 must=[
@@ -862,13 +904,11 @@ async def scan_deck_cards(
                     FieldCondition(key="doc_type", match=MatchValue(value="deck_card")),
                 ]
             ),
-            with_payload=["doc_id"],
-            with_vectors=False,
-            limit=10000,
+            payload_fields=["doc_id"],
         )
         indexed_card_ids = {
             str(point.payload["doc_id"])
-            for point in (scroll_result[0] or [])
+            for point in points
             if point.payload is not None and "doc_id" in point.payload
         }
         logger.debug(f"Found {len(indexed_card_ids)} indexed deck cards in Qdrant")
