@@ -71,12 +71,21 @@ async def get_qdrant_client() -> AsyncQdrantClient:
 
         expected_dimension = embedding_service.get_dimension()
 
-        # Explicitly check if collection exists
+        # Explicitly check if collection exists.
+        #
+        # Use `collection_exists(name)` (per-collection HEAD-style probe)
+        # rather than `get_collections()` (cluster-wide list). In managed
+        # multi-tenant Qdrant Cloud setups, per-tenant JWTs are scoped
+        # to a single collection and `get_collections()` returns 403
+        # Forbidden by design — listing other tenants' collections would
+        # be a security regression. `collection_exists` only requires
+        # access to the named collection, which the tenant JWT has.
         logger.debug(f"Checking if collection '{collection_name}' exists...")
-        collections = await _qdrant_client.get_collections()
-        collection_names = [c.name for c in collections.collections]
+        collection_present = await _qdrant_client.collection_exists(
+            collection_name=collection_name
+        )
 
-        if collection_name in collection_names:
+        if collection_present:
             # Collection exists - validate dimensions
             logger.debug(
                 f"Collection '{collection_name}' found, validating dimensions..."
