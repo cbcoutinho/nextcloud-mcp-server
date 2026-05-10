@@ -9,6 +9,7 @@ import random
 import time
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
+from typing import cast
 
 import anyio
 from anyio.abc import TaskStatus
@@ -49,6 +50,13 @@ INDEXED_DOC_TYPES: frozenset[str] = frozenset(
 # < 100 k point per (user_id, doc_type) case. The previous single-page
 # ``limit=10_000`` silently truncated deletion sets for any user past the
 # cap, so anything indexed beyond the first 10 k was never reconciled.
+#
+# Intentionally larger than the ``batch_size = 256`` used by
+# ``_backfill_doc_id_to_string`` in ``vector/qdrant_client.py``: this is a
+# read-only scroll that just collects payloads (no write round-trip per
+# point), so the per-page memory budget is the only relevant constraint.
+# The 256 there is sized for read-write upsert batches where Qdrant
+# accepts ~256-point chunks comfortably without timing out under load.
 _DELETION_TRACKING_PAGE_SIZE: int = 1024
 
 
@@ -120,6 +128,14 @@ async def get_last_indexed_timestamp(user_id: str) -> int | None:
     Returns:
         Unix timestamp of most recently indexed note, or None if no notes indexed yet
     """
+    # TODO: This is O(N) over a user's indexed notes on every incremental
+    # sync tick. Was accidentally bounded at 10 k before this PR (single-
+    # page scroll silently truncated); paginating fixed correctness but
+    # made the unbounded cost visible. Track the max ``indexed_at`` as
+    # collection metadata or a dedicated sentinel point so this becomes
+    # O(1). Out of scope for the current PR — see the chunk-context /
+    # vector-sync follow-up tracker (referenced by the canonical TODO at
+    # ``api/visualization.py``).
     try:
         qdrant_client = await get_qdrant_client()
 
@@ -263,7 +279,12 @@ async def scan_user_documents(
         qdrant_client = await get_qdrant_client() if not initial_sync else None
         indexed_doc_ids = set()
         if not initial_sync:
-            assert qdrant_client is not None  # narrow for the type checker
+            # ``assert ... is not None`` would also narrow but raises an
+            # opaque AssertionError under ``-O`` and at runtime — ``cast``
+            # is the conventional zero-cost narrower for branches the type
+            # checker can't infer from the surrounding ``if not
+            # initial_sync`` (the ternary above ties the two together).
+            qdrant_client = cast(AsyncQdrantClient, qdrant_client)
             points = await _scroll_all_points(
                 qdrant_client,
                 collection_name=get_settings().get_collection_name(),

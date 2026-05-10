@@ -182,9 +182,31 @@ async def _ensure_payload_indexes(
     failed_fields: list[str] = []
     for field, schema_type in _PAYLOAD_INDEX_FIELDS.items():
         if field in existing_schema:
-            # Index already present — silent skip. Logging here on every
-            # restart would be noise that hides the genuinely interesting
-            # "first-time creation" line in _create_one_payload_index.
+            # Index already present. Confirm the existing schema type matches
+            # what we'd create — a pre-existing collection with `doc_id`
+            # indexed as INTEGER (the bug this PR fixes) would otherwise
+            # silently survive here, and searches using
+            # MatchValue(value="123") would keep failing with HTTP 400 on
+            # Qdrant Cloud strict mode. Compare via PayloadSchemaType
+            # equality; PayloadIndexInfo.data_type is the same enum
+            # we wrote with.
+            existing_info = existing_schema[field]
+            existing_type = getattr(existing_info, "data_type", None)
+            if existing_type is not None and existing_type != schema_type:
+                logger.warning(
+                    "Payload index on '%s' has wrong schema type "
+                    "(got %s, expected %s); searches filtering on this "
+                    "field will fail with HTTP 400 until the index is "
+                    "dropped and recreated. See docs/configuration.md "
+                    "for the recovery procedure.",
+                    field,
+                    getattr(existing_type, "name", existing_type),
+                    schema_type.name,
+                )
+                failed_fields.append(field)
+            # Either way, skip the create call: a matching index needs no
+            # work, and a mismatch must not be auto-repaired (operator
+            # intervention only — see docs/configuration.md).
             continue
         if not await _create_one_payload_index(
             client, collection_name, field, schema_type
@@ -338,6 +360,12 @@ async def _backfill_doc_id_to_string(
     # Qdrant scroll returns next_offset as PointId | None — keep it untyped here
     # so the qdrant client's full union (UUID/int/str/PointId) flows through.
     next_offset = None
+    # Smaller than ``_DELETION_TRACKING_PAGE_SIZE = 1024`` in
+    # ``vector/scanner.py`` because this is a read-write path: every batch
+    # is followed by a ``set_payload`` upsert, and 256-point upserts are
+    # the working size where Qdrant comfortably accepts writes without
+    # timing out under load. The scanner-side scroll has no per-page write
+    # round-trip, so it can use a larger page.
     batch_size = 256
     # Log progress every N batches so a long-running migration on a large
     # collection (≥ 50k points) doesn't look like a startup hang. At batch

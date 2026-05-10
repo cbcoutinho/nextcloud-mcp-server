@@ -159,6 +159,49 @@ async def test_ensure_payload_indexes_skips_fields_already_indexed(mocker, caplo
 
 
 @pytest.mark.unit
+async def test_ensure_payload_indexes_warns_on_wrong_schema_type(mocker, caplog):
+    """Pre-existing index with wrong schema type surfaces as a WARNING.
+
+    The bug this PR fixes: a collection migrated from the int-doc_id era
+    can have ``doc_id`` indexed as INTEGER, which silently survives the
+    "field already in schema → skip" branch and lets ``MatchValue(value="123")``
+    keep failing with HTTP 400 on Qdrant Cloud strict mode. Confirm the
+    type-aware check fires a WARNING, marks the field as failed (so the
+    consolidated end-of-function summary picks it up), and does NOT
+    attempt to recreate the index — operator intervention is the only
+    safe path.
+    """
+    client = mocker.AsyncMock()
+    # PayloadIndexInfo-like stand-in: only ``data_type`` is read.
+    wrong = SimpleNamespace(data_type=PayloadSchemaType.INTEGER)
+    client.get_collection.return_value = SimpleNamespace(
+        payload_schema={"doc_id": wrong}
+    )
+
+    with caplog.at_level("WARNING", logger="nextcloud_mcp_server.vector.qdrant_client"):
+        await _ensure_payload_indexes(client, "test-collection")
+
+    # No create attempt for the mismatched field.
+    created_fields = {
+        c.kwargs["field_name"] for c in client.create_payload_index.await_args_list
+    }
+    assert "doc_id" not in created_fields
+
+    warning_messages = [
+        r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+    ]
+    # Per-field warning describes both observed and expected types.
+    assert any(
+        "doc_id" in m and "INTEGER" in m and "KEYWORD" in m for m in warning_messages
+    ), warning_messages
+    # Consolidated summary at end of function includes the field too.
+    assert any(
+        "Payload index creation incomplete" in m and "doc_id" in m
+        for m in warning_messages
+    ), warning_messages
+
+
+@pytest.mark.unit
 async def test_ensure_payload_indexes_logs_400_as_warning(mocker, caplog):
     """Any 400 from create_payload_index is logged at WARNING and skipped.
 

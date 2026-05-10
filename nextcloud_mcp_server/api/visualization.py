@@ -505,9 +505,15 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         # ints from MySQL auto_increment; doc_id stays a str downstream
         # (Qdrant payload index is keyword-typed). is_valid_nextcloud_doc_id
         # rejects "0", leading zeros, and Unicode digits that pass isdigit().
-        # TODO: when chunk-context support extends to non-numeric doc_types
-        # (calendar VEVENT UIDs, CardDAV hrefs, …), relax this gate or make
-        # it doc_type-aware. Today every indexed doc_type is numeric.
+        #
+        # Canonical TODO (referenced by ``auth/viz_routes.py`` and
+        # ``vector/scanner.py:get_last_indexed_timestamp``): when chunk-
+        # context support extends to non-numeric doc_types (calendar VEVENT
+        # UIDs, CardDAV hrefs, …), relax this gate or make it doc_type-
+        # aware. Today every indexed doc_type is numeric. The follow-up
+        # tracker also covers the O(N) → O(1) migration of
+        # ``get_last_indexed_timestamp`` (currently re-scans every
+        # ``indexed_at`` on each tick).
         if not is_valid_nextcloud_doc_id(doc_id):
             return JSONResponse(
                 {

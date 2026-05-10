@@ -392,8 +392,18 @@ async def _verify_news_items(
         # SearchResult.id is always str (Qdrant payload doc_id is keyword-
         # indexed; producers stringify on write). Pass through verbatim.
         if not is_valid_nextcloud_doc_id(d):
+            # The news API has no per-item endpoint, so a malformed doc_id
+            # cannot be verified against the source of truth. Err toward
+            # false-positive (keep in results) over false-negative (drop a
+            # potentially legitimate result) — matches the same conservative
+            # posture _verify_notes and _verify_deck_cards take for
+            # non-numeric IDs. The producer-side validation is the real
+            # security boundary; the verifier is defence-in-depth.
             logger.warning(
-                "Malformed news_item doc_id %r in verifier; keeping (cannot verify)",
+                "Malformed news_item doc_id %r in verifier; keeping to "
+                "avoid dropping a potentially legitimate result (news API "
+                "has no per-item endpoint, so cannot verify against source "
+                "of truth — false-positive preferred over false-negative)",
                 d,
             )
             accessible.add(d)

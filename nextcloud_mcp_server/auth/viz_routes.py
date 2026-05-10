@@ -561,15 +561,11 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
         assert start_str is not None
         assert end_str is not None
 
-        # Validate doc_id at the handler boundary: a malformed doc_id would
-        # otherwise pass through to get_chunk_with_context and bottom out as a
-        # 404 from deep inside, not a clear 400. Nextcloud IDs are unsigned
-        # ints from MySQL auto_increment; doc_id stays a str downstream
-        # (Qdrant payload index is keyword-typed). is_valid_nextcloud_doc_id
-        # rejects "0", leading zeros, and Unicode digits that pass isdigit().
-        # TODO: when chunk-context support extends to non-numeric doc_types
-        # (calendar VEVENT UIDs, CardDAV hrefs, …), relax this gate or make
-        # it doc_type-aware. Today every indexed doc_type is numeric.
+        # Same numeric-doc_id gate as ``api/visualization.py`` — see the
+        # canonical TODO and rationale there. Kept in sync so both
+        # OAuth-protected and direct-access handlers reject malformed
+        # IDs at the boundary instead of bottoming out as a 404 from
+        # deep inside ``get_chunk_with_context``.
         if not is_valid_nextcloud_doc_id(doc_id):
             return JSONResponse(
                 {
