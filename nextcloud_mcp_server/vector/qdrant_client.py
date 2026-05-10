@@ -31,13 +31,18 @@ logger = logging.getLogger(__name__)
 # ``_get_chunk_by_index_from_qdrant`` and ``get_chunk_bbox_and_page_from_qdrant``
 # (see search/context.py) — the always-indexed fast path that the offset-based
 # fallback exists to avoid; it has to actually be indexed for that promise to
-# hold on Qdrant Cloud strict mode.
+# hold on Qdrant Cloud strict mode. chunk_start_offset / chunk_end_offset are
+# the ints used by the legacy offset fallback in the same module — pre-#75
+# clients have no chunk_index payload, so the offset path still has to work
+# (or 400 silently and return None on Qdrant Cloud strict mode).
 _PAYLOAD_INDEX_FIELDS: dict[str, PayloadSchemaType] = {
     "doc_id": PayloadSchemaType.KEYWORD,
     "user_id": PayloadSchemaType.KEYWORD,
     "doc_type": PayloadSchemaType.KEYWORD,
     "is_placeholder": PayloadSchemaType.BOOL,
     "chunk_index": PayloadSchemaType.INTEGER,
+    "chunk_start_offset": PayloadSchemaType.INTEGER,
+    "chunk_end_offset": PayloadSchemaType.INTEGER,
 }
 
 # Sentinel point that records "this collection has been backfilled to str

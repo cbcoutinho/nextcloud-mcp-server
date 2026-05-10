@@ -763,9 +763,10 @@ async def test_ensure_payload_indexes_summarises_failed_fields(mocker, caplog):
     """
     client = mocker.AsyncMock()
     client.get_collection.return_value = SimpleNamespace(payload_schema={})
-    # All but the second field fail with 5xx. _PAYLOAD_INDEX_FIELDS has
-    # insertion-ordered keys (doc_id, user_id, doc_type, is_placeholder),
-    # so call #2 (user_id) is the success case.
+    # _PAYLOAD_INDEX_FIELDS preserves insertion order; user_id is the second
+    # entry, so call #2 is the success case and every other field fails. Don't
+    # hard-code the full field list here — it grows as new fields move into
+    # the index dict, and the assertions below are what enforce coverage.
     call_count = {"n": 0}
 
     async def _create_index(*args, **kwargs):
@@ -787,9 +788,14 @@ async def test_ensure_payload_indexes_summarises_failed_fields(mocker, caplog):
         if "Payload index creation incomplete" in r.getMessage()
     ]
     assert len(summary) == 1
-    # All fields except user_id should appear in the summary.
+    # Every field that failed must appear in the summary — operators rely on
+    # this single log line to spot the degraded state, so any missing entry
+    # is a silent gap.
     assert "doc_id" in summary[0]
     assert "doc_type" in summary[0]
     assert "is_placeholder" in summary[0]
+    assert "chunk_index" in summary[0]
+    assert "chunk_start_offset" in summary[0]
+    assert "chunk_end_offset" in summary[0]
     assert "user_id" not in summary[0]  # The one that succeeded.
     assert "test-collection" in summary[0]

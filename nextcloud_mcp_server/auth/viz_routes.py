@@ -567,6 +567,9 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
         # ints from MySQL auto_increment; doc_id stays a str downstream
         # (Qdrant payload index is keyword-typed). is_valid_nextcloud_doc_id
         # rejects "0", leading zeros, and Unicode digits that pass isdigit().
+        # TODO: when chunk-context support extends to non-numeric doc_types
+        # (calendar VEVENT UIDs, CardDAV hrefs, …), relax this gate or make
+        # it doc_type-aware. Today every indexed doc_type is numeric.
         if not is_valid_nextcloud_doc_id(doc_id):
             return JSONResponse(
                 {
