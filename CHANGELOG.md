@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.83.4 (2026-05-10)
+
+### Fix
+
+- **qdrant**: use get_collection for startup probe (multi-tenant safe, take 2)
+
 ## v0.83.3 (2026-05-10)
 
 ### Fix
