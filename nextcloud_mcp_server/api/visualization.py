@@ -34,6 +34,7 @@ from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
 )
+from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.oauth_sync import (
     NotProvisionedError,
     get_user_client_basic_auth,
@@ -498,6 +499,30 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         assert doc_id is not None
         assert doc_type is not None
 
+        # Validate doc_id at the handler boundary: a malformed doc_id would
+        # otherwise pass through to get_chunk_with_context and bottom out as a
+        # 404 from deep inside, not a clear 400. Nextcloud IDs are unsigned
+        # ints from MySQL auto_increment; doc_id stays a str downstream
+        # (Qdrant payload index is keyword-typed). is_valid_nextcloud_doc_id
+        # rejects "0", leading zeros, and Unicode digits that pass isdigit().
+        #
+        # Canonical TODO (referenced by ``auth/viz_routes.py`` and
+        # ``vector/scanner.py:get_last_indexed_timestamp``): when chunk-
+        # context support extends to non-numeric doc_types (calendar VEVENT
+        # UIDs, CardDAV hrefs, …), relax this gate or make it doc_type-
+        # aware. Today every indexed doc_type is numeric. The follow-up
+        # tracker also covers the O(N) → O(1) migration of
+        # ``get_last_indexed_timestamp`` (currently re-scans every
+        # ``indexed_at`` on each tick).
+        if not is_valid_nextcloud_doc_id(doc_id):
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": f"doc_id must be numeric, got {doc_id!r}",
+                },
+                status_code=400,
+            )
+
         # Parse and validate integer parameters with bounds checking
         try:
             context_chars = _parse_int_param(
@@ -521,8 +546,8 @@ async def get_chunk_context(request: Request) -> JSONResponse:
             )
         except ValueError as e:
             return JSONResponse({"success": False, "error": str(e)}, status_code=400)
-        # Convert doc_id to int if possible (most IDs are int)
-        doc_id_val: str | int = int(doc_id) if doc_id.isdigit() else doc_id
+        # doc_id is keyword-indexed in Qdrant as str — pass through verbatim
+        # (no int coercion; producers always stringify on write).
 
         # Get Nextcloud host from OAuth context
         oauth_ctx = request.app.state.oauth_context
@@ -547,7 +572,7 @@ async def get_chunk_context(request: Request) -> JSONResponse:
             chunk_context = await get_chunk_with_context(
                 nc_client=nc_client,
                 user_id=user_id,
-                doc_id=doc_id_val,
+                doc_id=doc_id,
                 doc_type=doc_type,
                 chunk_start=start,
                 chunk_end=end,
@@ -575,7 +600,7 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         if doc_type == "file":
             qdrant_bbox, qdrant_page = await get_chunk_bbox_and_page_from_qdrant(
                 user_id=user_id,
-                doc_id=doc_id_val,
+                doc_id=doc_id,
                 chunk_index=chunk_index,
                 chunk_start=start,
                 chunk_end=end,

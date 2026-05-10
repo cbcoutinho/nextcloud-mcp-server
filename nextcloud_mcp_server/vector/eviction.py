@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 async def delete_document_points(
-    doc_id: str | int,
+    doc_id: str,
     doc_type: str,
     user_id: str,
 ) -> None:
@@ -29,7 +29,7 @@ async def delete_document_points(
     not present — Qdrant returns successfully with zero points affected.
 
     Args:
-        doc_id: Document ID (int for notes/files/cards/news, str otherwise)
+        doc_id: Document ID (str — keyword-indexed in Qdrant payload)
         doc_type: Document type (note, file, deck_card, news_item)
         user_id: Owner of the points being evicted
 

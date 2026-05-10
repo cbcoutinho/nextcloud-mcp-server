@@ -9,11 +9,13 @@ import random
 import time
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
+from typing import cast
 
 import anyio
 from anyio.abc import TaskStatus
 from anyio.streams.memory import MemoryObjectSendStream
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+from qdrant_client import AsyncQdrantClient
+from qdrant_client.models import FieldCondition, Filter, MatchValue, Record
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.client.news import NewsItemType
@@ -43,12 +45,62 @@ INDEXED_DOC_TYPES: frozenset[str] = frozenset(
 )
 
 
+# Page size for paginated deletion-tracking scrolls. Chosen to keep per-page
+# memory bounded while making the round-trip count manageable in the typical
+# < 100 k point per (user_id, doc_type) case. The previous single-page
+# ``limit=10_000`` silently truncated deletion sets for any user past the
+# cap, so anything indexed beyond the first 10 k was never reconciled.
+#
+# Intentionally larger than the ``batch_size = 256`` used by
+# ``_backfill_doc_id_to_string`` in ``vector/qdrant_client.py``: this is a
+# read-only scroll that just collects payloads (no write round-trip per
+# point), so the per-page memory budget is the only relevant constraint.
+# The 256 there is sized for read-write upsert batches where Qdrant
+# accepts ~256-point chunks comfortably without timing out under load.
+_DELETION_TRACKING_PAGE_SIZE: int = 1024
+
+
+async def _scroll_all_points(
+    qdrant_client: AsyncQdrantClient,
+    *,
+    collection_name: str,
+    scroll_filter: Filter,
+    payload_fields: list[str],
+    page_size: int = _DELETION_TRACKING_PAGE_SIZE,
+) -> list[Record]:
+    """Scroll every point matching the filter, paginating until exhausted.
+
+    Replaces the prior single-page ``limit=10_000`` calls that silently
+    dropped points beyond the first page. Pagination follows Qdrant's
+    documented contract: ``scroll`` returns ``(points, next_page_offset)``
+    and ``next_page_offset`` is ``None`` once the cursor reaches the end.
+    Errors propagate to the caller — the scanner's outer ``try`` already
+    handles them by skipping the deletion-tracking pass for this scan
+    (worse: extra-scan latency; never: bad data).
+    """
+    all_points: list[Record] = []
+    offset = None
+    while True:
+        points, offset = await qdrant_client.scroll(
+            collection_name=collection_name,
+            scroll_filter=scroll_filter,
+            with_payload=payload_fields,
+            with_vectors=False,
+            limit=page_size,
+            offset=offset,
+        )
+        all_points.extend(points)
+        if offset is None:
+            break
+    return all_points
+
+
 @dataclass
 class DocumentTask:
     """Document task for processing queue."""
 
     user_id: str
-    doc_id: int | str  # int for files/notes, str for legacy
+    doc_id: str  # Always str — see vector/qdrant_client.py keyword index
     doc_type: str  # "note", "file", "calendar"
     operation: str  # "index" or "delete"
     modified_at: int
@@ -76,11 +128,22 @@ async def get_last_indexed_timestamp(user_id: str) -> int | None:
     Returns:
         Unix timestamp of most recently indexed note, or None if no notes indexed yet
     """
+    # TODO: This is O(N) over a user's indexed notes on every incremental
+    # sync tick. Was accidentally bounded at 10 k before this PR (single-
+    # page scroll silently truncated); paginating fixed correctness but
+    # made the unbounded cost visible. Track the max ``indexed_at`` as
+    # collection metadata or a dedicated sentinel point so this becomes
+    # O(1). Out of scope for the current PR — see the chunk-context /
+    # vector-sync follow-up tracker (referenced by the canonical TODO at
+    # ``api/visualization.py``).
     try:
         qdrant_client = await get_qdrant_client()
 
-        # Query for user's notes, ordered by indexed_at descending, limit 1
-        scroll_result = await qdrant_client.scroll(
+        # Scroll across every indexed note for this user — paginated so users
+        # with > 10 k indexed notes still produce a correct max (the prior
+        # single-page ``limit=10_000`` would have silently undercounted).
+        points = await _scroll_all_points(
+            qdrant_client,
             collection_name=get_settings().get_collection_name(),
             scroll_filter=Filter(
                 must=[
@@ -88,19 +151,16 @@ async def get_last_indexed_timestamp(user_id: str) -> int | None:
                     FieldCondition(key="doc_type", match=MatchValue(value="note")),
                 ]
             ),
-            with_payload=["indexed_at"],
-            with_vectors=False,
-            limit=10000,  # Get all to find max
+            payload_fields=["indexed_at"],
         )
 
-        # Find max indexed_at across all results
-        num_points = len(scroll_result[0]) if scroll_result[0] else 0
+        num_points = len(points)
         logger.info(f"Found {num_points} indexed notes in Qdrant for user {user_id}")
 
-        if scroll_result[0]:
+        if points:
             timestamps = [
                 point.payload.get("indexed_at", 0)
-                for point in scroll_result[0]
+                for point in points
                 if point.payload is not None
             ]
             max_timestamp = max(timestamps) if timestamps else 0
@@ -210,11 +270,23 @@ async def scan_user_documents(
             )
 
         # For deletion tracking, get all doc_ids in Qdrant (for incremental sync)
-        # Note: We no longer bulk-query indexed_at, instead check per-document
+        # Note: We no longer bulk-query indexed_at, instead check per-document.
+        # Hoisted to function scope so the file-scroll block below doesn't
+        # depend on a name bound inside the notes-scroll block; future
+        # refactors that add an early return between the two blocks would
+        # otherwise hit an UnboundLocalError. get_qdrant_client is a
+        # singleton call, so the cost is identical.
+        qdrant_client = await get_qdrant_client() if not initial_sync else None
         indexed_doc_ids = set()
         if not initial_sync:
-            qdrant_client = await get_qdrant_client()
-            scroll_result = await qdrant_client.scroll(
+            # ``assert ... is not None`` would also narrow but raises an
+            # opaque AssertionError under ``-O`` and at runtime — ``cast``
+            # is the conventional zero-cost narrower for branches the type
+            # checker can't infer from the surrounding ``if not
+            # initial_sync`` (the ternary above ties the two together).
+            qdrant_client = cast(AsyncQdrantClient, qdrant_client)
+            points = await _scroll_all_points(
+                qdrant_client,
                 collection_name=get_settings().get_collection_name(),
                 scroll_filter=Filter(
                     must=[
@@ -222,15 +294,13 @@ async def scan_user_documents(
                         FieldCondition(key="doc_type", match=MatchValue(value="note")),
                     ]
                 ),
-                with_payload=["doc_id"],
-                with_vectors=False,
-                limit=10000,
+                payload_fields=["doc_id"],
             )
 
             indexed_doc_ids = {
-                point.payload["doc_id"]
-                for point in (scroll_result[0] or [])
-                if point.payload is not None
+                str(point.payload["doc_id"])
+                for point in points
+                if point.payload is not None and "doc_id" in point.payload
             }
 
             logger.debug(f"Found {len(indexed_doc_ids)} indexed documents in Qdrant")
@@ -387,7 +457,9 @@ async def scan_user_documents(
         # Get indexed file IDs from Qdrant (for deletion tracking)
         indexed_file_ids = set()
         if not initial_sync:
-            file_scroll_result = await qdrant_client.scroll(
+            assert qdrant_client is not None  # narrow for the type checker
+            points = await _scroll_all_points(
+                qdrant_client,
                 collection_name=settings.get_collection_name(),
                 scroll_filter=Filter(
                     must=[
@@ -395,15 +467,13 @@ async def scan_user_documents(
                         FieldCondition(key="doc_type", match=MatchValue(value="file")),
                     ]
                 ),
-                limit=10000,  # Reasonable limit for file count
-                with_payload=["doc_id"],
-                with_vectors=False,
+                payload_fields=["doc_id"],
             )
 
             indexed_file_ids = {
-                point.payload["doc_id"]
-                for point in (file_scroll_result[0] or [])
-                if point.payload is not None
+                str(point.payload["doc_id"])
+                for point in points
+                if point.payload is not None and "doc_id" in point.payload
             }
 
             logger.debug(f"Found {len(indexed_file_ids)} indexed files in Qdrant")
@@ -456,7 +526,9 @@ async def scan_user_documents(
             for file_info in tagged_files:
                 # Files are already filtered by MIME type in find_files_by_tag()
                 file_count += 1
-                file_id = file_info["id"]  # Use numeric file ID, not path
+                # Normalize file ID to str — Qdrant doc_id payload is keyword-indexed
+                # and producers across doc_types must agree on a single type.
+                file_id = str(file_info["id"])
                 file_path = file_info["path"]  # Keep path for logging
                 nextcloud_file_ids.add(file_id)
 
@@ -482,11 +554,11 @@ async def scan_user_documents(
                     await send_stream.send(
                         DocumentTask(
                             user_id=user_id,
-                            doc_id=file_id,  # Use numeric file ID
+                            doc_id=file_id,
                             doc_type="file",
                             operation="index",
                             modified_at=modified_at,
-                            file_path=file_path,  # Pass file path for content retrieval
+                            file_path=file_path,
                         )
                     )
                     file_queued += 1
@@ -545,11 +617,11 @@ async def scan_user_documents(
                         await send_stream.send(
                             DocumentTask(
                                 user_id=user_id,
-                                doc_id=file_id,  # Use numeric file ID
+                                doc_id=file_id,
                                 doc_type="file",
                                 operation="index",
                                 modified_at=modified_at,
-                                file_path=file_path,  # Pass file path for content retrieval
+                                file_path=file_path,
                             )
                         )
                         file_queued += 1
@@ -579,7 +651,7 @@ async def scan_user_documents(
                                 await send_stream.send(
                                     DocumentTask(
                                         user_id=user_id,
-                                        doc_id=file_id,  # Use numeric file ID
+                                        doc_id=file_id,
                                         doc_type="file",
                                         operation="delete",
                                         modified_at=0,
@@ -666,7 +738,8 @@ async def scan_news_items(
     indexed_item_ids: set[str] = set()
     if not initial_sync:
         qdrant_client = await get_qdrant_client()
-        scroll_result = await qdrant_client.scroll(
+        points = await _scroll_all_points(
+            qdrant_client,
             collection_name=settings.get_collection_name(),
             scroll_filter=Filter(
                 must=[
@@ -674,14 +747,12 @@ async def scan_news_items(
                     FieldCondition(key="doc_type", match=MatchValue(value="news_item")),
                 ]
             ),
-            with_payload=["doc_id"],
-            with_vectors=False,
-            limit=10000,
+            payload_fields=["doc_id"],
         )
         indexed_item_ids = {
-            point.payload["doc_id"]
-            for point in (scroll_result[0] or [])
-            if point.payload is not None
+            str(point.payload["doc_id"])
+            for point in points
+            if point.payload is not None and "doc_id" in point.payload
         }
         logger.debug(f"Found {len(indexed_item_ids)} indexed news items in Qdrant")
 
@@ -845,7 +916,8 @@ async def scan_deck_cards(
     indexed_card_ids: set[str] = set()
     if not initial_sync:
         qdrant_client = await get_qdrant_client()
-        scroll_result = await qdrant_client.scroll(
+        points = await _scroll_all_points(
+            qdrant_client,
             collection_name=settings.get_collection_name(),
             scroll_filter=Filter(
                 must=[
@@ -853,14 +925,12 @@ async def scan_deck_cards(
                     FieldCondition(key="doc_type", match=MatchValue(value="deck_card")),
                 ]
             ),
-            with_payload=["doc_id"],
-            with_vectors=False,
-            limit=10000,
+            payload_fields=["doc_id"],
         )
         indexed_card_ids = {
-            point.payload["doc_id"]
-            for point in (scroll_result[0] or [])
-            if point.payload is not None
+            str(point.payload["doc_id"])
+            for point in points
+            if point.payload is not None and "doc_id" in point.payload
         }
         logger.debug(f"Found {len(indexed_card_ids)} indexed deck cards in Qdrant")
 

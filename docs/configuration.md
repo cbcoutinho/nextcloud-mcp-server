@@ -329,6 +329,50 @@ OLLAMA_EMBEDDING_MODEL=all-minilm
 - **Switching models requires re-embedding** all documents (may take time for large note collections)
 - **Old collection remains** in Qdrant and can be deleted manually if no longer needed
 
+#### Startup migrations on existing collections
+
+On the first call to `get_qdrant_client()` against an existing collection, the
+server runs two idempotent migrations:
+
+1. **Payload-index creation** — adds `KEYWORD` payload indexes for `doc_id`,
+   `user_id`, and `doc_type`. Required by Qdrant for any `FieldCondition`
+   filter. Cheap; runs even on healthy collections.
+2. **`doc_id` backfill** — scans the collection once and rewrites any
+   legacy integer `doc_id` payloads to strings so they match the keyword
+   index. Idempotent: on a clean collection (all `doc_id` values already
+   `str`), the scroll runs but emits zero writes. On the first start after
+   the upgrade, expect a delay proportional to total point count for the
+   scroll itself, plus an additional delay proportional to any `int`-typed
+   `doc_id` points found while their payloads are rewritten.
+
+Both steps emit INFO-level log lines so operators can track progress.
+
+> **Operator note:** if the server logs `TypeError: SemanticSearchResult.id
+> must be int-convertible` after upgrading, this indicates a `doc_type`
+> with non-numeric ids has been indexed but the public response model
+> (`SemanticSearchResult.id: int`) has not been widened to accept strings.
+> Semantic search itself is not broken — the boundary cast in
+> `server/semantic.py` is failing loudly on purpose so the discrepancy is
+> caught early. Either widen the public model's `id` field or convert the
+> id at the verifier layer.
+
+> **Degraded-migration signals:** both startup steps swallow non-fatal
+> failures so the server still starts, but each leaves a distinct ERROR
+> log line that operators should treat as a "restart needed" signal:
+>
+> - `Unexpected error creating payload index on '<field>' (status 5xx)` —
+>   the index was not created. Searches filtering on that field will keep
+>   returning HTTP 400 (`Index required but not found`) until a subsequent
+>   restart succeeds in creating it.
+> - `doc_id backfill scroll failed on '<collection>'; will retry on next restart` —
+>   the migration sentinel was not written. Legacy integer `doc_id`
+>   payloads remain invisible to the keyword index in the meantime; the
+>   scroll re-runs from scratch on the next process start.
+>
+> Neither prevents the server from accepting requests, but both indicate
+> that vector search is operating in a degraded state on the affected
+> collection until the next clean restart.
+
 #### Explicit Override
 
 Set `QDRANT_COLLECTION` to use a specific collection name:

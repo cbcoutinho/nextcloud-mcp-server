@@ -37,6 +37,7 @@ from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
 )
+from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.oauth_sync import (
     NotProvisionedError,
     get_user_client_basic_auth,
@@ -287,7 +288,11 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                         vector = point.vector
 
                     if vector is not None and point.payload:
-                        doc_id = point.payload.get("doc_id")
+                        # SearchResult.id is str; coerce payload doc_id to match
+                        # so the tuple lookup below succeeds even on legacy
+                        # int-typed payloads written before normalization.
+                        raw_doc_id = point.payload.get("doc_id")
+                        doc_id = None if raw_doc_id is None else str(raw_doc_id)
                         chunk_start = point.payload.get("chunk_start_offset")
                         chunk_end = point.payload.get("chunk_end_offset")
                         chunk_key = (doc_id, chunk_start, chunk_end)
@@ -556,6 +561,20 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
         assert start_str is not None
         assert end_str is not None
 
+        # Same numeric-doc_id gate as ``api/visualization.py`` — see the
+        # canonical TODO and rationale there. Kept in sync so both
+        # OAuth-protected and direct-access handlers reject malformed
+        # IDs at the boundary instead of bottoming out as a 404 from
+        # deep inside ``get_chunk_with_context``.
+        if not is_valid_nextcloud_doc_id(doc_id):
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": f"doc_id must be numeric, got {doc_id!r}",
+                },
+                status_code=400,
+            )
+
         context_chars = _parse_int_param(
             request.query_params.get("context"),
             500,
@@ -573,8 +592,8 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
                 chunk_index_str, 0, 0, 1000000, "chunk_index"
             )
         total_chunks = _parse_int_param(total_chunks_str, 1, 1, 1000000, "total_chunks")
-        # Convert doc_id to int (all document types use int IDs)
-        doc_id_int = int(doc_id)
+        # doc_id is keyword-indexed in Qdrant as str — pass through verbatim
+        # (no int coercion; producers always stringify on write).
 
         user_id = request.user.display_name
         settings = get_settings()
@@ -598,7 +617,7 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
             chunk_context = await get_chunk_with_context(
                 nc_client=nc_client,
                 user_id=user_id,
-                doc_id=doc_id_int,
+                doc_id=doc_id,
                 doc_type=doc_type,
                 chunk_start=start,
                 chunk_end=end,
@@ -633,7 +652,7 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
         if doc_type == "file":
             qdrant_bbox, qdrant_page = await get_chunk_bbox_and_page_from_qdrant(
                 user_id=user_id,
-                doc_id=doc_id_int,
+                doc_id=doc_id,
                 chunk_index=chunk_index,
                 chunk_start=start,
                 chunk_end=end,

@@ -42,6 +42,7 @@ from nextcloud_mcp_server.search.algorithms import (
     NextcloudClientProtocol,
     SearchResult,
 )
+from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.eviction import delete_document_points
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 BatchVerifier = Callable[
     [NextcloudClientProtocol, list[SearchResult], anyio.Semaphore],
-    Awaitable[set[int | str]],
+    Awaitable[set[str]],
 ]
 """(client, results, semaphore) -> set of doc_ids accessible to the user."""
 
@@ -75,9 +76,9 @@ async def _verify_notes(
     client: NextcloudClientProtocol,
     results: list[SearchResult],
     semaphore: anyio.Semaphore,
-) -> set[int | str]:
+) -> set[str]:
     # safe: cooperative concurrency, no lock needed (see verify_search_results)
-    accessible: set[int | str] = set()
+    accessible: set[str] = set()
 
     async def check(result: SearchResult) -> None:
         doc_id = result.id
@@ -130,9 +131,9 @@ async def _verify_files(
     client: NextcloudClientProtocol,
     results: list[SearchResult],
     semaphore: anyio.Semaphore,
-) -> set[int | str]:
+) -> set[str]:
     # safe: cooperative concurrency, no lock needed (see verify_search_results)
-    accessible: set[int | str] = set()
+    accessible: set[str] = set()
 
     async def check(result: SearchResult) -> None:
         doc_id = result.id
@@ -201,9 +202,9 @@ async def _verify_deck_cards(
     client: NextcloudClientProtocol,
     results: list[SearchResult],
     semaphore: anyio.Semaphore,
-) -> set[int | str]:
+) -> set[str]:
     # safe: cooperative concurrency, no lock needed (see verify_search_results)
-    accessible: set[int | str] = set()
+    accessible: set[str] = set()
 
     async def check(result: SearchResult) -> None:
         doc_id = result.id
@@ -283,7 +284,7 @@ async def _verify_news_items(
     client: NextcloudClientProtocol,
     results: list[SearchResult],
     semaphore: anyio.Semaphore,
-) -> set[int | str]:
+) -> set[str]:
     """Batch-verify news items with a single fetch.
 
     The Nextcloud News API has no per-item endpoint, so ``news.get_item`` is
@@ -386,8 +387,27 @@ async def _verify_news_items(
     # for THAT item only — not the whole batch. Mirrors the per-item
     # shape of the notes/files/deck verifiers. See the granularity note
     # above for why this is narrower than the API-response failure path.
-    accessible: set[int | str] = set()
+    accessible: set[str] = set()
     for d in doc_ids:
+        # SearchResult.id is always str (Qdrant payload doc_id is keyword-
+        # indexed; producers stringify on write). Pass through verbatim.
+        if not is_valid_nextcloud_doc_id(d):
+            # The news API has no per-item endpoint, so a malformed doc_id
+            # cannot be verified against the source of truth. Err toward
+            # false-positive (keep in results) over false-negative (drop a
+            # potentially legitimate result) — matches the same conservative
+            # posture _verify_notes and _verify_deck_cards take for
+            # non-numeric IDs. The producer-side validation is the real
+            # security boundary; the verifier is defence-in-depth.
+            logger.warning(
+                "Malformed news_item doc_id %r in verifier; keeping to "
+                "avoid dropping a potentially legitimate result (news API "
+                "has no per-item endpoint, so cannot verify against source "
+                "of truth — false-positive preferred over false-negative)",
+                d,
+            )
+            accessible.add(d)
+            continue
         try:
             if int(d) in present_ids:
                 accessible.add(d)
@@ -474,7 +494,7 @@ async def verify_search_results(
     # deduplicated batch. We pick one SearchResult per (id, doc_type) to carry
     # metadata (path, board_id/stack_id) into the verifier — chunks of the
     # same document share these fields, so any chunk works.
-    by_type: dict[str, dict[int | str, SearchResult]] = {}
+    by_type: dict[str, dict[str, SearchResult]] = {}
     for r in results:
         by_type.setdefault(r.doc_type, {}).setdefault(r.id, r)
 
@@ -494,7 +514,7 @@ async def verify_search_results(
     # same write. Adding a lock would be dead weight; using ``anyio.Lock``
     # here would force serialization on a path that is intentionally
     # parallel.
-    accessible_by_type: dict[str, set[int | str]] = {}
+    accessible_by_type: dict[str, set[str]] = {}
 
     async def run_verifier(doc_type: str, unique_results: list[SearchResult]) -> None:
         verifier = _VERIFIERS.get(doc_type)
@@ -526,7 +546,7 @@ async def verify_search_results(
             tg.start_soon(run_verifier, doc_type, list(id_to_result.values()))
 
     # Compute (doc_id, doc_type) pairs that failed verification
-    inaccessible: set[tuple[int | str, str]] = set()
+    inaccessible: set[tuple[str, str]] = set()
     for doc_type, id_to_result in by_type.items():
         # The .get() default is defensive only — run_verifier always populates
         # accessible_by_type[doc_type], either with the verifier's result or
@@ -537,12 +557,10 @@ async def verify_search_results(
                 inaccessible.add((doc_id, doc_type))
 
     if inaccessible:
-        # Tag ids with their type (int vs str) so ghost-record logs are
-        # unambiguous: int 42 and str "42" both render as "42" otherwise.
         logger.info(
             "Verification dropped %d inaccessible document(s): %s",
             len(inaccessible),
-            sorted((f"{type(d).__name__}:{d}", t) for d, t in inaccessible),
+            sorted(inaccessible),
         )
 
     # Filter results, preserving order. All chunks of an inaccessible document
@@ -565,7 +583,7 @@ async def verify_search_results(
     # complete by the time `verify_search_results` returns.
     if evict_on_missing and inaccessible:
 
-        async def evict(doc_id: int | str, doc_type: str) -> None:
+        async def evict(doc_id: str, doc_type: str) -> None:
             try:
                 await delete_document_points(doc_id, doc_type, user_id)
             except Exception as e:

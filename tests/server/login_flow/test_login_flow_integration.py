@@ -43,7 +43,13 @@ class TestLoginFlowAuthTools:
         data = json.loads(result.content[0].text)
         assert data["status"] == "provisioned"
         assert data["username"] is not None
-        assert data["scopes"] is not None
+        # ``scopes`` may legitimately be ``None`` — per ProvisionStatusResponse
+        # in models/auth.py, ``None`` is the documented sentinel for "all
+        # scopes granted" and is what the web provisioning path
+        # (``provision_routes.py``, used by Astrolabe's "Enable Semantic
+        # Search" flow) stores. So accept either a non-empty list or None;
+        # the field's *presence* in the payload is what we care about here.
+        assert data["scopes"] is None or len(data["scopes"]) > 0
         logger.info(f"Provisioned as: {data['username']}, scopes: {data['scopes']}")
 
     async def test_provision_access_already_provisioned(

@@ -197,7 +197,11 @@ def configure_contacts_tools(mcp: FastMCP):
                 hay_parts: list[str] = []
                 if contact.fn:
                     hay_parts.append(contact.fn.lower())
-                nickname = contact.custom_fields.get("nickname") if contact.custom_fields else None
+                nickname = (
+                    contact.custom_fields.get("nickname")
+                    if contact.custom_fields
+                    else None
+                )
                 if nickname:
                     hay_parts.append(str(nickname).lower())
                 for e in contact.emails:

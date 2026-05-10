@@ -224,12 +224,11 @@ def configure_semantic_tools(mcp: FastMCP):
             search_results = verified_results[:limit]
 
             # Convert SearchResult objects to SemanticSearchResult for response.
-            # SearchResult.id is typed `int | str` for forward-compat with future
-            # doc_types, but every currently indexed type uses numeric ids and
-            # the MCP response model narrows to `int`. Casting here makes the
-            # narrowing explicit and surfaces any future string-id type as a
-            # loud failure at the boundary instead of silently widening the
-            # public API.
+            # SearchResult.id is `str` (Qdrant keyword-indexed payload), but
+            # every currently indexed type uses numeric ids and the MCP response
+            # model narrows to `int`. Casting here makes the narrowing explicit
+            # and surfaces any future non-numeric-id type as a loud failure at
+            # the boundary instead of silently widening the public API.
             results = []
             for r in search_results:
                 try:
@@ -304,7 +303,10 @@ def configure_semantic_tools(mcp: FastMCP):
                             chunk_context = await get_chunk_with_context(
                                 nc_client=client,
                                 user_id=username,
-                                doc_id=result.id,
+                                # SemanticSearchResult.id is the int-narrowed
+                                # public form; get_chunk_with_context queries
+                                # Qdrant where doc_id is keyword-indexed as str.
+                                doc_id=str(result.id),
                                 doc_type=result.doc_type,
                                 chunk_start=result.chunk_start_offset,
                                 chunk_end=result.chunk_end_offset,

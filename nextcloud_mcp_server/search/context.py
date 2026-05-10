@@ -11,6 +11,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _get_chunk_from_qdrant(
-    user_id: str, doc_id: int, doc_type: str, chunk_start: int, chunk_end: int
+    user_id: str, doc_id: str, doc_type: str, chunk_start: int, chunk_end: int
 ) -> str | None:
     """Retrieve full chunk text from Qdrant payload.
 
@@ -86,7 +87,7 @@ async def _get_chunk_from_qdrant(
 
 
 async def _get_chunk_by_index_from_qdrant(
-    user_id: str, doc_id: int, doc_type: str, chunk_index: int
+    user_id: str, doc_id: str, doc_type: str, chunk_index: int
 ) -> str | None:
     """Retrieve chunk text by chunk_index from Qdrant payload.
 
@@ -144,7 +145,7 @@ async def _get_chunk_by_index_from_qdrant(
 
 
 async def _get_deck_metadata_from_qdrant(
-    user_id: str, card_id: int
+    user_id: str, card_id: str
 ) -> dict[str, int] | None:
     """Retrieve board_id and stack_id for a deck card from Qdrant payload.
 
@@ -198,7 +199,7 @@ async def _get_deck_metadata_from_qdrant(
 
 async def get_chunk_bbox_and_page_from_qdrant(
     user_id: str,
-    doc_id: int | str,
+    doc_id: str,
     chunk_index: int | None,
     chunk_start: int,
     chunk_end: int,
@@ -214,7 +215,11 @@ async def get_chunk_bbox_and_page_from_qdrant(
 
     Args:
         user_id: User ID who owns the document
-        doc_id: Document ID (int for file/note, str for some doc types)
+        doc_id: Document ID — always a string. Producers stringify their
+            native ID before writing to Qdrant so the keyword payload
+            index on ``doc_id`` matches every point regardless of source
+            doc_type. An ``int`` filter against the str-indexed payload
+            would silently match zero points.
         chunk_index: Zero-based chunk index, or None to use offset fallback
         chunk_start: Character offset where chunk starts (used when
             chunk_index is None)
@@ -325,7 +330,7 @@ class ChunkContext:
 async def get_chunk_with_context(
     nc_client: NextcloudClient,
     user_id: str,
-    doc_id: str | int,
+    doc_id: str,
     doc_type: str,
     chunk_start: int,
     chunk_end: int,
@@ -343,7 +348,7 @@ async def get_chunk_with_context(
     Args:
         nc_client: Authenticated Nextcloud client
         user_id: User ID who owns the document
-        doc_id: Document ID (int for notes/files)
+        doc_id: Document ID (str — keyword-indexed in Qdrant payload)
         doc_type: Type of document ("note", "file", etc.)
         chunk_start: Character offset where chunk starts
         chunk_end: Character offset where chunk ends
@@ -358,37 +363,31 @@ async def get_chunk_with_context(
         ChunkContext with expanded context and markers, or None if document
         cannot be retrieved
     """
-    # Convert doc_id to int for Qdrant query
-    doc_id_int = (
-        int(doc_id)
-        if isinstance(doc_id, str) and doc_id.isdigit()
-        else (doc_id if isinstance(doc_id, int) else None)
-    )
+    # doc_id is keyword-indexed in Qdrant as str — pass through verbatim
+    # (no int coercion; producers always stringify on write).
 
     # Try to get chunk from Qdrant (fast path).
     # Prefer chunk_index lookup (always-indexed field) when caller supplied it;
     # fall back to (chunk_start, chunk_end) lookup otherwise.
     chunk_text: str | None = None
-    if doc_id_int is not None:
-        if chunk_index is not None:
-            chunk_text = await _get_chunk_by_index_from_qdrant(
-                user_id, doc_id_int, doc_type, chunk_index
-            )
-        # Skip the offset fallback for files when the indexed chunk_index
-        # lookup already ran: chunk_start/end_offset aren't indexed in Qdrant
-        # Cloud strict mode, so the call returns 400 and surfaces a misleading
-        # logger.error. The file fast-fail below correctly handles the miss
-        # without it.
-        skip_offset_lookup = chunk_index is not None and doc_type == "file"
-        if chunk_text is None and not skip_offset_lookup:
-            chunk_text = await _get_chunk_from_qdrant(
-                user_id, doc_id_int, doc_type, chunk_start, chunk_end
-            )
+    if chunk_index is not None:
+        chunk_text = await _get_chunk_by_index_from_qdrant(
+            user_id, doc_id, doc_type, chunk_index
+        )
+    # When chunk_index is supplied, the indexed lookup is canonical: both the
+    # index path and the offset path query the same Qdrant collection, so an
+    # indexed miss means the chunk is genuinely absent. Skipping the offset
+    # filter avoids a redundant Qdrant round-trip. Legacy data without
+    # chunk_index (pre-cbcoutinho/astrolabe#75) still hits the offset path
+    # and degrades to a None chunk with a WARNING; that's the same behavior
+    # get_chunk_bbox_and_page_from_qdrant already documents.
+    skip_offset_lookup = chunk_index is not None
+    if chunk_text is None and not skip_offset_lookup:
+        chunk_text = await _get_chunk_from_qdrant(
+            user_id, doc_id, doc_type, chunk_start, chunk_end
+        )
 
     if chunk_text:
-        # chunk_text can only be non-None inside the `if doc_id_int is not None:`
-        # block above, so doc_id_int is guaranteed non-None here. Narrow for ty.
-        assert doc_id_int is not None
         logger.info(
             f"Retrieved chunk from Qdrant cache for {doc_type} {doc_id} "
             f"(avoids document re-fetch/re-parse)"
@@ -408,7 +407,7 @@ async def get_chunk_with_context(
             # Fetch previous chunk if not first chunk
             if chunk_index > 0:
                 before_chunk = await _get_chunk_by_index_from_qdrant(
-                    user_id, doc_id_int, doc_type, chunk_index - 1
+                    user_id, doc_id, doc_type, chunk_index - 1
                 )
                 if before_chunk:
                     # Remove overlap: the last chunk_overlap chars of previous chunk
@@ -429,7 +428,7 @@ async def get_chunk_with_context(
             # Fetch next chunk if not last chunk
             if chunk_index < total_chunks - 1:
                 after_chunk = await _get_chunk_by_index_from_qdrant(
-                    user_id, doc_id_int, doc_type, chunk_index + 1
+                    user_id, doc_id, doc_type, chunk_index + 1
                 )
                 if after_chunk:
                     # Remove overlap: the first chunk_overlap chars of next chunk
@@ -560,7 +559,7 @@ async def get_chunk_with_context(
 
 
 async def _fetch_document_text(
-    nc_client: NextcloudClient, doc_id: str | int, doc_type: str, user_id: str
+    nc_client: NextcloudClient, doc_id: str, doc_type: str, user_id: str
 ) -> str | None:
     """Fetch full text content of a document.
 
@@ -578,6 +577,16 @@ async def _fetch_document_text(
     """
     try:
         if doc_type == "note":
+            # Note IDs are positive ASCII integers (MySQL AUTO_INCREMENT).
+            # is_valid_nextcloud_doc_id rejects "0", leading zeros, and Unicode
+            # digits that pass str.isdigit(); a malformed payload surfaces in
+            # logs rather than getting silently swallowed by `except Exception`.
+            if not is_valid_nextcloud_doc_id(doc_id):
+                logger.warning(
+                    "Expected numeric note doc_id, got %r — skipping document fetch",
+                    doc_id,
+                )
+                return None
             # Fetch note by ID
             note = await nc_client.notes.get_note(note_id=int(doc_id))
             # Reconstruct full content as indexed: title + "\n\n" + content
@@ -586,6 +595,16 @@ async def _fetch_document_text(
             content = note.get("content", "")
             return f"{title}\n\n{content}"
         elif doc_type == "news_item":
+            # News item IDs are positive ASCII integers (MySQL AUTO_INCREMENT).
+            # is_valid_nextcloud_doc_id rejects "0", leading zeros, and Unicode
+            # digits that pass str.isdigit(); malformed payloads surface in
+            # logs rather than getting swallowed by the broad except below.
+            if not is_valid_nextcloud_doc_id(doc_id):
+                logger.warning(
+                    "Expected numeric news_item doc_id, got %r — skipping document fetch",
+                    doc_id,
+                )
+                return None
             # Fetch news item by ID
             item = await nc_client.news.get_item(int(doc_id))
             # Reconstruct full content as indexed: title + source + URL + body
@@ -604,11 +623,23 @@ async def _fetch_document_text(
             content_parts.append(body_markdown)
             return "\n".join(content_parts)
         elif doc_type == "deck_card":
+            # Deck card IDs are positive ASCII integers (MySQL AUTO_INCREMENT).
+            # is_valid_nextcloud_doc_id rejects "0", leading zeros, and Unicode
+            # digits that pass str.isdigit(); malformed payloads surface in
+            # logs rather than getting swallowed by the broad except below.
+            # The numeric check covers both the metadata-fast-path and the
+            # iteration fallback below.
+            if not is_valid_nextcloud_doc_id(doc_id):
+                logger.warning(
+                    "Expected numeric deck_card doc_id, got %r — skipping document fetch",
+                    doc_id,
+                )
+                return None
             # Fetch card from Deck API
             # Try to get board_id/stack_id from Qdrant metadata (O(1) lookup)
             # Otherwise fall back to iteration (legacy data)
             card = None
-            deck_metadata = await _get_deck_metadata_from_qdrant(user_id, int(doc_id))
+            deck_metadata = await _get_deck_metadata_from_qdrant(user_id, doc_id)
 
             if deck_metadata:
                 # Fast path: Direct lookup with known board_id/stack_id

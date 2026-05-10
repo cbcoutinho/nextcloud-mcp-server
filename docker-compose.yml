@@ -293,7 +293,7 @@ services:
       # the same configure_astrolabe_for_mcp_server fixture (which creates the
       # static `nextcloudMcpServerUIPublicClient` OIDC client) works for tests
       # against this profile too.
-      - ALLOWED_MGMT_CLIENT=nextcloudMcpServerUIPublicClient
+      - ALLOWED_MGMT_CLIENT=astrolabeMcpClientOAuth00000000000
     volumes:
       - login-flow-data:/app/data
       - login-flow-oauth-storage:/app/.oauth
