@@ -10,9 +10,11 @@ from nextcloud_mcp_server.models.deck import (
     DeckUser,
 )
 from nextcloud_mcp_server.server.deck import (
+    _SHARE_TYPE_DECK,
     _apply_board_filters,
     _apply_card_filters,
     _apply_stack_filters,
+    _resolve_note_path,
     _truncate_card_descriptions,
     _validate_description_max_length,
 )
@@ -368,3 +370,41 @@ def test_apply_card_filters_empty_list_is_noop():
         [], include_archived_cards=False, description_max_length=10
     )
     assert result == []
+
+
+# _resolve_note_path -------------------------------------------------------
+
+
+def test_resolve_note_path_no_category():
+    """Path is /<notes_folder>/<title>.md when no category."""
+    assert _resolve_note_path("Notes", "", "My Note") == "/Notes/My Note.md"
+
+
+def test_resolve_note_path_with_category():
+    """Category is inserted as a sub-path."""
+    assert _resolve_note_path("Notes", "Work", "Standup") == "/Notes/Work/Standup.md"
+
+
+def test_resolve_note_path_with_nested_category():
+    """Nested categories (Notes app supports `/`-separated) are preserved."""
+    assert _resolve_note_path("Notes", "Work/Q4", "Plan") == "/Notes/Work/Q4/Plan.md"
+
+
+def test_resolve_note_path_strips_redundant_slashes():
+    """Leading/trailing slashes on inputs do not produce `//` in the result."""
+    assert _resolve_note_path("/Notes/", "/Work/", "Title") == "/Notes/Work/Title.md"
+
+
+def test_resolve_note_path_custom_notes_folder():
+    """Honors a non-default notes_folder from Notes app settings."""
+    assert (
+        _resolve_note_path("Documents/Notes", "", "Idea") == "/Documents/Notes/Idea.md"
+    )
+
+
+# Share-type constant -------------------------------------------------------
+
+
+def test_share_type_deck_constant_matches_deck_app():
+    """Deck UI uses shareType=12 (IShare::TYPE_DECK) — must not drift."""
+    assert _SHARE_TYPE_DECK == 12
