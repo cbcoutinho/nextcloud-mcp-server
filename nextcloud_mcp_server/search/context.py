@@ -374,14 +374,13 @@ async def get_chunk_with_context(
         chunk_text = await _get_chunk_by_index_from_qdrant(
             user_id, doc_id, doc_type, chunk_index
         )
-    # When chunk_index is available, treat the indexed lookup as canonical
-    # for every doc_type. A miss means the chunk is genuinely absent, not
-    # "fall back to the unindexed slow path". chunk_start/end_offset aren't
-    # in _PAYLOAD_INDEX_FIELDS, so the offset filter 400s in Qdrant Cloud
-    # strict mode and surfaces a misleading logger.error. Legacy data
-    # without chunk_index (pre-cbcoutinho/astrolabe#75) still hits the
-    # offset path and degrades to a None chunk with a WARNING; that's the
-    # same behavior get_chunk_bbox_and_page_from_qdrant already documents.
+    # When chunk_index is supplied, the indexed lookup is canonical: both the
+    # index path and the offset path query the same Qdrant collection, so an
+    # indexed miss means the chunk is genuinely absent. Skipping the offset
+    # filter avoids a redundant Qdrant round-trip. Legacy data without
+    # chunk_index (pre-cbcoutinho/astrolabe#75) still hits the offset path
+    # and degrades to a None chunk with a WARNING; that's the same behavior
+    # get_chunk_bbox_and_page_from_qdrant already documents.
     skip_offset_lookup = chunk_index is not None
     if chunk_text is None and not skip_offset_lookup:
         chunk_text = await _get_chunk_from_qdrant(
