@@ -3,6 +3,7 @@
 import logging
 
 from qdrant_client import AsyncQdrantClient, models
+from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.models import Distance, VectorParams
 
 from nextcloud_mcp_server.config import get_settings
@@ -71,26 +72,33 @@ async def get_qdrant_client() -> AsyncQdrantClient:
 
         expected_dimension = embedding_service.get_dimension()
 
-        # Explicitly check if collection exists.
+        # Existence check folded into the get_collection() call.
         #
-        # Use `collection_exists(name)` (per-collection HEAD-style probe)
-        # rather than `get_collections()` (cluster-wide list). In managed
-        # multi-tenant Qdrant Cloud setups, per-tenant JWTs are scoped
-        # to a single collection and `get_collections()` returns 403
-        # Forbidden by design — listing other tenants' collections would
-        # be a security regression. `collection_exists` only requires
-        # access to the named collection, which the tenant JWT has.
-        logger.debug(f"Checking if collection '{collection_name}' exists...")
-        collection_present = await _qdrant_client.collection_exists(
-            collection_name=collection_name
-        )
+        # In managed multi-tenant Qdrant Cloud setups, per-tenant JWTs are
+        # scoped to a single collection (`access: [{"collection": "...",
+        # "access": "rw"}]`) and Qdrant denies the cluster-level meta
+        # endpoints `GET /collections` (used by `get_collections()`) and
+        # `GET /collections/{name}/exists` (used by `collection_exists()`)
+        # with 403 Forbidden — by design, since listing or probing
+        # collections cluster-wide is a tenant-isolation boundary.
+        # `GET /collections/{name}` (the underlying call for
+        # `get_collection()`) is the only existence-probe permitted on a
+        # collection-scoped JWT — it returns 200 with the collection
+        # detail on hit and 404 on miss.
+        logger.debug(f"Fetching collection '{collection_name}' details...")
+        collection_info = None
+        try:
+            collection_info = await _qdrant_client.get_collection(collection_name)
+        except UnexpectedResponse as exc:
+            if exc.status_code != 404:
+                raise
+            logger.debug(f"Collection '{collection_name}' not found (404).")
 
-        if collection_present:
+        if collection_info is not None:
             # Collection exists - validate dimensions
             logger.debug(
                 f"Collection '{collection_name}' found, validating dimensions..."
             )
-            collection_info = await _qdrant_client.get_collection(collection_name)
             # Handle both named vectors (dict) and legacy single vector
             vectors = collection_info.config.params.vectors
             if isinstance(vectors, dict):
