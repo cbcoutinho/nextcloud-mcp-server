@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.85.0 (2026-05-10)
+
+### Feat
+
+- **deck**: add file/note attachment MCP tools
+
+### Fix
+
+- **deck**: address review — notesPath key, scopes, modernize types
+
 ## v0.84.2 (2026-05-10)
 
 ### Fix
