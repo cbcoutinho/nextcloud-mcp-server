@@ -5,6 +5,33 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.84.1 (2026-05-10)
+
+### Fix
+
+- **vector**: address PR review round 17 + local-mode collection-creation regression
+- **vector**: address PR review round 16 — type-aware index check, comments
+- **vector**: address PR review round 15 — concurrency, pagination, stale coercion
+- **vector**: address PR review round 14 — accurate offset-skip comment + news_item doc_id guard
+- **vector**: address PR review round 13 — index offset fields + tighten test
+- **vector**: address PR review round 12 — bool guard + strict doc_id validation
+- **vector**: address PR review round 11 — broaden offset-skip gate, clarify ordering
+- **vector**: address PR review round 10 — index chunk_index, harden index loop, lazy-init lock
+- **api**: validate doc_id at chunk-context handler boundary
+- **vector**: address PR review round 9 — drop redundant guard, add init lock, test float doc_id path
+- **vector**: guard _group_int_doc_ids against non-int doc_id values
+- **vector**: tighten get_chunk_bbox_and_page_from_qdrant doc_id to str
+- **login-flow**: allow Astrolabe's OAuth client on the management API
+- **vector**: address PR review round 8 — anyio convention + cosine-safe sentinel + dedup get_collection
+- **vector**: add BOOL index for is_placeholder + correct wait=True docstring
+- **vector**: address PR review round 6 + SonarCloud findings
+- **vector**: address PR review round 5 — progress logging, summary visibility, sentinel split
+- **vector**: address PR review round 4 — backfill resilience + degraded-mode docs
+- **vector**: address PR review round 3 — sentinel guard, skip indexed fields, narrow types
+- **vector**: address PR review round 2 — status branching, doc_id guard, doc restore
+- **vector**: address PR review — wait=True backfill, batched writes, search helper
+- **vector**: normalize doc_id to str + add Qdrant keyword payload indexes
+
 ## v0.84.0 (2026-05-10)
 
 ### Feat
