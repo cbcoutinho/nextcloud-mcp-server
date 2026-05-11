@@ -18,6 +18,7 @@ dependencies = [
     "pydantic>=2.11.4",
     "click>=8.1.8",
     "caldav>=3.0.1,<4.0",
+    "recurring-ical-events>=3.8.0,<4.0", # Client-side recurrence expansion (preserves TZID/floating semantics)
     "pyjwt[crypto]>=2.8.0",
     "aiosqlite>=0.20.0", # Async SQLite for refresh token storage
     "alembic>=1.14.0", # Database migrations

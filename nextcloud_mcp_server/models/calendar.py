@@ -25,8 +25,30 @@ class CalendarEventSummary(BaseModel):
 
     uid: str = Field(description="Event UID")
     summary: str = Field(description="Event summary/title")
-    start: str = Field(description="Event start datetime (ISO format)")
-    end: Optional[str] = Field(None, description="Event end datetime (ISO format)")
+    start: str = Field(
+        description=(
+            "Event start datetime (ISO format). No suffix = RFC 5545 floating "
+            "local time; ``+00:00`` = UTC; an explicit offset (e.g. ``-04:00``) "
+            "= TZID-bound at that instant. The IANA TZID name is exposed "
+            "separately as ``start_tz``."
+        )
+    )
+    end: Optional[str] = Field(
+        None,
+        description=(
+            "Event end datetime (ISO format). Same encoding rules as ``start``."
+        ),
+    )
+    start_tz: Optional[str] = Field(
+        None,
+        description=(
+            "IANA timezone name when DTSTART had a TZID parameter (e.g. "
+            "``America/New_York``). ``None`` for floating local or UTC."
+        ),
+    )
+    end_tz: Optional[str] = Field(
+        None, description="IANA timezone name when DTEND had a TZID parameter."
+    )
     all_day: bool = Field(default=False, description="Whether event is all-day")
     location: Optional[str] = Field(None, description="Event location")
     description: Optional[str] = Field(None, description="Event description")

@@ -5,12 +5,14 @@ import inspect
 import logging
 import uuid
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
+import recurring_ical_events
 from caldav.aio import AsyncCalendar, AsyncDAVClient, AsyncEvent
 from caldav.elements import cdav, dav
 from caldav.lib import error as caldav_error
-from icalendar import Alarm, Calendar, vDDDTypes, vRecur
+from icalendar import Alarm, Calendar, Timezone, vDDDTypes, vRecur
 from icalendar import Event as ICalEvent
 from icalendar import Todo as ICalTodo
 from lxml import etree  # type: ignore[import-untyped]
@@ -320,40 +322,87 @@ class CalendarClient:
         calendar = self._get_calendar(calendar_name)
 
         if start_datetime or end_datetime:
-            # Build CalDAV REPORT with time-range filter for server-side filtering
             events = await self._search_events_by_date(
                 calendar, start_datetime, end_datetime
             )
-            # Expand is only used when both bounds are provided
-            expanded = bool(start_datetime and end_datetime)
+            # Client-side recurrence expansion preserves DTSTART format
+            # (floating / TZID / UTC). RFC 4791 <C:expand> would normalize
+            # everything to UTC and erase the original timezone context.
+            do_expand = bool(start_datetime and end_datetime)
         else:
-            # No date filter — fetch all events
             events = await calendar.events()  # type: ignore[misc]  # dual-mode
-            expanded = False
+            do_expand = False
 
         result = []
         for event in events:
             await _maybe_await(event.load(only_if_unloaded=True))
-            if event.data:
-                if expanded:
-                    # Server-side expansion: each response resource may contain
-                    # multiple VEVENTs (one per recurrence occurrence)
-                    for event_dict in self._parse_all_ical_events(event.data):
-                        event_dict["href"] = str(event.url)
-                        event_dict["etag"] = ""
-                        result.append(event_dict)
-                else:
-                    event_dict = self._parse_ical_event(event.data)
-                    if event_dict:
-                        event_dict["href"] = str(event.url)
-                        event_dict["etag"] = ""
-                        result.append(event_dict)
+            if not event.data:
+                continue
+
+            try:
+                cal = Calendar.from_ical(event.data)
+            except Exception as e:
+                logger.error("Error parsing iCalendar event: %s", e)
+                continue
+
+            href = str(event.url)
+            event_dicts = self._expand_event_occurrences(
+                cal, start_datetime, end_datetime, do_expand
+            )
+            for event_dict in event_dicts:
+                event_dict["href"] = href
+                event_dict["etag"] = ""
+                result.append(event_dict)
+
+                if len(result) >= limit:
+                    break
 
             if len(result) >= limit:
                 break
 
-        logger.debug(f"Found {len(result)} events")
+        logger.debug("Found %d events", len(result))
         return result
+
+    def _expand_event_occurrences(
+        self,
+        cal: Any,
+        start_datetime: dt.datetime | None,
+        end_datetime: dt.datetime | None,
+        do_expand: bool,
+    ) -> list[dict[str, Any]]:
+        """Return one event dict per occurrence in [start, end), or one dict for the master VEVENT.
+
+        When ``do_expand`` is true and the resource has an RRULE, expand recurrences
+        client-side using ``recurring_ical_events`` so that TZID and floating-local
+        semantics are preserved on the wire (server-side ``<C:expand>`` would
+        UTC-normalize every DTSTART per RFC 4791 §9.6.5).
+        """
+        if not do_expand:
+            for component in cal.walk("VEVENT"):
+                return [self._extract_vevent_data(component)]
+            return []
+
+        has_rrule = any("rrule" in component for component in cal.walk("VEVENT"))
+        if not has_rrule:
+            for component in cal.walk("VEVENT"):
+                return [self._extract_vevent_data(component)]
+            return []
+
+        try:
+            assert start_datetime is not None and end_datetime is not None
+            occurrences = recurring_ical_events.of(cal).between(
+                start_datetime, end_datetime
+            )
+        except Exception as e:
+            logger.warning(
+                "Client-side recurrence expansion failed (%s); returning master event",
+                e,
+            )
+            return [
+                self._extract_vevent_data(component) for component in cal.walk("VEVENT")
+            ]
+
+        return [self._extract_vevent_data(occ) for occ in occurrences]
 
     async def _search_events_by_date(
         self,
@@ -361,8 +410,13 @@ class CalendarClient:
         start_datetime: dt.datetime | None = None,
         end_datetime: dt.datetime | None = None,
     ) -> list:
-        """Execute a CalDAV REPORT with time-range filter."""
-        # Ensure naive datetimes are treated as UTC
+        """Execute a CalDAV REPORT with time-range filter.
+
+        Returns raw VEVENT resources (no server-side ``<C:expand>``). The caller
+        is responsible for expanding recurring events client-side so that
+        TZID/floating semantics are preserved.
+        """
+        # Ensure naive datetimes are treated as UTC for the wire-level filter
         if start_datetime and start_datetime.tzinfo is None:
             start_datetime = start_datetime.replace(tzinfo=dt.UTC)
         if end_datetime and end_datetime.tzinfo is None:
@@ -374,13 +428,7 @@ class CalendarClient:
         outer_comp_filter = cdav.CompFilter(name="VCALENDAR") + inner_comp_filter
         filter_element = cdav.Filter() + outer_comp_filter
 
-        # When both bounds are provided, request server-side expansion of
-        # recurring events (RFC 4791 §9.6.5). Each occurrence is returned as
-        # a separate VEVENT with its own DTSTART, with RRULE stripped.
         data = cdav.CalendarData()
-        if start_datetime and end_datetime:
-            data += cdav.Expand(start_datetime, end_datetime)
-
         query = cdav.CalendarQuery() + [dav.Prop() + data] + filter_element
 
         body = etree.tostring(
@@ -681,6 +729,51 @@ class CalendarClient:
 
     # ============= Helper Methods - Event iCalendar =============
 
+    @staticmethod
+    def _resolve_timezone(tz_name: str) -> ZoneInfo | None:
+        """Resolve an IANA timezone name to ZoneInfo, returning None for invalid input."""
+        if not tz_name:
+            return None
+        try:
+            return ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            logger.warning(
+                "Unknown IANA timezone %r — falling back to floating local time",
+                tz_name,
+            )
+            return None
+
+    @classmethod
+    def _parse_event_datetime(
+        cls, dt_str: str, tz_name: str | None = None
+    ) -> tuple[dt.datetime, ZoneInfo | None]:
+        """Parse an ISO datetime string with optional TZID application.
+
+        Returns ``(parsed_dt, applied_zoneinfo)`` where ``applied_zoneinfo``
+        is non-None only when ``tz_name`` was applied to a naive input — the
+        caller uses this to know whether to emit a VTIMEZONE component.
+        """
+        parsed = dt.datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        zi = cls._resolve_timezone(tz_name) if tz_name else None
+
+        if parsed.tzinfo is not None:
+            if zi is not None:
+                logger.warning(
+                    "Datetime %r has an explicit offset; ignoring timezone=%r",
+                    dt_str,
+                    tz_name,
+                )
+            return parsed, None
+
+        if zi is not None:
+            return parsed.replace(tzinfo=zi), zi
+
+        logger.warning(
+            "Datetime %r is naive and no timezone was supplied — storing as RFC 5545 floating local time",
+            dt_str,
+        )
+        return parsed, None
+
     def _create_ical_event(self, event_data: dict[str, Any], event_uid: str) -> str:
         """Create iCalendar content from event data."""
         cal = Calendar()
@@ -697,6 +790,8 @@ class CalendarClient:
         start_str = event_data.get("start_datetime", "")
         end_str = event_data.get("end_datetime", "")
         all_day = event_data.get("all_day", False)
+        tz_name = event_data.get("timezone", "")
+        used_timezones: set[ZoneInfo] = set()
 
         if start_str:
             if all_day:
@@ -706,10 +801,14 @@ class CalendarClient:
                     end_date = dt.datetime.fromisoformat(end_str.split("T")[0]).date()
                     event.add("dtend", end_date)
             else:
-                start_dt = dt.datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                start_dt, zi = self._parse_event_datetime(start_str, tz_name)
+                if zi is not None:
+                    used_timezones.add(zi)
                 event.add("dtstart", start_dt)
                 if end_str:
-                    end_dt = dt.datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                    end_dt, zi = self._parse_event_datetime(end_str, tz_name)
+                    if zi is not None:
+                        used_timezones.add(zi)
                     event.add("dtend", end_dt)
 
         # Add categories
@@ -762,14 +861,14 @@ class CalendarClient:
         event.add("dtstamp", now)
         event.add("last-modified", now)
 
+        # VTIMEZONE must appear before the referencing VEVENT.
+        for zi in used_timezones:
+            cal.add_component(Timezone.from_tzinfo(zi))
         cal.add_component(event)
         return cal.to_ical().decode("utf-8")
 
     def _extract_vevent_data(self, component) -> dict[str, Any]:
-        """Extract event data from a single VEVENT component.
-
-        Shared helper used by both _parse_ical_event() and _parse_all_ical_events().
-        """
+        """Extract event data from a single VEVENT component."""
         event_data: dict[str, Any] = {
             "uid": str(component.get("uid", "")),
             "title": str(component.get("summary", "")),
@@ -781,24 +880,28 @@ class CalendarClient:
             "url": str(component.get("url", "")),
         }
 
-        # Handle dates
+        # Handle dates. The ``.isoformat()`` representation already encodes the
+        # storage semantics: no suffix for floating local, ``+00:00`` for UTC,
+        # and the offset (e.g. ``-04:00``) for TZID-bound datetimes. The IANA
+        # TZID name is surfaced separately as ``start_tz``/``end_tz`` so callers
+        # can distinguish "10am NY time" (recurs in local time across DST) from
+        # "14:00 UTC" (same UTC instant), which the offset alone cannot express.
         dtstart = component.get("dtstart")
         if dtstart:
-            if isinstance(dtstart.dt, dt.date) and not isinstance(
+            event_data["start_datetime"] = dtstart.dt.isoformat()
+            event_data["all_day"] = isinstance(dtstart.dt, dt.date) and not isinstance(
                 dtstart.dt, dt.datetime
-            ):
-                event_data["start_datetime"] = dtstart.dt.isoformat()
-                event_data["all_day"] = True
-            else:
-                event_data["start_datetime"] = dtstart.dt.isoformat()
-                event_data["all_day"] = False
+            )
+            tzid = dtstart.params.get("TZID") if dtstart.params else None
+            if tzid:
+                event_data["start_tz"] = str(tzid)
 
         dtend = component.get("dtend")
         if dtend:
-            if isinstance(dtend.dt, dt.date) and not isinstance(dtend.dt, dt.datetime):
-                event_data["end_datetime"] = dtend.dt.isoformat()
-            else:
-                event_data["end_datetime"] = dtend.dt.isoformat()
+            event_data["end_datetime"] = dtend.dt.isoformat()
+            tzid = dtend.params.get("TZID") if dtend.params else None
+            if tzid:
+                event_data["end_tz"] = str(tzid)
 
         # Handle categories
         categories = component.get("categories")
@@ -834,22 +937,6 @@ class CalendarClient:
         except Exception as e:
             logger.error(f"Error parsing iCalendar event: {e}")
             return None
-
-    def _parse_all_ical_events(self, ical_text: str) -> list[dict[str, Any]]:
-        """Parse iCalendar text and extract ALL event occurrences.
-
-        Used with server-side expansion where a single VCALENDAR contains
-        multiple VEVENT components (one per recurrence occurrence).
-        """
-        results: list[dict[str, Any]] = []
-        try:
-            cal = Calendar.from_ical(ical_text)
-            for component in cal.walk():
-                if component.name == "VEVENT":
-                    results.append(self._extract_vevent_data(component))
-        except Exception as e:
-            logger.error(f"Error parsing iCalendar events: {e}")
-        return results
 
     def _merge_ical_properties(
         self, raw_ical: str, event_data: dict[str, Any], event_uid: str
@@ -921,6 +1008,8 @@ class CalendarClient:
                             component.add_component(alarm)
 
                     # Handle dates
+                    tz_name = event_data.get("timezone", "")
+                    used_timezones: set[ZoneInfo] = set()
                     if "start_datetime" in event_data:
                         start_str = event_data["start_datetime"]
                         all_day = event_data.get("all_day", False)
@@ -930,10 +1019,12 @@ class CalendarClient:
                             ).date()
                             component["DTSTART"] = start_date
                         else:
-                            start_dt = dt.datetime.fromisoformat(
-                                start_str.replace("Z", "+00:00")
+                            start_dt, zi = self._parse_event_datetime(
+                                start_str, tz_name
                             )
-                            component["DTSTART"] = start_dt
+                            if zi is not None:
+                                used_timezones.add(zi)
+                            component["DTSTART"] = vDDDTypes(start_dt)
 
                     if "end_datetime" in event_data:
                         end_str = event_data["end_datetime"]
@@ -944,15 +1035,25 @@ class CalendarClient:
                             ).date()
                             component["DTEND"] = end_date
                         else:
-                            end_dt = dt.datetime.fromisoformat(
-                                end_str.replace("Z", "+00:00")
-                            )
-                            component["DTEND"] = end_dt
+                            end_dt, zi = self._parse_event_datetime(end_str, tz_name)
+                            if zi is not None:
+                                used_timezones.add(zi)
+                            component["DTEND"] = vDDDTypes(end_dt)
 
                     # Update timestamps
                     now = dt.datetime.now(dt.UTC)
                     component["LAST-MODIFIED"] = vDDDTypes(now)
                     component["DTSTAMP"] = vDDDTypes(now)
+
+                    # Ensure VTIMEZONE definitions exist for any TZID we just attached.
+                    existing_tzids = {
+                        str(sub.get("TZID", ""))
+                        for sub in cal.subcomponents
+                        if sub.name == "VTIMEZONE"
+                    }
+                    for zi in used_timezones:
+                        if str(zi) not in existing_tzids:
+                            cal.add_component(Timezone.from_tzinfo(zi))
 
                     break
 
