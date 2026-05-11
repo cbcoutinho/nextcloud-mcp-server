@@ -2158,6 +2158,7 @@ dependencies = [
     { name = "python-json-logger" },
     { name = "pythonvcard4" },
     { name = "qdrant-client" },
+    { name = "recurring-ical-events" },
     { name = "starlette" },
 ]
 
@@ -2212,6 +2213,7 @@ requires-dist = [
     { name = "python-json-logger", specifier = ">=3.2.0" },
     { name = "pythonvcard4", specifier = ">=0.2.0" },
     { name = "qdrant-client", specifier = ">=1.17.0" },
+    { name = "recurring-ical-events", specifier = ">=3.8.0,<4.0" },
     { name = "starlette", specifier = "<1.0" },
 ]
 
