@@ -1789,21 +1789,14 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         )
                         break
 
-                # Background sync always uses app passwords post-ADR-022:
-                # `oauth_enabled` now implies `enable_login_flow` (single
-                # source of truth is `MCP_DEPLOYMENT_MODE`), so the old
-                # `not oauth_enabled or settings.enable_login_flow` was always
-                # True. The OAuth-refresh code paths in
-                # `vector/oauth_sync.py` (gated on `use_basic_auth=False`)
-                # are now unreachable; pruning them — and dropping the
-                # `use_basic_auth` parameter from `user_manager_task` /
-                # `oauth_processor_task` — is tracked as a separate
-                # follow-up. Keep the variable name + the conditional
-                # wiring at the call sites for now so the parallel-prune
-                # PR is a clean mechanical diff.
-                use_basic_auth = True
-
-                # Start background tasks using anyio TaskGroup
+                # Background sync authenticates as each provisioned user via
+                # locally-stored Nextcloud app passwords (Login Flow v2 /
+                # multi-user BasicAuth). The earlier OAuth refresh-token
+                # path in vector/oauth_sync.py was removed in the ADR-022
+                # cleanup — it relied on unmerged user_oidc patches and was
+                # never reachable from any supported deployment mode. The
+                # `token_broker` constructed above is still used by the
+                # management API revoke endpoint (via app.state.oauth_context).
                 async with anyio.create_task_group() as tg:
                     # Start user manager task (supervises per-user scanners)
                     await tg.start(
@@ -1811,12 +1804,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         send_stream,
                         shutdown_event,
                         scanner_wake_event,
-                        token_broker if not use_basic_auth else None,
-                        token_storage,  # Use token_storage (works for both OAuth and multi-user BasicAuth)
+                        token_storage,
                         nextcloud_host_for_sync,
                         user_states,
                         tg,
-                        use_basic_auth,  # Pass as positional arg (before task_status)
                     )
 
                     # Start processor pool (each gets a cloned receive stream)
@@ -1826,9 +1817,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                             i,
                             receive_stream.clone(),
                             shutdown_event,
-                            token_broker if not use_basic_auth else None,
                             nextcloud_host_for_sync,
-                            use_basic_auth,  # Pass as positional arg (before task_status)
                         )
 
                     # Expose this long-lived task group to request-path code
