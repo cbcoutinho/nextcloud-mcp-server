@@ -90,6 +90,7 @@ MCP_DEPLOYMENT_MODE=login_flow
 
 # Valid values: single_user_basic, multi_user_basic,
 #               oauth_single_audience, oauth_token_exchange
+#               (both OAuth values removed in ADR-022 — current value: login_flow)
 ```
 
 **Detection logic**:

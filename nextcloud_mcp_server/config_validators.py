@@ -172,6 +172,11 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
     `Settings.__post_init__` so every Settings instance carries correct
     flags regardless of how it was constructed.
 
+    Keep the resolution logic here in sync with `Settings.__post_init__`:
+    both compute the canonical mode from `deployment_mode` (+ credentials
+    as a fallback). When adding a new mode, update `mode_map` *and* the
+    `__post_init__` resolution block in `config.py`.
+
     Args:
         settings: Application settings
 
@@ -196,9 +201,18 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
 
         if mode_str not in mode_map:
             valid_modes = ", ".join(mode_map.keys())
+            # ADR-022 migration hint: the most common upgrade pain is users
+            # carrying MCP_DEPLOYMENT_MODE=oauth_single_audience over from
+            # ADR-021. Surface a one-liner so they don't have to grep the
+            # changelog.
+            hint = (
+                " (Note: 'oauth_single_audience' was renamed to 'login_flow' in ADR-022.)"
+                if mode_str == "oauth_single_audience"
+                else ""
+            )
             raise ValueError(
                 f"Invalid MCP_DEPLOYMENT_MODE: '{settings.deployment_mode}'. "
-                f"Valid values: {valid_modes}"
+                f"Valid values: {valid_modes}.{hint}"
             )
 
         explicit_mode = mode_map[mode_str]

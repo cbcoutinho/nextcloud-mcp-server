@@ -636,6 +636,14 @@ class Settings:
                     "of truth for selecting an auth flow."
                 )
 
+        # NOTE: this block mirrors the resolution logic in
+        # `config_validators.detect_auth_mode` (which works on strings via a
+        # `mode_map`). Both call sites resolve the deployment mode
+        # independently — the canonical AuthMode enum in detect_auth_mode,
+        # and the boolean derived flags here. **Keep them in sync when
+        # adding a new mode**: a new entry must be added in both places, in
+        # addition to `mode_map` (`config_validators.py`) and any
+        # MODE_REQUIREMENTS entry.
         resolved_mode = (self.deployment_mode or "").strip().lower()
         if not resolved_mode:
             if self.nextcloud_username and self.nextcloud_password:
