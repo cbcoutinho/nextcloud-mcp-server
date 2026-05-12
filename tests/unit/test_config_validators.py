@@ -788,6 +788,34 @@ class TestExplicitModeSelection:
                 assert "invalid_mode" in str(e)
                 assert "Valid values:" in str(e)
 
+    def test_oauth_single_audience_migration_hint(self):
+        """ADR-022: rejecting `oauth_single_audience` surfaces a rename hint.
+
+        Pins the special-case branch in detect_auth_mode that helps users
+        upgrading from ADR-021 configurations spot the rename without
+        having to grep the changelog.
+        """
+        with patch.dict(
+            os.environ,
+            {
+                "NEXTCLOUD_HOST": "http://localhost:8080",
+                "MCP_DEPLOYMENT_MODE": "oauth_single_audience",
+            },
+            clear=True,
+        ):
+            from nextcloud_mcp_server.config import get_settings
+
+            _reload_config()
+            settings = get_settings()
+
+            with pytest.raises(ValueError) as exc:
+                detect_auth_mode(settings)
+
+            msg = str(exc.value)
+            assert "oauth_single_audience" in msg
+            assert "login_flow" in msg
+            assert "ADR-022" in msg
+
     def test_explicit_mode_overrides_auto_detection(self):
         """Test explicit mode takes precedence over auto-detection."""
         with patch.dict(

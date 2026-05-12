@@ -325,8 +325,8 @@ def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
         # ADR-022 follow-up: the un-augmented OAuth bearer pass-through (the
         # old OAUTH_SINGLE_AUDIENCE without ENABLE_LOGIN_FLOW) needed unmerged
         # Nextcloud user_oidc patches and is no longer supported. The
-        # `enable_login_flow` flag is now derived from the resolved mode by
-        # `_sync_derived_flags`, so users only configure the mode — no
+        # `enable_login_flow` flag is now derived from the resolved mode in
+        # `Settings.__post_init__`, so users only configure the mode — no
         # separate ENABLE_LOGIN_FLOW env var is needed.
 
         # If OAuth credentials not provided, DCR must be available
