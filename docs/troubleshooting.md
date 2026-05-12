@@ -290,10 +290,10 @@ kill <pid>
 2. **Test connectivity:**
    ```bash
    # Test from same machine
-   curl http://localhost:8000/health
+   curl http://localhost:8000/health/live
 
    # Test from network (if using --host 0.0.0.0)
-   curl http://<server-ip>:8000/health
+   curl http://<server-ip>:8000/health/live
    ```
 
 3. **Check firewall:**
