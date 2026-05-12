@@ -5,6 +5,39 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.86.0 (2026-05-12)
+
+### BREAKING CHANGE
+
+- ENABLE_MULTI_USER_BASIC_AUTH is no longer read from
+the environment, and setting it now raises a startup ValueError with
+a migration message. Replace `ENABLE_MULTI_USER_BASIC_AUTH=true` with
+`MCP_DEPLOYMENT_MODE=multi_user_basic`. The same loud-deprecation
+check is also applied to the recently-removed ENABLE_LOGIN_FLOW —
+replace with `MCP_DEPLOYMENT_MODE=login_flow` (or drop both;
+`login_flow` is the auto-detect default when no other auth env vars
+are set).
+- `ENABLE_LOGIN_FLOW` is no longer read from the
+environment. Anyone who relied on `ENABLE_LOGIN_FLOW=true` to activate
+Login Flow v2 should set `MCP_DEPLOYMENT_MODE=login_flow` instead (or
+rely on it being the default when no other auth env vars are set).
+- MCP_DEPLOYMENT_MODE=oauth_single_audience is no longer
+accepted. Set MCP_DEPLOYMENT_MODE=login_flow (and keep
+ENABLE_LOGIN_FLOW=true) for the same deployment. The un-augmented
+OAuth path is no longer supported; if you previously ran the broken
+path, you can either configure Login Flow v2 (recommended) or switch
+to multi_user_basic / single_user_basic.
+
+### Fix
+
+- **config**: derive mode flags in Settings.__post_init__; address review round 2
+
+### Refactor
+
+- **config**: drop ENABLE_MULTI_USER_BASIC_AUTH env var, fail loud on legacy aliases
+- **config**: derive enable_login_flow from mode, remove ENABLE_LOGIN_FLOW env var
+- **config**: rename OAUTH_SINGLE_AUDIENCE to LOGIN_FLOW, gate on ENABLE_LOGIN_FLOW
+
 ## v0.85.1 (2026-05-11)
 
 ### Fix
