@@ -108,8 +108,9 @@ nextcloud_verify_ssl = true
 nextcloud_ca_bundle = "@none"
 
 # === Deployment Mode ===
-# Auto-detected if not set. Valid: single_user_basic, multi_user_basic,
-# oauth_single_audience, login_flow, keycloak
+# Auto-detected if not set. Valid: single_user_basic, multi_user_basic, login_flow
+# (`oauth_single_audience` was renamed to `login_flow` in ADR-022; `keycloak`
+# is a planned future mode.)
 # mcp_deployment_mode = ""
 
 # === Authentication Toggles ===
@@ -209,7 +210,7 @@ enable_token_exchange = true
 token_storage_db = "/app/data/tokens.db"
 token_exchange_cache_ttl = 300
 
-[oauth_single_audience]
+[login_flow]
 token_storage_db = "/app/data/tokens.db"
 ```
 
@@ -281,7 +282,6 @@ validators = [
     # Deployment mode validation — catch typos at startup
     Validator("MCP_DEPLOYMENT_MODE", is_in=[
         "single_user_basic", "multi_user_basic", "login_flow",
-        "keycloak", "oauth_single_audience",
     ], when=Validator("MCP_DEPLOYMENT_MODE", must_exist=True)),
 
     # Type and range validation

@@ -106,7 +106,7 @@ NEXTCLOUD_USERNAME=
 NEXTCLOUD_PASSWORD=
 
 # Optional: Explicit mode declaration
-MCP_DEPLOYMENT_MODE=oauth_single_audience
+MCP_DEPLOYMENT_MODE=login_flow
 
 # One variable does it all!
 ENABLE_SEMANTIC_SEARCH=true  # Automatically enables background operations
@@ -131,7 +131,7 @@ NEXTCLOUD_OIDC_CLIENT_SECRET=secret
 **Migration Steps:**
 1. Replace `VECTOR_SYNC_ENABLED=true` with `ENABLE_SEMANTIC_SEARCH=true`
 2. Remove `ENABLE_OFFLINE_ACCESS=true` (auto-enabled)
-3. Optionally add `MCP_DEPLOYMENT_MODE=oauth_single_audience`
+3. Optionally add `MCP_DEPLOYMENT_MODE=login_flow`
 4. Restart server
 5. Check logs for confirmation: "Automatically enabled background operations for semantic search"
 
@@ -161,7 +161,7 @@ NEXTCLOUD_USERNAME=
 NEXTCLOUD_PASSWORD=
 
 # Optional: Explicit mode declaration
-MCP_DEPLOYMENT_MODE=oauth_single_audience
+MCP_DEPLOYMENT_MODE=login_flow
 
 # Renamed for clarity
 ENABLE_BACKGROUND_OPERATIONS=true  # Previously ENABLE_OFFLINE_ACCESS
@@ -178,7 +178,7 @@ NEXTCLOUD_OIDC_CLIENT_SECRET=secret
 
 **Migration Steps:**
 1. Replace `ENABLE_OFFLINE_ACCESS=true` with `ENABLE_BACKGROUND_OPERATIONS=true`
-2. Optionally add `MCP_DEPLOYMENT_MODE=oauth_single_audience`
+2. Optionally add `MCP_DEPLOYMENT_MODE=login_flow`
 3. Restart server
 
 ---
@@ -321,7 +321,7 @@ Only needed when you want background operations **without** semantic search:
 ```bash
 # Example: OAuth mode with background operations but NO semantic search
 NEXTCLOUD_HOST=https://nextcloud.example.com
-MCP_DEPLOYMENT_MODE=oauth_single_audience
+MCP_DEPLOYMENT_MODE=login_flow
 
 # Explicitly enable background operations for future features
 ENABLE_BACKGROUND_OPERATIONS=true
@@ -352,7 +352,7 @@ NEXTCLOUD_HOST=https://nextcloud.example.com
 # Is this OAuth or Multi-User BasicAuth? Not immediately clear.
 
 # With explicit mode:
-MCP_DEPLOYMENT_MODE=oauth_single_audience
+MCP_DEPLOYMENT_MODE=login_flow
 NEXTCLOUD_HOST=https://nextcloud.example.com
 # Clear: This is OAuth mode
 ```
@@ -363,7 +363,7 @@ NEXTCLOUD_HOST=https://nextcloud.example.com
 |-----------|-------------|
 | `single_user_basic` | Single-user with username/password |
 | `multi_user_basic` | Multi-user with BasicAuth pass-through |
-| `oauth_single_audience` | Multi-user OAuth (recommended) |
+| `login_flow` | Multi-user OAuth (recommended) |
 | `oauth_token_exchange` | Multi-user OAuth with token exchange |
 
 ### Mode Detection Priority
@@ -430,7 +430,7 @@ WARNING: Both ENABLE_SEMANTIC_SEARCH and VECTOR_SYNC_ENABLED are set. Using ENAB
 
 **Symptom:**
 ```
-Error: [oauth_single_audience] TOKEN_ENCRYPTION_KEY is required when ENABLE_SEMANTIC_SEARCH is enabled
+Error: [login_flow] TOKEN_ENCRYPTION_KEY is required when ENABLE_SEMANTIC_SEARCH is enabled
 ```
 
 **Solution:**
@@ -442,7 +442,7 @@ When semantic search is enabled in multi-user modes, you need:
 ### Issue: Unexpected Mode Detected
 
 **Symptom:**
-Server activates `oauth_single_audience` mode when you expected `multi_user_basic`
+Server activates `login_flow` mode when you expected `multi_user_basic`
 
 **Solution:**
 Add explicit mode declaration:
@@ -483,7 +483,7 @@ docker-compose up mcp
 
 **Expected Log Output (Multi-User OAuth + Semantic Search):**
 ```
-INFO: Using explicit deployment mode: oauth_single_audience
+INFO: Using explicit deployment mode: login_flow
 INFO: Automatically enabled background operations for semantic search in multi-user mode.
 INFO: Vector sync enabled. Starting background scanner...
 ```

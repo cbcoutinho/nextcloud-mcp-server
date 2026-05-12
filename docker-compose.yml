@@ -275,7 +275,9 @@ services:
       #- NEXTCLOUD_MCP_SERVER_URL=https://nextcloud-mcp-dev.tail148d5.ts.net
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
 
-      # Login Flow v2 (ADR-022)
+      # Login Flow v2 (ADR-022) — explicit mode + the flag that enables the
+      # browser-based app-password acquisition layer
+      - MCP_DEPLOYMENT_MODE=login_flow
       - ENABLE_LOGIN_FLOW=true
 
       # Token storage (required for app password + session persistence).

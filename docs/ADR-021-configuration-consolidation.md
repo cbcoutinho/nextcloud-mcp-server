@@ -1,9 +1,9 @@
 # ADR-021: Configuration Consolidation and Simplification
 
-**Status:** Accepted
+**Status:** Accepted — partly superseded by ADR-022 (`oauth_single_audience` renamed to `login_flow`; `oauth_token_exchange` removed)
 **Date:** 2025-12-21
 **Deciders:** Development Team
-**Related:** ADR-020 (Deployment Modes), ADR-002 (Vector Sync), ADR-004 (Progressive Consent)
+**Related:** ADR-020 (Deployment Modes), ADR-002 (Vector Sync), ADR-004 (Progressive Consent), ADR-022 (Deployment Mode Consolidation)
 
 ## Context
 
