@@ -5,25 +5,22 @@ Manages background vector sync for multi-user deployments:
 - Per-User Scanners: One scanner task per provisioned user
 - Shared Processor Pool: Processes documents from all users
 
-Authentication strategies are mutually exclusive by deployment mode:
+Background sync authenticates as each provisioned user via locally-stored
+Nextcloud app passwords (BasicAuth), retrieved through the management API
+after the user completes Login Flow v2 (or, in multi-user BasicAuth mode,
+the per-user Astrolabe provisioning flow).
 
-Multi-user BasicAuth mode (MCP_DEPLOYMENT_MODE=multi_user_basic):
-- Uses app passwords stored locally in MCP server's database
-- Users provision via Astrolabe personal settings, which sends to MCP API
-- OAuth is NOT used
-
-OAuth mode (with external IdP like Keycloak):
-- Uses OAuth refresh tokens via TokenBrokerService
-- Users provision via browser OAuth flow
-- App passwords are NOT used
-
-These are separate concerns - no fallback between them.
+The earlier OAuth refresh-token path was removed in the ADR-022 follow-up:
+it depended on unmerged Nextcloud `user_oidc` patches for Bearer-token
+validation on non-OCS endpoints, and was never reachable from any
+supported deployment mode. The `TokenBrokerService` constructed in
+`app.py` is retained for the management API revoke endpoint, not for
+background sync.
 """
 
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 import anyio
 from anyio.abc import TaskGroup, TaskStatus
@@ -39,18 +36,7 @@ from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector.processor import process_document
 from nextcloud_mcp_server.vector.scanner import DocumentTask, scan_user_documents
 
-if TYPE_CHECKING:
-    from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
-
 logger = logging.getLogger(__name__)
-
-# Scopes required for vector sync operations
-VECTOR_SYNC_SCOPES = [
-    "notes.read",
-    "files.read",
-    "deck.read",
-    # "news.read",  # News app may not be installed
-]
 
 
 class NotProvisionedError(Exception):
@@ -113,84 +99,13 @@ async def get_user_client_basic_auth(
     )
 
 
-async def get_user_client_oauth(
-    user_id: str,
-    token_broker: "TokenBrokerService",
-    nextcloud_host: str,
-) -> NextcloudClient:
-    """Get an authenticated NextcloudClient using OAuth refresh token.
-
-    For OAuth deployments with external IdP where users provision via
-    browser OAuth flow. App passwords are NOT used in this mode.
-
-    Args:
-        user_id: User identifier
-        token_broker: Token broker for obtaining access tokens
-        nextcloud_host: Nextcloud base URL
-
-    Returns:
-        Authenticated NextcloudClient with Bearer token
-
-    Raises:
-        NotProvisionedError: If user has not provisioned offline access
-    """
-    token = await token_broker.get_background_token(user_id, VECTOR_SYNC_SCOPES)
-    if not token:
-        raise NotProvisionedError(
-            f"User {user_id} has not provisioned offline access. "
-            f"User must complete the OAuth provisioning flow."
-        )
-
-    logger.info("Using OAuth refresh token for background sync: %s", user_id)
-    return NextcloudClient.from_token(
-        base_url=nextcloud_host,
-        token=token,
-        username=user_id,
-    )
-
-
-async def get_user_client(
-    user_id: str,
-    token_broker: "TokenBrokerService | None",
-    nextcloud_host: str,
-    *,
-    use_basic_auth: bool = False,
-) -> NextcloudClient:
-    """Get an authenticated NextcloudClient for a user.
-
-    Dispatches to the appropriate authentication strategy based on mode.
-    These are mutually exclusive - no fallback between them.
-
-    Args:
-        user_id: User identifier
-        token_broker: Token broker for OAuth mode (can be None for BasicAuth mode)
-        nextcloud_host: Nextcloud base URL
-        use_basic_auth: If True, use app passwords via Astrolabe (BasicAuth mode).
-                       If False, use OAuth refresh tokens (OAuth mode).
-
-    Returns:
-        Authenticated NextcloudClient
-
-    Raises:
-        NotProvisionedError: If user has not provisioned access for the mode
-    """
-    if use_basic_auth:
-        return await get_user_client_basic_auth(user_id, nextcloud_host)
-    else:
-        if token_broker is None:
-            raise ValueError("token_broker required for OAuth mode")
-        return await get_user_client_oauth(user_id, token_broker, nextcloud_host)
-
-
 async def user_scanner_task(
     user_id: str,
     send_stream: MemoryObjectSendStream[DocumentTask],
     shutdown_event: anyio.Event,
     wake_event: anyio.Event,
-    token_broker: "TokenBrokerService | None",
     nextcloud_host: str,
     *,
-    use_basic_auth: bool = False,
     task_status: TaskStatus = anyio.TASK_STATUS_IGNORED,
 ) -> None:
     """Scanner task for a single user.
@@ -202,13 +117,10 @@ async def user_scanner_task(
         send_stream: Stream to send changed documents to processors
         shutdown_event: Event signaling shutdown
         wake_event: Event to trigger immediate scan
-        token_broker: Token broker for OAuth mode (None for BasicAuth mode)
         nextcloud_host: Nextcloud base URL
-        use_basic_auth: If True, use app passwords; if False, use OAuth tokens
         task_status: Status object for signaling task readiness
     """
-    mode_label = "BasicAuth" if use_basic_auth else "OAuth"
-    logger.info("[%s] Scanner started for user: %s", mode_label, user_id)
+    logger.info("[BasicAuth] Scanner started for user: %s", user_id)
     settings = get_settings()
     max_consecutive_errors = 5
 
@@ -216,17 +128,14 @@ async def user_scanner_task(
 
     # Pre-validate credentials before entering scan loop
     try:
-        nc_client = await get_user_client(
-            user_id, token_broker, nextcloud_host, use_basic_auth=use_basic_auth
-        )
+        nc_client = await get_user_client_basic_auth(user_id, nextcloud_host)
         try:
             await nc_client.capabilities()  # Lightweight OCS call to validate creds
-            logger.info("[%s] Credentials validated for %s", mode_label, user_id)
+            logger.info("[BasicAuth] Credentials validated for %s", user_id)
         except HTTPStatusError as e:
             if e.response.status_code in (401, 403):
                 logger.warning(
-                    "[%s] Credential validation failed for %s (HTTP %s), not starting scan loop",
-                    mode_label,
+                    "[BasicAuth] Credential validation failed for %s (HTTP %s), not starting scan loop",
                     user_id,
                     e.response.status_code,
                 )
@@ -236,13 +145,12 @@ async def user_scanner_task(
             await nc_client.close()
     except NotProvisionedError:
         logger.warning(
-            "[%s] User %s not provisioned, not starting scan loop", mode_label, user_id
+            "[BasicAuth] User %s not provisioned, not starting scan loop", user_id
         )
         return
     except Exception as e:
         logger.warning(
-            "[%s] Pre-validation failed for %s: %s. Proceeding to scan loop (has its own error handling).",
-            mode_label,
+            "[BasicAuth] Pre-validation failed for %s: %s. Proceeding to scan loop (has its own error handling).",
             user_id,
             e,
         )
@@ -253,9 +161,7 @@ async def user_scanner_task(
         nc_client = None
         try:
             # Get fresh credentials for this scan cycle
-            nc_client = await get_user_client(
-                user_id, token_broker, nextcloud_host, use_basic_auth=use_basic_auth
-            )
+            nc_client = await get_user_client_basic_auth(user_id, nextcloud_host)
 
             # Scan user's documents
             await scan_user_documents(
@@ -268,9 +174,7 @@ async def user_scanner_task(
 
         except NotProvisionedError:
             logger.warning(
-                "[%s] User %s no longer provisioned, stopping scanner",
-                mode_label,
-                user_id,
+                "[BasicAuth] User %s no longer provisioned, stopping scanner", user_id
             )
             break
 
@@ -278,8 +182,7 @@ async def user_scanner_task(
             status_code = e.response.status_code
             if status_code in (401, 403):
                 logger.warning(
-                    "[%s] Scanner auth failed for %s (HTTP %s), stopping scanner. User may need to re-provision credentials.",
-                    mode_label,
+                    "[BasicAuth] Scanner auth failed for %s (HTTP %s), stopping scanner. User may need to re-provision credentials.",
                     user_id,
                     status_code,
                 )
@@ -287,8 +190,7 @@ async def user_scanner_task(
             elif status_code == 429:
                 retry_after = min(int(e.response.headers.get("Retry-After", "60")), 300)
                 logger.warning(
-                    "[%s] Scanner rate-limited for %s, backing off %ss",
-                    mode_label,
+                    "[BasicAuth] Scanner rate-limited for %s, backing off %ss",
                     user_id,
                     retry_after,
                 )
@@ -303,8 +205,7 @@ async def user_scanner_task(
             else:
                 consecutive_errors += 1
                 logger.error(
-                    "[%s] Scanner HTTP error for %s: %s (%s/%s)",
-                    mode_label,
+                    "[BasicAuth] Scanner HTTP error for %s: %s (%s/%s)",
                     user_id,
                     e,
                     consecutive_errors,
@@ -315,8 +216,7 @@ async def user_scanner_task(
         except Exception as e:
             consecutive_errors += 1
             logger.error(
-                "[%s] Scanner error for %s: %s (%s/%s)",
-                mode_label,
+                "[BasicAuth] Scanner error for %s: %s (%s/%s)",
                 user_id,
                 e,
                 consecutive_errors,
@@ -330,8 +230,7 @@ async def user_scanner_task(
 
         if consecutive_errors >= max_consecutive_errors:
             logger.error(
-                "[%s] Scanner for %s hit %s consecutive errors, stopping scanner",
-                mode_label,
+                "[BasicAuth] Scanner for %s hit %s consecutive errors, stopping scanner",
                 user_id,
                 max_consecutive_errors,
             )
@@ -344,16 +243,14 @@ async def user_scanner_task(
         except anyio.get_cancelled_exc_class():
             break
 
-    logger.info("[%s] Scanner stopped for user: %s", mode_label, user_id)
+    logger.info("[BasicAuth] Scanner stopped for user: %s", user_id)
 
 
 async def multi_user_processor_task(
     worker_id: int,
     receive_stream: MemoryObjectReceiveStream[DocumentTask],
     shutdown_event: anyio.Event,
-    token_broker: "TokenBrokerService | None",
     nextcloud_host: str,
-    use_basic_auth: bool = False,
     *,
     task_status: TaskStatus = anyio.TASK_STATUS_IGNORED,
 ) -> None:
@@ -365,13 +262,10 @@ async def multi_user_processor_task(
         worker_id: Worker identifier for logging
         receive_stream: Stream to receive documents from
         shutdown_event: Event signaling shutdown
-        token_broker: Token broker for OAuth mode (None for BasicAuth mode)
         nextcloud_host: Nextcloud base URL
-        use_basic_auth: If True, use app passwords; if False, use OAuth tokens
         task_status: Status object for signaling task readiness
     """
-    mode_label = "BasicAuth" if use_basic_auth else "OAuth"
-    logger.info("[%s] Processor %s started", mode_label, worker_id)
+    logger.info("[BasicAuth] Processor %s started", worker_id)
     task_status.started()
 
     while not shutdown_event.is_set():
@@ -383,11 +277,8 @@ async def multi_user_processor_task(
                 doc_task = await receive_stream.receive()
 
             # Get credentials for THIS document's user
-            nc_client = await get_user_client(
-                doc_task.user_id,
-                token_broker,
-                nextcloud_host,
-                use_basic_auth=use_basic_auth,
+            nc_client = await get_user_client_basic_auth(
+                doc_task.user_id, nextcloud_host
             )
 
             # Process the document
@@ -397,16 +288,13 @@ async def multi_user_processor_task(
             continue
 
         except anyio.EndOfStream:
-            logger.info(
-                "[%s] Processor %s: Stream closed, exiting", mode_label, worker_id
-            )
+            logger.info("[BasicAuth] Processor %s: Stream closed, exiting", worker_id)
             break
 
         except NotProvisionedError:
             if doc_task:
                 logger.warning(
-                    "[%s] User %s not provisioned, skipping %s_%s",
-                    mode_label,
+                    "[BasicAuth] User %s not provisioned, skipping %s_%s",
                     doc_task.user_id,
                     doc_task.doc_type,
                     doc_task.doc_id,
@@ -416,8 +304,7 @@ async def multi_user_processor_task(
         except Exception as e:
             if doc_task:
                 logger.error(
-                    "[%s] Processor %s error processing %s_%s: %s",
-                    mode_label,
+                    "[BasicAuth] Processor %s error processing %s_%s: %s",
                     worker_id,
                     doc_task.doc_type,
                     doc_task.doc_id,
@@ -426,18 +313,14 @@ async def multi_user_processor_task(
                 )
             else:
                 logger.error(
-                    "[%s] Processor %s error: %s",
-                    mode_label,
-                    worker_id,
-                    e,
-                    exc_info=True,
+                    "[BasicAuth] Processor %s error: %s", worker_id, e, exc_info=True
                 )
 
         finally:
             if nc_client:
                 await nc_client.close()
 
-    logger.info("[%s] Processor %s stopped", mode_label, worker_id)
+    logger.info("[BasicAuth] Processor %s stopped", worker_id)
 
 
 # Backward compatibility alias
@@ -450,10 +333,8 @@ async def _run_user_scanner_with_scope(
     send_stream: MemoryObjectSendStream[DocumentTask],
     shutdown_event: anyio.Event,
     wake_event: anyio.Event,
-    token_broker: "TokenBrokerService | None",
     nextcloud_host: str,
     user_states: dict[str, UserSyncState],
-    use_basic_auth: bool = False,
 ) -> None:
     """Wrapper to run scanner with cancellation scope.
 
@@ -467,9 +348,7 @@ async def _run_user_scanner_with_scope(
                 send_stream=cloned_stream,
                 shutdown_event=shutdown_event,
                 wake_event=wake_event,
-                token_broker=token_broker,
                 nextcloud_host=nextcloud_host,
-                use_basic_auth=use_basic_auth,
             )
     finally:
         # Clean up on exit
@@ -482,12 +361,10 @@ async def user_manager_task(
     send_stream: MemoryObjectSendStream[DocumentTask],
     shutdown_event: anyio.Event,
     wake_event: anyio.Event,
-    token_broker: "TokenBrokerService | None",
     refresh_token_storage: "RefreshTokenStorage",
     nextcloud_host: str,
     user_states: dict[str, UserSyncState],
     tg: TaskGroup,
-    use_basic_auth: bool = False,
     *,
     task_status: TaskStatus = anyio.TASK_STATUS_IGNORED,
 ) -> None:
@@ -501,42 +378,33 @@ async def user_manager_task(
         send_stream: Stream to send documents to processors
         shutdown_event: Event signaling shutdown
         wake_event: Event to wake scanners for immediate scan
-        token_broker: Token broker for OAuth mode (None for BasicAuth mode)
         refresh_token_storage: Storage for tracking provisioned users
         nextcloud_host: Nextcloud base URL
         user_states: Shared dict tracking active user scanners
         tg: Task group for spawning scanner tasks
-        use_basic_auth: If True, use app passwords; if False, use OAuth tokens
         task_status: Status object for signaling task readiness
     """
     settings = get_settings()
     poll_interval = settings.vector_sync_user_poll_interval
-    mode_label = "BasicAuth" if use_basic_auth else "OAuth"
 
-    logger.info(
-        "[%s] User manager started (poll interval: %ss)", mode_label, poll_interval
-    )
+    logger.info("[BasicAuth] User manager started (poll interval: %ss)", poll_interval)
     task_status.started()
 
     while not shutdown_event.is_set():
         try:
-            # Get current provisioned users based on mode
-            if use_basic_auth:
-                # BasicAuth / Login Flow v2 mode: query app_passwords table
-                provisioned_users = set(
-                    await refresh_token_storage.get_all_app_password_user_ids()
-                )
-            else:
-                # OAuth mode: query refresh_tokens table
-                provisioned_users = set(await refresh_token_storage.get_all_user_ids())
+            # Query the app_passwords table — background sync always
+            # authenticates as the user via locally-stored Nextcloud app
+            # passwords (Login Flow v2 / multi-user BasicAuth).
+            provisioned_users = set(
+                await refresh_token_storage.get_all_app_password_user_ids()
+            )
             active_users = set(user_states.keys())
 
             # Start scanners for new users
             new_users = provisioned_users - active_users
             for user_id in new_users:
                 logger.info(
-                    "[%s] Starting scanner for newly provisioned user: %s",
-                    mode_label,
+                    "[BasicAuth] Starting scanner for newly provisioned user: %s",
                     user_id,
                 )
                 cancel_scope = anyio.CancelScope()
@@ -553,17 +421,15 @@ async def user_manager_task(
                     send_stream,
                     shutdown_event,
                     wake_event,
-                    token_broker,
                     nextcloud_host,
                     user_states,
-                    use_basic_auth,  # Positional after user_states
                 )
 
             # Cancel scanners for revoked users
             revoked_users = active_users - provisioned_users
             for user_id in revoked_users:
                 logger.info(
-                    "[%s] Stopping scanner for revoked user: %s", mode_label, user_id
+                    "[BasicAuth] Stopping scanner for revoked user: %s", user_id
                 )
                 state = user_states.get(user_id)
                 if state:
@@ -571,16 +437,12 @@ async def user_manager_task(
                     # Note: state will be removed by _run_user_scanner_with_scope on exit
 
             if new_users:
-                logger.info(
-                    "[%s] Started %s new scanner(s)", mode_label, len(new_users)
-                )
+                logger.info("[BasicAuth] Started %s new scanner(s)", len(new_users))
             if revoked_users:
-                logger.info(
-                    "[%s] Stopped %s scanner(s)", mode_label, len(revoked_users)
-                )
+                logger.info("[BasicAuth] Stopped %s scanner(s)", len(revoked_users))
 
         except Exception as e:
-            logger.error("[%s] User manager error: %s", mode_label, e, exc_info=True)
+            logger.error("[BasicAuth] User manager error: %s", e, exc_info=True)
 
         # Sleep until next poll
         try:
@@ -591,11 +453,10 @@ async def user_manager_task(
 
     # Cancel all remaining scanners on shutdown
     logger.info(
-        "[%s] User manager shutting down, cancelling %s scanner(s)",
-        mode_label,
+        "[BasicAuth] User manager shutting down, cancelling %s scanner(s)",
         len(user_states),
     )
     for state in list(user_states.values()):
         state.cancel_scope.cancel()
 
-    logger.info("[%s] User manager stopped", mode_label)
+    logger.info("[BasicAuth] User manager stopped")

@@ -1811,12 +1811,14 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         )
                         break
 
-                # Determine authentication mode for background sync
-                # Login Flow v2 and multi-user BasicAuth: use app passwords
-                # OAuth mode (without Login Flow): use OAuth refresh tokens
-                use_basic_auth = not oauth_enabled or settings.enable_login_flow
-
-                # Start background tasks using anyio TaskGroup
+                # Background sync authenticates as each provisioned user via
+                # locally-stored Nextcloud app passwords (Login Flow v2 /
+                # multi-user BasicAuth). The earlier OAuth refresh-token
+                # path in vector/oauth_sync.py was removed in the ADR-022
+                # cleanup — it relied on unmerged user_oidc patches and was
+                # never reachable from any supported deployment mode. The
+                # `token_broker` constructed above is still used by the
+                # management API revoke endpoint (via app.state.oauth_context).
                 async with anyio.create_task_group() as tg:
                     # Start user manager task (supervises per-user scanners)
                     await tg.start(
@@ -1824,12 +1826,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         send_stream,
                         shutdown_event,
                         scanner_wake_event,
-                        token_broker if not use_basic_auth else None,
-                        token_storage,  # Use token_storage (works for both OAuth and multi-user BasicAuth)
+                        token_storage,
                         nextcloud_host_for_sync,
                         user_states,
                         tg,
-                        use_basic_auth,  # Pass as positional arg (before task_status)
                     )
 
                     # Start processor pool (each gets a cloned receive stream)
@@ -1839,9 +1839,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                             i,
                             receive_stream.clone(),
                             shutdown_event,
-                            token_broker if not use_basic_auth else None,
                             nextcloud_host_for_sync,
-                            use_basic_auth,  # Pass as positional arg (before task_status)
                         )
 
                     # Expose this long-lived task group to request-path code
