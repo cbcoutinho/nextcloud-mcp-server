@@ -25,7 +25,7 @@ class AuthMode(Enum):
 
     SINGLE_USER_BASIC = "single_user_basic"
     MULTI_USER_BASIC = "multi_user_basic"
-    OAUTH_SINGLE_AUDIENCE = "oauth_single"
+    OAUTH_SINGLE_AUDIENCE = "oauth_single_audience"
 
 
 @dataclass

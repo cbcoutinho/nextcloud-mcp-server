@@ -1167,7 +1167,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
     # Create MCP server based on detected mode
     if mode == AuthMode.OAUTH_SINGLE_AUDIENCE:
-        logger.info("Configuring MCP server for OAuth mode")
+        logger.info("Configuring MCP server for %s mode", mode.value)
         # Asynchronously get the OAuth configuration
 
         (
