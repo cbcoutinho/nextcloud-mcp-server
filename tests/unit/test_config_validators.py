@@ -10,6 +10,8 @@ Tests cover:
 import os
 from unittest.mock import patch
 
+import pytest
+
 from nextcloud_mcp_server.config import Settings, _reload_config
 from nextcloud_mcp_server.config_validators import (
     AuthMode,
@@ -23,14 +25,21 @@ class TestModeDetection:
     """Test auth mode detection from configuration."""
 
     def test_multi_user_basic_mode_detection(self):
-        """Test multi-user BasicAuth mode is detected."""
+        """Test multi-user BasicAuth mode is selected via explicit deployment_mode.
+
+        ADR-022 follow-up: the ENABLE_MULTI_USER_BASIC_AUTH auto-detection branch
+        was removed; the only way to opt in is `MCP_DEPLOYMENT_MODE=multi_user_basic`.
+        Coverage for the explicit-mode path also lives in
+        TestExplicitModeSelection::test_explicit_multi_user_basic_mode.
+        """
         settings = Settings(
             nextcloud_host="http://localhost",
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
         )
 
         mode = detect_auth_mode(settings)
         assert mode == AuthMode.MULTI_USER_BASIC
+        assert settings.enable_multi_user_basic_auth is True
 
     def test_single_user_basic_mode_detection(self):
         """Test single-user BasicAuth mode is detected."""
@@ -127,20 +136,25 @@ class TestSingleUserBasicValidation:
         # In OAuth mode, having a username set is forbidden
         assert any("nextcloud_username" in err.lower() for err in errors)
 
-    def test_forbidden_multi_user_basic_auth(self):
-        """Test error when ENABLE_MULTI_USER_BASIC_AUTH is set."""
+    def test_forbidden_multi_user_basic_when_credentials_present(self):
+        """Test multi-user mode rejects single-user credentials.
+
+        When MCP_DEPLOYMENT_MODE=multi_user_basic is set explicitly but
+        NEXTCLOUD_USERNAME/PASSWORD are also set (a misconfiguration),
+        the explicit mode wins and validation reports the credentials as
+        forbidden.
+        """
         settings = Settings(
             nextcloud_host="http://localhost",
             nextcloud_username="admin",
             nextcloud_password="password",
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
         )
 
-        # Note: This will detect as MULTI_USER_BASIC due to priority
         mode, errors = validate_configuration(settings)
 
         assert mode == AuthMode.MULTI_USER_BASIC
-        # It will fail multi-user validation because username/password are forbidden
+        # Should report errors for forbidden username/password
         assert len(errors) > 0
 
     def test_vector_sync_without_embedding_provider_uses_fallback(self):
@@ -167,7 +181,7 @@ class TestMultiUserBasicValidation:
         """Test valid minimal multi-user BasicAuth config."""
         settings = Settings(
             nextcloud_host="http://localhost",
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
         )
 
         mode, errors = validate_configuration(settings)
@@ -179,7 +193,7 @@ class TestMultiUserBasicValidation:
         """Test valid config with offline access enabled."""
         settings = Settings(
             nextcloud_host="http://localhost",
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
             enable_offline_access=True,
             oidc_client_id="test-client",
             oidc_client_secret="test-secret",
@@ -195,7 +209,7 @@ class TestMultiUserBasicValidation:
     def test_missing_required_host(self):
         """Test error when NEXTCLOUD_HOST is missing."""
         settings = Settings(
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
         )
 
         mode, errors = validate_configuration(settings)
@@ -209,13 +223,12 @@ class TestMultiUserBasicValidation:
             nextcloud_host="http://localhost",
             nextcloud_username="admin",
             nextcloud_password="password",
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
         )
 
         mode, errors = validate_configuration(settings)
 
-        # Multi-user BasicAuth has higher priority than single-user in detection
-        # (explicit flags come before credentials)
+        # Explicit MCP_DEPLOYMENT_MODE wins over auto-detection from credentials
         assert mode == AuthMode.MULTI_USER_BASIC
         # Should report errors for forbidden username/password
         assert any("nextcloud_username" in err.lower() for err in errors)
@@ -225,7 +238,7 @@ class TestMultiUserBasicValidation:
         """Test that offline access works without OAuth credentials (will use DCR)."""
         settings = Settings(
             nextcloud_host="http://localhost",
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
             enable_offline_access=True,
             token_encryption_key="test-key-" + "a" * 32,
             token_storage_db="/tmp/tokens.db",
@@ -241,7 +254,7 @@ class TestMultiUserBasicValidation:
         """Test error when offline access enabled but encryption key missing."""
         settings = Settings(
             nextcloud_host="http://localhost",
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
             enable_offline_access=True,
             oidc_client_id="test-client",
             oidc_client_secret="test-secret",
@@ -261,7 +274,7 @@ class TestMultiUserBasicValidation:
             os.environ,
             {
                 "NEXTCLOUD_HOST": "http://localhost:8080",
-                "ENABLE_MULTI_USER_BASIC_AUTH": "true",
+                "MCP_DEPLOYMENT_MODE": "multi_user_basic",
                 "VECTOR_SYNC_ENABLED": "true",  # Using old name for backward compat test
                 "QDRANT_LOCATION": ":memory:",
                 "OLLAMA_BASE_URL": "http://ollama:11434",
@@ -659,7 +672,7 @@ class TestConfigurationConsolidation:
             os.environ,
             {
                 "NEXTCLOUD_HOST": "http://localhost:8080",
-                "ENABLE_MULTI_USER_BASIC_AUTH": "true",
+                "MCP_DEPLOYMENT_MODE": "multi_user_basic",
                 "ENABLE_SEMANTIC_SEARCH": "true",
                 "QDRANT_LOCATION": ":memory:",
                 "TOKEN_ENCRYPTION_KEY": "test-key",
@@ -830,3 +843,54 @@ class TestExplicitModeSelection:
             mode = detect_auth_mode(settings)
 
             assert mode == AuthMode.LOGIN_FLOW
+
+    def test_legacy_enable_multi_user_basic_auth_env_var_errors(self):
+        """ADR-022 follow-up: ENABLE_MULTI_USER_BASIC_AUTH=true must fail loudly.
+
+        The env-var alias was removed; users must migrate to
+        `MCP_DEPLOYMENT_MODE=multi_user_basic`. Silent removal would have
+        switched users to LOGIN_FLOW (the default) — wrong runtime mode.
+        """
+        with patch.dict(
+            os.environ,
+            {
+                "NEXTCLOUD_HOST": "http://localhost:8080",
+                "ENABLE_MULTI_USER_BASIC_AUTH": "true",
+            },
+            clear=True,
+        ):
+            from nextcloud_mcp_server.config import get_settings
+
+            _reload_config()
+            settings = get_settings()
+
+            with pytest.raises(ValueError) as exc:
+                detect_auth_mode(settings)
+
+            assert "ENABLE_MULTI_USER_BASIC_AUTH" in str(exc.value)
+            assert "multi_user_basic" in str(exc.value)
+
+    def test_legacy_enable_login_flow_env_var_errors(self):
+        """ADR-022 follow-up: ENABLE_LOGIN_FLOW=true must fail loudly.
+
+        Mirrors the ENABLE_MULTI_USER_BASIC_AUTH check — both legacy aliases
+        now error with a one-line migration message.
+        """
+        with patch.dict(
+            os.environ,
+            {
+                "NEXTCLOUD_HOST": "http://localhost:8080",
+                "ENABLE_LOGIN_FLOW": "true",
+            },
+            clear=True,
+        ):
+            from nextcloud_mcp_server.config import get_settings
+
+            _reload_config()
+            settings = get_settings()
+
+            with pytest.raises(ValueError) as exc:
+                detect_auth_mode(settings)
+
+            assert "ENABLE_LOGIN_FLOW" in str(exc.value)
+            assert "login_flow" in str(exc.value)

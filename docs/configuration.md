@@ -74,7 +74,7 @@ Each MCP client sends its own Nextcloud credentials in an `Authorization: Basic`
 
 ```dotenv
 NEXTCLOUD_HOST=https://your.nextcloud.instance.com
-ENABLE_MULTI_USER_BASIC_AUTH=true
+MCP_DEPLOYMENT_MODE=multi_user_basic
 
 # Optional: enable per-user app-password storage for background sync
 TOKEN_ENCRYPTION_KEY=<fernet-key>

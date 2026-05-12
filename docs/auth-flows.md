@@ -221,7 +221,7 @@ NEXTCLOUD_PASSWORD=<app-password>
 ### Multi-User BasicAuth
 ```bash
 NEXTCLOUD_HOST=https://nextcloud.example.com
-ENABLE_MULTI_USER_BASIC_AUTH=true
+MCP_DEPLOYMENT_MODE=multi_user_basic
 
 # Optional: app-password storage for background sync
 TOKEN_ENCRYPTION_KEY=<fernet-key>

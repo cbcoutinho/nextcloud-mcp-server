@@ -188,7 +188,7 @@ NEXTCLOUD_OIDC_CLIENT_SECRET=secret
 **Before (v0.57.x):**
 ```bash
 NEXTCLOUD_HOST=https://nextcloud.example.com
-ENABLE_MULTI_USER_BASIC_AUTH=true
+MCP_DEPLOYMENT_MODE=multi_user_basic
 
 # Both required - redundant
 ENABLE_OFFLINE_ACCESS=true
@@ -205,7 +205,7 @@ NEXTCLOUD_OIDC_CLIENT_SECRET=secret
 **After (v0.58.0+ - Simplified):**
 ```bash
 NEXTCLOUD_HOST=https://nextcloud.example.com
-ENABLE_MULTI_USER_BASIC_AUTH=true
+MCP_DEPLOYMENT_MODE=multi_user_basic
 
 # Optional: Explicit mode declaration
 MCP_DEPLOYMENT_MODE=multi_user_basic
@@ -448,7 +448,7 @@ Server activates `login_flow` mode when you expected `multi_user_basic`
 Add explicit mode declaration:
 ```bash
 MCP_DEPLOYMENT_MODE=multi_user_basic
-ENABLE_MULTI_USER_BASIC_AUTH=true
+MCP_DEPLOYMENT_MODE=multi_user_basic
 ```
 
 ---

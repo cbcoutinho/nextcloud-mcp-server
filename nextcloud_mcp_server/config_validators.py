@@ -9,6 +9,7 @@ See ADR-020 for detailed architecture and deployment mode documentation.
 """
 
 import logging
+import os
 from dataclasses import dataclass
 from enum import Enum
 
@@ -64,7 +65,6 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
             "document_chunk_overlap",
         ],
         forbidden=[
-            "enable_multi_user_basic_auth",
             "oidc_client_id",
             "oidc_client_secret",
         ],
@@ -78,7 +78,7 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
         "Suitable for personal Nextcloud instances and local development.",
     ),
     AuthMode.MULTI_USER_BASIC: ModeRequirements(
-        required=["nextcloud_host", "enable_multi_user_basic_auth"],
+        required=["nextcloud_host"],
         optional=[
             # Background sync with app passwords (via Astrolabe)
             "enable_offline_access",
@@ -138,7 +138,6 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
         forbidden=[
             "nextcloud_username",
             "nextcloud_password",
-            "enable_multi_user_basic_auth",
         ],
         conditional={
             "enable_offline_access": [
@@ -181,6 +180,21 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
 
     logger = logging.getLogger(__name__)
 
+    # ADR-022 follow-up: fail loudly if a caller is still relying on the
+    # removed env-var aliases. Bypass dynaconf and read os.environ directly
+    # so the check survives even though the aliases are gone.
+    for legacy, replacement in (
+        ("ENABLE_MULTI_USER_BASIC_AUTH", "multi_user_basic"),
+        ("ENABLE_LOGIN_FLOW", "login_flow"),
+    ):
+        if os.getenv(legacy):
+            raise ValueError(
+                f"{legacy} is no longer read from the environment. "
+                f"Set MCP_DEPLOYMENT_MODE={replacement} instead "
+                "(ADR-022). The deployment mode is the single source of "
+                "truth for selecting an auth flow."
+            )
+
     # ADR-021: Check for explicit deployment mode first
     if settings.deployment_mode:
         mode_str = settings.deployment_mode.lower().strip()
@@ -204,11 +218,11 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
         _sync_derived_flags(settings, explicit_mode)
         return explicit_mode
 
-    # Auto-detection (existing behavior)
-    # Check for multi-user BasicAuth
-    if settings.enable_multi_user_basic_auth:
-        _sync_derived_flags(settings, AuthMode.MULTI_USER_BASIC)
-        return AuthMode.MULTI_USER_BASIC
+    # Auto-detection (no explicit deployment_mode).
+    # MULTI_USER_BASIC is no longer auto-detectable — the ENABLE_MULTI_USER_BASIC_AUTH
+    # env-var alias was dropped in the ADR-022 follow-up, so the only way to
+    # opt into that mode is `MCP_DEPLOYMENT_MODE=multi_user_basic` (handled
+    # above). The legacy env var fails loudly at the top of this function.
 
     # Check for single-user BasicAuth (explicit credentials)
     if settings.nextcloud_username and settings.nextcloud_password:
@@ -228,13 +242,12 @@ def _sync_derived_flags(settings: Settings, mode: AuthMode) -> None:
     Some runtime call sites (app.py, context.py, auth/scope_authorization.py)
     still read individual boolean flags rather than passing the mode around.
     Keep those flags in sync with the mode here so the mode is the single
-    source of truth and users don't have to set redundant env vars.
-
-    Specifically: `enable_login_flow` is now derived from
-    `mode == AuthMode.LOGIN_FLOW`. The ENABLE_LOGIN_FLOW env-var alias was
+    source of truth and users don't have to set redundant env vars. The
+    ENABLE_LOGIN_FLOW and ENABLE_MULTI_USER_BASIC_AUTH env-var aliases were
     removed in the ADR-022 follow-up (PR #787).
     """
     settings.enable_login_flow = mode == AuthMode.LOGIN_FLOW
+    settings.enable_multi_user_basic_auth = mode == AuthMode.MULTI_USER_BASIC
 
 
 def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:

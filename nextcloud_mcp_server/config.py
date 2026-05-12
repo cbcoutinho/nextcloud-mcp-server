@@ -453,9 +453,13 @@ class Settings:
     # Progressive Consent settings (always enabled - no flag needed)
     enable_offline_access: bool = False
 
-    # Multi-user BasicAuth pass-through mode (ADR-019 interim solution)
-    # When enabled, MCP server extracts BasicAuth credentials from request headers
-    # and passes them through to Nextcloud APIs (no storage, stateless)
+    # Multi-user BasicAuth pass-through mode (ADR-019 interim solution).
+    # Internal — not user-settable; the ENABLE_MULTI_USER_BASIC_AUTH env-var
+    # alias was removed in the ADR-022 follow-up. Auto-set by
+    # detect_auth_mode() when MCP_DEPLOYMENT_MODE=multi_user_basic. When True,
+    # the MCP server extracts BasicAuth credentials from request headers and
+    # passes them through to Nextcloud APIs (no storage, stateless). Kept
+    # as a field for backward compat with the runtime call sites that read it.
     enable_multi_user_basic_auth: bool = False
 
     # Login Flow v2 derived flag (ADR-022). Internal — not user-settable.
@@ -723,20 +727,31 @@ def _get_semantic_search_enabled() -> bool:
 def _is_multi_user_mode() -> bool:
     """Detect if this is a multi-user deployment mode.
 
+    Runs early in config setup (before Settings is fully built) for
+    mode-conditional defaults. Must match the canonical detection in
+    `config_validators.detect_auth_mode`, but works directly against the
+    raw dynaconf store since Settings doesn't exist yet.
+
     Multi-user modes are:
-    - Multi-user BasicAuth (ENABLE_MULTI_USER_BASIC_AUTH=true)
-    - OAuth Single-Audience (no username/password set)
+    - Multi-user BasicAuth (MCP_DEPLOYMENT_MODE=multi_user_basic)
+    - Login Flow v2 / default OAuth (MCP_DEPLOYMENT_MODE=login_flow, or no
+      username/password and no explicit mode)
     - OAuth Token Exchange (ENABLE_TOKEN_EXCHANGE=true)
 
-    Single-user modes are:
+    Single-user mode is:
     - Single-user BasicAuth (username and password both set)
 
     Returns:
         True if multi-user mode detected
     """
-    # Multi-user BasicAuth explicitly enabled
-    if _dynaconf.get("ENABLE_MULTI_USER_BASIC_AUTH", False):
+    # Explicit deployment mode wins. The ENABLE_MULTI_USER_BASIC_AUTH env-var
+    # alias was removed in the ADR-022 follow-up; selection is now via
+    # MCP_DEPLOYMENT_MODE.
+    explicit_mode = str(_dynaconf.get("MCP_DEPLOYMENT_MODE", "") or "").lower().strip()
+    if explicit_mode in {"multi_user_basic", "login_flow"}:
         return True
+    if explicit_mode == "single_user_basic":
+        return False
 
     # Token exchange implies OAuth multi-user
     if _dynaconf.get("ENABLE_TOKEN_EXCHANGE", False):
@@ -748,7 +763,7 @@ def _is_multi_user_mode() -> bool:
     if has_username and has_password:
         return False
 
-    # Otherwise, assume OAuth multi-user (default when no credentials provided)
+    # Otherwise, assume multi-user (default when no credentials provided)
     return True
 
 
@@ -854,12 +869,10 @@ def get_settings() -> Settings:
         "jwks_uri": "JWKS_URI",
         "introspection_uri": "INTROSPECTION_URI",
         "userinfo_uri": "USERINFO_URI",
-        # Multi-user BasicAuth pass-through mode
-        "enable_multi_user_basic_auth": "ENABLE_MULTI_USER_BASIC_AUTH",
-        # NOTE: `enable_login_flow` used to have an `ENABLE_LOGIN_FLOW` env-var
-        # alias here, but it was removed in the ADR-022 follow-up — the flag
-        # is now derived from MCP_DEPLOYMENT_MODE=login_flow and set by
-        # detect_auth_mode() so users only need to configure the mode.
+        # NOTE: `enable_multi_user_basic_auth` and `enable_login_flow` no
+        # longer have env-var aliases — both are derived from the resolved
+        # MCP_DEPLOYMENT_MODE in detect_auth_mode() so users only configure
+        # the mode (ADR-022 follow-up).
         # Token and webhook storage settings
         "token_encryption_key": "TOKEN_ENCRYPTION_KEY",
         "token_storage_db": "TOKEN_STORAGE_DB",

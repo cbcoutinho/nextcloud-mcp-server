@@ -146,11 +146,11 @@ services:
     ports:
       - 127.0.0.1:8003:8000
     environment:
-      # Multi-user BasicAuth pass-through mode (ADR-020)
+      # Multi-user BasicAuth pass-through mode (ADR-020, ADR-022)
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8003
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
-      - ENABLE_MULTI_USER_BASIC_AUTH=true
+      - MCP_DEPLOYMENT_MODE=multi_user_basic
       - ENABLE_BACKGROUND_OPERATIONS=true
 
       # Token storage (required for middleware initialization).
