@@ -1789,10 +1789,19 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         )
                         break
 
-                # Determine authentication mode for background sync
-                # Login Flow v2 and multi-user BasicAuth: use app passwords
-                # OAuth mode (without Login Flow): use OAuth refresh tokens
-                use_basic_auth = not oauth_enabled or settings.enable_login_flow
+                # Background sync always uses app passwords post-ADR-022:
+                # `oauth_enabled` now implies `enable_login_flow` (single
+                # source of truth is `MCP_DEPLOYMENT_MODE`), so the old
+                # `not oauth_enabled or settings.enable_login_flow` was always
+                # True. The OAuth-refresh code paths in
+                # `vector/oauth_sync.py` (gated on `use_basic_auth=False`)
+                # are now unreachable; pruning them — and dropping the
+                # `use_basic_auth` parameter from `user_manager_task` /
+                # `oauth_processor_task` — is tracked as a separate
+                # follow-up. Keep the variable name + the conditional
+                # wiring at the call sites for now so the parallel-prune
+                # PR is a clean mechanical diff.
+                use_basic_auth = True
 
                 # Start background tasks using anyio TaskGroup
                 async with anyio.create_task_group() as tg:
