@@ -129,7 +129,7 @@ class LoginFlowV2Client:
                 f"Malformed Login Flow v2 initiate response from Nextcloud (missing key: {e})"
             ) from e
 
-        logger.info(f"Login Flow v2 initiated: login_url={result.login_url[:60]}...")
+        logger.info("Login Flow v2 initiated: login_url=%s...", result.login_url[:60])
         return result
 
     def _rewrite_to_nextcloud_host(self, url: str) -> str:
@@ -142,7 +142,7 @@ class LoginFlowV2Client:
         """
         result = rewrite_url_origin(url, self.nextcloud_host)
         if result != url:
-            logger.debug(f"Rewrote Login Flow v2 URL: {url} → {result}")
+            logger.debug("Rewrote Login Flow v2 URL: %s → %s", url, result)
         return result
 
     async def poll(self, poll_endpoint: str, poll_token: str) -> LoginFlowPollResult:
@@ -172,8 +172,9 @@ class LoginFlowV2Client:
         if response.status_code == 200:
             data = response.json()
             logger.info(
-                f"Login Flow v2 completed: server={data.get('server')}, "
-                f"loginName={data.get('loginName')}"
+                "Login Flow v2 completed: server=%s, loginName=%s",
+                data.get("server"),
+                data.get("loginName"),
             )
             try:
                 return LoginFlowPollResult(
@@ -193,6 +194,6 @@ class LoginFlowV2Client:
 
         # Any other status indicates the flow has expired or is invalid
         logger.warning(
-            f"Login Flow v2 poll returned unexpected status: {response.status_code}"
+            "Login Flow v2 poll returned unexpected status: %s", response.status_code
         )
         return LoginFlowPollResult(status="expired")

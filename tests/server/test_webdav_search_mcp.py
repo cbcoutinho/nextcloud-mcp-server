@@ -53,16 +53,16 @@ async def search_test_files(nc_client: NextcloudClient):
     for file_path, content, content_type in test_files:
         await nc_client.webdav.write_file(file_path, content, content_type)
 
-    logger.info(f"Created {len(test_files)} test files in {test_dir}")
+    logger.info("Created %s test files in %s", len(test_files), test_dir)
 
     yield test_dir
 
     # Cleanup
     try:
         await nc_client.webdav.delete_resource(test_dir)
-        logger.info(f"Cleaned up test directory: {test_dir}")
+        logger.info("Cleaned up test directory: %s", test_dir)
     except Exception as e:
-        logger.warning(f"Failed to cleanup {test_dir}: {e}")
+        logger.warning("Failed to cleanup %s: %s", test_dir, e)
 
 
 async def test_nc_webdav_find_by_name(
@@ -82,7 +82,7 @@ async def test_nc_webdav_find_by_name(
     content = result.content[0].text
     files = normalize_search_response(json.loads(content))
 
-    logger.info(f"Found {len(files)} files matching 'search_%.txt'")
+    logger.info("Found %s files matching 'search_%%.txt'", len(files))
 
     # Should find at least 3 .txt files
     assert len(files) >= 3, f"Expected at least 3 .txt files, got {len(files)}"
@@ -113,7 +113,7 @@ async def test_nc_webdav_find_by_name_with_limit(
     content = result.content[0].text
     files = normalize_search_response(json.loads(content))
 
-    logger.info(f"Found {len(files)} files with limit=2")
+    logger.info("Found %s files with limit=2", len(files))
 
     # Should return at most 2 results
     assert len(files) <= 2, f"Expected at most 2 files, got {len(files)}"
@@ -136,7 +136,7 @@ async def test_nc_webdav_find_by_type_images(
     content = result.content[0].text
     files = normalize_search_response(json.loads(content))
 
-    logger.info(f"Found {len(files)} image files")
+    logger.info("Found %s image files", len(files))
 
     # Should find at least 2 image files (jpg and png)
     assert len(files) >= 2, f"Expected at least 2 image files, got {len(files)}"
@@ -165,7 +165,7 @@ async def test_nc_webdav_find_by_type_specific(
     content = result.content[0].text
     files = normalize_search_response(json.loads(content))
 
-    logger.info(f"Found {len(files)} PDF files")
+    logger.info("Found %s PDF files", len(files))
 
     # Should find at least 1 PDF
     assert len(files) >= 1, f"Expected at least 1 PDF file, got {len(files)}"
@@ -194,7 +194,7 @@ async def test_nc_webdav_search_files_basic(
     content = result.content[0].text
     files = normalize_search_response(json.loads(content))
 
-    logger.info(f"Found {len(files)} markdown files")
+    logger.info("Found %s markdown files", len(files))
 
     # Should find at least 2 .md files
     assert len(files) >= 2, f"Expected at least 2 .md files, got {len(files)}"
@@ -222,7 +222,7 @@ async def test_nc_webdav_search_files_combined(
     content = result.content[0].text
     files = normalize_search_response(json.loads(content))
 
-    logger.info(f"Found {len(files)} files matching combined filters")
+    logger.info("Found %s files matching combined filters", len(files))
 
     # Should find search_test1.txt and search_test2.txt
     assert len(files) >= 2, f"Expected at least 2 files, got {len(files)}"
@@ -255,7 +255,7 @@ async def test_nc_webdav_search_files_with_limit(
     content = result.content[0].text
     files = normalize_search_response(json.loads(content))
 
-    logger.info(f"Found {len(files)} files with limit=3")
+    logger.info("Found %s files with limit=3", len(files))
 
     # Should return at most 3 results
     assert len(files) <= 3, f"Expected at most 3 files, got {len(files)}"
@@ -318,5 +318,5 @@ async def test_search_result_properties(
     extended_props = ["file_id", "etag", "size", "content_type", "last_modified"]
     present_props = [prop for prop in extended_props if prop in file]
 
-    logger.info(f"Search result properties: {list(file.keys())}")
+    logger.info("Search result properties: %s", list(file.keys()))
     assert len(present_props) > 0, f"Should have at least one of {extended_props}"

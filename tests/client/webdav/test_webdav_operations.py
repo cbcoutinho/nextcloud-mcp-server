@@ -33,7 +33,7 @@ async def test_create_and_delete_directory(
         # Create directory
         result = await nc_client.webdav.create_directory(test_dir)
         assert result["status_code"] == 201  # Created
-        logger.info(f"Created directory: {test_dir}")
+        logger.info("Created directory: %s", test_dir)
 
         # Verify directory exists by listing parent
         parent_listing = await nc_client.webdav.list_directory(test_base_path)
@@ -43,7 +43,7 @@ async def test_create_and_delete_directory(
         # Delete directory
         delete_result = await nc_client.webdav.delete_resource(test_dir)
         assert delete_result["status_code"] in [204, 404]  # No Content or Not Found
-        logger.info(f"Deleted directory: {test_dir}")
+        logger.info("Deleted directory: %s", test_dir)
 
     finally:
         # Cleanup: ensure directory is deleted
@@ -67,13 +67,13 @@ async def test_write_read_delete_file(nc_client: NextcloudClient, test_base_path
             test_file, test_content.encode("utf-8"), content_type="text/plain"
         )
         assert write_result["status_code"] in [200, 201, 204]  # Success codes
-        logger.info(f"Wrote file: {test_file}")
+        logger.info("Wrote file: %s", test_file)
 
         # Read file back
         content, content_type = await nc_client.webdav.read_file(test_file)
         assert content.decode("utf-8") == test_content
         assert "text/plain" in content_type
-        logger.info(f"Read file: {test_file}")
+        logger.info("Read file: %s", test_file)
 
         # Verify file appears in directory listing
         listing = await nc_client.webdav.list_directory(test_base_path)
@@ -83,7 +83,7 @@ async def test_write_read_delete_file(nc_client: NextcloudClient, test_base_path
         # Delete file
         delete_result = await nc_client.webdav.delete_resource(test_file)
         assert delete_result["status_code"] in [204, 404]  # No Content or Not Found
-        logger.info(f"Deleted file: {test_file}")
+        logger.info("Deleted file: %s", test_file)
 
     finally:
         # Cleanup
@@ -106,7 +106,7 @@ async def test_list_directory_empty_and_populated(
         empty_listing = await nc_client.webdav.list_directory(test_base_path)
         assert isinstance(empty_listing, list)
         assert len(empty_listing) == 0
-        logger.info(f"Empty directory listing: {len(empty_listing)} items")
+        logger.info("Empty directory listing: %s items", len(empty_listing))
 
         # Add some files and directories
         await nc_client.webdav.create_directory(f"{test_base_path}/subdir1")
@@ -140,7 +140,7 @@ async def test_list_directory_empty_and_populated(
             assert "content_type" in item
             assert "last_modified" in item
 
-        logger.info(f"Populated directory listing: {len(populated_listing)} items")
+        logger.info("Populated directory listing: %s items", len(populated_listing))
 
     finally:
         # Cleanup
@@ -162,7 +162,7 @@ async def test_read_nonexistent_file(nc_client: NextcloudClient):
         await nc_client.webdav.read_file(nonexistent_file)
 
     assert exc_info.value.response.status_code == 404
-    logger.info(f"Correctly got 404 for nonexistent file: {nonexistent_file}")
+    logger.info("Correctly got 404 for nonexistent file: %s", nonexistent_file)
 
 
 async def test_delete_nonexistent_resource(nc_client: NextcloudClient):
@@ -171,7 +171,7 @@ async def test_delete_nonexistent_resource(nc_client: NextcloudClient):
 
     result = await nc_client.webdav.delete_resource(nonexistent_resource)
     assert result["status_code"] == 404
-    logger.info(f"Correctly got 404 for nonexistent resource: {nonexistent_resource}")
+    logger.info("Correctly got 404 for nonexistent resource: %s", nonexistent_resource)
 
 
 async def test_create_nested_directories(
@@ -200,7 +200,7 @@ async def test_create_nested_directories(
         assert level2_listing[0]["name"] == "level3"
         assert level2_listing[0]["is_directory"] is True
 
-        logger.info(f"Created nested directory structure: {nested_path}")
+        logger.info("Created nested directory structure: %s", nested_path)
 
     finally:
         # Cleanup - delete from deepest to shallowest
@@ -241,7 +241,7 @@ async def test_overwrite_existing_file(nc_client: NextcloudClient, test_base_pat
         content, _ = await nc_client.webdav.read_file(test_file)
         assert content.decode("utf-8") == new_content
 
-        logger.info(f"Successfully overwrote file: {test_file}")
+        logger.info("Successfully overwrote file: %s", test_file)
 
     finally:
         # Cleanup
@@ -270,4 +270,4 @@ async def test_list_root_directory(nc_client: NextcloudClient):
         assert "content_type" in item
         assert "last_modified" in item
 
-    logger.info(f"Root directory contains {len(root_listing)} items")
+    logger.info("Root directory contains %s items", len(root_listing))

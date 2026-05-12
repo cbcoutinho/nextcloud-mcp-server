@@ -92,7 +92,7 @@ class OAuthUserPool:
         Returns:
             OAuth access token
         """
-        logger.info(f"Exchanging auth code for access token (user: {username})...")
+        logger.info("Exchanging auth code for access token (user: %s)...", username)
 
         if not self._http_client:
             raise RuntimeError(
@@ -118,7 +118,7 @@ class OAuthUserPool:
         if not access_token:
             raise ValueError(f"No access token in response for {username}")
 
-        logger.info(f"Successfully acquired OAuth token for {username}")
+        logger.info("Successfully acquired OAuth token for %s", username)
         return access_token
 
     async def add_user(self, username: str, password: str, token: str) -> UserProfile:
@@ -134,11 +134,11 @@ class OAuthUserPool:
             UserProfile for the added user
         """
         if username in self.users:
-            logger.warning(f"User {username} already in pool, updating token")
+            logger.warning("User %s already in pool, updating token", username)
 
         profile = UserProfile(username=username, password=password, token=token)
         self.users[username] = profile
-        logger.info(f"Added user {username} to pool (total: {len(self.users)})")
+        logger.info("Added user %s to pool (total: %s)", username, len(self.users))
         return profile
 
     async def create_user_session(
@@ -177,7 +177,7 @@ class OAuthUserPool:
             # Store both session and context for proper cleanup
             profile.session = session
             profile.streamable_context = streamable_context
-            logger.info(f"Created MCP session for {username}")
+            logger.info("Created MCP session for %s", username)
             return session
 
         except Exception as e:
@@ -185,7 +185,7 @@ class OAuthUserPool:
             try:
                 await streamable_context.__aexit__(None, None, None)
             except Exception as cleanup_error:
-                logger.debug(f"Error during cleanup: {cleanup_error}")
+                logger.debug("Error during cleanup: %s", cleanup_error)
             raise e
 
     async def close_user_session(self, username: str):
@@ -200,7 +200,7 @@ class OAuthUserPool:
             try:
                 await profile.session.__aexit__(None, None, None)
             except Exception as e:
-                logger.debug(f"Error closing session for {username}: {e}")
+                logger.debug("Error closing session for %s: %s", username, e)
             profile.session = None
 
         # Close streamable context
@@ -208,7 +208,7 @@ class OAuthUserPool:
             try:
                 await profile.streamable_context.__aexit__(None, None, None)
             except Exception as e:
-                logger.debug(f"Error closing streamable context for {username}: {e}")
+                logger.debug("Error closing streamable context for %s: %s", username, e)
             profile.streamable_context = None
 
     async def close_all_sessions(self):
@@ -270,7 +270,7 @@ class OAuthUserPool:
         Raises:
             HTTPStatusError: If user creation fails
         """
-        logger.info(f"Creating Nextcloud user: {username}")
+        logger.info("Creating Nextcloud user: %s", username)
 
         await self.admin_client.users.create_user(
             userid=username,
@@ -279,7 +279,7 @@ class OAuthUserPool:
             email=email or f"{username}@benchmark.local",
         )
 
-        logger.info(f"Successfully created Nextcloud user: {username}")
+        logger.info("Successfully created Nextcloud user: %s", username)
 
         return UserConfig(
             username=username,
@@ -296,13 +296,13 @@ class OAuthUserPool:
         Args:
             username: Username to delete
         """
-        logger.info(f"Deleting Nextcloud user: {username}")
+        logger.info("Deleting Nextcloud user: %s", username)
 
         try:
             await self.admin_client.users.delete_user(userid=username)
-            logger.info(f"Successfully deleted Nextcloud user: {username}")
+            logger.info("Successfully deleted Nextcloud user: %s", username)
         except Exception as e:
-            logger.warning(f"Failed to delete user {username}: {e}")
+            logger.warning("Failed to delete user %s: %s", username, e)
 
     async def acquire_token_playwright(
         self,
@@ -338,8 +338,8 @@ class OAuthUserPool:
             ValueError: If token exchange fails
         """
 
-        logger.info(f"Starting Playwright OAuth flow for {username}...")
-        logger.debug(f"Using state: {state[:16]}...")
+        logger.info("Starting Playwright OAuth flow for %s...", username)
+        logger.debug("Using state: %s...", state[:16])
 
         # Construct authorization URL
         auth_url = (
@@ -363,7 +363,7 @@ class OAuthUserPool:
 
             # Login if needed
             if "/login" in current_url or "/index.php/login" in current_url:
-                logger.info(f"Logging in as {username}...")
+                logger.info("Logging in as %s...", username)
                 await page.wait_for_selector('input[name="user"]', timeout=10000)
                 await page.fill('input[name="user"]', username)
                 await page.fill('input[name="password"]', password)
@@ -382,7 +382,7 @@ class OAuthUserPool:
                     await authorize_button.click()
                     await page.wait_for_load_state("networkidle", timeout=10000)
             except Exception as e:
-                logger.debug(f"No authorization needed: {e}")
+                logger.debug("No authorization needed: %s", e)
 
             # Wait for callback server to receive auth code
             logger.info("Waiting for OAuth callback...")
@@ -392,20 +392,20 @@ class OAuthUserPool:
                 if time.time() - start_time > timeout_seconds:
                     screenshot_path = f"/tmp/oauth_timeout_{username}.png"
                     await page.screenshot(path=screenshot_path)
-                    logger.error(f"Screenshot saved to {screenshot_path}")
+                    logger.error("Screenshot saved to %s", screenshot_path)
                     raise TimeoutError(
                         f"Timeout waiting for OAuth callback for {username}"
                     )
                 await anyio.sleep(0.5)
 
             auth_code = auth_states[state]
-            logger.info(f"Received auth code for {username}")
+            logger.info("Received auth code for %s", username)
 
         finally:
             await context.close()
 
         # Exchange code for token
-        logger.info(f"Exchanging auth code for access token ({username})...")
+        logger.info("Exchanging auth code for access token (%s)...", username)
         token_response = await self._http_client.post(
             self.token_endpoint,
             data={
@@ -424,7 +424,7 @@ class OAuthUserPool:
         if not access_token:
             raise ValueError(f"No access token for {username}: {token_data}")
 
-        logger.info(f"Successfully acquired OAuth token for {username}")
+        logger.info("Successfully acquired OAuth token for %s", username)
         return access_token
 
 

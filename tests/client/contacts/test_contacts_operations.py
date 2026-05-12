@@ -22,7 +22,7 @@ async def test_list_addressbooks(nc_client: NextcloudClient):
     if not addressbooks:
         pytest.skip("No addressbooks available - Contacts app may not be enabled")
 
-    logger.info(f"Found {len(addressbooks)} addressbooks")
+    logger.info("Found %s addressbooks", len(addressbooks))
 
     # Check structure of addressbooks
     for addressbook in addressbooks:
@@ -31,7 +31,7 @@ async def test_list_addressbooks(nc_client: NextcloudClient):
         assert "getctag" in addressbook
 
         logger.info(
-            f"Addressbook: {addressbook['name']} - {addressbook['display_name']}"
+            "Addressbook: %s - %s", addressbook["name"], addressbook["display_name"]
         )
 
 

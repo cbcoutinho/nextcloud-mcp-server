@@ -82,7 +82,7 @@ async def test_oauth_clients(
         token_type="Bearer",  # Use opaque tokens for this test
     )
     clients["clientA"] = (client_a.client_id, client_a.client_secret)
-    logger.info(f"Created client A: {client_a.client_id[:16]}...")
+    logger.info("Created client A: %s...", client_a.client_id[:16])
 
     # Create client B (will attempt to introspect client A's tokens)
     logger.info("Creating OAuth client B for introspection testing")
@@ -95,7 +95,7 @@ async def test_oauth_clients(
         token_type="Bearer",
     )
     clients["clientB"] = (client_b.client_id, client_b.client_secret)
-    logger.info(f"Created client B: {client_b.client_id[:16]}...")
+    logger.info("Created client B: %s...", client_b.client_id[:16])
 
     # Create client C (third party, should not be able to introspect)
     logger.info("Creating OAuth client C for introspection testing")
@@ -108,7 +108,7 @@ async def test_oauth_clients(
         token_type="Bearer",
     )
     clients["clientC"] = (client_c.client_id, client_c.client_secret)
-    logger.info(f"Created client C: {client_c.client_id[:16]}...")
+    logger.info("Created client C: %s...", client_c.client_id[:16])
 
     yield clients
 
@@ -146,7 +146,7 @@ async def test_introspection_requires_client_authentication(
         )
         assert response.status_code == 401, "Should return 401 with invalid credentials"
         data = response.json()
-        logger.info(f"Invalid client response: {data}")
+        logger.info("Invalid client response: %s", data)
         # Response may be either {"error": "invalid_client"} or {"message": "..."}
         # Both are acceptable as long as we get 401
         assert "error" in data or "message" in data, "Should return error information"
@@ -191,19 +191,21 @@ async def _obtain_token_for_client(
 
     auth_url = "".join(auth_url_parts)
 
-    logger.info(f"Obtaining token for client {client_id[:16]}... with scopes={scope}")
+    logger.info(
+        "Obtaining token for client %s... with scopes=%s", client_id[:16], scope
+    )
     if resource:
-        logger.info(f"  Resource parameter: {resource[:16]}...")
+        logger.info("  Resource parameter: %s...", resource[:16])
 
     # Browser automation (same pattern as conftest.py)
     context = await browser.new_context(ignore_https_errors=True)
     page = await context.new_page()
 
     try:
-        logger.debug(f"Navigating to: {auth_url[:100]}...")
+        logger.debug("Navigating to: %s...", auth_url[:100])
         await page.goto(auth_url, wait_until="networkidle", timeout=60000)
         current_url = page.url
-        logger.debug(f"Current URL after navigation: {current_url}")
+        logger.debug("Current URL after navigation: %s", current_url)
 
         # Handle login if needed
         if "/login" in current_url or "/index.php/login" in current_url:
@@ -214,24 +216,24 @@ async def _obtain_token_for_client(
             await page.click('button[type="submit"]')
             await page.wait_for_load_state("networkidle", timeout=60000)
             current_url = page.url
-            logger.info(f"After login: {current_url}")
+            logger.info("After login: %s", current_url)
 
         # Wait a bit for page to fully render after login
         await anyio.sleep(2)
         current_url = page.url
-        logger.info(f"After waiting, current URL: {current_url}")
+        logger.info("After waiting, current URL: %s", current_url)
 
         # Check page content for debugging
         page_content = await page.content()
         has_consent_div = "#oidc-consent" in page_content
-        logger.info(f"Page has #oidc-consent div: {has_consent_div}")
+        logger.info("Page has #oidc-consent div: %s", has_consent_div)
 
         # Handle consent screen using the helper from conftest
         try:
             consent_handled = await _handle_oauth_consent_screen(page, username)
-            logger.info(f"Consent screen handled: {consent_handled}")
+            logger.info("Consent screen handled: %s", consent_handled)
         except Exception as e:
-            logger.warning(f"Error handling consent screen: {e}")
+            logger.warning("Error handling consent screen: %s", e)
             # Take screenshot for debugging
             await page.screenshot(path=f"/tmp/consent_error_{state[:8]}.png")
             logger.error("Consent error screenshot saved")
@@ -247,15 +249,15 @@ async def _obtain_token_for_client(
                     f"/tmp/oauth_introspection_test_timeout_{state[:8]}.png"
                 )
                 await page.screenshot(path=screenshot_path)
-                logger.error(f"Timeout! Screenshot saved to {screenshot_path}")
-                logger.error(f"Current URL: {page.url}")
+                logger.error("Timeout! Screenshot saved to %s", screenshot_path)
+                logger.error("Current URL: %s", page.url)
                 raise TimeoutError(
                     f"Timeout waiting for OAuth callback (state={state[:16]}...)"
                 )
             await anyio.sleep(0.5)
 
         auth_code = auth_states[state]
-        logger.info(f"Successfully received auth code: {auth_code[:20]}...")
+        logger.info("Successfully received auth code: %s...", auth_code[:20])
 
     finally:
         await context.close()
@@ -311,10 +313,10 @@ async def test_client_cannot_introspect_other_clients_tokens(
     different_client_id, different_client_secret = test_oauth_clients["clientB"]
 
     logger.info(
-        f"Testing introspection with shared client token: {access_token[:16]}..."
+        "Testing introspection with shared client token: %s...", access_token[:16]
     )
-    logger.info(f"Shared client ID: {shared_client_id[:16]}...")
-    logger.info(f"Different client ID: {different_client_id[:16]}...")
+    logger.info("Shared client ID: %s...", shared_client_id[:16])
+    logger.info("Different client ID: %s...", different_client_id[:16])
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         # Test 1: The owning client (shared client) can introspect its own token
@@ -325,7 +327,7 @@ async def test_client_cannot_introspect_other_clients_tokens(
         )
         assert response.status_code == 200
         data = response.json()
-        logger.info(f"Owner client introspection response: {data}")
+        logger.info("Owner client introspection response: %s", data)
         assert data.get("active") is True, (
             "Owner client should be able to introspect its own token"
         )
@@ -338,7 +340,7 @@ async def test_client_cannot_introspect_other_clients_tokens(
         )
         assert response.status_code == 200
         data = response.json()
-        logger.info(f"Different client introspection response: {data}")
+        logger.info("Different client introspection response: %s", data)
         assert data.get("active") is False, (
             "Different client should NOT be able to introspect another client's token"
         )
@@ -387,11 +389,13 @@ async def test_introspection_with_resource_parameter(
             resource=client_b_id,  # Set client B as the resource server
         )
     except Exception as e:
-        logger.error(f"Failed to obtain token with resource parameter: {e}")
+        logger.error("Failed to obtain token with resource parameter: %s", e)
         pytest.skip(f"Cannot obtain test token with resource parameter: {e}")
 
     logger.info(
-        f"Obtained access token from client A with resource={client_b_id}: {access_token[:16]}..."
+        "Obtained access token from client A with resource=%s: %s...",
+        client_b_id,
+        access_token[:16],
     )
 
     # Test introspection
@@ -404,7 +408,7 @@ async def test_introspection_with_resource_parameter(
         )
         assert response.status_code == 200
         data = response.json()
-        logger.info(f"Client A (owner) introspection response: {data}")
+        logger.info("Client A (owner) introspection response: %s", data)
         assert data.get("active") is True, (
             "Client A (owner) should be able to introspect its own token"
         )
@@ -417,13 +421,13 @@ async def test_introspection_with_resource_parameter(
         )
         assert response.status_code == 200
         data = response.json()
-        logger.info(f"Client B (resource server) introspection response: {data}")
+        logger.info("Client B (resource server) introspection response: %s", data)
         assert data.get("active") is True, (
             "Client B (resource server) should be able to introspect token intended for it"
         )
 
         # Verify the resource field in the response matches client B
-        logger.info(f"Full introspection response from Client B: {data}")
+        logger.info("Full introspection response from Client B: %s", data)
 
         # Test 3: Client C CANNOT introspect the token (not owner, not resource server)
         response = await client.post(
@@ -433,7 +437,7 @@ async def test_introspection_with_resource_parameter(
         )
         assert response.status_code == 200
         data = response.json()
-        logger.info(f"Client C (third party) introspection response: {data}")
+        logger.info("Client C (third party) introspection response: %s", data)
         assert data.get("active") is False, (
             "Client C should NOT be able to introspect token (not owner or resource server)"
         )
@@ -464,7 +468,7 @@ async def test_introspection_returns_inactive_for_invalid_token(
 
         assert response.status_code == 200
         data = response.json()
-        logger.info(f"Introspection response for fake token: {data}")
+        logger.info("Introspection response for fake token: %s", data)
         assert data.get("active") is False, (
             "Should return active=false for invalid token"
         )

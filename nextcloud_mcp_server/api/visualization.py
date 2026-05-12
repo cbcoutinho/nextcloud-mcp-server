@@ -90,7 +90,7 @@ async def unified_search(request: Request) -> JSONResponse:
     try:
         user_id, _validated = await validate_token_and_get_user(request)
     except Exception as e:
-        logger.warning(f"Unauthorized access to /api/v1/search: {e}")
+        logger.warning("Unauthorized access to /api/v1/search: %s", e)
         return JSONResponse(
             {
                 "error": "Unauthorized",
@@ -268,12 +268,12 @@ async def unified_search(request: Request) -> JSONResponse:
                 )
                 response_data["pca_data"] = pca_data
             except Exception as e:
-                logger.warning(f"Failed to compute PCA for unified search: {e}")
+                logger.warning("Failed to compute PCA for unified search: %s", e)
 
         return JSONResponse(response_data)
 
     except Exception as e:
-        logger.error(f"Error in unified search: {e}")
+        logger.error("Error in unified search: %s", e)
         return JSONResponse(
             {
                 "error": "Internal error",
@@ -311,7 +311,7 @@ async def vector_search(request: Request) -> JSONResponse:
     try:
         user_id, _validated = await validate_token_and_get_user(request)
     except Exception as e:
-        logger.warning(f"Unauthorized access to /api/v1/vector-viz/search: {e}")
+        logger.warning("Unauthorized access to /api/v1/vector-viz/search: %s", e)
         return JSONResponse(
             {
                 "error": "Unauthorized",
@@ -428,7 +428,7 @@ async def vector_search(request: Request) -> JSONResponse:
                 if "pca_variance" in pca_data:
                     response_data["pca_variance"] = pca_data["pca_variance"]
             except Exception as e:
-                logger.warning(f"Failed to compute PCA coordinates: {e}")
+                logger.warning("Failed to compute PCA coordinates: %s", e)
                 response_data["coordinates_3d"] = []
                 response_data["query_coords"] = []
         elif include_pca:
@@ -465,7 +465,7 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         # Validate OAuth token and extract user
         user_id, validated = await validate_token_and_get_user(request)
     except Exception as e:
-        logger.warning(f"Unauthorized access to /api/v1/chunk-context: {e}")
+        logger.warning("Unauthorized access to /api/v1/chunk-context: %s", e)
         return JSONResponse(
             {
                 "error": "Unauthorized",
@@ -661,14 +661,16 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
     # Log incoming request
     file_path_param = request.query_params.get("file_path", "<not provided>")
     page_param = request.query_params.get("page", "1")
-    logger.info(f"PDF preview request: file_path={file_path_param}, page={page_param}")
+    logger.info(
+        "PDF preview request: file_path=%s, page=%s", file_path_param, page_param
+    )
 
     try:
         # Validate OAuth token and extract user
         user_id, validated = await validate_token_and_get_user(request)
-        logger.info(f"PDF preview authenticated for user: {user_id}")
+        logger.info("PDF preview authenticated for user: %s", user_id)
     except Exception as e:
-        logger.warning(f"Unauthorized access to /api/v1/pdf-preview: {e}")
+        logger.warning("Unauthorized access to /api/v1/pdf-preview: %s", e)
         return JSONResponse(
             {
                 "success": False,
@@ -763,8 +765,11 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
         image_b64 = base64.b64encode(png_bytes).decode("ascii")
 
         logger.info(
-            f"Rendered PDF preview: {file_path} page {page_num}/{total_pages}, "
-            f"{len(png_bytes):,} bytes"
+            "Rendered PDF preview: %s page %s/%s, %s bytes",
+            file_path,
+            page_num,
+            total_pages,
+            format(len(png_bytes), ","),
         )
 
         return JSONResponse(
@@ -777,19 +782,19 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
         )
 
     except FileNotFoundError:
-        logger.warning(f"PDF file not found: {file_path_param}")
+        logger.warning("PDF file not found: %s", file_path_param)
         return JSONResponse(
             {"success": False, "error": "PDF file not found"},
             status_code=404,
         )
     except (pymupdf.FileDataError, pymupdf.EmptyFileError):
-        logger.warning(f"Invalid or corrupted PDF file: {file_path_param}")
+        logger.warning("Invalid or corrupted PDF file: %s", file_path_param)
         return JSONResponse(
             {"success": False, "error": "Invalid or corrupted PDF file"},
             status_code=400,
         )
     except Exception as e:
-        logger.error(f"PDF preview error: {e}", exc_info=True)
+        logger.error("PDF preview error: %s", e, exc_info=True)
         error_msg = _sanitize_error_for_client(e, "get_pdf_preview")
         return JSONResponse(
             {"success": False, "error": error_msg},

@@ -30,7 +30,7 @@ class AnthropicProvider(Provider):
         self.client = AsyncAnthropic(api_key=api_key)
         self.model = generation_model
 
-        logger.info(f"Initialized Anthropic provider (model={self.model})")
+        logger.info("Initialized Anthropic provider (model=%s)", self.model)
 
     @property
     def supports_embeddings(self) -> bool:

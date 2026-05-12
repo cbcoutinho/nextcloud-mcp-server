@@ -81,7 +81,7 @@ async def login_flow_oauth_client_credentials(anyio_backend, oauth_callback_serv
         token_type="Bearer",
     )
 
-    logger.info(f"Login Flow OAuth client ready: {client_info.client_id[:16]}...")
+    logger.info("Login Flow OAuth client ready: %s...", client_info.client_id[:16])
 
     yield (
         client_info.client_id,
@@ -101,10 +101,10 @@ async def login_flow_oauth_client_credentials(anyio_backend, oauth_callback_serv
             registration_client_uri=client_info.registration_client_uri,
         )
         logger.info(
-            f"Cleaned up Login Flow OAuth client: {client_info.client_id[:16]}..."
+            "Cleaned up Login Flow OAuth client: %s...", client_info.client_id[:16]
         )
     except Exception as e:
-        logger.warning(f"Failed to clean up Login Flow OAuth client: {e}")
+        logger.warning("Failed to clean up Login Flow OAuth client: %s", e)
 
 
 @pytest.fixture(scope="session")
@@ -137,7 +137,7 @@ async def login_flow_oauth_token(
         )
         resource_id = resource_metadata.get("resource")
     except Exception as e:
-        logger.warning(f"Failed to fetch resource metadata from port 8004: {e}")
+        logger.warning("Failed to fetch resource metadata from port 8004: %s", e)
         resource_id = None
 
     state = secrets.token_urlsafe(32)
@@ -242,9 +242,9 @@ async def _complete_login_flow_v2(browser, login_url: str) -> None:
     page = await context.new_page()
 
     try:
-        logger.info(f"Opening Login Flow v2 URL: {login_url[:80]}...")
+        logger.info("Opening Login Flow v2 URL: %s...", login_url[:80])
         await page.goto(login_url, wait_until="networkidle", timeout=60000)
-        logger.info(f"Step 1 - Current URL: {page.url}")
+        logger.info("Step 1 - Current URL: %s", page.url)
 
         # Step 1: "Connect to your account" page - click "Log in"
         login_btn = page.get_by_role("button", name="Log in")
@@ -256,7 +256,7 @@ async def _complete_login_flow_v2(browser, login_url: str) -> None:
         except Exception:
             logger.info("No 'Log in' button - may already be on login/grant page")
 
-        logger.info(f"Step 2 - Current URL: {page.url}")
+        logger.info("Step 2 - Current URL: %s", page.url)
 
         # Step 2: Login form (only if not already logged in)
         # If the user has an active session, they skip straight to the grant page.
@@ -267,7 +267,7 @@ async def _complete_login_flow_v2(browser, login_url: str) -> None:
             await page.locator('input[name="password"]').fill(password)
             await page.get_by_role("button", name="Log in", exact=True).click()
             await page.wait_for_load_state("networkidle", timeout=60000)
-            logger.info(f"After login: {page.url}")
+            logger.info("After login: %s", page.url)
         else:
             logger.info("No login form - already logged in via session")
 
@@ -278,7 +278,7 @@ async def _complete_login_flow_v2(browser, login_url: str) -> None:
             await grant_btn.click()
             logger.info("Clicked 'Grant access'")
         except Exception as e:
-            logger.warning(f"No Grant access button: {e}")
+            logger.warning("No Grant access button: %s", e)
             await page.screenshot(path="/tmp/login_flow_no_grant.png")
 
         # Step 4: Password confirmation dialog
@@ -310,7 +310,7 @@ async def _complete_login_flow_v2(browser, login_url: str) -> None:
         except Exception:
             # The grant may have completed without the success page being visible
             await page.wait_for_load_state("networkidle", timeout=10000)
-            logger.info(f"Login Flow v2 done. Final URL: {page.url}")
+            logger.info("Login Flow v2 done. Final URL: %s", page.url)
 
     finally:
         await context.close()
@@ -347,14 +347,14 @@ async def nc_mcp_login_flow_client(
         completes the Login Flow v2 browser login.
         """
         message = params.message
-        logger.info(f"Elicitation received: {message[:100]}...")
+        logger.info("Elicitation received: %s...", message[:100])
 
         # Extract login URL from elicitation message
         for line in message.split("\n"):
             stripped = line.strip()
             if stripped.startswith("http") and "/login/v2/" in stripped:
                 login_url_holder["url"] = stripped
-                logger.info(f"Extracted login URL: {stripped[:80]}...")
+                logger.info("Extracted login URL: %s...", stripped[:80])
                 break
 
         if "url" in login_url_holder:
@@ -381,7 +381,7 @@ async def nc_mcp_login_flow_client(
         )
 
         provision_data = json.loads(provision_result.content[0].text)
-        logger.info(f"Provision result: {provision_data.get('status')}")
+        logger.info("Provision result: %s", provision_data.get("status"))
 
         # If elicitation didn't fire (client doesn't support it),
         # extract URL from the response and complete flow manually
@@ -398,11 +398,12 @@ async def nc_mcp_login_flow_client(
             status_result = await session.call_tool("nc_auth_check_status", {})
             status_data = json.loads(status_result.content[0].text)
             status = status_data.get("status")
-            logger.info(f"Status check {attempt + 1}/{max_attempts}: {status}")
+            logger.info("Status check %s/%s: %s", attempt + 1, max_attempts, status)
 
             if status == "provisioned":
                 logger.info(
-                    f"Login Flow v2 provisioned! Username: {status_data.get('username')}"
+                    "Login Flow v2 provisioned! Username: %s",
+                    status_data.get("username"),
                 )
                 break
 
@@ -698,8 +699,10 @@ async def all_login_flow_user_tokens(
 
     elapsed = time.time() - start_time
     logger.info(
-        f"Fetched {len(results)} login-flow tokens in {elapsed:.1f}s "
-        f"(~{elapsed / len(results):.1f}s per user)"
+        "Fetched %s login-flow tokens in %ss (~%ss per user)",
+        len(results),
+        format(elapsed, ".1f"),
+        format(elapsed / len(results), ".1f"),
     )
     return results  # type: ignore[return-value]
 
@@ -756,8 +759,9 @@ async def _provision_login_flow_mcp_client(
             status_data = json.loads(status_result.content[0].text)
             if status_data.get("status") == "provisioned":
                 logger.info(
-                    f"Login Flow v2 provisioned for {username}: "
-                    f"{status_data.get('username')}"
+                    "Login Flow v2 provisioned for %s: %s",
+                    username,
+                    status_data.get("username"),
                 )
                 break
             if status_data.get("status") in ("not_initiated", "error"):
@@ -795,44 +799,44 @@ async def _complete_login_flow_v2_as_user(
     page = await context.new_page()
 
     try:
-        logger.info(f"[{username}] Opening Login Flow v2 URL: {login_url[:80]}...")
+        logger.info("[%s] Opening Login Flow v2 URL: %s...", username, login_url[:80])
         await page.goto(login_url, wait_until="networkidle", timeout=60000)
-        logger.info(f"[{username}] Step 1 - Current URL: {page.url}")
+        logger.info("[%s] Step 1 - Current URL: %s", username, page.url)
 
         # Step 1: "Connect to your account" page - click "Log in"
         login_btn = page.get_by_role("button", name="Log in")
         try:
             await login_btn.wait_for(timeout=10000)
             await login_btn.click()
-            logger.info(f"[{username}] Clicked 'Log in' on Connect page")
+            logger.info("[%s] Clicked 'Log in' on Connect page", username)
             await page.wait_for_load_state("networkidle", timeout=30000)
         except Exception:
             logger.info(
-                f"[{username}] No 'Log in' button - may already be on login/grant page"
+                "[%s] No 'Log in' button - may already be on login/grant page", username
             )
 
-        logger.info(f"[{username}] Step 2 - Current URL: {page.url}")
+        logger.info("[%s] Step 2 - Current URL: %s", username, page.url)
 
         # Step 2: Login form (only if not already logged in)
         user_field = page.locator('input[name="user"]')
         if await user_field.count() > 0:
-            logger.info(f"[{username}] Login form detected, filling credentials...")
+            logger.info("[%s] Login form detected, filling credentials...", username)
             await user_field.fill(username)
             await page.locator('input[name="password"]').fill(password)
             await page.get_by_role("button", name="Log in", exact=True).click()
             await page.wait_for_load_state("networkidle", timeout=60000)
-            logger.info(f"[{username}] After login: {page.url}")
+            logger.info("[%s] After login: %s", username, page.url)
         else:
-            logger.info(f"[{username}] No login form - already logged in via session")
+            logger.info("[%s] No login form - already logged in via session", username)
 
         # Step 3: "Account access" grant page - click "Grant access"
         grant_btn = page.get_by_role("button", name="Grant access")
         try:
             await grant_btn.wait_for(timeout=15000)
             await grant_btn.click()
-            logger.info(f"[{username}] Clicked 'Grant access'")
+            logger.info("[%s] Clicked 'Grant access'", username)
         except Exception as e:
-            logger.warning(f"[{username}] No Grant access button: {e}")
+            logger.warning("[%s] No Grant access button: %s", username, e)
             await page.screenshot(path=f"/tmp/login_flow_no_grant_{username}.png")
 
         # Step 4: Password confirmation dialog
@@ -841,27 +845,27 @@ async def _complete_login_flow_v2_as_user(
         )
         try:
             await confirm_password.wait_for(timeout=10000)
-            logger.info(f"[{username}] Password confirmation dialog detected")
+            logger.info("[%s] Password confirmation dialog detected", username)
             await confirm_password.fill(password)
             confirm_btn = page.get_by_role("dialog").get_by_role(
                 "button", name="Confirm"
             )
             await confirm_btn.wait_for(timeout=5000)
             await confirm_btn.click()
-            logger.info(f"[{username}] Clicked 'Confirm' in password dialog")
+            logger.info("[%s] Clicked 'Confirm' in password dialog", username)
         except Exception:
             logger.info(
-                f"[{username}] No password confirmation dialog "
-                "(may have been auto-confirmed)"
+                "[%s] No password confirmation dialog (may have been auto-confirmed)",
+                username,
             )
 
         # Step 5: Wait for "Account connected" success page
         try:
             await page.get_by_text("Account connected").wait_for(timeout=15000)
-            logger.info(f"[{username}] Login Flow v2 completed: Account connected!")
+            logger.info("[%s] Login Flow v2 completed: Account connected!", username)
         except Exception:
             await page.wait_for_load_state("networkidle", timeout=10000)
-            logger.info(f"[{username}] Login Flow v2 done. Final URL: {page.url}")
+            logger.info("[%s] Login Flow v2 done. Final URL: %s", username, page.url)
 
     finally:
         await context.close()
@@ -986,7 +990,9 @@ async def login_flow_static_client_credentials(anyio_backend, oauth_callback_ser
         capture_output=True,
     )
 
-    logger.info(f"Creating static OIDC client {client_id} with callback {callback_url}")
+    logger.info(
+        "Creating static OIDC client %s with callback %s", client_id, callback_url
+    )
     result = subprocess.run(
         [
             "docker",

@@ -75,8 +75,10 @@ class BedrockProvider(Provider):
         self.client = boto3.client("bedrock-runtime", **client_kwargs)
 
         logger.info(
-            f"Initialized Bedrock provider in region {region_name or 'default'} "
-            f"(embedding_model={embedding_model}, generation_model={generation_model})"
+            "Initialized Bedrock provider in region %s (embedding_model=%s, generation_model=%s)",
+            region_name or "default",
+            embedding_model,
+            generation_model,
         )
 
     @property
@@ -115,8 +117,8 @@ class BedrockProvider(Provider):
         # Unknown model - try Titan format as default
         else:
             logger.warning(
-                f"Unknown embedding model format for {self.embedding_model}, "
-                "using Titan format as default"
+                "Unknown embedding model format for %s, using Titan format as default",
+                self.embedding_model,
             )
             return {"inputText": text}
 
@@ -143,8 +145,8 @@ class BedrockProvider(Provider):
         # Unknown model - try Titan format as default
         else:
             logger.warning(
-                f"Unknown embedding response format for {self.embedding_model}, "
-                "trying Titan format"
+                "Unknown embedding response format for %s, trying Titan format",
+                self.embedding_model,
             )
             return response.get("embedding", response.get("embeddings", [None])[0])
 
@@ -183,7 +185,7 @@ class BedrockProvider(Provider):
             return embedding
 
         except (BotoCoreError, ClientError) as e:
-            logger.error(f"Bedrock embedding error: {e}")
+            logger.error("Bedrock embedding error: %s", e)
             raise
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
@@ -220,13 +222,14 @@ class BedrockProvider(Provider):
         """
         if self._dimension is None and self.supports_embeddings:
             logger.debug(
-                f"Detecting embedding dimension for model {self.embedding_model}..."
+                "Detecting embedding dimension for model %s...", self.embedding_model
             )
             test_embedding = await self.embed("test")
             self._dimension = len(test_embedding)
             logger.info(
-                f"Detected embedding dimension: {self._dimension} "
-                f"for model {self.embedding_model}"
+                "Detected embedding dimension: %s for model %s",
+                self._dimension,
+                self.embedding_model,
             )
 
     def get_dimension(self) -> int:
@@ -300,8 +303,8 @@ class BedrockProvider(Provider):
         # Unknown model - try Claude format as default
         else:
             logger.warning(
-                f"Unknown generation model format for {self.generation_model}, "
-                "using Claude format as default"
+                "Unknown generation model format for %s, using Claude format as default",
+                self.generation_model,
             )
             return {
                 "anthropic_version": "bedrock-2023-05-31",
@@ -343,8 +346,8 @@ class BedrockProvider(Provider):
         # Unknown model - try common response fields
         else:
             logger.warning(
-                f"Unknown generation response format for {self.generation_model}, "
-                "trying common fields"
+                "Unknown generation response format for %s, trying common fields",
+                self.generation_model,
             )
             # Try common response field names
             for field in ["text", "generation", "outputText", "completion"]:
@@ -389,7 +392,7 @@ class BedrockProvider(Provider):
             return text
 
         except (BotoCoreError, ClientError) as e:
-            logger.error(f"Bedrock generation error: {e}")
+            logger.error("Bedrock generation error: %s", e)
             raise
 
     async def close(self) -> None:

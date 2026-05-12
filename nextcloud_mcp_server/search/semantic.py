@@ -77,8 +77,12 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         score_threshold = kwargs.get("score_threshold", self.score_threshold)
 
         logger.info(
-            f"Semantic search: query='{query}', user={user_id}, "
-            f"limit={limit}, score_threshold={score_threshold}, doc_type={doc_type}"
+            "Semantic search: query='%s', user=%s, limit=%s, score_threshold=%s, doc_type=%s",
+            query,
+            user_id,
+            limit,
+            score_threshold,
+            doc_type,
         )
 
         # Generate embedding for query
@@ -87,7 +91,7 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         # Store for reuse by callers (e.g., viz_routes PCA visualization)
         self.query_embedding = query_embedding
         logger.debug(
-            f"Generated embedding for query (dimension={len(query_embedding)})"
+            "Generated embedding for query (dimension=%s)", len(query_embedding)
         )
 
         # Build Qdrant filter
@@ -127,14 +131,14 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
             raise
 
         logger.info(
-            f"Qdrant returned {len(search_response.points)} results "
-            f"(before deduplication)"
+            "Qdrant returned %s results (before deduplication)",
+            len(search_response.points),
         )
 
         if search_response.points:
             # Log top 3 scores to help with threshold tuning
             top_scores = [p.score for p in search_response.points[:3]]
-            logger.debug(f"Top 3 similarity scores: {top_scores}")
+            logger.debug("Top 3 similarity scores: %s", top_scores)
 
         # Deduplicate by (doc_id, doc_type, chunk_start, chunk_end)
         # This allows multiple chunks from same doc, but removes duplicate chunks
@@ -155,12 +159,12 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
             if len(results) >= limit:
                 break
 
-        logger.info(f"Returning {len(results)} unverified results after deduplication")
+        logger.info("Returning %s unverified results after deduplication", len(results))
         if results:
             result_details = [
                 f"{r.doc_type}_{r.id} (score={r.score:.3f}, title='{r.title}')"
                 for r in results[:5]  # Show top 5
             ]
-            logger.debug(f"Top results: {', '.join(result_details)}")
+            logger.debug("Top results: %s", ", ".join(result_details))
 
         return results

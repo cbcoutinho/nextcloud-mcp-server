@@ -537,4 +537,4 @@ class TestMultiUserSmoke:
         ]:
             tools = await client.list_tools()
             assert len(tools.tools) > 0, f"{name} MCP client has no tools"
-            logger.info(f"{name} MCP client working ({len(tools.tools)} tools)")
+            logger.info("%s MCP client working (%s tools)", name, len(tools.tools))

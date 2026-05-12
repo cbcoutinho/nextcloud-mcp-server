@@ -137,7 +137,7 @@ def _sanitize_error_for_client(error: Exception, context: str = "") -> str:
         Generic error message safe for client consumption
     """
     # Log detailed error for debugging
-    logger.error(f"Error in {context}: {error}", exc_info=True)
+    logger.error("Error in %s: %s", context, error, exc_info=True)
 
     # Return generic message
     return "An internal error occurred. Please contact your administrator."
@@ -307,7 +307,7 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
             indexed_count = count_result.count
 
         except Exception as e:
-            logger.warning(f"Failed to query Qdrant for indexed count: {e}")
+            logger.warning("Failed to query Qdrant for indexed count: %s", e)
             # Continue with indexed_count = 0
 
         # Determine status
@@ -355,7 +355,7 @@ async def get_user_session(request: Request) -> JSONResponse:
     # Verify token user matches requested user
     if token_user_id != path_user_id:
         logger.warning(
-            f"User {token_user_id} attempted to access session for {path_user_id}"
+            "User %s attempted to access session for %s", token_user_id, path_user_id
         )
         return JSONResponse(
             {
@@ -442,7 +442,7 @@ async def revoke_user_access(request: Request) -> JSONResponse:
         # Validate OAuth token and extract user
         token_user_id, validated = await validate_token_and_get_user(request)
     except Exception as e:
-        logger.warning(f"Unauthorized access to /api/v1/users/{{user_id}}/revoke: {e}")
+        logger.warning("Unauthorized access to /api/v1/users/{{user_id}}/revoke: %s", e)
         return JSONResponse(
             {
                 "error": "Unauthorized",
@@ -457,7 +457,7 @@ async def revoke_user_access(request: Request) -> JSONResponse:
     # Verify token user matches requested user
     if token_user_id != path_user_id:
         logger.warning(
-            f"User {token_user_id} attempted to revoke access for {path_user_id}"
+            "User %s attempted to revoke access for %s", token_user_id, path_user_id
         )
         return JSONResponse(
             {
@@ -492,7 +492,8 @@ async def revoke_user_access(request: Request) -> JSONResponse:
         await token_broker.cache.invalidate(token_user_id)
 
         logger.info(
-            f"Revoked background access for user {token_user_id} (cache and storage cleared)"
+            "Revoked background access for user %s (cache and storage cleared)",
+            token_user_id,
         )
 
         return JSONResponse(

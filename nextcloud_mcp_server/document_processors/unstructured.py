@@ -68,9 +68,11 @@ class UnstructuredProcessor(DocumentProcessor):
         self.progress_interval = progress_interval
 
         logger.info(
-            f"Initialized UnstructuredProcessor: {api_url}, "
-            f"strategy={default_strategy}, languages={self.default_languages}, "
-            f"progress_interval={progress_interval}s"
+            "Initialized UnstructuredProcessor: %s, strategy=%s, languages=%s, progress_interval=%ss",
+            api_url,
+            default_strategy,
+            self.default_languages,
+            progress_interval,
         )
 
     @property
@@ -117,9 +119,9 @@ class UnstructuredProcessor(DocumentProcessor):
                             total=None,  # Unknown total duration  # type: ignore
                             message=message,  # type: ignore
                         )
-                        logger.debug(f"Progress update sent: {elapsed}s elapsed")
+                        logger.debug("Progress update sent: %ss elapsed", elapsed)
                     except Exception as e:
-                        logger.warning(f"Failed to send progress update: {e}")
+                        logger.warning("Failed to send progress update: %s", e)
         logger.debug("Progress poller stopped")
 
     async def _make_api_request(
@@ -165,7 +167,9 @@ class UnstructuredProcessor(DocumentProcessor):
             data["extract_image_block_types"] = ",".join(extract_image_block_types)
 
         logger.debug(
-            f"Processing with Unstructured API: strategy={strategy}, languages={languages}"
+            "Processing with Unstructured API: strategy=%s, languages=%s",
+            strategy,
+            languages,
         )
 
         try:
@@ -202,8 +206,9 @@ class UnstructuredProcessor(DocumentProcessor):
                 }
 
                 logger.debug(
-                    f"Successfully processed: {len(elements)} elements, "
-                    f"{len(parsed_text)} characters"
+                    "Successfully processed: %s elements, %s characters",
+                    len(elements),
+                    len(parsed_text),
                 )
 
                 return ProcessingResult(
@@ -214,10 +219,10 @@ class UnstructuredProcessor(DocumentProcessor):
                 )
 
         except httpx.HTTPError as e:
-            logger.error(f"Unstructured API HTTP error: {e}")
+            logger.error("Unstructured API HTTP error: %s", e)
             raise ProcessorError(f"HTTP error: {str(e)}") from e
         except Exception as e:
-            logger.error(f"Unstructured API processing failed: {e}")
+            logger.error("Unstructured API processing failed: %s", e)
             raise ProcessorError(f"Processing failed: {str(e)}") from e
 
     async def process(
@@ -306,5 +311,5 @@ class UnstructuredProcessor(DocumentProcessor):
                 response = await client.get(f"{self.api_url}/healthcheck")
                 return response.status_code == 200
         except Exception as e:
-            logger.warning(f"Unstructured health check failed: {e}")
+            logger.warning("Unstructured health check failed: %s", e)
             return False

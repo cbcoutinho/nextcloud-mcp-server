@@ -73,11 +73,12 @@ def setup_tracing(
             span_processor = BatchSpanProcessor(otlp_exporter)
             provider.add_span_processor(span_processor)
             logger.info(
-                f"OpenTelemetry tracing enabled with OTLP endpoint: {otlp_endpoint}"
+                "OpenTelemetry tracing enabled with OTLP endpoint: %s", otlp_endpoint
             )
         except Exception as e:
             logger.warning(
-                f"Failed to initialize OTLP exporter: {e}. Continuing without trace export."
+                "Failed to initialize OTLP exporter: %s. Continuing without trace export.",
+                e,
             )
     else:
         logger.info(
@@ -93,7 +94,7 @@ def setup_tracing(
     # Get and store tracer
     _tracer = trace.get_tracer(__name__)
 
-    logger.info(f"OpenTelemetry tracing initialized for service: {service_name}")
+    logger.info("OpenTelemetry tracing initialized for service: %s", service_name)
     return _tracer
 
 

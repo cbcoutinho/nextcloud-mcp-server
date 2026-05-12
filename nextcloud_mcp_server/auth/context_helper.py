@@ -54,8 +54,8 @@ def get_client_from_context(ctx: Context, base_url: str) -> NextcloudClient:
             raise ValueError("Username not available in OAuth token context")
 
         logger.debug(
-            f"Creating NextcloudClient for user {username} with multi-audience token "
-            f"(no exchange needed)"
+            "Creating NextcloudClient for user %s with multi-audience token (no exchange needed)",
+            username,
         )
 
         # Token was validated to have MCP audience
@@ -65,6 +65,6 @@ def get_client_from_context(ctx: Context, base_url: str) -> NextcloudClient:
         )
 
     except AttributeError as e:
-        logger.error(f"Failed to extract OAuth context: {e}")
+        logger.error("Failed to extract OAuth context: %s", e)
         logger.error("This may indicate the server is not running in OAuth mode")
         raise

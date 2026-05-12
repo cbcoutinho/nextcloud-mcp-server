@@ -68,7 +68,7 @@ END:VCALENDAR"""
         event.data = custom_ical
         await event.save()
 
-        logger.info(f"Injected custom iCal properties into event {event_uid}")
+        logger.info("Injected custom iCal properties into event %s", event_uid)
 
         # Reload the event to confirm custom fields are present
         await event.load()
@@ -91,7 +91,7 @@ END:VCALENDAR"""
         }
 
         await nc_client.calendar.update_event(calendar_name, event_uid, update_data)
-        logger.info(f"Updated event {event_uid} through MCP client")
+        logger.info("Updated event %s through MCP client", event_uid)
 
         # Reload the event to see if custom fields survived
         await event.load()
@@ -117,7 +117,7 @@ END:VCALENDAR"""
         try:
             await nc_client.calendar.delete_event(calendar_name, event_uid)
         except Exception as cleanup_error:
-            logger.warning(f"Failed to cleanup event {event_uid}: {cleanup_error}")
+            logger.warning("Failed to cleanup event %s: %s", event_uid, cleanup_error)
 
 
 @pytest.mark.integration
@@ -145,7 +145,7 @@ async def test_contact_extended_fields_preservation(nc_client):
             contact_data=basic_contact_data,
         )
 
-        logger.info(f"Created basic contact {contact_uid}")
+        logger.info("Created basic contact %s", contact_uid)
 
         # Now inject a rich vCard with extended fields directly via CardDAV
         extended_vcard = f"""BEGIN:VCARD
@@ -182,7 +182,7 @@ END:VCARD"""
             headers={"Content-Type": "text/vcard; charset=utf-8"},
         )
 
-        logger.info(f"Injected extended vCard for contact {contact_uid}")
+        logger.info("Injected extended vCard for contact %s", contact_uid)
 
         # Retrieve the contact to confirm extended fields are present in raw vCard
         response = await nc_client.contacts._make_request("GET", contact_path)
@@ -232,7 +232,7 @@ END:VCARD"""
             )
             logger.info("✓ Contact updated successfully")
         except Exception as e:
-            logger.error(f"✗ Failed to update contact: {e}")
+            logger.error("✗ Failed to update contact: %s", e)
             raise
 
         # Retrieve the contact again to see if extended fields survived
@@ -268,9 +268,9 @@ END:VCARD"""
         all_preserved = True
         for field_pattern, field_name in extended_field_checks:
             if field_pattern in updated_addressdata:
-                logger.info(f"✓ {field_name} preserved")
+                logger.info("✓ %s preserved", field_name)
             else:
-                logger.error(f"✗ {field_name} was lost during update")
+                logger.error("✗ %s was lost during update", field_name)
                 all_preserved = False
 
         # The test should PASS - field preservation should work
@@ -286,7 +286,7 @@ END:VCARD"""
             await nc_client.contacts.delete_addressbook(name=addressbook_name)
         except Exception as cleanup_error:
             logger.warning(
-                f"Failed to cleanup addressbook {addressbook_name}: {cleanup_error}"
+                "Failed to cleanup addressbook %s: %s", addressbook_name, cleanup_error
             )
 
 
@@ -415,9 +415,9 @@ END:VCALENDAR"""
                 else:
                     lost.append(prop)
 
-        logger.info(f"Properties that SURVIVED: {survived}")
+        logger.info("Properties that SURVIVED: %s", survived)
         if lost:
-            logger.error(f"Properties that were LOST: {lost}")
+            logger.error("Properties that were LOST: %s", lost)
 
         # Assert that all extended properties were preserved
         assert len(lost) == 0, (
@@ -430,4 +430,4 @@ END:VCALENDAR"""
         try:
             await nc_client.calendar.delete_event(calendar_name, event_uid)
         except Exception as cleanup_error:
-            logger.warning(f"Failed to cleanup event {event_uid}: {cleanup_error}")
+            logger.warning("Failed to cleanup event %s: %s", event_uid, cleanup_error)

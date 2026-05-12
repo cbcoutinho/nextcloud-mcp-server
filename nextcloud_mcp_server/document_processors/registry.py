@@ -41,7 +41,7 @@ class ProcessorRegistry:
         name = processor.name
 
         if name in self._processors:
-            logger.warning(f"Processor '{name}' already registered, replacing")
+            logger.warning("Processor '%s' already registered, replacing", name)
 
         self._processors[name] = (processor, priority)
 
@@ -62,8 +62,10 @@ class ProcessorRegistry:
             self._priority_order.append(name)
 
         logger.info(
-            f"Registered processor: {name} "
-            f"(priority={priority}, supports={len(processor.supported_mime_types)} types)"
+            "Registered processor: %s (priority=%s, supports=%s types)",
+            name,
+            priority,
+            len(processor.supported_mime_types),
         )
 
     def get_processor(self, name: str) -> Optional[DocumentProcessor]:
@@ -93,10 +95,10 @@ class ProcessorRegistry:
         for name in self._priority_order:
             processor = self._processors[name][0]
             if processor.supports(content_type):
-                logger.debug(f"Found processor '{name}' for type '{content_type}'")
+                logger.debug("Found processor '%s' for type '%s'", name, content_type)
                 return processor
 
-        logger.debug(f"No processor found for type '{content_type}'")
+        logger.debug("No processor found for type '%s'", content_type)
         return None
 
     def list_processors(self) -> list[str]:
@@ -150,7 +152,7 @@ class ProcessorRegistry:
                     f"Registered processors: {', '.join(self.list_processors())}"
                 )
 
-        logger.info(f"Processing with '{processor.name}' processor")
+        logger.info("Processing with '%s' processor", processor.name)
 
         # Process
         return await processor.process(

@@ -61,12 +61,12 @@ class AstrolabeClient:
         discovery_url = f"{self.nextcloud_host}/.well-known/openid-configuration"
 
         async with nextcloud_httpx_client() as client:
-            logger.debug(f"Discovering token endpoint from {discovery_url}")
+            logger.debug("Discovering token endpoint from %s", discovery_url)
             discovery_resp = await client.get(discovery_url)
             discovery_resp.raise_for_status()
             token_endpoint = discovery_resp.json()["token_endpoint"]
 
-            logger.debug(f"Requesting client credentials token from {token_endpoint}")
+            logger.debug("Requesting client credentials token from %s", token_endpoint)
 
             # Request token using client credentials grant
             token_resp = await client.post(
@@ -88,7 +88,7 @@ class AstrolabeClient:
                 "expires_at": time.time() + expires_in - 60,
             }
 
-            logger.info(f"Obtained Astrolabe API token (expires in {expires_in}s)")
+            logger.info("Obtained Astrolabe API token (expires in %ss)", expires_in)
             return data["access_token"]
 
     async def get_user_app_password(self, user_id: str) -> Optional[str]:
@@ -108,7 +108,7 @@ class AstrolabeClient:
         url = f"{self.nextcloud_host}/apps/astrolabe/api/v1/background-sync/credentials/{user_id}"
 
         async with nextcloud_httpx_client() as client:
-            logger.debug(f"Retrieving app password for user: {user_id}")
+            logger.debug("Retrieving app password for user: %s", user_id)
 
             response = await client.get(
                 url,
@@ -117,14 +117,16 @@ class AstrolabeClient:
             )
 
             if response.status_code == 404:
-                logger.debug(f"No app password configured for user: {user_id}")
+                logger.debug("No app password configured for user: %s", user_id)
                 return None
 
             response.raise_for_status()
             data = response.json()
 
             logger.info(
-                f"Retrieved app password for user: {user_id} (type: {data.get('credential_type')})"
+                "Retrieved app password for user: %s (type: %s)",
+                user_id,
+                data.get("credential_type"),
             )
             return data.get("app_password")
 

@@ -177,8 +177,10 @@ def setup_logging(
     configure_component_loggers(log_level)
 
     root_logger.info(
-        f"Logging configured: format={log_format}, level={log_level}, "
-        f"trace_context={include_trace_context}"
+        "Logging configured: format=%s, level=%s, trace_context=%s",
+        log_format,
+        log_level,
+        include_trace_context,
     )
 
 

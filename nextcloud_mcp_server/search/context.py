@@ -67,20 +67,26 @@ async def _get_chunk_from_qdrant(
             excerpt = point.payload.get("excerpt")
             if excerpt:
                 logger.debug(
-                    f"Retrieved chunk from Qdrant for {doc_type} {doc_id}: "
-                    f"{len(excerpt)} chars"
+                    "Retrieved chunk from Qdrant for %s %s: %s chars",
+                    doc_type,
+                    doc_id,
+                    len(excerpt),
                 )
                 return str(excerpt)
 
         logger.debug(
-            f"Chunk not found in Qdrant for {doc_type} {doc_id}, "
-            f"chunk [{chunk_start}:{chunk_end}]. Will fall back to document fetch."
+            "Chunk not found in Qdrant for %s %s, chunk [%s:%s]. Will fall back to document fetch.",
+            doc_type,
+            doc_id,
+            chunk_start,
+            chunk_end,
         )
         return None
 
     except Exception as e:
         logger.error(
-            f"Error querying Qdrant for chunk: {e}. Falling back to document fetch.",
+            "Error querying Qdrant for chunk: %s. Falling back to document fetch.",
+            e,
             exc_info=True,
         )
         return None
@@ -129,8 +135,11 @@ async def _get_chunk_by_index_from_qdrant(
             excerpt = point.payload.get("excerpt")
             if excerpt:
                 logger.debug(
-                    f"Retrieved adjacent chunk {chunk_index} from Qdrant for "
-                    f"{doc_type} {doc_id}: {len(excerpt)} chars"
+                    "Retrieved adjacent chunk %s from Qdrant for %s %s: %s chars",
+                    chunk_index,
+                    doc_type,
+                    doc_id,
+                    len(excerpt),
                 )
                 return str(excerpt)
 
@@ -138,8 +147,11 @@ async def _get_chunk_by_index_from_qdrant(
 
     except Exception as e:
         logger.debug(
-            f"Could not retrieve adjacent chunk {chunk_index} for "
-            f"{doc_type} {doc_id}: {e}"
+            "Could not retrieve adjacent chunk %s for %s %s: %s",
+            chunk_index,
+            doc_type,
+            doc_id,
+            e,
         )
         return None
 
@@ -181,19 +193,21 @@ async def _get_deck_metadata_from_qdrant(
             stack_id = point.payload.get("stack_id")
             if board_id is not None and stack_id is not None:
                 logger.debug(
-                    f"Retrieved deck metadata for card {card_id}: "
-                    f"board_id={board_id}, stack_id={stack_id}"
+                    "Retrieved deck metadata for card %s: board_id=%s, stack_id=%s",
+                    card_id,
+                    board_id,
+                    stack_id,
                 )
                 return {"board_id": int(board_id), "stack_id": int(stack_id)}
 
         logger.debug(
-            f"Could not find deck metadata in Qdrant for card {card_id} "
-            f"(might be legacy data without board_id/stack_id)"
+            "Could not find deck metadata in Qdrant for card %s (might be legacy data without board_id/stack_id)",
+            card_id,
         )
         return None
 
     except Exception as e:
-        logger.debug(f"Error querying Qdrant for deck metadata: {e}")
+        logger.debug("Error querying Qdrant for deck metadata: %s", e)
         return None
 
 
@@ -389,8 +403,9 @@ async def get_chunk_with_context(
 
     if chunk_text:
         logger.info(
-            f"Retrieved chunk from Qdrant cache for {doc_type} {doc_id} "
-            f"(avoids document re-fetch/re-parse)"
+            "Retrieved chunk from Qdrant cache for %s %s (avoids document re-fetch/re-parse)",
+            doc_type,
+            doc_id,
         )
 
         # Fetch adjacent chunks for context expansion
@@ -495,24 +510,30 @@ async def get_chunk_with_context(
         return None
 
     logger.info(
-        f"Falling back to document fetch for {doc_type} {doc_id} "
-        f"(Qdrant cache miss, possibly legacy data)"
+        "Falling back to document fetch for %s %s (Qdrant cache miss, possibly legacy data)",
+        doc_type,
+        doc_id,
     )
 
     # Fetch full document text (notes, deck cards, news items, etc.)
     full_text = await _fetch_document_text(nc_client, doc_id, doc_type, user_id)
     if full_text is None:
         logger.warning(
-            f"Could not fetch document text for {doc_type} {doc_id}, "
-            "skipping context expansion"
+            "Could not fetch document text for %s %s, skipping context expansion",
+            doc_type,
+            doc_id,
         )
         return None
 
     # Validate offsets
     if chunk_start < 0 or chunk_end > len(full_text) or chunk_start >= chunk_end:
         logger.warning(
-            f"Invalid chunk offsets for {doc_type} {doc_id}: "
-            f"start={chunk_start}, end={chunk_end}, doc_len={len(full_text)}"
+            "Invalid chunk offsets for %s %s: start=%s, end=%s, doc_len=%s",
+            doc_type,
+            doc_id,
+            chunk_start,
+            chunk_end,
+            len(full_text),
         )
         return None
 
@@ -650,13 +671,18 @@ async def _fetch_document_text(
                         board_id=board_id, stack_id=stack_id, card_id=int(doc_id)
                     )
                     logger.debug(
-                        f"Retrieved deck card {doc_id} using metadata "
-                        f"(board_id={board_id}, stack_id={stack_id})"
+                        "Retrieved deck card %s using metadata (board_id=%s, stack_id=%s)",
+                        doc_id,
+                        board_id,
+                        stack_id,
                     )
                 except Exception as e:
                     logger.warning(
-                        f"Failed to fetch card with metadata (board_id={board_id}, "
-                        f"stack_id={stack_id}, card_id={doc_id}): {e}, falling back to iteration"
+                        "Failed to fetch card with metadata (board_id=%s, stack_id=%s, card_id=%s): %s, falling back to iteration",
+                        board_id,
+                        stack_id,
+                        doc_id,
+                        e,
                     )
 
             # Fallback: Iterate through all boards/stacks (for legacy data or if fast path failed)
@@ -671,7 +697,9 @@ async def _fetch_document_text(
                     # Skip deleted boards (soft delete: deletedAt > 0)
                     if board.deletedAt > 0:
                         logger.debug(
-                            f"Skipping deleted board {board.id} while searching for card {doc_id}"
+                            "Skipping deleted board %s while searching for card %s",
+                            board.id,
+                            doc_id,
                         )
                         continue
 
@@ -686,13 +714,15 @@ async def _fetch_document_text(
                                     card = c
                                     card_found = True
                                     logger.debug(
-                                        f"Found deck card {doc_id} in board {board.id}, "
-                                        f"stack {stack.id} (fallback iteration)"
+                                        "Found deck card %s in board %s, stack %s (fallback iteration)",
+                                        doc_id,
+                                        board.id,
+                                        stack.id,
                                     )
                                     break
 
                 if not card_found:
-                    logger.warning(f"Deck card {doc_id} not found in any board/stack")
+                    logger.warning("Deck card %s not found in any board/stack", doc_id)
                     return None
 
             # Type narrowing: card is set if we reach here
@@ -705,10 +735,12 @@ async def _fetch_document_text(
                 content_parts.append(card.description)
             return "\n\n".join(content_parts)
         else:
-            logger.warning(f"Unsupported doc_type for context expansion: {doc_type}")
+            logger.warning("Unsupported doc_type for context expansion: %s", doc_type)
             return None
     except Exception as e:
-        logger.error(f"Error fetching document {doc_type} {doc_id}: {e}", exc_info=True)
+        logger.error(
+            "Error fetching document %s %s: %s", doc_type, doc_id, e, exc_info=True
+        )
         return None
 
 

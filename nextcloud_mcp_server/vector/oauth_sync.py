@@ -104,7 +104,7 @@ async def get_user_client_basic_auth(
             f"User must configure background sync in Astrolabe personal settings."
         )
 
-    logger.info(f"Using app password for background sync: {user_id}")
+    logger.info("Using app password for background sync: %s", user_id)
     return NextcloudClient(
         base_url=nextcloud_host,
         username=user_id,
@@ -141,7 +141,7 @@ async def get_user_client_oauth(
             f"User must complete the OAuth provisioning flow."
         )
 
-    logger.info(f"Using OAuth refresh token for background sync: {user_id}")
+    logger.info("Using OAuth refresh token for background sync: %s", user_id)
     return NextcloudClient.from_token(
         base_url=nextcloud_host,
         token=token,
@@ -208,7 +208,7 @@ async def user_scanner_task(
         task_status: Status object for signaling task readiness
     """
     mode_label = "BasicAuth" if use_basic_auth else "OAuth"
-    logger.info(f"[{mode_label}] Scanner started for user: {user_id}")
+    logger.info("[%s] Scanner started for user: %s", mode_label, user_id)
     settings = get_settings()
     max_consecutive_errors = 5
 
@@ -221,12 +221,14 @@ async def user_scanner_task(
         )
         try:
             await nc_client.capabilities()  # Lightweight OCS call to validate creds
-            logger.info(f"[{mode_label}] Credentials validated for {user_id}")
+            logger.info("[%s] Credentials validated for %s", mode_label, user_id)
         except HTTPStatusError as e:
             if e.response.status_code in (401, 403):
                 logger.warning(
-                    f"[{mode_label}] Credential validation failed for {user_id} "
-                    f"(HTTP {e.response.status_code}), not starting scan loop"
+                    "[%s] Credential validation failed for %s (HTTP %s), not starting scan loop",
+                    mode_label,
+                    user_id,
+                    e.response.status_code,
                 )
                 return
             raise
@@ -234,13 +236,15 @@ async def user_scanner_task(
             await nc_client.close()
     except NotProvisionedError:
         logger.warning(
-            f"[{mode_label}] User {user_id} not provisioned, not starting scan loop"
+            "[%s] User %s not provisioned, not starting scan loop", mode_label, user_id
         )
         return
     except Exception as e:
         logger.warning(
-            f"[{mode_label}] Pre-validation failed for {user_id}: {e}. "
-            f"Proceeding to scan loop (has its own error handling)."
+            "[%s] Pre-validation failed for %s: %s. Proceeding to scan loop (has its own error handling).",
+            mode_label,
+            user_id,
+            e,
         )
 
     consecutive_errors = 0
@@ -264,7 +268,9 @@ async def user_scanner_task(
 
         except NotProvisionedError:
             logger.warning(
-                f"[{mode_label}] User {user_id} no longer provisioned, stopping scanner"
+                "[%s] User %s no longer provisioned, stopping scanner",
+                mode_label,
+                user_id,
             )
             break
 
@@ -272,16 +278,19 @@ async def user_scanner_task(
             status_code = e.response.status_code
             if status_code in (401, 403):
                 logger.warning(
-                    f"[{mode_label}] Scanner auth failed for {user_id} "
-                    f"(HTTP {status_code}), stopping scanner. "
-                    f"User may need to re-provision credentials."
+                    "[%s] Scanner auth failed for %s (HTTP %s), stopping scanner. User may need to re-provision credentials.",
+                    mode_label,
+                    user_id,
+                    status_code,
                 )
                 break
             elif status_code == 429:
                 retry_after = min(int(e.response.headers.get("Retry-After", "60")), 300)
                 logger.warning(
-                    f"[{mode_label}] Scanner rate-limited for {user_id}, "
-                    f"backing off {retry_after}s"
+                    "[%s] Scanner rate-limited for %s, backing off %ss",
+                    mode_label,
+                    user_id,
+                    retry_after,
                 )
                 try:
                     with anyio.move_on_after(retry_after):
@@ -294,16 +303,24 @@ async def user_scanner_task(
             else:
                 consecutive_errors += 1
                 logger.error(
-                    f"[{mode_label}] Scanner HTTP error for {user_id}: {e} "
-                    f"({consecutive_errors}/{max_consecutive_errors})",
+                    "[%s] Scanner HTTP error for %s: %s (%s/%s)",
+                    mode_label,
+                    user_id,
+                    e,
+                    consecutive_errors,
+                    max_consecutive_errors,
                     exc_info=True,
                 )
 
         except Exception as e:
             consecutive_errors += 1
             logger.error(
-                f"[{mode_label}] Scanner error for {user_id}: {e} "
-                f"({consecutive_errors}/{max_consecutive_errors})",
+                "[%s] Scanner error for %s: %s (%s/%s)",
+                mode_label,
+                user_id,
+                e,
+                consecutive_errors,
+                max_consecutive_errors,
                 exc_info=True,
             )
 
@@ -313,8 +330,10 @@ async def user_scanner_task(
 
         if consecutive_errors >= max_consecutive_errors:
             logger.error(
-                f"[{mode_label}] Scanner for {user_id} hit {max_consecutive_errors} "
-                f"consecutive errors, stopping scanner"
+                "[%s] Scanner for %s hit %s consecutive errors, stopping scanner",
+                mode_label,
+                user_id,
+                max_consecutive_errors,
             )
             break
 
@@ -325,7 +344,7 @@ async def user_scanner_task(
         except anyio.get_cancelled_exc_class():
             break
 
-    logger.info(f"[{mode_label}] Scanner stopped for user: {user_id}")
+    logger.info("[%s] Scanner stopped for user: %s", mode_label, user_id)
 
 
 async def multi_user_processor_task(
@@ -352,7 +371,7 @@ async def multi_user_processor_task(
         task_status: Status object for signaling task readiness
     """
     mode_label = "BasicAuth" if use_basic_auth else "OAuth"
-    logger.info(f"[{mode_label}] Processor {worker_id} started")
+    logger.info("[%s] Processor %s started", mode_label, worker_id)
     task_status.started()
 
     while not shutdown_event.is_set():
@@ -378,34 +397,47 @@ async def multi_user_processor_task(
             continue
 
         except anyio.EndOfStream:
-            logger.info(f"[{mode_label}] Processor {worker_id}: Stream closed, exiting")
+            logger.info(
+                "[%s] Processor %s: Stream closed, exiting", mode_label, worker_id
+            )
             break
 
         except NotProvisionedError:
             if doc_task:
                 logger.warning(
-                    f"[{mode_label}] User {doc_task.user_id} not provisioned, "
-                    f"skipping {doc_task.doc_type}_{doc_task.doc_id}"
+                    "[%s] User %s not provisioned, skipping %s_%s",
+                    mode_label,
+                    doc_task.user_id,
+                    doc_task.doc_type,
+                    doc_task.doc_id,
                 )
             continue
 
         except Exception as e:
             if doc_task:
                 logger.error(
-                    f"[{mode_label}] Processor {worker_id} error processing "
-                    f"{doc_task.doc_type}_{doc_task.doc_id}: {e}",
+                    "[%s] Processor %s error processing %s_%s: %s",
+                    mode_label,
+                    worker_id,
+                    doc_task.doc_type,
+                    doc_task.doc_id,
+                    e,
                     exc_info=True,
                 )
             else:
                 logger.error(
-                    f"[{mode_label}] Processor {worker_id} error: {e}", exc_info=True
+                    "[%s] Processor %s error: %s",
+                    mode_label,
+                    worker_id,
+                    e,
+                    exc_info=True,
                 )
 
         finally:
             if nc_client:
                 await nc_client.close()
 
-    logger.info(f"[{mode_label}] Processor {worker_id} stopped")
+    logger.info("[%s] Processor %s stopped", mode_label, worker_id)
 
 
 # Backward compatibility alias
@@ -482,7 +514,7 @@ async def user_manager_task(
     mode_label = "BasicAuth" if use_basic_auth else "OAuth"
 
     logger.info(
-        f"[{mode_label}] User manager started (poll interval: {poll_interval}s)"
+        "[%s] User manager started (poll interval: %ss)", mode_label, poll_interval
     )
     task_status.started()
 
@@ -503,7 +535,9 @@ async def user_manager_task(
             new_users = provisioned_users - active_users
             for user_id in new_users:
                 logger.info(
-                    f"[{mode_label}] Starting scanner for newly provisioned user: {user_id}"
+                    "[%s] Starting scanner for newly provisioned user: %s",
+                    mode_label,
+                    user_id,
                 )
                 cancel_scope = anyio.CancelScope()
                 user_states[user_id] = UserSyncState(
@@ -529,7 +563,7 @@ async def user_manager_task(
             revoked_users = active_users - provisioned_users
             for user_id in revoked_users:
                 logger.info(
-                    f"[{mode_label}] Stopping scanner for revoked user: {user_id}"
+                    "[%s] Stopping scanner for revoked user: %s", mode_label, user_id
                 )
                 state = user_states.get(user_id)
                 if state:
@@ -537,12 +571,16 @@ async def user_manager_task(
                     # Note: state will be removed by _run_user_scanner_with_scope on exit
 
             if new_users:
-                logger.info(f"[{mode_label}] Started {len(new_users)} new scanner(s)")
+                logger.info(
+                    "[%s] Started %s new scanner(s)", mode_label, len(new_users)
+                )
             if revoked_users:
-                logger.info(f"[{mode_label}] Stopped {len(revoked_users)} scanner(s)")
+                logger.info(
+                    "[%s] Stopped %s scanner(s)", mode_label, len(revoked_users)
+                )
 
         except Exception as e:
-            logger.error(f"[{mode_label}] User manager error: {e}", exc_info=True)
+            logger.error("[%s] User manager error: %s", mode_label, e, exc_info=True)
 
         # Sleep until next poll
         try:
@@ -553,9 +591,11 @@ async def user_manager_task(
 
     # Cancel all remaining scanners on shutdown
     logger.info(
-        f"[{mode_label}] User manager shutting down, cancelling {len(user_states)} scanner(s)"
+        "[%s] User manager shutting down, cancelling %s scanner(s)",
+        mode_label,
+        len(user_states),
     )
     for state in list(user_states.values()):
         state.cancel_scope.cancel()
 
-    logger.info(f"[{mode_label}] User manager stopped")
+    logger.info("[%s] User manager stopped", mode_label)

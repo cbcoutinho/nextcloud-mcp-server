@@ -89,7 +89,7 @@ def require_provisioning(func: Callable) -> Callable:
         if not refresh_data:
             # User has not completed Flow 2 - provide helpful error
             logger.info(
-                f"User {user_id} attempted to use Nextcloud tool without provisioning"
+                "User %s attempted to use Nextcloud tool without provisioning", user_id
             )
             raise McpError(
                 ErrorData(
@@ -104,7 +104,7 @@ def require_provisioning(func: Callable) -> Callable:
             )
 
         logger.debug(
-            f"User {user_id} has provisioned access - proceeding with tool execution"
+            "User %s has provisioned access - proceeding with tool execution", user_id
         )
 
         # User has provisioned - allow access
@@ -156,15 +156,14 @@ def require_provisioning_or_suggest(func: Callable) -> Callable:
 
                     if not refresh_data:
                         logger.info(
-                            f"User {user_id} has not provisioned Nextcloud access. "
-                            "Some features may not work. Consider running "
-                            "'provision_nextcloud_access' tool."
+                            "User %s has not provisioned Nextcloud access. Some features may not work. Consider running 'provision_nextcloud_access' tool.",
+                            user_id,
                         )
                     else:
-                        logger.debug(f"User {user_id} has provisioned access")
+                        logger.debug("User %s has provisioned access", user_id)
 
             except Exception as e:
-                logger.debug(f"Could not check provisioning status: {e}")
+                logger.debug("Could not check provisioning status: %s", e)
 
         # Always proceed with the function
         return await func(*args, **kwargs)

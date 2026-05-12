@@ -89,7 +89,7 @@ class ContactsClient(BaseNextcloudClient):
                 }
             )
 
-        logger.debug(f"Found {len(addressbooks)} addressbooks")
+        logger.debug("Found %s addressbooks", len(addressbooks))
         return addressbooks
 
     async def create_addressbook(self, *, name: str, display_name: str):
@@ -166,7 +166,7 @@ class ContactsClient(BaseNextcloudClient):
             except Exception:
                 # Fall back to creating new vCard if we can't get existing
                 logger.warning(
-                    f"Could not fetch existing vCard for {uid}, creating new"
+                    "Could not fetch existing vCard for %s, creating new", uid
                 )
                 raw_vcard_content = ""
 
@@ -283,7 +283,7 @@ class ContactsClient(BaseNextcloudClient):
                 }
             )
 
-        logger.debug(f"Found {len(contacts)} contacts")
+        logger.debug("Found %s contacts", len(contacts))
         return contacts
 
     async def _get_raw_vcard(self, addressbook: str, uid: str) -> tuple[str, str]:
@@ -296,7 +296,7 @@ class ContactsClient(BaseNextcloudClient):
             etag = response.headers.get("etag", "")
             return response.text, etag
         except Exception as e:
-            logger.error(f"Error getting raw vCard for {uid}: {e}")
+            logger.error("Error getting raw vCard for %s: %s", uid, e)
             raise
 
     def _merge_vcard_properties(
@@ -428,7 +428,7 @@ class ContactsClient(BaseNextcloudClient):
             return "\n".join(updated_lines)
 
         except Exception as e:
-            logger.error(f"Error merging vCard properties: {e}")
+            logger.error("Error merging vCard properties: %s", e)
             # Fallback to creating basic vCard matching Nextcloud format
             basic_vcard = f"""BEGIN:VCARD
 VERSION:3.0

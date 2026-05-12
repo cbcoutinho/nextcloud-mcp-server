@@ -67,7 +67,7 @@ class GroupsClient(BaseNextcloudClient):
             headers={"OCS-APIRequest": "true", "Accept": "application/json"},
         )
         response.raise_for_status()
-        logger.info(f"Created group: {groupid}")
+        logger.info("Created group: %s", groupid)
 
     @retry_on_429
     async def delete_group(self, groupid: str) -> None:
@@ -85,7 +85,7 @@ class GroupsClient(BaseNextcloudClient):
             headers={"OCS-APIRequest": "true", "Accept": "application/json"},
         )
         response.raise_for_status()
-        logger.info(f"Deleted group: {groupid}")
+        logger.info("Deleted group: %s", groupid)
 
     @retry_on_429
     async def get_group_members(self, groupid: str) -> List[str]:
@@ -150,4 +150,4 @@ class GroupsClient(BaseNextcloudClient):
             headers={"OCS-APIRequest": "true", "Accept": "application/json"},
         )
         response.raise_for_status()
-        logger.info(f"Updated group {groupid} displayname to: {displayname}")
+        logger.info("Updated group %s displayname to: %s", groupid, displayname)

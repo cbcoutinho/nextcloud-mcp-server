@@ -79,7 +79,7 @@ async def create_generation_provider(provider_name: str) -> Provider:
             embedding_model=None,  # Generation only
             generation_model=generation_model,
         )
-        logger.info(f"Created OpenAI generation provider: model={generation_model}")
+        logger.info("Created OpenAI generation provider: model=%s", generation_model)
         return provider
 
     elif provider_name == "ollama":
@@ -96,7 +96,7 @@ async def create_generation_provider(provider_name: str) -> Provider:
             embedding_model=None,  # Generation only
             generation_model=generation_model,
         )
-        logger.info(f"Created Ollama generation provider: model={generation_model}")
+        logger.info("Created Ollama generation provider: model=%s", generation_model)
         return provider
 
     elif provider_name == "anthropic":
@@ -114,7 +114,7 @@ async def create_generation_provider(provider_name: str) -> Provider:
             api_key=api_key,
             generation_model=generation_model,
         )
-        logger.info(f"Created Anthropic generation provider: model={generation_model}")
+        logger.info("Created Anthropic generation provider: model=%s", generation_model)
         return provider
 
     elif provider_name == "bedrock":
@@ -133,7 +133,7 @@ async def create_generation_provider(provider_name: str) -> Provider:
             embedding_model=None,  # Generation only
             generation_model=generation_model,
         )
-        logger.info(f"Created Bedrock generation provider: model={generation_model}")
+        logger.info("Created Bedrock generation provider: model=%s", generation_model)
         return provider
 
     else:
@@ -178,7 +178,7 @@ async def create_embedding_provider(provider_name: str) -> Provider:
             embedding_model=embedding_model,
             generation_model=None,  # Embeddings only
         )
-        logger.info(f"Created OpenAI embedding provider: model={embedding_model}")
+        logger.info("Created OpenAI embedding provider: model=%s", embedding_model)
         return provider
 
     elif provider_name == "ollama":
@@ -195,7 +195,7 @@ async def create_embedding_provider(provider_name: str) -> Provider:
             embedding_model=embedding_model,
             generation_model=None,  # Embeddings only
         )
-        logger.info(f"Created Ollama embedding provider: model={embedding_model}")
+        logger.info("Created Ollama embedding provider: model=%s", embedding_model)
         return provider
 
     elif provider_name == "bedrock":
@@ -214,7 +214,7 @@ async def create_embedding_provider(provider_name: str) -> Provider:
             embedding_model=embedding_model,
             generation_model=None,  # Embeddings only
         )
-        logger.info(f"Created Bedrock embedding provider: model={embedding_model}")
+        logger.info("Created Bedrock embedding provider: model=%s", embedding_model)
         return provider
 
     else:

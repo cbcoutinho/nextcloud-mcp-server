@@ -127,7 +127,9 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
             )
 
             logger.error(
-                f"Request failed: {method} {path}",
+                "Request failed: %s %s",
+                method,
+                path,
                 exc_info=True,
                 extra={
                     "method": method,
@@ -212,7 +214,10 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         # Log slow requests (>1 second)
         if duration > 1.0:
             logger.warning(
-                f"Slow request: {method} {endpoint} took {duration:.3f}s",
+                "Slow request: %s %s took %ss",
+                method,
+                endpoint,
+                format(duration, ".3f"),
                 extra={
                     "method": method,
                     "endpoint": endpoint,

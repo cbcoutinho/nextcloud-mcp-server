@@ -69,7 +69,7 @@ class UnifiedTokenVerifier(TokenVerifier):
         # JWT verification support
         self.jwks_client: PyJWKClient | None = None
         if hasattr(settings, "jwks_uri") and settings.jwks_uri:
-            logger.info(f"JWT verification enabled with JWKS URI: {settings.jwks_uri}")
+            logger.info("JWT verification enabled with JWKS URI: %s", settings.jwks_uri)
             self.jwks_client = PyJWKClient(settings.jwks_uri, cache_keys=True)
 
         # Introspection support (for opaque tokens)
@@ -81,7 +81,7 @@ class UnifiedTokenVerifier(TokenVerifier):
             and settings.oidc_client_secret
         ):
             self.introspection_uri = settings.introspection_uri
-            logger.info(f"Token introspection enabled: {self.introspection_uri}")
+            logger.info("Token introspection enabled: %s", self.introspection_uri)
 
         # Build list of valid issuers (internal + public may differ in Docker)
         # AS proxy obtains tokens via internal URL (e.g. http://app:80), while
@@ -114,14 +114,16 @@ class UnifiedTokenVerifier(TokenVerifier):
             )
         else:
             logger.info(
-                f"Management API allowlist: {sorted(self._allowed_mgmt_clients)}"
+                "Management API allowlist: %s", sorted(self._allowed_mgmt_clients)
             )
 
         logger.info(
-            f"UnifiedTokenVerifier initialized in {self.mode} mode. "
-            f"MCP audience: {settings.oidc_client_id} or {settings.nextcloud_mcp_server_url}, "
-            f"Nextcloud resource URI: {settings.nextcloud_resource_uri}, "
-            f"Valid issuers: {self.valid_issuers}"
+            "UnifiedTokenVerifier initialized in %s mode. MCP audience: %s or %s, Nextcloud resource URI: %s, Valid issuers: %s",
+            self.mode,
+            settings.oidc_client_id,
+            settings.nextcloud_mcp_server_url,
+            settings.nextcloud_resource_uri,
+            self.valid_issuers,
         )
 
     async def verify_token(self, token: str) -> AccessToken | None:
@@ -281,9 +283,10 @@ class UnifiedTokenVerifier(TokenVerifier):
             if not self._has_mcp_audience(payload):
                 audiences = payload.get("aud", [])
                 logger.error(
-                    f"Token rejected: Missing MCP audience. "
-                    f"Got {audiences}, need MCP ({self.settings.oidc_client_id} or "
-                    f"{self.settings.nextcloud_mcp_server_url})"
+                    "Token rejected: Missing MCP audience. Got %s, need MCP (%s or %s)",
+                    audiences,
+                    self.settings.oidc_client_id,
+                    self.settings.nextcloud_mcp_server_url,
                 )
                 # Record as invalid due to audience mismatch
                 record_oauth_token_validation(validation_method, "invalid")
@@ -303,7 +306,7 @@ class UnifiedTokenVerifier(TokenVerifier):
             return self._create_access_token(token, payload)
 
         except Exception as e:
-            logger.error(f"Token verification failed: {e}")
+            logger.error("Token verification failed: %s", e)
             record_oauth_token_validation(validation_method, "error")
             return None
 
@@ -368,14 +371,15 @@ class UnifiedTokenVerifier(TokenVerifier):
 
             # Skip audience validation - any valid Nextcloud token is accepted
             logger.debug(
-                f"Management API token validated (no audience check) for user: {payload.get('sub')}"
+                "Management API token validated (no audience check) for user: %s",
+                payload.get("sub"),
             )
 
             # Cache and return the token
             return self._create_access_token_with_cache_key(token, payload, cache_key)
 
         except Exception as e:
-            logger.error(f"Management API token verification failed: {e}")
+            logger.error("Management API token verification failed: %s", e)
             record_oauth_token_validation(validation_method, "error")
             return None
 
@@ -478,20 +482,20 @@ class UnifiedTokenVerifier(TokenVerifier):
                         f"expected one of: {self.valid_issuers}"
                     )
 
-            logger.debug(f"JWT signature verified for user: {payload.get('sub')}")
+            logger.debug("JWT signature verified for user: %s", payload.get("sub"))
             return payload
 
         except jwt.ExpiredSignatureError:
             logger.info("JWT token has expired")
             return None
         except jwt.InvalidIssuerError as e:
-            logger.warning(f"JWT issuer validation failed: {e}")
+            logger.warning("JWT issuer validation failed: %s", e)
             return None
         except jwt.InvalidTokenError as e:
-            logger.warning(f"JWT validation failed: {e}")
+            logger.warning("JWT validation failed: %s", e)
             return None
         except Exception as e:
-            logger.error(f"Unexpected error during JWT verification: {e}")
+            logger.error("Unexpected error during JWT verification: %s", e)
             return None
 
     async def _introspect_token(self, token: str) -> dict[str, Any] | None:
@@ -528,20 +532,23 @@ class UnifiedTokenVerifier(TokenVerifier):
                     return None
 
                 logger.debug(
-                    f"Token introspected successfully for user: {introspection_data.get('sub')}"
+                    "Token introspected successfully for user: %s",
+                    introspection_data.get("sub"),
                 )
                 return introspection_data
 
             elif response.status_code in (400, 401, 403):
                 logger.warning(
-                    f"Token introspection failed: HTTP {response.status_code}. "
-                    f"Response: {response.text[:200] if response.text else 'empty'}"
+                    "Token introspection failed: HTTP %s. Response: %s",
+                    response.status_code,
+                    response.text[:200] if response.text else "empty",
                 )
                 return None
             else:
                 logger.warning(
-                    f"Unexpected response from introspection: {response.status_code}. "
-                    f"Response: {response.text[:200] if response.text else 'empty'}"
+                    "Unexpected response from introspection: %s. Response: %s",
+                    response.status_code,
+                    response.text[:200] if response.text else "empty",
                 )
                 return None
 
@@ -549,10 +556,10 @@ class UnifiedTokenVerifier(TokenVerifier):
             logger.error("Timeout while introspecting token")
             return None
         except httpx.RequestError as e:
-            logger.error(f"Network error while introspecting token: {e}")
+            logger.error("Network error while introspecting token: %s", e)
             return None
         except Exception as e:
-            logger.error(f"Unexpected error during token introspection: {e}")
+            logger.error("Unexpected error during token introspection: %s", e)
             return None
 
     def _create_access_token(
@@ -598,7 +605,9 @@ class UnifiedTokenVerifier(TokenVerifier):
         scope_string = payload.get("scope", "")
         scopes = scope_string.split() if scope_string else []
         logger.debug(
-            f"Extracted scopes from token - scope claim: '{scope_string}' -> scopes list: {scopes}"
+            "Extracted scopes from token - scope claim: '%s' -> scopes list: %s",
+            scope_string,
+            scopes,
         )
 
         # Extract expiration

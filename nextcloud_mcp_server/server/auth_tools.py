@@ -116,7 +116,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
             )
             init_response = await flow_client.initiate()
         except Exception as e:
-            logger.error(f"Failed to initiate Login Flow v2: {e}")
+            logger.error("Failed to initiate Login Flow v2: %s", e)
             return ProvisionAccessResponse(
                 status="error",
                 message=f"Failed to start login flow: {e}",
@@ -227,7 +227,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
         try:
             session = await storage.get_login_flow_session(user_id)
         except Exception as e:
-            logger.error(f"Failed to check login flow session for {user_id}: {e}")
+            logger.error("Failed to check login flow session for %s: %s", user_id, e)
             return ProvisionStatusResponse(
                 status="error",
                 message=f"Failed to check login flow session: {e}",
@@ -264,7 +264,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
                 poll_token=session["poll_token"],
             )
         except Exception as e:
-            logger.error(f"Failed to poll Login Flow v2: {e}")
+            logger.error("Failed to poll Login Flow v2: %s", e)
             return ProvisionStatusResponse(
                 status="error",
                 message=f"Failed to check login status: {e}",
@@ -434,7 +434,7 @@ def register_auth_tools(mcp: FastMCP) -> None:
             )
             init_response = await flow_client.initiate()
         except Exception as e:
-            logger.error(f"Failed to initiate Login Flow v2 for scope update: {e}")
+            logger.error("Failed to initiate Login Flow v2 for scope update: %s", e)
             return UpdateScopesResponse(
                 status="error",
                 message=f"Failed to start re-provisioning flow: {e}",

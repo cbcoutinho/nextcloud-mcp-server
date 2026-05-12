@@ -143,7 +143,7 @@ def _extract_basic_auth(
     # Verify username matches path user_id
     if username != path_user_id:
         logger.warning(
-            f"Username mismatch in app password operation for path user {path_user_id}"
+            "Username mismatch in app password operation for path user %s", path_user_id
         )
         return (
             "",
@@ -211,7 +211,7 @@ async def provision_app_password(request: Request) -> JSONResponse:
     is_allowed, retry_after = _check_rate_limit(path_user_id)
     if not is_allowed:
         logger.warning(
-            f"Rate limit exceeded for app password provisioning: {path_user_id}"
+            "Rate limit exceeded for app password provisioning: %s", path_user_id
         )
         return JSONResponse(
             {
@@ -263,7 +263,8 @@ async def provision_app_password(request: Request) -> JSONResponse:
 
             if response.status_code != 200:
                 logger.warning(
-                    f"App password validation failed for user: HTTP {response.status_code}"
+                    "App password validation failed for user: HTTP %s",
+                    response.status_code,
                 )
                 _record_rate_limit_attempt(path_user_id, success=False)
                 return JSONResponse(
@@ -283,7 +284,7 @@ async def provision_app_password(request: Request) -> JSONResponse:
                 )
 
     except httpx.RequestError as e:
-        logger.error(f"Failed to validate app password: {e}")
+        logger.error("Failed to validate app password: %s", e)
         return JSONResponse(
             {"success": False, "error": "Failed to validate credentials"},
             status_code=500,
@@ -309,7 +310,7 @@ async def provision_app_password(request: Request) -> JSONResponse:
         invalidate_scope_cache(username)
 
         _record_rate_limit_attempt(path_user_id, success=True)
-        logger.info(f"Provisioned app password for user: {username}")
+        logger.info("Provisioned app password for user: %s", username)
 
         return JSONResponse(
             {
@@ -409,7 +410,7 @@ async def delete_app_password(request: Request) -> JSONResponse:
                     status_code=401,
                 )
     except httpx.RequestError as e:
-        logger.error(f"Failed to validate credentials: {e}")
+        logger.error("Failed to validate credentials: %s", e)
         return JSONResponse(
             {"success": False, "error": "Failed to validate credentials"},
             status_code=500,
@@ -420,7 +421,7 @@ async def delete_app_password(request: Request) -> JSONResponse:
         deleted = await storage.delete_app_password(username)
 
         if deleted:
-            logger.info(f"Deleted app password for user: {username}")
+            logger.info("Deleted app password for user: %s", username)
             return JSONResponse(
                 {
                     "success": True,

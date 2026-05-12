@@ -30,11 +30,11 @@ class BM25SparseEmbeddingProvider:
             model_name: FastEmbed BM25 model name (default: Qdrant/bm25)
         """
         self.model_name = model_name
-        logger.info(f"Initializing BM25 sparse embedding provider: {model_name}")
+        logger.info("Initializing BM25 sparse embedding provider: %s", model_name)
 
         # Initialize FastEmbed sparse embedding model
         self.model = SparseTextEmbedding(model_name=model_name)
-        logger.info(f"BM25 sparse embedding model loaded: {model_name}")
+        logger.info("BM25 sparse embedding model loaded: %s", model_name)
 
     def encode(self, text: str) -> dict[str, Any]:
         """

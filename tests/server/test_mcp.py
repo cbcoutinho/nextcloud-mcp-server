@@ -19,7 +19,7 @@ async def test_mcp_connectivity(nc_mcp_client: ClientSession):
     logger.info("Available MCP tools:")
     tool_names = []
     for tool in tools.tools:
-        logger.info(f"  - {tool.name}: {tool.description}")
+        logger.info("  - %s: %s", tool.name, tool.description)
         tool_names.append(tool.name)
 
     # Verify expected tools are present
@@ -88,7 +88,7 @@ async def test_mcp_connectivity(nc_mcp_client: ClientSession):
     logger.info("\nAvailable resource templates:")
     template_uris = []
     for template in templates.resourceTemplates:
-        logger.info(f"  - {template.uriTemplate}")
+        logger.info("  - %s", template.uriTemplate)
         template_uris.append(template.uriTemplate)
 
     # Verify expected resource templates
@@ -105,7 +105,7 @@ async def test_mcp_connectivity(nc_mcp_client: ClientSession):
     logger.info("\nAvailable resources:")
     resource_uris = []
     for resource in resources.resources:
-        logger.info(f"  - {resource.uri}: {resource.name}")
+        logger.info("  - %s: %s", resource.uri, resource.name)
         resource_uris.append(str(resource.uri))  # Convert to string for comparison
 
     # Verify expected resources
@@ -126,7 +126,7 @@ async def test_mcp_connectivity(nc_mcp_client: ClientSession):
     prompts = await nc_mcp_client.list_prompts()
     logger.info("\nAvailable prompts:")
     for prompt in prompts.prompts:
-        logger.info(f"  - {prompt.name}")
+        logger.info("  - %s", prompt.name)
 
 
 async def test_mcp_notes_crud_workflow(
@@ -143,7 +143,7 @@ async def test_mcp_notes_crud_workflow(
 
     try:
         # 1. Create note via MCP
-        logger.info(f"Creating note via MCP: {test_title}")
+        logger.info("Creating note via MCP: %s", test_title)
         create_result = await nc_mcp_client.call_tool(
             "nc_notes_create_note",
             {"title": test_title, "content": test_content, "category": test_category},
@@ -157,7 +157,7 @@ async def test_mcp_notes_crud_workflow(
         note_id = note_data["id"]
         create_etag = note_data["etag"]  # Verify create response includes ETag
 
-        logger.info(f"Note created via MCP with ID: {note_id}, ETag: {create_etag}")
+        logger.info("Note created via MCP with ID: %s, ETag: %s", note_id, create_etag)
         assert "etag" in note_data, "Create response should include ETag"
         assert create_etag, "Create ETag should not be empty"
 
@@ -170,7 +170,7 @@ async def test_mcp_notes_crud_workflow(
         assert direct_note["category"] == test_category, "Category mismatch"
 
         # 3. Read note via MCP
-        logger.info(f"Reading note via MCP: {note_id}")
+        logger.info("Reading note via MCP: %s", note_id)
         read_result = await nc_mcp_client.call_tool(
             "nc_notes_get_note", {"note_id": note_id}
         )
@@ -186,7 +186,7 @@ async def test_mcp_notes_crud_workflow(
         updated_content = f"Updated content: {test_content}"
         etag = read_note_data["etag"]
 
-        logger.info(f"Updating note via MCP: {note_id}")
+        logger.info("Updating note via MCP: %s", note_id)
         update_result = await nc_mcp_client.call_tool(
             "nc_notes_update_note",
             {
@@ -206,7 +206,7 @@ async def test_mcp_notes_crud_workflow(
         updated_note_data = json.loads(update_result.content[0].text)
         update_etag = updated_note_data["etag"]
 
-        logger.info(f"Note updated via MCP, new ETag: {update_etag}")
+        logger.info("Note updated via MCP, new ETag: %s", update_etag)
         assert "etag" in updated_note_data, "Update response should include ETag"
         assert update_etag, "Update ETag should not be empty"
         assert update_etag != etag, "ETag should change after update"
@@ -218,7 +218,7 @@ async def test_mcp_notes_crud_workflow(
 
         # 6. Append content via MCP
         append_content = "\n\nThis is appended content via MCP."
-        logger.info(f"Appending content to note via MCP: {note_id}")
+        logger.info("Appending content to note via MCP: %s", note_id)
         append_result = await nc_mcp_client.call_tool(
             "nc_notes_append_content", {"note_id": note_id, "content": append_content}
         )
@@ -231,7 +231,7 @@ async def test_mcp_notes_crud_workflow(
         appended_note_data = json.loads(append_result.content[0].text)
         append_etag = appended_note_data["etag"]
 
-        logger.info(f"Content appended via MCP, new ETag: {append_etag}")
+        logger.info("Content appended via MCP, new ETag: %s", append_etag)
         assert "etag" in appended_note_data, "Append response should include ETag"
         assert append_etag, "Append ETag should not be empty"
         assert append_etag != update_etag, "ETag should change after append"
@@ -241,7 +241,7 @@ async def test_mcp_notes_crud_workflow(
         assert append_content in appended_direct_note["content"]
 
         # 8. Search for note via MCP
-        logger.info(f"Searching for note via MCP with query: {unique_suffix}")
+        logger.info("Searching for note via MCP with query: %s", unique_suffix)
         search_result = await nc_mcp_client.call_tool(
             "nc_notes_search_notes", {"query": unique_suffix}
         )
@@ -250,7 +250,7 @@ async def test_mcp_notes_crud_workflow(
             f"MCP note search failed: {search_result.content}"
         )
         search_notes_text = search_result.content[0].text
-        logger.info(f"Search result text: {search_notes_text}")
+        logger.info("Search result text: %s", search_notes_text)
         search_response = json.loads(search_notes_text)
 
         # Expect structured response with Pydantic format
@@ -282,7 +282,7 @@ async def test_mcp_notes_crud_workflow(
         assert found_note["title"] == updated_title
 
         # 9. Delete note via MCP
-        logger.info(f"Deleting note via MCP: {note_id}")
+        logger.info("Deleting note via MCP: %s", note_id)
         delete_result = await nc_mcp_client.call_tool(
             "nc_notes_delete_note", {"note_id": note_id}
         )
@@ -297,7 +297,7 @@ async def test_mcp_notes_crud_workflow(
             pytest.fail("Note should have been deleted but was still found")
         except Exception:
             # Expected - note should be deleted
-            logger.info(f"Successfully verified note {note_id} was deleted")
+            logger.info("Successfully verified note %s was deleted", note_id)
             created_note = None  # Mark as cleaned up
 
     finally:
@@ -306,9 +306,9 @@ async def test_mcp_notes_crud_workflow(
             try:
                 note_data = json.loads(created_note)
                 await nc_client.notes.delete_note(note_data["id"])
-                logger.info(f"Cleaned up note {note_data['id']} after test failure")
+                logger.info("Cleaned up note %s after test failure", note_data["id"])
             except Exception as e:
-                logger.warning(f"Failed to cleanup note: {e}")
+                logger.warning("Failed to cleanup note: %s", e)
 
 
 async def test_mcp_notes_etag_conflict(
@@ -325,7 +325,7 @@ async def test_mcp_notes_etag_conflict(
 
     try:
         # 1. Create note via MCP
-        logger.info(f"Creating note for ETag conflict test: {test_title}")
+        logger.info("Creating note for ETag conflict test: %s", test_title)
         create_result = await nc_mcp_client.call_tool(
             "nc_notes_create_note",
             {"title": test_title, "content": test_content, "category": test_category},
@@ -355,7 +355,7 @@ async def test_mcp_notes_etag_conflict(
         assert new_etag != original_etag, "ETag should have changed after update"
 
         # 3. Try to update with the stale (original) ETag - this should fail
-        logger.info(f"Attempting update with stale ETag: {original_etag}")
+        logger.info("Attempting update with stale ETag: %s", original_etag)
         conflict_result = await nc_mcp_client.call_tool(
             "nc_notes_update_note",
             {
@@ -382,9 +382,9 @@ async def test_mcp_notes_etag_conflict(
         if created_note is not None:
             try:
                 await nc_client.notes.delete_note(created_note["id"])
-                logger.info(f"Cleaned up test note {created_note['id']}")
+                logger.info("Cleaned up test note %s", created_note["id"])
             except Exception as e:
-                logger.warning(f"Failed to cleanup test note: {e}")
+                logger.warning("Failed to cleanup test note: %s", e)
 
 
 async def test_mcp_webdav_workflow(
@@ -400,7 +400,7 @@ async def test_mcp_webdav_workflow(
 
     try:
         # 1. Create directory via MCP
-        logger.info(f"Creating directory via MCP: {test_dir}")
+        logger.info("Creating directory via MCP: %s", test_dir)
         create_dir_result = await nc_mcp_client.call_tool(
             "nc_webdav_create_directory", {"path": test_dir}
         )
@@ -415,7 +415,7 @@ async def test_mcp_webdav_workflow(
         assert test_dir in dir_names, f"Directory {test_dir} not found in root listing"
 
         # 3. Write file via MCP
-        logger.info(f"Writing file via MCP: {test_file_path}")
+        logger.info("Writing file via MCP: %s", test_file_path)
         write_result = await nc_mcp_client.call_tool(
             "nc_webdav_write_file",
             {
@@ -437,7 +437,7 @@ async def test_mcp_webdav_workflow(
         )
 
         # 5. Read file via MCP
-        logger.info(f"Reading file via MCP: {test_file_path}")
+        logger.info("Reading file via MCP: %s", test_file_path)
         read_result = await nc_mcp_client.call_tool(
             "nc_webdav_read_file", {"path": test_file_path}
         )
@@ -458,7 +458,7 @@ async def test_mcp_webdav_workflow(
         assert direct_content.decode("utf-8") == test_content
 
         # 7. List directory via MCP
-        logger.info(f"Listing directory via MCP: {test_dir}")
+        logger.info("Listing directory via MCP: %s", test_dir)
         list_result = await nc_mcp_client.call_tool(
             "nc_webdav_list_directory", {"path": test_dir}
         )
@@ -467,7 +467,7 @@ async def test_mcp_webdav_workflow(
             f"MCP directory listing failed: {list_result.content}"
         )
         listing_text = list_result.content[0].text
-        logger.info(f"Directory listing response: {listing_text}")
+        logger.info("Directory listing response: %s", listing_text)
         listing_data = json.loads(listing_text)
 
         # Extract files from DirectoryListing response
@@ -498,17 +498,17 @@ async def test_mcp_webdav_workflow(
     finally:
         # Cleanup
         try:
-            logger.info(f"Cleaning up test file: {test_file_path}")
+            logger.info("Cleaning up test file: %s", test_file_path)
             await nc_mcp_client.call_tool(
                 "nc_webdav_delete_resource", {"path": test_file_path}
             )
 
-            logger.info(f"Cleaning up test directory: {test_dir}")
+            logger.info("Cleaning up test directory: %s", test_dir)
             await nc_mcp_client.call_tool(
                 "nc_webdav_delete_resource", {"path": test_dir}
             )
         except Exception as e:
-            logger.warning(f"Failed to cleanup WebDAV resources: {e}")
+            logger.warning("Failed to cleanup WebDAV resources: %s", e)
 
 
 async def test_mcp_resources_access(
@@ -576,8 +576,8 @@ async def test_mcp_calendar_workflow(
         calendars_response = json.loads(calendars_result.content[0].text)
 
         # Debug output to understand the structure
-        logger.info(f"calendars_response type: {type(calendars_response)}")
-        logger.info(f"calendars_response content: {calendars_response}")
+        logger.info("calendars_response type: %s", type(calendars_response))
+        logger.info("calendars_response content: %s", calendars_response)
 
         # Expect structured response with Pydantic format
         assert isinstance(calendars_response, dict), (
@@ -600,7 +600,7 @@ async def test_mcp_calendar_workflow(
 
         # Use the first available calendar
         calendar_name = calendars_list[0]["name"]
-        logger.info(f"Using calendar: {calendar_name}")
+        logger.info("Using calendar: %s", calendar_name)
 
         # 2. Create event via MCP
         from datetime import datetime, timedelta
@@ -621,7 +621,7 @@ async def test_mcp_calendar_workflow(
             "priority": 5,
         }
 
-        logger.info(f"Creating event via MCP: {test_event_title}")
+        logger.info("Creating event via MCP: %s", test_event_title)
         create_result = await nc_mcp_client.call_tool(
             "nc_calendar_create_event", event_data
         )
@@ -634,7 +634,7 @@ async def test_mcp_calendar_workflow(
         event_uid = created_event_data["uid"]
         created_event = {"uid": event_uid, "calendar_name": calendar_name}
 
-        logger.info(f"Event created via MCP with UID: {event_uid}")
+        logger.info("Event created via MCP with UID: %s", event_uid)
 
         # 3. Verify creation via direct NextcloudClient
         direct_event, _ = await nc_client.calendar.get_event(calendar_name, event_uid)
@@ -643,7 +643,7 @@ async def test_mcp_calendar_workflow(
         assert "testing" in direct_event.get("categories", "")
 
         # 4. Get event via MCP
-        logger.info(f"Getting event via MCP: {event_uid}")
+        logger.info("Getting event via MCP: %s", event_uid)
         get_result = await nc_mcp_client.call_tool(
             "nc_calendar_get_event",
             {"calendar_name": calendar_name, "event_uid": event_uid},
@@ -686,8 +686,8 @@ async def test_mcp_calendar_workflow(
         events_response = json.loads(list_result.content[0].text)
 
         # Debug output to understand what nc_calendar_list_events returns
-        logger.info(f"list_events result type: {type(events_response)}")
-        logger.info(f"list_events result content: {events_response}")
+        logger.info("list_events result type: %s", type(events_response))
+        logger.info("list_events result content: %s", events_response)
 
         # Response is now a ListEventsResponse with an "events" field
         assert isinstance(events_response, dict), "Expected response dict"
@@ -748,7 +748,7 @@ async def test_mcp_calendar_workflow(
             "priority": 1,
         }
 
-        logger.info(f"Updating event via MCP: {event_uid}")
+        logger.info("Updating event via MCP: %s", event_uid)
         update_result = await nc_mcp_client.call_tool(
             "nc_calendar_update_event", update_data
         )
@@ -784,7 +784,7 @@ async def test_mcp_calendar_workflow(
         assert isinstance(upcoming_events, list), "Expected upcoming events list"
 
         # 10. Delete event via MCP
-        logger.info(f"Deleting event via MCP: {event_uid}")
+        logger.info("Deleting event via MCP: %s", event_uid)
         delete_result = await nc_mcp_client.call_tool(
             "nc_calendar_delete_event",
             {"calendar_name": calendar_name, "event_uid": event_uid},
@@ -800,7 +800,7 @@ async def test_mcp_calendar_workflow(
             pytest.fail("Event should have been deleted but was still found")
         except Exception:
             # Expected - event should be deleted
-            logger.info(f"Successfully verified event {event_uid} was deleted")
+            logger.info("Successfully verified event %s was deleted", event_uid)
             created_event = None  # Mark as cleaned up
 
     except Exception as e:
@@ -818,7 +818,7 @@ async def test_mcp_calendar_workflow(
                     created_event["calendar_name"], created_event["uid"]
                 )
                 logger.info(
-                    f"Cleaned up event {created_event['uid']} after test failure"
+                    "Cleaned up event %s after test failure", created_event["uid"]
                 )
             except Exception as e:
-                logger.warning(f"Failed to cleanup event: {e}")
+                logger.warning("Failed to cleanup event: %s", e)

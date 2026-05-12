@@ -120,11 +120,11 @@ async def get_indexed_doc_types(user_id: str) -> set[str]:
             if point.payload and point.payload.get("doc_type")
         }
 
-        logger.debug(f"Found indexed document types for user {user_id}: {doc_types}")
+        logger.debug("Found indexed document types for user %s: %s", user_id, doc_types)
         return doc_types
 
     except Exception as e:
-        logger.warning(f"Failed to query Qdrant for doc_types: {e}")
+        logger.warning("Failed to query Qdrant for doc_types: %s", e)
         return set()
 
 

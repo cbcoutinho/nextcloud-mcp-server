@@ -56,15 +56,15 @@ class TokenCache:
             # Check if token has expired
             if now >= expiry:
                 del self._cache[user_id]
-                logger.debug(f"Cached token expired for user {user_id}")
+                logger.debug("Cached token expired for user %s", user_id)
                 return None
 
             # Check if token will expire soon (refresh early)
             if now >= expiry - self._early_refresh:
-                logger.debug(f"Cached token expiring soon for user {user_id}")
+                logger.debug("Cached token expiring soon for user %s", user_id)
                 return None
 
-            logger.debug(f"Using cached token for user {user_id}")
+            logger.debug("Using cached token for user %s", user_id)
             return token
 
     async def set(self, user_id: str, token: str, expires_in: int | None = None):
@@ -77,14 +77,14 @@ class TokenCache:
                 expiry = datetime.now(timezone.utc) + self._ttl
 
             self._cache[user_id] = (token, expiry)
-            logger.debug(f"Cached token for user {user_id} until {expiry}")
+            logger.debug("Cached token for user %s until %s", user_id, expiry)
 
     async def invalidate(self, user_id: str):
         """Remove token from cache."""
         async with self._lock:
             if user_id in self._cache:
                 del self._cache[user_id]
-                logger.debug(f"Invalidated cached token for user {user_id}")
+                logger.debug("Invalidated cached token for user %s", user_id)
 
 
 class TokenBrokerService:
@@ -214,7 +214,7 @@ class TokenBrokerService:
         # Get stored refresh token
         refresh_data = await self.storage.get_refresh_token(user_id)
         if not refresh_data:
-            logger.info(f"No refresh token found for user {user_id}")
+            logger.info("No refresh token found for user %s", user_id)
             return None
 
         try:
@@ -230,7 +230,7 @@ class TokenBrokerService:
             return access_token
 
         except Exception as e:
-            logger.error(f"Failed to get Nextcloud token for user {user_id}: {e}")
+            logger.error("Failed to get Nextcloud token for user %s: %s", user_id, e)
             # Invalidate cache on error
             await self.cache.invalidate(user_id)
             return None
@@ -273,19 +273,21 @@ class TokenBrokerService:
             cached_token = await self.cache.get(cache_key)
             if cached_token:
                 logger.debug(
-                    f"Token found in cache after lock acquisition for user {user_id}"
+                    "Token found in cache after lock acquisition for user %s", user_id
                 )
                 return cached_token
 
             # Check if another thread is currently refreshing
             if await self.cache.get(refresh_in_progress_key):
-                logger.debug(f"Refresh in progress for user {user_id}, waiting briefly")
+                logger.debug(
+                    "Refresh in progress for user %s, waiting briefly", user_id
+                )
                 await anyio.sleep(0.1)  # Brief wait for in-progress refresh
                 # Check cache one more time after wait
                 cached_token = await self.cache.get(cache_key)
                 if cached_token:
                     logger.debug(
-                        f"Token refreshed by another thread for user {user_id}"
+                        "Token refreshed by another thread for user %s", user_id
                     )
                     return cached_token
 
@@ -296,7 +298,7 @@ class TokenBrokerService:
                 # Get stored refresh token
                 refresh_data = await self.storage.get_refresh_token(user_id)
                 if not refresh_data:
-                    logger.info(f"No refresh token found for user {user_id}")
+                    logger.info("No refresh token found for user %s", user_id)
                     return None
 
                 # storage.get_refresh_token() returns already-decrypted token
@@ -312,14 +314,18 @@ class TokenBrokerService:
                 await self.cache.set(cache_key, access_token, expires_in)
 
                 logger.info(
-                    f"Generated background token for user {user_id} with scopes: {required_scopes}"
+                    "Generated background token for user %s with scopes: %s",
+                    user_id,
+                    required_scopes,
                 )
 
                 return access_token
 
             except Exception as e:
                 logger.error(
-                    f"Failed to get background token for user {user_id}: {e}",
+                    "Failed to get background token for user %s: %s",
+                    user_id,
+                    e,
                     exc_info=True,
                 )
                 await self.cache.invalidate(cache_key)
@@ -375,7 +381,7 @@ class TokenBrokerService:
 
         if response.status_code != 200:
             logger.error(
-                f"Token refresh failed: {response.status_code} - {response.text}"
+                "Token refresh failed: %s - %s", response.status_code, response.text
             )
             raise Exception(f"Token refresh failed: {response.status_code}")
 
@@ -395,11 +401,11 @@ class TokenBrokerService:
                 refresh_token=new_refresh_token,
                 expires_at=expires_at,
             )
-            logger.info(f"Stored rotated refresh token for user {user_id}")
+            logger.info("Stored rotated refresh token for user %s", user_id)
 
         # Note: Nextcloud validates token audience on API calls - no need to pre-validate here
 
-        logger.info(f"Refreshed access token (expires in {expires_in}s)")
+        logger.info("Refreshed access token (expires in %ss)", expires_in)
         return access_token, expires_in
 
     async def _refresh_access_token_with_scopes(
@@ -446,7 +452,9 @@ class TokenBrokerService:
         }
 
         logger.info(
-            f"Token refresh request to {token_endpoint} with client_id={self.client_id[:16]}..."
+            "Token refresh request to %s with client_id=%s...",
+            token_endpoint,
+            self.client_id[:16],
         )
 
         response = await client.post(
@@ -457,9 +465,11 @@ class TokenBrokerService:
 
         if response.status_code != 200:
             logger.error(
-                f"Token refresh with scopes failed: {response.status_code} - {response.text}"
+                "Token refresh with scopes failed: %s - %s",
+                response.status_code,
+                response.text,
             )
-            logger.error(f"  client_id used: {self.client_id[:16]}...")
+            logger.error("  client_id used: %s...", self.client_id[:16])
             raise Exception(f"Token refresh failed: {response.status_code}")
 
         token_data = response.json()
@@ -479,12 +489,12 @@ class TokenBrokerService:
                 refresh_token=new_refresh_token,
                 expires_at=expires_at,
             )
-            logger.info(f"Stored rotated refresh token for user {user_id}")
+            logger.info("Stored rotated refresh token for user %s", user_id)
 
         # Note: Nextcloud validates token audience on API calls - no need to pre-validate here
 
         logger.info(
-            f"Refreshed access token with scopes {scopes} (expires in {expires_in}s)"
+            "Refreshed access token with scopes %s (expires in %ss)", scopes, expires_in
         )
         return access_token, expires_in
 
@@ -503,7 +513,7 @@ class TokenBrokerService:
         """
         refresh_data = await self.storage.get_refresh_token(user_id)
         if not refresh_data:
-            logger.warning(f"No refresh token to rotate for user {user_id}")
+            logger.warning("No refresh token to rotate for user %s", user_id)
             return False
 
         try:
@@ -538,7 +548,7 @@ class TokenBrokerService:
             )
 
             if response.status_code != 200:
-                logger.error(f"Master token refresh failed: {response.status_code}")
+                logger.error("Master token refresh failed: %s", response.status_code)
                 return False
 
             token_data = response.json()
@@ -555,7 +565,7 @@ class TokenBrokerService:
                     refresh_token=new_refresh_token,
                     expires_at=expires_at,
                 )
-                logger.info(f"Rotated master refresh token for user {user_id}")
+                logger.info("Rotated master refresh token for user %s", user_id)
 
                 # Invalidate cached access token
                 await self.cache.invalidate(user_id)
@@ -564,7 +574,7 @@ class TokenBrokerService:
             return True
 
         except Exception as e:
-            logger.error(f"Failed to refresh master token for user {user_id}: {e}")
+            logger.error("Failed to refresh master token for user %s: %s", user_id, e)
             return False
 
     async def has_nextcloud_provisioning(self, user_id: str) -> bool:
@@ -601,7 +611,7 @@ class TokenBrokerService:
                     refresh_token = refresh_data["refresh_token"]
                     await self._revoke_token_at_idp(refresh_token)
                 except Exception as e:
-                    logger.warning(f"Failed to revoke at IdP: {e}")
+                    logger.warning("Failed to revoke at IdP: %s", e)
 
             # Remove from storage
             await self.storage.delete_refresh_token(user_id)
@@ -609,11 +619,11 @@ class TokenBrokerService:
             # Clear cache
             await self.cache.invalidate(user_id)
 
-            logger.info(f"Revoked Nextcloud access for user {user_id}")
+            logger.info("Revoked Nextcloud access for user %s", user_id)
             return True
 
         except Exception as e:
-            logger.error(f"Failed to revoke access for user {user_id}: {e}")
+            logger.error("Failed to revoke access for user %s: %s", user_id, e)
             return False
 
     async def _revoke_token_at_idp(self, token: str):
@@ -638,7 +648,7 @@ class TokenBrokerService:
         if response.status_code == 200:
             logger.info("Token revoked at IdP")
         else:
-            logger.warning(f"Token revocation returned {response.status_code}")
+            logger.warning("Token revocation returned %s", response.status_code)
 
     async def close(self):
         """Clean up resources."""

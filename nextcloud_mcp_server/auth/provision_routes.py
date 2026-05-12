@@ -90,7 +90,7 @@ async def _poll_and_store(provision_id: str) -> None:
             result = await flow_client.poll(poll_endpoint, poll_token)
         except Exception as e:
             logger.warning(
-                f"Login Flow v2 poll error for provision {provision_id}: {e}"
+                "Login Flow v2 poll error for provision %s: %s", provision_id, e
             )
             await anyio.sleep(2)
             continue
@@ -106,7 +106,8 @@ async def _poll_and_store(provision_id: str) -> None:
                 if session:
                     session["status"] = "error"
                 logger.error(
-                    f"Login Flow v2 completed but no app_password (provision_id={provision_id})"
+                    "Login Flow v2 completed but no app_password (provision_id=%s)",
+                    provision_id,
                 )
                 return
             await storage.store_app_password_with_scopes(
@@ -121,8 +122,9 @@ async def _poll_and_store(provision_id: str) -> None:
                 session["status"] = "completed"
                 session["username"] = result.login_name
             logger.info(
-                f"Login Flow v2 web provision completed for user {effective_user_id} "
-                f"(provision_id={provision_id})"
+                "Login Flow v2 web provision completed for user %s (provision_id=%s)",
+                effective_user_id,
+                provision_id,
             )
             return
 
@@ -131,7 +133,7 @@ async def _poll_and_store(provision_id: str) -> None:
             if session:
                 session["status"] = "expired"
             logger.warning(
-                f"Login Flow v2 web provision expired (provision_id={provision_id})"
+                "Login Flow v2 web provision expired (provision_id=%s)", provision_id
             )
             return
 
@@ -142,7 +144,7 @@ async def _poll_and_store(provision_id: str) -> None:
     if session:
         session["status"] = "expired"
     logger.warning(
-        f"Login Flow v2 web provision timed out (provision_id={provision_id})"
+        "Login Flow v2 web provision timed out (provision_id=%s)", provision_id
     )
 
 
@@ -166,7 +168,7 @@ async def provision_page(
     try:
         user_id, _token_data = await validate_token_and_get_user(request)
     except (ValueError, KeyError, AttributeError) as e:
-        logger.warning(f"Provision request rejected: {e}")
+        logger.warning("Provision request rejected: %s", e)
         return JSONResponse({"error": "Authentication required"}, status_code=401)
 
     _cleanup_expired_sessions()
@@ -180,14 +182,14 @@ async def provision_page(
         )
 
     if urlparse(redirect_uri).scheme == "http":
-        logger.warning(f"Provision redirect_uri uses insecure HTTP: {redirect_uri}")
+        logger.warning("Provision redirect_uri uses insecure HTTP: %s", redirect_uri)
 
     # Check if user already has an app password — skip straight to redirect
     if user_id:
         storage = await get_shared_storage()
         existing = await storage.get_app_password_with_scopes(user_id)
         if existing:
-            logger.info(f"User {user_id} already has app password, skipping provision")
+            logger.info("User %s already has app password, skipping provision", user_id)
             return RedirectResponse(redirect_uri)
 
     # Initiate Login Flow v2
@@ -206,7 +208,7 @@ async def provision_page(
         )
         init_response = await flow_client.initiate()
     except Exception as e:
-        logger.error(f"Failed to initiate Login Flow v2 for web provision: {e}")
+        logger.error("Failed to initiate Login Flow v2 for web provision: %s", e)
         return HTMLResponse(
             content=_render_error(
                 "Failed to start login flow. Please try again later."
@@ -241,8 +243,9 @@ async def provision_page(
     poll_tg.start_soon(_poll_and_store, provision_id)
 
     logger.info(
-        f"Login Flow v2 web provision initiated (provision_id={provision_id}, "
-        f"user_id={user_id or 'unknown'}), redirecting to NC login"
+        "Login Flow v2 web provision initiated (provision_id=%s, user_id=%s), redirecting to NC login",
+        provision_id,
+        user_id or "unknown",
     )
 
     # Redirect to Nextcloud's Login Flow v2 login page.
@@ -277,7 +280,7 @@ async def provision_status(request: Request) -> JSONResponse:
     try:
         _user_id, _token_data = await validate_token_and_get_user(request)
     except (ValueError, KeyError, AttributeError) as e:
-        logger.warning(f"Provision status request rejected: {e}")
+        logger.warning("Provision status request rejected: %s", e)
         return JSONResponse({"error": "Authentication required"}, status_code=401)
 
     provision_id = request.query_params.get("id", "")

@@ -140,8 +140,13 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
     doc_types = doc_types_param.split(",") if doc_types_param else None
 
     logger.info(
-        f"Viz search: user={username}, query='{query}', "
-        f"algorithm={algorithm}, fusion={fusion}, limit={limit}, doc_types={doc_types}"
+        "Viz search: user=%s, query='%s', algorithm=%s, fusion=%s, limit=%s, doc_types=%s",
+        username,
+        query,
+        algorithm,
+        fusion,
+        limit,
+        doc_types,
     )
 
     try:
@@ -230,8 +235,9 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 score_range = max_score - min_score if max_score > min_score else 1.0
 
                 logger.info(
-                    f"Normalizing scores for viz: original range [{min_score:.3f}, {max_score:.3f}] "
-                    f"→ [0.0, 1.0]"
+                    "Normalizing scores for viz: original range [%s, %s] → [0.0, 1.0]",
+                    format(min_score, ".3f"),
+                    format(max_score, ".3f"),
                 )
 
                 # Store original score and rescale to 0-1 for visualization
@@ -338,7 +344,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 status_code=500,
             )
 
-        logger.info(f"Detected embedding dimension: {embedding_dim}")
+        logger.info("Detected embedding dimension: %s", embedding_dim)
 
         # Build chunk vectors array in search_results order (1:1 mapping)
         chunk_vectors = []
@@ -349,7 +355,8 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             else:
                 # Chunk not found in vectors (shouldn't happen)
                 logger.warning(
-                    f"Chunk {chunk_key} not found in fetched vectors, using zero vector"
+                    "Chunk %s not found in fetched vectors, using zero vector",
+                    chunk_key,
                 )
                 # Use zero vector as fallback
                 chunk_vectors.append(np.zeros(embedding_dim))
@@ -361,14 +368,16 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
         if search_algo.query_embedding is not None:
             query_embedding = search_algo.query_embedding
             logger.info(
-                f"Reusing query embedding from search algorithm "
-                f"(dimension={len(query_embedding)})"
+                "Reusing query embedding from search algorithm (dimension=%s)",
+                len(query_embedding),
             )
         else:
             # Fallback: generate embedding if not available from search
             embedding_service = get_embedding_service()
             query_embedding = await embedding_service.embed(query)
-            logger.info(f"Generated query embedding (dimension={len(query_embedding)})")
+            logger.info(
+                "Generated query embedding (dimension=%s)", len(query_embedding)
+            )
         query_embed_duration = time.perf_counter() - query_embed_start
 
         # Combine query vector with chunk vectors for PCA
@@ -387,16 +396,19 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
         if zero_norm_mask.any():
             zero_indices = np.where(zero_norm_mask)[0]
             logger.warning(
-                f"Found {zero_norm_mask.sum()} zero-norm vectors at indices {zero_indices.tolist()}. "
-                "Replacing with small epsilon to avoid division by zero."
+                "Found %s zero-norm vectors at indices %s. Replacing with small epsilon to avoid division by zero.",
+                zero_norm_mask.sum(),
+                zero_indices.tolist(),
             )
             # Replace zero norms with small epsilon to avoid NaN
             norms[zero_norm_mask] = 1e-10
 
         all_vectors_normalized = all_vectors / norms
         logger.info(
-            f"Normalized vectors: query_norm={norms[-1][0]:.3f}, "
-            f"doc_norm_range=[{norms[:-1].min():.3f}, {norms[:-1].max():.3f}]"
+            "Normalized vectors: query_norm=%s, doc_norm_range=[%s, %s]",
+            format(norms[-1][0], ".3f"),
+            format(norms[:-1].min(), ".3f"),
+            format(norms[:-1].max(), ".3f"),
         )
 
         # Apply PCA dimensionality reduction (768-dim → 3D) on normalized vectors
@@ -428,8 +440,9 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
         if nan_mask.any():
             nan_rows = np.where(nan_mask.any(axis=1))[0]
             logger.error(
-                f"Found NaN values in PCA output at {len(nan_rows)} points: {nan_rows.tolist()[:10]}. "
-                "Replacing NaN with 0.0 to prevent JSON serialization error."
+                "Found NaN values in PCA output at %s points: %s. Replacing NaN with 0.0 to prevent JSON serialization error.",
+                len(nan_rows),
+                nan_rows.tolist()[:10],
             )
             # Replace NaN with 0 to allow JSON serialization
             coords_3d = np.nan_to_num(coords_3d, nan=0.0)
@@ -442,13 +455,16 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
         chunk_coords_3d = coords_3d[:-1]  # All but last are chunks
 
         logger.info(
-            f"PCA explained variance: PC1={pca.explained_variance_ratio_[0]:.3f}, "
-            f"PC2={pca.explained_variance_ratio_[1]:.3f}, "
-            f"PC3={pca.explained_variance_ratio_[2]:.3f}"
+            "PCA explained variance: PC1=%s, PC2=%s, PC3=%s",
+            format(pca.explained_variance_ratio_[0], ".3f"),
+            format(pca.explained_variance_ratio_[1], ".3f"),
+            format(pca.explained_variance_ratio_[2], ".3f"),
         )
         logger.info(
-            f"Embedding stats: chunks={len(chunk_vectors)}, "
-            f"query_dim={len(query_embedding)}, chunk_vector_dim={chunk_vectors.shape[1] if chunk_vectors.size > 0 else 0}"
+            "Embedding stats: chunks=%s, query_dim=%s, chunk_vector_dim=%s",
+            len(chunk_vectors),
+            len(query_embedding),
+            chunk_vectors.shape[1] if chunk_vectors.size > 0 else 0,
         )
 
         # Coordinates already match search_results order (1:1 mapping)
@@ -479,12 +495,18 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
 
         # Log comprehensive timing metrics
         logger.info(
-            f"Viz search timing: total={total_duration * 1000:.1f}ms, "
-            f"search={search_duration * 1000:.1f}ms ({search_duration / total_duration * 100:.1f}%), "
-            f"vector_fetch={vector_fetch_duration * 1000:.1f}ms ({vector_fetch_duration / total_duration * 100:.1f}%), "
-            f"query_embed={query_embed_duration * 1000:.1f}ms ({query_embed_duration / total_duration * 100:.1f}%), "
-            f"pca={pca_duration * 1000:.1f}ms ({pca_duration / total_duration * 100:.1f}%), "
-            f"results={len(search_results)}, chunk_vectors={len(chunk_vectors)}"
+            "Viz search timing: total=%sms, search=%sms (%s%%), vector_fetch=%sms (%s%%), query_embed=%sms (%s%%), pca=%sms (%s%%), results=%s, chunk_vectors=%s",
+            format(total_duration * 1000, ".1f"),
+            format(search_duration * 1000, ".1f"),
+            format(search_duration / total_duration * 100, ".1f"),
+            format(vector_fetch_duration * 1000, ".1f"),
+            format(vector_fetch_duration / total_duration * 100, ".1f"),
+            format(query_embed_duration * 1000, ".1f"),
+            format(query_embed_duration / total_duration * 100, ".1f"),
+            format(pca_duration * 1000, ".1f"),
+            format(pca_duration / total_duration * 100, ".1f"),
+            len(search_results),
+            len(chunk_vectors),
         )
 
         return JSONResponse(
@@ -511,7 +533,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
         )
 
     except Exception as e:
-        logger.error(f"Viz search error: {e}", exc_info=True)
+        logger.error("Viz search error: %s", e, exc_info=True)
         return JSONResponse(
             {"success": False, "error": str(e)},
             status_code=500,
@@ -637,10 +659,12 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
             )
 
         logger.info(
-            f"Fetched chunk context for {doc_type}_{doc_id}: "
-            f"chunk_len={len(chunk_context.chunk_text)}, "
-            f"before_len={len(chunk_context.before_context)}, "
-            f"after_len={len(chunk_context.after_context)}"
+            "Fetched chunk context for %s_%s: chunk_len=%s, before_len=%s, after_len=%s",
+            doc_type,
+            doc_id,
+            len(chunk_context.chunk_text),
+            len(chunk_context.before_context),
+            len(chunk_context.after_context),
         )
 
         # For PDF files, also fetch the chunk bbox from Qdrant so the client
@@ -688,7 +712,7 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
             status_code=400,
         )
     except Exception as e:
-        logger.error(f"Chunk context error: {e}", exc_info=True)
+        logger.error("Chunk context error: %s", e, exc_info=True)
         return JSONResponse(
             {"success": False, "error": str(e)},
             status_code=500,

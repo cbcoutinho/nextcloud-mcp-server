@@ -27,7 +27,7 @@ async def temporary_collective(nc_mcp_client: ClientSession):
     assert result.isError is False, f"Failed to create collective: {result.content}"
     data = json.loads(result.content[0].text)
     collective_id = data["id"]
-    logger.info(f"Created temporary collective: {name} (ID: {collective_id})")
+    logger.info("Created temporary collective: %s (ID: %s)", name, collective_id)
 
     # Get the landing page ID — filter by parentId == 0 (root page)
     pages_result = await nc_mcp_client.call_tool(
@@ -55,9 +55,9 @@ async def temporary_collective(nc_mcp_client: ClientSession):
             "collectives_delete_collective",
             {"collective_id": collective_id},
         )
-        logger.info(f"Cleaned up collective: {collective_id}")
+        logger.info("Cleaned up collective: %s", collective_id)
     except Exception as e:
-        logger.warning(f"Cleanup of collective {collective_id} failed: {e}")
+        logger.warning("Cleanup of collective %s failed: %s", collective_id, e)
 
 
 # --- Tool Discovery ---
@@ -96,7 +96,7 @@ async def test_collectives_tools_available(nc_mcp_client: ClientSession):
             f"Expected tool '{expected}' not found in available tools"
         )
 
-    logger.info(f"All {len(expected_tools)} Collectives tools registered")
+    logger.info("All %s Collectives tools registered", len(expected_tools))
 
 
 # --- Collective CRUD ---
@@ -115,7 +115,7 @@ async def test_collectives_list(
 
     collective_ids = [c["id"] for c in data["collectives"]]
     assert temporary_collective["id"] in collective_ids
-    logger.info(f"Found {data['total']} collectives")
+    logger.info("Found %s collectives", data["total"])
 
 
 async def test_collectives_set_collective_emoji(
@@ -179,7 +179,7 @@ async def test_collectives_page_workflow(
     page_id = create_data["id"]
     assert create_data["collective_id"] == cid
     assert create_data["parent_id"] == landing_id
-    logger.info(f"Created page: {unique_title} (ID: {page_id})")
+    logger.info("Created page: %s (ID: %s)", unique_title, page_id)
 
     # 2. List pages — should include the new page
     list_result = await nc_mcp_client.call_tool(
@@ -190,7 +190,7 @@ async def test_collectives_page_workflow(
     list_data = json.loads(list_result.content[0].text)
     page_ids = [p["id"] for p in list_data["pages"]]
     assert page_id in page_ids
-    logger.info(f"Page found in list ({list_data['total']} pages)")
+    logger.info("Page found in list (%s pages)", list_data["total"])
 
     # 3. Get page with content
     get_result = await nc_mcp_client.call_tool(
@@ -269,7 +269,7 @@ async def test_collectives_get_landing_page_content(
         "Landing page should have auto-generated content"
     )
     assert len(data["content"]) > 0, "Landing page should have non-empty content"
-    logger.info(f"Landing page content: {len(data['content'])} bytes")
+    logger.info("Landing page content: %s bytes", len(data["content"]))
 
 
 async def test_collectives_move_page(
@@ -307,7 +307,7 @@ async def test_collectives_move_page(
     assert data["page_id"] == page_id
     assert "moved" in data["message"]
     assert new_title in data["message"]
-    logger.info(f"Page renamed to: {new_title}")
+    logger.info("Page renamed to: %s", new_title)
 
     # Cleanup
     await nc_mcp_client.call_tool(
@@ -337,7 +337,7 @@ async def test_collectives_tag_workflow(
     tag_id = tag_data["id"]
     assert tag_data["name"] == tag_name
     assert tag_data["color"] == "FF5733"
-    logger.info(f"Created tag: {tag_name} (ID: {tag_id})")
+    logger.info("Created tag: %s (ID: %s)", tag_name, tag_id)
 
     # 2. List tags — should include the new tag
     list_tags_result = await nc_mcp_client.call_tool(
@@ -348,7 +348,7 @@ async def test_collectives_tag_workflow(
     tags_data = json.loads(list_tags_result.content[0].text)
     tag_ids = [t["id"] for t in tags_data["tags"]]
     assert tag_id in tag_ids
-    logger.info(f"Tag found in list ({tags_data['total']} tags)")
+    logger.info("Tag found in list (%s tags)", tags_data["total"])
 
     # 3. Create a page to tag
     page_result = await nc_mcp_client.call_tool(
@@ -368,7 +368,7 @@ async def test_collectives_tag_workflow(
         {"collective_id": cid, "page_id": page_id, "tag_id": tag_id},
     )
     assert assign_result.isError is False
-    logger.info(f"Tag {tag_id} assigned to page {page_id}")
+    logger.info("Tag %s assigned to page %s", tag_id, page_id)
 
     # 5. Remove tag from page
     remove_result = await nc_mcp_client.call_tool(
@@ -376,7 +376,7 @@ async def test_collectives_tag_workflow(
         {"collective_id": cid, "page_id": page_id, "tag_id": tag_id},
     )
     assert remove_result.isError is False
-    logger.info(f"Tag {tag_id} removed from page {page_id}")
+    logger.info("Tag %s removed from page %s", tag_id, page_id)
 
     # Cleanup
     await nc_mcp_client.call_tool(
@@ -406,7 +406,7 @@ async def test_collectives_search(
     assert data["query"] == "Welcome"
     assert data["collective_id"] == cid
     # Search may or may not find results depending on indexing timing
-    logger.info(f"Search returned {data['total']} results for 'Welcome'")
+    logger.info("Search returned %s results for 'Welcome'", data["total"])
 
 
 # --- Collective Trash / Restore / Delete ---
@@ -425,7 +425,7 @@ async def test_collectives_trash_restore_delete_workflow(
     assert create_result.isError is False
     created = json.loads(create_result.content[0].text)
     cid = created["id"]
-    logger.info(f"Created collective {name} (ID: {cid})")
+    logger.info("Created collective %s (ID: %s)", name, cid)
 
     # Trash the collective
     trash_result = await nc_mcp_client.call_tool(
@@ -444,7 +444,7 @@ async def test_collectives_trash_restore_delete_workflow(
     trash_data = json.loads(list_trash_result.content[0].text)
     trashed_ids = [c["id"] for c in trash_data["collectives"]]
     assert cid in trashed_ids
-    logger.info(f"Found {trash_data['total']} trashed collectives")
+    logger.info("Found %s trashed collectives", trash_data["total"])
 
     # Restore the collective
     restore_result = await nc_mcp_client.call_tool(

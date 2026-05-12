@@ -184,12 +184,12 @@ class RefreshTokenStorage:
 
                 if has_schema:
                     logger.info(
-                        f"Detected pre-Alembic database at {self.db_path}, "
-                        "stamping with initial revision"
+                        "Detected pre-Alembic database at %s, stamping with initial revision",
+                        self.db_path,
                     )
                 else:
                     logger.info(
-                        f"Initializing new database at {self.db_path} with migrations"
+                        "Initializing new database at %s with migrations", self.db_path
                     )
 
         # Run migrations in a worker thread using anyio.to_thread
@@ -215,7 +215,7 @@ class RefreshTokenStorage:
         os.chmod(self.db_path, 0o600)
 
         self._initialized = True
-        logger.info(f"Initialized refresh token storage at {self.db_path}")
+        logger.info("Initialized refresh token storage at %s", self.db_path)
 
     async def store_refresh_token(
         self,
@@ -333,7 +333,7 @@ class RefreshTokenStorage:
             )
             await db.commit()
 
-        logger.debug(f"Cached user profile for {user_id}")
+        logger.debug("Cached user profile for %s", user_id)
 
     async def get_user_profile(self, user_id: str) -> dict[str, Any] | None:
         """
@@ -419,7 +419,7 @@ class RefreshTokenStorage:
                     row = await cursor.fetchone()
 
             if not row:
-                logger.debug(f"No refresh token found for user {user_id}")
+                logger.debug("No refresh token found for user %s", user_id)
                 duration = time.time() - start_time
                 record_db_operation("sqlite", "select", duration, "success")
                 return None
@@ -437,7 +437,9 @@ class RefreshTokenStorage:
             # Check expiration
             if expires_at is not None and expires_at < time.time():
                 logger.warning(
-                    f"Refresh token for user {user_id} has expired (expired at {expires_at})"
+                    "Refresh token for user %s has expired (expired at %s)",
+                    user_id,
+                    expires_at,
                 )
                 await self.delete_refresh_token(user_id)
                 duration = time.time() - start_time
@@ -448,7 +450,9 @@ class RefreshTokenStorage:
             scopes = json.loads(scopes_json) if scopes_json else None
 
             logger.debug(
-                f"Retrieved refresh token for user {user_id} (flow_type: {flow_type})"
+                "Retrieved refresh token for user %s (flow_type: %s)",
+                user_id,
+                flow_type,
             )
 
             duration = time.time() - start_time
@@ -467,7 +471,7 @@ class RefreshTokenStorage:
         except Exception as e:
             duration = time.time() - start_time
             record_db_operation("sqlite", "select", duration, "error")
-            logger.error(f"Failed to decrypt refresh token for user {user_id}: {e}")
+            logger.error("Failed to decrypt refresh token for user %s: %s", user_id, e)
             return None
 
     async def get_refresh_token_by_provisioning_client_id(
@@ -511,7 +515,8 @@ class RefreshTokenStorage:
 
         if not row:
             logger.debug(
-                f"No refresh token found for provisioning_client_id {provisioning_client_id[:16]}..."
+                "No refresh token found for provisioning_client_id %s...",
+                provisioning_client_id[:16],
             )
             return None
 
@@ -529,7 +534,8 @@ class RefreshTokenStorage:
         # Check expiration
         if expires_at is not None and expires_at < time.time():
             logger.warning(
-                f"Refresh token for provisioning_client_id {provisioning_client_id[:16]}... has expired"
+                "Refresh token for provisioning_client_id %s... has expired",
+                provisioning_client_id[:16],
             )
             return None
 
@@ -538,7 +544,9 @@ class RefreshTokenStorage:
             scopes = json.loads(scopes_json) if scopes_json else None
 
             logger.debug(
-                f"Retrieved refresh token for provisioning_client_id {provisioning_client_id[:16]}... (user_id: {user_id})"
+                "Retrieved refresh token for provisioning_client_id %s... (user_id: %s)",
+                provisioning_client_id[:16],
+                user_id,
             )
 
             return {
@@ -553,7 +561,9 @@ class RefreshTokenStorage:
             }
         except Exception as e:
             logger.error(
-                f"Failed to decrypt refresh token for provisioning_client_id {provisioning_client_id[:16]}...: {e}"
+                "Failed to decrypt refresh token for provisioning_client_id %s...: %s",
+                provisioning_client_id[:16],
+                e,
             )
             return None
 
@@ -584,14 +594,14 @@ class RefreshTokenStorage:
             record_db_operation("sqlite", "delete", duration, "success")
 
             if deleted:
-                logger.info(f"Deleted refresh token for user {user_id}")
+                logger.info("Deleted refresh token for user %s", user_id)
                 await self._audit_log(
                     event="delete_refresh_token",
                     user_id=user_id,
                     auth_method="offline_access",
                 )
             else:
-                logger.debug(f"No refresh token to delete for user {user_id}")
+                logger.debug("No refresh token to delete for user %s", user_id)
 
             return deleted
         except Exception:
@@ -616,7 +626,7 @@ class RefreshTokenStorage:
                 rows = await cursor.fetchall()
 
         user_ids = [row[0] for row in rows]
-        logger.debug(f"Found {len(user_ids)} users with refresh tokens")
+        logger.debug("Found %s users with refresh tokens", len(user_ids))
         return user_ids
 
     async def cleanup_expired_tokens(self) -> int:
@@ -640,7 +650,7 @@ class RefreshTokenStorage:
             deleted = cursor.rowcount
 
         if deleted > 0:
-            logger.info(f"Cleaned up {deleted} expired refresh token(s)")
+            logger.info("Cleaned up %s expired refresh token(s)", deleted)
 
         return deleted
 
@@ -718,8 +728,9 @@ class RefreshTokenStorage:
             await db.commit()
 
         logger.info(
-            f"Stored OAuth client credentials (client_id: {client_id[:16]}..., "
-            f"expires at {client_secret_expires_at})"
+            "Stored OAuth client credentials (client_id: %s..., expires at %s)",
+            client_id[:16],
+            client_secret_expires_at,
         )
 
         # Audit log
@@ -785,7 +796,7 @@ class RefreshTokenStorage:
         # Check expiration
         if expires_at < time.time():
             logger.warning(
-                f"OAuth client has expired (expired at {expires_at}), deleting"
+                "OAuth client has expired (expired at %s), deleting", expires_at
             )
             await self.delete_oauth_client()
             return None
@@ -803,7 +814,7 @@ class RefreshTokenStorage:
             redirect_uris = json.loads(redirect_uris_json)
 
             logger.debug(
-                f"Retrieved OAuth client credentials (client_id: {client_id[:16]}...)"
+                "Retrieved OAuth client credentials (client_id: %s...)", client_id[:16]
             )
 
             return {
@@ -817,7 +828,7 @@ class RefreshTokenStorage:
             }
 
         except Exception as e:
-            logger.error(f"Failed to decrypt OAuth client credentials: {e}")
+            logger.error("Failed to decrypt OAuth client credentials: %s", e)
             return None
 
     async def delete_oauth_client(self) -> bool:
@@ -1017,7 +1028,9 @@ class RefreshTokenStorage:
             )
             await db.commit()
 
-        logger.debug(f"Stored OAuth session {session_id} (expires in {ttl_seconds}s)")
+        logger.debug(
+            "Stored OAuth session %s (expires in %ss)", session_id, ttl_seconds
+        )
 
     async def get_oauth_session(self, session_id: str) -> dict | None:
         """
@@ -1043,7 +1056,7 @@ class RefreshTokenStorage:
 
         # Check expiration
         if session["expires_at"] < time.time():
-            logger.debug(f"OAuth session {session_id} has expired")
+            logger.debug("OAuth session %s has expired", session_id)
             await self.delete_oauth_session(session_id)
             return None
 
@@ -1077,7 +1090,8 @@ class RefreshTokenStorage:
         # Check expiration
         if session["expires_at"] < time.time():
             logger.debug(
-                f"OAuth session with MCP code {mcp_authorization_code[:16]}... has expired"
+                "OAuth session with MCP code %s... has expired",
+                mcp_authorization_code[:16],
             )
             await self.delete_oauth_session(session["session_id"])
             return None
@@ -1133,7 +1147,7 @@ class RefreshTokenStorage:
             updated = cursor.rowcount > 0
 
         if updated:
-            logger.debug(f"Updated OAuth session {session_id}")
+            logger.debug("Updated OAuth session %s", session_id)
 
         return updated
 
@@ -1155,7 +1169,7 @@ class RefreshTokenStorage:
             deleted = cursor.rowcount > 0
 
         if deleted:
-            logger.debug(f"Deleted OAuth session {session_id}")
+            logger.debug("Deleted OAuth session %s", session_id)
 
         return deleted
 
@@ -1179,7 +1193,7 @@ class RefreshTokenStorage:
             deleted = cursor.rowcount
 
         if deleted > 0:
-            logger.info(f"Cleaned up {deleted} expired OAuth session(s)")
+            logger.info("Cleaned up %s expired OAuth session(s)", deleted)
 
         return deleted
 
@@ -1339,7 +1353,7 @@ class RefreshTokenStorage:
             )
             await db.commit()
 
-        logger.debug(f"Stored webhook {webhook_id} for preset '{preset_id}'")
+        logger.debug("Stored webhook %s for preset '%s'", webhook_id, preset_id)
 
     async def get_webhooks_by_preset(self, preset_id: str) -> list[int]:
         """
@@ -1384,7 +1398,7 @@ class RefreshTokenStorage:
             deleted = cursor.rowcount > 0
 
         if deleted:
-            logger.debug(f"Deleted webhook {webhook_id} from tracking")
+            logger.debug("Deleted webhook %s from tracking", webhook_id)
 
         return deleted
 
@@ -1430,7 +1444,7 @@ class RefreshTokenStorage:
             deleted = cursor.rowcount
 
         if deleted > 0:
-            logger.debug(f"Cleared {deleted} webhook(s) for preset '{preset_id}'")
+            logger.debug("Cleared %s webhook(s) for preset '%s'", deleted, preset_id)
 
         return deleted
 
@@ -1482,7 +1496,7 @@ class RefreshTokenStorage:
 
             duration = time.time() - start_time
             record_db_operation("sqlite", "insert", duration, "success")
-            logger.info(f"Stored app password for user {user_id}")
+            logger.info("Stored app password for user %s", user_id)
 
         except Exception:
             duration = time.time() - start_time
@@ -1525,7 +1539,7 @@ class RefreshTokenStorage:
                     row = await cursor.fetchone()
 
             if not row:
-                logger.debug(f"No app password found for user {user_id}")
+                logger.debug("No app password found for user %s", user_id)
                 duration = time.time() - start_time
                 record_db_operation("sqlite", "select", duration, "success")
                 return None
@@ -1535,14 +1549,14 @@ class RefreshTokenStorage:
 
             duration = time.time() - start_time
             record_db_operation("sqlite", "select", duration, "success")
-            logger.debug(f"Retrieved app password for user {user_id}")
+            logger.debug("Retrieved app password for user %s", user_id)
 
             return decrypted_password
 
         except Exception as e:
             duration = time.time() - start_time
             record_db_operation("sqlite", "select", duration, "error")
-            logger.error(f"Failed to decrypt app password for user {user_id}: {e}")
+            logger.error("Failed to decrypt app password for user %s: %s", user_id, e)
             return None
 
     async def delete_app_password(self, user_id: str) -> bool:
@@ -1572,14 +1586,14 @@ class RefreshTokenStorage:
             record_db_operation("sqlite", "delete", duration, "success")
 
             if deleted:
-                logger.info(f"Deleted app password for user {user_id}")
+                logger.info("Deleted app password for user %s", user_id)
                 await self._audit_log(
                     event="delete_app_password",
                     user_id=user_id,
                     auth_method="app_password",
                 )
             else:
-                logger.debug(f"No app password to delete for user {user_id}")
+                logger.debug("No app password to delete for user %s", user_id)
 
             return deleted
 
@@ -1605,7 +1619,7 @@ class RefreshTokenStorage:
                 rows = await cursor.fetchall()
 
         user_ids = [row[0] for row in rows]
-        logger.debug(f"Found {len(user_ids)} users with app passwords")
+        logger.debug("Found %s users with app passwords", len(user_ids))
         return user_ids
 
     async def cleanup_invalid_app_passwords(self, nextcloud_host: str) -> list[str]:
@@ -1651,19 +1665,21 @@ class RefreshTokenStorage:
 
                 if response.status_code in (401, 403):
                     logger.info(
-                        f"App password for {user_id} is invalid "
-                        f"(HTTP {response.status_code}), removing"
+                        "App password for %s is invalid (HTTP %s), removing",
+                        user_id,
+                        response.status_code,
                     )
                     await self.delete_app_password(user_id)
                     removed.append(user_id)
                 else:
                     logger.debug(
-                        f"App password for {user_id} validated "
-                        f"(HTTP {response.status_code})"
+                        "App password for %s validated (HTTP %s)",
+                        user_id,
+                        response.status_code,
                     )
 
             except Exception as e:
-                logger.warning(f"Could not validate app password for {user_id}: {e}")
+                logger.warning("Could not validate app password for %s: %s", user_id, e)
 
         async with anyio.create_task_group() as tg:
             for user_id in user_ids:
@@ -1745,9 +1761,10 @@ class RefreshTokenStorage:
             duration = time.time() - start_time
             record_db_operation("sqlite", "insert", duration, "success")
             logger.info(
-                f"Stored scoped app password for user {user_id} "
-                f"(scopes={'all' if scopes is None else len(scopes)}, "
-                f"username={username or 'N/A'})"
+                "Stored scoped app password for user %s (scopes=%s, username=%s)",
+                user_id,
+                "all" if scopes is None else len(scopes),
+                username or "N/A",
             )
 
         except Exception:
@@ -1793,7 +1810,7 @@ class RefreshTokenStorage:
                     row = await cursor.fetchone()
 
             if not row:
-                logger.debug(f"No app password found for user {user_id}")
+                logger.debug("No app password found for user %s", user_id)
                 duration = time.time() - start_time
                 record_db_operation("sqlite", "select", duration, "success")
                 return None
@@ -1917,7 +1934,7 @@ class RefreshTokenStorage:
 
             duration = time.time() - start_time
             record_db_operation("sqlite", "insert", duration, "success")
-            logger.info(f"Stored login flow session for user {user_id}")
+            logger.info("Stored login flow session for user %s", user_id)
 
         except Exception:
             duration = time.time() - start_time
@@ -1984,7 +2001,7 @@ class RefreshTokenStorage:
             duration = time.time() - start_time
             record_db_operation("sqlite", "select", duration, "error")
             logger.error(
-                f"Failed to retrieve login flow session for user {user_id}: {e}"
+                "Failed to retrieve login flow session for user %s: %s", user_id, e
             )
             raise
 
@@ -2014,7 +2031,7 @@ class RefreshTokenStorage:
             record_db_operation("sqlite", "delete", duration, "success")
 
             if deleted:
-                logger.info(f"Deleted login flow session for user {user_id}")
+                logger.info("Deleted login flow session for user %s", user_id)
                 await self._audit_log(
                     event="delete_login_flow_session",
                     user_id=user_id,
@@ -2052,7 +2069,7 @@ class RefreshTokenStorage:
             record_db_operation("sqlite", "delete", duration, "success")
 
             if count > 0:
-                logger.info(f"Cleaned up {count} expired login flow sessions")
+                logger.info("Cleaned up %s expired login flow sessions", count)
                 await self._audit_log(
                     event="delete_expired_login_flow_sessions",
                     user_id="system",

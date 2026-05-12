@@ -40,7 +40,7 @@ async def login_to_nextcloud(page: Page, username: str, password: str):
     """
     nextcloud_url = "http://localhost:8080"
 
-    logger.info(f"Logging in to Nextcloud as {username}...")
+    logger.info("Logging in to Nextcloud as %s...", username)
     await page.goto(f"{nextcloud_url}/login", wait_until="networkidle")
 
     # Fill in login form
@@ -68,7 +68,7 @@ async def login_to_nextcloud(page: Page, username: str, password: str):
     assert "/login" not in current_url, (
         f"Login failed for {username}, still on login page"
     )
-    logger.info(f"✓ Successfully logged in as {username}")
+    logger.info("✓ Successfully logged in as %s", username)
 
 
 async def navigate_to_astrolabe_settings(page: Page):
@@ -80,7 +80,7 @@ async def navigate_to_astrolabe_settings(page: Page):
     nextcloud_url = "http://localhost:8080"
     settings_url = f"{nextcloud_url}/settings/user/astrolabe"
 
-    logger.info(f"Navigating to Astrolabe settings: {settings_url}")
+    logger.info("Navigating to Astrolabe settings: %s", settings_url)
     await page.goto(settings_url, wait_until="networkidle", timeout=30000)
 
     # Verify we're on the settings page
@@ -110,7 +110,7 @@ async def authorize_search_access(page: Page, username: str) -> bool:
     """
     nextcloud_url = "http://localhost:8080"
 
-    logger.info(f"Authorizing search access (Step 1) for {username}...")
+    logger.info("Authorizing search access (Step 1) for %s...", username)
 
     # Check if already on Astrolabe settings page, if not navigate there
     if "/settings/user/astrolabe" not in page.url:
@@ -124,7 +124,7 @@ async def authorize_search_access(page: Page, username: str) -> bool:
         # Check for "Active" badge (fully configured state)
         active_badge = page.get_by_text("Active", exact=True)
         if await active_badge.count() > 0 and await active_badge.is_visible():
-            logger.info(f"✓ Already fully authorized for {username} (Active badge)")
+            logger.info("✓ Already fully authorized for %s (Active badge)", username)
             return True
     except Exception:
         pass
@@ -136,7 +136,7 @@ async def authorize_search_access(page: Page, username: str) -> bool:
             step1_parent = step1_section.locator("..")
             complete_badge = step1_parent.get_by_text("Complete", exact=True)
             if await complete_badge.count() > 0 and await complete_badge.is_visible():
-                logger.info(f"✓ Step 1 already complete for {username}")
+                logger.info("✓ Step 1 already complete for %s", username)
                 return True
     except Exception:
         pass
@@ -146,36 +146,38 @@ async def authorize_search_access(page: Page, username: str) -> bool:
 
     try:
         await authorize_button.wait_for(timeout=5000, state="visible")
-        logger.info(f"Found Authorize button for {username}")
+        logger.info("Found Authorize button for %s", username)
     except Exception:
         # Take screenshot for debugging
         screenshot_path = f"/tmp/astrolabe_no_authorize_button_{username}.png"
         await page.screenshot(path=screenshot_path)
         logger.error(
-            f"Could not find Authorize button for {username}. Screenshot: {screenshot_path}"
+            "Could not find Authorize button for %s. Screenshot: %s",
+            username,
+            screenshot_path,
         )
         raise ValueError(f"Authorize button not found for {username}")
 
     # Click the Authorize button - this will redirect to OAuth provider
     # Use force=True to bypass stability check which can timeout due to CSS transitions
     await authorize_button.click(force=True)
-    logger.info(f"Clicked Authorize button for {username}")
+    logger.info("Clicked Authorize button for %s", username)
 
     # Wait for OAuth redirect to complete
     await page.wait_for_load_state("networkidle", timeout=30000)
-    logger.info(f"After networkidle, current URL: {page.url}")
+    logger.info("After networkidle, current URL: %s", page.url)
 
     # Take screenshot to see current state
     await page.screenshot(path=f"/tmp/astrolabe_after_authorize_{username}.png")
-    logger.info(f"Screenshot saved: /tmp/astrolabe_after_authorize_{username}.png")
+    logger.info("Screenshot saved: /tmp/astrolabe_after_authorize_%s.png", username)
 
     # Handle OIDC consent screen if present
     consent_handled = await _handle_oauth_consent_screen(page, username)
     if consent_handled:
-        logger.info(f"✓ OAuth consent granted for {username}")
+        logger.info("✓ OAuth consent granted for %s", username)
     else:
         logger.info(
-            f"No consent screen required for {username} (may be previously authorized)"
+            "No consent screen required for %s (may be previously authorized)", username
         )
 
     # Wait for redirect back to Astrolabe settings
@@ -184,12 +186,12 @@ async def authorize_search_access(page: Page, username: str) -> bool:
         await page.wait_for_url(
             f"**{nextcloud_url}/settings/user/astrolabe**", timeout=30000
         )
-        logger.info(f"Redirected back to Astrolabe settings for {username}")
+        logger.info("Redirected back to Astrolabe settings for %s", username)
     except Exception:
         # Check if we're already on settings page
         if "/settings/user/astrolabe" not in page.url:
             logger.warning(
-                f"Not redirected to Astrolabe settings, current URL: {page.url}"
+                "Not redirected to Astrolabe settings, current URL: %s", page.url
             )
             # Navigate manually
             await page.goto(
@@ -205,7 +207,9 @@ async def authorize_search_access(page: Page, username: str) -> bool:
         # First check if "Active" badge is shown (fully configured state)
         active_badge = page.get_by_text("Active", exact=True)
         if await active_badge.count() > 0 and await active_badge.is_visible():
-            logger.info(f"✓ OAuth authorization complete for {username} (Active badge)")
+            logger.info(
+                "✓ OAuth authorization complete for %s (Active badge)", username
+            )
             return True
     except Exception:
         pass
@@ -217,7 +221,7 @@ async def authorize_search_access(page: Page, username: str) -> bool:
             step1_parent = step1_section.locator("..")
             complete_badge = step1_parent.get_by_text("Complete", exact=True)
             await complete_badge.wait_for(timeout=5000, state="visible")
-            logger.info(f"✓ Step 1 OAuth authorization complete for {username}")
+            logger.info("✓ Step 1 OAuth authorization complete for %s", username)
             return True
     except Exception:
         pass
@@ -226,7 +230,9 @@ async def authorize_search_access(page: Page, username: str) -> bool:
     screenshot_path = f"/tmp/astrolabe_step1_not_complete_{username}.png"
     await page.screenshot(path=screenshot_path)
     logger.error(
-        f"Authorization badge not visible for {username}. Screenshot: {screenshot_path}"
+        "Authorization badge not visible for %s. Screenshot: %s",
+        username,
+        screenshot_path,
     )
     raise ValueError(f"OAuth authorization did not complete for {username}")
 
@@ -244,28 +250,28 @@ async def _handle_oauth_consent_screen(page: Page, username: str) -> bool:
         True if consent was handled, False if no consent screen was found
     """
     try:
-        logger.info(f"Checking for consent screen at URL: {page.url}")
+        logger.info("Checking for consent screen at URL: %s", page.url)
 
         # Check if consent screen is present - try multiple selectors
         # The consent screen may be #oidc-consent or use a different format
         consent_div = await page.query_selector("#oidc-consent")
 
         if consent_div:
-            logger.info(f"Consent screen detected via #oidc-consent for {username}")
+            logger.info("Consent screen detected via #oidc-consent for %s", username)
             # Get consent screen data attributes for logging
             client_name = await consent_div.get_attribute("data-client-name")
             scopes_attr = await consent_div.get_attribute("data-scopes")
-            logger.info(f"  Client: {client_name}")
-            logger.info(f"  Requested scopes: {scopes_attr}")
+            logger.info("  Client: %s", client_name)
+            logger.info("  Requested scopes: %s", scopes_attr)
         else:
             # Check for Allow button directly (different consent screen format)
             allow_button = page.locator('button:has-text("Allow")')
             if await allow_button.count() > 0:
-                logger.info(f"Consent screen detected via Allow button for {username}")
+                logger.info("Consent screen detected via Allow button for %s", username)
             else:
-                logger.info(f"No consent screen found for {username} at {page.url}")
+                logger.info("No consent screen found for %s at %s", username, page.url)
                 await page.screenshot(path=f"/tmp/no_consent_screen_{username}.png")
-                logger.info(f"Screenshot: /tmp/no_consent_screen_{username}.png")
+                logger.info("Screenshot: /tmp/no_consent_screen_%s.png", username)
                 return False
 
         # Wait for Vue.js to render the Allow button
@@ -275,19 +281,19 @@ async def _handle_oauth_consent_screen(page: Page, username: str) -> bool:
         except Exception as e:
             screenshot_path = f"/tmp/consent_no_allow_button_{username}.png"
             await page.screenshot(path=screenshot_path)
-            logger.error(f"  Timeout waiting for Allow button: {e}")
+            logger.error("  Timeout waiting for Allow button: %s", e)
             raise
 
         # Check all scope checkboxes
         scope_checkboxes = await page.query_selector_all('input[type="checkbox"]')
         if scope_checkboxes:
-            logger.info(f"  Found {len(scope_checkboxes)} scope checkboxes")
+            logger.info("  Found %s scope checkboxes", len(scope_checkboxes))
             for i, checkbox in enumerate(scope_checkboxes):
                 is_checked = await checkbox.is_checked()
                 is_disabled = await checkbox.is_disabled()
                 if not is_checked and not is_disabled:
                     await checkbox.check()
-                    logger.info(f"    ✓ Checked scope checkbox {i + 1}")
+                    logger.info("    ✓ Checked scope checkbox %s", i + 1)
 
         # Click the Allow button using JavaScript (handles viewport issues)
         allow_button_locator = page.locator('button:has-text("Allow")')
@@ -295,16 +301,16 @@ async def _handle_oauth_consent_screen(page: Page, username: str) -> bool:
         # Debug: take screenshot before clicking Allow
         await page.screenshot(path=f"/tmp/consent_before_allow_{username}.png")
         logger.info(
-            f"  Screenshot before Allow: /tmp/consent_before_allow_{username}.png"
+            "  Screenshot before Allow: /tmp/consent_before_allow_%s.png", username
         )
 
         button_count = await allow_button_locator.count()
-        logger.info(f"  Found {button_count} Allow button(s)")
+        logger.info("  Found %s Allow button(s)", button_count)
 
         if button_count > 0:
             current_url = page.url
-            logger.info(f"  Current URL: {current_url}")
-            logger.info(f"  Clicking Allow button for {username}...")
+            logger.info("  Current URL: %s", current_url)
+            logger.info("  Clicking Allow button for %s...", username)
 
             # Use JavaScript click to handle consent buttons (proven pattern from conftest.py)
             # This is more reliable than Playwright's click for Vue.js rendered buttons
@@ -327,10 +333,10 @@ async def _handle_oauth_consent_screen(page: Page, username: str) -> bool:
                     lambda url: url != current_url,
                     timeout=30000,
                 )
-                logger.info(f"  URL changed to: {page.url}")
+                logger.info("  URL changed to: %s", page.url)
             except Exception as wait_error:
                 # If URL didn't change, check console for errors
-                logger.warning(f"  URL didn't change after click: {wait_error}")
+                logger.warning("  URL didn't change after click: %s", wait_error)
                 await page.screenshot(path=f"/tmp/consent_after_allow_{username}.png")
 
                 # Try alternative: manually POST consent and navigate
@@ -356,21 +362,21 @@ async def _handle_oauth_consent_screen(page: Page, username: str) -> bool:
                         }
                         """
                     )
-                    logger.info(f"  Manual consent returned URL: {redirect_url}")
+                    logger.info("  Manual consent returned URL: %s", redirect_url)
                     await page.goto(redirect_url, wait_until="networkidle")
                 except Exception as manual_error:
-                    logger.error(f"  Manual consent also failed: {manual_error}")
+                    logger.error("  Manual consent also failed: %s", manual_error)
                     raise
 
             await page.screenshot(path=f"/tmp/consent_after_allow_{username}.png")
-            logger.info(f"  Consent granted for {username}")
+            logger.info("  Consent granted for %s", username)
             return True
         else:
-            logger.error(f"  Allow button not found for {username}")
+            logger.error("  Allow button not found for %s", username)
             return False
 
     except Exception as e:
-        logger.error(f"Error handling consent screen for {username}: {e}")
+        logger.error("Error handling consent screen for %s: %s", username, e)
         raise
 
 
@@ -387,7 +393,7 @@ async def generate_app_password(
     Returns:
         The generated app password string
     """
-    logger.info(f"Generating app password for {username}...")
+    logger.info("Generating app password for %s...", username)
 
     nextcloud_url = "http://localhost:8080"
 
@@ -398,7 +404,7 @@ async def generate_app_password(
     # Fill the app password input field (selector confirmed via Playwright MCP)
     app_password_input = page.locator('input[placeholder="App name"]')
     await app_password_input.fill(app_name)
-    logger.info(f"Entered app name: {app_name}")
+    logger.info("Entered app name: %s", app_name)
 
     # Wait for Vue.js to react and enable the button (needs 1 second, not 0.5)
     await anyio.sleep(1.0)
@@ -427,7 +433,7 @@ async def generate_app_password(
     # Debug screenshot after clicking create
     await page.screenshot(path=f"/tmp/app_password_after_create_{username}.png")
     logger.info(
-        f"Screenshot after create: /tmp/app_password_after_create_{username}.png"
+        "Screenshot after create: /tmp/app_password_after_create_%s.png", username
     )
 
     # Find the Login input field which should have the username value
@@ -440,7 +446,7 @@ async def generate_app_password(
 
         # Get all visible input elements
         all_inputs = await page.locator('input[type="text"]').all()
-        logger.info(f"Found {len(all_inputs)} text input elements")
+        logger.info("Found %s text input elements", len(all_inputs))
 
         # Check each input to find the one with the app password
         for idx, input_elem in enumerate(all_inputs):
@@ -449,15 +455,18 @@ async def generate_app_password(
                 if value and "-" in value and len(value) > 20:
                     app_password = value.strip()
                     logger.info(
-                        f"Found app password in input {idx}: '{app_password}' (length: {len(app_password)})"
+                        "Found app password in input %s: '%s' (length: %s)",
+                        idx,
+                        app_password,
+                        len(app_password),
                     )
                     break
             except Exception as e:
-                logger.debug(f"Could not get value from input {idx}: {e}")
+                logger.debug("Could not get value from input %s: %s", idx, e)
                 continue
 
     except Exception as e:
-        logger.error(f"Failed to find app password dialog or extract password: {e}")
+        logger.error("Failed to find app password dialog or extract password: %s", e)
 
     if not app_password:
         # Take screenshot for debugging
@@ -474,9 +483,9 @@ async def generate_app_password(
         app_password,
     ):
         logger.error(
-            f"Extracted password does not match expected format: '{app_password}'"
+            "Extracted password does not match expected format: '%s'", app_password
         )
-        logger.error(f"Password repr: {repr(app_password)}")
+        logger.error("Password repr: %s", repr(app_password))
         screenshot_path = f"/tmp/app_password_invalid_format_{username}.png"
         await page.screenshot(path=screenshot_path)
         raise ValueError(
@@ -484,7 +493,9 @@ async def generate_app_password(
         )
 
     logger.info(
-        f"✓ Generated app password for {username}: {app_password[:10]}... (validated)"
+        "✓ Generated app password for %s: %s... (validated)",
+        username,
+        app_password[:10],
     )
 
     # Close dialog with Escape key (bypasses CSS layout issues with h2 intercepting clicks)
@@ -509,7 +520,7 @@ async def enable_background_sync_via_app_password(
     Returns:
         True if background sync was enabled successfully
     """
-    logger.info(f"Enabling background sync via app password for {username}...")
+    logger.info("Enabling background sync via app password for %s...", username)
 
     nextcloud_url = "http://localhost:8080"
 
@@ -524,7 +535,7 @@ async def enable_background_sync_via_app_password(
     def log_response(resp):
         response_info = f"{resp.status} {resp.url}"
         network_responses.append(response_info)
-        logger.info(f"Response: {response_info}")
+        logger.info("Response: %s", response_info)
 
     def log_console(msg):
         console_messages.append(f"[{msg.type}] {msg.text}")
@@ -546,7 +557,7 @@ async def enable_background_sync_via_app_password(
         # First check for overall "Active" badge (both steps complete)
         active_text = page.get_by_text("Active", exact=True)
         if await active_text.is_visible(timeout=2000):
-            logger.info(f"✓ Background sync already active for {username}")
+            logger.info("✓ Background sync already active for %s", username)
             return True
     except Exception:
         pass
@@ -558,7 +569,7 @@ async def enable_background_sync_via_app_password(
             step2_parent = step2_section.locator("..")
             complete_badge = step2_parent.get_by_text("Complete", exact=True)
             if await complete_badge.count() > 0 and await complete_badge.is_visible():
-                logger.info(f"✓ Step 2 (app password) already complete for {username}")
+                logger.info("✓ Step 2 (app password) already complete for %s", username)
                 return True
     except Exception:
         pass
@@ -580,7 +591,7 @@ async def enable_background_sync_via_app_password(
 
     # Enter the app password
     await app_password_input.fill(app_password)
-    logger.info(f"Entered app password for {username}")
+    logger.info("Entered app password for %s", username)
 
     # Wait a moment for any validation to complete
     await anyio.sleep(0.5)
@@ -588,14 +599,14 @@ async def enable_background_sync_via_app_password(
     # Take screenshot before clicking Save to check for warnings
     screenshot_path = f"/tmp/before_save_{username}.png"
     await page.screenshot(path=screenshot_path)
-    logger.info(f"Screenshot taken before Save: {screenshot_path}")
+    logger.info("Screenshot taken before Save: %s", screenshot_path)
 
     # Find and click the Save button
     save_button = page.get_by_role("button", name="Save")
 
     # Check if Save button is enabled
     is_disabled = await save_button.is_disabled()
-    logger.info(f"Save button disabled state: {is_disabled}")
+    logger.info("Save button disabled state: %s", is_disabled)
 
     await save_button.click()
     logger.info("Clicked Save button")
@@ -604,24 +615,24 @@ async def enable_background_sync_via_app_password(
     await anyio.sleep(0.5)
 
     # Log network requests after clicking Save
-    logger.info(f"Network requests after Save for {username}:")
+    logger.info("Network requests after Save for %s:", username)
     for req in network_requests[-10:]:  # Last 10 requests
-        logger.info(f"  {req}")
+        logger.info("  %s", req)
 
     # Log network responses after clicking Save
-    logger.info(f"Network responses after Save for {username}:")
+    logger.info("Network responses after Save for %s:", username)
     for resp in network_responses[-10:]:  # Last 10 responses
-        logger.info(f"  {resp}")
+        logger.info("  %s", resp)
 
     # Check specifically for the credentials POST response
     credentials_responses = [
         r for r in network_responses if "background-sync/credentials" in r
     ]
     if credentials_responses:
-        logger.info(f"Credentials endpoint response: {credentials_responses[-1]}")
+        logger.info("Credentials endpoint response: %s", credentials_responses[-1])
         if "200" not in credentials_responses[-1]:
             logger.error(
-                f"Credentials POST did not return 200 OK: {credentials_responses[-1]}"
+                "Credentials POST did not return 200 OK: %s", credentials_responses[-1]
             )
     else:
         logger.warning("No response found for credentials endpoint!")
@@ -633,16 +644,16 @@ async def enable_background_sync_via_app_password(
 
     # Log any console messages
     if console_messages:
-        logger.info(f"Console messages for {username}:")
+        logger.info("Console messages for %s:", username)
         for msg in console_messages:
-            logger.info(f"  {msg}")
+            logger.info("  %s", msg)
 
     # Check for error notifications (toast messages)
     try:
         error_toast = page.locator(".toastify.toast-error, .toast-error")
         if await error_toast.count() > 0:
             error_text = await error_toast.first.text_content()
-            logger.error(f"Error notification for {username}: {error_text}")
+            logger.error("Error notification for %s: %s", username, error_text)
     except Exception:
         pass
 
@@ -653,7 +664,7 @@ async def enable_background_sync_via_app_password(
         if await active_text.count() > 0:
             await active_text.wait_for(timeout=5000, state="visible")
             logger.info(
-                f"✓ Background sync enabled for {username} - Active badge visible"
+                "✓ Background sync enabled for %s - Active badge visible", username
             )
             return True
     except Exception:
@@ -667,7 +678,8 @@ async def enable_background_sync_via_app_password(
             complete_badge = step2_parent.get_by_text("Complete", exact=True)
             await complete_badge.wait_for(timeout=5000, state="visible")
             logger.info(
-                f"✓ Step 2 (app password) enabled for {username} - Complete badge visible"
+                "✓ Step 2 (app password) enabled for %s - Complete badge visible",
+                username,
             )
             return True
     except Exception:
@@ -677,8 +689,9 @@ async def enable_background_sync_via_app_password(
     screenshot_path = f"/tmp/astrolabe_after_password_{username}.png"
     await page.screenshot(path=screenshot_path)
     logger.error(
-        f"Neither Active nor Complete badge appeared for {username}. "
-        f"Screenshot: {screenshot_path}"
+        "Neither Active nor Complete badge appeared for %s. Screenshot: %s",
+        username,
+        screenshot_path,
     )
     raise ValueError(f"Background sync setup did not complete for {username}")
 
@@ -702,7 +715,7 @@ async def complete_astrolabe_authorization(
     Returns:
         Dict with {"step1": bool, "step2": bool, "app_password": str | None}
     """
-    logger.info(f"Starting full Astrolabe authorization for {username}...")
+    logger.info("Starting full Astrolabe authorization for %s...", username)
 
     result = {"step1": False, "step2": False, "app_password": None}
 
@@ -712,9 +725,9 @@ async def complete_astrolabe_authorization(
     # Step 1: OAuth authorization
     try:
         result["step1"] = await authorize_search_access(page, username)
-        logger.info(f"✓ Step 1 complete for {username}")
+        logger.info("✓ Step 1 complete for %s", username)
     except Exception as e:
-        logger.error(f"Step 1 failed for {username}: {e}")
+        logger.error("Step 1 failed for %s: %s", username, e)
         raise
 
     # Navigate back to settings if needed (OAuth might have redirected elsewhere)
@@ -728,7 +741,7 @@ async def complete_astrolabe_authorization(
             step2_parent = step2_section.locator("..")
             complete_badge = step2_parent.get_by_text("Complete", exact=True)
             if await complete_badge.count() > 0 and await complete_badge.is_visible():
-                logger.info(f"✓ Step 2 already complete for {username}")
+                logger.info("✓ Step 2 already complete for %s", username)
                 result["step2"] = True
                 return result
     except Exception:
@@ -738,7 +751,7 @@ async def complete_astrolabe_authorization(
     try:
         active_text = page.get_by_text("Active", exact=True)
         if await active_text.count() > 0 and await active_text.is_visible():
-            logger.info(f"✓ Authorization already fully active for {username}")
+            logger.info("✓ Authorization already fully active for %s", username)
             result["step2"] = True
             return result
     except Exception:
@@ -752,12 +765,12 @@ async def complete_astrolabe_authorization(
         result["step2"] = await enable_background_sync_via_app_password(
             page, username, app_password
         )
-        logger.info(f"✓ Step 2 complete for {username}")
+        logger.info("✓ Step 2 complete for %s", username)
     except Exception as e:
-        logger.error(f"Step 2 failed for {username}: {e}")
+        logger.error("Step 2 failed for %s: %s", username, e)
         raise
 
-    logger.info(f"✓ Full Astrolabe authorization complete for {username}")
+    logger.info("✓ Full Astrolabe authorization complete for %s", username)
     return result
 
 
@@ -773,7 +786,7 @@ async def verify_app_password_created(username: str) -> bool:
     Returns:
         True if background sync app password exists
     """
-    logger.info(f"Verifying background sync app password for {username}...")
+    logger.info("Verifying background sync app password for %s...", username)
 
     # Query the database to check for background sync credentials
     # Astrolabe stores app passwords in oc_preferences, not oc_authtoken
@@ -809,7 +822,7 @@ async def verify_app_password_created(username: str) -> bool:
         )
 
         output = result.stdout
-        logger.debug(f"Background sync credentials query result:\n{output}")
+        logger.debug("Background sync credentials query result:\\n%s", output)
 
         # Check if background sync credentials exist
         # We should see 3 rows: background_sync_password, background_sync_type, background_sync_provisioned_at
@@ -818,19 +831,22 @@ async def verify_app_password_created(username: str) -> bool:
         if len(lines) >= 3:  # Header + at least 2 data rows (password + type)
             # Verify background_sync_type is "app_password"
             if "app_password" in output:
-                logger.info(f"✓ Background sync app password stored for {username}")
+                logger.info("✓ Background sync app password stored for %s", username)
                 return True
             else:
                 logger.warning(
-                    f"Background sync credentials found but type is not app_password for {username}"
+                    "Background sync credentials found but type is not app_password for %s",
+                    username,
                 )
                 return False
         else:
-            logger.warning(f"No background sync credentials found for {username}")
+            logger.warning("No background sync credentials found for %s", username)
             return False
 
     except Exception as e:
-        logger.error(f"Error checking background sync credentials for {username}: {e}")
+        logger.error(
+            "Error checking background sync credentials for %s: %s", username, e
+        )
         return False
 
 
@@ -892,10 +908,13 @@ def clear_stale_test_state(clear_preferences: bool = False) -> None:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
             logger.warning(
-                f"Failed to clear {label} (rc={result.returncode}): {result.stderr}"
+                "Failed to clear %s (rc=%s): %s",
+                label,
+                result.returncode,
+                result.stderr,
             )
         else:
-            logger.debug(f"Cleared {label}")
+            logger.debug("Cleared %s", label)
 
 
 @pytest.mark.integration
@@ -946,7 +965,9 @@ async def test_multi_user_astrolabe_background_sync_enablement(
             # Use nc_client to check if user exists
             user_details = await nc_client.users.get_user_details(username)
             logger.info(
-                f"✓ Confirmed {username} exists (display name: {user_details.displayname})"
+                "✓ Confirmed %s exists (display name: %s)",
+                username,
+                user_details.displayname,
             )
         except Exception as e:
             raise AssertionError(
@@ -957,9 +978,9 @@ async def test_multi_user_astrolabe_background_sync_enablement(
     results = {}
 
     for username in test_users:
-        logger.info(f"\n{'=' * 60}")
-        logger.info(f"Testing background sync enablement for: {username}")
-        logger.info(f"{'=' * 60}")
+        logger.info("\\n%s", "=" * 60)
+        logger.info("Testing background sync enablement for: %s", username)
+        logger.info("%s", "=" * 60)
 
         user_config = test_users_setup[username]
         password = user_config["password"]
@@ -994,17 +1015,20 @@ async def test_multi_user_astrolabe_background_sync_enablement(
                 "background_sync_active": sync_enabled and app_password_stored,
             }
 
-            logger.info(f"\n{username} results:")
+            logger.info("\\n%s results:", username)
             logger.info("  Settings accessed: ✓")
-            logger.info(f"  App password generated: {'✓' if app_password else '✗'}")
-            logger.info(f"  Sync enabled: {'✓' if sync_enabled else '✗'}")
-            logger.info(f"  App password stored: {'✓' if app_password_stored else '✗'}")
+            logger.info("  App password generated: %s", "✓" if app_password else "✗")
+            logger.info("  Sync enabled: %s", "✓" if sync_enabled else "✗")
             logger.info(
-                f"  Background sync active: {'✓' if (sync_enabled and app_password_stored) else '✗'}"
+                "  App password stored: %s", "✓" if app_password_stored else "✗"
+            )
+            logger.info(
+                "  Background sync active: %s",
+                "✓" if (sync_enabled and app_password_stored) else "✗",
             )
 
         except Exception as e:
-            logger.error(f"Error during {username} test: {e}")
+            logger.error("Error during %s test: %s", username, e)
             results[username] = {
                 "settings_accessed": False,
                 "app_password_generated": False,
@@ -1018,18 +1042,18 @@ async def test_multi_user_astrolabe_background_sync_enablement(
             await context.close()
 
     # Verify all users succeeded
-    logger.info(f"\n{'=' * 60}")
+    logger.info("\\n%s", "=" * 60)
     logger.info("Test Summary")
-    logger.info(f"{'=' * 60}")
+    logger.info("%s", "=" * 60)
 
     for username, result in results.items():
-        logger.info(f"\n{username}:")
+        logger.info("\\n%s:", username)
         for key, value in result.items():
             if key != "error":
                 status = "✓" if value else "✗"
-                logger.info(f"  {key}: {status}")
+                logger.info("  %s: %s", key, status)
             elif value:
-                logger.info(f"  error: {value}")
+                logger.info("  error: %s", value)
 
     # Assert all users successfully enabled background sync
     for username in test_users:
@@ -1051,7 +1075,8 @@ async def test_multi_user_astrolabe_background_sync_enablement(
         )
 
     logger.info(
-        f"\n✓ All {len(test_users)} users successfully enabled background sync via app passwords!"
+        "\\n✓ All %s users successfully enabled background sync via app passwords!",
+        len(test_users),
     )
 
 
@@ -1065,7 +1090,7 @@ async def revoke_background_sync_access(page: Page, username: str) -> bool:
     Returns:
         True if revocation was successful
     """
-    logger.info(f"Revoking background sync access for {username}...")
+    logger.info("Revoking background sync access for %s...", username)
 
     nextcloud_url = "http://localhost:8080"
 
@@ -1080,7 +1105,7 @@ async def revoke_background_sync_access(page: Page, username: str) -> bool:
     def log_response(resp):
         response_info = f"{resp.status} {resp.url}"
         network_responses.append(response_info)
-        logger.info(f"Response: {response_info}")
+        logger.info("Response: %s", response_info)
 
     def log_console(msg):
         console_messages.append(f"[{msg.type}] {msg.text}")
@@ -1102,11 +1127,11 @@ async def revoke_background_sync_access(page: Page, username: str) -> bool:
         active_text = page.get_by_text("Active", exact=True)
         if not await active_text.is_visible(timeout=2000):
             logger.warning(
-                f"Background sync not active for {username}, nothing to revoke"
+                "Background sync not active for %s, nothing to revoke", username
             )
             return False
     except Exception:
-        logger.warning(f"Could not find Active badge for {username}")
+        logger.warning("Could not find Active badge for %s", username)
         return False
 
     # Find the "Revoke Access" button
@@ -1134,21 +1159,21 @@ async def revoke_background_sync_access(page: Page, username: str) -> bool:
     await anyio.sleep(2)
 
     # Log network requests after clicking
-    logger.info(f"Network requests after Revoke for {username}:")
+    logger.info("Network requests after Revoke for %s:", username)
     for req in network_requests[-10:]:
-        logger.info(f"  {req}")
+        logger.info("  %s", req)
 
     # Log network responses
-    logger.info(f"Network responses after Revoke for {username}:")
+    logger.info("Network responses after Revoke for %s:", username)
     for resp in network_responses[-10:]:
-        logger.info(f"  {resp}")
+        logger.info("  %s", resp)
 
     # Check specifically for the revoke POST response
     revoke_responses = [r for r in network_responses if "credentials/revoke" in r]
     if revoke_responses:
-        logger.info(f"Revoke endpoint response: {revoke_responses[-1]}")
+        logger.info("Revoke endpoint response: %s", revoke_responses[-1])
         if "200" not in revoke_responses[-1]:
-            logger.error(f"Revoke POST did not return 200 OK: {revoke_responses[-1]}")
+            logger.error("Revoke POST did not return 200 OK: %s", revoke_responses[-1])
             return False
     else:
         logger.warning("No response found for credentials/revoke endpoint!")
@@ -1159,16 +1184,16 @@ async def revoke_background_sync_access(page: Page, username: str) -> bool:
 
     # Log any console messages
     if console_messages:
-        logger.info(f"Console messages for {username}:")
+        logger.info("Console messages for %s:", username)
         for msg in console_messages:
-            logger.info(f"  {msg}")
+            logger.info("  %s", msg)
 
     # Check for error notifications (toast messages)
     try:
         error_toast = page.locator(".toastify.toast-error, .toast-error")
         if await error_toast.count() > 0:
             error_text = await error_toast.first.text_content()
-            logger.error(f"Error notification for {username}: {error_text}")
+            logger.error("Error notification for %s: %s", username, error_text)
             return False
     except Exception:
         pass
@@ -1177,14 +1202,14 @@ async def revoke_background_sync_access(page: Page, username: str) -> bool:
     try:
         active_text = page.get_by_text("Active", exact=True)
         if await active_text.is_visible(timeout=2000):
-            logger.error(f"Active badge still visible for {username} after revoke!")
+            logger.error("Active badge still visible for %s after revoke!", username)
             screenshot_path = f"/tmp/astrolabe_revoke_still_active_{username}.png"
             await page.screenshot(path=screenshot_path)
             return False
     except Exception:
         pass
 
-    logger.info(f"✓ Background sync access revoked for {username}")
+    logger.info("✓ Background sync access revoked for %s", username)
     return True
 
 
@@ -1197,7 +1222,7 @@ async def verify_app_password_deleted(username: str) -> bool:
     Returns:
         True if background sync credentials no longer exist
     """
-    logger.info(f"Verifying background sync credentials deleted for {username}...")
+    logger.info("Verifying background sync credentials deleted for %s...", username)
 
     query = f"""
     SELECT userid, configkey, configvalue
@@ -1230,18 +1255,20 @@ async def verify_app_password_deleted(username: str) -> bool:
         )
 
         output = result.stdout
-        logger.debug(f"Background sync credentials query result:\n{output}")
+        logger.debug("Background sync credentials query result:\\n%s", output)
 
         # After deletion, we should NOT see background_sync_password
         if "background_sync_password" not in output:
-            logger.info(f"✓ Background sync credentials deleted for {username}")
+            logger.info("✓ Background sync credentials deleted for %s", username)
             return True
         else:
-            logger.warning(f"Background sync credentials still exist for {username}")
+            logger.warning("Background sync credentials still exist for %s", username)
             return False
 
     except Exception as e:
-        logger.error(f"Error checking background sync credentials for {username}: {e}")
+        logger.error(
+            "Error checking background sync credentials for %s: %s", username, e
+        )
         return False
 
 
@@ -1316,7 +1343,9 @@ async def test_revoke_background_sync_access(
             f"Background sync credentials not deleted for {username}"
         )
 
-        logger.info(f"\n✓ Successfully revoked background sync access for {username}!")
+        logger.info(
+            "\\n✓ Successfully revoked background sync access for %s!", username
+        )
 
     finally:
         await context.close()

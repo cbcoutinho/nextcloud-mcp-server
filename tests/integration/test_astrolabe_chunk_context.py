@@ -91,8 +91,10 @@ async def _poll_astrolabe_search_for_note(
         )
         if note_result is not None:
             logger.info(
-                f"Note {note_id} surfaced in Astrolabe search after {attempts} "
-                f"attempts (~{attempts * 2}s)"
+                "Note %s surfaced in Astrolabe search after %s attempts (~%ss)",
+                note_id,
+                attempts,
+                attempts * 2,
             )
             return note_result
         await anyio.sleep(2)
@@ -245,7 +247,7 @@ async def test_chunk_context_endpoint_uses_app_password(
                         "nc_notes_delete_note", {"note_id": note_id}
                     )
         except Exception as cleanup_err:
-            logger.warning(f"Cleanup failed for note {note_id}: {cleanup_err}")
+            logger.warning("Cleanup failed for note %s: %s", note_id, cleanup_err)
         await context.close()
 
 

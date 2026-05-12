@@ -26,7 +26,7 @@ async def board_with_two_stacks(nc_client: NextcloudClient):
     board_title = f"Reorder Test Board {unique_suffix}"
     board = None
 
-    logger.info(f"Creating board with two stacks: {board_title}")
+    logger.info("Creating board with two stacks: %s", board_title)
     try:
         board = await nc_client.deck.create_board(board_title, "0000FF")
         board_id = board.id
@@ -40,7 +40,7 @@ async def board_with_two_stacks(nc_client: NextcloudClient):
             "title": source_stack.title,
             "order": source_stack.order,
         }
-        logger.info(f"Created source stack with ID: {source_stack.id}")
+        logger.info("Created source stack with ID: %s", source_stack.id)
 
         # Create target stack (stack 2)
         target_stack = await nc_client.deck.create_stack(
@@ -51,7 +51,7 @@ async def board_with_two_stacks(nc_client: NextcloudClient):
             "title": target_stack.title,
             "order": target_stack.order,
         }
-        logger.info(f"Created target stack with ID: {target_stack.id}")
+        logger.info("Created target stack with ID: %s", target_stack.id)
 
         board_data = {
             "id": board_id,
@@ -63,11 +63,11 @@ async def board_with_two_stacks(nc_client: NextcloudClient):
 
     finally:
         if board:
-            logger.info(f"Cleaning up board ID: {board.id}")
+            logger.info("Cleaning up board ID: %s", board.id)
             try:
                 await nc_client.deck.delete_board(board.id)
             except Exception as e:
-                logger.warning(f"Error cleaning up board: {e}")
+                logger.warning("Error cleaning up board: %s", e)
 
 
 async def test_reorder_card_move_to_different_stack(
@@ -90,7 +90,7 @@ async def test_reorder_card_move_to_different_stack(
         board_id, source_stack_id, card_title, description="Card to be moved"
     )
     card_id = card.id
-    logger.info(f"Created card ID: {card_id} in source stack ID: {source_stack_id}")
+    logger.info("Created card ID: %s in source stack ID: %s", card_id, source_stack_id)
 
     try:
         # Verify card is in source stack
@@ -99,12 +99,14 @@ async def test_reorder_card_move_to_different_stack(
             f"Card should start in source stack {source_stack_id}, "
             f"but is in {card_before.stackId}"
         )
-        logger.info(f"Verified card is in source stack: {source_stack_id}")
+        logger.info("Verified card is in source stack: %s", source_stack_id)
 
         # Move card to target stack
         logger.info(
-            f"Moving card {card_id} from stack {source_stack_id} "
-            f"to stack {target_stack_id}"
+            "Moving card %s from stack %s to stack %s",
+            card_id,
+            source_stack_id,
+            target_stack_id,
         )
         await nc_client.deck.reorder_card(
             board_id=board_id,
@@ -122,7 +124,7 @@ async def test_reorder_card_move_to_different_stack(
             f"Card should have moved to target stack {target_stack_id}, "
             f"but is in {card_after.stackId}"
         )
-        logger.info(f"SUCCESS: Card moved to target stack {target_stack_id}")
+        logger.info("SUCCESS: Card moved to target stack %s", target_stack_id)
 
     finally:
         # Clean up - try to delete from target stack first, then source
@@ -132,7 +134,7 @@ async def test_reorder_card_move_to_different_stack(
             try:
                 await nc_client.deck.delete_card(board_id, source_stack_id, card_id)
             except Exception as e:
-                logger.warning(f"Error cleaning up card: {e}")
+                logger.warning("Error cleaning up card: %s", e)
 
 
 async def test_reorder_card_within_same_stack(
@@ -151,7 +153,7 @@ async def test_reorder_card_within_same_stack(
     card2 = await nc_client.deck.create_card(
         board_id, source_stack_id, f"Card 2 {unique_suffix}", order=1
     )
-    logger.info(f"Created cards {card1.id} (order 0) and {card2.id} (order 1)")
+    logger.info("Created cards %s (order 0) and %s (order 1)", card1.id, card2.id)
 
     try:
         # Reorder card1 to position after card2
@@ -162,7 +164,7 @@ async def test_reorder_card_within_same_stack(
             order=2,  # Move to position 2
             target_stack_id=source_stack_id,  # Same stack
         )
-        logger.info(f"Reordered card {card1.id} to order 2")
+        logger.info("Reordered card %s to order 2", card1.id)
 
         # Verify card is still in the same stack
         card_after = await nc_client.deck.get_card(board_id, source_stack_id, card1.id)
@@ -174,4 +176,4 @@ async def test_reorder_card_within_same_stack(
             await nc_client.deck.delete_card(board_id, source_stack_id, card1.id)
             await nc_client.deck.delete_card(board_id, source_stack_id, card2.id)
         except Exception as e:
-            logger.warning(f"Error cleaning up cards: {e}")
+            logger.warning("Error cleaning up cards: %s", e)

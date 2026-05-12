@@ -71,7 +71,7 @@ class TesseractProcessor(DocumentProcessor):
             )
 
         self.default_lang = default_lang
-        logger.info(f"Initialized TesseractProcessor: lang={default_lang}")
+        logger.info("Initialized TesseractProcessor: lang=%s", default_lang)
 
     @property
     def name(self) -> str:
@@ -137,8 +137,9 @@ class TesseractProcessor(DocumentProcessor):
             }
 
             logger.debug(
-                f"Tesseract OCR completed: {len(text)} chars, "
-                f"confidence={avg_confidence:.1f}%"
+                "Tesseract OCR completed: %s chars, confidence=%s%%",
+                len(text),
+                format(avg_confidence, ".1f"),
             )
 
             return ProcessingResult(
@@ -149,7 +150,7 @@ class TesseractProcessor(DocumentProcessor):
             )
 
         except Exception as e:
-            logger.error(f"Tesseract processing failed: {e}")
+            logger.error("Tesseract processing failed: %s", e)
             raise ProcessorError(f"OCR failed: {str(e)}") from e
 
     async def health_check(self) -> bool:

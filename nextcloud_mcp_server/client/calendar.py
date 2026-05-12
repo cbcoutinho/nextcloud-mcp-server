@@ -131,23 +131,32 @@ class CalendarClient:
             max_attempts: Maximum polling attempts (default: 40)
             initial_delay_ms: Initial delay between attempts in ms (default: 100ms)
         """
-        logger.info(f"Waiting for calendar '{calendar_name}' to propagate...")
+        logger.info("Waiting for calendar '%s' to propagate...", calendar_name)
         delay_ms = initial_delay_ms
 
         for attempt in range(max_attempts):
             try:
                 logger.debug(
-                    f"Attempt {attempt + 1}/{max_attempts} to find calendar '{calendar_name}'..."
+                    "Attempt %s/%s to find calendar '%s'...",
+                    attempt + 1,
+                    max_attempts,
+                    calendar_name,
                 )
                 calendars = await self.list_calendars()
                 if any(cal["name"] == calendar_name for cal in calendars):
                     logger.info(
-                        f"Calendar '{calendar_name}' became available after {attempt + 1} attempts"
+                        "Calendar '%s' became available after %s attempts",
+                        calendar_name,
+                        attempt + 1,
                     )
                     return
             except Exception as e:
                 logger.warning(
-                    f"Attempt {attempt + 1}/{max_attempts} to verify calendar '{calendar_name}' failed: {e}"
+                    "Attempt %s/%s to verify calendar '%s' failed: %s",
+                    attempt + 1,
+                    max_attempts,
+                    calendar_name,
+                    e,
                 )
 
             if attempt < max_attempts - 1:
@@ -156,7 +165,9 @@ class CalendarClient:
                 delay_ms = min(delay_ms * 2, 2000)
 
         logger.error(
-            f"Calendar '{calendar_name}' did not become available after {max_attempts} attempts."
+            "Calendar '%s' did not become available after %s attempts.",
+            calendar_name,
+            max_attempts,
         )
 
     # ============= Calendar Operations =============
@@ -243,7 +254,7 @@ class CalendarClient:
                         }
                     )
 
-        logger.debug(f"Found {len(result)} calendars")
+        logger.debug("Found %s calendars", len(result))
         return result
 
     async def create_calendar(
@@ -285,7 +296,7 @@ class CalendarClient:
                 f"Failed to create calendar '{calendar_name}': HTTP {response.status}"
             )
 
-        logger.debug(f"Created calendar: {calendar_name}")
+        logger.debug("Created calendar: %s", calendar_name)
 
         # Wait for calendar to be queryable (Nextcloud eventual consistency)
         await self._wait_for_calendar_propagation(calendar_name)
@@ -306,7 +317,7 @@ class CalendarClient:
         )
         await self._dav_client.delete(calendar_url)
 
-        logger.debug(f"Deleted calendar: {calendar_name}")
+        logger.debug("Deleted calendar: %s", calendar_name)
         return {"status_code": 204}
 
     # ============= Event Operations =============
@@ -467,7 +478,7 @@ class CalendarClient:
         # caldav v3's _async_put raises PutError on HTTP failure
         event = await calendar.save_event(ical=ical_content)  # type: ignore[misc]  # dual-mode
 
-        logger.debug(f"Created event {event_uid}")
+        logger.debug("Created event %s", event_uid)
 
         return {
             "uid": event_uid,
@@ -498,7 +509,7 @@ class CalendarClient:
 
         await _maybe_await(event.save())
 
-        logger.debug(f"Updated event {event_uid}")
+        logger.debug("Updated event %s", event_uid)
         return {
             "uid": event_uid,
             "href": str(event.url),
@@ -515,10 +526,10 @@ class CalendarClient:
                 calendar, event_uid, cdav.CompFilter("VEVENT")
             )
             await _maybe_await(event.delete())
-            logger.debug(f"Deleted event {event_uid}")
+            logger.debug("Deleted event %s", event_uid)
             return {"status_code": 204}
         except caldav_error.NotFoundError as e:
-            logger.debug(f"Event {event_uid} not found: {e}")
+            logger.debug("Event %s not found: %s", event_uid, e)
             return {"status_code": 404}
 
     async def get_event(
@@ -539,7 +550,7 @@ class CalendarClient:
         event_data["href"] = str(event.url)
         event_data["etag"] = ""
 
-        logger.debug(f"Retrieved event {event_uid}")
+        logger.debug("Retrieved event %s", event_uid)
         return event_data, ""
 
     async def search_events_across_calendars(
@@ -573,14 +584,14 @@ class CalendarClient:
                     all_events.extend(events)
                 except Exception as e:
                     logger.warning(
-                        f"Error getting events from calendar {calendar['name']}: {e}"
+                        "Error getting events from calendar %s: %s", calendar["name"], e
                     )
                     continue
 
             return all_events
 
         except Exception as e:
-            logger.error(f"Error searching events across calendars: {e}")
+            logger.error("Error searching events across calendars: %s", e)
             raise
 
     # ============= Todo/Task Operations (NEW) =============
@@ -611,7 +622,7 @@ class CalendarClient:
                 if not filters or self._todo_matches_filters(todo_dict, filters):
                     result.append(todo_dict)
 
-        logger.debug(f"Found {len(result)} todos")
+        logger.debug("Found %s todos", len(result))
         return result
 
     async def create_todo(
@@ -626,7 +637,7 @@ class CalendarClient:
         # caldav v3's _async_put raises PutError on HTTP failure
         todo = await calendar.save_todo(ical=ical_content)  # type: ignore[misc]  # dual-mode
 
-        logger.debug(f"Created todo {todo_uid}")
+        logger.debug("Created todo %s", todo_uid)
 
         return {
             "uid": todo_uid,
@@ -653,7 +664,7 @@ class CalendarClient:
             await _maybe_await(todo.load(only_if_unloaded=True))
 
             logger.debug(
-                f"Loaded todo {todo_uid}, current data length: {len(todo.data)}"  # type: ignore
+                "Loaded todo %s, current data length: %s", todo_uid, len(todo.data)
             )
 
             # Merge updates into existing iCal data
@@ -662,14 +673,14 @@ class CalendarClient:
                 todo_data,
                 todo_uid,
             )
-            logger.debug(f"Merged iCal data length: {len(updated_ical)}")
-            logger.debug(f"Updated iCal content:\n{updated_ical}")
+            logger.debug("Merged iCal data length: %s", len(updated_ical))
+            logger.debug("Updated iCal content:\\n%s", updated_ical)
 
             todo.data = updated_ical
 
             await _maybe_await(todo.save())
 
-            logger.debug(f"Updated todo {todo_uid}")
+            logger.debug("Updated todo %s", todo_uid)
             return {
                 "uid": todo_uid,
                 "href": str(todo.url),
@@ -677,7 +688,7 @@ class CalendarClient:
                 "status_code": 200,
             }
         except Exception as e:
-            logger.error(f"Error updating todo {todo_uid}: {e}", exc_info=True)
+            logger.error("Error updating todo %s: %s", todo_uid, e, exc_info=True)
             raise
 
     async def delete_todo(self, calendar_name: str, todo_uid: str) -> dict[str, Any]:
@@ -689,10 +700,10 @@ class CalendarClient:
                 calendar, todo_uid, cdav.CompFilter("VTODO")
             )
             await _maybe_await(todo.delete())
-            logger.debug(f"Deleted todo {todo_uid}")
+            logger.debug("Deleted todo %s", todo_uid)
             return {"status_code": 204}
         except caldav_error.NotFoundError as e:
-            logger.debug(f"Todo {todo_uid} not found: {e}")
+            logger.debug("Todo %s not found: %s", todo_uid, e)
             return {"status_code": 404}
 
     async def search_todos_across_calendars(
@@ -717,14 +728,14 @@ class CalendarClient:
                     all_todos.extend(todos)
                 except Exception as e:
                     logger.warning(
-                        f"Error getting todos from calendar {calendar['name']}: {e}"
+                        "Error getting todos from calendar %s: %s", calendar["name"], e
                     )
                     continue
 
             return all_todos
 
         except Exception as e:
-            logger.error(f"Error searching todos across calendars: {e}")
+            logger.error("Error searching todos across calendars: %s", e)
             raise
 
     # ============= Helper Methods - Event iCalendar =============
@@ -935,7 +946,7 @@ class CalendarClient:
                     return self._extract_vevent_data(component)
             return None
         except Exception as e:
-            logger.error(f"Error parsing iCalendar event: {e}")
+            logger.error("Error parsing iCalendar event: %s", e)
             return None
 
     def _merge_ical_properties(
@@ -1060,7 +1071,7 @@ class CalendarClient:
             return cal.to_ical().decode("utf-8")
 
         except Exception as e:
-            logger.error(f"Error merging iCal properties: {e}")
+            logger.error("Error merging iCal properties: %s", e)
             return self._create_ical_event(event_data, event_uid)
 
     # ============= Helper Methods - Todo iCalendar =============
@@ -1184,7 +1195,7 @@ class CalendarClient:
             return None
 
         except Exception as e:
-            logger.error(f"Error parsing iCalendar todo: {e}")
+            logger.error("Error parsing iCalendar todo: %s", e)
             return None
 
     def _merge_ical_todo_properties(
@@ -1193,7 +1204,7 @@ class CalendarClient:
         """Merge new todo data into existing raw iCal while preserving all properties."""
         try:
             logger.debug(
-                f"Merging todo properties for {todo_uid}: {list(todo_data.keys())}"
+                "Merging todo properties for %s: %s", todo_uid, list(todo_data.keys())
             )
             cal = Calendar.from_ical(raw_ical)
 
@@ -1207,13 +1218,13 @@ class CalendarClient:
                     if "status" in todo_data:
                         status_value = todo_data["status"].upper()
                         component["STATUS"] = status_value
-                        logger.debug(f"Set STATUS to {status_value}")
+                        logger.debug("Set STATUS to %s", status_value)
                     if "priority" in todo_data:
                         component["PRIORITY"] = todo_data["priority"]
                     if "percent_complete" in todo_data:
                         percent_value = todo_data["percent_complete"]
                         component["PERCENT-COMPLETE"] = percent_value
-                        logger.debug(f"Set PERCENT-COMPLETE to {percent_value}")
+                        logger.debug("Set PERCENT-COMPLETE to %s", percent_value)
 
                     # Handle due date
                     if "due" in todo_data:
@@ -1221,7 +1232,7 @@ class CalendarClient:
                         if due_str:
                             due_dt = self._ensure_timezone_aware(due_str)
                             component["DUE"] = vDDDTypes(due_dt)
-                            logger.debug(f"Set DUE to {due_dt}")
+                            logger.debug("Set DUE to %s", due_dt)
 
                     # Handle start date
                     if "dtstart" in todo_data:
@@ -1229,7 +1240,7 @@ class CalendarClient:
                         if dtstart_str:
                             dtstart_dt = self._ensure_timezone_aware(dtstart_str)
                             component["DTSTART"] = vDDDTypes(dtstart_dt)
-                            logger.debug(f"Set DTSTART to {dtstart_dt}")
+                            logger.debug("Set DTSTART to %s", dtstart_dt)
 
                     # Handle completed date
                     if "completed" in todo_data:
@@ -1237,7 +1248,7 @@ class CalendarClient:
                         if completed_str:
                             completed_dt = self._ensure_timezone_aware(completed_str)
                             component["COMPLETED"] = vDDDTypes(completed_dt)
-                            logger.debug(f"Set COMPLETED to {completed_dt}")
+                            logger.debug("Set COMPLETED to %s", completed_dt)
 
                     # Handle categories
                     if "categories" in todo_data:
@@ -1246,7 +1257,7 @@ class CalendarClient:
                             component["CATEGORIES"] = [
                                 c.strip() for c in categories_str.split(",")
                             ]
-                            logger.debug(f"Set CATEGORIES to {categories_str}")
+                            logger.debug("Set CATEGORIES to %s", categories_str)
 
                     # Update timestamps
                     now = dt.datetime.now(dt.UTC)
@@ -1258,7 +1269,7 @@ class CalendarClient:
             return cal.to_ical().decode("utf-8")
 
         except Exception as e:
-            logger.error(f"Error merging iCal todo properties: {e}", exc_info=True)
+            logger.error("Error merging iCal todo properties: %s", e, exc_info=True)
             return self._create_ical_todo(todo_data, todo_uid)
 
     # ============= Helper Methods - Filtering =============
@@ -1290,7 +1301,7 @@ class CalendarClient:
                     return categories_obj.to_ical().decode("utf-8")
                 return str(categories_obj)
         except Exception as e:
-            logger.warning(f"Error extracting categories: {e}")
+            logger.warning("Error extracting categories: %s", e)
             return str(categories_obj)
 
     def _apply_event_filters(
@@ -1437,7 +1448,7 @@ class CalendarClient:
             }
 
         except Exception as e:
-            logger.error(f"Error in bulk update: {e}")
+            logger.error("Error in bulk update: %s", e)
             raise
 
     async def find_availability(

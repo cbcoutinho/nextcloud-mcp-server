@@ -39,7 +39,7 @@ async def test_create_and_delete_share(nc_client):
         assert share_data is not None
         assert "id" in share_data
         share_id = share_data["id"]
-        logger.info(f"Created share: {share_id}")
+        logger.info("Created share: %s", share_id)
 
         # Get share info
         share_info = await nc_client.sharing.get_share(share_id)
@@ -56,7 +56,7 @@ async def test_create_and_delete_share(nc_client):
         # Cleanup
         if share_id:
             await nc_client.sharing.delete_share(share_id)
-            logger.info(f"Deleted share: {share_id}")
+            logger.info("Deleted share: %s", share_id)
 
         await nc_client.webdav.delete_resource(file_path)
 

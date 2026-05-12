@@ -29,18 +29,21 @@ async def test_category_change_cleans_up_old_attachments_directory(
 
     try:
         # 1. Create note with initial category
-        logger.info(f"Creating note '{note_title}' in category '{initial_category}'")
+        logger.info("Creating note '%s' in category '%s'", note_title, initial_category)
         created_note = await nc_client.notes.create_note(
             title=note_title, content="Initial content", category=initial_category
         )
         note_id = created_note["id"]
         etag1 = created_note["etag"]
-        logger.info(f"Note created with ID: {note_id}, Etag: {etag1}")
+        logger.info("Note created with ID: %s, Etag: %s", note_id, etag1)
         time.sleep(1)
 
         # 2. Add attachment (passing initial category)
         logger.info(
-            f"Adding attachment '{attachment_filename}' to note {note_id} (in {initial_category})"
+            "Adding attachment '%s' to note %s (in %s)",
+            attachment_filename,
+            note_id,
+            initial_category,
         )
         upload_response = await nc_client.webdav.add_note_attachment(
             note_id=note_id,
@@ -55,7 +58,8 @@ async def test_category_change_cleans_up_old_attachments_directory(
 
         # 3. Verify attachment retrieval from initial category
         logger.info(
-            f"Verifying attachment retrieval from initial category '{initial_category}'"
+            "Verifying attachment retrieval from initial category '%s'",
+            initial_category,
         )
         retrieved_content1, _ = await nc_client.webdav.get_note_attachment(
             note_id=note_id, filename=attachment_filename, category=initial_category
@@ -65,13 +69,16 @@ async def test_category_change_cleans_up_old_attachments_directory(
 
         # 4. Construct and check the WebDAV path for the initial category's attachment directory
         initial_webdav_path = f"Notes/{initial_category}/.attachments.{note_id}"
-        logger.info(f"Initial WebDAV path for attachments: {initial_webdav_path}")
+        logger.info("Initial WebDAV path for attachments: %s", initial_webdav_path)
         # Here we would check if the directory exists, but the WebDAV client doesn't directly
         # expose directory listing functionality, so we'll infer from attachment retrieval success
 
         # 5. Update note category
         logger.info(
-            f"Updating note {note_id} category from '{initial_category}' to '{new_category}'"
+            "Updating note %s category from '%s' to '%s'",
+            note_id,
+            initial_category,
+            new_category,
         )
         current_note_data = await nc_client.notes.get_note(note_id=note_id)
         current_etag = current_note_data["etag"]
@@ -84,12 +91,12 @@ async def test_category_change_cleans_up_old_attachments_directory(
         )
         etag3 = updated_note["etag"]
         assert updated_note["category"] == new_category
-        logger.info(f"Note category updated successfully. New Etag: {etag3}")
+        logger.info("Note category updated successfully. New Etag: %s", etag3)
         time.sleep(1)
 
         # 6. Verify attachment retrieval from new category
         logger.info(
-            f"Verifying attachment retrieval from new category '{new_category}'"
+            "Verifying attachment retrieval from new category '%s'", new_category
         )
         retrieved_content2, _ = await nc_client.webdav.get_note_attachment(
             note_id=note_id, filename=attachment_filename, category=new_category
@@ -99,7 +106,8 @@ async def test_category_change_cleans_up_old_attachments_directory(
 
         # 7. Try to retrieve from old category - this should fail
         logger.info(
-            f"Trying to retrieve attachment from old category '{initial_category}' - should fail"
+            "Trying to retrieve attachment from old category '%s' - should fail",
+            initial_category,
         )
         try:
             await nc_client.webdav.get_note_attachment(
@@ -115,7 +123,8 @@ async def test_category_change_cleans_up_old_attachments_directory(
         except HTTPStatusError as e:
             # This is the expected outcome - old directory should be gone
             logger.info(
-                f"Correctly got error accessing old category path: {e.response.status_code}"
+                "Correctly got error accessing old category path: %s",
+                e.response.status_code,
             )
             assert e.response.status_code == 404, (
                 f"Expected 404, got {e.response.status_code}"
@@ -143,14 +152,16 @@ async def test_category_change_cleans_up_old_attachments_directory(
                     207,
                 ]:  # Success codes indicate the directory exists (a problem)
                     logger.error(
-                        f"Old attachment directory still exists! PROPFIND returned {status}"
+                        "Old attachment directory still exists! PROPFIND returned %s",
+                        status,
                     )
                     assert False, (
                         f"Expected old attachment directory to be gone, but it still exists (PROPFIND returned {status})!"
                     )
                 # If we got another status code (like 404), it's also good - the directory doesn't exist
                 logger.info(
-                    f"Verified old attachment directory does not exist (PROPFIND returned {status})"
+                    "Verified old attachment directory does not exist (PROPFIND returned %s)",
+                    status,
                 )
             except HTTPStatusError as e:
                 # 404 is expected - directory should not exist
@@ -164,10 +175,10 @@ async def test_category_change_cleans_up_old_attachments_directory(
     finally:
         # 8. Cleanup: Delete the note
         if note_id:
-            logger.info(f"Cleaning up note ID: {note_id}")
+            logger.info("Cleaning up note ID: %s", note_id)
             try:
                 await nc_client.notes.delete_note(note_id=note_id)
-                logger.info(f"Note {note_id} deleted.")
+                logger.info("Note %s deleted.", note_id)
                 time.sleep(1)
 
                 # 9. Verify both old and new attachment paths are gone
@@ -209,14 +220,16 @@ async def test_category_change_cleans_up_old_attachments_directory(
                         207,
                     ]:  # Success codes indicate the directory exists (a problem)
                         logger.error(
-                            f"New category attachment directory still exists! PROPFIND returned {status}"
+                            "New category attachment directory still exists! PROPFIND returned %s",
+                            status,
                         )
                         assert False, (
                             f"Expected new category attachment directory to be gone, but it still exists (PROPFIND returned {status})!"
                         )
                     # If we got another status code (like 404), it's also good - the directory doesn't exist
                     logger.info(
-                        f"Verified new category attachment directory does not exist (PROPFIND returned {status})"
+                        "Verified new category attachment directory does not exist (PROPFIND returned %s)",
+                        status,
                     )
                 except HTTPStatusError as e:
                     assert e.response.status_code == 404, (
@@ -240,14 +253,16 @@ async def test_category_change_cleans_up_old_attachments_directory(
                         207,
                     ]:  # Success codes indicate the directory exists (a problem)
                         logger.error(
-                            f"Old category attachment directory still exists! PROPFIND returned {status}"
+                            "Old category attachment directory still exists! PROPFIND returned %s",
+                            status,
                         )
                         assert False, (
                             f"Expected old category attachment directory to be gone, but it still exists (PROPFIND returned {status})!"
                         )
                     # If we got another status code (like 404), it's also good - the directory doesn't exist
                     logger.info(
-                        f"Verified old category attachment directory does not exist (PROPFIND returned {status})"
+                        "Verified old category attachment directory does not exist (PROPFIND returned %s)",
+                        status,
                     )
                 except HTTPStatusError as e:
                     assert e.response.status_code == 404, (
@@ -261,4 +276,4 @@ async def test_category_change_cleans_up_old_attachments_directory(
                     "Verified all attachment directories are properly cleaned up."
                 )
             except Exception as e:
-                logger.error(f"Error during cleanup for note {note_id}: {e}")
+                logger.error("Error during cleanup for note %s: %s", note_id, e)

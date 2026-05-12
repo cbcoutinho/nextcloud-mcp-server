@@ -215,7 +215,7 @@ def configure_calendar_tools(mcp: FastMCP):
                 try:
                     start_datetime = dt.datetime.fromisoformat(start_date)
                 except ValueError:
-                    logger.warning(f"Invalid start_date format: {start_date}")
+                    logger.warning("Invalid start_date format: %s", start_date)
 
         if end_date:
             try:
@@ -228,7 +228,7 @@ def configure_calendar_tools(mcp: FastMCP):
                 try:
                     end_datetime = dt.datetime.fromisoformat(end_date)
                 except ValueError:
-                    logger.warning(f"Invalid end_date format: {end_date}")
+                    logger.warning("Invalid end_date format: %s", end_date)
 
         # Build filters dictionary
         filters = {}
@@ -519,7 +519,7 @@ def configure_calendar_tools(mcp: FastMCP):
                     all_events.extend(cal_events)
                 except Exception as e:
                     logger.warning(
-                        f"Error getting events from calendar {calendar['name']}: {e}"
+                        "Error getting events from calendar %s: %s", calendar["name"], e
                     )
                     continue
 
@@ -593,7 +593,7 @@ def configure_calendar_tools(mcp: FastMCP):
             try:
                 start_datetime = dt.datetime.strptime(date_range_start, "%Y-%m-%d")
             except ValueError:
-                logger.warning(f"Invalid date_range_start format: {date_range_start}")
+                logger.warning("Invalid date_range_start format: %s", date_range_start)
 
         if date_range_end:
             try:
@@ -601,7 +601,7 @@ def configure_calendar_tools(mcp: FastMCP):
                     hour=23, minute=59, second=59
                 )
             except ValueError:
-                logger.warning(f"Invalid date_range_end format: {date_range_end}")
+                logger.warning("Invalid date_range_end format: %s", date_range_end)
 
         # Build constraints
         constraints = {
@@ -686,7 +686,7 @@ def configure_calendar_tools(mcp: FastMCP):
             try:
                 start_datetime = dt.datetime.strptime(start_date, "%Y-%m-%d")
             except ValueError:
-                logger.warning(f"Invalid start_date format: {start_date}")
+                logger.warning("Invalid start_date format: %s", start_date)
 
         if end_date:
             try:
@@ -694,7 +694,7 @@ def configure_calendar_tools(mcp: FastMCP):
                     hour=23, minute=59, second=59
                 )
             except ValueError:
-                logger.warning(f"Invalid end_date format: {end_date}")
+                logger.warning("Invalid end_date format: %s", end_date)
 
         # Build filter criteria
         filter_criteria = {}

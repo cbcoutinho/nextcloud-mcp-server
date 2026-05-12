@@ -46,9 +46,11 @@ class OllamaProvider(Provider):
         self._dimension: int | None = None  # Detected dynamically for embeddings
 
         logger.info(
-            f"Initialized Ollama provider: {base_url} "
-            f"(embedding_model={embedding_model}, generation_model={generation_model}, "
-            f"verify_ssl={verify_ssl})"
+            "Initialized Ollama provider: %s (embedding_model=%s, generation_model=%s, verify_ssl=%s)",
+            base_url,
+            embedding_model,
+            generation_model,
+            verify_ssl,
         )
 
         # Pre-check and auto-load models
@@ -140,13 +142,14 @@ class OllamaProvider(Provider):
         """
         if self._dimension is None and self.supports_embeddings:
             logger.debug(
-                f"Detecting embedding dimension for model {self.embedding_model}..."
+                "Detecting embedding dimension for model %s...", self.embedding_model
             )
             test_embedding = await self.embed("test")
             self._dimension = len(test_embedding)
             logger.info(
-                f"Detected embedding dimension: {self._dimension} "
-                f"for model {self.embedding_model}"
+                "Detected embedding dimension: %s for model %s",
+                self._dimension,
+                self.embedding_model,
             )
 
     def get_dimension(self) -> int:

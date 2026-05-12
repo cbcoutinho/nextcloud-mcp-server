@@ -37,7 +37,7 @@ def test_image_data() -> tuple[bytes, str]:
     img.save(img_byte_arr, format="PNG")
     image_bytes = img_byte_arr.getvalue()
     suggested_filename = "test_image.png"
-    logger.info(f"Generated test image data ({len(image_bytes)} bytes).")
+    logger.info("Generated test image data (%s bytes).", len(image_bytes))
     return image_bytes, suggested_filename
 
 
@@ -61,7 +61,10 @@ async def test_note_with_embedded_image(
     # 1. Upload the image as an attachment
     note_category = note_data.get("category")  # Get category from fixture data
     logger.info(
-        f"Uploading image attachment '{attachment_filename}' to note {note_id} (category: '{note_category or ''}')..."
+        "Uploading image attachment '%s' to note %s (category: '%s')...",
+        attachment_filename,
+        note_id,
+        note_category or "",
     )
     upload_response = await nc_client.webdav.add_note_attachment(
         note_id=note_id,
@@ -72,7 +75,7 @@ async def test_note_with_embedded_image(
     )
     assert upload_response and upload_response.get("status_code") in [201, 204]
     logger.info(
-        f"Image uploaded successfully (Status: {upload_response.get('status_code')})."
+        "Image uploaded successfully (Status: %s).", upload_response.get("status_code")
     )
     time.sleep(1)  # Allow potential processing time
 
@@ -94,11 +97,12 @@ async def test_note_with_embedded_image(
             200,
         ], f"Expected PROPFIND to return success (207/200), got {status}"
         logger.info(
-            f"Verified attachment directory exists via PROPFIND ({status} received)"
+            "Verified attachment directory exists via PROPFIND (%s received)", status
         )
     except HTTPStatusError as e:
         logger.error(
-            f"Attachment directory not found! PROPFIND failed with {e.response.status_code}"
+            "Attachment directory not found! PROPFIND failed with %s",
+            e.response.status_code,
         )
         assert False, (
             f"Expected attachment directory to exist, but PROPFIND failed with {e.response.status_code}"
@@ -135,7 +139,9 @@ async def test_note_with_embedded_image(
 
     # 4. Verify the image attachment can be retrieved
     logger.info(
-        f"Retrieving image attachment '{attachment_filename}' (category: '{note_category or ''}')..."
+        "Retrieving image attachment '%s' (category: '%s')...",
+        attachment_filename,
+        note_category or "",
     )
     # Pass category to get_note_attachment
     retrieved_img_content, mime_type = await nc_client.webdav.get_note_attachment(
@@ -149,17 +155,17 @@ async def test_note_with_embedded_image(
 
     # 5. Manually trigger deletion to verify cleanup (instead of waiting for fixture teardown)
     logger.info(
-        f"Manually deleting note ID: {note_id} to verify proper attachment cleanup"
+        "Manually deleting note ID: %s to verify proper attachment cleanup", note_id
     )
     await nc_client.notes.delete_note(note_id=note_id)
-    logger.info(f"Note ID: {note_id} deleted successfully.")
+    logger.info("Note ID: %s deleted successfully.", note_id)
     time.sleep(1)
 
     # 6. Verify note is deleted
     with pytest.raises(HTTPStatusError) as excinfo_note:
         await nc_client.notes.get_note(note_id=note_id)
     assert excinfo_note.value.response.status_code == 404
-    logger.info(f"Verified note {note_id} deletion (404 received).")
+    logger.info("Verified note %s deletion (404 received).", note_id)
 
     # 7. Verify attachment directory is deleted via WebDAV PROPFIND
     logger.info("Directly verifying attachment directory doesn't exist via PROPFIND")
@@ -170,7 +176,7 @@ async def test_note_with_embedded_image(
         status = propfind_resp.status_code
         if status in [200, 207]:  # Successful PROPFIND means directory exists
             logger.error(
-                f"Attachment directory still exists! PROPFIND returned {status}"
+                "Attachment directory still exists! PROPFIND returned %s", status
             )
             assert False, (
                 f"Expected attachment directory to be gone, but PROPFIND returned {status}!"

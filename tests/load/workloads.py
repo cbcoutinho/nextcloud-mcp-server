@@ -182,12 +182,12 @@ class WorkloadOperations:
 
     async def cleanup(self):
         """Clean up any resources created during testing."""
-        logger.info(f"Cleaning up {len(self._created_notes)} test notes...")
+        logger.info("Cleaning up %s test notes...", len(self._created_notes))
         for note_id in self._created_notes[:]:
             try:
                 await self.delete_note(note_id)
             except Exception as e:
-                logger.warning(f"Failed to delete note {note_id}: {e}")
+                logger.warning("Failed to delete note %s: %s", note_id, e)
 
 
 class MixedWorkload:
@@ -210,7 +210,7 @@ class MixedWorkload:
 
     async def warmup(self, count: int = 10):
         """Create initial notes for read/update operations."""
-        logger.info(f"Warming up with {count} test notes...")
+        logger.info("Warming up with %s test notes...", count)
         for _ in range(count):
             result = await self.ops.create_note()
             if result.success and self.ops._created_notes:
@@ -225,7 +225,7 @@ class MixedWorkload:
                         etag = note_data.get("etag", "")
                         self._warmup_note_ids.append((note_id, etag))
                 except Exception as e:
-                    logger.warning(f"Failed to get etag for note {note_id}: {e}")
+                    logger.warning("Failed to get etag for note %s: %s", note_id, e)
 
     async def run_operation(self) -> OperationResult:
         """Execute one random operation based on the workload distribution."""

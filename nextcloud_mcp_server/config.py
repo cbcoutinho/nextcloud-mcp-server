@@ -603,8 +603,8 @@ class Settings:
 
         if self.document_chunk_size < 512:
             logger.warning(
-                f"DOCUMENT_CHUNK_SIZE is set to {self.document_chunk_size} characters, which is quite small. "
-                f"Smaller chunks may lose context. Consider using at least 1024 characters."
+                "DOCUMENT_CHUNK_SIZE is set to %s characters, which is quite small. Smaller chunks may lose context. Consider using at least 1024 characters.",
+                self.document_chunk_size,
             )
 
         # --- ADR-022 follow-up: deployment mode is the single source of truth ---

@@ -100,9 +100,13 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         score_threshold = kwargs.get("score_threshold", self.score_threshold)
 
         logger.info(
-            f"BM25 hybrid search: query='{query}', user={user_id}, "
-            f"limit={limit}, score_threshold={score_threshold}, doc_type={doc_type}, "
-            f"fusion={self.fusion_name}"
+            "BM25 hybrid search: query='%s', user=%s, limit=%s, score_threshold=%s, doc_type=%s, fusion=%s",
+            query,
+            user_id,
+            limit,
+            score_threshold,
+            doc_type,
+            self.fusion_name,
         )
 
         # Generate dense embedding for semantic search
@@ -112,7 +116,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             dense_embedding = await embedding_service.embed(query)
         # Store for reuse by callers (e.g., viz_routes PCA visualization)
         self.query_embedding = dense_embedding
-        logger.debug(f"Generated dense embedding (dimension={len(dense_embedding)})")
+        logger.debug("Generated dense embedding (dimension=%s)", len(dense_embedding))
 
         # Generate sparse embedding for BM25 keyword search
         with trace_operation("search.get_bm25_service"):
@@ -120,8 +124,8 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         with trace_operation("search.sparse_embedding_bm25"):
             sparse_embedding = await bm25_service.encode_async(query)
         logger.debug(
-            f"Generated sparse embedding "
-            f"({len(sparse_embedding['indices'])} non-zero terms)"
+            "Generated sparse embedding (%s non-zero terms)",
+            len(sparse_embedding["indices"]),
         )
 
         # Build Qdrant filter
@@ -189,15 +193,16 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             raise
 
         logger.info(
-            f"Qdrant {self.fusion_name.upper()} fusion returned {len(search_response.points)} results "
-            f"(before deduplication)"
+            "Qdrant %s fusion returned %s results (before deduplication)",
+            self.fusion_name.upper(),
+            len(search_response.points),
         )
 
         if search_response.points:
             # Log top 3 fusion scores to help with threshold tuning
             top_scores = [p.score for p in search_response.points[:3]]
             logger.debug(
-                f"Top 3 {self.fusion_name.upper()} fusion scores: {top_scores}"
+                "Top 3 %s fusion scores: %s", self.fusion_name.upper(), top_scores
             )
 
         # Deduplicate by (doc_id, doc_type, chunk_start, chunk_end)
@@ -233,12 +238,12 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                 if len(results) >= limit:
                     break
 
-        logger.info(f"Returning {len(results)} unverified results after deduplication")
+        logger.info("Returning %s unverified results after deduplication", len(results))
         if results:
             result_details = [
                 f"{r.doc_type}_{r.id} (score={r.score:.3f}, title='{r.title}')"
                 for r in results[:5]  # Show top 5
             ]
-            logger.debug(f"Top results: {', '.join(result_details)}")
+            logger.debug("Top results: %s", ", ".join(result_details))
 
         return results

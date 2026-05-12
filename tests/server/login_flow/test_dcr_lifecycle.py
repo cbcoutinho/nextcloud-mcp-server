@@ -101,7 +101,7 @@ async def get_oauth_token_with_client(
         try:
             await _handle_oauth_consent_screen(page, username)
         except Exception as e:
-            logger.debug(f"No consent screen or already authorized: {e}")
+            logger.debug("No consent screen or already authorized: %s", e)
 
         # Wait for callback
         logger.info("Waiting for OAuth callback...")
@@ -115,7 +115,7 @@ async def get_oauth_token_with_client(
             await anyio.sleep(0.5)
 
         auth_code = auth_states[state]
-        logger.info(f"Got auth code: {auth_code[:20]}...")
+        logger.info("Got auth code: %s...", auth_code[:20])
 
     finally:
         await context.close()
@@ -200,8 +200,8 @@ async def test_dcr_register_and_delete_lifecycle(
         reg_response.raise_for_status()
         full_client_info = reg_response.json()
 
-    logger.info(f"Full registration response keys: {list(full_client_info.keys())}")
-    logger.info(f"Registration response: {full_client_info}")
+    logger.info("Full registration response keys: %s", list(full_client_info.keys()))
+    logger.info("Registration response: %s", full_client_info)
 
     # Use the register_client function for the ClientInfo object
     client_info = await register_client(
@@ -217,13 +217,13 @@ async def test_dcr_register_and_delete_lifecycle(
     registration_access_token = full_client_info.get("registration_access_token")
     registration_client_uri = full_client_info.get("registration_client_uri")
     logger.info(
-        f"Registration access token present: {registration_access_token is not None}"
+        "Registration access token present: %s", registration_access_token is not None
     )
     logger.info(
-        f"Registration client URI present: {registration_client_uri is not None}"
+        "Registration client URI present: %s", registration_client_uri is not None
     )
 
-    logger.info(f"✅ Client registered: {client_info.client_id[:16]}...")
+    logger.info("✅ Client registered: %s...", client_info.client_id[:16])
 
     # Step 2: Obtain token and verify client works
     logger.info("Step 2: Obtaining OAuth token with registered client...")
@@ -239,14 +239,15 @@ async def test_dcr_register_and_delete_lifecycle(
     )
 
     assert access_token, "Failed to obtain access token"
-    logger.info(f"✅ Access token obtained: {access_token[:30]}...")
+    logger.info("✅ Access token obtained: %s...", access_token[:30])
 
     # Step 3: Delete the client using RFC 7592
     logger.info("Step 3: Deleting OAuth client...")
-    logger.info(f"Client ID: {client_info.client_id}")
-    logger.info(f"Client secret (first 16 chars): {client_info.client_secret[:16]}...")
+    logger.info("Client ID: %s", client_info.client_id)
+    logger.info("Client secret (first 16 chars): %s...", client_info.client_secret[:16])
     logger.info(
-        f"Registration access token: {registration_access_token[:16] if registration_access_token else 'None'}..."
+        "Registration access token: %s...",
+        registration_access_token[:16] if registration_access_token else "None",
     )
 
     # Use delete_client() which prefers RFC 7592 Bearer token, falls back to Basic Auth
@@ -261,7 +262,7 @@ async def test_dcr_register_and_delete_lifecycle(
     assert success, (
         "Client deletion should succeed with RFC 7592 Bearer token or Basic Auth"
     )
-    logger.info(f"✅ Client deleted successfully: {client_info.client_id[:16]}...")
+    logger.info("✅ Client deleted successfully: %s...", client_info.client_id[:16])
 
     # Step 4: Verify deleted client cannot obtain new tokens
     logger.info("Step 4: Verifying deleted client cannot obtain new tokens...")
@@ -284,7 +285,8 @@ async def test_dcr_register_and_delete_lifecycle(
             # Accept either 400 (Bad Request) or 401 (Unauthorized) as valid rejection
             if token_response.status_code in [400, 401]:
                 logger.info(
-                    f"✅ Deleted client correctly rejected ({token_response.status_code})"
+                    "✅ Deleted client correctly rejected (%s)",
+                    token_response.status_code,
                 )
             else:
                 # Unexpected success - client should be deleted
@@ -343,7 +345,7 @@ async def test_dcr_delete_with_wrong_credentials(
         token_type="Bearer",
     )
 
-    logger.info(f"Client registered: {client_info.client_id[:16]}...")
+    logger.info("Client registered: %s...", client_info.client_id[:16])
 
     # Try to delete with wrong registration_access_token (RFC 7592 Bearer token)
     logger.info("Attempting deletion with wrong registration_access_token...")
@@ -392,7 +394,7 @@ async def test_dcr_delete_nonexistent_client(
     fake_client_id = "nonexistent_" + secrets.token_urlsafe(16)
     fake_client_secret = secrets.token_urlsafe(32)
 
-    logger.info(f"Attempting to delete non-existent client: {fake_client_id[:16]}...")
+    logger.info("Attempting to delete non-existent client: %s...", fake_client_id[:16])
 
     success = await delete_client(
         nextcloud_url=nextcloud_host,
@@ -442,7 +444,7 @@ async def test_dcr_deletion_is_idempotent(
         token_type="Bearer",
     )
 
-    logger.info(f"Client registered: {client_info.client_id[:16]}...")
+    logger.info("Client registered: %s...", client_info.client_id[:16])
 
     # First deletion with RFC 7592 Bearer token
     logger.info("First deletion attempt...")

@@ -43,7 +43,8 @@ def retry_on_429(func):
                 # error we wait a couple of seconds and do a retry
                 if e.response.status_code == codes.TOO_MANY_REQUESTS:
                     logger.warning(
-                        f"429 Client Error: Too Many Requests, Number of attempts: {retries}"
+                        "429 Client Error: Too Many Requests, Number of attempts: %s",
+                        retries,
                     )
                     # Record retry metric (extract app name from args if available)
                     if len(args) > 0 and hasattr(args[0], "app_name"):
@@ -53,17 +54,26 @@ def retry_on_429(func):
                     # 404 errors are often expected (e.g., checking if attachments exist)
                     # Log as debug instead of warning
                     logger.debug(
-                        f"HTTPStatusError {e.response.status_code}: {e}, Number of attempts: {retries}"
+                        "HTTPStatusError %s: %s, Number of attempts: %s",
+                        e.response.status_code,
+                        e,
+                        retries,
                     )
                     raise
                 else:
                     logger.warning(
-                        f"HTTPStatusError {e.response.status_code}: {e}, Number of attempts: {retries}"
+                        "HTTPStatusError %s: %s, Number of attempts: %s",
+                        e.response.status_code,
+                        e,
+                        retries,
                     )
                     raise
             except RequestError as e:
                 logger.warning(
-                    f"RequestError {e.request.url}: {e}, Number of attempts: {retries}"
+                    "RequestError %s: %s, Number of attempts: %s",
+                    e.request.url,
+                    e,
+                    retries,
                 )
                 raise
 
@@ -127,7 +137,7 @@ class BaseNextcloudClient(ABC):
             Response object
         """
         url = self._resolve_url(url)
-        logger.debug(f"Making {method} request to {url}")
+        logger.debug("Making %s request to %s", method, url)
 
         # Start timer for metrics
         start_time = time.time()

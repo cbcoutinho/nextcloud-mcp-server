@@ -167,7 +167,7 @@ class NextcloudClient:
         """
         from ..auth import BearerAuth  # noqa: PLC0415
 
-        logger.info(f"Creating NC Client for user '{username}' using OAuth token")
+        logger.info("Creating NC Client for user '%s' using OAuth token", username)
         return cls(
             base_url=base_url,
             username=username,

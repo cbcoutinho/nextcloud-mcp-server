@@ -36,7 +36,7 @@ async def test_mcp_cookbook_create_and_read_recipe(
 
     try:
         # 1. Create recipe via MCP
-        logger.info(f"Creating recipe via MCP: {recipe_name}")
+        logger.info("Creating recipe via MCP: %s", recipe_name)
         create_result = await nc_mcp_client.call_tool(
             "nc_cookbook_create_recipe",
             {
@@ -59,7 +59,7 @@ async def test_mcp_cookbook_create_and_read_recipe(
 
         create_response = json.loads(create_result.content[0].text)
         created_recipe_id = create_response["id"]
-        logger.info(f"Recipe created via MCP with ID: {created_recipe_id}")
+        logger.info("Recipe created via MCP with ID: %s", created_recipe_id)
 
         # 2. Verify creation via direct NextcloudClient
         direct_recipe = await nc_client.cookbook.get_recipe(created_recipe_id)
@@ -70,7 +70,7 @@ async def test_mcp_cookbook_create_and_read_recipe(
         assert direct_recipe["recipeCategory"] == "MCPTesting"
 
         # 3. Read recipe via MCP
-        logger.info(f"Reading recipe via MCP: {created_recipe_id}")
+        logger.info("Reading recipe via MCP: %s", created_recipe_id)
         read_result = await nc_mcp_client.call_tool(
             "nc_cookbook_get_recipe", {"recipe_id": created_recipe_id}
         )
@@ -84,16 +84,16 @@ async def test_mcp_cookbook_create_and_read_recipe(
         assert read_recipe["description"] == "A test recipe created via MCP tools"
         assert len(read_recipe["recipeIngredient"]) == 3
 
-        logger.info(f"Successfully verified recipe {created_recipe_id} via MCP")
+        logger.info("Successfully verified recipe %s via MCP", created_recipe_id)
 
     finally:
         # Cleanup
         if created_recipe_id is not None:
             try:
                 await nc_client.cookbook.delete_recipe(created_recipe_id)
-                logger.info(f"Cleaned up recipe {created_recipe_id}")
+                logger.info("Cleaned up recipe %s", created_recipe_id)
             except Exception as e:
-                logger.warning(f"Failed to cleanup recipe: {e}")
+                logger.warning("Failed to cleanup recipe: %s", e)
 
 
 async def test_mcp_cookbook_update_recipe(
@@ -115,11 +115,11 @@ async def test_mcp_cookbook_update_recipe(
 
     try:
         # 1. Create recipe via direct client
-        logger.info(f"Creating recipe for update test: {recipe_name}")
+        logger.info("Creating recipe for update test: %s", recipe_name)
         created_recipe_id = await nc_client.cookbook.create_recipe(recipe_data)
 
         # 2. Update recipe via MCP (tool handles fetching current recipe internally)
-        logger.info(f"Updating recipe via MCP: {created_recipe_id}")
+        logger.info("Updating recipe via MCP: %s", created_recipe_id)
         update_result = await nc_mcp_client.call_tool(
             "nc_cookbook_update_recipe",
             {
@@ -143,16 +143,16 @@ async def test_mcp_cookbook_update_recipe(
         assert len(updated_recipe["recipeInstructions"]) == 2
         assert updated_recipe["recipeCategory"] == "Updated"
 
-        logger.info(f"Successfully updated recipe {created_recipe_id} via MCP")
+        logger.info("Successfully updated recipe %s via MCP", created_recipe_id)
 
     finally:
         # Cleanup
         if created_recipe_id is not None:
             try:
                 await nc_client.cookbook.delete_recipe(created_recipe_id)
-                logger.info(f"Cleaned up recipe {created_recipe_id}")
+                logger.info("Cleaned up recipe %s", created_recipe_id)
             except Exception as e:
-                logger.warning(f"Failed to cleanup recipe: {e}")
+                logger.warning("Failed to cleanup recipe: %s", e)
 
 
 async def test_mcp_cookbook_delete_recipe(
@@ -173,11 +173,11 @@ async def test_mcp_cookbook_delete_recipe(
 
     try:
         # 1. Create recipe via direct client
-        logger.info(f"Creating recipe for delete test: {recipe_name}")
+        logger.info("Creating recipe for delete test: %s", recipe_name)
         created_recipe_id = await nc_client.cookbook.create_recipe(recipe_data)
 
         # 2. Delete recipe via MCP
-        logger.info(f"Deleting recipe via MCP: {created_recipe_id}")
+        logger.info("Deleting recipe via MCP: %s", created_recipe_id)
         delete_result = await nc_mcp_client.call_tool(
             "nc_cookbook_delete_recipe", {"recipe_id": created_recipe_id}
         )
@@ -192,7 +192,9 @@ async def test_mcp_cookbook_delete_recipe(
             pytest.fail("Recipe should have been deleted but was still found")
         except Exception:
             # Expected - recipe should be deleted
-            logger.info(f"Successfully verified recipe {created_recipe_id} was deleted")
+            logger.info(
+                "Successfully verified recipe %s was deleted", created_recipe_id
+            )
             created_recipe_id = None  # Mark as cleaned up
 
     finally:
@@ -200,9 +202,9 @@ async def test_mcp_cookbook_delete_recipe(
         if created_recipe_id is not None:
             try:
                 await nc_client.cookbook.delete_recipe(created_recipe_id)
-                logger.info(f"Cleaned up recipe {created_recipe_id}")
+                logger.info("Cleaned up recipe %s", created_recipe_id)
             except Exception as e:
-                logger.warning(f"Failed to cleanup recipe: {e}")
+                logger.warning("Failed to cleanup recipe: %s", e)
 
 
 async def test_mcp_cookbook_import_recipe_from_url(
@@ -221,7 +223,7 @@ async def test_mcp_cookbook_import_recipe_from_url(
 
     try:
         # 1. Import recipe via MCP
-        logger.info(f"Importing recipe from nginx container via MCP: {test_url}")
+        logger.info("Importing recipe from nginx container via MCP: %s", test_url)
         import_result = await nc_mcp_client.call_tool(
             "nc_cookbook_import_recipe", {"url": test_url}
         )
@@ -234,7 +236,7 @@ async def test_mcp_cookbook_import_recipe_from_url(
         created_recipe_id = int(import_response["recipe_id"])
         imported_recipe = import_response["recipe"]
 
-        logger.info(f"Successfully imported recipe via MCP: {imported_recipe['name']}")
+        logger.info("Successfully imported recipe via MCP: %s", imported_recipe["name"])
 
         # 2. Verify basic recipe structure
         assert imported_recipe["name"] == "Black Pepper Tofu"
@@ -247,16 +249,16 @@ async def test_mcp_cookbook_import_recipe_from_url(
         # 3. Verify we can read it back via direct NextcloudClient
         retrieved = await nc_client.cookbook.get_recipe(created_recipe_id)
         assert retrieved["name"] == imported_recipe["name"]
-        logger.info(f"Verified imported recipe ID: {created_recipe_id}")
+        logger.info("Verified imported recipe ID: %s", created_recipe_id)
 
     finally:
         # Cleanup
         if created_recipe_id is not None:
             try:
                 await nc_client.cookbook.delete_recipe(created_recipe_id)
-                logger.info(f"Cleaned up imported recipe {created_recipe_id}")
+                logger.info("Cleaned up imported recipe %s", created_recipe_id)
             except Exception as e:
-                logger.warning(f"Failed to cleanup imported recipe: {e}")
+                logger.warning("Failed to cleanup imported recipe: %s", e)
 
 
 async def test_mcp_cookbook_search_recipes(
@@ -278,14 +280,14 @@ async def test_mcp_cookbook_search_recipes(
 
     try:
         # 1. Create recipe via direct client
-        logger.info(f"Creating recipe for search test with keyword: {unique_keyword}")
+        logger.info("Creating recipe for search test with keyword: %s", unique_keyword)
         created_recipe_id = await nc_client.cookbook.create_recipe(recipe_data)
 
         # 2. Allow time for indexing
         await anyio.sleep(2)
 
         # 3. Search for the recipe via MCP
-        logger.info(f"Searching for recipes via MCP with keyword: {unique_keyword}")
+        logger.info("Searching for recipes via MCP with keyword: %s", unique_keyword)
         search_result = await nc_mcp_client.call_tool(
             "nc_cookbook_search_recipes", {"query": unique_keyword}
         )
@@ -304,7 +306,7 @@ async def test_mcp_cookbook_search_recipes(
         found = any(str(r.get("id")) == str(created_recipe_id) for r in search_results)
         assert found, f"Recipe {created_recipe_id} not found in search results"
         logger.info(
-            f"Successfully found recipe {created_recipe_id} in MCP search results"
+            "Successfully found recipe %s in MCP search results", created_recipe_id
         )
 
     finally:
@@ -312,9 +314,9 @@ async def test_mcp_cookbook_search_recipes(
         if created_recipe_id is not None:
             try:
                 await nc_client.cookbook.delete_recipe(created_recipe_id)
-                logger.info(f"Cleaned up recipe {created_recipe_id}")
+                logger.info("Cleaned up recipe %s", created_recipe_id)
             except Exception as e:
-                logger.warning(f"Failed to cleanup recipe: {e}")
+                logger.warning("Failed to cleanup recipe: %s", e)
 
 
 async def test_mcp_cookbook_list_recipes(
@@ -333,7 +335,7 @@ async def test_mcp_cookbook_list_recipes(
     recipes = list_response["recipes"]
 
     assert isinstance(recipes, list)
-    logger.info(f"Found {len(recipes)} recipes via MCP")
+    logger.info("Found %s recipes via MCP", len(recipes))
 
 
 async def test_mcp_cookbook_categories_workflow(
@@ -354,7 +356,7 @@ async def test_mcp_cookbook_categories_workflow(
 
     try:
         # 1. Create recipe in test category
-        logger.info(f"Creating recipe in category: {unique_category}")
+        logger.info("Creating recipe in category: %s", unique_category)
         created_recipe_id = await nc_client.cookbook.create_recipe(recipe_data)
 
         # 2. Allow time for indexing
@@ -374,10 +376,10 @@ async def test_mcp_cookbook_categories_workflow(
         categories = categories_response["categories"]
 
         assert isinstance(categories, list)
-        logger.info(f"Found {len(categories)} categories via MCP")
+        logger.info("Found %s categories via MCP", len(categories))
 
         # 4. Get recipes in this category via MCP
-        logger.info(f"Getting recipes in category via MCP: {unique_category}")
+        logger.info("Getting recipes in category via MCP: %s", unique_category)
         category_recipes_result = await nc_mcp_client.call_tool(
             "nc_cookbook_get_recipes_in_category", {"category": unique_category}
         )
@@ -399,16 +401,16 @@ async def test_mcp_cookbook_categories_workflow(
         assert found, (
             f"Recipe {created_recipe_id} not found in category {unique_category}"
         )
-        logger.info(f"Successfully found recipe in category {unique_category} via MCP")
+        logger.info("Successfully found recipe in category %s via MCP", unique_category)
 
     finally:
         # Cleanup
         if created_recipe_id is not None:
             try:
                 await nc_client.cookbook.delete_recipe(created_recipe_id)
-                logger.info(f"Cleaned up recipe {created_recipe_id}")
+                logger.info("Cleaned up recipe %s", created_recipe_id)
             except Exception as e:
-                logger.warning(f"Failed to cleanup recipe: {e}")
+                logger.warning("Failed to cleanup recipe: %s", e)
 
 
 async def test_mcp_cookbook_keywords_workflow(
@@ -429,7 +431,7 @@ async def test_mcp_cookbook_keywords_workflow(
 
     try:
         # 1. Create recipe with test keywords
-        logger.info(f"Creating recipe with keyword: {unique_keyword}")
+        logger.info("Creating recipe with keyword: %s", unique_keyword)
         created_recipe_id = await nc_client.cookbook.create_recipe(recipe_data)
 
         # 2. Allow extra time for indexing and trigger reindex
@@ -449,10 +451,10 @@ async def test_mcp_cookbook_keywords_workflow(
         keywords = keywords_response["keywords"]
 
         assert isinstance(keywords, list)
-        logger.info(f"Found {len(keywords)} keywords via MCP")
+        logger.info("Found %s keywords via MCP", len(keywords))
 
         # 4. Get recipes with this keyword via MCP
-        logger.info(f"Getting recipes with keyword via MCP: {unique_keyword}")
+        logger.info("Getting recipes with keyword via MCP: %s", unique_keyword)
         keyword_recipes_result = await nc_mcp_client.call_tool(
             "nc_cookbook_get_recipes_with_keywords", {"keywords": [unique_keyword]}
         )
@@ -475,15 +477,17 @@ async def test_mcp_cookbook_keywords_workflow(
             )
             if found:
                 logger.info(
-                    f"Successfully found recipe with keyword {unique_keyword} via MCP"
+                    "Successfully found recipe with keyword %s via MCP", unique_keyword
                 )
             else:
                 logger.warning(
-                    f"Recipe {created_recipe_id} not in keyword results via MCP, but other recipes found"
+                    "Recipe %s not in keyword results via MCP, but other recipes found",
+                    created_recipe_id,
                 )
         else:
             logger.warning(
-                f"No recipes found with keyword {unique_keyword} via MCP - may be indexing delay"
+                "No recipes found with keyword %s via MCP - may be indexing delay",
+                unique_keyword,
             )
 
     finally:
@@ -491,9 +495,9 @@ async def test_mcp_cookbook_keywords_workflow(
         if created_recipe_id is not None:
             try:
                 await nc_client.cookbook.delete_recipe(created_recipe_id)
-                logger.info(f"Cleaned up recipe {created_recipe_id}")
+                logger.info("Cleaned up recipe %s", created_recipe_id)
             except Exception as e:
-                logger.warning(f"Failed to cleanup recipe: {e}")
+                logger.warning("Failed to cleanup recipe: %s", e)
 
 
 async def test_mcp_cookbook_config_and_version(
@@ -509,7 +513,7 @@ async def test_mcp_cookbook_config_and_version(
     version_response = json.loads(version_result.contents[0].text)
     assert "cookbook_version" in version_response
     assert "api_version" in version_response
-    logger.info(f"Cookbook version from MCP: {version_response}")
+    logger.info("Cookbook version from MCP: %s", version_response)
 
     # 2. Verify version via direct NextcloudClient
     direct_version = await nc_client.cookbook.get_version()
@@ -526,7 +530,7 @@ async def test_mcp_cookbook_config_and_version(
     assert len(config_result.contents) > 0
     config_response = json.loads(config_result.contents[0].text)
     assert isinstance(config_response, dict)
-    logger.info(f"Cookbook config from MCP: {config_response}")
+    logger.info("Cookbook config from MCP: %s", config_response)
 
     # 4. Verify config via direct NextcloudClient
     direct_config = await nc_client.cookbook.get_config()
@@ -551,4 +555,4 @@ async def test_mcp_cookbook_reindex(
 
     reindex_response = json.loads(reindex_result.content[0].text)
     assert isinstance(reindex_response["message"], str)
-    logger.info(f"Reindex result from MCP: {reindex_response['message']}")
+    logger.info("Reindex result from MCP: %s", reindex_response["message"])
