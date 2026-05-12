@@ -119,7 +119,7 @@ def require_scopes(*required_scopes: str):
                 # No context parameter found - likely BasicAuth mode
                 # In BasicAuth mode, all operations are allowed
                 logger.debug(
-                    f"No context parameter for {func_name} - allowing (BasicAuth mode)"
+                    "No context parameter for %s - allowing (BasicAuth mode)", func_name
                 )
                 return await func(*args, **kwargs)
 
@@ -131,7 +131,7 @@ def require_scopes(*required_scopes: str):
             if access_token is None:
                 # No OAuth token — BasicAuth mode bypasses scope checks
                 logger.debug(
-                    f"No access token for {func_name} - allowing (BasicAuth mode)"
+                    "No access token for %s - allowing (BasicAuth mode)", func_name
                 )
                 return await func(*args, **kwargs)
 
@@ -210,7 +210,8 @@ def require_scopes(*required_scopes: str):
                     if stored_scopes == "all":
                         # NULL scopes in DB = legacy app password = all allowed
                         logger.debug(
-                            f"Stored app password scope check passed for {func_name}: all scopes"
+                            "Stored app password scope check passed for %s: all scopes",
+                            func_name,
                         )
                         return await func(*args, **kwargs)
 
@@ -227,7 +228,7 @@ def require_scopes(*required_scopes: str):
                         raise InsufficientScopeError(list(missing), error_msg)
 
                     logger.debug(
-                        f"Stored app password scope check passed for {func_name}"
+                        "Stored app password scope check passed for %s", func_name
                     )
                     return await func(*args, **kwargs)
 
@@ -303,7 +304,7 @@ def require_scopes(*required_scopes: str):
 
             # All required scopes present - allow execution
             logger.debug(
-                f"Scope authorization passed for {func_name}: {required_scopes}"
+                "Scope authorization passed for %s: %s", func_name, required_scopes
             )
             return await func(*args, **kwargs)
 
@@ -366,7 +367,7 @@ def get_access_token_scopes(ctx: Context | None = None) -> set[str]:
 
     scopes = set(access_token.scopes or [])
     scopes = _strip_resource_prefix(scopes)
-    logger.info(f"✅ Extracted scopes from access token: {scopes}")
+    logger.info("✅ Extracted scopes from access token: %s", scopes)
     return scopes
 
 
@@ -446,7 +447,7 @@ def is_jwt_token() -> bool:
     token_string = access_token.token
     is_jwt = "." in token_string and token_string.count(".") == 2
 
-    logger.debug(f"Token format check: is_jwt={is_jwt}")
+    logger.debug("Token format check: is_jwt=%s", is_jwt)
     return is_jwt
 
 

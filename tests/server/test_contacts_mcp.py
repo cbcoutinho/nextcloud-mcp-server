@@ -28,7 +28,7 @@ async def test_mcp_contacts_workflow(
 
     try:
         # 1. Create address book via MCP
-        logger.info(f"Creating address book via MCP: {addressbook_name}")
+        logger.info("Creating address book via MCP: %s", addressbook_name)
         create_ab_result = await nc_mcp_client.call_tool(
             "nc_contacts_create_addressbook",
             {"name": addressbook_name, "display_name": f"MCP Test {addressbook_name}"},
@@ -40,7 +40,7 @@ async def test_mcp_contacts_workflow(
         assert any(ab["name"] == addressbook_name for ab in addressbooks)
 
         # 3. Create contact via MCP
-        logger.info(f"Creating contact in {addressbook_name} via MCP")
+        logger.info("Creating contact in %s via MCP", addressbook_name)
         create_c_result = await nc_mcp_client.call_tool(
             "nc_contacts_create_contact",
             {
@@ -56,7 +56,7 @@ async def test_mcp_contacts_workflow(
         assert any(c["vcard_id"] == contact_uid for c in contacts)
 
         # 5. Delete contact via MCP
-        logger.info(f"Deleting contact {contact_uid} via MCP")
+        logger.info("Deleting contact %s via MCP", contact_uid)
         delete_c_result = await nc_mcp_client.call_tool(
             "nc_contacts_delete_contact",
             {"addressbook": addressbook_name, "uid": contact_uid},
@@ -68,7 +68,7 @@ async def test_mcp_contacts_workflow(
         assert not any(c["vcard_id"] == contact_uid for c in contacts)
 
         # 7. Delete address book via MCP
-        logger.info(f"Deleting address book {addressbook_name} via MCP")
+        logger.info("Deleting address book %s via MCP", addressbook_name)
         delete_ab_result = await nc_mcp_client.call_tool(
             "nc_contacts_delete_addressbook", {"name": addressbook_name}
         )

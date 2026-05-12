@@ -57,7 +57,7 @@ async def test_unstructured_api_enabled_parsing(
         await nc_client.webdav.write_file(
             test_file, pdf_content, content_type="application/pdf"
         )
-        logger.info(f"Uploaded PDF file: {test_file}")
+        logger.info("Uploaded PDF file: %s", test_file)
 
         # Read the PDF using MCP tool (should parse via Unstructured API)
         mcp_result = await nc_mcp_client.call_tool(
@@ -123,7 +123,7 @@ async def test_unstructured_api_with_docx(
             docx_content,
             content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
-        logger.info(f"Uploaded DOCX file: {test_file}")
+        logger.info("Uploaded DOCX file: %s", test_file)
 
         # Read the file using MCP tool
         mcp_result = await nc_mcp_client.call_tool(

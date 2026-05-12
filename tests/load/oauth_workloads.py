@@ -115,7 +115,7 @@ class Workflow(ABC):
             return step_result
         except Exception as e:
             duration = time.time() - start
-            logger.error(f"Step {step_name} failed for user {user.username}: {e}")
+            logger.error("Step %s failed for user %s: %s", step_name, user.username, e)
             step_result = WorkflowStepResult(
                 step_name=step_name,
                 user=user.username,
@@ -236,7 +236,7 @@ class NoteShareWorkflow(Workflow):
             return self._finish(success=True)
 
         except Exception as e:
-            logger.error(f"Note share workflow failed: {e}")
+            logger.error("Note share workflow failed: %s", e)
             return self._finish(False, error=str(e))
 
 
@@ -338,7 +338,7 @@ class CollaborativeEditWorkflow(Workflow):
             return self._finish(success=True)
 
         except Exception as e:
-            logger.error(f"Collaborative edit workflow failed: {e}")
+            logger.error("Collaborative edit workflow failed: %s", e)
             return self._finish(False, error=str(e))
 
 
@@ -424,7 +424,7 @@ class FileShareAndDownloadWorkflow(Workflow):
             return self._finish(success=True)
 
         except Exception as e:
-            logger.error(f"File share workflow failed: {e}")
+            logger.error("File share workflow failed: %s", e)
             return self._finish(False, error=str(e))
 
 

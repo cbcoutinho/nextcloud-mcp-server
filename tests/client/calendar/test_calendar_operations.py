@@ -44,29 +44,29 @@ async def temporary_event(nc_client: NextcloudClient, temporary_calendar: str):
     }
 
     try:
-        logger.info(f"Creating temporary event in calendar: {calendar_name}")
+        logger.info("Creating temporary event in calendar: %s", calendar_name)
         result = await nc_client.calendar.create_event(calendar_name, event_data)
         event_uid = result.get("uid")
 
         if not event_uid:
             pytest.fail("Failed to create temporary event")
 
-        logger.info(f"Created temporary event with UID: {event_uid}")
+        logger.info("Created temporary event with UID: %s", event_uid)
         yield {"uid": event_uid, "calendar_name": calendar_name, "data": event_data}
 
     finally:
         # Cleanup
         if event_uid:
             try:
-                logger.info(f"Cleaning up temporary event: {event_uid}")
+                logger.info("Cleaning up temporary event: %s", event_uid)
                 await nc_client.calendar.delete_event(calendar_name, event_uid)
-                logger.info(f"Successfully deleted temporary event: {event_uid}")
+                logger.info("Successfully deleted temporary event: %s", event_uid)
             except HTTPStatusError as e:
                 if e.response.status_code != 404:
-                    logger.error(f"Error deleting temporary event {event_uid}: {e}")
+                    logger.error("Error deleting temporary event %s: %s", event_uid, e)
             except Exception as e:
                 logger.error(
-                    f"Unexpected error deleting temporary event {event_uid}: {e}"
+                    "Unexpected error deleting temporary event %s: %s", event_uid, e
                 )
 
 
@@ -79,7 +79,7 @@ async def test_list_calendars(nc_client: NextcloudClient):
     if not calendars:
         pytest.skip("No calendars available - Calendar app may not be enabled")
 
-    logger.info(f"Found {len(calendars)} calendars")
+    logger.info("Found %s calendars", len(calendars))
 
     # Check structure of calendars
     for calendar in calendars:
@@ -90,7 +90,7 @@ async def test_list_calendars(nc_client: NextcloudClient):
         assert "description" in calendar
         assert "color" in calendar
 
-        logger.info(f"Calendar: {calendar['name']} - {calendar['display_name']}")
+        logger.info("Calendar: %s - %s", calendar["name"], calendar["display_name"])
 
 
 async def test_create_and_delete_event(
@@ -118,7 +118,7 @@ async def test_create_and_delete_event(
         assert result["status_code"] in [200, 201, 204]
 
         event_uid = result["uid"]
-        logger.info(f"Created event with UID: {event_uid}")
+        logger.info("Created event with UID: %s", event_uid)
 
         # Verify event was created by retrieving it
         retrieved_event, etag = await nc_client.calendar.get_event(
@@ -132,10 +132,10 @@ async def test_create_and_delete_event(
         delete_result = await nc_client.calendar.delete_event(calendar_name, event_uid)
         assert delete_result["status_code"] in [200, 204, 404]
 
-        logger.info(f"Successfully deleted event: {event_uid}")
+        logger.info("Successfully deleted event: %s", event_uid)
 
     except Exception as e:
-        logger.error(f"Test failed: {e}")
+        logger.error("Test failed: %s", e)
         raise
 
 
@@ -157,7 +157,7 @@ async def test_create_all_day_event(
     try:
         result = await nc_client.calendar.create_event(calendar_name, event_data)
         event_uid = result["uid"]
-        logger.info(f"Created all-day event with UID: {event_uid}")
+        logger.info("Created all-day event with UID: %s", event_uid)
 
         # Verify event
         retrieved_event, _ = await nc_client.calendar.get_event(
@@ -170,7 +170,7 @@ async def test_create_all_day_event(
         await nc_client.calendar.delete_event(calendar_name, event_uid)
 
     except Exception as e:
-        logger.error(f"All-day event test failed: {e}")
+        logger.error("All-day event test failed: %s", e)
         raise
 
 
@@ -194,7 +194,7 @@ async def test_create_recurring_event(
     try:
         result = await nc_client.calendar.create_event(calendar_name, event_data)
         event_uid = result["uid"]
-        logger.info(f"Created recurring event with UID: {event_uid}")
+        logger.info("Created recurring event with UID: %s", event_uid)
 
         # Verify event
         retrieved_event, _ = await nc_client.calendar.get_event(
@@ -207,7 +207,7 @@ async def test_create_recurring_event(
         await nc_client.calendar.delete_event(calendar_name, event_uid)
 
     except Exception as e:
-        logger.error(f"Recurring event test failed: {e}")
+        logger.error("Recurring event test failed: %s", e)
         raise
 
 
@@ -227,7 +227,7 @@ async def test_list_events_in_range(nc_client: NextcloudClient, temporary_event:
     )
 
     assert isinstance(events, list)
-    logger.info(f"Found {len(events)} events in date range")
+    logger.info("Found %s events in date range", len(events))
 
     # Our temporary event should be in the list
     event_uids = [event.get("uid") for event in events]
@@ -266,10 +266,10 @@ async def test_update_event(nc_client: NextcloudClient, temporary_event: dict):
         assert updated_event["location"] == "Updated Location"
         assert updated_event["priority"] == 1
 
-        logger.info(f"Successfully updated event: {event_uid}")
+        logger.info("Successfully updated event: %s", event_uid)
 
     except Exception as e:
-        logger.error(f"Event update test failed: {e}")
+        logger.error("Event update test failed: %s", e)
         raise
 
 
@@ -291,7 +291,7 @@ async def test_update_event_extended_fields(
     try:
         result = await nc_client.calendar.create_event(calendar_name, event_data)
         event_uid = result["uid"]
-        logger.info(f"Created base event for extended fields test: {event_uid}")
+        logger.info("Created base event for extended fields test: %s", event_uid)
 
         # --- Phase 1: Set all four extended fields ---
         updated_data = {
@@ -343,7 +343,7 @@ async def test_update_event_extended_fields(
         logger.info("Phase 2 passed: all extended fields cleared correctly")
 
     except Exception as e:
-        logger.error(f"Extended fields update test failed: {e}")
+        logger.error("Extended fields update test failed: %s", e)
         raise
     finally:
         if event_uid:
@@ -374,7 +374,7 @@ async def test_create_event_with_attendees(
     try:
         result = await nc_client.calendar.create_event(calendar_name, event_data)
         event_uid = result["uid"]
-        logger.info(f"Created event with attendees, UID: {event_uid}")
+        logger.info("Created event with attendees, UID: %s", event_uid)
 
         # Verify event
         retrieved_event, _ = await nc_client.calendar.get_event(
@@ -388,7 +388,7 @@ async def test_create_event_with_attendees(
         await nc_client.calendar.delete_event(calendar_name, event_uid)
 
     except Exception as e:
-        logger.error(f"Event with attendees test failed: {e}")
+        logger.error("Event with attendees test failed: %s", e)
         raise
 
 
@@ -403,7 +403,7 @@ async def test_get_nonexistent_event(
     with pytest.raises(Exception, match="not found"):
         await nc_client.calendar.get_event(calendar_name, fake_uid)
 
-    logger.info(f"Correctly raised exception for nonexistent event: {fake_uid}")
+    logger.info("Correctly raised exception for nonexistent event: %s", fake_uid)
 
 
 async def test_delete_nonexistent_event(
@@ -415,7 +415,7 @@ async def test_delete_nonexistent_event(
 
     result = await nc_client.calendar.delete_event(calendar_name, fake_uid)
     assert result["status_code"] == 404
-    logger.info(f"Correctly got 404 for deleting nonexistent event: {fake_uid}")
+    logger.info("Correctly got 404 for deleting nonexistent event: %s", fake_uid)
 
 
 async def test_event_with_url_and_categories(
@@ -439,7 +439,7 @@ async def test_event_with_url_and_categories(
     try:
         result = await nc_client.calendar.create_event(calendar_name, event_data)
         event_uid = result["uid"]
-        logger.info(f"Created event with metadata, UID: {event_uid}")
+        logger.info("Created event with metadata, UID: %s", event_uid)
 
         # Verify event
         retrieved_event, _ = await nc_client.calendar.get_event(
@@ -456,7 +456,7 @@ async def test_event_with_url_and_categories(
         await nc_client.calendar.delete_event(calendar_name, event_uid)
 
     except Exception as e:
-        logger.error(f"Event with metadata test failed: {e}")
+        logger.error("Event with metadata test failed: %s", e)
         raise
 
 
@@ -485,7 +485,7 @@ async def test_list_events_date_range_filtering(
             calendar_name, past_event_data
         )
         past_uid = result_past["uid"]
-        logger.info(f"Created past event: {past_uid}")
+        logger.info("Created past event: %s", past_uid)
 
         # Create Event B: 1 day in the future
         future_date = datetime.now() + timedelta(days=1)
@@ -499,7 +499,7 @@ async def test_list_events_date_range_filtering(
             calendar_name, future_event_data
         )
         future_uid = result_future["uid"]
-        logger.info(f"Created future event: {future_uid}")
+        logger.info("Created future event: %s", future_uid)
 
         # Query with date range: today → 7 days ahead
         now = datetime.now()
@@ -526,8 +526,8 @@ async def test_list_events_date_range_filtering(
         )
 
         logger.info(
-            f"Date range filtering works: {len(events)} events returned, "
-            f"past event correctly excluded"
+            "Date range filtering works: %s events returned, past event correctly excluded",
+            len(events),
         )
 
     finally:
@@ -537,7 +537,7 @@ async def test_list_events_date_range_filtering(
                 try:
                     await nc_client.calendar.delete_event(calendar_name, uid)
                 except Exception as e:
-                    logger.warning(f"Cleanup failed for event {uid}: {e}")
+                    logger.warning("Cleanup failed for event %s: %s", uid, e)
 
 
 async def test_recurring_event_date_range_expansion(
@@ -569,7 +569,7 @@ async def test_recurring_event_date_range_expansion(
         }
         result = await nc_client.calendar.create_event(calendar_name, event_data)
         event_uid = result["uid"]
-        logger.info(f"Created daily recurring event: {event_uid}")
+        logger.info("Created daily recurring event: %s", event_uid)
 
         # Query with date range: today → 3 days ahead
         query_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -619,8 +619,8 @@ async def test_recurring_event_date_range_expansion(
             )
 
         logger.info(
-            f"Recurring event expansion works: {len(our_events)} occurrences "
-            f"returned with unique start dates"
+            "Recurring event expansion works: %s occurrences returned with unique start dates",
+            len(our_events),
         )
 
     finally:
@@ -628,7 +628,9 @@ async def test_recurring_event_date_range_expansion(
             try:
                 await nc_client.calendar.delete_event(calendar_name, event_uid)
             except Exception as e:
-                logger.warning(f"Cleanup failed for recurring event {event_uid}: {e}")
+                logger.warning(
+                    "Cleanup failed for recurring event %s: %s", event_uid, e
+                )
 
 
 async def test_calendar_operations_error_handling(

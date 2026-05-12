@@ -24,7 +24,7 @@ async def test_mcp_todo_complete_workflow(
 
     try:
         # 1. Create todo via MCP
-        logger.info(f"Creating todo in {calendar_name} via MCP")
+        logger.info("Creating todo in %s via MCP", calendar_name)
         tomorrow = datetime.now() + timedelta(days=1)
 
         create_result = await nc_mcp_client.call_tool(
@@ -46,7 +46,7 @@ async def test_mcp_todo_complete_workflow(
 
         result_json = json.loads(result_data)
         todo_uid = result_json["uid"]
-        logger.info(f"Created todo with UID: {todo_uid}")
+        logger.info("Created todo with UID: %s", todo_uid)
 
         # 2. Verify todo creation via client
         todos = await nc_client.calendar.list_todos(calendar_name)
@@ -57,7 +57,7 @@ async def test_mcp_todo_complete_workflow(
         assert created_todo["priority"] == 3
 
         # 3. List todos via MCP
-        logger.info(f"Listing todos in {calendar_name} via MCP")
+        logger.info("Listing todos in %s via MCP", calendar_name)
         list_result = await nc_mcp_client.call_tool(
             "nc_calendar_list_todos",
             {"calendar_name": calendar_name},
@@ -69,7 +69,7 @@ async def test_mcp_todo_complete_workflow(
         assert any(t["uid"] == todo_uid for t in list_data["todos"])
 
         # 4. Update todo via MCP
-        logger.info(f"Updating todo {todo_uid} via MCP")
+        logger.info("Updating todo %s via MCP", todo_uid)
         update_result = await nc_mcp_client.call_tool(
             "nc_calendar_update_todo",
             {
@@ -92,7 +92,7 @@ async def test_mcp_todo_complete_workflow(
         assert updated_todo["percent_complete"] == 50
 
         # 6. Delete todo via MCP
-        logger.info(f"Deleting todo {todo_uid} via MCP")
+        logger.info("Deleting todo %s via MCP", todo_uid)
         delete_result = await nc_mcp_client.call_tool(
             "nc_calendar_delete_todo",
             {"calendar_name": calendar_name, "todo_uid": todo_uid},

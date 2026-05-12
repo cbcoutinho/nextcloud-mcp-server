@@ -93,7 +93,7 @@ async def wait_for_nextcloud(
     Returns:
         True if server is ready, False otherwise
     """
-    logger.info(f"Waiting for Nextcloud server at {host} to be ready...")
+    logger.info("Waiting for Nextcloud server at %s to be ready...", host)
 
     async with httpx.AsyncClient(timeout=5.0) as client:
         for attempt in range(1, max_attempts + 1):
@@ -104,20 +104,26 @@ async def wait_for_nextcloud(
                     data = response.json()
                     if data.get("installed"):
                         logger.info(
-                            f"Nextcloud server is ready (version: {data.get('versionstring', 'unknown')})"
+                            "Nextcloud server is ready (version: %s)",
+                            data.get("versionstring", "unknown"),
                         )
                         return True
             except (httpx.RequestError, httpx.TimeoutException) as e:
-                logger.debug(f"Attempt {attempt}/{max_attempts}: {e}")
+                logger.debug("Attempt %s/%s: %s", attempt, max_attempts, e)
 
             if attempt < max_attempts:
                 logger.info(
-                    f"Nextcloud not ready yet, waiting {delay}s... (attempt {attempt}/{max_attempts})"
+                    "Nextcloud not ready yet, waiting %ss... (attempt %s/%s)",
+                    delay,
+                    attempt,
+                    max_attempts,
                 )
                 await anyio.sleep(delay)
 
     logger.error(
-        f"Nextcloud server at {host} did not become ready after {max_attempts} attempts"
+        "Nextcloud server at %s did not become ready after %s attempts",
+        host,
+        max_attempts,
     )
     return False
 
@@ -163,7 +169,7 @@ async def create_mcp_client_session(
         requirements are met, as Python guarantees LIFO cleanup order for nested
         context managers. See: https://github.com/modelcontextprotocol/python-sdk/issues/577
     """
-    logger.info(f"Creating Streamable HTTP client for {client_name}")
+    logger.info("Creating Streamable HTTP client for %s", client_name)
 
     # Prepare headers - custom headers take precedence over token-based auth
     if headers is None:
@@ -183,11 +189,11 @@ async def create_mcp_client_session(
             sampling_callback=sampling_callback,
         ) as session:
             await session.initialize()
-            logger.info(f"{client_name} client session initialized successfully")
+            logger.info("%s client session initialized successfully", client_name)
             yield session
 
     # Cleanup happens automatically in LIFO order - no exception suppression needed
-    logger.debug(f"{client_name} client session cleaned up successfully")
+    logger.debug("%s client session cleaned up successfully", client_name)
 
 
 @pytest.fixture(scope="session")
@@ -219,7 +225,7 @@ async def nc_client(anyio_backend) -> AsyncGenerator[NextcloudClient, Any]:
         )
         yield client
     except Exception as e:
-        logger.error(f"Failed to initialize NextcloudClient session fixture: {e}")
+        logger.error("Failed to initialize NextcloudClient session fixture: %s", e)
         pytest.fail(f"Failed to connect to Nextcloud or get capabilities: {e}")
     finally:
         await client.close()
@@ -352,8 +358,8 @@ async def nc_mcp_oauth_client_with_elicitation(
         elicitation_triggered["count"] += 1
 
         logger.info("🎯 Elicitation callback invoked!")
-        logger.info(f"  Message: {params.message[:100]}...")
-        logger.info(f"  Schema: {params.schema}")
+        logger.info("  Message: %s...", params.message[:100])
+        logger.info("  Schema: %s", params.schema)
 
         # Extract OAuth URL from elicitation message
 
@@ -362,11 +368,11 @@ async def nc_mcp_oauth_client_with_elicitation(
 
         if not urls:
             error_msg = "No URL found in elicitation message"
-            logger.error(f"❌ {error_msg}")
+            logger.error("❌ %s", error_msg)
             return ErrorData(code=-32602, message=error_msg)
 
         oauth_url = urls[0]
-        logger.info(f"  Extracted URL: {oauth_url}")
+        logger.info("  Extracted URL: %s", oauth_url)
 
         # Complete OAuth flow with Playwright
         page = await browser.new_page()
@@ -375,7 +381,7 @@ async def nc_mcp_oauth_client_with_elicitation(
             await page.goto(oauth_url, timeout=60000)
 
             current_url = page.url
-            logger.info(f"  Current URL after navigation: {current_url}")
+            logger.info("  Current URL after navigation: %s", current_url)
 
             # Handle login form if present
             if "/login" in current_url or "/index.php/login" in current_url:
@@ -400,21 +406,21 @@ async def nc_mcp_oauth_client_with_elicitation(
             if "/consent" in page.url:
                 await page.wait_for_load_state("networkidle", timeout=10000)
                 try:
-                    logger.info(f"  Current URL before consent: {page.url}")
+                    logger.info("  Current URL before consent: %s", page.url)
                     consent_handled = await _handle_oauth_consent_screen(page, username)
                     if consent_handled:
                         logger.info("  ✓ Consent granted")
                     else:
                         logger.warning("  ⚠ Consent handler returned False")
                 except Exception as e:
-                    logger.warning(f"  ⚠ Consent screen handling failed: {e}")
+                    logger.warning("  ⚠ Consent screen handling failed: %s", e)
                     screenshot_path = (
                         f"/tmp/elicitation_consent_error_{uuid.uuid4()}.png"
                     )
                     await page.screenshot(path=screenshot_path)
-                    logger.info(f"  Screenshot saved: {screenshot_path}")
+                    logger.info("  Screenshot saved: %s", screenshot_path)
             else:
-                logger.debug(f"  No consent screen (URL: {page.url})")
+                logger.debug("  No consent screen (URL: %s)", page.url)
 
             # Wait for OAuth callback URL to be reached
             # The MCP server's callback endpoint will handle token exchange
@@ -426,30 +432,30 @@ async def nc_mcp_oauth_client_with_elicitation(
                 await anyio.sleep(0.5)
                 current_url = page.url
                 if "/oauth/callback" in current_url or "/user" in current_url:
-                    logger.info(f"  ✓ Callback URL reached: {current_url}")
+                    logger.info("  ✓ Callback URL reached: %s", current_url)
                     break
             else:
                 logger.warning(
-                    f"  ⚠ Timeout waiting for callback, final URL: {page.url}"
+                    "  ⚠ Timeout waiting for callback, final URL: %s", page.url
                 )
 
             # Wait a bit more to ensure the server processed the callback
             await anyio.sleep(2)
 
             final_url = page.url
-            logger.info(f"  Final URL: {final_url}")
+            logger.info("  Final URL: %s", final_url)
 
             # Return success - user "accepted" the elicitation
             logger.info("✅ OAuth flow completed, returning accept")
             return ElicitResult(action="accept", content={"acknowledged": True})
 
         except Exception as e:
-            logger.error(f"❌ Elicitation OAuth flow failed: {e}")
+            logger.error("❌ Elicitation OAuth flow failed: %s", e)
             # Take screenshot for debugging
             try:
                 screenshot_path = f"/tmp/elicitation_oauth_failure_{uuid.uuid4()}.png"
                 await page.screenshot(path=screenshot_path)
-                logger.error(f"  Screenshot saved: {screenshot_path}")
+                logger.error("  Screenshot saved: %s", screenshot_path)
             except Exception:
                 pass
 
@@ -579,7 +585,7 @@ async def temporary_note(nc_client: NextcloudClient):
     note_category = "TemporaryTesting"
     created_note_data = None
 
-    logger.info(f"Creating temporary note: {note_title}")
+    logger.info("Creating temporary note: %s", note_title)
     try:
         created_note_data = await nc_client.notes.create_note(
             title=note_title, content=note_content, category=note_category
@@ -588,23 +594,27 @@ async def temporary_note(nc_client: NextcloudClient):
         if not note_id:
             pytest.fail("Failed to get ID from created temporary note.")
 
-        logger.info(f"Temporary note created with ID: {note_id}")
+        logger.info("Temporary note created with ID: %s", note_id)
         yield created_note_data  # Provide the created note data to the test
 
     finally:
         if note_id:
-            logger.info(f"Cleaning up temporary note ID: {note_id}")
+            logger.info("Cleaning up temporary note ID: %s", note_id)
             try:
                 await nc_client.notes.delete_note(note_id=note_id)
-                logger.info(f"Successfully deleted temporary note ID: {note_id}")
+                logger.info("Successfully deleted temporary note ID: %s", note_id)
             except HTTPStatusError as e:
                 # Ignore 404 if note was already deleted by the test itself
                 if e.response.status_code != 404:
-                    logger.error(f"HTTP error deleting temporary note {note_id}: {e}")
+                    logger.error(
+                        "HTTP error deleting temporary note %s: %s", note_id, e
+                    )
                 else:
-                    logger.warning(f"Temporary note {note_id} already deleted (404).")
+                    logger.warning("Temporary note %s already deleted (404).", note_id)
             except Exception as e:
-                logger.error(f"Unexpected error deleting temporary note {note_id}: {e}")
+                logger.error(
+                    "Unexpected error deleting temporary note %s: %s", note_id, e
+                )
 
 
 @pytest.fixture
@@ -617,31 +627,31 @@ async def temporary_note_factory(nc_client: NextcloudClient):
 
     async def _create_note(title: str, content: str, category: str = ""):
         """Create a temporary note with custom title, content, and category."""
-        logger.info(f"Creating temporary note via factory: {title}")
+        logger.info("Creating temporary note via factory: %s", title)
         note_data = await nc_client.notes.create_note(
             title=title, content=content, category=category
         )
         note_id = note_data.get("id")
         if note_id:
             created_notes.append(note_id)
-            logger.info(f"Factory created note ID: {note_id}")
+            logger.info("Factory created note ID: %s", note_id)
         return note_data
 
     yield _create_note
 
     # Cleanup all created notes
     for note_id in created_notes:
-        logger.info(f"Cleaning up factory-created note ID: {note_id}")
+        logger.info("Cleaning up factory-created note ID: %s", note_id)
         try:
             await nc_client.notes.delete_note(note_id=note_id)
-            logger.info(f"Successfully deleted factory note ID: {note_id}")
+            logger.info("Successfully deleted factory note ID: %s", note_id)
         except HTTPStatusError as e:
             if e.response.status_code != 404:
-                logger.error(f"HTTP error deleting factory note {note_id}: {e}")
+                logger.error("HTTP error deleting factory note %s: %s", note_id, e)
             else:
-                logger.warning(f"Factory note {note_id} already deleted (404).")
+                logger.warning("Factory note %s already deleted (404).", note_id)
         except Exception as e:
-            logger.error(f"Unexpected error deleting factory note {note_id}: {e}")
+            logger.error("Unexpected error deleting factory note %s: %s", note_id, e)
 
 
 @pytest.fixture
@@ -663,7 +673,10 @@ async def temporary_note_with_attachment(
     attachment_mime = "text/plain"
 
     logger.info(
-        f"Adding attachment '{attachment_filename}' to temporary note ID: {note_id} (category: '{note_category or ''}')"
+        "Adding attachment '%s' to temporary note ID: %s (category: '%s')",
+        attachment_filename,
+        note_id,
+        note_category or "",
     )
     try:
         # Pass the category to add_note_attachment
@@ -678,7 +691,7 @@ async def temporary_note_with_attachment(
             201,
             204,
         ], f"Failed to upload attachment: {upload_response}"
-        logger.info(f"Attachment '{attachment_filename}' added successfully.")
+        logger.info("Attachment '%s' added successfully.", attachment_filename)
 
         yield note_data, attachment_filename, attachment_content
 
@@ -686,7 +699,7 @@ async def temporary_note_with_attachment(
         # in the temporary_note fixture's finally block (which deletes the .attachments dir)
 
     except Exception as e:
-        logger.error(f"Failed to add attachment in fixture: {e}")
+        logger.error("Failed to add attachment in fixture: %s", e)
         pytest.fail(f"Fixture setup failed during attachment upload: {e}")
 
     # Note: The temporary_note fixture's finally block will handle note deletion,
@@ -700,32 +713,36 @@ async def temporary_addressbook(nc_client: NextcloudClient):
     Yields the created addressbook dictionary.
     """
     addressbook_name = f"test-addressbook-{uuid.uuid4().hex[:8]}"
-    logger.info(f"Creating temporary addressbook: {addressbook_name}")
+    logger.info("Creating temporary addressbook: %s", addressbook_name)
     try:
         await nc_client.contacts.create_addressbook(
             name=addressbook_name, display_name=f"Test Addressbook {addressbook_name}"
         )
-        logger.info(f"Temporary addressbook created: {addressbook_name}")
+        logger.info("Temporary addressbook created: %s", addressbook_name)
         yield addressbook_name
     finally:
-        logger.info(f"Cleaning up temporary addressbook: {addressbook_name}")
+        logger.info("Cleaning up temporary addressbook: %s", addressbook_name)
         try:
             await nc_client.contacts.delete_addressbook(name=addressbook_name)
             logger.info(
-                f"Successfully deleted temporary addressbook: {addressbook_name}"
+                "Successfully deleted temporary addressbook: %s", addressbook_name
             )
         except HTTPStatusError as e:
             if e.response.status_code != 404:
                 logger.error(
-                    f"HTTP error deleting temporary addressbook {addressbook_name}: {e}"
+                    "HTTP error deleting temporary addressbook %s: %s",
+                    addressbook_name,
+                    e,
                 )
             else:
                 logger.warning(
-                    f"Temporary addressbook {addressbook_name} already deleted (404)."
+                    "Temporary addressbook %s already deleted (404).", addressbook_name
                 )
         except Exception as e:
             logger.error(
-                f"Unexpected error deleting temporary addressbook {addressbook_name}: {e}"
+                "Unexpected error deleting temporary addressbook %s: %s",
+                addressbook_name,
+                e,
             )
 
 
@@ -742,34 +759,34 @@ async def temporary_contact(nc_client: NextcloudClient, temporary_addressbook: s
         "email": "john.doe@example.com",
         "tel": "1234567890",
     }
-    logger.info(f"Creating temporary contact in addressbook: {addressbook_name}")
+    logger.info("Creating temporary contact in addressbook: %s", addressbook_name)
     try:
         await nc_client.contacts.create_contact(
             addressbook=addressbook_name,
             uid=contact_uid,
             contact_data=contact_data,
         )
-        logger.info(f"Temporary contact created with UID: {contact_uid}")
+        logger.info("Temporary contact created with UID: %s", contact_uid)
         yield contact_uid
     finally:
-        logger.info(f"Cleaning up temporary contact: {contact_uid}")
+        logger.info("Cleaning up temporary contact: %s", contact_uid)
         try:
             await nc_client.contacts.delete_contact(
                 addressbook=addressbook_name, uid=contact_uid
             )
-            logger.info(f"Successfully deleted temporary contact: {contact_uid}")
+            logger.info("Successfully deleted temporary contact: %s", contact_uid)
         except HTTPStatusError as e:
             if e.response.status_code != 404:
                 logger.error(
-                    f"HTTP error deleting temporary contact {contact_uid}: {e}"
+                    "HTTP error deleting temporary contact %s: %s", contact_uid, e
                 )
             else:
                 logger.warning(
-                    f"Temporary contact {contact_uid} already deleted (404)."
+                    "Temporary contact %s already deleted (404).", contact_uid
                 )
         except Exception as e:
             logger.error(
-                f"Unexpected error deleting temporary contact {contact_uid}: {e}"
+                "Unexpected error deleting temporary contact %s: %s", contact_uid, e
             )
 
 
@@ -785,7 +802,7 @@ async def temporary_board(nc_client: NextcloudClient):
     board_color = "FF0000"  # Red color
     created_board_data = None
 
-    logger.info(f"Creating temporary deck board: {board_title}")
+    logger.info("Creating temporary deck board: %s", board_title)
     try:
         created_board = await nc_client.deck.create_board(board_title, board_color)
         board_id = created_board.id
@@ -796,26 +813,30 @@ async def temporary_board(nc_client: NextcloudClient):
             "archived": getattr(created_board, "archived", False),
         }
 
-        logger.info(f"Temporary board created with ID: {board_id}")
+        logger.info("Temporary board created with ID: %s", board_id)
         yield created_board_data
 
     finally:
         if board_id:
-            logger.info(f"Cleaning up temporary board ID: {board_id}")
+            logger.info("Cleaning up temporary board ID: %s", board_id)
             try:
                 await nc_client.deck.delete_board(board_id)
-                logger.info(f"Successfully deleted temporary board ID: {board_id}")
+                logger.info("Successfully deleted temporary board ID: %s", board_id)
             except HTTPStatusError as e:
                 # Ignore 404 if board was already deleted by the test itself
                 if e.response.status_code not in [404, 403]:
-                    logger.error(f"HTTP error deleting temporary board {board_id}: {e}")
+                    logger.error(
+                        "HTTP error deleting temporary board %s: %s", board_id, e
+                    )
                 else:
                     logger.warning(
-                        f"Temporary board {board_id} already deleted or access denied ({e.response.status_code})."
+                        "Temporary board %s already deleted or access denied (%s).",
+                        board_id,
+                        e.response.status_code,
                     )
             except Exception as e:
                 logger.error(
-                    f"Unexpected error deleting temporary board {board_id}: {e}"
+                    "Unexpected error deleting temporary board %s: %s", board_id, e
                 )
 
 
@@ -833,7 +854,7 @@ async def temporary_board_with_stack(nc_client: NextcloudClient, temporary_board
     stack_order = 1
     stack = None
 
-    logger.info(f"Creating temporary stack in board ID: {board_id}")
+    logger.info("Creating temporary stack in board ID: %s", board_id)
     try:
         stack = await nc_client.deck.create_stack(board_id, stack_title, stack_order)
         stack_data = {
@@ -843,26 +864,30 @@ async def temporary_board_with_stack(nc_client: NextcloudClient, temporary_board
             "boardId": board_id,
         }
 
-        logger.info(f"Temporary stack created with ID: {stack.id}")
+        logger.info("Temporary stack created with ID: %s", stack.id)
         yield (board_data, stack_data)
 
     finally:
         # Clean up - delete stack
         if stack and hasattr(stack, "id"):
-            logger.info(f"Cleaning up temporary stack ID: {stack.id}")
+            logger.info("Cleaning up temporary stack ID: %s", stack.id)
             try:
                 await nc_client.deck.delete_stack(board_id, stack.id)
-                logger.info(f"Successfully deleted temporary stack ID: {stack.id}")
+                logger.info("Successfully deleted temporary stack ID: %s", stack.id)
             except HTTPStatusError as e:
                 if e.response.status_code not in [404, 403]:
-                    logger.error(f"HTTP error deleting temporary stack {stack.id}: {e}")
+                    logger.error(
+                        "HTTP error deleting temporary stack %s: %s", stack.id, e
+                    )
                 else:
                     logger.warning(
-                        f"Temporary stack {stack.id} already deleted or access denied ({e.response.status_code})."
+                        "Temporary stack %s already deleted or access denied (%s).",
+                        stack.id,
+                        e.response.status_code,
                     )
             except Exception as e:
                 logger.error(
-                    f"Unexpected error deleting temporary stack {stack.id}: {e}"
+                    "Unexpected error deleting temporary stack %s: %s", stack.id, e
                 )
 
 
@@ -884,7 +909,7 @@ async def temporary_board_with_card(
     card = None
 
     logger.info(
-        f"Creating temporary card in stack ID: {stack_id}, board ID: {board_id}"
+        "Creating temporary card in stack ID: %s, board ID: %s", stack_id, board_id
     )
     try:
         card = await nc_client.deck.create_card(
@@ -898,25 +923,31 @@ async def temporary_board_with_card(
             "boardId": board_id,
         }
 
-        logger.info(f"Temporary card created with ID: {card.id}")
+        logger.info("Temporary card created with ID: %s", card.id)
         yield (board_data, stack_data, card_data)
 
     finally:
         # Clean up - delete card
         if card and hasattr(card, "id"):
-            logger.info(f"Cleaning up temporary card ID: {card.id}")
+            logger.info("Cleaning up temporary card ID: %s", card.id)
             try:
                 await nc_client.deck.delete_card(board_id, stack_id, card.id)
-                logger.info(f"Successfully deleted temporary card ID: {card.id}")
+                logger.info("Successfully deleted temporary card ID: %s", card.id)
             except HTTPStatusError as e:
                 if e.response.status_code not in [404, 403]:
-                    logger.error(f"HTTP error deleting temporary card {card.id}: {e}")
+                    logger.error(
+                        "HTTP error deleting temporary card %s: %s", card.id, e
+                    )
                 else:
                     logger.warning(
-                        f"Temporary card {card.id} already deleted or access denied ({e.response.status_code})."
+                        "Temporary card %s already deleted or access denied (%s).",
+                        card.id,
+                        e.response.status_code,
                     )
             except Exception as e:
-                logger.error(f"Unexpected error deleting temporary card {card.id}: {e}")
+                logger.error(
+                    "Unexpected error deleting temporary card %s: %s", card.id, e
+                )
 
 
 @pytest.fixture
@@ -929,30 +960,33 @@ async def temporary_conversation(nc_client: NextcloudClient):
     room_name = f"MCP Test Room {unique_suffix}"
     token = None
 
-    logger.info(f"Creating temporary Talk conversation: {room_name}")
+    logger.info("Creating temporary Talk conversation: %s", room_name)
     try:
         room = await nc_client.talk.create_conversation(room_name=room_name)
         token = room.token
-        logger.info(f"Temporary Talk conversation created (token={token})")
+        logger.info("Temporary Talk conversation created (token=%s)", token)
         yield {"token": token, "id": room.id, "name": room_name}
 
     finally:
         if token:
-            logger.info(f"Cleaning up temporary Talk conversation token={token}")
+            logger.info("Cleaning up temporary Talk conversation token=%s", token)
             try:
                 await nc_client.talk.delete_conversation(token)
-                logger.info(f"Successfully deleted Talk conversation token={token}")
+                logger.info("Successfully deleted Talk conversation token=%s", token)
             except HTTPStatusError as e:
                 if e.response.status_code not in [404, 403]:
-                    logger.error(f"HTTP error deleting Talk conversation {token}: {e}")
+                    logger.error(
+                        "HTTP error deleting Talk conversation %s: %s", token, e
+                    )
                 else:
                     logger.warning(
-                        f"Talk conversation {token} already deleted or access denied "
-                        f"({e.response.status_code})."
+                        "Talk conversation %s already deleted or access denied (%s).",
+                        token,
+                        e.response.status_code,
                     )
             except Exception as e:
                 logger.error(
-                    f"Unexpected error deleting Talk conversation {token}: {e}"
+                    "Unexpected error deleting Talk conversation %s: %s", token, e
                 )
 
 
@@ -975,7 +1009,7 @@ async def shared_calendar(nc_client: NextcloudClient, shared_test_calendar_name:
 
     try:
         # Create a test calendar
-        logger.info(f"Creating shared test calendar: {calendar_name}")
+        logger.info("Creating shared test calendar: %s", calendar_name)
         result = await nc_client.calendar.create_calendar(
             calendar_name=calendar_name,
             display_name=f"Shared Test Calendar {calendar_name}",
@@ -986,21 +1020,21 @@ async def shared_calendar(nc_client: NextcloudClient, shared_test_calendar_name:
         if result["status_code"] not in [200, 201]:
             pytest.skip(f"Failed to create shared test calendar: {result}")
 
-        logger.info(f"Created shared test calendar: {calendar_name}")
+        logger.info("Created shared test calendar: %s", calendar_name)
         yield calendar_name
 
     except Exception as e:
-        logger.error(f"Error setting up shared test calendar: {e}")
+        logger.error("Error setting up shared test calendar: %s", e)
         pytest.skip(f"Shared calendar setup failed: {e}")
 
     finally:
         # Cleanup: Delete the shared calendar at end of session
         try:
-            logger.info(f"Cleaning up shared test calendar: {calendar_name}")
+            logger.info("Cleaning up shared test calendar: %s", calendar_name)
             await nc_client.calendar.delete_calendar(calendar_name)
-            logger.info(f"Successfully deleted shared test calendar: {calendar_name}")
+            logger.info("Successfully deleted shared test calendar: %s", calendar_name)
         except Exception as e:
-            logger.error(f"Error deleting shared test calendar {calendar_name}: {e}")
+            logger.error("Error deleting shared test calendar %s: %s", calendar_name, e)
 
 
 @pytest.fixture(scope="session")
@@ -1024,7 +1058,7 @@ async def shared_calendar_2(
         await anyio.sleep(3)  # Increased from 2 to 3 seconds
 
         # Create a test calendar
-        logger.info(f"Creating second shared test calendar: {calendar_name}")
+        logger.info("Creating second shared test calendar: %s", calendar_name)
         result = await nc_client.calendar.create_calendar(
             calendar_name=calendar_name,
             display_name=f"Shared Test Calendar 2 {calendar_name}",
@@ -1035,7 +1069,7 @@ async def shared_calendar_2(
         if result["status_code"] not in [200, 201]:
             pytest.skip(f"Failed to create second shared test calendar: {result}")
 
-        logger.info(f"Created second shared test calendar: {calendar_name}")
+        logger.info("Created second shared test calendar: %s", calendar_name)
 
         # Verify calendar was created by listing calendars
         # Add small delay to allow calendar to propagate in the system
@@ -1046,7 +1080,9 @@ async def shared_calendar_2(
         calendar_names = [cal["name"] for cal in calendars]
         if calendar_name not in calendar_names:
             logger.warning(
-                f"Calendar {calendar_name} not found immediately after creation. Available: {calendar_names}"
+                "Calendar %s not found immediately after creation. Available: %s",
+                calendar_name,
+                calendar_names,
             )
             # Try one more time after a longer delay
             await anyio.sleep(3)  # Additional wait for calendar synchronization
@@ -1054,32 +1090,34 @@ async def shared_calendar_2(
             calendar_names = [cal["name"] for cal in calendars]
             if calendar_name not in calendar_names:
                 logger.error(
-                    f"Calendar {calendar_name} still not found after retries. Available: {calendar_names}"
+                    "Calendar %s still not found after retries. Available: %s",
+                    calendar_name,
+                    calendar_names,
                 )
                 pytest.fail(
                     f"Failed to create second shared calendar: {calendar_name} not found in listing"
                 )
 
         logger.info(
-            f"Successfully verified second shared test calendar: {calendar_name}"
+            "Successfully verified second shared test calendar: %s", calendar_name
         )
         yield calendar_name
 
     except Exception as e:
-        logger.error(f"Error setting up second shared test calendar: {e}")
+        logger.error("Error setting up second shared test calendar: %s", e)
         pytest.skip(f"Second shared calendar setup failed: {e}")
 
     finally:
         # Cleanup: Delete the second shared calendar at end of session
         try:
-            logger.info(f"Cleaning up second shared test calendar: {calendar_name}")
+            logger.info("Cleaning up second shared test calendar: %s", calendar_name)
             await nc_client.calendar.delete_calendar(calendar_name)
             logger.info(
-                f"Successfully deleted second shared test calendar: {calendar_name}"
+                "Successfully deleted second shared test calendar: %s", calendar_name
             )
         except Exception as e:
             logger.error(
-                f"Error deleting second shared test calendar {calendar_name}: {e}"
+                "Error deleting second shared test calendar %s: %s", calendar_name, e
             )
 
 
@@ -1097,16 +1135,16 @@ async def temporary_calendar(shared_calendar: str, nc_client: NextcloudClient):
 
     # Cleanup: Delete all todos from this calendar
     try:
-        logger.info(f"Cleaning up todos from shared calendar: {calendar_name}")
+        logger.info("Cleaning up todos from shared calendar: %s", calendar_name)
         todos = await nc_client.calendar.list_todos(calendar_name)
         for todo in todos:
             try:
                 await nc_client.calendar.delete_todo(calendar_name, todo["uid"])
             except Exception as e:
-                logger.warning(f"Error deleting todo {todo['uid']}: {e}")
-        logger.info(f"Cleaned up {len(todos)} todos from shared calendar")
+                logger.warning("Error deleting todo %s: %s", todo["uid"], e)
+        logger.info("Cleaned up %s todos from shared calendar", len(todos))
     except Exception as e:
-        logger.error(f"Error cleaning up todos from calendar {calendar_name}: {e}")
+        logger.error("Error cleaning up todos from calendar %s: %s", calendar_name, e)
 
 
 @pytest.fixture(scope="session")
@@ -1124,7 +1162,7 @@ async def nc_oauth_client(
     if not all([nextcloud_host, username]):
         pytest.skip("OAuth client fixture requires NEXTCLOUD_HOST and USERNAME")
 
-    logger.info(f"Creating OAuth NextcloudClient (Playwright) for user: {username}")
+    logger.info("Creating OAuth NextcloudClient (Playwright) for user: %s", username)
     client = NextcloudClient.from_token(
         base_url=nextcloud_host,
         token=playwright_oauth_token,
@@ -1139,7 +1177,7 @@ async def nc_oauth_client(
         )
         yield client
     except Exception as e:
-        logger.error(f"Failed to initialize OAuth NextcloudClient (Playwright): {e}")
+        logger.error("Failed to initialize OAuth NextcloudClient (Playwright): %s", e)
         pytest.fail(f"Failed to connect to Nextcloud with Playwright OAuth token: {e}")
     finally:
         await client.close()
@@ -1182,13 +1220,15 @@ def oauth_callback_server():
                 if state:
                     auth_states[state] = code
                     logger.info(
-                        f"OAuth callback received for state={state[:16]}... Code: {code[:20]}..."
+                        "OAuth callback received for state=%s... Code: %s...",
+                        state[:16],
+                        code[:20],
                     )
                 else:
                     # Fallback for flows without state parameter (legacy interactive flow)
                     auth_states["_default"] = code
                     logger.info(
-                        f"OAuth callback received (no state). Code: {code[:20]}..."
+                        "OAuth callback received (no state). Code: %s...", code[:20]
                     )
 
                 self.send_response(200)
@@ -1199,7 +1239,7 @@ def oauth_callback_server():
                 )
             else:
                 # Ignore requests without a code (e.g., favicon requests)
-                logger.debug(f"Ignoring request without auth code: {self.path}")
+                logger.debug("Ignoring request without auth code: %s", self.path)
                 self.send_response(404)
                 self.end_headers()
 
@@ -1251,7 +1291,7 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
     auth_states, callback_url = oauth_callback_server
 
     logger.info("Setting up shared OAuth client credentials for all test users...")
-    logger.info(f"Using real callback server at: {callback_url}")
+    logger.info("Using real callback server at: %s", callback_url)
 
     async with httpx.AsyncClient(timeout=30.0) as http_client:
         # OIDC Discovery
@@ -1277,7 +1317,7 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
             token_type="Bearer",  # Opaque tokens for port 8001
         )
 
-        logger.info(f"Shared OAuth client ready: {client_info.client_id[:16]}...")
+        logger.info("Shared OAuth client ready: %s...", client_info.client_id[:16])
         logger.info(
             "This opaque token client with full scopes will be reused for all test user authentications"
         )
@@ -1293,7 +1333,7 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
         # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
         try:
             logger.info(
-                f"Cleaning up shared OAuth client: {client_info.client_id[:16]}..."
+                "Cleaning up shared OAuth client: %s...", client_info.client_id[:16]
             )
             success = await delete_client(
                 nextcloud_url=nextcloud_host,
@@ -1304,15 +1344,19 @@ async def shared_oauth_client_credentials(anyio_backend, oauth_callback_server):
             )
             if success:
                 logger.info(
-                    f"Successfully deleted shared OAuth client: {client_info.client_id[:16]}..."
+                    "Successfully deleted shared OAuth client: %s...",
+                    client_info.client_id[:16],
                 )
             else:
                 logger.warning(
-                    f"Failed to delete shared OAuth client: {client_info.client_id[:16]}..."
+                    "Failed to delete shared OAuth client: %s...",
+                    client_info.client_id[:16],
                 )
         except Exception as e:
             logger.warning(
-                f"Error cleaning up shared OAuth client {client_info.client_id[:16]}...: {e}"
+                "Error cleaning up shared OAuth client %s...: %s",
+                client_info.client_id[:16],
+                e,
             )
 
 
@@ -1340,7 +1384,7 @@ async def shared_jwt_oauth_client_credentials(anyio_backend, oauth_callback_serv
     auth_states, callback_url = oauth_callback_server
 
     logger.info("Setting up shared JWT OAuth client credentials...")
-    logger.info(f"Using real callback server at: {callback_url}")
+    logger.info("Using real callback server at: %s", callback_url)
 
     async with httpx.AsyncClient(timeout=30.0) as http_client:
         # OIDC Discovery
@@ -1365,7 +1409,7 @@ async def shared_jwt_oauth_client_credentials(anyio_backend, oauth_callback_serv
             token_type="JWT",  # Explicitly set JWT token type
         )
 
-        logger.info(f"Shared JWT OAuth client ready: {client_info.client_id[:16]}...")
+        logger.info("Shared JWT OAuth client ready: %s...", client_info.client_id[:16])
         logger.info(
             "This JWT client with full scopes will be reused for JWT MCP server tests"
         )
@@ -1381,7 +1425,7 @@ async def shared_jwt_oauth_client_credentials(anyio_backend, oauth_callback_serv
         # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
         try:
             logger.info(
-                f"Cleaning up shared JWT OAuth client: {client_info.client_id[:16]}..."
+                "Cleaning up shared JWT OAuth client: %s...", client_info.client_id[:16]
             )
             success = await delete_client(
                 nextcloud_url=nextcloud_host,
@@ -1392,15 +1436,19 @@ async def shared_jwt_oauth_client_credentials(anyio_backend, oauth_callback_serv
             )
             if success:
                 logger.info(
-                    f"Successfully deleted shared JWT OAuth client: {client_info.client_id[:16]}..."
+                    "Successfully deleted shared JWT OAuth client: %s...",
+                    client_info.client_id[:16],
                 )
             else:
                 logger.warning(
-                    f"Failed to delete shared JWT OAuth client: {client_info.client_id[:16]}..."
+                    "Failed to delete shared JWT OAuth client: %s...",
+                    client_info.client_id[:16],
                 )
         except Exception as e:
             logger.warning(
-                f"Error cleaning up shared JWT OAuth client {client_info.client_id[:16]}...: {e}"
+                "Error cleaning up shared JWT OAuth client %s...: %s",
+                client_info.client_id[:16],
+                e,
             )
 
 
@@ -1425,13 +1473,13 @@ async def get_mcp_server_resource_metadata(mcp_base_url: str) -> dict:
     """
     async with httpx.AsyncClient(timeout=30.0) as http_client:
         prm_url = f"{mcp_base_url}/.well-known/oauth-protected-resource"
-        logger.debug(f"Fetching resource metadata from: {prm_url}")
+        logger.debug("Fetching resource metadata from: %s", prm_url)
 
         response = await http_client.get(prm_url)
         response.raise_for_status()
         metadata = response.json()
 
-        logger.debug(f"Resource metadata: {metadata}")
+        logger.debug("Resource metadata: %s", metadata)
         return metadata
 
 
@@ -1456,7 +1504,10 @@ async def _create_oauth_client_with_scopes(
     from nextcloud_mcp_server.auth.client_registration import register_client
 
     logger.info(
-        f"Creating {token_type} OAuth client '{client_name}' with scopes: {allowed_scopes} using DCR"
+        "Creating %s OAuth client '%s' with scopes: %s using DCR",
+        token_type,
+        client_name,
+        allowed_scopes,
     )
 
     # Get Nextcloud host and registration endpoint
@@ -1486,7 +1537,9 @@ async def _create_oauth_client_with_scopes(
     )
 
     logger.info(
-        f"Created OAuth client via DCR: {client_info.client_id[:16]}... with scopes: {allowed_scopes}"
+        "Created OAuth client via DCR: %s... with scopes: %s",
+        client_info.client_id[:16],
+        allowed_scopes,
     )
     if client_info.registration_access_token:
         logger.info(
@@ -1544,7 +1597,7 @@ async def read_only_oauth_client_credentials(anyio_backend, oauth_callback_serve
         # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
         try:
             logger.info(
-                f"Cleaning up read-only OAuth client: {client_info.client_id[:16]}..."
+                "Cleaning up read-only OAuth client: %s...", client_info.client_id[:16]
             )
             success = await delete_client(
                 nextcloud_url=nextcloud_host,
@@ -1555,15 +1608,19 @@ async def read_only_oauth_client_credentials(anyio_backend, oauth_callback_serve
             )
             if success:
                 logger.info(
-                    f"Successfully deleted read-only OAuth client: {client_info.client_id[:16]}..."
+                    "Successfully deleted read-only OAuth client: %s...",
+                    client_info.client_id[:16],
                 )
             else:
                 logger.warning(
-                    f"Failed to delete read-only OAuth client: {client_info.client_id[:16]}..."
+                    "Failed to delete read-only OAuth client: %s...",
+                    client_info.client_id[:16],
                 )
         except Exception as e:
             logger.warning(
-                f"Error cleaning up read-only OAuth client {client_info.client_id[:16]}...: {e}"
+                "Error cleaning up read-only OAuth client %s...: %s",
+                client_info.client_id[:16],
+                e,
             )
 
 
@@ -1613,7 +1670,7 @@ async def write_only_oauth_client_credentials(anyio_backend, oauth_callback_serv
         # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
         try:
             logger.info(
-                f"Cleaning up write-only OAuth client: {client_info.client_id[:16]}..."
+                "Cleaning up write-only OAuth client: %s...", client_info.client_id[:16]
             )
             success = await delete_client(
                 nextcloud_url=nextcloud_host,
@@ -1624,15 +1681,19 @@ async def write_only_oauth_client_credentials(anyio_backend, oauth_callback_serv
             )
             if success:
                 logger.info(
-                    f"Successfully deleted write-only OAuth client: {client_info.client_id[:16]}..."
+                    "Successfully deleted write-only OAuth client: %s...",
+                    client_info.client_id[:16],
                 )
             else:
                 logger.warning(
-                    f"Failed to delete write-only OAuth client: {client_info.client_id[:16]}..."
+                    "Failed to delete write-only OAuth client: %s...",
+                    client_info.client_id[:16],
                 )
         except Exception as e:
             logger.warning(
-                f"Error cleaning up write-only OAuth client {client_info.client_id[:16]}...: {e}"
+                "Error cleaning up write-only OAuth client %s...: %s",
+                client_info.client_id[:16],
+                e,
             )
 
 
@@ -1682,7 +1743,8 @@ async def full_access_oauth_client_credentials(anyio_backend, oauth_callback_ser
         # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
         try:
             logger.info(
-                f"Cleaning up full-access OAuth client: {client_info.client_id[:16]}..."
+                "Cleaning up full-access OAuth client: %s...",
+                client_info.client_id[:16],
             )
             success = await delete_client(
                 nextcloud_url=nextcloud_host,
@@ -1693,15 +1755,19 @@ async def full_access_oauth_client_credentials(anyio_backend, oauth_callback_ser
             )
             if success:
                 logger.info(
-                    f"Successfully deleted full-access OAuth client: {client_info.client_id[:16]}..."
+                    "Successfully deleted full-access OAuth client: %s...",
+                    client_info.client_id[:16],
                 )
             else:
                 logger.warning(
-                    f"Failed to delete full-access OAuth client: {client_info.client_id[:16]}..."
+                    "Failed to delete full-access OAuth client: %s...",
+                    client_info.client_id[:16],
                 )
         except Exception as e:
             logger.warning(
-                f"Error cleaning up full-access OAuth client {client_info.client_id[:16]}...: {e}"
+                "Error cleaning up full-access OAuth client %s...: %s",
+                client_info.client_id[:16],
+                e,
             )
 
 
@@ -1756,7 +1822,8 @@ async def no_custom_scopes_oauth_client_credentials(
         # Cleanup: Delete OAuth client from Nextcloud using RFC 7592
         try:
             logger.info(
-                f"Cleaning up no-custom-scopes OAuth client: {client_info.client_id[:16]}..."
+                "Cleaning up no-custom-scopes OAuth client: %s...",
+                client_info.client_id[:16],
             )
             success = await delete_client(
                 nextcloud_url=nextcloud_host,
@@ -1767,15 +1834,19 @@ async def no_custom_scopes_oauth_client_credentials(
             )
             if success:
                 logger.info(
-                    f"Successfully deleted no-custom-scopes OAuth client: {client_info.client_id[:16]}..."
+                    "Successfully deleted no-custom-scopes OAuth client: %s...",
+                    client_info.client_id[:16],
                 )
             else:
                 logger.warning(
-                    f"Failed to delete no-custom-scopes OAuth client: {client_info.client_id[:16]}..."
+                    "Failed to delete no-custom-scopes OAuth client: %s...",
+                    client_info.client_id[:16],
                 )
         except Exception as e:
             logger.warning(
-                f"Error cleaning up no-custom-scopes OAuth client {client_info.client_id[:16]}...: {e}"
+                "Error cleaning up no-custom-scopes OAuth client %s...: %s",
+                client_info.client_id[:16],
+                e,
             )
 
 
@@ -1822,9 +1893,9 @@ async def playwright_oauth_token(
         shared_oauth_client_credentials
     )
 
-    logger.info(f"Starting Playwright-based OAuth flow for {username}...")
-    logger.info(f"Using shared OAuth client: {client_id[:16]}...")
-    logger.info(f"Using real callback server at: {callback_url}")
+    logger.info("Starting Playwright-based OAuth flow for %s...", username)
+    logger.info("Using shared OAuth client: %s...", client_id[:16])
+    logger.info("Using real callback server at: %s", callback_url)
 
     # Fetch MCP server's resource metadata to get correct audience
     mcp_server_base_url = "http://localhost:8001"
@@ -1832,16 +1903,18 @@ async def playwright_oauth_token(
         resource_metadata = await get_mcp_server_resource_metadata(mcp_server_base_url)
         resource_id = resource_metadata.get("resource")
         if resource_id:
-            logger.info(f"MCP server resource ID (for audience): {resource_id[:16]}...")
+            logger.info(
+                "MCP server resource ID (for audience): %s...", resource_id[:16]
+            )
         else:
             logger.warning("No resource ID in metadata - token may have wrong audience")
     except Exception as e:
-        logger.warning(f"Failed to fetch resource metadata: {e}")
+        logger.warning("Failed to fetch resource metadata: %s", e)
         resource_id = None
 
     # Generate unique state parameter for this OAuth flow
     state = secrets.token_urlsafe(32)
-    logger.debug(f"Generated state: {state[:16]}...")
+    logger.debug("Generated state: %s...", state[:16])
 
     # Construct authorization URL with state and resource parameters
     auth_url = (
@@ -1856,7 +1929,7 @@ async def playwright_oauth_token(
     # Add resource parameter (RFC 8707) if available
     if resource_id:
         auth_url += f"&resource={quote(resource_id, safe='')}"
-        logger.debug(f"Added resource parameter to auth URL: {resource_id[:16]}...")
+        logger.debug("Added resource parameter to auth URL: %s...", resource_id[:16])
 
     # Async browser automation using pytest-playwright's browser fixture
     context = await browser.new_context(ignore_https_errors=True)
@@ -1864,12 +1937,12 @@ async def playwright_oauth_token(
 
     try:
         # Navigate to authorization URL
-        logger.debug(f"Navigating to: {auth_url}")
+        logger.debug("Navigating to: %s", auth_url)
         await page.goto(auth_url, wait_until="networkidle", timeout=60000)
 
         # Check if we need to login first
         current_url = page.url
-        logger.debug(f"Current URL after navigation: {current_url}")
+        logger.debug("Current URL after navigation: %s", current_url)
 
         # If we're on a login page, fill in credentials
         if "/login" in current_url or "/index.php/login" in current_url:
@@ -1890,7 +1963,7 @@ async def playwright_oauth_token(
             # Wait for navigation after login
             await page.wait_for_load_state("networkidle", timeout=60000)
             current_url = page.url
-            logger.info(f"After login, current URL: {current_url}")
+            logger.info("After login, current URL: %s", current_url)
 
         # Wait for the OIDC redirect chain to settle before handling consent.
         # After login, the flow goes: /apps/oidc/redirect (JS page) → JS navigates
@@ -1909,7 +1982,7 @@ async def playwright_oauth_token(
             await page.wait_for_load_state("networkidle", timeout=10000)
             await _handle_oauth_consent_screen(page, username)
         else:
-            logger.debug(f"No consent screen (URL: {page.url})")
+            logger.debug("No consent screen (URL: %s)", page.url)
 
         # Wait for callback server to receive the auth code
         # Browser will be redirected to localhost:8081 which will capture the code
@@ -1921,14 +1994,14 @@ async def playwright_oauth_token(
                 # Take a screenshot for debugging
                 screenshot_path = "/tmp/playwright_oauth_error.png"
                 await page.screenshot(path=screenshot_path)
-                logger.error(f"Screenshot saved to {screenshot_path}")
+                logger.error("Screenshot saved to %s", screenshot_path)
                 raise TimeoutError(
                     f"Timeout waiting for OAuth callback (state={state[:16]}...)"
                 )
             await anyio.sleep(0.5)
 
         auth_code = auth_states[state]
-        logger.info(f"Successfully received authorization code: {auth_code[:20]}...")
+        logger.info("Successfully received authorization code: %s...", auth_code[:20])
 
     finally:
         await context.close()
@@ -2006,45 +2079,45 @@ async def _handle_oauth_consent_screen(page, username: str = "user"):
         consent_div = await page.query_selector("#oidc-consent")
 
         if not consent_div:
-            logger.debug(f"No consent screen found for {username}")
+            logger.debug("No consent screen found for %s", username)
             return False
 
-        logger.info(f"Consent screen detected for {username}")
+        logger.info("Consent screen detected for %s", username)
 
         # Get consent screen data attributes
         client_name = await consent_div.get_attribute("data-client-name")
         scopes_attr = await consent_div.get_attribute("data-scopes")
-        logger.info(f"  Client: {client_name}")
-        logger.info(f"  Requested scopes: {scopes_attr}")
+        logger.info("  Client: %s", client_name)
+        logger.info("  Requested scopes: %s", scopes_attr)
 
         # Wait for Vue.js to render the Allow button (max 10 seconds)
         try:
             await page.wait_for_selector('button:has-text("Allow")', timeout=10000)
             logger.info("  Allow button rendered by Vue.js")
         except Exception as e:
-            logger.warning(f"  Timeout waiting for Allow button: {e}")
+            logger.warning("  Timeout waiting for Allow button: %s", e)
             # Take a screenshot for debugging
             screenshot_path = f"/tmp/consent_no_allow_button_{username}.png"
             await page.screenshot(path=screenshot_path)
-            logger.error(f"  Screenshot saved to {screenshot_path}")
+            logger.error("  Screenshot saved to %s", screenshot_path)
             raise
 
         # Check all scope checkboxes
         scope_checkboxes = await page.query_selector_all('input[type="checkbox"]')
         if scope_checkboxes:
-            logger.info(f"  Found {len(scope_checkboxes)} scope checkboxes")
+            logger.info("  Found %s scope checkboxes", len(scope_checkboxes))
             for i, checkbox in enumerate(scope_checkboxes):
                 # Check if checkbox is not already checked
                 is_checked = await checkbox.is_checked()
                 is_disabled = await checkbox.is_disabled()
                 if not is_checked and not is_disabled:
                     await checkbox.check()
-                    logger.info(f"    ✓ Checked scope checkbox {i + 1}")
+                    logger.info("    ✓ Checked scope checkbox %s", i + 1)
                 elif is_checked:
-                    logger.info(f"    ✓ Scope checkbox {i + 1} already checked")
+                    logger.info("    ✓ Scope checkbox %s already checked", i + 1)
                 elif is_disabled:
                     logger.info(
-                        f"    ⊗ Scope checkbox {i + 1} disabled (required scope)"
+                        "    ⊗ Scope checkbox %s disabled (required scope)", i + 1
                     )
 
         # Click the Allow button to grant consent with retry logic.
@@ -2053,7 +2126,7 @@ async def _handle_oauth_consent_screen(page, username: str = "user"):
         allow_button = page.locator('button:has-text("Allow")')
 
         if await allow_button.count() > 0:
-            logger.info(f"  Clicking Allow button to grant consent for {username}...")
+            logger.info("  Clicking Allow button to grant consent for %s...", username)
 
             for attempt in range(3):
                 await allow_button.scroll_into_view_if_needed()
@@ -2062,28 +2135,30 @@ async def _handle_oauth_consent_screen(page, username: str = "user"):
                     await page.wait_for_url(
                         lambda url: "/consent" not in url, timeout=10000
                     )
-                    logger.info(f"  Consent granted for {username}")
+                    logger.info("  Consent granted for %s", username)
                     return True
                 except (TimeoutError, PlaywrightTimeoutError):
                     if attempt == 2:
                         screenshot_path = f"/tmp/consent_click_failed_{username}.png"
                         await page.screenshot(path=screenshot_path)
                         logger.error(
-                            f"  Consent click failed after 3 attempts for {username}, "
-                            f"screenshot: {screenshot_path}"
+                            "  Consent click failed after 3 attempts for %s, screenshot: %s",
+                            username,
+                            screenshot_path,
                         )
                         raise
                     logger.warning(
-                        f"  Consent click attempt {attempt + 1} didn't navigate, retrying..."
+                        "  Consent click attempt %s didn't navigate, retrying...",
+                        attempt + 1,
                     )
 
             raise RuntimeError("consent click retry loop exited unexpectedly")
         else:
-            logger.error(f"  Allow button not found for {username}")
+            logger.error("  Allow button not found for %s", username)
             return False
 
     except Exception as e:
-        logger.error(f"Error handling consent screen for {username}: {e}")
+        logger.error("Error handling consent screen for %s: %s", username, e)
         raise
 
 
@@ -2127,9 +2202,9 @@ async def _get_oauth_token_with_scopes(
         shared_oauth_client_credentials
     )
 
-    logger.info(f"Starting Playwright-based OAuth flow with scopes: {scopes}")
-    logger.info(f"Using shared OAuth client: {client_id[:16]}...")
-    logger.info(f"Using real callback server at: {callback_url}")
+    logger.info("Starting Playwright-based OAuth flow with scopes: %s", scopes)
+    logger.info("Using shared OAuth client: %s...", client_id[:16])
+    logger.info("Using real callback server at: %s", callback_url)
 
     # If no resource provided, fetch from MCP server metadata
     if resource is None:
@@ -2140,18 +2215,18 @@ async def _get_oauth_token_with_scopes(
             resource = resource_metadata.get("resource")
             if resource:
                 logger.info(
-                    f"MCP server resource ID (for audience): {resource[:16]}..."
+                    "MCP server resource ID (for audience): %s...", resource[:16]
                 )
             else:
                 logger.warning(
                     "No resource ID in metadata - token may have wrong audience"
                 )
         except Exception as e:
-            logger.warning(f"Failed to fetch resource metadata: {e}")
+            logger.warning("Failed to fetch resource metadata: %s", e)
 
     # Generate unique state parameter for this OAuth flow
     state = secrets.token_urlsafe(32)
-    logger.debug(f"Generated state: {state[:16]}...")
+    logger.debug("Generated state: %s...", state[:16])
 
     # URL-encode scopes
     scopes_encoded = quote(scopes, safe="")
@@ -2169,7 +2244,7 @@ async def _get_oauth_token_with_scopes(
     # Add resource parameter (RFC 8707) if available
     if resource:
         auth_url += f"&resource={quote(resource, safe='')}"
-        logger.debug(f"Added resource parameter to auth URL: {resource[:16]}...")
+        logger.debug("Added resource parameter to auth URL: %s...", resource[:16])
 
     # Async browser automation using pytest-playwright's browser fixture
     context = await browser.new_context(ignore_https_errors=True)
@@ -2177,12 +2252,12 @@ async def _get_oauth_token_with_scopes(
 
     try:
         # Navigate to authorization URL
-        logger.debug(f"Navigating to: {auth_url}")
+        logger.debug("Navigating to: %s", auth_url)
         await page.goto(auth_url, wait_until="networkidle", timeout=60000)
 
         # Check if we need to login first
         current_url = page.url
-        logger.debug(f"Current URL after navigation: {current_url}")
+        logger.debug("Current URL after navigation: %s", current_url)
 
         # If we're on a login page, fill in credentials
         if "/login" in current_url or "/index.php/login" in current_url:
@@ -2203,10 +2278,10 @@ async def _get_oauth_token_with_scopes(
             # Wait for navigation after login
             await page.wait_for_load_state("networkidle", timeout=60000)
             current_url = page.url
-            logger.info(f"After login, current URL: {current_url}")
+            logger.info("After login, current URL: %s", current_url)
 
         # Wait for the OIDC redirect chain to settle before handling consent.
-        logger.info(f"Waiting for OIDC redirect chain to settle for {username}...")
+        logger.info("Waiting for OIDC redirect chain to settle for %s...", username)
         settle_start = time.time()
         while time.time() - settle_start < 15:
             current_url = page.url
@@ -2219,10 +2294,10 @@ async def _get_oauth_token_with_scopes(
             await page.wait_for_load_state("networkidle", timeout=10000)
             await _handle_oauth_consent_screen(page, username)
         else:
-            logger.debug(f"No consent screen for {username} (URL: {page.url})")
+            logger.debug("No consent screen for %s (URL: %s)", username, page.url)
 
         # Wait for callback server to receive the auth code
-        logger.info(f"Waiting for auth code with state: {state[:16]}...")
+        logger.info("Waiting for auth code with state: %s...", state[:16])
         start_time = time.time()
         timeout = 30
 
@@ -2261,7 +2336,7 @@ async def _get_oauth_token_with_scopes(
         if not access_token:
             raise ValueError(f"No access_token in response: {token_data}")
 
-        logger.info(f"Successfully obtained OAuth access token with scopes: {scopes}")
+        logger.info("Successfully obtained OAuth access token with scopes: %s", scopes)
         return access_token
 
 
@@ -2390,7 +2465,7 @@ async def test_users_setup(anyio_backend, nc_client: NextcloudClient):
 
     logger.info("=" * 60)
     logger.info("EXECUTING test_users_setup FIXTURE (session-scoped)")
-    logger.info(f"Creating test users: {list(test_user_configs.keys())}")
+    logger.info("Creating test users: %s", list(test_user_configs.keys()))
     logger.info("=" * 60)
     created_users = []
 
@@ -2416,10 +2491,12 @@ async def test_users_setup(anyio_backend, nc_client: NextcloudClient):
                     logger.info("Editors group ready")
                 else:
                     logger.warning(
-                        f"Group creation returned {response.status_code}: {response.text}"
+                        "Group creation returned %s: %s",
+                        response.status_code,
+                        response.text,
                     )
         except Exception as e:
-            logger.warning(f"Error creating editors group (may already exist): {e}")
+            logger.warning("Error creating editors group (may already exist): %s", e)
 
         # Create each test user (idempotent - check if exists first)
         for username, config in test_user_configs.items():
@@ -2428,7 +2505,7 @@ async def test_users_setup(anyio_backend, nc_client: NextcloudClient):
             try:
                 await nc_client.users.get_user_details(username)
                 user_exists = True
-                logger.info(f"Test user {username} already exists, skipping creation")
+                logger.info("Test user %s already exists, skipping creation", username)
             except Exception:
                 # User doesn't exist, proceed with creation
                 pass
@@ -2441,23 +2518,23 @@ async def test_users_setup(anyio_backend, nc_client: NextcloudClient):
                         display_name=config["display_name"],
                         email=config["email"],
                     )
-                    logger.info(f"Created test user: {username}")
+                    logger.info("Created test user: %s", username)
                     created_users.append(username)  # Only track users WE created
 
                     # Add user to groups if specified
                     for group in config["groups"]:
                         try:
                             await nc_client.users.add_user_to_group(username, group)
-                            logger.info(f"Added {username} to group {group}")
+                            logger.info("Added %s to group %s", username, group)
                         except Exception as e:
                             logger.warning(
-                                f"Error adding {username} to group {group}: {e}"
+                                "Error adding %s to group %s: %s", username, group, e
                             )
 
                 except Exception as e:
-                    logger.warning(f"Could not create user {username}: {e}")
+                    logger.warning("Could not create user %s: %s", username, e)
 
-        logger.info(f"Test users setup complete: {created_users}")
+        logger.info("Test users setup complete: %s", created_users)
         yield test_user_configs
 
     finally:
@@ -2466,9 +2543,9 @@ async def test_users_setup(anyio_backend, nc_client: NextcloudClient):
         for username in created_users:
             try:
                 await nc_client.users.delete_user(username)
-                logger.info(f"Deleted test user: {username}")
+                logger.info("Deleted test user: %s", username)
             except Exception as e:
-                logger.warning(f"Error deleting test user {username}: {e}")
+                logger.warning("Error deleting test user %s: %s", username, e)
 
         # Clean up all app passwords from MCP server to prevent stale scanners
         import subprocess
@@ -2490,8 +2567,9 @@ async def test_users_setup(anyio_backend, nc_client: NextcloudClient):
         )
         if result.returncode != 0:
             logger.warning(
-                f"Failed to clean up app passwords (rc={result.returncode}): "
-                f"{result.stderr}"
+                "Failed to clean up app passwords (rc=%s): %s",
+                result.returncode,
+                result.stderr,
             )
         else:
             logger.info("Cleaned up all test app passwords")
@@ -2531,28 +2609,28 @@ async def _get_oauth_token_for_user(
         shared_oauth_client_credentials
     )
 
-    logger.info(f"Getting OAuth token for user: {username}...")
-    logger.info(f"Using shared OAuth client: {client_id[:16]}...")
+    logger.info("Getting OAuth token for user: %s...", username)
+    logger.info("Using shared OAuth client: %s...", client_id[:16])
 
     # Fetch resource identifier from PRM endpoint (RFC 9728)
     mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8001")
     prm_url = f"{mcp_server_url}/.well-known/oauth-protected-resource"
 
-    logger.debug(f"Fetching PRM metadata from: {prm_url}")
+    logger.debug("Fetching PRM metadata from: %s", prm_url)
     async with httpx.AsyncClient() as client:
         prm_response = await client.get(prm_url, timeout=10)
         if prm_response.status_code != 200:
-            logger.warning(f"Failed to fetch PRM metadata: {prm_response.status_code}")
+            logger.warning("Failed to fetch PRM metadata: %s", prm_response.status_code)
             # Fallback to default if PRM fetch fails
             mcp_server_resource = f"{mcp_server_url}/mcp"
         else:
             prm_data = prm_response.json()
             mcp_server_resource = prm_data.get("resource", f"{mcp_server_url}/mcp")
-            logger.info(f"Using resource from PRM: {mcp_server_resource}")
+            logger.info("Using resource from PRM: %s", mcp_server_resource)
 
     # Generate unique state parameter for this OAuth flow
     state = secrets.token_urlsafe(32)
-    logger.debug(f"Generated state for {username}: {state[:16]}...")
+    logger.debug("Generated state for %s: %s...", username, state[:16])
 
     # Construct authorization URL with state parameter
     # Include resource parameter discovered from PRM endpoint
@@ -2566,8 +2644,8 @@ async def _get_oauth_token_for_user(
         f"scope=openid%20profile%20email%20notes.read%20notes.write%20calendar.read%20calendar.write%20contacts.read%20contacts.write%20cookbook.read%20cookbook.write%20deck.read%20deck.write%20tables.read%20tables.write%20files.read%20files.write%20sharing.read%20sharing.write"
     )
 
-    logger.info(f"Performing browser OAuth flow for {username}...")
-    logger.debug(f"Authorization URL: {auth_url}")
+    logger.info("Performing browser OAuth flow for %s...", username)
+    logger.debug("Authorization URL: %s", auth_url)
 
     # Browser automation
     context = await browser.new_context(ignore_https_errors=True)
@@ -2579,7 +2657,7 @@ async def _get_oauth_token_for_user(
 
         # Login if needed
         if "/login" in current_url or "/index.php/login" in current_url:
-            logger.info(f"Logging in as {username}...")
+            logger.info("Logging in as %s...", username)
             await page.wait_for_selector('input[name="user"]', timeout=10000)
             await page.fill('input[name="user"]', username)
             await page.fill('input[name="password"]', password)
@@ -2592,7 +2670,7 @@ async def _get_oauth_token_for_user(
         # to /authorize → 303 to /consent. networkidle fires after the JS page
         # loads but before the JS navigation starts, so we must wait for the URL
         # to reach either the consent page or the callback.
-        logger.info(f"Waiting for OIDC redirect chain to settle for {username}...")
+        logger.info("Waiting for OIDC redirect chain to settle for %s...", username)
         settle_start = time.time()
         while time.time() - settle_start < 15:
             current_url = page.url
@@ -2601,8 +2679,9 @@ async def _get_oauth_token_for_user(
             await anyio.sleep(0.5)
         else:
             logger.warning(
-                f"OIDC redirect chain did not settle for {username}, "
-                f"current URL: {page.url}"
+                "OIDC redirect chain did not settle for %s, current URL: %s",
+                username,
+                page.url,
             )
 
         # Handle consent screen if present
@@ -2610,12 +2689,12 @@ async def _get_oauth_token_for_user(
             await page.wait_for_load_state("networkidle", timeout=10000)
             await _handle_oauth_consent_screen(page, username)
         else:
-            logger.debug(f"No consent screen for {username} (URL: {page.url})")
+            logger.debug("No consent screen for %s (URL: %s)", username, page.url)
 
         # Wait for callback server to receive the auth code
         # Browser will be redirected to localhost:8081 which will capture the code
         logger.info(
-            f"Waiting for callback server to receive auth code for {username}..."
+            "Waiting for callback server to receive auth code for %s...", username
         )
         timeout_seconds = 30
         start_time = time.time()
@@ -2624,20 +2703,20 @@ async def _get_oauth_token_for_user(
                 # Take screenshot for debugging
                 screenshot_path = f"/tmp/playwright_oauth_timeout_{username}.png"
                 await page.screenshot(path=screenshot_path)
-                logger.error(f"Screenshot saved to {screenshot_path}")
+                logger.error("Screenshot saved to %s", screenshot_path)
                 raise TimeoutError(
                     f"Timeout waiting for OAuth callback for {username} (state={state[:16]}...)"
                 )
             await anyio.sleep(0.5)
 
         auth_code = auth_states[state]
-        logger.info(f"Got auth code for {username}: {auth_code[:20]}...")
+        logger.info("Got auth code for %s: %s...", username, auth_code[:20])
 
     finally:
         await context.close()
 
     # Exchange code for token
-    logger.info(f"Exchanging auth code for access token ({username})...")
+    logger.info("Exchanging auth code for access token (%s)...", username)
     async with httpx.AsyncClient(timeout=30.0) as http_client:
         token_response = await http_client.post(
             token_endpoint,
@@ -2657,7 +2736,7 @@ async def _get_oauth_token_for_user(
         if not access_token:
             raise ValueError(f"No access_token for {username}: {token_data}")
 
-        logger.info(f"Successfully obtained OAuth token for {username}")
+        logger.info("Successfully obtained OAuth token for %s", username)
         return access_token
 
 
@@ -2685,7 +2764,9 @@ async def all_oauth_tokens(
 
     start_time = time.time()
     logger.info("Fetching OAuth tokens for all users in parallel...")
-    logger.info(f"Using callback server at {callback_url} with state-based correlation")
+    logger.info(
+        "Using callback server at %s with state-based correlation", callback_url
+    )
 
     async def get_token_with_delay(username: str, config: dict, delay: float):
         """Get token for a user after a small delay to stagger requests."""
@@ -2725,14 +2806,16 @@ async def all_oauth_tokens(
     for username in results:
         result = results[username]
         if isinstance(result, Exception):
-            logger.error(f"Failed to get OAuth token for {username}: {result}")
+            logger.error("Failed to get OAuth token for %s: %s", username, result)
             raise result
         tokens[username] = result
 
     elapsed = time.time() - start_time
     logger.info(
-        f"Successfully fetched {len(tokens)} OAuth tokens in parallel "
-        f"in {elapsed:.1f}s (~{elapsed / len(tokens):.1f}s per user)"
+        "Successfully fetched %s OAuth tokens in parallel in %ss (~%ss per user)",
+        len(tokens),
+        format(elapsed, ".1f"),
+        format(elapsed / len(tokens), ".1f"),
     )
     return tokens
 
@@ -2852,9 +2935,9 @@ async def test_user(nc_client: NextcloudClient):
     # Cleanup after test
     try:
         await nc_client.users.delete_user(userid)
-        logger.debug(f"Cleaned up test user: {userid}")
+        logger.debug("Cleaned up test user: %s", userid)
     except Exception as e:
-        logger.warning(f"Failed to cleanup test user {userid}: {e}")
+        logger.warning("Failed to cleanup test user %s: %s", userid, e)
 
 
 @pytest.fixture
@@ -2876,16 +2959,16 @@ async def test_group(nc_client: NextcloudClient):
 
     # Create the group
     await nc_client.groups.create_group(groupid)
-    logger.debug(f"Created test group: {groupid}")
+    logger.debug("Created test group: %s", groupid)
 
     yield groupid
 
     # Cleanup after test
     try:
         await nc_client.groups.delete_group(groupid)
-        logger.debug(f"Cleaned up test group: {groupid}")
+        logger.debug("Cleaned up test group: %s", groupid)
     except Exception as e:
-        logger.warning(f"Failed to cleanup test group {groupid}: {e}")
+        logger.warning("Failed to cleanup test group %s: %s", groupid, e)
 
 
 @pytest.fixture
@@ -2903,7 +2986,7 @@ async def test_user_in_group(nc_client: NextcloudClient, test_user, test_group):
 
     # Add user to group
     await nc_client.users.add_user_to_group(user_config["userid"], groupid)
-    logger.debug(f"Added user {user_config['userid']} to group {groupid}")
+    logger.debug("Added user %s to group %s", user_config["userid"], groupid)
 
     yield (user_config, groupid)
 
@@ -2950,7 +3033,9 @@ async def configure_astrolabe_for_mcp_server(nc_client):
             Dict with client_id and client_secret
         """
         logger.info(
-            f"Configuring Astrolabe for MCP server: {mcp_server_internal_url} (public: {mcp_server_public_url})"
+            "Configuring Astrolabe for MCP server: %s (public: %s)",
+            mcp_server_internal_url,
+            mcp_server_public_url,
         )
 
         # Configure MCP server URLs in Nextcloud system config
@@ -3003,7 +3088,7 @@ async def configure_astrolabe_for_mcp_server(nc_client):
                 f"Expected: {mcp_server_internal_url}, Got: {actual_url}"
             )
 
-        logger.info(f"✓ MCP server URL configured and verified: {actual_url}")
+        logger.info("✓ MCP server URL configured and verified: %s", actual_url)
 
         # Configure public URL
         result = subprocess.run(
@@ -3031,7 +3116,7 @@ async def configure_astrolabe_for_mcp_server(nc_client):
                 f"stderr: {result.stderr}, stdout: {result.stdout}"
             )
 
-        logger.info(f"✓ MCP server public URL configured: {mcp_server_public_url}")
+        logger.info("✓ MCP server public URL configured: %s", mcp_server_public_url)
 
         # Remove existing OAuth client if it exists
         try:
@@ -3050,7 +3135,7 @@ async def configure_astrolabe_for_mcp_server(nc_client):
                 check=False,  # Don't fail if client doesn't exist
                 capture_output=True,
             )
-            logger.info(f"Removed existing OAuth client: {client_id}")
+            logger.info("Removed existing OAuth client: %s", client_id)
         except Exception:
             pass
 
@@ -3096,7 +3181,7 @@ async def configure_astrolabe_for_mcp_server(nc_client):
                 "Failed to extract client_secret from OAuth client creation"
             )
 
-        logger.info(f"✓ OAuth client created: {client_id}")
+        logger.info("✓ OAuth client created: %s", client_id)
 
         # Store client credentials in Nextcloud system config
         subprocess.run(
@@ -3136,7 +3221,7 @@ async def configure_astrolabe_for_mcp_server(nc_client):
         )
 
         logger.info("✓ Client credentials stored in system config")
-        logger.info(f"Astrolabe configured for MCP server: {mcp_server_public_url}")
+        logger.info("Astrolabe configured for MCP server: %s", mcp_server_public_url)
 
         return {"client_id": client_id, "client_secret": client_secret}
 

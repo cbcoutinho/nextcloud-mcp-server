@@ -92,9 +92,11 @@ class PCA:
             self.explained_variance_ratio_ = np.zeros(self.n_components)
 
         logger.debug(
-            f"PCA fit: {n_samples} samples, {n_features} features → "
-            f"{self.n_components} components, "
-            f"explained variance: {self.explained_variance_ratio_}"
+            "PCA fit: %s samples, %s features → %s components, explained variance: %s",
+            n_samples,
+            n_features,
+            self.n_components,
+            self.explained_variance_ratio_,
         )
 
         return self

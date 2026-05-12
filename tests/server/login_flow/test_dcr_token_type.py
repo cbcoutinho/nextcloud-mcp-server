@@ -157,7 +157,7 @@ async def get_oauth_token_with_client(
         try:
             await _handle_oauth_consent_screen(page, username)
         except Exception as e:
-            logger.debug(f"No consent screen or already authorized: {e}")
+            logger.debug("No consent screen or already authorized: %s", e)
 
         # Wait for callback
         logger.info("Waiting for OAuth callback...")
@@ -171,7 +171,7 @@ async def get_oauth_token_with_client(
             await anyio.sleep(0.5)
 
         auth_code = auth_states[state]
-        logger.info(f"Got auth code: {auth_code[:20]}...")
+        logger.info("Got auth code: %s...", auth_code[:20])
 
     finally:
         await context.close()
@@ -245,7 +245,7 @@ async def test_dcr_respects_jwt_token_type(
         token_type="jwt",
     )
 
-    logger.info(f"Registered JWT client: {client_info.client_id[:16]}...")
+    logger.info("Registered JWT client: %s...", client_info.client_id[:16])
 
     # Obtain token via OAuth flow
     access_token = await get_oauth_token_with_client(
@@ -280,8 +280,8 @@ async def test_dcr_respects_jwt_token_type(
     assert "notes.write" in scopes, "JWT scope claim missing notes.write"
 
     logger.info(
-        f"✅ DCR with token_type=jwt works correctly! "
-        f"Token is JWT format with scope claim: {payload['scope']}"
+        "✅ DCR with token_type=jwt works correctly! Token is JWT format with scope claim: %s",
+        payload["scope"],
     )
 
 
@@ -329,7 +329,7 @@ async def test_dcr_respects_bearer_token_type(
         token_type="opaque",
     )
 
-    logger.info(f"Registered Opaque token client: {client_info.client_id[:16]}...")
+    logger.info("Registered Opaque token client: %s...", client_info.client_id[:16])
 
     # Obtain token via OAuth flow
     access_token = await get_oauth_token_with_client(
@@ -357,8 +357,8 @@ async def test_dcr_respects_bearer_token_type(
         pass
 
     logger.info(
-        f"✅ DCR with token_type=opaque works correctly! "
-        f"Token is opaque (not JWT format): {access_token[:30]}..."
+        "✅ DCR with token_type=opaque works correctly! Token is opaque (not JWT format): %s...",
+        access_token[:30],
     )
 
 
@@ -390,8 +390,8 @@ async def test_jwt_tokens_embed_scopes_in_payload():
     # but we document the behavior explicitly here for reference
 
     logger.info(
-        "✅ JWT token scope embedding verified. "
-        f"Expected scopes in JWT payload: {DEFAULT_FULL_SCOPES}"
+        "✅ JWT token scope embedding verified. Expected scopes in JWT payload: %s",
+        DEFAULT_FULL_SCOPES,
     )
 
     # This test primarily serves as documentation

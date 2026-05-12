@@ -52,8 +52,8 @@ def get_alembic_config(database_path: str | Path | None = None) -> Config:
     url = f"sqlite+aiosqlite:///{db_path}"
     config.set_main_option("sqlalchemy.url", url)
 
-    logger.debug(f"Alembic script location: {script_location}")
-    logger.debug(f"Database: {db_path}")
+    logger.debug("Alembic script location: %s", script_location)
+    logger.debug("Database: %s", db_path)
 
     return config
 
@@ -69,7 +69,7 @@ def upgrade_database(
         revision: Target revision (default: "head" for latest)
     """
     config = get_alembic_config(database_path)
-    logger.info(f"Upgrading database to revision: {revision}")
+    logger.info("Upgrading database to revision: %s", revision)
     command.upgrade(config, revision)
     logger.info("Database upgrade completed successfully")
 
@@ -85,7 +85,7 @@ def downgrade_database(
         revision: Target revision (default: "-1" for previous version)
     """
     config = get_alembic_config(database_path)
-    logger.warning(f"Downgrading database to revision: {revision}")
+    logger.warning("Downgrading database to revision: %s", revision)
     command.downgrade(config, revision)
     logger.info("Database downgrade completed successfully")
 
@@ -107,7 +107,7 @@ def get_current_revision(database_path: str | Path | None = None) -> str | None:
     db_path = Path(database_path).resolve()
 
     if not db_path.exists():
-        logger.debug(f"Database does not exist: {db_path}")
+        logger.debug("Database does not exist: %s", db_path)
         return None
 
     try:
@@ -133,7 +133,7 @@ def get_current_revision(database_path: str | Path | None = None) -> str | None:
         return row[0] if row else None
 
     except Exception as e:
-        logger.error(f"Failed to get current revision: {e}")
+        logger.error("Failed to get current revision: %s", e)
         return None
 
 
@@ -152,7 +152,7 @@ def stamp_database(
         revision: Revision to stamp (default: "head" for latest)
     """
     config = get_alembic_config(database_path)
-    logger.info(f"Stamping database with revision: {revision}")
+    logger.info("Stamping database with revision: %s", revision)
     command.stamp(config, revision)
     logger.info("Database stamped successfully")
 
@@ -181,7 +181,7 @@ def create_migration(message: str, autogenerate: bool = False) -> None:
         and migrations must be written manually.
     """
     config = get_alembic_config()
-    logger.info(f"Creating new migration: {message}")
+    logger.info("Creating new migration: %s", message)
 
     if autogenerate:
         logger.warning(

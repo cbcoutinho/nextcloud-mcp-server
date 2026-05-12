@@ -133,8 +133,8 @@ async def register_client(
     if resource_url:
         client_metadata["resource_url"] = resource_url
 
-    logger.info(f"Registering OAuth client with Nextcloud: {client_name}")
-    logger.debug(f"Registration endpoint: {registration_endpoint}")
+    logger.info("Registering OAuth client with Nextcloud: %s", client_name)
+    logger.debug("Registration endpoint: %s", registration_endpoint)
 
     async with nextcloud_httpx_client(timeout=30.0) as client:
         for attempt in range(max_retries):
@@ -151,14 +151,17 @@ async def register_client(
                         retry_after = int(response.headers.get("Retry-After", 2))
                         wait_time = min(retry_after, 2**attempt)
                         logger.warning(
-                            f"Rate limited (429) registering client, "
-                            f"retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})"
+                            "Rate limited (429) registering client, retrying in %ss (attempt %s/%s)",
+                            wait_time,
+                            attempt + 1,
+                            max_retries,
                         )
                         await anyio.sleep(wait_time)
                         continue
                     else:
                         logger.error(
-                            f"Failed to register client after {max_retries} attempts: Rate limited (429)"
+                            "Failed to register client after %s attempts: Rate limited (429)",
+                            max_retries,
                         )
                         response.raise_for_status()
 
@@ -166,14 +169,15 @@ async def register_client(
 
                 client_info = response.json()
                 logger.info(
-                    f"Successfully registered client: {client_info.get('client_id')}"
+                    "Successfully registered client: %s", client_info.get("client_id")
                 )
                 expires_at = dt.datetime.fromtimestamp(
                     client_info.get("client_secret_expires_at")
                 )
                 logger.info(
-                    f"Client expires at: {expires_at} "
-                    f"(in {client_info.get('client_secret_expires_at', 0) - int(time.time())} seconds)"
+                    "Client expires at: %s (in %s seconds)",
+                    expires_at,
+                    client_info.get("client_secret_expires_at", 0) - int(time.time()),
                 )
 
                 # Log if RFC 7592 fields are present
@@ -206,13 +210,13 @@ async def register_client(
 
             except httpx.HTTPStatusError as e:
                 logger.error(
-                    f"Failed to register client: HTTP {e.response.status_code}"
+                    "Failed to register client: HTTP %s", e.response.status_code
                 )
-                logger.error(f"Response: {e.response.text}")
+                logger.error("Response: %s", e.response.text)
                 raise
             except KeyError as e:
                 logger.error(
-                    f"Invalid response from registration endpoint: missing {e}"
+                    "Invalid response from registration endpoint: missing %s", e
                 )
                 raise ValueError(f"Invalid registration response: missing {e}")
 
@@ -264,8 +268,8 @@ async def delete_client(
     else:
         deletion_endpoint = f"{nextcloud_url}/apps/oidc/register/{client_id}"
 
-    logger.info(f"Deleting OAuth client: {client_id[:16]}...")
-    logger.debug(f"Deletion endpoint: {deletion_endpoint}")
+    logger.info("Deleting OAuth client: %s...", client_id[:16])
+    logger.debug("Deletion endpoint: %s", deletion_endpoint)
 
     async with nextcloud_httpx_client(timeout=30.0) as http_client:
         for attempt in range(max_retries):
@@ -296,7 +300,7 @@ async def delete_client(
                 # RFC 7592: Successful deletion returns 204 No Content
                 if response.status_code == 204:
                     logger.info(
-                        f"Successfully deleted OAuth client: {client_id[:16]}..."
+                        "Successfully deleted OAuth client: %s...", client_id[:16]
                     )
                     return True
                 elif response.status_code == 429:
@@ -307,42 +311,53 @@ async def delete_client(
                             retry_after, 2**attempt
                         )  # Exponential backoff, max from header
                         logger.warning(
-                            f"Rate limited (429) deleting client {client_id[:16]}..., "
-                            f"retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})"
+                            "Rate limited (429) deleting client %s..., retrying in %ss (attempt %s/%s)",
+                            client_id[:16],
+                            wait_time,
+                            attempt + 1,
+                            max_retries,
                         )
                         await anyio.sleep(wait_time)
                         continue
                     else:
                         logger.error(
-                            f"Failed to delete client {client_id[:16]}... after {max_retries} attempts: Rate limited (429)"
+                            "Failed to delete client %s... after %s attempts: Rate limited (429)",
+                            client_id[:16],
+                            max_retries,
                         )
                         return False
                 elif response.status_code == 401:
                     logger.error(
-                        f"Failed to delete client {client_id[:16]}...: Authentication failed (invalid credentials)"
+                        "Failed to delete client %s...: Authentication failed (invalid credentials)",
+                        client_id[:16],
                     )
                     return False
                 elif response.status_code == 403:
                     logger.error(
-                        f"Failed to delete client {client_id[:16]}...: Not authorized (not a DCR client or wrong client)"
+                        "Failed to delete client %s...: Not authorized (not a DCR client or wrong client)",
+                        client_id[:16],
                     )
                     return False
                 else:
                     logger.error(
-                        f"Failed to delete client {client_id[:16]}...: HTTP {response.status_code}"
+                        "Failed to delete client %s...: HTTP %s",
+                        client_id[:16],
+                        response.status_code,
                     )
-                    logger.debug(f"Response: {response.text}")
+                    logger.debug("Response: %s", response.text)
                     return False
 
             except httpx.HTTPStatusError as e:
                 logger.error(
-                    f"HTTP error deleting client {client_id[:16]}...: {e.response.status_code}"
+                    "HTTP error deleting client %s...: %s",
+                    client_id[:16],
+                    e.response.status_code,
                 )
-                logger.debug(f"Response: {e.response.text}")
+                logger.debug("Response: %s", e.response.text)
                 return False
             except Exception as e:
                 logger.error(
-                    f"Unexpected error deleting client {client_id[:16]}...: {e}"
+                    "Unexpected error deleting client %s...: %s", client_id[:16], e
                 )
                 return False
 
@@ -390,14 +405,14 @@ async def ensure_oauth_client(
     client_data = await storage.get_oauth_client()
     if client_data:
         logger.info(
-            f"Loaded OAuth client from SQLite: {client_data['client_id'][:16]}..."
+            "Loaded OAuth client from SQLite: %s...", client_data["client_id"][:16]
         )
         return ClientInfo.from_dict(client_data)
 
     # Register new client
     logger.info("Registering new OAuth client...")
     if resource_url:
-        logger.info(f"  with resource_url: {resource_url}")
+        logger.info("  with resource_url: %s", resource_url)
     client_info = await register_client(
         nextcloud_url=nextcloud_url,
         registration_endpoint=registration_endpoint,

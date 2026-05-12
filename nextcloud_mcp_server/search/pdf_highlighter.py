@@ -118,7 +118,7 @@ class PDFHighlighter:
         try:
             shutil.rmtree(temp_dir)
         except Exception as e:
-            logger.warning(f"Failed to clean up temp directory {temp_dir}: {e}")
+            logger.warning("Failed to clean up temp directory %s: %s", temp_dir, e)
 
         return full_text, page_boundaries
 
@@ -202,7 +202,7 @@ class PDFHighlighter:
         try:
             page_words = page.get_text("words")
         except Exception as e:
-            logger.error(f"Failed to extract words from page: {e}")
+            logger.error("Failed to extract words from page: %s", e)
             return 0
 
         if not page_words:
@@ -225,8 +225,12 @@ class PDFHighlighter:
                 )
             ]
             logger.debug(
-                f"Filtered to {len(page_words)} words in region "
-                f"({rx0:.0f}, {ry0:.0f}, {rx1:.0f}, {ry1:.0f})"
+                "Filtered to %s words in region (%s, %s, %s, %s)",
+                len(page_words),
+                format(rx0, ".0f"),
+                format(ry0, ".0f"),
+                format(rx1, ".0f"),
+                format(ry1, ".0f"),
             )
 
         if not page_words:
@@ -286,17 +290,19 @@ class PDFHighlighter:
             if len(current_matches) >= len(chunk_words) * 0.5:
                 matches = current_matches
                 logger.debug(
-                    f"Found match at position {start_pos}: "
-                    f"{len(matches)}/{len(chunk_words)} words"
+                    "Found match at position %s: %s/%s words",
+                    start_pos,
+                    len(matches),
+                    len(chunk_words),
                 )
                 break  # Take FIRST match, not best/longest
 
         if not matches:
-            logger.debug(f"No word matches found (chunk has {len(chunk_words)} words)")
+            logger.debug("No word matches found (chunk has %s words)", len(chunk_words))
             return 0
 
         logger.debug(
-            f"Matched {len(matches)} words out of {len(chunk_words)} chunk words"
+            "Matched %s words out of %s chunk words", len(matches), len(chunk_words)
         )
 
         # Build rectangles from matched words
@@ -324,8 +330,9 @@ class PDFHighlighter:
             # A chunk should be mostly contiguous text
             if large_gaps > len(matches) * 0.3:  # More than 30% have gaps
                 logger.debug(
-                    f"Rejecting scattered matches: {large_gaps} large gaps "
-                    f"out of {len(matches)} matches"
+                    "Rejecting scattered matches: %s large gaps out of %s matches",
+                    large_gaps,
+                    len(matches),
                 )
                 return 0
 
@@ -512,12 +519,12 @@ class PDFHighlighter:
             rects = page.search_for(phrase.strip())
             if rects:
                 anchor_rect = rects[0]  # Use first match
-                logger.debug(f"Found chunk anchor using phrase: '{phrase[:30]}...'")
+                logger.debug("Found chunk anchor using phrase: '%s...'", phrase[:30])
                 break
 
         if not anchor_rect:
             page_num = page.number + 1 if page.number is not None else "unknown"
-            logger.warning(f"Could not find chunk text on page {page_num}")
+            logger.warning("Could not find chunk text on page %s", page_num)
             return 0
 
         # Calculate chunk height based on character count
@@ -558,8 +565,10 @@ class PDFHighlighter:
         fill_shape.commit()
 
         logger.debug(
-            f"Added bounding box at y={chunk_rect.y0:.0f}-{chunk_rect.y1:.0f} "
-            f"(estimated {estimated_lines:.1f} lines)"
+            "Added bounding box at y=%s-%s (estimated %s lines)",
+            format(chunk_rect.y0, ".0f"),
+            format(chunk_rect.y1, ".0f"),
+            format(estimated_lines, ".1f"),
         )
 
         return 1
@@ -626,7 +635,9 @@ class PDFHighlighter:
             # Log if page differs from stored metadata
             if stored_page_number and stored_page_number != page_num:
                 logger.info(
-                    f"Chunk primarily on page {page_num}, metadata says {stored_page_number}"
+                    "Chunk primarily on page %s, metadata says %s",
+                    page_num,
+                    stored_page_number,
                 )
 
             # Extract page text
@@ -644,8 +655,12 @@ class PDFHighlighter:
             page_text_length = page_end - page_start
 
             logger.debug(
-                f"Extracted {len(chunk_text)} chars on page {page_num} "
-                f"(offsets {page_relative_start}-{page_relative_end} of {page_text_length})"
+                "Extracted %s chars on page %s (offsets %s-%s of %s)",
+                len(chunk_text),
+                page_num,
+                page_relative_start,
+                page_relative_end,
+                page_text_length,
             )
 
             # Get page and add highlights
@@ -672,13 +687,15 @@ class PDFHighlighter:
             doc.close()
 
             logger.info(
-                f"Generated {len(png_bytes):,} byte image with {highlight_count} highlights"
+                "Generated %s byte image with %s highlights",
+                format(len(png_bytes), ","),
+                highlight_count,
             )
 
             return (png_bytes, page_num, highlight_count)
 
         except Exception as e:
-            logger.error(f"Error highlighting chunk: {e}", exc_info=True)
+            logger.error("Error highlighting chunk: %s", e, exc_info=True)
             return None
 
         finally:
@@ -688,7 +705,9 @@ class PDFHighlighter:
                     shutil.rmtree(temp_pdf_path.parent)
                 except Exception as e:
                     logger.warning(
-                        f"Failed to delete temp directory {temp_pdf_path.parent}: {e}"
+                        "Failed to delete temp directory %s: %s",
+                        temp_pdf_path.parent,
+                        e,
                     )
 
     @staticmethod
@@ -791,11 +810,11 @@ class PDFHighlighter:
                 )
                 results[chunk_index] = ([normalized], page_num)
 
-            logger.info(f"Computed bboxes for {len(results)}/{len(chunks)} chunks")
+            logger.info("Computed bboxes for %s/%s chunks", len(results), len(chunks))
             return results
 
         except Exception as e:
-            logger.error(f"Error computing chunk bboxes: {e}", exc_info=True)
+            logger.error("Error computing chunk bboxes: %s", e, exc_info=True)
             return results
 
         finally:
@@ -805,7 +824,7 @@ class PDFHighlighter:
                 try:
                     shutil.rmtree(temp_pdf_path.parent)
                 except Exception as e:
-                    logger.warning(f"Failed to clean up temp dir: {e}")
+                    logger.warning("Failed to clean up temp dir: %s", e)
 
     @staticmethod
     def highlight_chunks_batch(
@@ -853,8 +872,9 @@ class PDFHighlighter:
             doc = pymupdf.open(temp_pdf_path)
 
             logger.debug(
-                f"Batch highlighting: {len(chunks)} chunks, "
-                f"{len(page_boundaries)} pages"
+                "Batch highlighting: %s chunks, %s pages",
+                len(chunks),
+                len(page_boundaries),
             )
 
             # Group chunks by their target page for efficient rendering
@@ -873,7 +893,7 @@ class PDFHighlighter:
                 )
 
                 if not chunk_page_info:
-                    logger.warning(f"Chunk {chunk_index}: not found on any page")
+                    logger.warning("Chunk %s: not found on any page", chunk_index)
                     continue
 
                 page_num = chunk_page_info["page_num"]
@@ -881,8 +901,10 @@ class PDFHighlighter:
                 # Log if page differs from stored metadata
                 if stored_page_num and stored_page_num != page_num:
                     logger.debug(
-                        f"Chunk {chunk_index}: found on page {page_num}, "
-                        f"metadata says {stored_page_num}"
+                        "Chunk %s: found on page %s, metadata says %s",
+                        chunk_index,
+                        page_num,
+                        stored_page_num,
                     )
 
                 # Extract page-relative portion of chunk text
@@ -905,7 +927,7 @@ class PDFHighlighter:
                 )
 
             logger.debug(
-                f"Chunks distributed across {len(chunks_by_page)} unique pages"
+                "Chunks distributed across %s unique pages", len(chunks_by_page)
             )
 
             # OPTIMIZATION: Render each page ONCE, then draw highlights using PIL
@@ -929,7 +951,9 @@ class PDFHighlighter:
                 page_rect = page.rect
 
                 logger.debug(
-                    f"Page {page_num}: rendered once, processing {len(page_chunks)} chunks"
+                    "Page %s: rendered once, processing %s chunks",
+                    page_num,
+                    len(page_chunks),
                 )
 
                 for (
@@ -949,7 +973,7 @@ class PDFHighlighter:
                         )
 
                         if bbox is None:
-                            logger.warning(f"Chunk {chunk_index}: could not find bbox")
+                            logger.warning("Chunk %s: could not find bbox", chunk_index)
                             continue
 
                         # Copy base image for this chunk
@@ -985,24 +1009,27 @@ class PDFHighlighter:
                         results[chunk_index] = (png_bytes, page_num, 1)
 
                         logger.debug(
-                            f"Chunk {chunk_index}: {len(png_bytes):,} bytes, "
-                            f"page {page_num}, bbox {pil_bbox}"
+                            "Chunk %s: %s bytes, page %s, bbox %s",
+                            chunk_index,
+                            format(len(png_bytes), ","),
+                            page_num,
+                            pil_bbox,
                         )
 
                     except Exception as e:
-                        logger.error(f"Chunk {chunk_index}: error - {e}")
+                        logger.error("Chunk %s: error - %s", chunk_index, e)
                         continue
 
             doc.close()
 
             logger.info(
-                f"Batch highlighted {len(results)}/{len(chunks)} chunks successfully"
+                "Batch highlighted %s/%s chunks successfully", len(results), len(chunks)
             )
 
             return results
 
         except Exception as e:
-            logger.error(f"Error in batch highlighting: {e}", exc_info=True)
+            logger.error("Error in batch highlighting: %s", e, exc_info=True)
             return results
 
         finally:
@@ -1011,4 +1038,4 @@ class PDFHighlighter:
                 try:
                     shutil.rmtree(temp_pdf_path.parent)
                 except Exception as e:
-                    logger.warning(f"Failed to clean up temp dir: {e}")
+                    logger.warning("Failed to clean up temp dir: %s", e)

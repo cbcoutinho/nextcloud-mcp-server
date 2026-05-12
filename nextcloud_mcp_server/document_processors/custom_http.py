@@ -55,7 +55,7 @@ class CustomHTTPProcessor(DocumentProcessor):
         self._name = name
         self._supported_types = supported_types or set()
 
-        logger.info(f"Initialized CustomHTTPProcessor: {name} -> {api_url}")
+        logger.info("Initialized CustomHTTPProcessor: %s -> %s", name, api_url)
 
     @property
     def name(self) -> str:
@@ -114,7 +114,9 @@ class CustomHTTPProcessor(DocumentProcessor):
                 metadata = result.get("metadata", {})
 
                 logger.debug(
-                    f"Custom processor '{self.name}' extracted {len(text)} characters"
+                    "Custom processor '%s' extracted %s characters",
+                    self.name,
+                    len(text),
                 )
 
                 return ProcessingResult(
@@ -125,10 +127,10 @@ class CustomHTTPProcessor(DocumentProcessor):
                 )
 
         except httpx.HTTPError as e:
-            logger.error(f"Custom processor '{self.name}' HTTP error: {e}")
+            logger.error("Custom processor '%s' HTTP error: %s", self.name, e)
             raise ProcessorError(f"API call failed: {str(e)}") from e
         except Exception as e:
-            logger.error(f"Custom processor '{self.name}' failed: {e}")
+            logger.error("Custom processor '%s' failed: %s", self.name, e)
             raise ProcessorError(f"Processing failed: {str(e)}") from e
 
     async def health_check(self) -> bool:
@@ -146,5 +148,7 @@ class CustomHTTPProcessor(DocumentProcessor):
                 )
                 return response.status_code < 500
         except Exception as e:
-            logger.warning(f"Custom processor '{self.name}' health check failed: {e}")
+            logger.warning(
+                "Custom processor '%s' health check failed: %s", self.name, e
+            )
             return False

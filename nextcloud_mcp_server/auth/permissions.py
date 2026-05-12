@@ -44,11 +44,14 @@ async def is_nextcloud_admin(request: Request, http_client: AsyncClient) -> bool
         # Check if user is in the admin group
         is_admin = "admin" in user_groups
         logger.debug(
-            f"Admin check for user '{username}': {is_admin} (groups: {user_groups})"
+            "Admin check for user '%s': %s (groups: %s)",
+            username,
+            is_admin,
+            user_groups,
         )
 
         return is_admin
 
     except Exception as e:
-        logger.error(f"Error checking admin permissions: {e}", exc_info=True)
+        logger.error("Error checking admin permissions: %s", e, exc_info=True)
         return False

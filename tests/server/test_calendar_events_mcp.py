@@ -40,7 +40,7 @@ async def test_mcp_update_event_extended_fields(
 
         result_data = json.loads(create_result.content[0].text)
         event_uid = result_data["uid"]
-        logger.info(f"Created base event via MCP: {event_uid}")
+        logger.info("Created base event via MCP: %s", event_uid)
 
         # 2. Update with all four extended fields via MCP
         update_result = await nc_mcp_client.call_tool(

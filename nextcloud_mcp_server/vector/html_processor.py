@@ -42,7 +42,7 @@ def html_to_markdown(html_content: str | None) -> str:
         )
         return markdown.strip()
     except Exception as e:
-        logger.warning(f"Failed to convert HTML to Markdown: {e}")
+        logger.warning("Failed to convert HTML to Markdown: %s", e)
         # Fallback: strip all HTML tags as a last resort
 
         text = re.sub(r"<[^>]+>", " ", html_content)

@@ -359,7 +359,8 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
             if auth_parsed.query:
                 authorization_endpoint += f"?{auth_parsed.query}"
             logger.info(
-                f"Rewrote authorization endpoint for browser access: {authorization_endpoint}"
+                "Rewrote authorization endpoint for browser access: %s",
+                authorization_endpoint,
             )
 
     # Prefix resource scopes with the resource server identifier if configured.
@@ -952,7 +953,7 @@ async def _oauth_callback_as_proxy(
 
     if response.status_code != 200:
         logger.error(
-            f"AS proxy token exchange failed: {response.status_code} {response.text}"
+            "AS proxy token exchange failed: %s %s", response.status_code, response.text
         )
         params = urlencode(
             {
@@ -968,8 +969,8 @@ async def _oauth_callback_as_proxy(
     nc_token_response = response.json()
 
     logger.info(
-        "AS proxy: Successfully exchanged code for Nextcloud token "
-        f"(token_type={nc_token_response.get('token_type')})"
+        "AS proxy: Successfully exchanged code for Nextcloud token (token_type=%s)",
+        nc_token_response.get("token_type"),
     )
 
     # Verify the ID token signature + claims before caching the response
@@ -1017,7 +1018,8 @@ async def _oauth_callback_as_proxy(
     redirect_url = f"{session.client_redirect_uri}?{redirect_params}"
 
     logger.info(
-        f"AS proxy: Redirecting to client with proxy_code (client_id={session.client_id})"
+        "AS proxy: Redirecting to client with proxy_code (client_id=%s)",
+        session.client_id,
     )
     return RedirectResponse(redirect_url, status_code=302)
 
@@ -1294,7 +1296,7 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
 
     if response.status_code != 200:
         logger.error(
-            f"AS proxy token refresh failed: {response.status_code} {response.text}"
+            "AS proxy token refresh failed: %s %s", response.status_code, response.text
         )
         return JSONResponse(
             {
@@ -1396,7 +1398,9 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
 
     if response.status_code not in (200, 201):
         logger.error(
-            f"DCR proxy: Upstream registration failed: {response.status_code} {response.text}"
+            "DCR proxy: Upstream registration failed: %s %s",
+            response.status_code,
+            response.text,
         )
         return JSONResponse(
             response.json()

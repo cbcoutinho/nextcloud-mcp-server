@@ -53,7 +53,7 @@ async def test_talk_send_and_read_workflow(
     assert posted["message"] == "Hello from MCP integration test"
     assert posted["token"] == token
     posted_id = posted["id"]
-    logger.info(f"Posted message id={posted_id} into token={token}")
+    logger.info("Posted message id=%s into token=%s", posted_id, token)
 
     # 2. Cross-check via direct client
     direct_messages, _ = await nc_client.talk.get_messages(token, limit=10)

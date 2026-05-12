@@ -63,28 +63,28 @@ async def test_new_dcr_registration_includes_access_token(
         registration_data = response.json()
 
     # Log the full response
-    logger.info(f"\n{'=' * 70}")
+    logger.info("\\n%s", "=" * 70)
     logger.info("REGISTRATION RESPONSE")
-    logger.info(f"{'=' * 70}")
-    logger.info(f"Response keys: {sorted(registration_data.keys())}")
+    logger.info("%s", "=" * 70)
+    logger.info("Response keys: %s", sorted(registration_data.keys()))
     logger.info("\nFull response:")
     for key, value in sorted(registration_data.items()):
         if key in ["client_secret", "registration_access_token"]:
             # Truncate secrets for security
-            logger.info(f"  {key}: {value[:20]}... (truncated)")
+            logger.info("  %s: %s... (truncated)", key, value[:20])
         else:
-            logger.info(f"  {key}: {value}")
+            logger.info("  %s: %s", key, value)
 
     # Check for RFC 7592 required fields
-    logger.info(f"\n{'=' * 70}")
+    logger.info("\\n%s", "=" * 70)
     logger.info("RFC 7592 COMPLIANCE CHECK")
-    logger.info(f"{'=' * 70}")
+    logger.info("%s", "=" * 70)
 
     has_token = "registration_access_token" in registration_data
     has_uri = "registration_client_uri" in registration_data
 
-    logger.info(f"registration_access_token present: {has_token}")
-    logger.info(f"registration_client_uri present: {has_uri}")
+    logger.info("registration_access_token present: %s", has_token)
+    logger.info("registration_client_uri present: %s", has_uri)
 
     if has_token and has_uri:
         logger.info(
@@ -100,15 +100,15 @@ async def test_new_dcr_registration_includes_access_token(
         registration_client_uri = registration_data.get("registration_client_uri")
 
         # Now test deletion with the registration_access_token
-        logger.info(f"\n{'=' * 70}")
+        logger.info("\\n%s", "=" * 70)
         logger.info("TESTING DCR DELETION WITH REGISTRATION_ACCESS_TOKEN")
-        logger.info(f"{'=' * 70}")
+        logger.info("%s", "=" * 70)
 
         deletion_endpoint = (
             registration_client_uri
             or f"{nextcloud_host}/apps/oidc/register/{client_id}"
         )
-        logger.info(f"Deletion endpoint: {deletion_endpoint}")
+        logger.info("Deletion endpoint: %s", deletion_endpoint)
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             # Try deletion with Bearer token (RFC 7592 standard)
@@ -118,8 +118,8 @@ async def test_new_dcr_registration_includes_access_token(
                 headers={"Authorization": f"Bearer {registration_access_token}"},
             )
 
-            logger.info(f"Response status: {delete_response.status_code}")
-            logger.info(f"Response body: {delete_response.text[:200]}")
+            logger.info("Response status: %s", delete_response.status_code)
+            logger.info("Response body: %s", delete_response.text[:200])
 
             if delete_response.status_code == 204:
                 logger.info(
@@ -139,7 +139,7 @@ async def test_new_dcr_registration_includes_access_token(
                 )
             else:
                 logger.warning(
-                    f"\n? UNEXPECTED: Got status {delete_response.status_code}"
+                    "\\n? UNEXPECTED: Got status %s", delete_response.status_code
                 )
                 pytest.fail(
                     f"Unexpected status code: {delete_response.status_code}, body: {delete_response.text[:500]}"
@@ -204,10 +204,10 @@ async def test_dcr_deletion_with_basic_auth_new_impl(
     client_secret = reg_data["client_secret"]
     deletion_endpoint = f"{nextcloud_host}/apps/oidc/register/{client_id}"
 
-    logger.info(f"\n{'=' * 70}")
+    logger.info("\\n%s", "=" * 70)
     logger.info("TESTING DCR DELETION WITH HTTP BASIC AUTH")
-    logger.info(f"{'=' * 70}")
-    logger.info(f"Endpoint: {deletion_endpoint}")
+    logger.info("%s", "=" * 70)
+    logger.info("Endpoint: %s", deletion_endpoint)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.delete(
@@ -215,8 +215,8 @@ async def test_dcr_deletion_with_basic_auth_new_impl(
             auth=(client_id, client_secret),
         )
 
-        logger.info(f"Status: {response.status_code}")
-        logger.info(f"Body: {response.text[:200]}")
+        logger.info("Status: %s", response.status_code)
+        logger.info("Body: %s", response.text[:200])
 
         if response.status_code == 204:
             logger.info("\n✓ SUCCESS: HTTP Basic Auth works for deletion!")
@@ -225,7 +225,7 @@ async def test_dcr_deletion_with_basic_auth_new_impl(
                 "\n✗ HTTP Basic Auth not supported - use registration_access_token instead"
             )
         else:
-            logger.warning(f"\n? Unexpected status: {response.status_code}")
+            logger.warning("\\n? Unexpected status: %s", response.status_code)
 
     # This test is informational - we don't fail if Basic Auth doesn't work
     # as long as Bearer token works

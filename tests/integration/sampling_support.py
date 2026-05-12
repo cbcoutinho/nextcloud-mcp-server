@@ -62,7 +62,7 @@ def create_sampling_callback(provider: Provider):
         params: types.CreateMessageRequestParams,
     ) -> types.CreateMessageResult | types.ErrorData:
         """Handle sampling requests using the configured provider."""
-        logger.debug(f"Sampling callback invoked with {len(params.messages)} messages")
+        logger.debug("Sampling callback invoked with %s messages", len(params.messages))
 
         # Extract messages and build prompt
         messages_text = []
@@ -77,7 +77,7 @@ def create_sampling_callback(provider: Provider):
         if params.systemPrompt:
             prompt = f"System: {params.systemPrompt}\n\n{prompt}"
 
-        logger.debug(f"Generating response for prompt ({len(prompt)} chars)")
+        logger.debug("Generating response for prompt (%s chars)", len(prompt))
 
         try:
             # Generate response using provider
@@ -87,7 +87,9 @@ def create_sampling_callback(provider: Provider):
                 max_tokens=params.maxTokens,
             )
 
-            logger.info(f"Sampling completed: {len(response)} chars from {model_name}")
+            logger.info(
+                "Sampling completed: %s chars from %s", len(response), model_name
+            )
 
             return types.CreateMessageResult(
                 role="assistant",
@@ -96,7 +98,7 @@ def create_sampling_callback(provider: Provider):
                 stopReason="endTurn",
             )
         except Exception as e:
-            logger.error(f"Generation failed ({provider.__class__.__name__}): {e}")
+            logger.error("Generation failed (%s): %s", provider.__class__.__name__, e)
             return types.ErrorData(
                 code=types.INTERNAL_ERROR,
                 message=f"Generation failed: {e!s}",

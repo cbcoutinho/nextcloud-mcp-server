@@ -47,16 +47,16 @@ async def test_search_setup(nc_client: NextcloudClient):
     for file_path, content, content_type in test_files:
         await nc_client.webdav.write_file(file_path, content, content_type)
 
-    logger.info(f"Created test directory with {len(test_files)} files: {test_dir}")
+    logger.info("Created test directory with %s files: %s", len(test_files), test_dir)
 
     yield test_dir
 
     # Cleanup
     try:
         await nc_client.webdav.delete_resource(test_dir)
-        logger.info(f"Cleaned up test directory: {test_dir}")
+        logger.info("Cleaned up test directory: %s", test_dir)
     except Exception as e:
-        logger.warning(f"Failed to cleanup test directory {test_dir}: {e}")
+        logger.warning("Failed to cleanup test directory %s: %s", test_dir, e)
 
 
 async def test_find_by_name_exact(nc_client: NextcloudClient, test_search_setup: str):
@@ -69,7 +69,7 @@ async def test_find_by_name_exact(nc_client: NextcloudClient, test_search_setup:
     readme_files = [r for r in results if r.get("name") == "readme.md"]
     assert len(readme_files) >= 1, "Should find readme.md"
 
-    logger.info(f"Found {len(results)} files matching 'readme.md'")
+    logger.info("Found %s files matching 'readme.md'", len(results))
 
 
 async def test_find_by_name_wildcard_extension(
@@ -86,7 +86,7 @@ async def test_find_by_name_wildcard_extension(
         name = result.get("name", "")
         assert name.endswith(".txt"), f"Expected .txt file, got {name}"
 
-    logger.info(f"Found {len(results)} .txt files")
+    logger.info("Found %s .txt files", len(results))
 
 
 async def test_find_by_name_wildcard_prefix(
@@ -105,7 +105,7 @@ async def test_find_by_name_wildcard_prefix(
             f"Expected name to start with 'document', got {name}"
         )
 
-    logger.info(f"Found {len(results)} files starting with 'document'")
+    logger.info("Found %s files starting with 'document'", len(results))
 
 
 async def test_find_by_type_text(nc_client: NextcloudClient, test_search_setup: str):
@@ -122,7 +122,7 @@ async def test_find_by_type_text(nc_client: NextcloudClient, test_search_setup: 
             f"Expected text/* type, got {content_type}"
         )
 
-    logger.info(f"Found {len(results)} text files")
+    logger.info("Found %s text files", len(results))
 
 
 async def test_find_by_type_specific(
@@ -143,7 +143,7 @@ async def test_find_by_type_specific(
             f"Expected application/pdf, got {content_type}"
         )
 
-    logger.info(f"Found {len(results)} PDF files")
+    logger.info("Found %s PDF files", len(results))
 
 
 async def test_search_with_limit(nc_client: NextcloudClient, test_search_setup: str):
@@ -157,7 +157,7 @@ async def test_search_with_limit(nc_client: NextcloudClient, test_search_setup: 
     assert len(results) <= 2, f"Should return at most 2 results, got {len(results)}"
     assert len(results) > 0, "Should return at least 1 result"
 
-    logger.info(f"Found {len(results)} files with limit=2")
+    logger.info("Found %s files with limit=2", len(results))
 
 
 async def test_search_files_combined_filters(
@@ -198,7 +198,7 @@ async def test_search_files_combined_filters(
             f"Expected name to start with 'document', got {name}"
         )
 
-    logger.info(f"Found {len(results)} files matching combined filters")
+    logger.info("Found %s files matching combined filters", len(results))
 
 
 async def test_search_empty_scope(nc_client: NextcloudClient, test_search_setup: str):
@@ -210,7 +210,7 @@ async def test_search_empty_scope(nc_client: NextcloudClient, test_search_setup:
     # Should find at least the one we created
     assert len(results) >= 1, f"Should find at least 1 file named {unique_name}"
 
-    logger.info(f"Found {len(results)} files in root scope")
+    logger.info("Found %s files in root scope", len(results))
 
 
 async def test_search_subdirectory(nc_client: NextcloudClient, test_search_setup: str):
@@ -226,7 +226,7 @@ async def test_search_subdirectory(nc_client: NextcloudClient, test_search_setup
     nested_file = results[0]
     assert "nested.txt" in nested_file.get("name", ""), "Should find nested.txt"
 
-    logger.info(f"Found file in subdirectory: {nested_file.get('name')}")
+    logger.info("Found file in subdirectory: %s", nested_file.get("name"))
 
 
 async def test_search_no_results(nc_client: NextcloudClient, test_search_setup: str):
@@ -259,10 +259,10 @@ async def test_search_properties_returned(
 
     # Optional properties that may be present
     optional_props = ["size", "content_type", "last_modified", "etag"]
-    logger.info(f"Result properties: {list(result.keys())}")
+    logger.info("Result properties: %s", list(result.keys()))
 
     # At least some optional properties should be present
     present_optional = [prop for prop in optional_props if prop in result]
     assert len(present_optional) > 0, f"Should have at least one of {optional_props}"
 
-    logger.info(f"Search returned properties: {list(result.keys())}")
+    logger.info("Search returned properties: %s", list(result.keys()))

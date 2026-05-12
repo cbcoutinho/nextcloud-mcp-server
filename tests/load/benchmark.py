@@ -215,7 +215,7 @@ class BenchmarkMetrics:
 @asynccontextmanager
 async def create_mcp_session(url: str):
     """Create an MCP client session with proper cleanup."""
-    logger.info(f"Creating MCP client session for {url}")
+    logger.info("Creating MCP client session for %s", url)
     streamable_context = streamablehttp_client(url)
     session_context = None
 
@@ -231,17 +231,17 @@ async def create_mcp_session(url: str):
             try:
                 await session_context.__aexit__(None, None, None)
             except Exception as e:
-                logger.debug(f"Error closing session: {e}")
+                logger.debug("Error closing session: %s", e)
 
         try:
             await streamable_context.__aexit__(None, None, None)
         except Exception as e:
-            logger.debug(f"Error closing streamable context: {e}")
+            logger.debug("Error closing streamable context: %s", e)
 
 
 async def wait_for_mcp_server(url: str, max_attempts: int = 10) -> bool:
     """Wait for MCP server to be ready."""
-    logger.info(f"Waiting for MCP server at {url}...")
+    logger.info("Waiting for MCP server at %s...", url)
 
     for attempt in range(1, max_attempts + 1):
         try:
@@ -252,10 +252,10 @@ async def wait_for_mcp_server(url: str, max_attempts: int = 10) -> bool:
                 return True
         except Exception as e:
             if attempt < max_attempts:
-                logger.debug(f"Attempt {attempt}/{max_attempts}: {e}")
+                logger.debug("Attempt %s/%s: %s", attempt, max_attempts, e)
                 await anyio.sleep(2)
             else:
-                logger.error(f"MCP server not ready after {max_attempts} attempts")
+                logger.error("MCP server not ready after %s attempts", max_attempts)
                 return False
 
     return False
@@ -269,7 +269,7 @@ async def benchmark_worker(
     stop_event: anyio.Event,
 ):
     """Single worker that runs operations for the specified duration."""
-    logger.info(f"Worker {worker_id} starting...")
+    logger.info("Worker %s starting...", worker_id)
 
     try:
         async with create_mcp_session(url) as session:
@@ -297,10 +297,10 @@ async def benchmark_worker(
             # Cleanup
             await ops.cleanup()
 
-            logger.info(f"Worker {worker_id} completed {operation_count} operations")
+            logger.info("Worker %s completed %s operations", worker_id, operation_count)
 
     except Exception as e:
-        logger.error(f"Worker {worker_id} error: {e}", exc_info=True)
+        logger.error("Worker %s error: %s", worker_id, e, exc_info=True)
 
 
 async def run_benchmark(

@@ -95,7 +95,7 @@ update_changelog_on_bump = true
 major_version_zero = true
 
 [tool.ruff.lint]
-extend-select = ["I", "PLC0415"]
+extend-select = ["I", "PLC0415", "G004"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["PLC0415"]

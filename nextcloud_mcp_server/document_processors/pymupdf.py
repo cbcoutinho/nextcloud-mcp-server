@@ -59,7 +59,8 @@ class PyMuPDFProcessor(DocumentProcessor):
         if self.extract_images:
             self.image_dir.mkdir(exist_ok=True, parents=True)
             logger.info(
-                f"Initialized PyMuPDFProcessor with image extraction to {self.image_dir}"
+                "Initialized PyMuPDFProcessor with image extraction to %s",
+                self.image_dir,
             )
         else:
             logger.info("Initialized PyMuPDFProcessor without image extraction")
@@ -175,9 +176,11 @@ class PyMuPDFProcessor(DocumentProcessor):
                 await progress_callback(100, 100, "Processing complete")
 
             logger.info(
-                f"Successfully processed PDF {filename or '<bytes>'}: "
-                f"{metadata['page_count']} pages, {len(md_text)} chars, "
-                f"{metadata.get('image_count', 0)} images"
+                "Successfully processed PDF %s: %s pages, %s chars, %s images",
+                filename or "<bytes>",
+                metadata["page_count"],
+                len(md_text),
+                metadata.get("image_count", 0),
             )
 
             return ProcessingResult(
@@ -250,5 +253,5 @@ class PyMuPDFProcessor(DocumentProcessor):
             test_doc.close()
             return True
         except Exception as e:
-            logger.error(f"PyMuPDF health check failed: {e}")
+            logger.error("PyMuPDF health check failed: %s", e)
             return False

@@ -58,7 +58,7 @@ async def wait_for_vector_sync(
     while waited < timeout_seconds:
         sync_status = await mcp_client.call_tool("nc_get_vector_sync_status", {})
         if sync_status.isError:
-            logger.warning(f"Vector sync status error: {sync_status}")
+            logger.warning("Vector sync status error: %s", sync_status)
             return False, None
 
         status_data = json.loads(sync_status.content[0].text)
@@ -66,14 +66,18 @@ async def wait_for_vector_sync(
         pending_count = status_data.get("pending_count", 1)
 
         logger.info(
-            f"Sync status at {waited}s: indexed={indexed_count}, "
-            f"pending={pending_count}, status={status_data.get('status')}"
+            "Sync status at %ss: indexed=%s, pending=%s, status=%s",
+            waited,
+            indexed_count,
+            pending_count,
+            status_data.get("status"),
         )
 
         if indexed_count > initial_indexed_count and pending_count == 0:
             logger.info(
-                f"✓ Sync complete: {indexed_count} documents indexed "
-                f"(was {initial_indexed_count})"
+                "✓ Sync complete: %s documents indexed (was %s)",
+                indexed_count,
+                initial_indexed_count,
             )
             return True, status_data
 
@@ -142,7 +146,7 @@ async def test_astrolabe_plotly_visualization_with_basic_auth(
         # Phase 2: Complete full Astrolabe authorization (OAuth + app password)
         await login_to_nextcloud(page, username, password)
         auth_result = await complete_astrolabe_authorization(page, username, password)
-        logger.info(f"Authorization result: {auth_result}")
+        logger.info("Authorization result: %s", auth_result)
 
         # Create MCP client session as alice - all MCP operations inside this block
         async with create_mcp_client_session(
@@ -160,7 +164,7 @@ async def test_astrolabe_plotly_visualization_with_basic_auth(
 
             initial_data = json.loads(initial_sync.content[0].text)
             initial_count = initial_data.get("indexed_count", 0)
-            logger.info(f"Initial indexed count: {initial_count}")
+            logger.info("Initial indexed count: %s", initial_count)
 
             # Create note with unique searchable term
             unique_term = f"plotly_viz_test_{uuid.uuid4().hex[:8]}"
@@ -189,7 +193,7 @@ The visualization should show this document as a point in PCA-reduced space.
 
             note_data = json.loads(note_response.content[0].text)
             note_id = note_data.get("id")
-            logger.info(f"Created test note ID: {note_id}")
+            logger.info("Created test note ID: %s", note_id)
 
             # Phase 4: Wait for vector indexing
             sync_complete, status = await wait_for_vector_sync(
@@ -205,7 +209,7 @@ The visualization should show this document as a point in PCA-reduced space.
             search_input = page.locator(".mcp-search-input input")
             await search_input.wait_for(timeout=10000, state="visible")
             await search_input.fill(unique_term)
-            logger.info(f"Entered search query: {unique_term}")
+            logger.info("Entered search query: %s", unique_term)
 
             # Trigger search by pressing Enter on the input field
             # This is wired to performSearch via @keyup.enter in the Vue component
@@ -246,7 +250,7 @@ The visualization should show this document as a point in PCA-reduced space.
                 for attempt in range(60):  # 60 attempts, 500ms each = 30s total
                     if await error_note.count() > 0:
                         error_text = await error_note.text_content()
-                        logger.error(f"Search error: {error_text}")
+                        logger.error("Search error: %s", error_text)
                         pytest.fail(f"Search failed with error: {error_text}")
 
                     if await no_results_text.count() > 0:
@@ -261,13 +265,13 @@ The visualization should show this document as a point in PCA-reduced space.
 
                     if await results_text_pattern.count() > 0:
                         results_text = await results_text_pattern.first.text_content()
-                        logger.info(f"Found results: {results_text}")
+                        logger.info("Found results: %s", results_text)
                         found_state = True
                         break
 
                     if attempt % 10 == 0:
                         logger.info(
-                            f"Waiting for results... (attempt {attempt + 1}/60)"
+                            "Waiting for results... (attempt %s/60)", attempt + 1
                         )
 
                     await anyio.sleep(0.5)
@@ -275,8 +279,8 @@ The visualization should show this document as a point in PCA-reduced space.
                 if not found_state:
                     await page.screenshot(path="/tmp/astrolabe_search_timeout.png")
                     page_content = await page.content()
-                    logger.error(f"Search state not resolved. Page URL: {page.url}")
-                    logger.error(f"Page content snippet: {page_content[:2000]}")
+                    logger.error("Search state not resolved. Page URL: %s", page.url)
+                    logger.error("Page content snippet: %s", page_content[:2000])
                     raise AssertionError("Search did not complete within timeout")
 
             except AssertionError:
@@ -285,8 +289,8 @@ The visualization should show this document as a point in PCA-reduced space.
                 # Take another screenshot and get page content for debugging
                 await page.screenshot(path="/tmp/astrolabe_search_timeout.png")
                 page_content = await page.content()
-                logger.error(f"Search state not resolved. Page URL: {page.url}")
-                logger.error(f"Page content snippet: {page_content[:2000]}")
+                logger.error("Search state not resolved. Page URL: %s", page.url)
+                logger.error("Page content snippet: %s", page_content[:2000])
                 raise AssertionError(f"Search did not complete: {e}")
 
             logger.info("Results loaded")
@@ -316,7 +320,7 @@ The visualization should show this document as a point in PCA-reduced space.
             result_items = page.locator(".mcp-result-item")
             result_count = await result_items.count()
             assert result_count > 0, "No search results displayed"
-            logger.info(f"✓ Found {result_count} search result(s)")
+            logger.info("✓ Found %s search result(s)", result_count)
 
             # Verify our note appears in results
             found_note = False
@@ -326,7 +330,7 @@ The visualization should show this document as a point in PCA-reduced space.
                 title_text = await title_elem.text_content()
                 if title_text and unique_term in title_text:
                     found_note = True
-                    logger.info(f"✓ Found test note in results: {title_text}")
+                    logger.info("✓ Found test note in results: %s", title_text)
                     break
 
             assert found_note, f"Created note with '{unique_term}' not found in results"
@@ -342,14 +346,14 @@ The visualization should show this document as a point in PCA-reduced space.
                         "nc_notes_delete_note", {"note_id": note_id}
                     )
                     if not delete_response.isError:
-                        logger.info(f"✓ Cleaned up test note {note_id}")
+                        logger.info("✓ Cleaned up test note %s", note_id)
                         note_id = None  # Mark as cleaned
                     else:
                         logger.warning(
-                            f"Failed to delete note {note_id}: {delete_response}"
+                            "Failed to delete note %s: %s", note_id, delete_response
                         )
                 except Exception as e:
-                    logger.warning(f"Cleanup failed for note {note_id}: {e}")
+                    logger.warning("Cleanup failed for note %s: %s", note_id, e)
 
     finally:
         # Cleanup note if not already cleaned (create new client for cleanup)
@@ -364,13 +368,13 @@ The visualization should show this document as a point in PCA-reduced space.
                         "nc_notes_delete_note", {"note_id": note_id}
                     )
                     if not delete_response.isError:
-                        logger.info(f"✓ Cleaned up test note {note_id} (finally)")
+                        logger.info("✓ Cleaned up test note %s (finally)", note_id)
                     else:
                         logger.warning(
-                            f"Failed to delete note {note_id}: {delete_response}"
+                            "Failed to delete note %s: %s", note_id, delete_response
                         )
             except Exception as e:
-                logger.warning(f"Cleanup failed for note {note_id}: {e}")
+                logger.warning("Cleanup failed for note %s: %s", note_id, e)
 
         # Close browser context
         await context.close()

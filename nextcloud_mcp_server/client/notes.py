@@ -93,13 +93,14 @@ class NotesClient(BaseNextcloudClient):
             for note in response_data:
                 note_id = note.get("id")
                 if note_id is None:
-                    logger.warning(f"Skipping note without ID: {note}")
+                    logger.warning("Skipping note without ID: %s", note)
                     continue
 
                 # Skip duplicates (API returns all IDs in last chunk for deletion detection)
                 if note_id in seen_ids:
                     logger.debug(
-                        f"Skipping duplicate note {note_id} (pruned version in last chunk)"
+                        "Skipping duplicate note %s (pruned version in last chunk)",
+                        note_id,
                     )
                     continue
 
@@ -152,10 +153,10 @@ class NotesClient(BaseNextcloudClient):
             if category is not None:
                 old_note = await self.get_note(note_id)
                 old_category = old_note.get("category", "")
-                logger.info(f"Current category for note {note_id}: '{old_category}'")
+                logger.info("Current category for note %s: '%s'", note_id, old_category)
         except Exception as e:
             logger.warning(
-                f"Could not fetch current note {note_id} details before update: {e}"
+                "Could not fetch current note %s details before update: %s", note_id, e
             )
             old_note = None
 
@@ -169,7 +170,7 @@ class NotesClient(BaseNextcloudClient):
             body["category"] = category
 
         logger.info(
-            f"Attempting to update note {note_id} with etag {etag}. Body: {body}"
+            "Attempting to update note %s with etag %s. Body: %s", note_id, etag, body
         )
 
         response = await self._make_request(
@@ -180,7 +181,7 @@ class NotesClient(BaseNextcloudClient):
         )
 
         logger.info(
-            f"Update response for note {note_id}: Status {response.status_code}"
+            "Update response for note %s: Status %s", note_id, response.status_code
         )
         updated_note = _expect_note_object(response.json(), operation="update_note")
 
@@ -191,7 +192,9 @@ class NotesClient(BaseNextcloudClient):
             and old_note.get("category", "") != category
         ):
             logger.info(
-                f"Category changed from '{old_note.get('category', '')}' to '{category}' - cleaning up old attachment directory"
+                "Category changed from '%s' to '%s' - cleaning up old attachment directory",
+                old_note.get("category", ""),
+                category,
             )
             try:
                 webdav_client = WebDAVClient(self._client, self.username)
@@ -200,7 +203,9 @@ class NotesClient(BaseNextcloudClient):
                 )
             except Exception as e:
                 logger.error(
-                    f"Error cleaning up old attachment directory for note {note_id}: {e}"
+                    "Error cleaning up old attachment directory for note %s: %s",
+                    note_id,
+                    e,
                 )
 
         return updated_note
@@ -220,20 +225,23 @@ class NotesClient(BaseNextcloudClient):
                 potential_categories.append("")  # Empty category
 
             logger.info(
-                f"Note {note_id} has category: '{category}', will check attachment directories in: {potential_categories}"
+                "Note %s has category: '%s', will check attachment directories in: %s",
+                note_id,
+                category,
+                potential_categories,
             )
         except Exception as e:
             logger.warning(
-                f"Could not fetch note {note_id} details before deletion: {e}"
+                "Could not fetch note %s details before deletion: %s", note_id, e
             )
             potential_categories = ["", "Unknown"]  # Try common categories
 
         # Delete the note via API
-        logger.info(f"Deleting note {note_id} via API")
+        logger.info("Deleting note %s via API", note_id)
         response = await self._make_request(
             "DELETE", f"/apps/notes/api/v1/notes/{note_id}"
         )
-        logger.info(f"Note {note_id} deleted successfully via API")
+        logger.info("Note %s deleted successfully via API", note_id)
         json_response = response.json()
 
         # Clean up attachment directories
@@ -245,16 +253,16 @@ class NotesClient(BaseNextcloudClient):
                     await webdav_client.cleanup_note_attachments(note_id, cat)
                 except Exception as e:
                     logger.warning(
-                        f"Failed to cleanup attachments for category '{cat}': {e}"
+                        "Failed to cleanup attachments for category '%s': %s", cat, e
                     )
         except Exception as e:
-            logger.warning(f"Error during attachment cleanup: {e}")
+            logger.warning("Error during attachment cleanup: %s", e)
 
         return json_response
 
     async def append_content(self, note_id: int, content: str) -> Dict[str, Any]:
         """Append content to an existing note with a separator."""
-        logger.info(f"Appending content to note {note_id}")
+        logger.info("Appending content to note %s", note_id)
 
         # Get current note
         current_note = await self.get_note(note_id)
@@ -270,7 +278,9 @@ class NotesClient(BaseNextcloudClient):
             new_content = content  # No separator needed for empty notes
 
         logger.info(
-            f"Combining existing content ({len(existing_content)} chars) with new content ({len(content)} chars)"
+            "Combining existing content (%s chars) with new content (%s chars)",
+            len(existing_content),
+            len(content),
         )
 
         # Update with combined content

@@ -72,8 +72,12 @@ class SharingClient(BaseNextcloudClient):
             )
 
         logger.info(
-            f"Created share {share_data['id']}: {path} -> {share_with} "
-            f"(type={share_type}, permissions={permissions})"
+            "Created share %s: %s -> %s (type=%s, permissions=%s)",
+            share_data["id"],
+            path,
+            share_with,
+            share_type,
+            permissions,
         )
         return share_data
 
@@ -99,7 +103,7 @@ class SharingClient(BaseNextcloudClient):
                 f"OCS API error: {data['ocs']['meta'].get('message', 'Unknown error')}"
             )
 
-        logger.info(f"Deleted share {share_id}")
+        logger.info("Deleted share %s", share_id)
 
     @retry_on_429
     async def get_share(self, share_id: int) -> dict[str, Any]:
@@ -206,5 +210,5 @@ class SharingClient(BaseNextcloudClient):
                 f"OCS API error: {result['ocs']['meta'].get('message', 'Unknown error')}"
             )
 
-        logger.info(f"Updated share {share_id}")
+        logger.info("Updated share %s", share_id)
         return result["ocs"]["data"]

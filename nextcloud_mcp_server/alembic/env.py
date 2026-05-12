@@ -61,8 +61,8 @@ def get_database_url() -> str:
         db_path = Path(get_token_db_path())
         url = f"sqlite+aiosqlite:///{db_path}"
         logger.warning(
-            f"No database URL configured, using default: {url}. "
-            "Set sqlalchemy.url in alembic.ini or pass -x database_url=..."
+            "No database URL configured, using default: %s. Set sqlalchemy.url in alembic.ini or pass -x database_url=...",
+            url,
         )
 
     return url

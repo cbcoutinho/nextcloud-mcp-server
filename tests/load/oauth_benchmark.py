@@ -74,7 +74,7 @@ class OAuthCallbackServer:
 
                     if code and state:
                         self.auth_states[state] = code
-                        logger.info(f"Captured auth code for state {state[:16]}...")
+                        logger.info("Captured auth code for state %s...", state[:16])
 
                     self.send_response(200)
                     self.send_header("Content-type", "text/html")
@@ -94,7 +94,9 @@ class OAuthCallbackServer:
         self.server = HTTPServer((self.host, self.port), CallbackHandler)
 
         def run():
-            logger.info(f"OAuth callback server listening on {self.host}:{self.port}")
+            logger.info(
+                "OAuth callback server listening on %s:%s", self.host, self.port
+            )
             self.server.serve_forever()
 
         self.thread = threading.Thread(target=run, daemon=True)
@@ -135,7 +137,7 @@ async def discover_oidc_endpoints(nextcloud_host: str) -> dict[str, str]:
         "token_endpoint": config["token_endpoint"],
         "registration_endpoint": config["registration_endpoint"],
     }
-    logger.info(f"Discovered endpoints: {endpoints}")
+    logger.info("Discovered endpoints: %s", endpoints)
     return endpoints
 
 
@@ -168,7 +170,7 @@ async def setup_oauth_client(
         redirect_uris=[callback_url],
     )
 
-    logger.info(f"OAuth client setup complete (client_id: {client_info.client_id})")
+    logger.info("OAuth client setup complete (client_id: %s)", client_info.client_id)
     return {
         "client_id": client_info.client_id,
         "client_secret": client_info.client_secret,
@@ -197,7 +199,7 @@ async def create_and_authenticate_user(
     Returns:
         OAuth access token for the user
     """
-    logger.info(f"Creating and authenticating user: {username}")
+    logger.info("Creating and authenticating user: %s", username)
 
     # Create Nextcloud user
     await user_pool.create_nextcloud_user(
@@ -218,7 +220,7 @@ async def create_and_authenticate_user(
         auth_states=auth_states,
     )
 
-    logger.info(f"Successfully authenticated user: {username}")
+    logger.info("Successfully authenticated user: %s", username)
     return token
 
 
@@ -239,7 +241,7 @@ async def oauth_benchmark_worker(
         metrics: Metrics collector
         stop_event: Event to signal stop
     """
-    logger.info(f"Worker for {user_wrapper.username} starting...")
+    logger.info("Worker for %s starting...", user_wrapper.username)
 
     start_time = time.time()
     operation_count = 0
@@ -265,18 +267,21 @@ async def oauth_benchmark_worker(
             await anyio.sleep(0.05)
 
         logger.info(
-            f"Worker for {user_wrapper.username} completed {operation_count} operations"
+            "Worker for %s completed %s operations",
+            user_wrapper.username,
+            operation_count,
         )
 
     except anyio.get_cancelled_exc_class():
         # Handle task cancellation gracefully (e.g., during benchmark shutdown)
         logger.info(
-            f"Worker for {user_wrapper.username} was cancelled "
-            f"(completed {operation_count} operations)"
+            "Worker for %s was cancelled (completed %s operations)",
+            user_wrapper.username,
+            operation_count,
         )
         raise  # Re-raise to allow proper cleanup
     except Exception as e:
-        logger.error(f"Worker {user_wrapper.username} error: {e}", exc_info=True)
+        logger.error("Worker %s error: %s", user_wrapper.username, e, exc_info=True)
 
 
 async def show_progress(
@@ -432,7 +437,9 @@ async def run_oauth_benchmark(
                     return (username, password, token)
 
                 except Exception as e:
-                    logger.error(f"Failed to create/authenticate user {username}: {e}")
+                    logger.error(
+                        "Failed to create/authenticate user %s: %s", username, e
+                    )
                     return None
 
             async with async_playwright() as p:
@@ -452,7 +459,7 @@ async def run_oauth_benchmark(
                             )
                             results.append(result)
                         except Exception as e:
-                            logger.error(f"User creation task failed: {e}")
+                            logger.error("User creation task failed: %s", e)
                             results.append(e)
 
                     async with anyio.create_task_group() as tg:
@@ -462,7 +469,7 @@ async def run_oauth_benchmark(
                     # Process results
                     for result in results:
                         if isinstance(result, Exception):
-                            logger.error(f"User creation task failed: {result}")
+                            logger.error("User creation task failed: %s", result)
                             continue
                         if result is None:
                             continue
@@ -496,7 +503,7 @@ async def run_oauth_benchmark(
                     print(f"  ✓ Session created for '{username}'")
                     return wrapper
                 except Exception as e:
-                    logger.error(f"Failed to create session for {username}: {e}")
+                    logger.error("Failed to create session for %s: %s", username, e)
                     return None
 
             # Create all sessions concurrently using anyio task groups
@@ -508,7 +515,7 @@ async def run_oauth_benchmark(
                     result = await create_session_task(username)
                     session_results.append(result)
                 except Exception as e:
-                    logger.error(f"Session creation task failed: {e}")
+                    logger.error("Session creation task failed: %s", e)
                     session_results.append(e)
 
             async with anyio.create_task_group() as tg:
@@ -518,7 +525,7 @@ async def run_oauth_benchmark(
             # Process results
             for result in session_results:
                 if isinstance(result, Exception):
-                    logger.error(f"Session creation task failed: {result}")
+                    logger.error("Session creation task failed: %s", result)
                     continue
                 if result is not None:
                     user_wrappers.append(result)
@@ -573,7 +580,7 @@ async def run_oauth_benchmark(
             print("✓ All sessions closed\n")
 
     except Exception as e:
-        logger.error(f"Benchmark error: {e}", exc_info=True)
+        logger.error("Benchmark error: %s", e, exc_info=True)
         # Don't re-raise here - we want cleanup to run
 
     finally:
@@ -583,7 +590,7 @@ async def run_oauth_benchmark(
                 callback_server.stop()
                 logger.info("OAuth callback server stopped")
             except Exception as e:
-                logger.warning(f"Error stopping callback server: {e}")
+                logger.warning("Error stopping callback server: %s", e)
 
         # Cleanup test users
         if cleanup and created_users:
@@ -596,10 +603,10 @@ async def run_oauth_benchmark(
                         await cleanup_client.users.delete_user(userid=username)
                         print(f"  ✓ Deleted user '{username}'")
                     except Exception as e:
-                        logger.warning(f"Failed to delete user {username}: {e}")
+                        logger.warning("Failed to delete user %s: %s", username, e)
                 print("✓ Cleanup complete\n")
             except Exception as e:
-                logger.error(f"Error during user cleanup: {e}")
+                logger.error("Error during user cleanup: %s", e)
                 print(
                     "⚠️  Failed to cleanup users. Please run cleanup script manually.\n"
                 )

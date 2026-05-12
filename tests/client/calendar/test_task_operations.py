@@ -33,29 +33,29 @@ async def temporary_todo(nc_client: NextcloudClient, temporary_calendar: str):
     }
 
     try:
-        logger.info(f"Creating temporary todo in calendar: {calendar_name}")
+        logger.info("Creating temporary todo in calendar: %s", calendar_name)
         result = await nc_client.calendar.create_todo(calendar_name, todo_data)
         todo_uid = result.get("uid")
 
         if not todo_uid:
             pytest.fail("Failed to create temporary todo")
 
-        logger.info(f"Created temporary todo with UID: {todo_uid}")
+        logger.info("Created temporary todo with UID: %s", todo_uid)
         yield {"uid": todo_uid, "calendar_name": calendar_name, "data": todo_data}
 
     finally:
         # Cleanup
         if todo_uid:
             try:
-                logger.info(f"Cleaning up temporary todo: {todo_uid}")
+                logger.info("Cleaning up temporary todo: %s", todo_uid)
                 await nc_client.calendar.delete_todo(calendar_name, todo_uid)
-                logger.info(f"Successfully deleted temporary todo: {todo_uid}")
+                logger.info("Successfully deleted temporary todo: %s", todo_uid)
             except HTTPStatusError as e:
                 if e.response.status_code != 404:
-                    logger.error(f"Error deleting temporary todo {todo_uid}: {e}")
+                    logger.error("Error deleting temporary todo %s: %s", todo_uid, e)
             except Exception as e:
                 logger.error(
-                    f"Unexpected error deleting temporary todo {todo_uid}: {e}"
+                    "Unexpected error deleting temporary todo %s: %s", todo_uid, e
                 )
 
 
@@ -85,7 +85,7 @@ async def test_create_and_delete_todo(
         assert result["status_code"] in [200, 201, 204]
 
         todo_uid = result["uid"]
-        logger.info(f"Created todo with UID: {todo_uid}")
+        logger.info("Created todo with UID: %s", todo_uid)
 
         # Verify todo was created by listing todos
         todos = await nc_client.calendar.list_todos(calendar_name)
@@ -103,10 +103,10 @@ async def test_create_and_delete_todo(
         delete_result = await nc_client.calendar.delete_todo(calendar_name, todo_uid)
         assert delete_result["status_code"] in [200, 204, 404]
 
-        logger.info(f"Successfully deleted todo: {todo_uid}")
+        logger.info("Successfully deleted todo: %s", todo_uid)
 
     except Exception as e:
-        logger.error(f"Test failed: {e}")
+        logger.error("Test failed: %s", e)
         raise
 
 
@@ -145,7 +145,7 @@ async def test_list_todos(nc_client: NextcloudClient, temporary_calendar: str):
         for uid in todo_uids:
             assert uid in listed_uids
 
-        logger.info(f"Found {len(todos)} todos in calendar")
+        logger.info("Found %s todos in calendar", len(todos))
 
     finally:
         # Cleanup
@@ -187,10 +187,10 @@ async def test_update_todo(nc_client: NextcloudClient, temporary_todo: dict):
         assert updated_todo["priority"] == 1
         assert updated_todo["percent_complete"] == 50
 
-        logger.info(f"Successfully updated todo: {todo_uid}")
+        logger.info("Successfully updated todo: %s", todo_uid)
 
     except Exception as e:
-        logger.error(f"Todo update test failed: {e}")
+        logger.error("Todo update test failed: %s", e)
         raise
 
 
@@ -213,7 +213,7 @@ async def test_todo_with_dates(nc_client: NextcloudClient, temporary_calendar: s
     try:
         result = await nc_client.calendar.create_todo(calendar_name, todo_data)
         todo_uid = result["uid"]
-        logger.info(f"Created todo with dates, UID: {todo_uid}")
+        logger.info("Created todo with dates, UID: %s", todo_uid)
 
         # Verify dates
         todos = await nc_client.calendar.list_todos(calendar_name)
@@ -228,7 +228,7 @@ async def test_todo_with_dates(nc_client: NextcloudClient, temporary_calendar: s
         await nc_client.calendar.delete_todo(calendar_name, todo_uid)
 
     except Exception as e:
-        logger.error(f"Date handling test failed: {e}")
+        logger.error("Date handling test failed: %s", e)
         raise
 
 
@@ -281,7 +281,7 @@ async def test_todo_status_transitions(
         assert todo["percent_complete"] == 100
         assert "completed" in todo
 
-        logger.info(f"Successfully transitioned todo through statuses: {todo_uid}")
+        logger.info("Successfully transitioned todo through statuses: %s", todo_uid)
 
     finally:
         await nc_client.calendar.delete_todo(calendar_name, todo_uid)
@@ -315,7 +315,7 @@ async def test_todo_priority_levels(
             assert todo is not None
             assert todo["priority"] == expected_priority
 
-        logger.info(f"Successfully tested priority levels: {priorities}")
+        logger.info("Successfully tested priority levels: %s", priorities)
 
     finally:
         # Cleanup
@@ -342,7 +342,7 @@ async def test_todo_with_categories(
     try:
         result = await nc_client.calendar.create_todo(calendar_name, todo_data)
         todo_uid = result["uid"]
-        logger.info(f"Created todo with categories, UID: {todo_uid}")
+        logger.info("Created todo with categories, UID: %s", todo_uid)
 
         # Verify categories
         todos = await nc_client.calendar.list_todos(calendar_name)
@@ -360,7 +360,7 @@ async def test_todo_with_categories(
         await nc_client.calendar.delete_todo(calendar_name, todo_uid)
 
     except Exception as e:
-        logger.error(f"Categories test failed: {e}")
+        logger.error("Categories test failed: %s", e)
         raise
 
 
@@ -399,7 +399,7 @@ async def test_search_todos_across_calendars(
         assert todo1["calendar_name"] == cal1_name
         assert todo2["calendar_name"] == cal2_name
 
-        logger.info(f"Found {len(all_todos)} todos across all calendars")
+        logger.info("Found %s todos across all calendars", len(all_todos))
 
     finally:
         # Cleanup: Delete only the todos we created (calendars are reused/built-in)
@@ -428,7 +428,7 @@ async def test_get_nonexistent_todo(
     matching_todos = [t for t in todos if t.get("uid") == fake_uid]
     assert len(matching_todos) == 0
 
-    logger.info(f"Verified nonexistent todo UID: {fake_uid}")
+    logger.info("Verified nonexistent todo UID: %s", fake_uid)
 
 
 async def test_delete_nonexistent_todo(
@@ -440,7 +440,7 @@ async def test_delete_nonexistent_todo(
 
     result = await nc_client.calendar.delete_todo(calendar_name, fake_uid)
     assert result["status_code"] == 404
-    logger.info(f"Correctly got 404 for deleting nonexistent todo: {fake_uid}")
+    logger.info("Correctly got 404 for deleting nonexistent todo: %s", fake_uid)
 
 
 async def test_list_todos_with_filters(
@@ -487,7 +487,7 @@ async def test_list_todos_with_filters(
         our_todo_uids = [t["uid"] for t in all_todos if t["uid"] in created_uids]
         assert len(our_todo_uids) == 3
 
-        logger.info(f"Successfully created and listed {len(created_uids)} test todos")
+        logger.info("Successfully created and listed %s test todos", len(created_uids))
 
     finally:
         # Cleanup

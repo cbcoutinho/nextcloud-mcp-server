@@ -91,7 +91,9 @@ class DocumentChunker:
         ]
 
         logger.debug(
-            f"Chunked document into {len(chunks)} chunks "
-            f"(chunk_size={self.chunk_size}, overlap={self.overlap})"
+            "Chunked document into %s chunks (chunk_size=%s, overlap=%s)",
+            len(chunks),
+            self.chunk_size,
+            self.overlap,
         )
         return chunks

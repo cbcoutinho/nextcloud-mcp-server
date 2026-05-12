@@ -45,7 +45,7 @@ async def login_to_nextcloud(page: Page, username: str, password: str):
     """
     nextcloud_url = "http://localhost:8080"
 
-    logger.info(f"Logging in to Nextcloud as {username}...")
+    logger.info("Logging in to Nextcloud as %s...", username)
     await page.goto(f"{nextcloud_url}/login", wait_until="networkidle")
 
     # Fill in login form
@@ -62,7 +62,7 @@ async def login_to_nextcloud(page: Page, username: str, password: str):
     assert "/login" not in current_url, (
         f"Login failed for {username}, still on login page"
     )
-    logger.info(f"✓ Successfully logged in as {username}")
+    logger.info("✓ Successfully logged in as %s", username)
 
 
 async def generate_app_password(
@@ -78,7 +78,7 @@ async def generate_app_password(
     Returns:
         The generated app password string
     """
-    logger.info(f"Generating app password for {username}...")
+    logger.info("Generating app password for %s...", username)
 
     nextcloud_url = "http://localhost:8080"
 
@@ -89,7 +89,7 @@ async def generate_app_password(
     # Fill the app password input field
     app_password_input = page.locator('input[placeholder="App name"]')
     await app_password_input.fill(app_name)
-    logger.info(f"Entered app name: {app_name}")
+    logger.info("Entered app name: %s", app_name)
 
     # Wait for Vue.js to react and enable the button
     await anyio.sleep(1.0)
@@ -116,12 +116,12 @@ async def generate_app_password(
                 value = await input_elem.input_value()
                 if value and "-" in value and len(value) > 20:
                     app_password = value.strip()
-                    logger.info(f"Found app password in input {idx}")
+                    logger.info("Found app password in input %s", idx)
                     break
             except Exception:
                 continue
     except Exception as e:
-        logger.error(f"Failed to find app password dialog: {e}")
+        logger.error("Failed to find app password dialog: %s", e)
 
     if not app_password:
         screenshot_path = f"/tmp/app_password_generation_{username}.png"
@@ -137,7 +137,7 @@ async def generate_app_password(
     ):
         raise ValueError(f"App password format validation failed: {app_password}")
 
-    logger.info(f"✓ Generated app password for {username}")
+    logger.info("✓ Generated app password for %s", username)
 
     # Close the dialog
     close_button = page.get_by_role("button", name="Close")
@@ -163,7 +163,7 @@ async def save_app_password_in_astrolabe(
     Returns:
         True if the password was saved successfully (based on network response)
     """
-    logger.info(f"Saving app password in Astrolabe for {username}...")
+    logger.info("Saving app password in Astrolabe for %s...", username)
 
     nextcloud_url = "http://localhost:8080"
 
@@ -174,7 +174,7 @@ async def save_app_password_in_astrolabe(
         nonlocal credentials_response_status
         if "background-sync/credentials" in resp.url or "storeAppPassword" in resp.url:
             credentials_response_status = resp.status
-            logger.info(f"Credentials endpoint response: {resp.status} {resp.url}")
+            logger.info("Credentials endpoint response: %s %s", resp.status, resp.url)
 
     page.on("response", capture_response)
 
@@ -188,7 +188,7 @@ async def save_app_password_in_astrolabe(
     try:
         complete_badge = page.locator('text="Complete"').first
         if await complete_badge.is_visible(timeout=2000):
-            logger.info(f"✓ App password already configured for {username}")
+            logger.info("✓ App password already configured for %s", username)
             return True
     except Exception:
         pass
@@ -208,7 +208,7 @@ async def save_app_password_in_astrolabe(
 
     # Enter the app password
     await app_password_input.fill(app_password)
-    logger.info(f"Entered app password for {username}")
+    logger.info("Entered app password for %s", username)
 
     await anyio.sleep(0.5)
 
@@ -223,11 +223,13 @@ async def save_app_password_in_astrolabe(
 
     # Verify the save was successful by checking network response
     if credentials_response_status == 200:
-        logger.info(f"✓ App password saved successfully for {username}")
+        logger.info("✓ App password saved successfully for %s", username)
         return True
     else:
         logger.error(
-            f"App password save failed for {username}, status: {credentials_response_status}"
+            "App password save failed for %s, status: %s",
+            username,
+            credentials_response_status,
         )
         screenshot_path = f"/tmp/astrolabe_save_failed_{username}.png"
         await page.screenshot(path=screenshot_path)
@@ -284,7 +286,7 @@ def get_background_sync_credentials(username: str) -> dict | None:
         return None
 
     except Exception as e:
-        logger.error(f"Error getting credentials for {username}: {e}")
+        logger.error("Error getting credentials for %s: %s", username, e)
         return None
 
 
@@ -325,11 +327,11 @@ def delete_user_credentials(username: str) -> bool:
             timeout=10,
         )
 
-        logger.info(f"Deleted credentials for {username}")
+        logger.info("Deleted credentials for %s", username)
         return result.returncode == 0
 
     except Exception as e:
-        logger.error(f"Error deleting credentials for {username}: {e}")
+        logger.error("Error deleting credentials for %s: %s", username, e)
         return False
 
 
@@ -489,7 +491,7 @@ async def test_credential_isolation_between_users(
             # Verify stored
             creds = get_background_sync_credentials(username)
             assert creds is not None, f"Credentials not stored for {username}"
-            logger.info(f"✓ Credentials provisioned for {username}")
+            logger.info("✓ Credentials provisioned for %s", username)
 
         finally:
             await context.close()

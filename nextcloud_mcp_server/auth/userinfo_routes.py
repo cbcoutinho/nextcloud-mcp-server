@@ -143,7 +143,7 @@ async def _get_processing_status(request: Request) -> dict[str, Any] | None:
             indexed_count = count_result.count
 
         except Exception as e:
-            logger.warning(f"Failed to query Qdrant for indexed count: {e}")
+            logger.warning("Failed to query Qdrant for indexed count: %s", e)
             # Continue with indexed_count = 0
 
         # Determine status
@@ -156,7 +156,7 @@ async def _get_processing_status(request: Request) -> dict[str, Any] | None:
         }
 
     except Exception as e:
-        logger.error(f"Error getting processing status: {e}")
+        logger.error("Error getting processing status: %s", e)
         return None
 
 
@@ -243,11 +243,11 @@ async def _get_userinfo_endpoint(oauth_ctx: dict[str, Any]) -> str | None:
             try:
                 await oauth_client.discover()
             except Exception as e:
-                logger.error(f"Failed to discover IdP endpoints: {e}")
+                logger.error("Failed to discover IdP endpoints: %s", e)
                 return None
 
         logger.debug(
-            f"Using external IdP userinfo endpoint: {oauth_client.userinfo_endpoint}"
+            "Using external IdP userinfo endpoint: %s", oauth_client.userinfo_endpoint
         )
         return oauth_client.userinfo_endpoint
 
@@ -269,7 +269,8 @@ async def _get_userinfo_endpoint(oauth_ctx: dict[str, Any]) -> str | None:
 
             if userinfo_endpoint:
                 logger.debug(
-                    f"Using Nextcloud userinfo endpoint from discovery: {userinfo_endpoint}"
+                    "Using Nextcloud userinfo endpoint from discovery: %s",
+                    userinfo_endpoint,
                 )
                 return userinfo_endpoint
 
@@ -277,7 +278,7 @@ async def _get_userinfo_endpoint(oauth_ctx: dict[str, Any]) -> str | None:
             return None
 
     except Exception as e:
-        logger.error(f"Failed to query discovery document for userinfo endpoint: {e}")
+        logger.error("Failed to query discovery document for userinfo endpoint: %s", e)
         return None
 
 
@@ -302,7 +303,7 @@ async def _query_idp_userinfo(
             response.raise_for_status()
             return response.json()
     except Exception as e:
-        logger.warning(f"Failed to query IdP userinfo endpoint: {e}")
+        logger.warning("Failed to query IdP userinfo endpoint: %s", e)
         return None
 
 
@@ -379,9 +380,9 @@ async def _get_user_info(request: Request) -> dict[str, Any]:
         # Include cached profile if available
         if profile_data:
             user_context["idp_profile"] = profile_data
-            logger.debug(f"Loaded cached profile for {session_id[:16]}...")
+            logger.debug("Loaded cached profile for %s...", session_id[:16])
         else:
-            logger.warning(f"No cached profile found for {session_id[:16]}...")
+            logger.warning("No cached profile found for %s...", session_id[:16])
             user_context["idp_profile_error"] = (
                 "Profile not cached. Try logging out and back in."
             )
@@ -389,8 +390,8 @@ async def _get_user_info(request: Request) -> dict[str, Any]:
         return user_context
 
     except Exception as e:
-        logger.error(f"Error retrieving user info: {e}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error("Error retrieving user info: %s", e)
+        logger.error("Traceback: %s", traceback.format_exc())
         return {
             "error": f"Failed to retrieve user info: {e}",
             "username": username,
@@ -439,7 +440,7 @@ async def user_info_html(request: Request) -> HTMLResponse:
         is_admin = await is_nextcloud_admin(request, nc_client._client)
         await nc_client.close()
     except Exception as e:
-        logger.warning(f"Failed to check admin status: {e}")
+        logger.warning("Failed to check admin status: %s", e)
         # Default to not admin if check fails
 
     # Check for error
@@ -697,9 +698,9 @@ async def revoke_session(request: Request) -> HTMLResponse:
 
     try:
         # Delete the refresh token
-        logger.info(f"Revoking background access for session {session_id[:16]}...")
+        logger.info("Revoking background access for session %s...", session_id[:16])
         await storage.delete_refresh_token(session_id)
-        logger.info(f"✓ Background access revoked for session {session_id[:16]}...")
+        logger.info("✓ Background access revoked for session %s...", session_id[:16])
 
         # Redirect back to user page
         user_page_url = str(request.url_for("user_info_html"))
@@ -718,7 +719,7 @@ async def revoke_session(request: Request) -> HTMLResponse:
         )
 
     except Exception as e:
-        logger.error(f"Failed to revoke background access: {e}")
+        logger.error("Failed to revoke background access: %s", e)
         template = _jinja_env.get_template("error.html")
         return HTMLResponse(
             content=template.render(

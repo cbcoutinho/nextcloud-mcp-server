@@ -534,7 +534,7 @@ async def get_qdrant_client() -> AsyncQdrantClient:
             # Detect mode and initialize client accordingly
             if settings.qdrant_url:
                 # Network mode
-                logger.info(f"Using Qdrant network mode: {settings.qdrant_url}")
+                logger.info("Using Qdrant network mode: %s", settings.qdrant_url)
                 provisional = AsyncQdrantClient(
                     url=settings.qdrant_url,
                     api_key=settings.qdrant_api_key,
@@ -548,7 +548,7 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 else:
                     # Persistent local mode - use path parameter
                     logger.info(
-                        f"Using Qdrant persistent mode: {settings.qdrant_location}"
+                        "Using Qdrant persistent mode: %s", settings.qdrant_location
                     )
                     provisional = AsyncQdrantClient(path=settings.qdrant_location)
             else:
@@ -580,14 +580,14 @@ async def get_qdrant_client() -> AsyncQdrantClient:
             # `get_collection()`) is the only existence-probe permitted on a
             # collection-scoped JWT — it returns 200 with the collection
             # detail on hit and 404 on miss.
-            logger.debug(f"Fetching collection '{collection_name}' details...")
+            logger.debug("Fetching collection '%s' details...", collection_name)
             collection_info = None
             try:
                 collection_info = await provisional.get_collection(collection_name)
             except UnexpectedResponse as exc:
                 if exc.status_code != 404:
                     raise
-                logger.debug(f"Collection '{collection_name}' not found (404).")
+                logger.debug("Collection '%s' not found (404).", collection_name)
             except ValueError as exc:
                 # Local/in-memory qdrant_client raises ValueError(f"Collection
                 # {name} not found") instead of UnexpectedResponse — see
@@ -602,12 +602,12 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 # multi-user-basic CI jobs all exercise this path.
                 if "not found" not in str(exc):
                     raise
-                logger.debug(f"Collection '{collection_name}' not found (local mode).")
+                logger.debug("Collection '%s' not found (local mode).", collection_name)
 
             if collection_info is not None:
                 # Collection exists - validate dimensions
                 logger.debug(
-                    f"Collection '{collection_name}' found, validating dimensions..."
+                    "Collection '%s' found, validating dimensions...", collection_name
                 )
                 # Handle both named vectors (dict) and legacy single vector
                 vectors = collection_info.config.params.vectors
@@ -633,8 +633,10 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                     )
 
                 logger.info(
-                    f"Using existing Qdrant collection: {collection_name} "
-                    f"(dimension={actual_dimension}, model={settings.get_embedding_model_name()})"
+                    "Using existing Qdrant collection: %s (dimension=%s, model=%s)",
+                    collection_name,
+                    actual_dimension,
+                    settings.get_embedding_model_name(),
                 )
 
                 # Existing collections may pre-date the doc_id normalization /
@@ -658,8 +660,10 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 # Collection doesn't exist - create it
                 embedding_model = settings.get_embedding_model_name()
                 logger.info(
-                    f"Collection '{collection_name}' not found, creating with "
-                    f"dimension={expected_dimension}, model={embedding_model}..."
+                    "Collection '%s' not found, creating with dimension=%s, model=%s...",
+                    collection_name,
+                    expected_dimension,
+                    embedding_model,
                 )
                 await provisional.create_collection(
                     collection_name=collection_name,
@@ -678,12 +682,10 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                     },
                 )
                 logger.info(
-                    f"Created Qdrant collection: {collection_name}\n"
-                    f"  Dense vector dimension: {expected_dimension}\n"
-                    f"  Dense embedding model: {embedding_model}\n"
-                    f"  Sparse vectors: BM25 (for hybrid search)\n"
-                    f"  Distance: COSINE\n"
-                    f"Background sync will index all documents with dense + sparse vectors."
+                    "Created Qdrant collection: %s\\n  Dense vector dimension: %s\\n  Dense embedding model: %s\\n  Sparse vectors: BM25 (for hybrid search)\\n  Distance: COSINE\\nBackground sync will index all documents with dense + sparse vectors.",
+                    collection_name,
+                    expected_dimension,
+                    embedding_model,
                 )
                 # Freshly created collection has no payload schema yet; pass
                 # {} explicitly to skip the otherwise-redundant

@@ -92,7 +92,7 @@ async def compute_pca_coordinates(
     if embedding_dim is None:
         return {"coordinates_3d": [], "query_coords": []}
 
-    logger.info(f"Detected embedding dimension: {embedding_dim}")
+    logger.info("Detected embedding dimension: %s", embedding_dim)
 
     # Build chunk vectors array in search_results order (1:1 mapping)
     chunk_vectors = []
@@ -103,7 +103,7 @@ async def compute_pca_coordinates(
         else:
             # Chunk not found in vectors (shouldn't happen)
             logger.warning(
-                f"Chunk {chunk_key} not found in fetched vectors, using zero vector"
+                "Chunk %s not found in fetched vectors, using zero vector", chunk_key
             )
             chunk_vectors.append(np.zeros(embedding_dim))
 
@@ -129,17 +129,19 @@ async def compute_pca_coordinates(
     if zero_norm_mask.any():
         zero_indices = np.where(zero_norm_mask)[0]
         logger.warning(
-            f"Found {zero_norm_mask.sum()} zero-norm vectors at indices "
-            f"{zero_indices.tolist()}. Replacing with small epsilon to avoid "
-            "division by zero."
+            "Found %s zero-norm vectors at indices %s. Replacing with small epsilon to avoid division by zero.",
+            zero_norm_mask.sum(),
+            zero_indices.tolist(),
         )
         # Replace zero norms with small epsilon to avoid NaN
         norms[zero_norm_mask] = 1e-10
 
     all_vectors_normalized = all_vectors / norms
     logger.info(
-        f"Normalized vectors: query_norm={norms[-1][0]:.3f}, "
-        f"doc_norm_range=[{norms[:-1].min():.3f}, {norms[:-1].max():.3f}]"
+        "Normalized vectors: query_norm=%s, doc_norm_range=[%s, %s]",
+        format(norms[-1][0], ".3f"),
+        format(norms[:-1].min(), ".3f"),
+        format(norms[:-1].max(), ".3f"),
     )
 
     # Apply PCA dimensionality reduction (768-dim → 3D)
@@ -161,9 +163,9 @@ async def compute_pca_coordinates(
     if nan_mask.any():
         nan_rows = np.where(nan_mask.any(axis=1))[0]
         logger.error(
-            f"Found NaN values in PCA output at {len(nan_rows)} points: "
-            f"{nan_rows.tolist()[:10]}. Replacing NaN with 0.0 to prevent "
-            "JSON serialization error."
+            "Found NaN values in PCA output at %s points: %s. Replacing NaN with 0.0 to prevent JSON serialization error.",
+            len(nan_rows),
+            nan_rows.tolist()[:10],
         )
         # Replace NaN with 0 to allow JSON serialization
         coords_3d = np.nan_to_num(coords_3d, nan=0.0)
@@ -174,9 +176,10 @@ async def compute_pca_coordinates(
     chunk_coords_3d = coords_3d[:-1]  # All but last are chunks
 
     logger.info(
-        f"PCA explained variance: PC1={pca.explained_variance_ratio_[0]:.3f}, "
-        f"PC2={pca.explained_variance_ratio_[1]:.3f}, "
-        f"PC3={pca.explained_variance_ratio_[2]:.3f}"
+        "PCA explained variance: PC1=%s, PC2=%s, PC3=%s",
+        format(pca.explained_variance_ratio_[0], ".3f"),
+        format(pca.explained_variance_ratio_[1], ".3f"),
+        format(pca.explained_variance_ratio_[2], ".3f"),
     )
 
     # Coordinates already match search_results order (1:1 mapping)

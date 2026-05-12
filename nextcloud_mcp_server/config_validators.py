@@ -216,7 +216,7 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
             )
 
         explicit_mode = mode_map[mode_str]
-        logger.info(f"Using explicit deployment mode: {explicit_mode.value}")
+        logger.info("Using explicit deployment mode: %s", explicit_mode.value)
         return explicit_mode
 
     # Auto-detection (no explicit deployment_mode).
@@ -247,7 +247,7 @@ def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
     requirements = MODE_REQUIREMENTS[mode]
     errors: list[str] = []
 
-    logger.debug(f"Validating configuration for mode: {mode.value}")
+    logger.debug("Validating configuration for mode: %s", mode.value)
 
     # Check required variables
     for var in requirements.required:
@@ -333,8 +333,8 @@ def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
         # (This is a runtime check, not a config check, so we just warn)
         if not settings.oidc_client_id or not settings.oidc_client_secret:
             logger.info(
-                f"[{mode.value}] OAuth credentials not configured. "
-                "Will attempt Dynamic Client Registration (DCR) at startup."
+                "[%s] OAuth credentials not configured. Will attempt Dynamic Client Registration (DCR) at startup.",
+                mode.value,
             )
 
     if mode == AuthMode.MULTI_USER_BASIC:
@@ -343,9 +343,8 @@ def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
         if settings.enable_offline_access:
             if not settings.oidc_client_id or not settings.oidc_client_secret:
                 logger.info(
-                    f"[{mode.value}] OAuth credentials not configured. "
-                    "Will attempt Dynamic Client Registration (DCR) at startup "
-                    "(required for app password retrieval via Astrolabe)."
+                    "[%s] OAuth credentials not configured. Will attempt Dynamic Client Registration (DCR) at startup (required for app password retrieval via Astrolabe).",
+                    mode.value,
                 )
 
         # Note: Vector sync no longer requires explicit ENABLE_OFFLINE_ACCESS setting

@@ -50,7 +50,7 @@ class TestLoginFlowAuthTools:
         # Search" flow) stores. So accept either a non-empty list or None;
         # the field's *presence* in the payload is what we care about here.
         assert data["scopes"] is None or len(data["scopes"]) > 0
-        logger.info(f"Provisioned as: {data['username']}, scopes: {data['scopes']}")
+        logger.info("Provisioned as: %s, scopes: %s", data["username"], data["scopes"])
 
     async def test_provision_access_already_provisioned(
         self, nc_mcp_login_flow_client: ClientSession
@@ -100,7 +100,7 @@ class TestLoginFlowNotes:
         note = json.loads(create_result.content[0].text)
         note_id = note["id"]
         etag = note["etag"]
-        logger.info(f"Created note {note_id}")
+        logger.info("Created note %s", note_id)
 
         try:
             # Read
@@ -152,7 +152,7 @@ class TestLoginFlowNotes:
             await nc_mcp_login_flow_client.call_tool(
                 "nc_notes_delete_note", {"note_id": note_id}
             )
-            logger.info(f"Deleted note {note_id}")
+            logger.info("Deleted note %s", note_id)
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ class TestLoginFlowCalendarEvents:
         calendars = cal_data.get("calendars", [])
         assert len(calendars) > 0
         calendar_name = calendars[0].get("name", "personal")
-        logger.info(f"Using calendar: {calendar_name}")
+        logger.info("Using calendar: %s", calendar_name)
 
         suffix = uuid.uuid4().hex[:8]
         event_title = f"LoginFlow Event {suffix}"
@@ -197,7 +197,7 @@ class TestLoginFlowCalendarEvents:
         )
         event_data = json.loads(create_result.content[0].text)
         event_uid = event_data.get("uid") or event_data.get("event_uid")
-        logger.info(f"Created event: {event_uid}")
+        logger.info("Created event: %s", event_uid)
 
         try:
             # Get event
@@ -213,7 +213,7 @@ class TestLoginFlowCalendarEvents:
                 "nc_calendar_delete_event",
                 {"calendar_name": calendar_name, "event_uid": event_uid},
             )
-            logger.info(f"Deleted event {event_uid}")
+            logger.info("Deleted event %s", event_uid)
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +254,7 @@ class TestLoginFlowCalendarTodos:
             raise AssertionError(f"Create todo failed: {error_text}")
         todo_data = json.loads(create_result.content[0].text)
         todo_uid = todo_data.get("uid") or todo_data.get("todo_uid")
-        logger.info(f"Created todo: {todo_uid}")
+        logger.info("Created todo: %s", todo_uid)
 
         try:
             # List todos
@@ -280,7 +280,7 @@ class TestLoginFlowCalendarTodos:
                 "nc_calendar_delete_todo",
                 {"calendar_name": calendar_name, "todo_uid": todo_uid},
             )
-            logger.info(f"Deleted todo {todo_uid}")
+            logger.info("Deleted todo %s", todo_uid)
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +312,7 @@ class TestLoginFlowContacts:
         assert create_ab_result.isError is False, (
             f"Create addressbook failed: {create_ab_result.content[0].text}"
         )
-        logger.info(f"Created address book: {ab_name}")
+        logger.info("Created address book: %s", ab_name)
 
         try:
             # Create contact (requires addressbook, uid, contact_data dict)
@@ -330,7 +330,7 @@ class TestLoginFlowContacts:
             assert create_result.isError is False, (
                 f"Create contact failed: {create_result.content[0].text}"
             )
-            logger.info(f"Created contact: {contact_uid}")
+            logger.info("Created contact: %s", contact_uid)
 
             # List contacts in our clean addressbook
             # Note: may fail due to server-side Pydantic bug where ContactField.value
@@ -343,7 +343,7 @@ class TestLoginFlowContacts:
                 error_text = list_result.content[0].text
                 if "ContactField" in error_text:
                     logger.warning(
-                        f"Known server bug: ContactField validation: {error_text}"
+                        "Known server bug: ContactField validation: %s", error_text
                     )
                 else:
                     raise AssertionError(f"List contacts failed: {error_text}")
@@ -360,7 +360,7 @@ class TestLoginFlowContacts:
                 "nc_contacts_delete_contact",
                 {"addressbook": ab_name, "uid": contact_uid},
             )
-            logger.info(f"Deleted contact {contact_uid}")
+            logger.info("Deleted contact %s", contact_uid)
 
         finally:
             # Always clean up the temporary address book
@@ -368,7 +368,7 @@ class TestLoginFlowContacts:
                 "nc_contacts_delete_addressbook",
                 {"name": ab_name},
             )
-            logger.info(f"Deleted address book {ab_name}")
+            logger.info("Deleted address book %s", ab_name)
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +393,7 @@ class TestLoginFlowFiles:
         assert mkdir_result.isError is False, (
             f"Create dir failed: {mkdir_result.content[0].text}"
         )
-        logger.info(f"Created directory: {dir_path}")
+        logger.info("Created directory: %s", dir_path)
 
         try:
             # Write file
@@ -436,7 +436,7 @@ class TestLoginFlowFiles:
             await nc_mcp_login_flow_client.call_tool(
                 "nc_webdav_delete_resource", {"path": dir_path}
             )
-            logger.info(f"Cleaned up {dir_path}")
+            logger.info("Cleaned up %s", dir_path)
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +467,7 @@ class TestLoginFlowDeck:
             )
             board_data = json.loads(create_result.content[0].text)
             board_id = board_data.get("id") or board_data.get("board_id")
-            logger.info(f"Created board: {board_id}")
+            logger.info("Created board: %s", board_id)
 
             # List boards (tool name is deck_get_boards)
             list_result = await nc_mcp_login_flow_client.call_tool(
@@ -499,9 +499,11 @@ class TestLoginFlowDeck:
                         resp = await client.delete(
                             f"/apps/deck/api/v1.0/boards/{board_id}"
                         )
-                        logger.info(f"Board cleanup: {board_id} → {resp.status_code}")
+                        logger.info(
+                            "Board cleanup: %s → %s", board_id, resp.status_code
+                        )
                 except Exception as e:
-                    logger.warning(f"Board cleanup failed: {e}")
+                    logger.warning("Board cleanup failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +523,7 @@ class TestLoginFlowTables:
         result = await nc_mcp_login_flow_client.call_tool("nc_tables_list_tables", {})
         assert result.isError is False, f"List tables failed: {result.content[0].text}"
         data = json.loads(result.content[0].text)
-        logger.info(f"Tables: {data}")
+        logger.info("Tables: %s", data)
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +571,7 @@ class TestLoginFlowCookbook:
         )
         recipe_data = json.loads(create_result.content[0].text)
         recipe_id = recipe_data.get("id") or recipe_data.get("recipe_id")
-        logger.info(f"Created recipe: {recipe_id}")
+        logger.info("Created recipe: %s", recipe_id)
 
         try:
             # Get recipe (may fail due to server-side Pydantic bug with recipeYield=None)
@@ -580,7 +582,8 @@ class TestLoginFlowCookbook:
                 error_text = get_result.content[0].text
                 if "recipeYield" in error_text:
                     logger.warning(
-                        f"Known server bug: Recipe.recipeYield validation: {error_text}"
+                        "Known server bug: Recipe.recipeYield validation: %s",
+                        error_text,
                     )
                 else:
                     raise AssertionError(f"Get recipe failed: {error_text}")
@@ -590,7 +593,7 @@ class TestLoginFlowCookbook:
                 await nc_mcp_login_flow_client.call_tool(
                     "nc_cookbook_delete_recipe", {"recipe_id": recipe_id}
                 )
-                logger.info(f"Deleted recipe {recipe_id}")
+                logger.info("Deleted recipe %s", recipe_id)
 
 
 # ---------------------------------------------------------------------------
@@ -655,4 +658,4 @@ class TestLoginFlowConnectivity:
     async def test_list_resources(self, nc_mcp_login_flow_client: ClientSession):
         """Verify resource templates are available."""
         templates = await nc_mcp_login_flow_client.list_resource_templates()
-        logger.info(f"Resource templates: {len(templates.resourceTemplates)}")
+        logger.info("Resource templates: %s", len(templates.resourceTemplates))

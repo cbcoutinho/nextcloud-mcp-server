@@ -21,7 +21,7 @@ async def test_deck_stack_mcp_tools(
     stack_order = 1
 
     # 1. Create stack via MCP tool
-    logger.info(f"Creating stack via MCP: {stack_title}")
+    logger.info("Creating stack via MCP: %s", stack_title)
     create_result = await nc_mcp_client.call_tool(
         "deck_create_stack",
         {"board_id": board_id, "title": stack_title, "order": stack_order},
@@ -34,11 +34,11 @@ async def test_deck_stack_mcp_tools(
     stack_id = created_stack_response["id"]
     assert created_stack_response["title"] == stack_title
     assert created_stack_response["order"] == stack_order
-    logger.info(f"Stack created via MCP with ID: {stack_id}")
+    logger.info("Stack created via MCP with ID: %s", stack_id)
 
     try:
         # 2. Get stack via MCP resource
-        logger.info(f"Getting stack via MCP resource: {stack_id}")
+        logger.info("Getting stack via MCP resource: %s", stack_id)
         get_result = await nc_mcp_client.read_resource(
             f"nc://Deck/boards/{board_id}/stacks/{stack_id}"
         )
@@ -51,7 +51,7 @@ async def test_deck_stack_mcp_tools(
         # 3. Update stack via MCP tool
         updated_title = f"Updated {stack_title}"
         updated_order = 2
-        logger.info(f"Updating stack via MCP tool: {stack_id}")
+        logger.info("Updating stack via MCP tool: %s", stack_id)
         update_result = await nc_mcp_client.call_tool(
             "deck_update_stack",
             {
@@ -86,10 +86,10 @@ async def test_deck_stack_mcp_tools(
         # Verify our stack is in the list
         stack_ids = [stack["id"] for stack in stacks_data]
         assert stack_id in stack_ids, "Updated stack not found in list"
-        logger.info(f"Stack {stack_id} found in stacks list")
+        logger.info("Stack %s found in stacks list", stack_id)
 
         # 6. Read stack via MCP resource
-        logger.info(f"Reading stack via MCP resource: {stack_id}")
+        logger.info("Reading stack via MCP resource: %s", stack_id)
         read_result = await nc_mcp_client.read_resource(
             f"nc://Deck/boards/{board_id}/stacks/{stack_id}"
         )
@@ -100,7 +100,7 @@ async def test_deck_stack_mcp_tools(
     finally:
         # Clean up
         await nc_client.deck.delete_stack(board_id, stack_id)
-        logger.info(f"Cleaned up stack ID: {stack_id}")
+        logger.info("Cleaned up stack ID: %s", stack_id)
 
 
 # Card MCP Tools Tests
@@ -117,7 +117,7 @@ async def test_deck_card_mcp_tools(
     card_description = f"Test description for {card_title}"
 
     # 1. Create card via MCP tool
-    logger.info(f"Creating card via MCP: {card_title}")
+    logger.info("Creating card via MCP: %s", card_title)
     create_result = await nc_mcp_client.call_tool(
         "deck_create_card",
         {
@@ -137,11 +137,11 @@ async def test_deck_card_mcp_tools(
     card_id = created_card_response["id"]
     assert created_card_response["title"] == card_title
     assert created_card_response["description"] == card_description
-    logger.info(f"Card created via MCP with ID: {card_id}")
+    logger.info("Card created via MCP with ID: %s", card_id)
 
     try:
         # 2. Get card via MCP resource
-        logger.info(f"Getting card via MCP resource: {card_id}")
+        logger.info("Getting card via MCP resource: %s", card_id)
         get_result = await nc_mcp_client.read_resource(
             f"nc://Deck/boards/{board_id}/stacks/{stack_id}/cards/{card_id}"
         )
@@ -154,7 +154,7 @@ async def test_deck_card_mcp_tools(
         # 3. Update card via MCP tool
         updated_title = f"Updated {card_title}"
         updated_description = f"Updated description for {card_title}"
-        logger.info(f"Updating card via MCP tool: {card_id}")
+        logger.info("Updating card via MCP tool: %s", card_id)
         update_result = await nc_mcp_client.call_tool(
             "deck_update_card",
             {
@@ -178,7 +178,7 @@ async def test_deck_card_mcp_tools(
         logger.info("Card update verified via direct client")
 
         # 5. Archive/unarchive card via MCP tools
-        logger.info(f"Archiving card via MCP tool: {card_id}")
+        logger.info("Archiving card via MCP tool: %s", card_id)
         archive_result = await nc_mcp_client.call_tool(
             "deck_archive_card",
             {"board_id": board_id, "stack_id": stack_id, "card_id": card_id},
@@ -189,7 +189,7 @@ async def test_deck_card_mcp_tools(
         )
         logger.info("Card archived via MCP tool successfully")
 
-        logger.info(f"Unarchiving card via MCP tool: {card_id}")
+        logger.info("Unarchiving card via MCP tool: %s", card_id)
         unarchive_result = await nc_mcp_client.call_tool(
             "deck_unarchive_card",
             {"board_id": board_id, "stack_id": stack_id, "card_id": card_id},
@@ -201,7 +201,7 @@ async def test_deck_card_mcp_tools(
         logger.info("Card unarchived via MCP tool successfully")
 
         # 6. Move card to different position via MCP tool
-        logger.info(f"Reordering card via MCP tool: {card_id}")
+        logger.info("Reordering card via MCP tool: %s", card_id)
         reorder_result = await nc_mcp_client.call_tool(
             "deck_reorder_card",
             {
@@ -219,7 +219,7 @@ async def test_deck_card_mcp_tools(
         logger.info("Card reordered via MCP tool successfully")
 
         # 7. Read card via MCP resource
-        logger.info(f"Reading card via MCP resource: {card_id}")
+        logger.info("Reading card via MCP resource: %s", card_id)
         read_result = await nc_mcp_client.read_resource(
             f"nc://Deck/boards/{board_id}/stacks/{stack_id}/cards/{card_id}"
         )
@@ -230,7 +230,7 @@ async def test_deck_card_mcp_tools(
     finally:
         # Clean up
         await nc_client.deck.delete_card(board_id, stack_id, card_id)
-        logger.info(f"Cleaned up card ID: {card_id}")
+        logger.info("Cleaned up card ID: %s", card_id)
 
 
 # Label MCP Tools Tests
@@ -243,7 +243,7 @@ async def test_deck_label_mcp_tools(
     label_color = "FF0000"  # Red
 
     # 1. Create label via MCP tool
-    logger.info(f"Creating label via MCP: {label_title}")
+    logger.info("Creating label via MCP: %s", label_title)
     create_result = await nc_mcp_client.call_tool(
         "deck_create_label",
         {"board_id": board_id, "title": label_title, "color": label_color},
@@ -256,11 +256,11 @@ async def test_deck_label_mcp_tools(
     label_id = created_label_response["id"]
     assert created_label_response["title"] == label_title
     assert created_label_response["color"] == label_color
-    logger.info(f"Label created via MCP with ID: {label_id}")
+    logger.info("Label created via MCP with ID: %s", label_id)
 
     try:
         # 2. Get label via MCP resource
-        logger.info(f"Getting label via MCP resource: {label_id}")
+        logger.info("Getting label via MCP resource: %s", label_id)
         get_result = await nc_mcp_client.read_resource(
             f"nc://Deck/boards/{board_id}/labels/{label_id}"
         )
@@ -273,7 +273,7 @@ async def test_deck_label_mcp_tools(
         # 3. Update label via MCP tool
         updated_title = f"Updated {label_title}"
         updated_color = "00FF00"  # Green
-        logger.info(f"Updating label via MCP tool: {label_id}")
+        logger.info("Updating label via MCP tool: %s", label_id)
         update_result = await nc_mcp_client.call_tool(
             "deck_update_label",
             {
@@ -296,7 +296,7 @@ async def test_deck_label_mcp_tools(
         logger.info("Label update verified via direct client")
 
         # 5. Read label via MCP resource
-        logger.info(f"Reading label via MCP resource: {label_id}")
+        logger.info("Reading label via MCP resource: %s", label_id)
         read_result = await nc_mcp_client.read_resource(
             f"nc://Deck/boards/{board_id}/labels/{label_id}"
         )
@@ -307,7 +307,7 @@ async def test_deck_label_mcp_tools(
     finally:
         # Clean up
         await nc_client.deck.delete_label(board_id, label_id)
-        logger.info(f"Cleaned up label ID: {label_id}")
+        logger.info("Cleaned up label ID: %s", label_id)
 
 
 # Label-Card Assignment Tests
@@ -330,7 +330,7 @@ async def test_deck_card_label_assignment_mcp_tools(
 
     try:
         # 1. Assign label to card via MCP tool
-        logger.info(f"Assigning label {label_id} to card {card_id} via MCP")
+        logger.info("Assigning label %s to card %s via MCP", label_id, card_id)
         assign_result = await nc_mcp_client.call_tool(
             "deck_assign_label_to_card",
             {
@@ -354,7 +354,7 @@ async def test_deck_card_label_assignment_mcp_tools(
         logger.info("Label assignment verified via direct client")
 
         # 3. Remove label from card via MCP tool
-        logger.info(f"Removing label {label_id} from card {card_id} via MCP")
+        logger.info("Removing label %s from card %s via MCP", label_id, card_id)
         remove_result = await nc_mcp_client.call_tool(
             "deck_remove_label_from_card",
             {
@@ -382,7 +382,7 @@ async def test_deck_card_label_assignment_mcp_tools(
     finally:
         # Clean up
         await nc_client.deck.delete_label(board_id, label_id)
-        logger.info(f"Cleaned up label ID: {label_id}")
+        logger.info("Cleaned up label ID: %s", label_id)
 
 
 # User Assignment Tests
@@ -401,7 +401,7 @@ async def test_deck_card_user_assignment_mcp_tools(
     user_id = "admin"
 
     # 1. Assign user to card via MCP tool
-    logger.info(f"Assigning user {user_id} to card {card_id} via MCP")
+    logger.info("Assigning user %s to card %s via MCP", user_id, card_id)
     assign_result = await nc_mcp_client.call_tool(
         "deck_assign_user_to_card",
         {
@@ -432,7 +432,7 @@ async def test_deck_card_user_assignment_mcp_tools(
     logger.info("User assignment verified via direct client")
 
     # 3. Unassign user from card via MCP tool
-    logger.info(f"Unassigning user {user_id} from card {card_id} via MCP")
+    logger.info("Unassigning user %s from card %s via MCP", user_id, card_id)
     unassign_result = await nc_mcp_client.call_tool(
         "deck_unassign_user_from_card",
         {
@@ -521,7 +521,7 @@ async def test_deck_mcp_resource_templates(nc_mcp_client: ClientSession):
         assert expected_template in template_uris, (
             f"Expected template '{expected_template}' not found"
         )
-        logger.info(f"Found expected deck resource template: {expected_template}")
+        logger.info("Found expected deck resource template: %s", expected_template)
 
 
 # Listing resource tests
@@ -534,7 +534,7 @@ async def test_deck_mcp_listing_resources(
     stack_id = stack_data["id"]
 
     # 1. Test listing stacks resource
-    logger.info(f"Reading stacks list via MCP resource for board {board_id}")
+    logger.info("Reading stacks list via MCP resource for board %s", board_id)
     stacks_resource_result = await nc_mcp_client.read_resource(
         f"nc://Deck/boards/{board_id}/stacks"
     )
@@ -547,7 +547,7 @@ async def test_deck_mcp_listing_resources(
     logger.info("Stack found in stacks resource list")
 
     # 2. Test listing cards resource
-    logger.info(f"Reading cards list via MCP resource for stack {stack_id}")
+    logger.info("Reading cards list via MCP resource for stack %s", stack_id)
     cards_resource_result = await nc_mcp_client.read_resource(
         f"nc://Deck/boards/{board_id}/stacks/{stack_id}/cards"
     )
@@ -560,7 +560,7 @@ async def test_deck_mcp_listing_resources(
     logger.info("Card found in cards resource list")
 
     # 3. Test listing labels resource
-    logger.info(f"Reading labels list via MCP resource for board {board_id}")
+    logger.info("Reading labels list via MCP resource for board %s", board_id)
     labels_resource_result = await nc_mcp_client.read_resource(
         f"nc://Deck/boards/{board_id}/labels"
     )

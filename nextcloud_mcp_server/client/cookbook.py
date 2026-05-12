@@ -130,7 +130,7 @@ class CookbookClient(BaseNextcloudClient):
         Returns:
             Full imported recipe data
         """
-        logger.info(f"Importing recipe from URL: {url}")
+        logger.info("Importing recipe from URL: %s", url)
         response = await self._make_request(
             "POST",
             "/apps/cookbook/api/v1/import",

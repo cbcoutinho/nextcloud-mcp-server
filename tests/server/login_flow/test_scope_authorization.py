@@ -73,7 +73,7 @@ async def test_read_only_token_filters_write_tools(nc_mcp_login_flow_client_read
     assert len(result.tools) > 0
 
     tool_names = [tool.name for tool in result.tools]
-    logger.info(f"Read-only token sees {len(tool_names)} tools")
+    logger.info("Read-only token sees %s tools", len(tool_names))
 
     # Verify read tools are present (only for apps with :read scopes)
     # Read-only token has: notes.read, calendar.read, contacts.read,
@@ -104,8 +104,8 @@ async def test_read_only_token_filters_write_tools(nc_mcp_login_flow_client_read
         )
 
     logger.info(
-        f"✅ Read-only token properly filters tools: {len(tool_names)} read tools visible, "
-        f"write tools hidden"
+        "✅ Read-only token properly filters tools: %s read tools visible, write tools hidden",
+        len(tool_names),
     )
 
 
@@ -122,7 +122,7 @@ async def test_write_only_token_filters_read_tools(nc_mcp_login_flow_client_writ
     assert len(result.tools) > 0
 
     tool_names = [tool.name for tool in result.tools]
-    logger.info(f"Write-only token sees {len(tool_names)} tools")
+    logger.info("Write-only token sees %s tools", len(tool_names))
 
     # Verify write tools are present
     # Write-only token has: notes.write, calendar.write, contacts.write,
@@ -153,8 +153,8 @@ async def test_write_only_token_filters_read_tools(nc_mcp_login_flow_client_writ
         )
 
     logger.info(
-        f"✅ Write-only token properly filters tools: {len(tool_names)} write tools visible, "
-        f"read tools hidden"
+        "✅ Write-only token properly filters tools: %s write tools visible, read tools hidden",
+        len(tool_names),
     )
 
 
@@ -171,8 +171,8 @@ async def test_full_access_token_shows_all_tools(nc_mcp_login_flow_client_full_a
     assert len(result.tools) > 0
 
     tool_names = [tool.name for tool in result.tools]
-    logger.info(f"Full access token sees {len(tool_names)} tools")
-    logger.info(f"Tools: {sorted(tool_names)}")
+    logger.info("Full access token sees %s tools", len(tool_names))
+    logger.info("Tools: %s", sorted(tool_names))
 
     # Verify both read and write tools are present
     # Full access has all *read and *write scopes
@@ -197,7 +197,7 @@ async def test_full_access_token_shows_all_tools(nc_mcp_login_flow_client_full_a
     assert len(tool_names) >= 90
 
     logger.info(
-        f"✅ Full access token sees all tools: {len(tool_names)} total (read + write)"
+        "✅ Full access token sees all tools: %s total (read + write)", len(tool_names)
     )
 
 
@@ -415,7 +415,8 @@ async def test_jwt_with_no_custom_scopes_returns_zero_tools(
 
     tool_names = [tool.name for tool in result.tools]
     logger.info(
-        f"JWT token with no custom scopes sees {len(tool_names)} tools (should be 7 auth tools)"
+        "JWT token with no custom scopes sees %s tools (should be 7 auth tools)",
+        len(tool_names),
     )
 
     # Only auth/provisioning tools should be visible (they require 'openid' scope)
@@ -435,8 +436,8 @@ async def test_jwt_with_no_custom_scopes_returns_zero_tools(
     )
 
     logger.info(
-        f"✅ JWT token with only openid scope correctly shows {len(tool_names)} auth tools, "
-        "resource tools filtered out"
+        "✅ JWT token with only openid scope correctly shows %s auth tools, resource tools filtered out",
+        len(tool_names),
     )
 
 
@@ -457,7 +458,7 @@ async def test_jwt_consent_scenarios_read_only(nc_mcp_login_flow_client_read_onl
     assert len(result.tools) > 0
 
     tool_names = [tool.name for tool in result.tools]
-    logger.info(f"JWT with nc:read consent sees {len(tool_names)} tools")
+    logger.info("JWT with nc:read consent sees %s tools", len(tool_names))
 
     # Verify read tools are present
     read_tools = ["nc_notes_get_note", "nc_notes_search_notes", "nc_webdav_read_file"]
@@ -474,7 +475,8 @@ async def test_jwt_consent_scenarios_read_only(nc_mcp_login_flow_client_read_onl
         assert tool not in tool_names, f"Write tool {tool} should be filtered out"
 
     logger.info(
-        f"✅ JWT with nc:read consent: {len(tool_names)} read tools visible, write tools filtered"
+        "✅ JWT with nc:read consent: %s read tools visible, write tools filtered",
+        len(tool_names),
     )
 
 
@@ -495,7 +497,7 @@ async def test_jwt_consent_scenarios_write_only(nc_mcp_login_flow_client_write_o
     assert len(result.tools) > 0
 
     tool_names = [tool.name for tool in result.tools]
-    logger.info(f"JWT with nc:write consent sees {len(tool_names)} tools")
+    logger.info("JWT with nc:write consent sees %s tools", len(tool_names))
 
     # Verify write tools are present
     write_tools = [
@@ -512,7 +514,8 @@ async def test_jwt_consent_scenarios_write_only(nc_mcp_login_flow_client_write_o
         assert tool not in tool_names, f"Read-only tool {tool} should be filtered out"
 
     logger.info(
-        f"✅ JWT with nc:write consent: {len(tool_names)} write tools visible, read-only tools filtered"
+        "✅ JWT with nc:write consent: %s write tools visible, read-only tools filtered",
+        len(tool_names),
     )
 
 
@@ -533,7 +536,7 @@ async def test_jwt_consent_scenarios_full_access(nc_mcp_login_flow_client_full_a
     assert len(result.tools) > 0
 
     tool_names = [tool.name for tool in result.tools]
-    logger.info(f"JWT with full consent sees {len(tool_names)} tools")
+    logger.info("JWT with full consent sees %s tools", len(tool_names))
 
     # Verify both read and write tools are present
     read_tools = ["nc_notes_get_note", "nc_webdav_read_file"]
@@ -549,7 +552,7 @@ async def test_jwt_consent_scenarios_full_access(nc_mcp_login_flow_client_full_a
     assert len(tool_names) >= 90, f"Expected 90+ tools but got {len(tool_names)}"
 
     logger.info(
-        f"✅ JWT with full consent: {len(tool_names)} tools visible (all read + write)"
+        "✅ JWT with full consent: %s tools visible (all read + write)", len(tool_names)
     )
 
 

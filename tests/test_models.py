@@ -78,7 +78,7 @@ def test_current_broken_format():
     assert "+" not in current_format
     assert "-" not in current_format[-6:]  # Check last 6 chars for timezone
 
-    logger.info(f"Current broken format: {current_format}")
+    logger.info("Current broken format: %s", current_format)
     logger.info(
         "This format causes MCP validation errors because it lacks timezone information"
     )

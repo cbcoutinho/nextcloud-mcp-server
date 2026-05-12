@@ -231,14 +231,15 @@ def setup_metrics(port: int = 9090) -> None:
     """
     try:
         start_http_server(port)
-        logger.info(f"Prometheus metrics server started on port {port}")
+        logger.info("Prometheus metrics server started on port %s", port)
     except OSError as e:
         if "Address already in use" in str(e):
             logger.warning(
-                f"Metrics port {port} already in use (metrics server likely already running)"
+                "Metrics port %s already in use (metrics server likely already running)",
+                port,
             )
         else:
-            logger.error(f"Failed to start metrics server on port {port}: {e}")
+            logger.error("Failed to start metrics server on port %s: %s", port, e)
             raise
 
 

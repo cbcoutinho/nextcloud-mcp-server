@@ -129,7 +129,7 @@ async def indexed_manual_pdf(nc_client, nc_mcp_client):
 
     manual_path = os.getenv("RAG_MANUAL_PATH", DEFAULT_MANUAL_PATH)
 
-    logger.info(f"Setting up indexed manual PDF: {manual_path}")
+    logger.info("Setting up indexed manual PDF: %s", manual_path)
 
     # Get file info to verify file exists and get file ID. After the
     # round-7 contract widening, get_file_info raises HTTPStatusError on
@@ -145,16 +145,16 @@ async def indexed_manual_pdf(nc_client, nc_mcp_client):
         pytest.skip(f"Manual PDF unreadable at '{manual_path}' (malformed PROPFIND)")
 
     file_id = file_info["id"]
-    logger.info(f"Found manual PDF: {manual_path} (file_id={file_id})")
+    logger.info("Found manual PDF: %s (file_id=%s)", manual_path, file_id)
 
     # Create or get the vector-index tag
     tag = await nc_client.webdav.get_or_create_tag("vector-index")
     tag_id = tag["id"]
-    logger.info(f"Using tag 'vector-index' (tag_id={tag_id})")
+    logger.info("Using tag 'vector-index' (tag_id=%s)", tag_id)
 
     # Assign tag to file
     await nc_client.webdav.assign_tag_to_file(file_id, tag_id)
-    logger.info(f"Tagged file {file_id} with vector-index tag")
+    logger.info("Tagged file %s with vector-index tag", file_id)
 
     # Wait for vector sync to complete indexing
     max_attempts = 60
@@ -176,23 +176,26 @@ async def indexed_manual_pdf(nc_client, nc_mcp_client):
                 pending = content.get("pending_count", 1)
 
                 logger.info(
-                    f"Attempt {attempt}/{max_attempts}: "
-                    f"indexed={indexed}, pending={pending}"
+                    "Attempt %s/%s: indexed=%s, pending=%s",
+                    attempt,
+                    max_attempts,
+                    indexed,
+                    pending,
                 )
 
                 if indexed > 0 and pending == 0:
                     logger.info(
-                        f"Vector indexing complete: {indexed} documents indexed"
+                        "Vector indexing complete: %s documents indexed", indexed
                     )
                     break
         except Exception as e:
-            logger.warning(f"Attempt {attempt}: Error checking status: {e}")
+            logger.warning("Attempt %s: Error checking status: %s", attempt, e)
 
         if attempt < max_attempts:
             await anyio.sleep(poll_interval)
     else:
         logger.warning(
-            f"Vector indexing may not be complete after {max_attempts} attempts"
+            "Vector indexing may not be complete after %s attempts", max_attempts
         )
 
     yield {

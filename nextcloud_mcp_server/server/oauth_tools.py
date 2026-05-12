@@ -266,7 +266,7 @@ async def _provision_nextcloud_access(ctx: Context, user_id: str) -> Provisionin
         )
 
     except Exception as e:
-        logger.error(f"Failed to initiate provisioning: {e}")
+        logger.error("Failed to initiate provisioning: %s", e)
         return ProvisioningResult(
             success=False,
             message=f"Failed to initiate provisioning: {str(e)}",
@@ -337,7 +337,7 @@ async def _revoke_nextcloud_access(ctx: Context, user_id: str) -> RevocationResu
             )
 
     except Exception as e:
-        logger.error(f"Failed to revoke access: {e}")
+        logger.error("Failed to revoke access: %s", e)
         return RevocationResult(
             success=False,
             message=f"Failed to revoke access: {str(e)}",
@@ -542,7 +542,7 @@ async def _check_logged_in(ctx: Context, user_id: str) -> str:
             return "Login cancelled by user."
 
     except Exception as e:
-        logger.error(f"Failed to check login status: {e}")
+        logger.error("Failed to check login status: %s", e)
         return f"Error checking login status: {str(e)}"
 
 

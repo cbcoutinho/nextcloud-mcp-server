@@ -72,7 +72,7 @@ async def parse_document(
 
     registry = get_registry()
 
-    logger.debug(f"Parsing document of type '{content_type}'")
+    logger.debug("Parsing document of type '%s'", content_type)
 
     try:
         # Process using registry (auto-selects processor based on MIME type)
@@ -83,12 +83,14 @@ async def parse_document(
             progress_callback=progress_callback,
         )
 
-        logger.info(f"Successfully parsed document with '{result.processor}' processor")
+        logger.info(
+            "Successfully parsed document with '%s' processor", result.processor
+        )
 
         return result.text, result.metadata
 
     except ProcessorError as e:
-        logger.error(f"Document processing failed: {e}")
+        logger.error("Document processing failed: %s", e)
         # Fallback to base64 with error metadata
         parsed_text = f"Document could not be parsed. Base64 content: {base64.b64encode(content).decode('ascii')[:200]}..."
         metadata = {

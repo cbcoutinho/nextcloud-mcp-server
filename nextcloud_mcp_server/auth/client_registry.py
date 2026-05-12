@@ -89,7 +89,7 @@ class ClientRegistry:
 
                     if not cid or not redirect:
                         logger.warning(
-                            f"Skipping malformed ALLOWED_MCP_CLIENTS entry: {entry!r}"
+                            "Skipping malformed ALLOWED_MCP_CLIENTS entry: %r", entry
                         )
                         continue
 
@@ -97,8 +97,9 @@ class ClientRegistry:
                     hostname = parsed.hostname
                     if hostname is None:
                         logger.warning(
-                            f"Skipping client {cid!r}: cannot parse hostname "
-                            f"from {redirect!r}"
+                            "Skipping client %r: cannot parse hostname from %r",
+                            cid,
+                            redirect,
                         )
                         continue
                     is_loopback = hostname in ("localhost", "127.0.0.1", "::1")
@@ -108,8 +109,9 @@ class ClientRegistry:
                         or (parsed.scheme == "http" and is_loopback)
                     ):
                         logger.warning(
-                            f"Rejecting client {cid!r}: HTTP redirect URIs are only "
-                            f"allowed for localhost, got {redirect!r}"
+                            "Rejecting client %r: HTTP redirect URIs are only allowed for localhost, got %r",
+                            cid,
+                            redirect,
                         )
                         continue
 
@@ -120,7 +122,7 @@ class ClientRegistry:
                         allowed_scopes=["*"],
                         is_public=True,
                     )
-                    logger.info(f"Registered static client: {cid}")
+                    logger.info("Registered static client: %s", cid)
                 else:
                     self._clients[entry] = MCPClientInfo(
                         client_id=entry,
@@ -129,7 +131,7 @@ class ClientRegistry:
                         allowed_scopes=["*"],
                         is_public=True,
                     )
-                    logger.info(f"Registered static client: {entry}")
+                    logger.info("Registered static client: %s", entry)
 
         if not self._clients:
             logger.warning(
@@ -170,7 +172,7 @@ class ClientRegistry:
         if not client:
             if self.allow_dynamic_registration:
                 # In production, would attempt DCR here
-                logger.info(f"Unknown client {client_id}, would attempt DCR")
+                logger.info("Unknown client %s, would attempt DCR", client_id)
                 return True, None
             else:
                 return False, f"Unknown client_id: {client_id}"
@@ -229,15 +231,15 @@ class ClientRegistry:
             True if registered successfully
         """
         if not self.allow_dynamic_registration:
-            logger.warning(f"DCR disabled, cannot register {client_info.client_id}")
+            logger.warning("DCR disabled, cannot register %s", client_info.client_id)
             return False
 
         if client_info.client_id in self._clients:
-            logger.warning(f"Client {client_info.client_id} already registered")
+            logger.warning("Client %s already registered", client_info.client_id)
             return False
 
         self._clients[client_info.client_id] = client_info
-        logger.info(f"Dynamically registered client: {client_info.client_id}")
+        logger.info("Dynamically registered client: %s", client_info.client_id)
 
         # In production, would persist to database
         return True
@@ -263,7 +265,7 @@ class ClientRegistry:
             allowed_scopes=["*"],  # Nextcloud enforces actual scopes
             is_public=True,
         )
-        logger.info(f"Registered proxy client: {client_id}")
+        logger.info("Registered proxy client: %s", client_id)
 
     def get_client(self, client_id: str) -> Optional[MCPClientInfo]:
         """

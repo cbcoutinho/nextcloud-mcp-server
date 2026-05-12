@@ -139,7 +139,9 @@ def _get_client_from_basic_auth(ctx: Context) -> NextcloudClient:
         raise ValueError("Invalid BasicAuth credentials - missing username or password")
 
     logger.debug(
-        f"Creating multi-user BasicAuth client for {settings.nextcloud_host} as {username}"
+        "Creating multi-user BasicAuth client for %s as %s",
+        settings.nextcloud_host,
+        username,
     )
 
     # Create client that passes BasicAuth credentials through to Nextcloud
@@ -191,7 +193,7 @@ async def _get_client_from_login_flow(
 
     username = app_data.get("username") or user_id
 
-    logger.debug(f"Creating Login Flow v2 client for {nextcloud_host} as {username}")
+    logger.debug("Creating Login Flow v2 client for %s as %s", nextcloud_host, username)
 
     return NextcloudClient(
         base_url=nextcloud_host,

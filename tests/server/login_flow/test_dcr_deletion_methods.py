@@ -61,9 +61,9 @@ async def test_dcr_deletion_authentication_methods(
     )
 
     deletion_endpoint = f"{nextcloud_host}/apps/oidc/register/{client_info.client_id}"
-    logger.info(f"\nTesting deletion endpoint: {deletion_endpoint}")
-    logger.info(f"Client ID: {client_info.client_id}")
-    logger.info(f"Client Secret (first 16 chars): {client_info.client_secret[:16]}...")
+    logger.info("\\nTesting deletion endpoint: %s", deletion_endpoint)
+    logger.info("Client ID: %s", client_info.client_id)
+    logger.info("Client Secret (first 16 chars): %s...", client_info.client_secret[:16])
 
     results = {}
 
@@ -79,11 +79,11 @@ async def test_dcr_deletion_authentication_methods(
                 "status": response.status_code,
                 "body": response.text[:200],
             }
-            logger.info(f"Status: {response.status_code}")
-            logger.info(f"Body: {response.text[:200]}")
+            logger.info("Status: %s", response.status_code)
+            logger.info("Body: %s", response.text[:200])
         except Exception as e:
             results["basic_auth"] = {"status": "error", "error": str(e)}
-            logger.error(f"Error: {e}")
+            logger.error("Error: %s", e)
 
         # Method 2: Credentials in JSON body
         logger.info("\n=== Method 2: Credentials in JSON Body ===")
@@ -99,11 +99,11 @@ async def test_dcr_deletion_authentication_methods(
                 "status": response.status_code,
                 "body": response.text[:200],
             }
-            logger.info(f"Status: {response.status_code}")
-            logger.info(f"Body: {response.text[:200]}")
+            logger.info("Status: %s", response.status_code)
+            logger.info("Body: %s", response.text[:200])
         except Exception as e:
             results["json_body"] = {"status": "error", "error": str(e)}
-            logger.error(f"Error: {e}")
+            logger.error("Error: %s", e)
 
         # Method 3: Credentials in query parameters
         logger.info("\n=== Method 3: Credentials in Query Parameters ===")
@@ -119,11 +119,11 @@ async def test_dcr_deletion_authentication_methods(
                 "status": response.status_code,
                 "body": response.text[:200],
             }
-            logger.info(f"Status: {response.status_code}")
-            logger.info(f"Body: {response.text[:200]}")
+            logger.info("Status: %s", response.status_code)
+            logger.info("Body: %s", response.text[:200])
         except Exception as e:
             results["query_params"] = {"status": "error", "error": str(e)}
-            logger.error(f"Error: {e}")
+            logger.error("Error: %s", e)
 
         # Method 4: No authentication (baseline)
         logger.info("\n=== Method 4: No Authentication (Baseline) ===")
@@ -133,11 +133,11 @@ async def test_dcr_deletion_authentication_methods(
                 "status": response.status_code,
                 "body": response.text[:200],
             }
-            logger.info(f"Status: {response.status_code}")
-            logger.info(f"Body: {response.text[:200]}")
+            logger.info("Status: %s", response.status_code)
+            logger.info("Body: %s", response.text[:200])
         except Exception as e:
             results["no_auth"] = {"status": "error", "error": str(e)}
-            logger.error(f"Error: {e}")
+            logger.error("Error: %s", e)
 
     # Print summary
     logger.info("\n" + "=" * 70)
@@ -146,7 +146,7 @@ async def test_dcr_deletion_authentication_methods(
 
     for method, result in results.items():
         status = result.get("status", "unknown")
-        logger.info(f"{method:20s} → Status: {status}")
+        logger.info("%s → Status: %s", format(method, "20s"), status)
 
     # Analysis
     logger.info("\n" + "=" * 70)
@@ -170,11 +170,11 @@ async def test_dcr_deletion_authentication_methods(
         logger.info("✓ At least one authentication method succeeded (204 No Content)")
         for method, result in results.items():
             if result.get("status") == 204:
-                logger.info(f"  Working method: {method}")
+                logger.info("  Working method: %s", method)
     else:
         logger.info("? Mixed results - further investigation needed")
         for method, result in results.items():
-            logger.info(f"  {method}: {result.get('status')}")
+            logger.info("  %s: %s", method, result.get("status"))
 
     # Document the finding
     assert all_401 or any_204, (

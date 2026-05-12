@@ -33,7 +33,10 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         self.client = httpx.AsyncClient(verify=verify_ssl, timeout=timeout)
         self._dimension: int | None = None  # Will be detected dynamically
         logger.info(
-            f"Initialized Ollama provider: {base_url} (model={model}, verify_ssl={verify_ssl})"
+            "Initialized Ollama provider: %s (model=%s, verify_ssl=%s)",
+            base_url,
+            model,
+            verify_ssl,
         )
 
         self._check_model_is_loaded(autoload=True)
@@ -82,11 +85,13 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         instead of relying on hardcoded values.
         """
         if self._dimension is None:
-            logger.debug(f"Detecting embedding dimension for model {self.model}...")
+            logger.debug("Detecting embedding dimension for model %s...", self.model)
             test_embedding = await self.embed("test")
             self._dimension = len(test_embedding)
             logger.info(
-                f"Detected embedding dimension: {self._dimension} for model {self.model}"
+                "Detected embedding dimension: %s for model %s",
+                self._dimension,
+                self.model,
             )
 
     def get_dimension(self) -> int:
