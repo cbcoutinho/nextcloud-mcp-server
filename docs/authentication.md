@@ -75,7 +75,7 @@ The server detects the active mode from environment variables at startup:
 |------------------|---------------|
 | `NEXTCLOUD_USERNAME` + `NEXTCLOUD_PASSWORD` | Single-User (BasicAuth) |
 | `ENABLE_MULTI_USER_BASIC_AUTH=true` (no creds) | Multi-User (BasicAuth pass-through) |
-| `ENABLE_LOGIN_FLOW=true` (no creds) | Multi-User (Login Flow v2) |
+| `MCP_DEPLOYMENT_MODE=login_flow` or no auth env vars set | Multi-User (Login Flow v2) |
 
 You can also force a mode via CLI flag:
 

@@ -289,22 +289,22 @@ class TestLoginFlowValidation:
     """Test validation for Login Flow v2 mode (formerly OAUTH_SINGLE_AUDIENCE)."""
 
     def test_valid_minimal_config(self):
-        """Test valid minimal Login Flow v2 config."""
+        """Test valid minimal Login Flow v2 config — enable_login_flow is now derived."""
         settings = Settings(
             nextcloud_host="http://localhost",
-            enable_login_flow=True,
         )
 
         mode, errors = validate_configuration(settings)
 
         assert mode == AuthMode.LOGIN_FLOW
         assert len(errors) == 0
+        # ADR-022 follow-up: enable_login_flow is derived from the resolved mode.
+        assert settings.enable_login_flow is True
 
     def test_valid_with_static_credentials(self):
         """Test valid config with static OAuth credentials."""
         settings = Settings(
             nextcloud_host="http://localhost",
-            enable_login_flow=True,
             oidc_client_id="test-client",
             oidc_client_secret="test-secret",
         )
@@ -318,7 +318,6 @@ class TestLoginFlowValidation:
         """Test valid config with offline access."""
         settings = Settings(
             nextcloud_host="http://localhost",
-            enable_login_flow=True,
             oidc_client_id="test-client",
             oidc_client_secret="test-secret",
             enable_offline_access=True,
@@ -348,7 +347,6 @@ class TestLoginFlowValidation:
         """Test error when offline access enabled but encryption key missing."""
         settings = Settings(
             nextcloud_host="http://localhost",
-            enable_login_flow=True,
             enable_offline_access=True,
             token_storage_db="/tmp/tokens.db",
         )
@@ -358,19 +356,28 @@ class TestLoginFlowValidation:
         assert mode == AuthMode.LOGIN_FLOW
         assert any("token_encryption_key" in err.lower() for err in errors)
 
-    def test_login_flow_requires_enable_login_flow_flag(self):
-        """ADR-022: LOGIN_FLOW mode must error when ENABLE_LOGIN_FLOW is not true."""
-        settings = Settings(
-            nextcloud_host="http://localhost",
-            # enable_login_flow deliberately omitted (defaults to False)
-        )
+    def test_login_flow_mode_auto_derives_enable_login_flow_flag(self):
+        """ADR-022 follow-up: setting MCP_DEPLOYMENT_MODE=login_flow auto-derives the flag.
 
-        mode, errors = validate_configuration(settings)
-
+        Users no longer need to set ENABLE_LOGIN_FLOW=true (env var was removed);
+        detect_auth_mode populates settings.enable_login_flow from the resolved mode.
+        """
+        # Default-fallback case: no auth env vars → LOGIN_FLOW.
+        settings = Settings(nextcloud_host="http://localhost")
+        assert settings.enable_login_flow is False  # default before detection
+        mode = detect_auth_mode(settings)
         assert mode == AuthMode.LOGIN_FLOW
-        assert any("ENABLE_LOGIN_FLOW" in err for err in errors), (
-            f"Expected ENABLE_LOGIN_FLOW gate error, got: {errors}"
+        assert settings.enable_login_flow is True
+
+        # Non-LOGIN_FLOW mode should leave the flag False.
+        basic_settings = Settings(
+            nextcloud_host="http://localhost",
+            nextcloud_username="alice",
+            nextcloud_password="hunter2",
         )
+        basic_mode = detect_auth_mode(basic_settings)
+        assert basic_mode == AuthMode.SINGLE_USER_BASIC
+        assert basic_settings.enable_login_flow is False
 
     def test_vector_sync_auto_enables_background_ops_in_login_flow_mode(self):
         """Test vector sync automatically enables background operations in Login Flow v2 mode (ADR-021)."""
@@ -380,7 +387,6 @@ class TestLoginFlowValidation:
             os.environ,
             {
                 "NEXTCLOUD_HOST": "http://localhost:8080",
-                "ENABLE_LOGIN_FLOW": "true",
                 "VECTOR_SYNC_ENABLED": "true",
                 "QDRANT_LOCATION": ":memory:",
                 "OLLAMA_BASE_URL": "http://ollama:11434",

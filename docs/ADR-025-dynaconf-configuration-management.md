@@ -38,7 +38,7 @@ The nextcloud-mcp-server configuration system has grown to ~80+ environment vari
 |----------|-------------|---------|
 | Core Nextcloud | 6 | `NEXTCLOUD_HOST`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_VERIFY_SSL` |
 | OAuth/OIDC | 12 | `OIDC_DISCOVERY_URL`, `NEXTCLOUD_OIDC_CLIENT_ID`, `JWKS_URI` |
-| Mode Selection | 4 | `MCP_DEPLOYMENT_MODE`, `ENABLE_LOGIN_FLOW`, `ENABLE_TOKEN_EXCHANGE` |
+| Mode Selection | 2 | `MCP_DEPLOYMENT_MODE`, `ENABLE_MULTI_USER_BASIC_AUTH` |
 | Token Storage | 3 | `TOKEN_ENCRYPTION_KEY`, `TOKEN_STORAGE_DB` |
 | Semantic Search | 6 | `ENABLE_SEMANTIC_SEARCH`, `VECTOR_SYNC_SCAN_INTERVAL` |
 | Qdrant | 4 | `QDRANT_URL`, `QDRANT_LOCATION`, `QDRANT_API_KEY` |
@@ -115,7 +115,8 @@ nextcloud_ca_bundle = "@none"
 
 # === Authentication Toggles ===
 enable_multi_user_basic_auth = false
-enable_login_flow = false
+# `enable_login_flow` is derived from MCP_DEPLOYMENT_MODE=login_flow in
+# detect_auth_mode (ADR-022 follow-up) — no separate toggle.
 enable_token_exchange = false
 
 # === Token Storage ===
@@ -202,7 +203,7 @@ enable_multi_user_basic_auth = true
 token_storage_db = "/app/data/tokens.db"
 
 [login_flow]
-enable_login_flow = true
+# enable_login_flow is now derived from the mode (ADR-022 follow-up).
 token_storage_db = "/app/data/tokens.db"
 
 [keycloak]
@@ -266,7 +267,7 @@ Dynaconf merges configuration in this order (last wins):
 
 This means:
 - **File-based config is optional** — env vars alone still work (they override everything)
-- **Mode-specific defaults reduce boilerplate** — `[login_flow]` sets `enable_login_flow=true` and `token_storage_db=/app/data/tokens.db` so deployers don't need to
+- **Mode-specific defaults reduce boilerplate** — `[login_flow]` sets `token_storage_db=/app/data/tokens.db` so deployers don't need to
 - **Secrets are separated** — `.secrets.toml` holds `TOKEN_ENCRYPTION_KEY`, passwords, API keys
 - **Local dev overrides don't pollute** — `settings.local.toml` is gitignored
 

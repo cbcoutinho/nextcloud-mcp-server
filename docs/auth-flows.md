@@ -231,7 +231,7 @@ TOKEN_STORAGE_DB=/app/data/tokens.db
 ### Login Flow v2
 ```bash
 NEXTCLOUD_HOST=https://nextcloud.example.com
-ENABLE_LOGIN_FLOW=true
+MCP_DEPLOYMENT_MODE=login_flow
 
 # Required for app-password storage
 TOKEN_ENCRYPTION_KEY=<fernet-key>

@@ -114,7 +114,7 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
         "Optional background sync using app passwords stored via Astrolabe.",
     ),
     AuthMode.LOGIN_FLOW: ModeRequirements(
-        required=["nextcloud_host", "enable_login_flow"],
+        required=["nextcloud_host"],
         optional=[
             # OAuth credentials (uses DCR if not provided)
             "oidc_client_id",
@@ -201,22 +201,40 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
 
         explicit_mode = mode_map[mode_str]
         logger.info(f"Using explicit deployment mode: {explicit_mode.value}")
+        _sync_derived_flags(settings, explicit_mode)
         return explicit_mode
 
     # Auto-detection (existing behavior)
     # Check for multi-user BasicAuth
     if settings.enable_multi_user_basic_auth:
+        _sync_derived_flags(settings, AuthMode.MULTI_USER_BASIC)
         return AuthMode.MULTI_USER_BASIC
 
     # Check for single-user BasicAuth (explicit credentials)
     if settings.nextcloud_username and settings.nextcloud_password:
+        _sync_derived_flags(settings, AuthMode.SINGLE_USER_BASIC)
         return AuthMode.SINGLE_USER_BASIC
 
     # Default: Login Flow v2 multi-user mode (browser-based app-password flow).
     # The un-augmented OAuth bearer pass-through it replaced required unmerged
-    # Nextcloud user_oidc patches (see ADR-022); selecting LOGIN_FLOW without
-    # ENABLE_LOGIN_FLOW=true fails validation below.
+    # Nextcloud user_oidc patches (see ADR-022).
+    _sync_derived_flags(settings, AuthMode.LOGIN_FLOW)
     return AuthMode.LOGIN_FLOW
+
+
+def _sync_derived_flags(settings: Settings, mode: AuthMode) -> None:
+    """Derive internal feature flags from the resolved deployment mode.
+
+    Some runtime call sites (app.py, context.py, auth/scope_authorization.py)
+    still read individual boolean flags rather than passing the mode around.
+    Keep those flags in sync with the mode here so the mode is the single
+    source of truth and users don't have to set redundant env vars.
+
+    Specifically: `enable_login_flow` is now derived from
+    `mode == AuthMode.LOGIN_FLOW`. The ENABLE_LOGIN_FLOW env-var alias was
+    removed in the ADR-022 follow-up (PR #787).
+    """
+    settings.enable_login_flow = mode == AuthMode.LOGIN_FLOW
 
 
 def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
@@ -308,16 +326,12 @@ def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
             )
 
     if mode == AuthMode.LOGIN_FLOW:
-        # ADR-022: LOGIN_FLOW requires the Login Flow v2 layer. The un-augmented
-        # OAuth bearer pass-through (formerly OAUTH_SINGLE_AUDIENCE without
-        # ENABLE_LOGIN_FLOW) needed unmerged Nextcloud user_oidc patches and
-        # is no longer supported.
-        if not settings.enable_login_flow:
-            errors.append(
-                f"[{mode.value}] ENABLE_LOGIN_FLOW=true is required for "
-                "login_flow mode. The un-augmented OAuth path is no longer "
-                "supported — see ADR-022."
-            )
+        # ADR-022 follow-up: the un-augmented OAuth bearer pass-through (the
+        # old OAUTH_SINGLE_AUDIENCE without ENABLE_LOGIN_FLOW) needed unmerged
+        # Nextcloud user_oidc patches and is no longer supported. The
+        # `enable_login_flow` flag is now derived from the resolved mode by
+        # `_sync_derived_flags`, so users only configure the mode — no
+        # separate ENABLE_LOGIN_FLOW env var is needed.
 
         # If OAuth credentials not provided, DCR must be available
         # (This is a runtime check, not a config check, so we just warn)

@@ -58,8 +58,8 @@ NEXTCLOUD_HOST=https://your.nextcloud.example.com
 NEXTCLOUD_OIDC_CLIENT_ID=<your-client-id>
 NEXTCLOUD_OIDC_CLIENT_SECRET=<your-client-secret>
 
-# Enable Login Flow v2 (per-user Nextcloud app-password provisioning for the data leg)
-ENABLE_LOGIN_FLOW=true
+# Select Login Flow v2 mode (per-user Nextcloud app-password provisioning for the data leg)
+MCP_DEPLOYMENT_MODE=login_flow
 
 # App-password storage (required for persistence across restarts)
 TOKEN_STORAGE_DB=/app/data/tokens.db
@@ -172,7 +172,7 @@ mcp-login-flow:
     - NEXTCLOUD_HOST=http://app:80
     - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8004
     - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
-    - ENABLE_LOGIN_FLOW=true
+    - MCP_DEPLOYMENT_MODE=login_flow
     # Dev-only inline value. In production, mount via Docker secret and read
     # from a *_FILE env var or a secrets-management init step.
     - TOKEN_ENCRYPTION_KEY=<your-fernet-key>
@@ -351,7 +351,7 @@ The user revoked it from **Settings → Security → Devices & Sessions**. Delet
 
 ### Multiple worker processes
 
-The provisioning session store is in-memory; `ENABLE_LOGIN_FLOW=true` assumes a single worker. Running with `uvicorn --workers N` will cause provisioning sessions to randomly fail. For higher concurrency, scale horizontally (multiple containers behind a sticky-session load balancer) rather than within a single process.
+The provisioning session store is in-memory; `MCP_DEPLOYMENT_MODE=login_flow` assumes a single worker. Running with `uvicorn --workers N` will cause provisioning sessions to randomly fail. For higher concurrency, scale horizontally (multiple containers behind a sticky-session load balancer) rather than within a single process.
 
 > **Sticky-session keying:** route on the **user identity** (e.g. the `sub` claim from the OAuth Bearer token) — **not** the raw token value, and **not** source IP. Bearer tokens rotate on refresh, which would silently break token-value affinity if a refresh lands between the request that initiates provisioning and the polling request that completes it. MCP clients may also not maintain stable IPs across those requests. A stable per-user identifier extracted from the `Authorization` header (e.g. `sub`) is the right key.
 

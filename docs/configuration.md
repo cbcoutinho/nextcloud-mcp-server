@@ -91,7 +91,7 @@ The recommended multi-user mode. MCP clients authenticate to the MCP server via 
 
 ```dotenv
 NEXTCLOUD_HOST=https://your.nextcloud.instance.com
-ENABLE_LOGIN_FLOW=true
+MCP_DEPLOYMENT_MODE=login_flow
 
 # App-password storage (required)
 TOKEN_ENCRYPTION_KEY=<fernet-key>
@@ -105,7 +105,7 @@ NEXTCLOUD_PUBLIC_ISSUER_URL=https://your.nextcloud.instance.com
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `NEXTCLOUD_HOST` | ✅ Yes | Internal URL of your Nextcloud instance (server-to-server) |
-| `ENABLE_LOGIN_FLOW` | ✅ Yes | Set to `true` to enable Login Flow v2 |
+| `MCP_DEPLOYMENT_MODE` | ✅ Yes | Set to `login_flow` to select this mode. The Login Flow v2 browser-app-password layer is derived from the mode automatically — no separate flag needed. |
 | `TOKEN_ENCRYPTION_KEY` | ✅ Yes | Fernet key for app-password encryption — generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `TOKEN_STORAGE_DB` | ✅ Yes | Path to SQLite DB for stored app passwords (use a persistent volume) |
 | `NEXTCLOUD_MCP_SERVER_URL` | ✅ Yes | Public URL of the MCP server (used as the audience claim and for browser redirects) |
@@ -197,8 +197,7 @@ OLLAMA_BASE_URL=http://ollama:11434
 **Multi-User Login Flow v2 Mode:**
 ```dotenv
 NEXTCLOUD_HOST=https://nextcloud.example.com
-MCP_DEPLOYMENT_MODE=login_flow_v2
-ENABLE_LOGIN_FLOW=true
+MCP_DEPLOYMENT_MODE=login_flow
 
 # Enable semantic search
 # In multi-user modes, this AUTOMATICALLY enables background operations!

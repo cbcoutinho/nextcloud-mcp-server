@@ -148,7 +148,7 @@ For multi-user deployment issues — provisioning loops, app-password storage, O
 ```bash
 # To Single-User BasicAuth: set NEXTCLOUD_USERNAME and NEXTCLOUD_PASSWORD
 # To Multi-User BasicAuth pass-through: ENABLE_MULTI_USER_BASIC_AUTH=true (no creds)
-# To Login Flow v2: ENABLE_LOGIN_FLOW=true (no creds)
+# To Login Flow v2: MCP_DEPLOYMENT_MODE=login_flow (no creds; also the default fallback)
 ```
 
 Restart the server after changing modes. The active mode is logged at startup; you can also set `MCP_DEPLOYMENT_MODE` explicitly to fail fast if the env vars don't match.

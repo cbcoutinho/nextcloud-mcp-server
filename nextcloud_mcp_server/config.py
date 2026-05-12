@@ -458,7 +458,10 @@ class Settings:
     # and passes them through to Nextcloud APIs (no storage, stateless)
     enable_multi_user_basic_auth: bool = False
 
-    # Login Flow v2 settings (ADR-022)
+    # Login Flow v2 derived flag (ADR-022). Internal — not user-settable.
+    # Auto-set by detect_auth_mode() when the resolved deployment mode is
+    # LOGIN_FLOW. Kept as a field for backward compat with the runtime call
+    # sites that read it (app.py, context.py, scope_authorization.py).
     enable_login_flow: bool = False
 
     # Token and webhook storage settings
@@ -853,8 +856,10 @@ def get_settings() -> Settings:
         "userinfo_uri": "USERINFO_URI",
         # Multi-user BasicAuth pass-through mode
         "enable_multi_user_basic_auth": "ENABLE_MULTI_USER_BASIC_AUTH",
-        # Login Flow v2 settings (ADR-022)
-        "enable_login_flow": "ENABLE_LOGIN_FLOW",
+        # NOTE: `enable_login_flow` used to have an `ENABLE_LOGIN_FLOW` env-var
+        # alias here, but it was removed in the ADR-022 follow-up — the flag
+        # is now derived from MCP_DEPLOYMENT_MODE=login_flow and set by
+        # detect_auth_mode() so users only need to configure the mode.
         # Token and webhook storage settings
         "token_encryption_key": "TOKEN_ENCRYPTION_KEY",
         "token_storage_db": "TOKEN_STORAGE_DB",

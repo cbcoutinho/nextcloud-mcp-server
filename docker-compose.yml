@@ -241,8 +241,8 @@ services:
       - ENABLE_TOKEN_EXCHANGE=true
       - TOKEN_EXCHANGE_CACHE_TTL=300  # Cache exchanged tokens for 5 minutes (default)
 
-      # Login Flow v2 (ADR-022) with external IdP
-      - ENABLE_LOGIN_FLOW=true
+      # Login Flow v2 (ADR-022) with external IdP — derived from the
+      # auto-detected LOGIN_FLOW deployment mode; no separate flag needed.
       - ENABLE_DCR=true
 
       # OAuth scopes (optional - uses defaults if not specified)
@@ -275,10 +275,9 @@ services:
       #- NEXTCLOUD_MCP_SERVER_URL=https://nextcloud-mcp-dev.tail148d5.ts.net
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
 
-      # Login Flow v2 (ADR-022) — explicit mode + the flag that enables the
-      # browser-based app-password acquisition layer
+      # Login Flow v2 (ADR-022) — the deployment mode is the single switch;
+      # the browser-based app-password layer is derived automatically.
       - MCP_DEPLOYMENT_MODE=login_flow
-      - ENABLE_LOGIN_FLOW=true
 
       # Token storage (required for app password + session persistence).
       # Source the key from .env — see env.sample. To generate a fresh key:
