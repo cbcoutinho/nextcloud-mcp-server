@@ -25,7 +25,7 @@ class AuthMode(Enum):
 
     SINGLE_USER_BASIC = "single_user_basic"
     MULTI_USER_BASIC = "multi_user_basic"
-    OAUTH_SINGLE_AUDIENCE = "oauth_single"
+    LOGIN_FLOW = "login_flow"
 
 
 @dataclass
@@ -113,8 +113,8 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
         "Users provide credentials in request headers. "
         "Optional background sync using app passwords stored via Astrolabe.",
     ),
-    AuthMode.OAUTH_SINGLE_AUDIENCE: ModeRequirements(
-        required=["nextcloud_host"],
+    AuthMode.LOGIN_FLOW: ModeRequirements(
+        required=["nextcloud_host", "enable_login_flow"],
         optional=[
             # OAuth credentials (uses DCR if not provided)
             "oidc_client_id",
@@ -149,9 +149,13 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
             # enables background operations in multi-user modes. No explicit
             # enable_offline_access setting required.
         },
-        description="OAuth multi-user deployment with single-audience tokens. "
-        "Tokens work for both MCP server and Nextcloud APIs (pass-through). "
-        "Uses Dynamic Client Registration if credentials not provided.",
+        description="OAuth multi-user deployment using Login Flow v2 to acquire "
+        "per-user Nextcloud app passwords via a browser flow. The MCP server "
+        "is an OIDC relying party of a configurable IdP (Nextcloud's built-in "
+        "OIDC by default; Keycloak, AWS Cognito, etc. via OIDC_DISCOVERY_URL). "
+        "Uses Dynamic Client Registration if credentials not provided. "
+        "Replaces the deprecated direct OAuth bearer-token pass-through which "
+        "required unmerged user_oidc patches (see ADR-022).",
     ),
 }
 
@@ -159,11 +163,11 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
 def detect_auth_mode(settings: Settings) -> AuthMode:
     """Detect authentication mode from configuration.
 
-    Mode detection priority (ADR-021):
+    Mode detection priority (ADR-021, updated for ADR-022):
     0. Explicit MCP_DEPLOYMENT_MODE (if set) - NEW in ADR-021
     1. Multi-user BasicAuth
     2. Single-user BasicAuth
-    3. OAuth single-audience (default OAuth mode)
+    3. Login Flow v2 (default — was OAuth single-audience pre-ADR-022)
 
     Args:
         settings: Application settings
@@ -185,7 +189,7 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
         mode_map = {
             "single_user_basic": AuthMode.SINGLE_USER_BASIC,
             "multi_user_basic": AuthMode.MULTI_USER_BASIC,
-            "oauth_single_audience": AuthMode.OAUTH_SINGLE_AUDIENCE,
+            "login_flow": AuthMode.LOGIN_FLOW,
         }
 
         if mode_str not in mode_map:
@@ -208,9 +212,11 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
     if settings.nextcloud_username and settings.nextcloud_password:
         return AuthMode.SINGLE_USER_BASIC
 
-    # Default: OAuth single-audience mode
-    # This is the safest multi-user mode (no credential storage)
-    return AuthMode.OAUTH_SINGLE_AUDIENCE
+    # Default: Login Flow v2 multi-user mode (browser-based app-password flow).
+    # The un-augmented OAuth bearer pass-through it replaced required unmerged
+    # Nextcloud user_oidc patches (see ADR-022); selecting LOGIN_FLOW without
+    # ENABLE_LOGIN_FLOW=true fails validation below.
+    return AuthMode.LOGIN_FLOW
 
 
 def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
@@ -301,7 +307,18 @@ def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
                 f"{settings.nextcloud_host}"
             )
 
-    if mode == AuthMode.OAUTH_SINGLE_AUDIENCE:
+    if mode == AuthMode.LOGIN_FLOW:
+        # ADR-022: LOGIN_FLOW requires the Login Flow v2 layer. The un-augmented
+        # OAuth bearer pass-through (formerly OAUTH_SINGLE_AUDIENCE without
+        # ENABLE_LOGIN_FLOW) needed unmerged Nextcloud user_oidc patches and
+        # is no longer supported.
+        if not settings.enable_login_flow:
+            errors.append(
+                f"[{mode.value}] ENABLE_LOGIN_FLOW=true is required for "
+                "login_flow mode. The un-augmented OAuth path is no longer "
+                "supported — see ADR-022."
+            )
+
         # If OAuth credentials not provided, DCR must be available
         # (This is a runtime check, not a config check, so we just warn)
         if not settings.oidc_client_id or not settings.oidc_client_secret:

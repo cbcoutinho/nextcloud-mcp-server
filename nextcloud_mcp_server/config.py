@@ -408,9 +408,10 @@ def get_document_processor_config() -> dict[str, Any]:
 class Settings:
     """Application settings from environment variables."""
 
-    # Deployment mode (ADR-021: explicit mode selection)
+    # Deployment mode (ADR-021: explicit mode selection; updated by ADR-022)
     # Optional: If not set, mode is auto-detected from other settings
-    # Valid values: single_user_basic, multi_user_basic, oauth_single_audience
+    # Valid values: single_user_basic, multi_user_basic, login_flow
+    # (ADR-022: `oauth_single_audience` was renamed to `login_flow`.)
     deployment_mode: str | None = None
 
     # OAuth/OIDC settings

@@ -43,14 +43,14 @@ class TestModeDetection:
         mode = detect_auth_mode(settings)
         assert mode == AuthMode.SINGLE_USER_BASIC
 
-    def test_oauth_single_audience_default(self):
-        """Test OAuth single-audience is default mode."""
+    def test_login_flow_default(self):
+        """Test Login Flow v2 is the default multi-user mode."""
         settings = Settings(
             nextcloud_host="http://localhost",
         )
 
         mode = detect_auth_mode(settings)
-        assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+        assert mode == AuthMode.LOGIN_FLOW
 
 
 class TestSingleUserBasicValidation:
@@ -108,7 +108,7 @@ class TestSingleUserBasicValidation:
 
         # Mode detection requires BOTH username AND password for single-user BasicAuth
         # If only one is present, it defaults to OAuth single-audience
-        assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+        assert mode == AuthMode.LOGIN_FLOW
         # In OAuth mode, having a password set is forbidden
         assert any("nextcloud_password" in err.lower() for err in errors)
 
@@ -123,7 +123,7 @@ class TestSingleUserBasicValidation:
 
         # Mode detection requires BOTH username AND password for single-user BasicAuth
         # If only one is present, it defaults to OAuth single-audience
-        assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+        assert mode == AuthMode.LOGIN_FLOW
         # In OAuth mode, having a username set is forbidden
         assert any("nextcloud_username" in err.lower() for err in errors)
 
@@ -285,37 +285,40 @@ class TestMultiUserBasicValidation:
             assert settings.enable_offline_access is True
 
 
-class TestOAuthSingleAudienceValidation:
-    """Test validation for OAuth single-audience mode."""
+class TestLoginFlowValidation:
+    """Test validation for Login Flow v2 mode (formerly OAUTH_SINGLE_AUDIENCE)."""
 
     def test_valid_minimal_config(self):
-        """Test valid minimal OAuth single-audience config."""
+        """Test valid minimal Login Flow v2 config."""
         settings = Settings(
             nextcloud_host="http://localhost",
+            enable_login_flow=True,
         )
 
         mode, errors = validate_configuration(settings)
 
-        assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+        assert mode == AuthMode.LOGIN_FLOW
         assert len(errors) == 0
 
     def test_valid_with_static_credentials(self):
         """Test valid config with static OAuth credentials."""
         settings = Settings(
             nextcloud_host="http://localhost",
+            enable_login_flow=True,
             oidc_client_id="test-client",
             oidc_client_secret="test-secret",
         )
 
         mode, errors = validate_configuration(settings)
 
-        assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+        assert mode == AuthMode.LOGIN_FLOW
         assert len(errors) == 0
 
     def test_valid_with_offline_access(self):
         """Test valid config with offline access."""
         settings = Settings(
             nextcloud_host="http://localhost",
+            enable_login_flow=True,
             oidc_client_id="test-client",
             oidc_client_secret="test-secret",
             enable_offline_access=True,
@@ -325,7 +328,7 @@ class TestOAuthSingleAudienceValidation:
 
         mode, errors = validate_configuration(settings)
 
-        assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+        assert mode == AuthMode.LOGIN_FLOW
         assert len(errors) == 0
 
     def test_forbidden_username_password(self):
@@ -345,29 +348,45 @@ class TestOAuthSingleAudienceValidation:
         """Test error when offline access enabled but encryption key missing."""
         settings = Settings(
             nextcloud_host="http://localhost",
+            enable_login_flow=True,
             enable_offline_access=True,
             token_storage_db="/tmp/tokens.db",
         )
 
         mode, errors = validate_configuration(settings)
 
-        assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+        assert mode == AuthMode.LOGIN_FLOW
         assert any("token_encryption_key" in err.lower() for err in errors)
 
-    def test_vector_sync_auto_enables_background_ops_in_oauth_mode(self):
-        """Test vector sync automatically enables background operations in OAuth mode (ADR-021)."""
+    def test_login_flow_requires_enable_login_flow_flag(self):
+        """ADR-022: LOGIN_FLOW mode must error when ENABLE_LOGIN_FLOW is not true."""
+        settings = Settings(
+            nextcloud_host="http://localhost",
+            # enable_login_flow deliberately omitted (defaults to False)
+        )
+
+        mode, errors = validate_configuration(settings)
+
+        assert mode == AuthMode.LOGIN_FLOW
+        assert any("ENABLE_LOGIN_FLOW" in err for err in errors), (
+            f"Expected ENABLE_LOGIN_FLOW gate error, got: {errors}"
+        )
+
+    def test_vector_sync_auto_enables_background_ops_in_login_flow_mode(self):
+        """Test vector sync automatically enables background operations in Login Flow v2 mode (ADR-021)."""
         # Before ADR-021: This would have failed validation (required explicit ENABLE_OFFLINE_ACCESS)
         # After ADR-021: vector_sync_enabled auto-enables background operations in multi-user modes
         with patch.dict(
             os.environ,
             {
                 "NEXTCLOUD_HOST": "http://localhost:8080",
+                "ENABLE_LOGIN_FLOW": "true",
                 "VECTOR_SYNC_ENABLED": "true",
                 "QDRANT_LOCATION": ":memory:",
                 "OLLAMA_BASE_URL": "http://ollama:11434",
                 "TOKEN_ENCRYPTION_KEY": "test-key",
                 "TOKEN_STORAGE_DB": "/tmp/test.db",
-                # Note: No username/password = OAuth mode
+                # Note: No username/password = Login Flow v2 multi-user OAuth mode
             },
             clear=True,
         ):
@@ -377,7 +396,7 @@ class TestOAuthSingleAudienceValidation:
             settings = get_settings()
             mode, errors = validate_configuration(settings)
 
-            assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+            assert mode == AuthMode.LOGIN_FLOW
             # Should have no errors - background operations auto-enabled
             assert len(errors) == 0
             # Verify background operations were auto-enabled
@@ -515,8 +534,8 @@ class TestConfigurationConsolidation:
             settings = get_settings()
             assert settings.enable_offline_access is True
 
-    def test_semantic_search_auto_enables_background_ops_in_oauth_mode(self):
-        """Test ENABLE_SEMANTIC_SEARCH automatically enables background operations in OAuth mode."""
+    def test_semantic_search_auto_enables_background_ops_in_login_flow_mode(self):
+        """Test ENABLE_SEMANTIC_SEARCH automatically enables background operations in Login Flow v2 mode."""
         with patch.dict(
             os.environ,
             {
@@ -707,13 +726,13 @@ class TestExplicitModeSelection:
 
             assert mode == AuthMode.MULTI_USER_BASIC
 
-    def test_explicit_oauth_single_audience_mode(self):
-        """Test explicit oauth_single_audience mode selection."""
+    def test_explicit_login_flow_mode(self):
+        """Test explicit login_flow mode selection."""
         with patch.dict(
             os.environ,
             {
                 "NEXTCLOUD_HOST": "http://localhost:8080",
-                "MCP_DEPLOYMENT_MODE": "oauth_single_audience",
+                "MCP_DEPLOYMENT_MODE": "login_flow",
             },
             clear=True,
         ):
@@ -723,7 +742,7 @@ class TestExplicitModeSelection:
             settings = get_settings()
             mode = detect_auth_mode(settings)
 
-            assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+            assert mode == AuthMode.LOGIN_FLOW
 
     def test_invalid_deployment_mode_raises_error(self):
         """Test invalid MCP_DEPLOYMENT_MODE raises ValueError."""
@@ -757,7 +776,7 @@ class TestExplicitModeSelection:
                 "NEXTCLOUD_HOST": "http://localhost:8080",
                 "NEXTCLOUD_USERNAME": "admin",  # Would auto-detect as single_user_basic
                 "NEXTCLOUD_PASSWORD": "password",
-                "MCP_DEPLOYMENT_MODE": "oauth_single_audience",  # Explicit override
+                "MCP_DEPLOYMENT_MODE": "login_flow",  # Explicit override
             },
             clear=True,
         ):
@@ -768,7 +787,7 @@ class TestExplicitModeSelection:
             mode = detect_auth_mode(settings)
 
             # Should use explicit mode, not auto-detected mode
-            assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+            assert mode == AuthMode.LOGIN_FLOW
 
     def test_case_insensitive_mode_names(self):
         """Test MCP_DEPLOYMENT_MODE is case-insensitive."""
@@ -776,7 +795,7 @@ class TestExplicitModeSelection:
             os.environ,
             {
                 "NEXTCLOUD_HOST": "http://localhost:8080",
-                "MCP_DEPLOYMENT_MODE": "OAUTH_SINGLE_AUDIENCE",  # Uppercase
+                "MCP_DEPLOYMENT_MODE": "LOGIN_FLOW",  # Uppercase
             },
             clear=True,
         ):
@@ -786,7 +805,7 @@ class TestExplicitModeSelection:
             settings = get_settings()
             mode = detect_auth_mode(settings)
 
-            assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+            assert mode == AuthMode.LOGIN_FLOW
 
     def test_whitespace_in_mode_name_stripped(self):
         """Test whitespace in MCP_DEPLOYMENT_MODE is stripped."""
@@ -794,7 +813,7 @@ class TestExplicitModeSelection:
             os.environ,
             {
                 "NEXTCLOUD_HOST": "http://localhost:8080",
-                "MCP_DEPLOYMENT_MODE": "  oauth_single_audience  ",  # Whitespace
+                "MCP_DEPLOYMENT_MODE": "  login_flow  ",  # Whitespace
             },
             clear=True,
         ):
@@ -804,4 +823,4 @@ class TestExplicitModeSelection:
             settings = get_settings()
             mode = detect_auth_mode(settings)
 
-            assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+            assert mode == AuthMode.LOGIN_FLOW

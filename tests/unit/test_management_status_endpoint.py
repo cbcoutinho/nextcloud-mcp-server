@@ -173,7 +173,7 @@ class TestStatusEndpointOidcConfig:
             ),
             patch(
                 "nextcloud_mcp_server.api.management.detect_auth_mode",
-                return_value=AuthMode.OAUTH_SINGLE_AUDIENCE,
+                return_value=AuthMode.LOGIN_FLOW,
             ),
         ):
             app = create_test_app()

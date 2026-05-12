@@ -1015,8 +1015,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     logger.info(f"✅ Configuration validated successfully for {mode.value} mode")
     logger.debug(f"Mode details:\n{get_mode_summary(mode)}")
 
-    # Derive helper variables for backward compatibility with existing code
-    oauth_enabled = mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+    # Derive helper variables for backward compatibility with existing code.
+    # `oauth_enabled` is True for the LOGIN_FLOW (formerly OAUTH_SINGLE_AUDIENCE)
+    # multi-user OAuth mode — in this mode the MCP server is an OIDC relying
+    # party and Login Flow v2 acquires per-user Nextcloud app passwords.
+    oauth_enabled = mode == AuthMode.LOGIN_FLOW
     # Log hybrid authentication status for multi-user BasicAuth with offline access
     if mode == AuthMode.MULTI_USER_BASIC and settings.enable_offline_access:
         logger.info(
@@ -1166,8 +1169,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 raise
 
     # Create MCP server based on detected mode
-    if mode == AuthMode.OAUTH_SINGLE_AUDIENCE:
-        logger.info("Configuring MCP server for OAuth mode")
+    if mode == AuthMode.LOGIN_FLOW:
+        logger.info("Configuring MCP server for %s mode", mode.value)
         # Asynchronously get the OAuth configuration
 
         (
@@ -1932,7 +1935,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         # Check authentication configuration
         # Report the deployment mode, not just whether OAuth is enabled
         # This helps clients (like Astrolabe) determine which auth flow to use
-        if mode == AuthMode.OAUTH_SINGLE_AUDIENCE:
+        if mode == AuthMode.LOGIN_FLOW:
             checks["auth_mode"] = "oauth"
             checks["auth_configured"] = "ok"
         elif mode == AuthMode.MULTI_USER_BASIC:
