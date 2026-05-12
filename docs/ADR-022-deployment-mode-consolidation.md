@@ -1,7 +1,7 @@
 # ADR-022: Deployment Mode Consolidation via Login Flow v2
 
-**Status:** Proposed
-**Date:** 2026-02-01
+**Status:** Accepted (step 1 — `OAUTH_SINGLE_AUDIENCE` → `LOGIN_FLOW` rename + validation gate. Dead-code pruning is a follow-up.)
+**Date:** 2026-02-01 (accepted 2026-05-12)
 **Deciders:** Development Team
 **Related:** ADR-020 (Deployment Modes), ADR-021 (Configuration Consolidation), ADR-004 (Progressive Consent), Issue #521
 

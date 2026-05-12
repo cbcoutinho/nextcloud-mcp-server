@@ -7,7 +7,7 @@ Manages background vector sync for multi-user deployments:
 
 Authentication strategies are mutually exclusive by deployment mode:
 
-Multi-user BasicAuth mode (ENABLE_MULTI_USER_BASIC_AUTH=true):
+Multi-user BasicAuth mode (MCP_DEPLOYMENT_MODE=multi_user_basic):
 - Uses app passwords stored locally in MCP server's database
 - Users provision via Astrolabe personal settings, which sends to MCP API
 - OAuth is NOT used

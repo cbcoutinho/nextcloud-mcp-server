@@ -408,9 +408,10 @@ def get_document_processor_config() -> dict[str, Any]:
 class Settings:
     """Application settings from environment variables."""
 
-    # Deployment mode (ADR-021: explicit mode selection)
+    # Deployment mode (ADR-021: explicit mode selection; updated by ADR-022)
     # Optional: If not set, mode is auto-detected from other settings
-    # Valid values: single_user_basic, multi_user_basic, oauth_single_audience
+    # Valid values: single_user_basic, multi_user_basic, login_flow
+    # (ADR-022: `oauth_single_audience` was renamed to `login_flow`.)
     deployment_mode: str | None = None
 
     # OAuth/OIDC settings
@@ -452,12 +453,19 @@ class Settings:
     # Progressive Consent settings (always enabled - no flag needed)
     enable_offline_access: bool = False
 
-    # Multi-user BasicAuth pass-through mode (ADR-019 interim solution)
-    # When enabled, MCP server extracts BasicAuth credentials from request headers
-    # and passes them through to Nextcloud APIs (no storage, stateless)
+    # Multi-user BasicAuth pass-through mode (ADR-019 interim solution).
+    # Internal — not user-settable; the ENABLE_MULTI_USER_BASIC_AUTH env-var
+    # alias was removed in the ADR-022 follow-up. Auto-set by
+    # Settings.__post_init__ when MCP_DEPLOYMENT_MODE=multi_user_basic. When True,
+    # the MCP server extracts BasicAuth credentials from request headers and
+    # passes them through to Nextcloud APIs (no storage, stateless). Kept
+    # as a field for backward compat with the runtime call sites that read it.
     enable_multi_user_basic_auth: bool = False
 
-    # Login Flow v2 settings (ADR-022)
+    # Login Flow v2 derived flag (ADR-022). Internal — not user-settable.
+    # Auto-set by Settings.__post_init__ when the resolved deployment mode is
+    # LOGIN_FLOW. Kept as a field for backward compat with the runtime call
+    # sites that read it (app.py, context.py, scope_authorization.py).
     enable_login_flow: bool = False
 
     # Token and webhook storage settings
@@ -599,6 +607,57 @@ class Settings:
                 f"Smaller chunks may lose context. Consider using at least 1024 characters."
             )
 
+        # --- ADR-022 follow-up: deployment mode is the single source of truth ---
+        # The ENABLE_MULTI_USER_BASIC_AUTH and ENABLE_LOGIN_FLOW env vars were
+        # removed in favour of MCP_DEPLOYMENT_MODE. We do TWO things here:
+        #
+        # 1. Loud-fail if a user still has either legacy env var set to a
+        #    truthy value (silent removal would have flipped them into the
+        #    wrong runtime mode). Only fires for truthy strings, so an
+        #    explicit `ENABLE_LOGIN_FLOW=false` in a leftover .env passes
+        #    through harmlessly.
+        # 2. Derive `enable_login_flow` and `enable_multi_user_basic_auth`
+        #    from the resolved deployment mode here, in __post_init__, so
+        #    every Settings instance carries correct flags. (`get_settings()`
+        #    builds a fresh Settings on each call — without this, the
+        #    mutation that used to live in detect_auth_mode would only stick
+        #    on the startup Settings instance, leaving per-request handlers
+        #    with default False values.)
+        _truthy = {"1", "true", "yes", "on"}
+        for _legacy, _replacement in (
+            ("ENABLE_MULTI_USER_BASIC_AUTH", "multi_user_basic"),
+            ("ENABLE_LOGIN_FLOW", "login_flow"),
+        ):
+            if os.environ.get(_legacy, "").strip().lower() in _truthy:
+                raise ValueError(
+                    f"{_legacy} is no longer read from the environment. "
+                    f"Set MCP_DEPLOYMENT_MODE={_replacement} instead "
+                    "(ADR-022). The deployment mode is the single source "
+                    "of truth for selecting an auth flow."
+                )
+
+        # NOTE: this block mirrors the resolution logic in
+        # `config_validators.detect_auth_mode` (which works on strings via a
+        # `mode_map`). Both call sites resolve the deployment mode
+        # independently — the canonical AuthMode enum in detect_auth_mode,
+        # and the boolean derived flags here. **Keep them in sync when
+        # adding a new mode**: a new entry must be added in both places, in
+        # addition to `mode_map` (`config_validators.py`) and any
+        # MODE_REQUIREMENTS entry.
+        resolved_mode = (self.deployment_mode or "").strip().lower()
+        if not resolved_mode:
+            if self.nextcloud_username and self.nextcloud_password:
+                resolved_mode = "single_user_basic"
+            else:
+                # Default multi-user mode is Login Flow v2 (browser-based
+                # app-password acquisition); the un-augmented OAuth bearer
+                # pass-through it replaced needed unmerged Nextcloud
+                # user_oidc patches and is no longer supported.
+                resolved_mode = "login_flow"
+
+        self.enable_multi_user_basic_auth = resolved_mode == "multi_user_basic"
+        self.enable_login_flow = resolved_mode == "login_flow"
+
     def get_embedding_model_name(self) -> str:
         """
         Get the active embedding model name based on provider priority.
@@ -719,20 +778,31 @@ def _get_semantic_search_enabled() -> bool:
 def _is_multi_user_mode() -> bool:
     """Detect if this is a multi-user deployment mode.
 
+    Runs early in config setup (before Settings is fully built) for
+    mode-conditional defaults. Must match the canonical detection in
+    `config_validators.detect_auth_mode`, but works directly against the
+    raw dynaconf store since Settings doesn't exist yet.
+
     Multi-user modes are:
-    - Multi-user BasicAuth (ENABLE_MULTI_USER_BASIC_AUTH=true)
-    - OAuth Single-Audience (no username/password set)
+    - Multi-user BasicAuth (MCP_DEPLOYMENT_MODE=multi_user_basic)
+    - Login Flow v2 / default OAuth (MCP_DEPLOYMENT_MODE=login_flow, or no
+      username/password and no explicit mode)
     - OAuth Token Exchange (ENABLE_TOKEN_EXCHANGE=true)
 
-    Single-user modes are:
+    Single-user mode is:
     - Single-user BasicAuth (username and password both set)
 
     Returns:
         True if multi-user mode detected
     """
-    # Multi-user BasicAuth explicitly enabled
-    if _dynaconf.get("ENABLE_MULTI_USER_BASIC_AUTH", False):
+    # Explicit deployment mode wins. The ENABLE_MULTI_USER_BASIC_AUTH env-var
+    # alias was removed in the ADR-022 follow-up; selection is now via
+    # MCP_DEPLOYMENT_MODE.
+    explicit_mode = str(_dynaconf.get("MCP_DEPLOYMENT_MODE", "") or "").lower().strip()
+    if explicit_mode in {"multi_user_basic", "login_flow"}:
         return True
+    if explicit_mode == "single_user_basic":
+        return False
 
     # Token exchange implies OAuth multi-user
     if _dynaconf.get("ENABLE_TOKEN_EXCHANGE", False):
@@ -744,7 +814,7 @@ def _is_multi_user_mode() -> bool:
     if has_username and has_password:
         return False
 
-    # Otherwise, assume OAuth multi-user (default when no credentials provided)
+    # Otherwise, assume multi-user (default when no credentials provided)
     return True
 
 
@@ -850,10 +920,10 @@ def get_settings() -> Settings:
         "jwks_uri": "JWKS_URI",
         "introspection_uri": "INTROSPECTION_URI",
         "userinfo_uri": "USERINFO_URI",
-        # Multi-user BasicAuth pass-through mode
-        "enable_multi_user_basic_auth": "ENABLE_MULTI_USER_BASIC_AUTH",
-        # Login Flow v2 settings (ADR-022)
-        "enable_login_flow": "ENABLE_LOGIN_FLOW",
+        # NOTE: `enable_multi_user_basic_auth` and `enable_login_flow` no
+        # longer have env-var aliases — both are derived from the resolved
+        # MCP_DEPLOYMENT_MODE in detect_auth_mode() so users only configure
+        # the mode (ADR-022 follow-up).
         # Token and webhook storage settings
         "token_encryption_key": "TOKEN_ENCRYPTION_KEY",
         "token_storage_db": "TOKEN_STORAGE_DB",

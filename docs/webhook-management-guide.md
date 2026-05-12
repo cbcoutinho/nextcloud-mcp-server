@@ -77,7 +77,7 @@ php occ webhook_listeners:remove <webhook-id>
 **Configuration:**
 ```bash
 NEXTCLOUD_HOST=http://nextcloud.example.com
-ENABLE_MULTI_USER_BASIC_AUTH=true
+MCP_DEPLOYMENT_MODE=multi_user_basic
 ENABLE_BACKGROUND_OPERATIONS=true
 TOKEN_ENCRYPTION_KEY=<key>
 TOKEN_STORAGE_DB=/app/data/tokens.db

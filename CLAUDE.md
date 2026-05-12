@@ -338,7 +338,7 @@ The server supports three deployment modes, controlled by environment variables 
 - Best for: personal instances, local development
 
 **2. Multi-User BasicAuth** (profile: `multi-user-basic`)
-- Set `ENABLE_MULTI_USER_BASIC_AUTH=true`
+- Set `MCP_DEPLOYMENT_MODE=multi_user_basic`
 - Each MCP client provides credentials via HTTP Authorization header
 - Per-request client creation from extracted credentials
 - Best for: internal deployments where users manage their own Nextcloud credentials

@@ -43,7 +43,7 @@ Each MCP client sends its own credentials in an HTTP `Authorization: Basic` head
 
 ```bash
 NEXTCLOUD_HOST=https://your.nextcloud.example.com
-ENABLE_MULTI_USER_BASIC_AUTH=true
+MCP_DEPLOYMENT_MODE=multi_user_basic
 ```
 
 `NEXTCLOUD_USERNAME` and `NEXTCLOUD_PASSWORD` must NOT be set in this mode.
@@ -74,8 +74,8 @@ The server detects the active mode from environment variables at startup:
 | Env vars present | Detected mode |
 |------------------|---------------|
 | `NEXTCLOUD_USERNAME` + `NEXTCLOUD_PASSWORD` | Single-User (BasicAuth) |
-| `ENABLE_MULTI_USER_BASIC_AUTH=true` (no creds) | Multi-User (BasicAuth pass-through) |
-| `ENABLE_LOGIN_FLOW=true` (no creds) | Multi-User (Login Flow v2) |
+| `MCP_DEPLOYMENT_MODE=multi_user_basic` | Multi-User (BasicAuth pass-through) |
+| `MCP_DEPLOYMENT_MODE=login_flow` or no auth env vars set | Multi-User (Login Flow v2) |
 
 You can also force a mode via CLI flag:
 

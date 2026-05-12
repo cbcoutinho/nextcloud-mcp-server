@@ -14,8 +14,8 @@ def single_user_env(monkeypatch):
     monkeypatch.setenv("NEXTCLOUD_HOST", "https://cloud.example.com")
     monkeypatch.setenv("NEXTCLOUD_USERNAME", "admin")
     monkeypatch.setenv("NEXTCLOUD_PASSWORD", "secret")
-    # Ensure multi-user mode is off (may leak from other tests)
-    monkeypatch.delenv("ENABLE_MULTI_USER_BASIC_AUTH", raising=False)
+    # Ensure no explicit deployment mode leaks from other tests
+    monkeypatch.delenv("MCP_DEPLOYMENT_MODE", raising=False)
     _reload_config()
     yield
     _reload_config()

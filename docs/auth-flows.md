@@ -221,7 +221,7 @@ NEXTCLOUD_PASSWORD=<app-password>
 ### Multi-User BasicAuth
 ```bash
 NEXTCLOUD_HOST=https://nextcloud.example.com
-ENABLE_MULTI_USER_BASIC_AUTH=true
+MCP_DEPLOYMENT_MODE=multi_user_basic
 
 # Optional: app-password storage for background sync
 TOKEN_ENCRYPTION_KEY=<fernet-key>
@@ -231,7 +231,7 @@ TOKEN_STORAGE_DB=/app/data/tokens.db
 ### Login Flow v2
 ```bash
 NEXTCLOUD_HOST=https://nextcloud.example.com
-ENABLE_LOGIN_FLOW=true
+MCP_DEPLOYMENT_MODE=login_flow
 
 # Required for app-password storage
 TOKEN_ENCRYPTION_KEY=<fernet-key>

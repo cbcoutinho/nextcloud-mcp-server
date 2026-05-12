@@ -336,28 +336,18 @@ messages in the container logs:
 **At server boot (all modes):**
 ```
 INFO     ✅ Configuration validated successfully for <mode> mode
+INFO     Configuring MCP server for <mode> mode
 INFO     Health check endpoints enabled: /health/live, /health/ready
 ```
 
-`<mode>` is one of `single_user_basic`, `multi_user_basic`, or
-`oauth_single`, matching the `MCP_DEPLOYMENT_MODE` setting.
-
-**Additional BasicAuth-mode messages (at server boot):**
-```
-INFO     Configuring MCP server for <mode> mode
-```
-
-Here `<mode>` is the enum value (`single_user_basic` or `multi_user_basic`).
+`<mode>` is one of `single_user_basic`, `multi_user_basic`, or `login_flow`,
+matching the `MCP_DEPLOYMENT_MODE` setting.
 
 **Additional OAuth-mode messages (at server boot):**
 ```
-INFO     Configuring MCP server for OAuth mode
 INFO     OAuth client ready: <client-id>...
 INFO     OAuth configuration complete
 ```
-
-Note the OAuth boot line logs the literal string `OAuth mode`, not the enum
-value `oauth_single`.
 
 **Additional single-user BasicAuth messages (per MCP session):**
 

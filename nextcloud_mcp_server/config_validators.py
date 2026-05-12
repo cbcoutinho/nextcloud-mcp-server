@@ -25,7 +25,7 @@ class AuthMode(Enum):
 
     SINGLE_USER_BASIC = "single_user_basic"
     MULTI_USER_BASIC = "multi_user_basic"
-    OAUTH_SINGLE_AUDIENCE = "oauth_single"
+    LOGIN_FLOW = "login_flow"
 
 
 @dataclass
@@ -64,7 +64,6 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
             "document_chunk_overlap",
         ],
         forbidden=[
-            "enable_multi_user_basic_auth",
             "oidc_client_id",
             "oidc_client_secret",
         ],
@@ -78,7 +77,7 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
         "Suitable for personal Nextcloud instances and local development.",
     ),
     AuthMode.MULTI_USER_BASIC: ModeRequirements(
-        required=["nextcloud_host", "enable_multi_user_basic_auth"],
+        required=["nextcloud_host"],
         optional=[
             # Background sync with app passwords (via Astrolabe)
             "enable_offline_access",
@@ -113,7 +112,7 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
         "Users provide credentials in request headers. "
         "Optional background sync using app passwords stored via Astrolabe.",
     ),
-    AuthMode.OAUTH_SINGLE_AUDIENCE: ModeRequirements(
+    AuthMode.LOGIN_FLOW: ModeRequirements(
         required=["nextcloud_host"],
         optional=[
             # OAuth credentials (uses DCR if not provided)
@@ -138,7 +137,6 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
         forbidden=[
             "nextcloud_username",
             "nextcloud_password",
-            "enable_multi_user_basic_auth",
         ],
         conditional={
             "enable_offline_access": [
@@ -149,9 +147,13 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
             # enables background operations in multi-user modes. No explicit
             # enable_offline_access setting required.
         },
-        description="OAuth multi-user deployment with single-audience tokens. "
-        "Tokens work for both MCP server and Nextcloud APIs (pass-through). "
-        "Uses Dynamic Client Registration if credentials not provided.",
+        description="OAuth multi-user deployment using Login Flow v2 to acquire "
+        "per-user Nextcloud app passwords via a browser flow. The MCP server "
+        "is an OIDC relying party of a configurable IdP (Nextcloud's built-in "
+        "OIDC by default; Keycloak, AWS Cognito, etc. via OIDC_DISCOVERY_URL). "
+        "Uses Dynamic Client Registration if credentials not provided. "
+        "Replaces the deprecated direct OAuth bearer-token pass-through which "
+        "required unmerged user_oidc patches (see ADR-022).",
     ),
 }
 
@@ -159,11 +161,21 @@ MODE_REQUIREMENTS: dict[AuthMode, ModeRequirements] = {
 def detect_auth_mode(settings: Settings) -> AuthMode:
     """Detect authentication mode from configuration.
 
-    Mode detection priority (ADR-021):
-    0. Explicit MCP_DEPLOYMENT_MODE (if set) - NEW in ADR-021
-    1. Multi-user BasicAuth
-    2. Single-user BasicAuth
-    3. OAuth single-audience (default OAuth mode)
+    Mode detection priority (ADR-021, updated for ADR-022):
+    0. Explicit MCP_DEPLOYMENT_MODE (if set) — NEW in ADR-021
+    1. Multi-user BasicAuth (only via explicit mode after ADR-022 follow-up)
+    2. Single-user BasicAuth (auto-detected from credentials)
+    3. Login Flow v2 (default — was OAuth single-audience pre-ADR-022)
+
+    Pure function — the legacy-env-var deprecation and the derivation of
+    `enable_login_flow` / `enable_multi_user_basic_auth` now happen in
+    `Settings.__post_init__` so every Settings instance carries correct
+    flags regardless of how it was constructed.
+
+    Keep the resolution logic here in sync with `Settings.__post_init__`:
+    both compute the canonical mode from `deployment_mode` (+ credentials
+    as a fallback). When adding a new mode, update `mode_map` *and* the
+    `__post_init__` resolution block in `config.py`.
 
     Args:
         settings: Application settings
@@ -172,45 +184,53 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
         Detected AuthMode
 
     Raises:
-        ValueError: If explicit deployment_mode is invalid or conflicts with detected mode
+        ValueError: If explicit deployment_mode is unrecognised.
     """
 
     logger = logging.getLogger(__name__)
 
-    # ADR-021: Check for explicit deployment mode first
+    # ADR-021: explicit deployment mode wins
     if settings.deployment_mode:
         mode_str = settings.deployment_mode.lower().strip()
 
-        # Map string to AuthMode enum
         mode_map = {
             "single_user_basic": AuthMode.SINGLE_USER_BASIC,
             "multi_user_basic": AuthMode.MULTI_USER_BASIC,
-            "oauth_single_audience": AuthMode.OAUTH_SINGLE_AUDIENCE,
+            "login_flow": AuthMode.LOGIN_FLOW,
         }
 
         if mode_str not in mode_map:
             valid_modes = ", ".join(mode_map.keys())
+            # ADR-022 migration hint: the most common upgrade pain is users
+            # carrying MCP_DEPLOYMENT_MODE=oauth_single_audience over from
+            # ADR-021. Surface a one-liner so they don't have to grep the
+            # changelog.
+            hint = (
+                " (Note: 'oauth_single_audience' was renamed to 'login_flow' in ADR-022.)"
+                if mode_str == "oauth_single_audience"
+                else ""
+            )
             raise ValueError(
                 f"Invalid MCP_DEPLOYMENT_MODE: '{settings.deployment_mode}'. "
-                f"Valid values: {valid_modes}"
+                f"Valid values: {valid_modes}.{hint}"
             )
 
         explicit_mode = mode_map[mode_str]
         logger.info(f"Using explicit deployment mode: {explicit_mode.value}")
         return explicit_mode
 
-    # Auto-detection (existing behavior)
-    # Check for multi-user BasicAuth
-    if settings.enable_multi_user_basic_auth:
-        return AuthMode.MULTI_USER_BASIC
+    # Auto-detection (no explicit deployment_mode).
+    # MULTI_USER_BASIC is no longer auto-detectable — the ENABLE_MULTI_USER_BASIC_AUTH
+    # env-var alias was dropped in the ADR-022 follow-up, so the only way
+    # to opt into that mode is `MCP_DEPLOYMENT_MODE=multi_user_basic`
+    # (handled above). The legacy env var fails loudly in
+    # `Settings.__post_init__`.
 
-    # Check for single-user BasicAuth (explicit credentials)
     if settings.nextcloud_username and settings.nextcloud_password:
         return AuthMode.SINGLE_USER_BASIC
 
-    # Default: OAuth single-audience mode
-    # This is the safest multi-user mode (no credential storage)
-    return AuthMode.OAUTH_SINGLE_AUDIENCE
+    # Default: Login Flow v2 multi-user mode (browser-based app-password flow).
+    return AuthMode.LOGIN_FLOW
 
 
 def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
@@ -301,7 +321,14 @@ def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:
                 f"{settings.nextcloud_host}"
             )
 
-    if mode == AuthMode.OAUTH_SINGLE_AUDIENCE:
+    if mode == AuthMode.LOGIN_FLOW:
+        # ADR-022 follow-up: the un-augmented OAuth bearer pass-through (the
+        # old OAUTH_SINGLE_AUDIENCE without ENABLE_LOGIN_FLOW) needed unmerged
+        # Nextcloud user_oidc patches and is no longer supported. The
+        # `enable_login_flow` flag is now derived from the resolved mode in
+        # `Settings.__post_init__`, so users only configure the mode — no
+        # separate ENABLE_LOGIN_FLOW env var is needed.
+
         # If OAuth credentials not provided, DCR must be available
         # (This is a runtime check, not a config check, so we just warn)
         if not settings.oidc_client_id or not settings.oidc_client_secret:

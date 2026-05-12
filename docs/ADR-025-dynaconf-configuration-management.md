@@ -38,7 +38,7 @@ The nextcloud-mcp-server configuration system has grown to ~80+ environment vari
 |----------|-------------|---------|
 | Core Nextcloud | 6 | `NEXTCLOUD_HOST`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_VERIFY_SSL` |
 | OAuth/OIDC | 12 | `OIDC_DISCOVERY_URL`, `NEXTCLOUD_OIDC_CLIENT_ID`, `JWKS_URI` |
-| Mode Selection | 4 | `MCP_DEPLOYMENT_MODE`, `ENABLE_LOGIN_FLOW`, `ENABLE_TOKEN_EXCHANGE` |
+| Mode Selection | 1 | `MCP_DEPLOYMENT_MODE` |
 | Token Storage | 3 | `TOKEN_ENCRYPTION_KEY`, `TOKEN_STORAGE_DB` |
 | Semantic Search | 6 | `ENABLE_SEMANTIC_SEARCH`, `VECTOR_SYNC_SCAN_INTERVAL` |
 | Qdrant | 4 | `QDRANT_URL`, `QDRANT_LOCATION`, `QDRANT_API_KEY` |
@@ -108,13 +108,16 @@ nextcloud_verify_ssl = true
 nextcloud_ca_bundle = "@none"
 
 # === Deployment Mode ===
-# Auto-detected if not set. Valid: single_user_basic, multi_user_basic,
-# oauth_single_audience, login_flow, keycloak
+# Auto-detected if not set. Valid: single_user_basic, multi_user_basic, login_flow
+# (`oauth_single_audience` was renamed to `login_flow` in ADR-022; `keycloak`
+# is a planned future mode.)
 # mcp_deployment_mode = ""
 
 # === Authentication Toggles ===
-enable_multi_user_basic_auth = false
-enable_login_flow = false
+# Both `enable_multi_user_basic_auth` and `enable_login_flow` are derived
+# from MCP_DEPLOYMENT_MODE in detect_auth_mode (ADR-022 follow-up) — no
+# separate toggles. Only ENABLE_TOKEN_EXCHANGE remains as an independent
+# flag (separate cleanup).
 enable_token_exchange = false
 
 # === Token Storage ===
@@ -197,20 +200,17 @@ nextcloud_mcp_port = 8000
 # nextcloud_password = ""  (in .secrets.toml)
 
 [multi_user_basic]
-enable_multi_user_basic_auth = true
+# enable_multi_user_basic_auth is now derived from the mode (ADR-022 follow-up).
 token_storage_db = "/app/data/tokens.db"
 
 [login_flow]
-enable_login_flow = true
+# enable_login_flow is now derived from the mode (ADR-022 follow-up).
 token_storage_db = "/app/data/tokens.db"
 
 [keycloak]
 enable_token_exchange = true
 token_storage_db = "/app/data/tokens.db"
 token_exchange_cache_ttl = 300
-
-[oauth_single_audience]
-token_storage_db = "/app/data/tokens.db"
 ```
 
 **`.secrets.toml.example`** — Template, checked into git (actual `.secrets.toml` is gitignored):
@@ -265,7 +265,7 @@ Dynaconf merges configuration in this order (last wins):
 
 This means:
 - **File-based config is optional** — env vars alone still work (they override everything)
-- **Mode-specific defaults reduce boilerplate** — `[login_flow]` sets `enable_login_flow=true` and `token_storage_db=/app/data/tokens.db` so deployers don't need to
+- **Mode-specific defaults reduce boilerplate** — `[login_flow]` sets `token_storage_db=/app/data/tokens.db` so deployers don't need to
 - **Secrets are separated** — `.secrets.toml` holds `TOKEN_ENCRYPTION_KEY`, passwords, API keys
 - **Local dev overrides don't pollute** — `settings.local.toml` is gitignored
 
@@ -281,7 +281,6 @@ validators = [
     # Deployment mode validation — catch typos at startup
     Validator("MCP_DEPLOYMENT_MODE", is_in=[
         "single_user_basic", "multi_user_basic", "login_flow",
-        "keycloak", "oauth_single_audience",
     ], when=Validator("MCP_DEPLOYMENT_MODE", must_exist=True)),
 
     # Type and range validation
@@ -343,10 +342,16 @@ In **Phase 4**, this could migrate to a post-hook:
 # Phase 4 target (not implemented in Phases 1-3)
 def resolve_dependencies(settings):
     """Auto-enable background operations for semantic search in multi-user modes."""
+    mode = (settings.get("MCP_DEPLOYMENT_MODE", "") or "").lower().strip()
     is_multi_user = (
-        settings.get("ENABLE_MULTI_USER_BASIC_AUTH", False)
+        mode in {"multi_user_basic", "login_flow"}
         or settings.get("ENABLE_TOKEN_EXCHANGE", False)
-        or (not settings.get("NEXTCLOUD_USERNAME") and not settings.get("NEXTCLOUD_PASSWORD"))
+        or (
+            mode != "single_user_basic"
+            and not (
+                settings.get("NEXTCLOUD_USERNAME") and settings.get("NEXTCLOUD_PASSWORD")
+            )
+        )
     )
     if settings.get("ENABLE_SEMANTIC_SEARCH", False) and is_multi_user:
         if not settings.get("ENABLE_BACKGROUND_OPERATIONS", False):

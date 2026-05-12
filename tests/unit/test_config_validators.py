@@ -10,6 +10,8 @@ Tests cover:
 import os
 from unittest.mock import patch
 
+import pytest
+
 from nextcloud_mcp_server.config import Settings, _reload_config
 from nextcloud_mcp_server.config_validators import (
     AuthMode,
@@ -23,14 +25,21 @@ class TestModeDetection:
     """Test auth mode detection from configuration."""
 
     def test_multi_user_basic_mode_detection(self):
-        """Test multi-user BasicAuth mode is detected."""
+        """Test multi-user BasicAuth mode is selected via explicit deployment_mode.
+
+        ADR-022 follow-up: the ENABLE_MULTI_USER_BASIC_AUTH auto-detection branch
+        was removed; the only way to opt in is `MCP_DEPLOYMENT_MODE=multi_user_basic`.
+        Coverage for the explicit-mode path also lives in
+        TestExplicitModeSelection::test_explicit_multi_user_basic_mode.
+        """
         settings = Settings(
             nextcloud_host="http://localhost",
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
         )
 
         mode = detect_auth_mode(settings)
         assert mode == AuthMode.MULTI_USER_BASIC
+        assert settings.enable_multi_user_basic_auth is True
 
     def test_single_user_basic_mode_detection(self):
         """Test single-user BasicAuth mode is detected."""
@@ -43,14 +52,14 @@ class TestModeDetection:
         mode = detect_auth_mode(settings)
         assert mode == AuthMode.SINGLE_USER_BASIC
 
-    def test_oauth_single_audience_default(self):
-        """Test OAuth single-audience is default mode."""
+    def test_login_flow_default(self):
+        """Test Login Flow v2 is the default multi-user mode."""
         settings = Settings(
             nextcloud_host="http://localhost",
         )
 
         mode = detect_auth_mode(settings)
-        assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+        assert mode == AuthMode.LOGIN_FLOW
 
 
 class TestSingleUserBasicValidation:
@@ -108,7 +117,7 @@ class TestSingleUserBasicValidation:
 
         # Mode detection requires BOTH username AND password for single-user BasicAuth
         # If only one is present, it defaults to OAuth single-audience
-        assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+        assert mode == AuthMode.LOGIN_FLOW
         # In OAuth mode, having a password set is forbidden
         assert any("nextcloud_password" in err.lower() for err in errors)
 
@@ -123,24 +132,29 @@ class TestSingleUserBasicValidation:
 
         # Mode detection requires BOTH username AND password for single-user BasicAuth
         # If only one is present, it defaults to OAuth single-audience
-        assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+        assert mode == AuthMode.LOGIN_FLOW
         # In OAuth mode, having a username set is forbidden
         assert any("nextcloud_username" in err.lower() for err in errors)
 
-    def test_forbidden_multi_user_basic_auth(self):
-        """Test error when ENABLE_MULTI_USER_BASIC_AUTH is set."""
+    def test_forbidden_multi_user_basic_when_credentials_present(self):
+        """Test multi-user mode rejects single-user credentials.
+
+        When MCP_DEPLOYMENT_MODE=multi_user_basic is set explicitly but
+        NEXTCLOUD_USERNAME/PASSWORD are also set (a misconfiguration),
+        the explicit mode wins and validation reports the credentials as
+        forbidden.
+        """
         settings = Settings(
             nextcloud_host="http://localhost",
             nextcloud_username="admin",
             nextcloud_password="password",
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
         )
 
-        # Note: This will detect as MULTI_USER_BASIC due to priority
         mode, errors = validate_configuration(settings)
 
         assert mode == AuthMode.MULTI_USER_BASIC
-        # It will fail multi-user validation because username/password are forbidden
+        # Should report errors for forbidden username/password
         assert len(errors) > 0
 
     def test_vector_sync_without_embedding_provider_uses_fallback(self):
@@ -167,7 +181,7 @@ class TestMultiUserBasicValidation:
         """Test valid minimal multi-user BasicAuth config."""
         settings = Settings(
             nextcloud_host="http://localhost",
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
         )
 
         mode, errors = validate_configuration(settings)
@@ -179,7 +193,7 @@ class TestMultiUserBasicValidation:
         """Test valid config with offline access enabled."""
         settings = Settings(
             nextcloud_host="http://localhost",
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
             enable_offline_access=True,
             oidc_client_id="test-client",
             oidc_client_secret="test-secret",
@@ -195,7 +209,7 @@ class TestMultiUserBasicValidation:
     def test_missing_required_host(self):
         """Test error when NEXTCLOUD_HOST is missing."""
         settings = Settings(
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
         )
 
         mode, errors = validate_configuration(settings)
@@ -209,13 +223,12 @@ class TestMultiUserBasicValidation:
             nextcloud_host="http://localhost",
             nextcloud_username="admin",
             nextcloud_password="password",
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
         )
 
         mode, errors = validate_configuration(settings)
 
-        # Multi-user BasicAuth has higher priority than single-user in detection
-        # (explicit flags come before credentials)
+        # Explicit MCP_DEPLOYMENT_MODE wins over auto-detection from credentials
         assert mode == AuthMode.MULTI_USER_BASIC
         # Should report errors for forbidden username/password
         assert any("nextcloud_username" in err.lower() for err in errors)
@@ -225,7 +238,7 @@ class TestMultiUserBasicValidation:
         """Test that offline access works without OAuth credentials (will use DCR)."""
         settings = Settings(
             nextcloud_host="http://localhost",
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
             enable_offline_access=True,
             token_encryption_key="test-key-" + "a" * 32,
             token_storage_db="/tmp/tokens.db",
@@ -241,7 +254,7 @@ class TestMultiUserBasicValidation:
         """Test error when offline access enabled but encryption key missing."""
         settings = Settings(
             nextcloud_host="http://localhost",
-            enable_multi_user_basic_auth=True,
+            deployment_mode="multi_user_basic",
             enable_offline_access=True,
             oidc_client_id="test-client",
             oidc_client_secret="test-secret",
@@ -261,7 +274,7 @@ class TestMultiUserBasicValidation:
             os.environ,
             {
                 "NEXTCLOUD_HOST": "http://localhost:8080",
-                "ENABLE_MULTI_USER_BASIC_AUTH": "true",
+                "MCP_DEPLOYMENT_MODE": "multi_user_basic",
                 "VECTOR_SYNC_ENABLED": "true",  # Using old name for backward compat test
                 "QDRANT_LOCATION": ":memory:",
                 "OLLAMA_BASE_URL": "http://ollama:11434",
@@ -285,19 +298,21 @@ class TestMultiUserBasicValidation:
             assert settings.enable_offline_access is True
 
 
-class TestOAuthSingleAudienceValidation:
-    """Test validation for OAuth single-audience mode."""
+class TestLoginFlowValidation:
+    """Test validation for Login Flow v2 mode (formerly OAUTH_SINGLE_AUDIENCE)."""
 
     def test_valid_minimal_config(self):
-        """Test valid minimal OAuth single-audience config."""
+        """Test valid minimal Login Flow v2 config — enable_login_flow is now derived."""
         settings = Settings(
             nextcloud_host="http://localhost",
         )
 
         mode, errors = validate_configuration(settings)
 
-        assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+        assert mode == AuthMode.LOGIN_FLOW
         assert len(errors) == 0
+        # ADR-022 follow-up: enable_login_flow is derived from the resolved mode.
+        assert settings.enable_login_flow is True
 
     def test_valid_with_static_credentials(self):
         """Test valid config with static OAuth credentials."""
@@ -309,7 +324,7 @@ class TestOAuthSingleAudienceValidation:
 
         mode, errors = validate_configuration(settings)
 
-        assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+        assert mode == AuthMode.LOGIN_FLOW
         assert len(errors) == 0
 
     def test_valid_with_offline_access(self):
@@ -325,7 +340,7 @@ class TestOAuthSingleAudienceValidation:
 
         mode, errors = validate_configuration(settings)
 
-        assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+        assert mode == AuthMode.LOGIN_FLOW
         assert len(errors) == 0
 
     def test_forbidden_username_password(self):
@@ -351,11 +366,35 @@ class TestOAuthSingleAudienceValidation:
 
         mode, errors = validate_configuration(settings)
 
-        assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+        assert mode == AuthMode.LOGIN_FLOW
         assert any("token_encryption_key" in err.lower() for err in errors)
 
-    def test_vector_sync_auto_enables_background_ops_in_oauth_mode(self):
-        """Test vector sync automatically enables background operations in OAuth mode (ADR-021)."""
+    def test_login_flow_mode_auto_derives_enable_login_flow_flag(self):
+        """ADR-022 follow-up: deployment_mode=login_flow auto-derives the flag.
+
+        Users no longer need to set ENABLE_LOGIN_FLOW=true (env var was
+        removed); Settings.__post_init__ populates settings.enable_login_flow
+        from the resolved mode at construction time, so every Settings
+        instance carries correct flags regardless of how it was built.
+        """
+        # Default-fallback case: no auth env vars → LOGIN_FLOW.
+        settings = Settings(nextcloud_host="http://localhost")
+        assert settings.enable_login_flow is True
+        assert settings.enable_multi_user_basic_auth is False
+        assert detect_auth_mode(settings) == AuthMode.LOGIN_FLOW
+
+        # Single-user BasicAuth (credentials set) → neither derived flag.
+        basic_settings = Settings(
+            nextcloud_host="http://localhost",
+            nextcloud_username="alice",
+            nextcloud_password="password",
+        )
+        assert basic_settings.enable_login_flow is False
+        assert basic_settings.enable_multi_user_basic_auth is False
+        assert detect_auth_mode(basic_settings) == AuthMode.SINGLE_USER_BASIC
+
+    def test_vector_sync_auto_enables_background_ops_in_login_flow_mode(self):
+        """Test vector sync automatically enables background operations in Login Flow v2 mode (ADR-021)."""
         # Before ADR-021: This would have failed validation (required explicit ENABLE_OFFLINE_ACCESS)
         # After ADR-021: vector_sync_enabled auto-enables background operations in multi-user modes
         with patch.dict(
@@ -367,7 +406,7 @@ class TestOAuthSingleAudienceValidation:
                 "OLLAMA_BASE_URL": "http://ollama:11434",
                 "TOKEN_ENCRYPTION_KEY": "test-key",
                 "TOKEN_STORAGE_DB": "/tmp/test.db",
-                # Note: No username/password = OAuth mode
+                # Note: No username/password = Login Flow v2 multi-user OAuth mode
             },
             clear=True,
         ):
@@ -377,7 +416,7 @@ class TestOAuthSingleAudienceValidation:
             settings = get_settings()
             mode, errors = validate_configuration(settings)
 
-            assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+            assert mode == AuthMode.LOGIN_FLOW
             # Should have no errors - background operations auto-enabled
             assert len(errors) == 0
             # Verify background operations were auto-enabled
@@ -515,8 +554,8 @@ class TestConfigurationConsolidation:
             settings = get_settings()
             assert settings.enable_offline_access is True
 
-    def test_semantic_search_auto_enables_background_ops_in_oauth_mode(self):
-        """Test ENABLE_SEMANTIC_SEARCH automatically enables background operations in OAuth mode."""
+    def test_semantic_search_auto_enables_background_ops_in_login_flow_mode(self):
+        """Test ENABLE_SEMANTIC_SEARCH automatically enables background operations in Login Flow v2 mode."""
         with patch.dict(
             os.environ,
             {
@@ -634,7 +673,7 @@ class TestConfigurationConsolidation:
             os.environ,
             {
                 "NEXTCLOUD_HOST": "http://localhost:8080",
-                "ENABLE_MULTI_USER_BASIC_AUTH": "true",
+                "MCP_DEPLOYMENT_MODE": "multi_user_basic",
                 "ENABLE_SEMANTIC_SEARCH": "true",
                 "QDRANT_LOCATION": ":memory:",
                 "TOKEN_ENCRYPTION_KEY": "test-key",
@@ -707,13 +746,13 @@ class TestExplicitModeSelection:
 
             assert mode == AuthMode.MULTI_USER_BASIC
 
-    def test_explicit_oauth_single_audience_mode(self):
-        """Test explicit oauth_single_audience mode selection."""
+    def test_explicit_login_flow_mode(self):
+        """Test explicit login_flow mode selection."""
         with patch.dict(
             os.environ,
             {
                 "NEXTCLOUD_HOST": "http://localhost:8080",
-                "MCP_DEPLOYMENT_MODE": "oauth_single_audience",
+                "MCP_DEPLOYMENT_MODE": "login_flow",
             },
             clear=True,
         ):
@@ -723,7 +762,7 @@ class TestExplicitModeSelection:
             settings = get_settings()
             mode = detect_auth_mode(settings)
 
-            assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+            assert mode == AuthMode.LOGIN_FLOW
 
     def test_invalid_deployment_mode_raises_error(self):
         """Test invalid MCP_DEPLOYMENT_MODE raises ValueError."""
@@ -749,6 +788,34 @@ class TestExplicitModeSelection:
                 assert "invalid_mode" in str(e)
                 assert "Valid values:" in str(e)
 
+    def test_oauth_single_audience_migration_hint(self):
+        """ADR-022: rejecting `oauth_single_audience` surfaces a rename hint.
+
+        Pins the special-case branch in detect_auth_mode that helps users
+        upgrading from ADR-021 configurations spot the rename without
+        having to grep the changelog.
+        """
+        with patch.dict(
+            os.environ,
+            {
+                "NEXTCLOUD_HOST": "http://localhost:8080",
+                "MCP_DEPLOYMENT_MODE": "oauth_single_audience",
+            },
+            clear=True,
+        ):
+            from nextcloud_mcp_server.config import get_settings
+
+            _reload_config()
+            settings = get_settings()
+
+            with pytest.raises(ValueError) as exc:
+                detect_auth_mode(settings)
+
+            msg = str(exc.value)
+            assert "oauth_single_audience" in msg
+            assert "login_flow" in msg
+            assert "ADR-022" in msg
+
     def test_explicit_mode_overrides_auto_detection(self):
         """Test explicit mode takes precedence over auto-detection."""
         with patch.dict(
@@ -757,7 +824,7 @@ class TestExplicitModeSelection:
                 "NEXTCLOUD_HOST": "http://localhost:8080",
                 "NEXTCLOUD_USERNAME": "admin",  # Would auto-detect as single_user_basic
                 "NEXTCLOUD_PASSWORD": "password",
-                "MCP_DEPLOYMENT_MODE": "oauth_single_audience",  # Explicit override
+                "MCP_DEPLOYMENT_MODE": "login_flow",  # Explicit override
             },
             clear=True,
         ):
@@ -768,7 +835,7 @@ class TestExplicitModeSelection:
             mode = detect_auth_mode(settings)
 
             # Should use explicit mode, not auto-detected mode
-            assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+            assert mode == AuthMode.LOGIN_FLOW
 
     def test_case_insensitive_mode_names(self):
         """Test MCP_DEPLOYMENT_MODE is case-insensitive."""
@@ -776,7 +843,7 @@ class TestExplicitModeSelection:
             os.environ,
             {
                 "NEXTCLOUD_HOST": "http://localhost:8080",
-                "MCP_DEPLOYMENT_MODE": "OAUTH_SINGLE_AUDIENCE",  # Uppercase
+                "MCP_DEPLOYMENT_MODE": "LOGIN_FLOW",  # Uppercase
             },
             clear=True,
         ):
@@ -786,7 +853,7 @@ class TestExplicitModeSelection:
             settings = get_settings()
             mode = detect_auth_mode(settings)
 
-            assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+            assert mode == AuthMode.LOGIN_FLOW
 
     def test_whitespace_in_mode_name_stripped(self):
         """Test whitespace in MCP_DEPLOYMENT_MODE is stripped."""
@@ -794,7 +861,7 @@ class TestExplicitModeSelection:
             os.environ,
             {
                 "NEXTCLOUD_HOST": "http://localhost:8080",
-                "MCP_DEPLOYMENT_MODE": "  oauth_single_audience  ",  # Whitespace
+                "MCP_DEPLOYMENT_MODE": "  login_flow  ",  # Whitespace
             },
             clear=True,
         ):
@@ -804,4 +871,114 @@ class TestExplicitModeSelection:
             settings = get_settings()
             mode = detect_auth_mode(settings)
 
-            assert mode == AuthMode.OAUTH_SINGLE_AUDIENCE
+            assert mode == AuthMode.LOGIN_FLOW
+
+    def test_legacy_enable_multi_user_basic_auth_env_var_errors(self):
+        """ADR-022 follow-up: ENABLE_MULTI_USER_BASIC_AUTH=true must fail loudly.
+
+        The env-var alias was removed; users must migrate to
+        `MCP_DEPLOYMENT_MODE=multi_user_basic`. Silent removal would have
+        switched users to LOGIN_FLOW (the default) — wrong runtime mode.
+        The check lives in Settings.__post_init__ so it fires at config
+        load time, not only when detect_auth_mode is reached.
+        """
+        with patch.dict(
+            os.environ,
+            {
+                "NEXTCLOUD_HOST": "http://localhost:8080",
+                "ENABLE_MULTI_USER_BASIC_AUTH": "true",
+            },
+            clear=True,
+        ):
+            from nextcloud_mcp_server.config import get_settings
+
+            _reload_config()
+
+            with pytest.raises(ValueError) as exc:
+                get_settings()
+
+            assert "ENABLE_MULTI_USER_BASIC_AUTH" in str(exc.value)
+            assert "multi_user_basic" in str(exc.value)
+
+    def test_legacy_enable_login_flow_env_var_errors(self):
+        """ADR-022 follow-up: ENABLE_LOGIN_FLOW=true must fail loudly.
+
+        Mirrors the ENABLE_MULTI_USER_BASIC_AUTH check — both legacy aliases
+        now error with a one-line migration message at Settings construction.
+        """
+        with patch.dict(
+            os.environ,
+            {
+                "NEXTCLOUD_HOST": "http://localhost:8080",
+                "ENABLE_LOGIN_FLOW": "true",
+            },
+            clear=True,
+        ):
+            from nextcloud_mcp_server.config import get_settings
+
+            _reload_config()
+
+            with pytest.raises(ValueError) as exc:
+                get_settings()
+
+            assert "ENABLE_LOGIN_FLOW" in str(exc.value)
+            assert "login_flow" in str(exc.value)
+
+    def test_legacy_env_var_check_ignores_falsy_strings(self):
+        """ADR-022 follow-up: a leftover ENABLE_LOGIN_FLOW=false must NOT error.
+
+        Reviewer round 2 found that the legacy check used `os.getenv(legacy)`
+        which is truthy for the literal string 'false'. A user who had
+        explicitly set the flag to false (meaning 'I don't want this') would
+        get a startup ValueError after upgrading, which is wrong. The fix
+        only fires for explicitly-truthy values.
+        """
+        with patch.dict(
+            os.environ,
+            {
+                "NEXTCLOUD_HOST": "http://localhost:8080",
+                "ENABLE_LOGIN_FLOW": "false",
+                "ENABLE_MULTI_USER_BASIC_AUTH": "0",
+            },
+            clear=True,
+        ):
+            from nextcloud_mcp_server.config import get_settings
+
+            _reload_config()
+            settings = get_settings()  # Must not raise.
+
+            # Falls through to LOGIN_FLOW (the auto-detect default) since
+            # no credentials are set.
+            assert detect_auth_mode(settings) == AuthMode.LOGIN_FLOW
+
+    def test_derived_flags_stable_across_get_settings_calls(self):
+        """Regression: derived flags must persist across get_settings() calls.
+
+        `get_settings()` builds a fresh Settings on each invocation. Earlier
+        commits set the derived flags as a side effect of detect_auth_mode,
+        which meant the *next* get_settings() call started with default
+        False — breaking per-request handlers in the integration tests
+        for `mcp-multi-user-basic` and `mcp-login-flow`. The fix moves the
+        derivation into Settings.__post_init__ so every instance carries
+        correct flags.
+        """
+        with patch.dict(
+            os.environ,
+            {
+                "NEXTCLOUD_HOST": "http://localhost:8080",
+                "MCP_DEPLOYMENT_MODE": "multi_user_basic",
+            },
+            clear=True,
+        ):
+            from nextcloud_mcp_server.config import get_settings
+
+            _reload_config()
+
+            s1 = get_settings()
+            s2 = get_settings()
+
+            assert s1 is not s2  # fresh instance each call
+            assert s1.enable_multi_user_basic_auth is True
+            assert s2.enable_multi_user_basic_auth is True
+            assert s1.enable_login_flow is False
+            assert s2.enable_login_flow is False
