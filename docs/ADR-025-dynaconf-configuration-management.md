@@ -211,9 +211,6 @@ token_storage_db = "/app/data/tokens.db"
 enable_token_exchange = true
 token_storage_db = "/app/data/tokens.db"
 token_exchange_cache_ttl = 300
-
-[login_flow]
-token_storage_db = "/app/data/tokens.db"
 ```
 
 **`.secrets.toml.example`** — Template, checked into git (actual `.secrets.toml` is gitignored):
