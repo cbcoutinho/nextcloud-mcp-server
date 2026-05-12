@@ -43,8 +43,9 @@ _DEFAULTS: dict[str, Any] = {
     "userinfo_uri": None,
     "oidc_resource_server_id": None,
     # Mode flags
-    "enable_multi_user_basic_auth": False,
-    "enable_login_flow": False,
+    # NOTE: `enable_multi_user_basic_auth` and `enable_login_flow` are
+    # intentionally absent — they are derived from MCP_DEPLOYMENT_MODE in
+    # Settings.__post_init__ (ADR-022) and not read from the dynaconf store.
     "enable_semantic_search": False,
     "enable_background_operations": False,
     "vector_sync_enabled": False,
