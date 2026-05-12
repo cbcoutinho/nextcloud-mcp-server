@@ -207,9 +207,6 @@ NEXTCLOUD_OIDC_CLIENT_SECRET=secret
 NEXTCLOUD_HOST=https://nextcloud.example.com
 MCP_DEPLOYMENT_MODE=multi_user_basic
 
-# Optional: Explicit mode declaration
-MCP_DEPLOYMENT_MODE=multi_user_basic
-
 # One variable handles both!
 ENABLE_SEMANTIC_SEARCH=true  # Auto-enables background operations
 

@@ -86,7 +86,7 @@ Add `MCP_DEPLOYMENT_MODE` environment variable to remove detection ambiguity:
 
 ```bash
 # Optional: Explicitly declare deployment mode
-MCP_DEPLOYMENT_MODE=oauth_single_audience
+MCP_DEPLOYMENT_MODE=login_flow
 
 # Valid values: single_user_basic, multi_user_basic,
 #               oauth_single_audience, oauth_token_exchange
@@ -114,7 +114,7 @@ TOKEN_STORAGE_DB=/path/to/tokens.db
 ```bash
 # Multi-user OAuth with semantic search
 NEXTCLOUD_HOST=https://nextcloud.example.com
-MCP_DEPLOYMENT_MODE=oauth_single_audience  # Explicit (optional)
+MCP_DEPLOYMENT_MODE=login_flow  # Explicit (optional)
 ENABLE_SEMANTIC_SEARCH=true                # Auto-enables background ops
 QDRANT_URL=http://qdrant:6333
 TOKEN_ENCRYPTION_KEY=<key>
@@ -271,7 +271,7 @@ def enable_semantic_search(self) -> bool:
 - `ENABLE_SEMANTIC_SEARCH=false` → `enable_background_operations=false` (unless explicitly set)
 
 **Mode selection tests**:
-- `MCP_DEPLOYMENT_MODE=oauth_single_audience` → mode correctly detected
+- `MCP_DEPLOYMENT_MODE=login_flow` → mode correctly detected
 - `MCP_DEPLOYMENT_MODE` conflicts with detected mode → validation error
 - No `MCP_DEPLOYMENT_MODE` → auto-detection works as before
 
@@ -363,7 +363,7 @@ QDRANT_URL=http://qdrant:6333
 **After** (simplified):
 ```bash
 NEXTCLOUD_HOST=https://nextcloud.example.com
-MCP_DEPLOYMENT_MODE=oauth_single_audience  # Explicit (optional)
+MCP_DEPLOYMENT_MODE=login_flow  # Explicit (optional)
 ENABLE_SEMANTIC_SEARCH=true                # Auto-enables background operations
 TOKEN_ENCRYPTION_KEY=<key>
 TOKEN_STORAGE_DB=/path/to/tokens.db
@@ -384,7 +384,7 @@ TOKEN_STORAGE_DB=/path/to/tokens.db
 **After** (optional migration):
 ```bash
 NEXTCLOUD_HOST=https://nextcloud.example.com
-MCP_DEPLOYMENT_MODE=oauth_single_audience
+MCP_DEPLOYMENT_MODE=login_flow
 ENABLE_BACKGROUND_OPERATIONS=true  # Renamed for clarity
 TOKEN_ENCRYPTION_KEY=<key>
 TOKEN_STORAGE_DB=/path/to/tokens.db

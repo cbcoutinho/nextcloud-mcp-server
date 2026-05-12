@@ -265,7 +265,7 @@ async def nc_mcp_basic_auth_client(
 ) -> AsyncGenerator[ClientSession, Any]:
     """
     Fixture to create an MCP client session with BasicAuth credentials.
-    Connects to the multi-user BasicAuth MCP server on port 8003 with ENABLE_MULTI_USER_BASIC_AUTH=true.
+    Connects to the multi-user BasicAuth MCP server on port 8003 with MCP_DEPLOYMENT_MODE=multi_user_basic.
 
     Uses BasicAuth credentials for multi-user pass-through mode (ADR-020).
     Credentials are passed in Authorization header and forwarded to Nextcloud APIs.

@@ -9,7 +9,6 @@ See ADR-020 for detailed architecture and deployment mode documentation.
 """
 
 import logging
-import os
 from dataclasses import dataclass
 from enum import Enum
 
@@ -163,10 +162,15 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
     """Detect authentication mode from configuration.
 
     Mode detection priority (ADR-021, updated for ADR-022):
-    0. Explicit MCP_DEPLOYMENT_MODE (if set) - NEW in ADR-021
-    1. Multi-user BasicAuth
-    2. Single-user BasicAuth
+    0. Explicit MCP_DEPLOYMENT_MODE (if set) — NEW in ADR-021
+    1. Multi-user BasicAuth (only via explicit mode after ADR-022 follow-up)
+    2. Single-user BasicAuth (auto-detected from credentials)
     3. Login Flow v2 (default — was OAuth single-audience pre-ADR-022)
+
+    Pure function — the legacy-env-var deprecation and the derivation of
+    `enable_login_flow` / `enable_multi_user_basic_auth` now happen in
+    `Settings.__post_init__` so every Settings instance carries correct
+    flags regardless of how it was constructed.
 
     Args:
         settings: Application settings
@@ -175,31 +179,15 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
         Detected AuthMode
 
     Raises:
-        ValueError: If explicit deployment_mode is invalid or conflicts with detected mode
+        ValueError: If explicit deployment_mode is unrecognised.
     """
 
     logger = logging.getLogger(__name__)
 
-    # ADR-022 follow-up: fail loudly if a caller is still relying on the
-    # removed env-var aliases. Bypass dynaconf and read os.environ directly
-    # so the check survives even though the aliases are gone.
-    for legacy, replacement in (
-        ("ENABLE_MULTI_USER_BASIC_AUTH", "multi_user_basic"),
-        ("ENABLE_LOGIN_FLOW", "login_flow"),
-    ):
-        if os.getenv(legacy):
-            raise ValueError(
-                f"{legacy} is no longer read from the environment. "
-                f"Set MCP_DEPLOYMENT_MODE={replacement} instead "
-                "(ADR-022). The deployment mode is the single source of "
-                "truth for selecting an auth flow."
-            )
-
-    # ADR-021: Check for explicit deployment mode first
+    # ADR-021: explicit deployment mode wins
     if settings.deployment_mode:
         mode_str = settings.deployment_mode.lower().strip()
 
-        # Map string to AuthMode enum
         mode_map = {
             "single_user_basic": AuthMode.SINGLE_USER_BASIC,
             "multi_user_basic": AuthMode.MULTI_USER_BASIC,
@@ -215,39 +203,20 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
 
         explicit_mode = mode_map[mode_str]
         logger.info(f"Using explicit deployment mode: {explicit_mode.value}")
-        _sync_derived_flags(settings, explicit_mode)
         return explicit_mode
 
     # Auto-detection (no explicit deployment_mode).
     # MULTI_USER_BASIC is no longer auto-detectable — the ENABLE_MULTI_USER_BASIC_AUTH
-    # env-var alias was dropped in the ADR-022 follow-up, so the only way to
-    # opt into that mode is `MCP_DEPLOYMENT_MODE=multi_user_basic` (handled
-    # above). The legacy env var fails loudly at the top of this function.
+    # env-var alias was dropped in the ADR-022 follow-up, so the only way
+    # to opt into that mode is `MCP_DEPLOYMENT_MODE=multi_user_basic`
+    # (handled above). The legacy env var fails loudly in
+    # `Settings.__post_init__`.
 
-    # Check for single-user BasicAuth (explicit credentials)
     if settings.nextcloud_username and settings.nextcloud_password:
-        _sync_derived_flags(settings, AuthMode.SINGLE_USER_BASIC)
         return AuthMode.SINGLE_USER_BASIC
 
     # Default: Login Flow v2 multi-user mode (browser-based app-password flow).
-    # The un-augmented OAuth bearer pass-through it replaced required unmerged
-    # Nextcloud user_oidc patches (see ADR-022).
-    _sync_derived_flags(settings, AuthMode.LOGIN_FLOW)
     return AuthMode.LOGIN_FLOW
-
-
-def _sync_derived_flags(settings: Settings, mode: AuthMode) -> None:
-    """Derive internal feature flags from the resolved deployment mode.
-
-    Some runtime call sites (app.py, context.py, auth/scope_authorization.py)
-    still read individual boolean flags rather than passing the mode around.
-    Keep those flags in sync with the mode here so the mode is the single
-    source of truth and users don't have to set redundant env vars. The
-    ENABLE_LOGIN_FLOW and ENABLE_MULTI_USER_BASIC_AUTH env-var aliases were
-    removed in the ADR-022 follow-up (PR #787).
-    """
-    settings.enable_login_flow = mode == AuthMode.LOGIN_FLOW
-    settings.enable_multi_user_basic_auth = mode == AuthMode.MULTI_USER_BASIC
 
 
 def validate_configuration(settings: Settings) -> tuple[AuthMode, list[str]]:

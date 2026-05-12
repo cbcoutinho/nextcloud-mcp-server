@@ -607,6 +607,49 @@ class Settings:
                 f"Smaller chunks may lose context. Consider using at least 1024 characters."
             )
 
+        # --- ADR-022 follow-up: deployment mode is the single source of truth ---
+        # The ENABLE_MULTI_USER_BASIC_AUTH and ENABLE_LOGIN_FLOW env vars were
+        # removed in favour of MCP_DEPLOYMENT_MODE. We do TWO things here:
+        #
+        # 1. Loud-fail if a user still has either legacy env var set to a
+        #    truthy value (silent removal would have flipped them into the
+        #    wrong runtime mode). Only fires for truthy strings, so an
+        #    explicit `ENABLE_LOGIN_FLOW=false` in a leftover .env passes
+        #    through harmlessly.
+        # 2. Derive `enable_login_flow` and `enable_multi_user_basic_auth`
+        #    from the resolved deployment mode here, in __post_init__, so
+        #    every Settings instance carries correct flags. (`get_settings()`
+        #    builds a fresh Settings on each call — without this, the
+        #    mutation that used to live in detect_auth_mode would only stick
+        #    on the startup Settings instance, leaving per-request handlers
+        #    with default False values.)
+        _truthy = {"1", "true", "yes", "on"}
+        for _legacy, _replacement in (
+            ("ENABLE_MULTI_USER_BASIC_AUTH", "multi_user_basic"),
+            ("ENABLE_LOGIN_FLOW", "login_flow"),
+        ):
+            if os.environ.get(_legacy, "").strip().lower() in _truthy:
+                raise ValueError(
+                    f"{_legacy} is no longer read from the environment. "
+                    f"Set MCP_DEPLOYMENT_MODE={_replacement} instead "
+                    "(ADR-022). The deployment mode is the single source "
+                    "of truth for selecting an auth flow."
+                )
+
+        resolved_mode = (self.deployment_mode or "").strip().lower()
+        if not resolved_mode:
+            if self.nextcloud_username and self.nextcloud_password:
+                resolved_mode = "single_user_basic"
+            else:
+                # Default multi-user mode is Login Flow v2 (browser-based
+                # app-password acquisition); the un-augmented OAuth bearer
+                # pass-through it replaced needed unmerged Nextcloud
+                # user_oidc patches and is no longer supported.
+                resolved_mode = "login_flow"
+
+        self.enable_multi_user_basic_auth = resolved_mode == "multi_user_basic"
+        self.enable_login_flow = resolved_mode == "login_flow"
+
     def get_embedding_model_name(self) -> str:
         """
         Get the active embedding model name based on provider priority.
