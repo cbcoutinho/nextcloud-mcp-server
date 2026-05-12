@@ -313,30 +313,61 @@ MCP clients (like Claude Desktop, LLM IDEs) can connect to your server:
 
 ### Check Server Health
 
+The server exposes two Kubernetes-style probe endpoints:
+
 ```bash
-# Test if server is responding
-curl http://localhost:8000/health
+# Liveness — server process is up (always 200 if running)
+curl http://localhost:8000/health/live
 
-# Expected response: HTTP 200 OK
+# Readiness — server can reach Nextcloud and (if enabled) Qdrant
+curl http://localhost:8000/health/ready
 ```
 
-### Check OAuth Configuration
+`/health/live` returns `200 OK` as long as the process is running. `/health/ready`
+returns `200 OK` with a JSON body describing each dependency check, or `503` with
+the same JSON body listing which checks failed — use the readiness probe when
+troubleshooting connectivity to Nextcloud or Qdrant.
 
-Look for these log messages on startup:
+### Check Deployment Mode
 
-**OAuth mode:**
+The server logs the detected deployment mode on startup. Look for these
+messages in the container logs:
+
+**At server boot (all modes):**
 ```
-INFO     OAuth mode detected (NEXTCLOUD_USERNAME/PASSWORD not set)
+INFO     ✅ Configuration validated successfully for <mode> mode
+INFO     Health check endpoints enabled: /health/live, /health/ready
+```
+
+`<mode>` is one of `single_user_basic`, `multi_user_basic`, or
+`oauth_single`, matching the `MCP_DEPLOYMENT_MODE` setting.
+
+**Additional BasicAuth-mode messages (at server boot):**
+```
+INFO     Configuring MCP server for <mode> mode
+```
+
+Here `<mode>` is the enum value (`single_user_basic` or `multi_user_basic`).
+
+**Additional OAuth-mode messages (at server boot):**
+```
 INFO     Configuring MCP server for OAuth mode
-INFO     OIDC discovery successful
 INFO     OAuth client ready: <client-id>...
-INFO     OAuth initialization complete
+INFO     OAuth configuration complete
 ```
 
-**BasicAuth mode:**
+Note the OAuth boot line logs the literal string `OAuth mode`, not the enum
+value `oauth_single`.
+
+**Additional single-user BasicAuth messages (per MCP session):**
+
+These fire when the first MCP client connects, not at server boot — if you
+have just started the container and no client has connected yet, you will not
+see them in the logs:
 ```
-INFO     BasicAuth mode detected (NEXTCLOUD_USERNAME/PASSWORD set)
-INFO     Initializing Nextcloud client with BasicAuth
+INFO     Starting MCP session in single-user BasicAuth mode
+INFO     Creating shared Nextcloud client with BasicAuth
+INFO     Client initialization complete
 ```
 
 ---
@@ -416,7 +447,7 @@ Common issues:
 
 ### Can't connect to server
 
-1. Verify server is running: `curl http://localhost:8000/health`
+1. Verify server is running: `curl http://localhost:8000/health/live`
 2. Check firewall settings
 3. Verify host binding (use `0.0.0.0` to allow network access)
 4. Check OAuth authentication if enabled
