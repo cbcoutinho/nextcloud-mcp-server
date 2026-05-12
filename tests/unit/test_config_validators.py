@@ -387,7 +387,7 @@ class TestLoginFlowValidation:
         basic_settings = Settings(
             nextcloud_host="http://localhost",
             nextcloud_username="alice",
-            nextcloud_password="hunter2",
+            nextcloud_password="password",
         )
         assert basic_settings.enable_login_flow is False
         assert basic_settings.enable_multi_user_basic_auth is False

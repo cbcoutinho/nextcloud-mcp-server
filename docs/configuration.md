@@ -38,12 +38,12 @@ The server supports three deployment modes. See [Authentication](authentication.
 |------|-------------|
 | `single_user_basic` | Personal use, dev — credentials in env vars |
 | `multi_user_basic` | Internal deployments — clients send credentials via `Authorization: Basic` header |
-| `login_flow_v2` | Hosted / OAuth-based MCP clients (claude.ai, Astrolabe Cloud) — recommended for multi-user |
+| `login_flow` | Hosted / OAuth-based MCP clients (claude.ai, Astrolabe Cloud) — recommended for multi-user |
 
 You can declare the mode explicitly:
 
 ```dotenv
-MCP_DEPLOYMENT_MODE=login_flow_v2
+MCP_DEPLOYMENT_MODE=login_flow
 ```
 
 If `MCP_DEPLOYMENT_MODE` is not set, the server auto-detects from the other env vars below.

@@ -69,7 +69,7 @@ ENABLE_BACKGROUND_OPERATIONS=true
 
 **Symptom:**
 ```
-ValueError: Invalid MCP_DEPLOYMENT_MODE: 'oauth'. Valid values: single_user_basic, multi_user_basic, login_flow_v2
+ValueError: Invalid MCP_DEPLOYMENT_MODE: 'oauth'. Valid values: single_user_basic, multi_user_basic, login_flow
 ```
 
 **Cause:** Invalid value for `MCP_DEPLOYMENT_MODE`.
@@ -79,7 +79,7 @@ Use one of the valid mode values:
 ```bash
 MCP_DEPLOYMENT_MODE=single_user_basic   # Single-user with username/app password
 MCP_DEPLOYMENT_MODE=multi_user_basic    # Multi-user BasicAuth pass-through
-MCP_DEPLOYMENT_MODE=login_flow_v2       # Multi-user via Login Flow v2 (recommended)
+MCP_DEPLOYMENT_MODE=login_flow       # Multi-user via Login Flow v2 (recommended)
 ```
 
 Or remove `MCP_DEPLOYMENT_MODE` to use automatic detection.
@@ -90,7 +90,7 @@ Or remove `MCP_DEPLOYMENT_MODE` to use automatic detection.
 
 **Symptom:**
 ```
-Error: [login_flow_v2] TOKEN_ENCRYPTION_KEY is required when ENABLE_SEMANTIC_SEARCH is enabled
+Error: [login_flow] TOKEN_ENCRYPTION_KEY is required when ENABLE_SEMANTIC_SEARCH is enabled
 ```
 
 **Cause:** In multi-user modes, semantic search automatically enables background operations, which require encrypted token storage.
@@ -441,7 +441,7 @@ If problems persist, open an issue on the [GitHub repository](https://github.com
 
 - **Server logs** (with `--log-level debug`)
 - **Nextcloud version**
-- **Deployment mode** (single_user_basic / multi_user_basic / login_flow_v2)
+- **Deployment mode** (single_user_basic / multi_user_basic / login_flow)
 - **Error messages**
 - **Steps to reproduce**
 - **Environment details** (OS, Python version, Docker vs local)

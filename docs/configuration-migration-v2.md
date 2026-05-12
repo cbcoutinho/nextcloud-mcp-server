@@ -360,8 +360,7 @@ NEXTCLOUD_HOST=https://nextcloud.example.com
 |-----------|-------------|
 | `single_user_basic` | Single-user with username/password |
 | `multi_user_basic` | Multi-user with BasicAuth pass-through |
-| `login_flow` | Multi-user OAuth (recommended) |
-| `oauth_token_exchange` | Multi-user OAuth with token exchange |
+| `login_flow` | Multi-user OAuth via Login Flow v2 (recommended) |
 
 ### Mode Detection Priority
 
@@ -444,7 +443,6 @@ Server activates `login_flow` mode when you expected `multi_user_basic`
 **Solution:**
 Add explicit mode declaration:
 ```bash
-MCP_DEPLOYMENT_MODE=multi_user_basic
 MCP_DEPLOYMENT_MODE=multi_user_basic
 ```
 

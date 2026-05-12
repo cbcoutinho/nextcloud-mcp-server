@@ -456,14 +456,14 @@ class Settings:
     # Multi-user BasicAuth pass-through mode (ADR-019 interim solution).
     # Internal — not user-settable; the ENABLE_MULTI_USER_BASIC_AUTH env-var
     # alias was removed in the ADR-022 follow-up. Auto-set by
-    # detect_auth_mode() when MCP_DEPLOYMENT_MODE=multi_user_basic. When True,
+    # Settings.__post_init__ when MCP_DEPLOYMENT_MODE=multi_user_basic. When True,
     # the MCP server extracts BasicAuth credentials from request headers and
     # passes them through to Nextcloud APIs (no storage, stateless). Kept
     # as a field for backward compat with the runtime call sites that read it.
     enable_multi_user_basic_auth: bool = False
 
     # Login Flow v2 derived flag (ADR-022). Internal — not user-settable.
-    # Auto-set by detect_auth_mode() when the resolved deployment mode is
+    # Auto-set by Settings.__post_init__ when the resolved deployment mode is
     # LOGIN_FLOW. Kept as a field for backward compat with the runtime call
     # sites that read it (app.py, context.py, scope_authorization.py).
     enable_login_flow: bool = False
