@@ -56,6 +56,10 @@ _DEFAULTS: dict[str, Any] = {
     # None = ephemeral per-process tempfile (see get_token_db_path()).
     # Set TOKEN_STORAGE_DB to persist tokens across restarts.
     "token_storage_db": None,
+    # Centralized backend (any SQLAlchemy URL). Wins over TOKEN_STORAGE_DB
+    # when set. Use postgresql+asyncpg://user:pw@host/db for HA k8s
+    # deployments so pods can be stateless. See ADR-026.
+    "database_url": None,
     # Webhook delivery authentication (ADR-010): when set, registrations
     # tell NC to add `Authorization: Bearer <secret>` to webhook deliveries
     # and the receiver rejects unauthenticated requests.
@@ -277,6 +281,30 @@ def is_ephemeral_token_db(path: str) -> bool:
     site in this repo resolves the path via `get_token_db_path()` first.
     """
     return path == _ephemeral_db_path
+
+
+def get_database_url() -> str:
+    """Resolve the SQLAlchemy database URL for token storage.
+
+    Priority:
+    1. ``DATABASE_URL`` if set — any SQLAlchemy URL is accepted; the primary
+       supported backends are ``postgresql+asyncpg://...`` for HA k8s
+       deployments and ``sqlite+aiosqlite:///...`` for development.
+    2. Otherwise build ``sqlite+aiosqlite:///{get_token_db_path()}`` so the
+       legacy ``TOKEN_STORAGE_DB`` env var and the ephemeral-tempfile
+       fallback both keep working unchanged.
+    """
+    explicit = _dynaconf.get("DATABASE_URL")
+    if explicit:
+        return str(explicit)
+    return f"sqlite+aiosqlite:///{get_token_db_path()}"
+
+
+def is_sqlite_url(url: str) -> bool:
+    """Return True for SQLite SQLAlchemy URLs (used to gate sqlite-only logic
+    like file-permission hardening and ``sqlite_master`` legacy lookups).
+    """
+    return url.startswith("sqlite")
 
 
 LOGGING_CONFIG = {

@@ -5,8 +5,8 @@ import click
 import uvicorn
 
 from nextcloud_mcp_server.config import (
+    get_database_url,
     get_settings,
-    get_token_db_path,
     is_ephemeral_token_db,
 )
 from nextcloud_mcp_server.migrations import (
@@ -287,27 +287,67 @@ def db():
     pass
 
 
-def _warn_if_ephemeral(database_path: str) -> None:
-    if is_ephemeral_token_db(database_path):
+def _resolve_db_url(database_url: str | None, database_path: str | None) -> str:
+    """Pick the database URL for a CLI subcommand.
+
+    Priority: explicit ``--database-url`` > legacy ``--database-path``
+    (treated as a SQLite file) > :func:`get_database_url` (honors
+    ``DATABASE_URL`` env or falls back to the ephemeral SQLite tempfile).
+    """
+    if database_url:
+        return database_url
+    if database_path:
+        return f"sqlite+aiosqlite:///{database_path}"
+    return get_database_url()
+
+
+def _warn_if_ephemeral(database_url: str) -> None:
+    """Warn when the resolved URL is the per-process SQLite tempfile."""
+    if not database_url.startswith(
+        "sqlite+aiosqlite:///"
+    ) and not database_url.startswith("sqlite:///"):
+        return
+    path = database_url.split("///", 1)[1]
+    if is_ephemeral_token_db(path):
         click.echo(
             click.style(
-                f"⚠ Using ephemeral tempfile {database_path}; changes "
-                "will be lost on exit. Pass --database-path or set "
-                "TOKEN_STORAGE_DB to operate on a persistent database.",
+                f"⚠ Using ephemeral tempfile {path}; changes "
+                "will be lost on exit. Pass --database-url / --database-path "
+                "or set DATABASE_URL / TOKEN_STORAGE_DB to operate on a "
+                "persistent database.",
                 fg="yellow",
             ),
             err=True,
         )
 
 
+def _db_target_options(fn):
+    """Attach the shared ``--database-url`` / ``--database-path`` options.
+
+    Using a decorator factory rather than ``**kwargs`` dict-expansion so
+    static type checkers (ty) see ``click.option`` called with literal
+    keyword arguments, which is the only form it's typed to accept.
+    """
+    fn = click.option(
+        "--database-path",
+        "-d",
+        envvar="TOKEN_STORAGE_DB",
+        default=None,
+        help="SQLite database file path. Equivalent to "
+        "--database-url sqlite+aiosqlite:///<path>.",
+    )(fn)
+    fn = click.option(
+        "--database-url",
+        "-u",
+        envvar="DATABASE_URL",
+        default=None,
+        help="SQLAlchemy URL (e.g. postgresql+asyncpg://...). Wins over --database-path.",
+    )(fn)
+    return fn
+
+
 @db.command()
-@click.option(
-    "--database-path",
-    "-d",
-    envvar="TOKEN_STORAGE_DB",
-    default=None,
-    help="Path to token storage database (can also use TOKEN_STORAGE_DB env var)",
-)
+@_db_target_options
 @click.option(
     "--revision",
     "-r",
@@ -315,7 +355,7 @@ def _warn_if_ephemeral(database_path: str) -> None:
     show_default=True,
     help="Target revision (default: head for latest)",
 )
-def upgrade(database_path: str | None, revision: str):
+def upgrade(database_url: str | None, database_path: str | None, revision: str):
     """Upgrade database to a specific revision.
 
     \b
@@ -323,17 +363,17 @@ def upgrade(database_path: str | None, revision: str):
       # Upgrade to latest version
       $ nextcloud-mcp-server db upgrade
 
-      # Upgrade to specific revision
-      $ nextcloud-mcp-server db upgrade --revision 001
+      # Upgrade a Postgres backend
+      $ nextcloud-mcp-server db upgrade -u postgresql+asyncpg://mcp:mcp@db/mcp
 
-      # Use custom database path
+      # Use custom SQLite path
       $ nextcloud-mcp-server db upgrade -d /path/to/tokens.db
     """
-    database_path = database_path or get_token_db_path()
-    _warn_if_ephemeral(database_path)
+    url = _resolve_db_url(database_url, database_path)
+    _warn_if_ephemeral(url)
     try:
         click.echo(f"Upgrading database to revision: {revision}")
-        upgrade_database(database_path, revision)
+        upgrade_database(url, revision)
         click.echo(click.style("✓ Database upgraded successfully", fg="green"))
     except Exception as e:
         click.echo(click.style(f"✗ Upgrade failed: {e}", fg="red"), err=True)
@@ -341,13 +381,7 @@ def upgrade(database_path: str | None, revision: str):
 
 
 @db.command()
-@click.option(
-    "--database-path",
-    "-d",
-    envvar="TOKEN_STORAGE_DB",
-    default=None,
-    help="Path to token storage database",
-)
+@_db_target_options
 @click.option(
     "--revision",
     "-r",
@@ -358,27 +392,16 @@ def upgrade(database_path: str | None, revision: str):
 @click.confirmation_option(
     prompt="Are you sure you want to downgrade the database? This may result in data loss."
 )
-def downgrade(database_path: str | None, revision: str):
+def downgrade(database_url: str | None, database_path: str | None, revision: str):
     """Downgrade database to a specific revision.
 
     WARNING: This may result in data loss! Use with caution.
-
-    \b
-    Examples:
-      # Downgrade by one version
-      $ nextcloud-mcp-server db downgrade
-
-      # Downgrade to specific revision
-      $ nextcloud-mcp-server db downgrade --revision 001
-
-      # Downgrade to base (empty database)
-      $ nextcloud-mcp-server db downgrade --revision base
     """
-    database_path = database_path or get_token_db_path()
-    _warn_if_ephemeral(database_path)
+    url = _resolve_db_url(database_url, database_path)
+    _warn_if_ephemeral(url)
     try:
         click.echo(f"Downgrading database to revision: {revision}")
-        downgrade_database(database_path, revision)
+        downgrade_database(url, revision)
         click.echo(click.style("✓ Database downgraded successfully", fg="green"))
     except Exception as e:
         click.echo(click.style(f"✗ Downgrade failed: {e}", fg="red"), err=True)
@@ -386,24 +409,13 @@ def downgrade(database_path: str | None, revision: str):
 
 
 @db.command()
-@click.option(
-    "--database-path",
-    "-d",
-    envvar="TOKEN_STORAGE_DB",
-    default=None,
-    help="Path to token storage database",
-)
-def current(database_path: str | None):
-    """Show current database revision.
-
-    \b
-    Example:
-      $ nextcloud-mcp-server db current
-    """
-    database_path = database_path or get_token_db_path()
-    _warn_if_ephemeral(database_path)
+@_db_target_options
+def current(database_url: str | None, database_path: str | None):
+    """Show current database revision."""
+    url = _resolve_db_url(database_url, database_path)
+    _warn_if_ephemeral(url)
     try:
-        revision = get_current_revision(database_path)
+        revision = get_current_revision(url)
         if revision:
             click.echo(f"Current revision: {click.style(revision, fg='cyan')}")
         else:
@@ -420,25 +432,14 @@ def current(database_path: str | None):
 
 
 @db.command()
-@click.option(
-    "--database-path",
-    "-d",
-    envvar="TOKEN_STORAGE_DB",
-    default=None,
-    help="Path to token storage database",
-)
-def history(database_path: str | None):
-    """Show migration history.
-
-    \b
-    Example:
-      $ nextcloud-mcp-server db history
-    """
-    database_path = database_path or get_token_db_path()
-    _warn_if_ephemeral(database_path)
+@_db_target_options
+def history(database_url: str | None, database_path: str | None):
+    """Show migration history."""
+    url = _resolve_db_url(database_url, database_path)
+    _warn_if_ephemeral(url)
     try:
         click.echo("Migration history:")
-        show_migration_history(database_path)
+        show_migration_history(url)
     except Exception as e:
         click.echo(click.style(f"✗ Failed to show history: {e}", fg="red"), err=True)
         raise click.ClickException(str(e))

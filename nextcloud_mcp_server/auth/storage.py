@@ -31,20 +31,230 @@ import os
 import socket
 import sqlite3
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-import aiosqlite
 import anyio
 import httpx
+import sqlalchemy as sa
 from anyio import to_thread
 from cryptography.fernet import Fernet
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
+from sqlalchemy.pool import NullPool
 
-from nextcloud_mcp_server.config import get_token_db_path, is_ephemeral_token_db
+from nextcloud_mcp_server.config import (
+    get_database_url,
+    is_ephemeral_token_db,
+    is_sqlite_url,
+)
 from nextcloud_mcp_server.migrations import stamp_database, upgrade_database
 from nextcloud_mcp_server.observability.metrics import record_db_operation
 
 logger = logging.getLogger(__name__)
+
+
+def _qmark_to_named(sql: str) -> tuple[str, list[str]]:
+    """Rewrite ``?`` positional placeholders to ``:p0, :p1, ...`` named binds.
+
+    SQLAlchemy's :func:`text` only supports named bind parameters, so the
+    aiosqlite-style call sites (which use ``?``) are translated as they
+    cross the shim. The rewriter preserves ``?`` characters inside SQL
+    string literals; comments are not currently respected but the storage
+    layer doesn't put ``?`` inside comments.
+    """
+    out: list[str] = []
+    names: list[str] = []
+    i = 0
+    in_str = False
+    quote = ""
+    n = 0
+    while i < len(sql):
+        ch = sql[i]
+        if in_str:
+            out.append(ch)
+            if ch == quote:
+                # SQL string escapes ('' or "") — stay in string mode.
+                if i + 1 < len(sql) and sql[i + 1] == quote:
+                    out.append(quote)
+                    i += 2
+                    continue
+                in_str = False
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            in_str = True
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "?":
+            name = f"p{n}"
+            out.append(f":{name}")
+            names.append(name)
+            n += 1
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out), names
+
+
+class _Row:
+    """Hybrid tuple/dict row mirroring ``aiosqlite.Row`` semantics.
+
+    The legacy SQLite-direct call sites use a mix of access patterns:
+    positional unpacking (``a, b, c = row``), indexed access (``row[0]``),
+    and dict-like access (``row["col"]``, ``dict(row)``) when
+    ``db.row_factory = aiosqlite.Row`` is set. To avoid touching every call
+    site, every row returned by :class:`_Cursor` is wrapped in this hybrid
+    object so all three patterns keep working.
+    """
+
+    __slots__ = ("_values", "_mapping")
+
+    def __init__(self, values: tuple, mapping: dict) -> None:
+        self._values = values
+        self._mapping = mapping
+
+    def __getitem__(self, key):
+        if isinstance(key, (int, slice)):
+            return self._values[key]
+        return self._mapping[key]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def keys(self):
+        return self._mapping.keys()
+
+    def values(self):
+        return self._mapping.values()
+
+    def items(self):
+        return self._mapping.items()
+
+
+def _wrap_row(row) -> _Row | None:
+    if row is None:
+        return None
+    return _Row(tuple(row), dict(row._mapping))
+
+
+def _wrap_rows(rows) -> list[_Row]:
+    """Wrap a list of SQLAlchemy rows; iterator never yields ``None``."""
+    return [_Row(tuple(r), dict(r._mapping)) for r in rows]
+
+
+class _Cursor:
+    """aiosqlite-compatible cursor view over a SQLAlchemy CursorResult.
+
+    Existing storage methods iterate cursors via ``async with db.execute(...)
+    as cursor: row = await cursor.fetchone()``. SQLAlchemy returns a
+    synchronous :class:`Result` from an async ``execute``; this shim adds the
+    async context-manager / async-fetch surface so call sites are unchanged.
+
+    ``rowcount`` is captured eagerly at construction time. ``lastrowid`` is
+    intentionally NOT exposed: accessing ``CursorResult.lastrowid`` on the
+    asyncpg dialect consumes the result buffer, which would silently turn
+    every subsequent ``fetchall()`` into an empty list (a real bug hit
+    during the Postgres port).
+    """
+
+    __slots__ = ("_result", "rowcount")
+
+    def __init__(self, result: sa.CursorResult) -> None:
+        self._result = result
+        # ``rowcount`` is -1 for SELECTs in SQLAlchemy; existing code only
+        # reads it after writes (DELETE/UPDATE) where it is accurate.
+        self.rowcount = result.rowcount
+
+    async def fetchone(self) -> _Row | None:
+        return _wrap_row(self._result.fetchone())
+
+    async def fetchall(self) -> list[_Row]:
+        return _wrap_rows(self._result.fetchall())
+
+    async def __aenter__(self) -> "_Cursor":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        # SQLAlchemy Result closes when the connection closes; no-op here.
+        return None
+
+
+class _ExecuteCtx:
+    """Hybrid awaitable + async context manager for ``db.execute(...)``.
+
+    Aiosqlite call sites use both forms interchangeably::
+
+        cursor = await db.execute(sql, params)
+        async with db.execute(sql, params) as cursor: ...
+
+    so the return value must be awaitable (resolves to a cursor) AND a
+    one-shot async context manager (executes on ``__aenter__`` and returns
+    the cursor). This wrapper provides both surfaces without executing the
+    SQL twice — the cursor is cached after the first resolution.
+    """
+
+    __slots__ = ("_conn", "_sql", "_params", "_cursor")
+
+    def __init__(self, conn: AsyncConnection, sql: str, params: tuple | list) -> None:
+        self._conn = conn
+        self._sql = sql
+        self._params = params
+        self._cursor: _Cursor | None = None
+
+    async def _resolve(self) -> _Cursor:
+        if self._cursor is not None:
+            return self._cursor
+        text_sql, names = _qmark_to_named(self._sql)
+        if len(names) != len(self._params):
+            raise ValueError(
+                f"Placeholder count mismatch: SQL has {len(names)} '?' "
+                f"but got {len(self._params)} params"
+            )
+        bind = dict(zip(names, self._params, strict=True))
+        result = await self._conn.execute(sa.text(text_sql), bind)
+        self._cursor = _Cursor(result)
+        return self._cursor
+
+    def __await__(self):
+        return self._resolve().__await__()
+
+    async def __aenter__(self) -> _Cursor:
+        return await self._resolve()
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+class _DBConn:
+    """aiosqlite-compatible wrapper around a SQLAlchemy AsyncConnection.
+
+    Provides ``execute`` (with ``?`` placeholders, returning a hybrid
+    awaitable/context-manager :class:`_ExecuteCtx`) and ``commit`` so the
+    existing storage method bodies need no churn beyond swapping the
+    connection context-manager. Wraps results in :class:`_Cursor` for the
+    fetchone/fetchall/rowcount surface the call sites already use.
+
+    ``row_factory`` is accepted as a setter for source compatibility with
+    aiosqlite call sites but is ignored: every row is already wrapped in
+    :class:`_Row` so dict-style access works unconditionally.
+    """
+
+    def __init__(self, conn: AsyncConnection) -> None:
+        self._conn = conn
+        self.row_factory = None  # set by aiosqlite-shaped call sites; ignored
+
+    def execute(self, sql: str, params: tuple | list = ()) -> _ExecuteCtx:
+        return _ExecuteCtx(self._conn, sql, params)
+
+    async def commit(self) -> None:
+        await self._conn.commit()
 
 
 class RefreshTokenStorage:
@@ -65,17 +275,41 @@ class RefreshTokenStorage:
     Token-related operations require TOKEN_ENCRYPTION_KEY, but webhook operations do not.
     """
 
-    def __init__(self, db_path: str, encryption_key: bytes | None = None):
+    def __init__(
+        self,
+        database_url: str | None = None,
+        encryption_key: bytes | None = None,
+        *,
+        db_path: str | None = None,
+    ):
         """
         Initialize persistent storage.
 
         Args:
-            db_path: Path to SQLite database file
+            database_url: SQLAlchemy URL (``sqlite+aiosqlite:///...`` or
+                ``postgresql+asyncpg://...``). When omitted, falls back to
+                :func:`get_database_url` (honors ``DATABASE_URL`` env, then
+                ``TOKEN_STORAGE_DB``).
             encryption_key: Optional Fernet encryption key (32 bytes, base64-encoded).
-                          Required for token storage operations, not required for webhook tracking.
+                Required for token storage operations, not required for webhook tracking.
+            db_path: Deprecated SQLite-only constructor argument retained for
+                tests that pass a tempfile path. Internally converted to
+                ``sqlite+aiosqlite:///{db_path}``.
         """
-        self.db_path = db_path
+        if database_url is None and db_path is not None:
+            database_url = f"sqlite+aiosqlite:///{db_path}"
+        if database_url is None:
+            database_url = get_database_url()
+        self.database_url = database_url
+        # Legacy attribute retained for sqlite-only code paths (file perms,
+        # ephemeral tempfile detection, log messages). Empty string for
+        # non-sqlite URLs so accidental file ops fail loudly.
+        self.db_path = (
+            database_url.split("///", 1)[1] if is_sqlite_url(database_url) else ""
+        )
         self.cipher = Fernet(encryption_key) if encryption_key else None
+        self.engine: AsyncEngine | None = None
+        self._dialect: str = "unknown"
         self._initialized = False
 
     @classmethod
@@ -84,10 +318,14 @@ class RefreshTokenStorage:
         Create storage instance from environment variables.
 
         Environment variables:
-            TOKEN_STORAGE_DB: Path to database file. If unset, a per-process
-                tempfile is allocated and deleted at interpreter exit —
-                tokens are ephemeral and wiped on restart. Set this to a
-                filesystem path to persist tokens across restarts.
+            DATABASE_URL: SQLAlchemy URL for any supported backend. Wins
+                over ``TOKEN_STORAGE_DB`` when set. Use
+                ``postgresql+asyncpg://user:pw@host/db`` for HA k8s
+                deployments. See ADR-026.
+            TOKEN_STORAGE_DB: Legacy SQLite-only path. If unset and
+                ``DATABASE_URL`` is also unset, a per-process tempfile is
+                allocated and deleted at interpreter exit — tokens are
+                ephemeral and wiped on restart.
             TOKEN_ENCRYPTION_KEY: Optional base64-encoded Fernet key (required for token storage)
 
         Returns:
@@ -97,13 +335,17 @@ class RefreshTokenStorage:
             If TOKEN_ENCRYPTION_KEY is not set, token storage operations will fail,
             but webhook tracking will still work.
         """
-        db_path = get_token_db_path()
-        if is_ephemeral_token_db(db_path):
-            logger.info(
-                "Using ephemeral token storage at %s "
-                "(set TOKEN_STORAGE_DB to persist tokens across restarts)",
-                db_path,
-            )
+        database_url = get_database_url()
+        if is_sqlite_url(database_url):
+            sqlite_path = database_url.split("///", 1)[1]
+            if is_ephemeral_token_db(sqlite_path):
+                logger.info(
+                    "Using ephemeral token storage at %s "
+                    "(set DATABASE_URL or TOKEN_STORAGE_DB to persist tokens across restarts)",
+                    sqlite_path,
+                )
+        else:
+            logger.info("Using centralized token storage at %s", database_url)
         encryption_key_b64 = os.getenv("TOKEN_ENCRYPTION_KEY")
 
         encryption_key = None
@@ -130,7 +372,7 @@ class RefreshTokenStorage:
                 "but webhook tracking will still work"
             )
 
-        return cls(db_path=db_path, encryption_key=encryption_key)
+        return cls(database_url=database_url, encryption_key=encryption_key)
 
     async def initialize(self) -> None:
         """
@@ -151,7 +393,9 @@ class RefreshTokenStorage:
         if self._initialized:
             return
 
-        if sqlite3.sqlite_version_info < (3, 35):
+        is_sqlite = is_sqlite_url(self.database_url)
+
+        if is_sqlite and sqlite3.sqlite_version_info < (3, 35):
             raise RuntimeError(
                 "SQLite >= 3.35 is required (DELETE ... RETURNING is used "
                 "by delete_browser_session); detected "
@@ -159,63 +403,85 @@ class RefreshTokenStorage:
                 "image with a newer bundled libsqlite3."
             )
 
-        # Ensure directory exists
-        db_dir = Path(self.db_path).parent
-        db_dir.mkdir(parents=True, exist_ok=True)
+        if is_sqlite:
+            # File-permission hardening + parent dir creation is sqlite-only;
+            # centralized backends manage their own filesystem.
+            db_dir = Path(self.db_path).parent
+            db_dir.mkdir(parents=True, exist_ok=True)
+            if Path(self.db_path).exists():
+                os.chmod(self.db_path, 0o600)
 
-        # Set restrictive permissions on database file if it exists
-        if Path(self.db_path).exists():
-            os.chmod(self.db_path, 0o600)
-
-        # Check database state and run appropriate migration strategy
-        async with aiosqlite.connect(self.db_path) as db:
-            # Check if database is managed by Alembic
-            cursor = await db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'"
+        # Create the shared async engine for the chosen backend. SQLite uses
+        # NullPool (per-call connections, matches the prior aiosqlite-direct
+        # behavior); Postgres uses the default pool with pre-ping so dropped
+        # connections from idle k8s networks are retried transparently.
+        if is_sqlite:
+            self.engine = create_async_engine(
+                self.database_url,
+                poolclass=NullPool,
+                connect_args={"check_same_thread": False},
+                future=True,
             )
-            has_alembic = await cursor.fetchone() is not None
+        else:
+            self.engine = create_async_engine(
+                self.database_url,
+                pool_size=10,
+                max_overflow=20,
+                pool_pre_ping=True,
+                future=True,
+            )
+        self._dialect = self.engine.dialect.name
 
-            if not has_alembic:
-                # Check if this is a pre-Alembic database with existing schema
-                cursor = await db.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='refresh_tokens'"
-                )
-                has_schema = await cursor.fetchone() is not None
+        # Check database state with the SQLAlchemy inspector so the legacy
+        # ``sqlite_master`` lookup works against either backend.
+        def _inspect(sync_conn: sa.Connection) -> tuple[bool, bool]:
+            insp = sa.inspect(sync_conn)
+            tables = set(insp.get_table_names())
+            return ("alembic_version" in tables), ("refresh_tokens" in tables)
 
-                if has_schema:
-                    logger.info(
-                        "Detected pre-Alembic database at %s, stamping with initial revision",
-                        self.db_path,
-                    )
-                else:
-                    logger.info(
-                        "Initializing new database at %s with migrations", self.db_path
-                    )
+        async with self.engine.connect() as conn:
+            has_alembic, has_schema = await conn.run_sync(_inspect)
 
-        # Run migrations in a worker thread using anyio.to_thread
-        # This allows Alembic to run its own async operations in a separate context
         if not has_alembic:
             if has_schema:
-                # Stamp existing database without running migrations
-                await to_thread.run_sync(stamp_database, self.db_path, "001")
+                logger.info(
+                    "Detected pre-Alembic database at %s, stamping with initial revision",
+                    self.database_url,
+                )
+                await to_thread.run_sync(stamp_database, self.database_url, "001")
                 logger.info(
                     "Pre-Alembic database stamped successfully. "
                     "Future schema changes will use migrations."
                 )
             else:
-                # New database - run migrations
-                await to_thread.run_sync(upgrade_database, self.db_path, "head")
+                logger.info(
+                    "Initializing new database at %s with migrations",
+                    self.database_url,
+                )
+                await to_thread.run_sync(upgrade_database, self.database_url, "head")
                 logger.info("Database initialized with migrations")
         else:
-            # Alembic-managed database - upgrade to latest
-            await to_thread.run_sync(upgrade_database, self.db_path, "head")
+            await to_thread.run_sync(upgrade_database, self.database_url, "head")
             logger.info("Database upgraded to latest version")
 
-        # Set restrictive permissions after initialization
-        os.chmod(self.db_path, 0o600)
+        if is_sqlite:
+            os.chmod(self.db_path, 0o600)
 
         self._initialized = True
-        logger.info("Initialized refresh token storage at %s", self.db_path)
+        logger.info("Initialized refresh token storage at %s", self.database_url)
+
+    @asynccontextmanager
+    async def _db(self):
+        """Open a backend-agnostic connection.
+
+        Yields a :class:`_DBConn` that mimics aiosqlite's API (``execute`` with
+        ``?`` placeholders, ``commit``, cursor with ``fetchone`` /
+        ``fetchall`` / ``rowcount``) so the existing storage method bodies
+        work against either SQLite or Postgres without per-call rewrites.
+        """
+        assert self.engine is not None, "RefreshTokenStorage.initialize() not called"
+        async with self.engine.connect() as conn:
+            yield _DBConn(conn)
 
     async def store_refresh_token(
         self,
@@ -260,20 +526,30 @@ class RefreshTokenStorage:
 
         start_time = time.time()
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._db() as db:
+                # ON CONFLICT DO UPDATE preserves ``created_at`` (it's not
+                # listed in the update clause) so the original
+                # COALESCE(...)-based INSERT OR REPLACE semantics are kept.
                 await db.execute(
                     """
-                    INSERT OR REPLACE INTO refresh_tokens
+                    INSERT INTO refresh_tokens
                     (user_id, encrypted_token, expires_at, created_at, updated_at,
                      flow_type, token_audience, provisioned_at, provisioning_client_id, scopes)
-                    VALUES (?, ?, ?, COALESCE((SELECT created_at FROM refresh_tokens WHERE user_id = ?), ?), ?,
-                            ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        encrypted_token = EXCLUDED.encrypted_token,
+                        expires_at = EXCLUDED.expires_at,
+                        updated_at = EXCLUDED.updated_at,
+                        flow_type = EXCLUDED.flow_type,
+                        token_audience = EXCLUDED.token_audience,
+                        provisioned_at = EXCLUDED.provisioned_at,
+                        provisioning_client_id = EXCLUDED.provisioning_client_id,
+                        scopes = EXCLUDED.scopes
                     """,
                     (
                         user_id,
                         encrypted_token,
                         expires_at,
-                        user_id,
                         now,
                         now,
                         flow_type,
@@ -285,7 +561,7 @@ class RefreshTokenStorage:
                 )
                 await db.commit()
             duration = time.time() - start_time
-            record_db_operation("sqlite", "insert", duration, "success")
+            record_db_operation(self._dialect, "insert", duration, "success")
 
             logger.info(
                 f"Stored refresh token for user {user_id}"
@@ -293,7 +569,7 @@ class RefreshTokenStorage:
             )
         except Exception:
             duration = time.time() - start_time
-            record_db_operation("sqlite", "insert", duration, "error")
+            record_db_operation(self._dialect, "insert", duration, "error")
             raise
 
         # Audit log
@@ -322,7 +598,7 @@ class RefreshTokenStorage:
         profile_json = json.dumps(profile_data)
         now = int(time.time())
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             await db.execute(
                 """
                 UPDATE refresh_tokens
@@ -351,7 +627,7 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             async with db.execute(
                 """
                 SELECT user_profile, profile_cached_at
@@ -407,7 +683,7 @@ class RefreshTokenStorage:
 
         start_time = time.time()
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._db() as db:
                 async with db.execute(
                     """
                     SELECT encrypted_token, expires_at, flow_type, token_audience,
@@ -421,7 +697,7 @@ class RefreshTokenStorage:
             if not row:
                 logger.debug("No refresh token found for user %s", user_id)
                 duration = time.time() - start_time
-                record_db_operation("sqlite", "select", duration, "success")
+                record_db_operation(self._dialect, "select", duration, "success")
                 return None
 
             (
@@ -443,7 +719,7 @@ class RefreshTokenStorage:
                 )
                 await self.delete_refresh_token(user_id)
                 duration = time.time() - start_time
-                record_db_operation("sqlite", "select", duration, "success")
+                record_db_operation(self._dialect, "select", duration, "success")
                 return None
 
             decrypted_token = self.cipher.decrypt(encrypted_token).decode()
@@ -456,7 +732,7 @@ class RefreshTokenStorage:
             )
 
             duration = time.time() - start_time
-            record_db_operation("sqlite", "select", duration, "success")
+            record_db_operation(self._dialect, "select", duration, "success")
 
             return {
                 "refresh_token": decrypted_token,
@@ -470,7 +746,7 @@ class RefreshTokenStorage:
             }
         except Exception as e:
             duration = time.time() - start_time
-            record_db_operation("sqlite", "select", duration, "error")
+            record_db_operation(self._dialect, "select", duration, "error")
             logger.error("Failed to decrypt refresh token for user %s: %s", user_id, e)
             return None
 
@@ -502,7 +778,7 @@ class RefreshTokenStorage:
                 "TOKEN_ENCRYPTION_KEY is not set — token storage operations unavailable"
             )
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             async with db.execute(
                 """
                 SELECT user_id, encrypted_token, expires_at, flow_type, token_audience,
@@ -582,7 +858,7 @@ class RefreshTokenStorage:
 
         start_time = time.time()
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._db() as db:
                 cursor = await db.execute(
                     "DELETE FROM refresh_tokens WHERE user_id = ?",
                     (user_id,),
@@ -591,7 +867,7 @@ class RefreshTokenStorage:
                 deleted = cursor.rowcount > 0
 
             duration = time.time() - start_time
-            record_db_operation("sqlite", "delete", duration, "success")
+            record_db_operation(self._dialect, "delete", duration, "success")
 
             if deleted:
                 logger.info("Deleted refresh token for user %s", user_id)
@@ -606,7 +882,7 @@ class RefreshTokenStorage:
             return deleted
         except Exception:
             duration = time.time() - start_time
-            record_db_operation("sqlite", "delete", duration, "error")
+            record_db_operation(self._dialect, "delete", duration, "error")
             raise
 
     async def get_all_user_ids(self) -> list[str]:
@@ -619,7 +895,7 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             async with db.execute(
                 "SELECT user_id FROM refresh_tokens ORDER BY updated_at DESC"
             ) as cursor:
@@ -641,7 +917,7 @@ class RefreshTokenStorage:
 
         now = int(time.time())
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             cursor = await db.execute(
                 "DELETE FROM refresh_tokens WHERE expires_at IS NOT NULL AND expires_at < ?",
                 (now,),
@@ -700,18 +976,25 @@ class RefreshTokenStorage:
         redirect_uris_json = json.dumps(redirect_uris)
         now = int(time.time())
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
+            # Singleton row pinned at id=1; ON CONFLICT preserves the
+            # original ``created_at`` because it's omitted from the update.
             await db.execute(
                 """
-                INSERT OR REPLACE INTO oauth_clients
+                INSERT INTO oauth_clients
                 (id, client_id, encrypted_client_secret, client_id_issued_at,
                  client_secret_expires_at, redirect_uris, encrypted_registration_access_token,
                  registration_client_uri, created_at, updated_at)
-                VALUES (
-                    1, ?, ?, ?, ?, ?, ?, ?,
-                    COALESCE((SELECT created_at FROM oauth_clients WHERE id = 1), ?),
-                    ?
-                )
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET
+                    client_id = EXCLUDED.client_id,
+                    encrypted_client_secret = EXCLUDED.encrypted_client_secret,
+                    client_id_issued_at = EXCLUDED.client_id_issued_at,
+                    client_secret_expires_at = EXCLUDED.client_secret_expires_at,
+                    redirect_uris = EXCLUDED.redirect_uris,
+                    encrypted_registration_access_token = EXCLUDED.encrypted_registration_access_token,
+                    registration_client_uri = EXCLUDED.registration_client_uri,
+                    updated_at = EXCLUDED.updated_at
                 """,
                 (
                     client_id,
@@ -768,7 +1051,7 @@ class RefreshTokenStorage:
                 "TOKEN_ENCRYPTION_KEY is not set — token storage operations unavailable"
             )
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             async with db.execute(
                 """
                 SELECT client_id, encrypted_client_secret, client_id_issued_at,
@@ -841,7 +1124,7 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             cursor = await db.execute("DELETE FROM oauth_clients WHERE id = 1")
             await db.commit()
             deleted = cursor.rowcount > 0
@@ -868,7 +1151,7 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             async with db.execute(
                 "SELECT client_secret_expires_at FROM oauth_clients WHERE id = 1"
             ) as cursor:
@@ -902,7 +1185,7 @@ class RefreshTokenStorage:
         hostname = socket.gethostname()
         timestamp = int(time.time())
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             await db.execute(
                 """
                 INSERT INTO audit_logs
@@ -955,8 +1238,7 @@ class RefreshTokenStorage:
         query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
 
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
+        async with self._db() as db:
             async with db.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
 
@@ -1001,7 +1283,7 @@ class RefreshTokenStorage:
         now = int(time.time())
         expires_at = now + ttl_seconds
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             await db.execute(
                 """
                 INSERT INTO oauth_sessions
@@ -1042,8 +1324,7 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
+        async with self._db() as db:
             async with db.execute(
                 "SELECT * FROM oauth_sessions WHERE session_id = ?", (session_id,)
             ) as cursor:
@@ -1074,8 +1355,7 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
+        async with self._db() as db:
             async with db.execute(
                 "SELECT * FROM oauth_sessions WHERE mcp_authorization_code = ?",
                 (mcp_authorization_code,),
@@ -1134,7 +1414,7 @@ class RefreshTokenStorage:
 
         params.append(session_id)
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             cursor = await db.execute(
                 f"""
                 UPDATE oauth_sessions
@@ -1161,7 +1441,7 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             cursor = await db.execute(
                 "DELETE FROM oauth_sessions WHERE session_id = ?", (session_id,)
             )
@@ -1185,7 +1465,7 @@ class RefreshTokenStorage:
 
         now = int(time.time())
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             cursor = await db.execute(
                 "DELETE FROM oauth_sessions WHERE expires_at < ?", (now,)
             )
@@ -1220,12 +1500,16 @@ class RefreshTokenStorage:
         now = int(time.time())
         expires_at = now + ttl_seconds
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             await db.execute(
                 """
-                INSERT OR REPLACE INTO browser_sessions
+                INSERT INTO browser_sessions
                 (session_id, user_id, created_at, expires_at)
                 VALUES (?, ?, ?, ?)
+                ON CONFLICT (session_id) DO UPDATE SET
+                    user_id = EXCLUDED.user_id,
+                    created_at = EXCLUDED.created_at,
+                    expires_at = EXCLUDED.expires_at
                 """,
                 (session_id, user_id, now, expires_at),
             )
@@ -1257,8 +1541,7 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
+        async with self._db() as db:
             async with db.execute(
                 "SELECT user_id, expires_at FROM browser_sessions WHERE session_id = ?",
                 (session_id,),
@@ -1285,7 +1568,7 @@ class RefreshTokenStorage:
         # concurrent delete that empties the row between SELECT and DELETE
         # (PR #758 round-3 review).
         user_id: str | None = None
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             async with db.execute(
                 "DELETE FROM browser_sessions WHERE session_id = ? RETURNING user_id",
                 (session_id,),
@@ -1319,7 +1602,7 @@ class RefreshTokenStorage:
 
         now = int(time.time())
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             cursor = await db.execute(
                 "DELETE FROM browser_sessions WHERE expires_at < ?", (now,)
             )
@@ -1346,9 +1629,15 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             await db.execute(
-                "INSERT OR REPLACE INTO registered_webhooks (webhook_id, preset_id, created_at) VALUES (?, ?, ?)",
+                """
+                INSERT INTO registered_webhooks (webhook_id, preset_id, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT (webhook_id) DO UPDATE SET
+                    preset_id = EXCLUDED.preset_id,
+                    created_at = EXCLUDED.created_at
+                """,
                 (webhook_id, preset_id, time.time()),
             )
             await db.commit()
@@ -1368,7 +1657,7 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             cursor = await db.execute(
                 "SELECT webhook_id FROM registered_webhooks WHERE preset_id = ?",
                 (preset_id,),
@@ -1390,7 +1679,7 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             cursor = await db.execute(
                 "DELETE FROM registered_webhooks WHERE webhook_id = ?", (webhook_id,)
             )
@@ -1412,7 +1701,7 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             cursor = await db.execute(
                 "SELECT webhook_id, preset_id, created_at FROM registered_webhooks ORDER BY created_at DESC"
             )
@@ -1436,7 +1725,7 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             cursor = await db.execute(
                 "DELETE FROM registered_webhooks WHERE preset_id = ?", (preset_id,)
             )
@@ -1478,29 +1767,27 @@ class RefreshTokenStorage:
 
         start_time = time.time()
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._db() as db:
                 await db.execute(
                     """
-                    INSERT OR REPLACE INTO app_passwords
+                    INSERT INTO app_passwords
                     (user_id, encrypted_password, created_at, updated_at)
-                    VALUES (
-                        ?,
-                        ?,
-                        COALESCE((SELECT created_at FROM app_passwords WHERE user_id = ?), ?),
-                        ?
-                    )
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        encrypted_password = EXCLUDED.encrypted_password,
+                        updated_at = EXCLUDED.updated_at
                     """,
-                    (user_id, encrypted_password, user_id, now, now),
+                    (user_id, encrypted_password, now, now),
                 )
                 await db.commit()
 
             duration = time.time() - start_time
-            record_db_operation("sqlite", "insert", duration, "success")
+            record_db_operation(self._dialect, "insert", duration, "success")
             logger.info("Stored app password for user %s", user_id)
 
         except Exception:
             duration = time.time() - start_time
-            record_db_operation("sqlite", "insert", duration, "error")
+            record_db_operation(self._dialect, "insert", duration, "error")
             raise
 
         # Audit log
@@ -1531,7 +1818,7 @@ class RefreshTokenStorage:
 
         start_time = time.time()
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._db() as db:
                 async with db.execute(
                     "SELECT encrypted_password FROM app_passwords WHERE user_id = ?",
                     (user_id,),
@@ -1541,21 +1828,21 @@ class RefreshTokenStorage:
             if not row:
                 logger.debug("No app password found for user %s", user_id)
                 duration = time.time() - start_time
-                record_db_operation("sqlite", "select", duration, "success")
+                record_db_operation(self._dialect, "select", duration, "success")
                 return None
 
             encrypted_password = row[0]
             decrypted_password = self.cipher.decrypt(encrypted_password).decode()
 
             duration = time.time() - start_time
-            record_db_operation("sqlite", "select", duration, "success")
+            record_db_operation(self._dialect, "select", duration, "success")
             logger.debug("Retrieved app password for user %s", user_id)
 
             return decrypted_password
 
         except Exception as e:
             duration = time.time() - start_time
-            record_db_operation("sqlite", "select", duration, "error")
+            record_db_operation(self._dialect, "select", duration, "error")
             logger.error("Failed to decrypt app password for user %s: %s", user_id, e)
             return None
 
@@ -1574,7 +1861,7 @@ class RefreshTokenStorage:
 
         start_time = time.time()
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._db() as db:
                 cursor = await db.execute(
                     "DELETE FROM app_passwords WHERE user_id = ?",
                     (user_id,),
@@ -1583,7 +1870,7 @@ class RefreshTokenStorage:
                 deleted = cursor.rowcount > 0
 
             duration = time.time() - start_time
-            record_db_operation("sqlite", "delete", duration, "success")
+            record_db_operation(self._dialect, "delete", duration, "success")
 
             if deleted:
                 logger.info("Deleted app password for user %s", user_id)
@@ -1599,7 +1886,7 @@ class RefreshTokenStorage:
 
         except Exception:
             duration = time.time() - start_time
-            record_db_operation("sqlite", "delete", duration, "error")
+            record_db_operation(self._dialect, "delete", duration, "error")
             raise
 
     async def get_all_app_password_user_ids(self) -> list[str]:
@@ -1612,7 +1899,7 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._db() as db:
             async with db.execute(
                 "SELECT user_id FROM app_passwords ORDER BY updated_at DESC"
             ) as cursor:
@@ -1732,24 +2019,21 @@ class RefreshTokenStorage:
 
         start_time = time.time()
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._db() as db:
                 await db.execute(
                     """
-                    INSERT OR REPLACE INTO app_passwords
+                    INSERT INTO app_passwords
                     (user_id, encrypted_password, created_at, updated_at, scopes, username)
-                    VALUES (
-                        ?,
-                        ?,
-                        COALESCE((SELECT created_at FROM app_passwords WHERE user_id = ?), ?),
-                        ?,
-                        ?,
-                        ?
-                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        encrypted_password = EXCLUDED.encrypted_password,
+                        updated_at = EXCLUDED.updated_at,
+                        scopes = EXCLUDED.scopes,
+                        username = EXCLUDED.username
                     """,
                     (
                         user_id,
                         encrypted_password,
-                        user_id,
                         now,
                         now,
                         scopes_json,
@@ -1759,7 +2043,7 @@ class RefreshTokenStorage:
                 await db.commit()
 
             duration = time.time() - start_time
-            record_db_operation("sqlite", "insert", duration, "success")
+            record_db_operation(self._dialect, "insert", duration, "success")
             logger.info(
                 "Stored scoped app password for user %s (scopes=%s, username=%s)",
                 user_id,
@@ -1769,7 +2053,7 @@ class RefreshTokenStorage:
 
         except Exception:
             duration = time.time() - start_time
-            record_db_operation("sqlite", "insert", duration, "error")
+            record_db_operation(self._dialect, "insert", duration, "error")
             raise
 
         await self._audit_log(
@@ -1799,7 +2083,7 @@ class RefreshTokenStorage:
 
         start_time = time.time()
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._db() as db:
                 async with db.execute(
                     """
                     SELECT encrypted_password, scopes, username, created_at, updated_at
@@ -1812,7 +2096,7 @@ class RefreshTokenStorage:
             if not row:
                 logger.debug("No app password found for user %s", user_id)
                 duration = time.time() - start_time
-                record_db_operation("sqlite", "select", duration, "success")
+                record_db_operation(self._dialect, "select", duration, "success")
                 return None
 
             encrypted_password, scopes_json, username, created_at, updated_at = row
@@ -1820,7 +2104,7 @@ class RefreshTokenStorage:
             scopes = json.loads(scopes_json) if scopes_json else None
 
             duration = time.time() - start_time
-            record_db_operation("sqlite", "select", duration, "success")
+            record_db_operation(self._dialect, "select", duration, "success")
 
             return {
                 "app_password": decrypted_password,
@@ -1832,7 +2116,7 @@ class RefreshTokenStorage:
 
         except Exception:
             duration = time.time() - start_time
-            record_db_operation("sqlite", "select", duration, "error")
+            record_db_operation(self._dialect, "select", duration, "error")
             raise
 
     async def update_app_password_scopes(self, user_id: str, scopes: list[str]) -> bool:
@@ -1852,7 +2136,7 @@ class RefreshTokenStorage:
         now = int(time.time())
         start_time = time.time()
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._db() as db:
                 cursor = await db.execute(
                     "UPDATE app_passwords SET scopes = ?, updated_at = ? WHERE user_id = ?",
                     (scopes_json, now, user_id),
@@ -1861,7 +2145,7 @@ class RefreshTokenStorage:
                 updated = cursor.rowcount > 0
 
             duration = time.time() - start_time
-            record_db_operation("sqlite", "update", duration, "success")
+            record_db_operation(self._dialect, "update", duration, "success")
 
             if updated:
                 await self._audit_log(
@@ -1874,7 +2158,7 @@ class RefreshTokenStorage:
 
         except Exception:
             duration = time.time() - start_time
-            record_db_operation("sqlite", "update", duration, "error")
+            record_db_operation(self._dialect, "update", duration, "error")
             raise
 
     # ── Login Flow v2: Session Tracking ──────────────────────────────────
@@ -1913,13 +2197,19 @@ class RefreshTokenStorage:
 
         start_time = time.time()
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._db() as db:
                 await db.execute(
                     """
-                    INSERT OR REPLACE INTO login_flow_sessions
+                    INSERT INTO login_flow_sessions
                     (user_id, encrypted_poll_token, poll_endpoint, requested_scopes,
                      created_at, expires_at)
                     VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        encrypted_poll_token = EXCLUDED.encrypted_poll_token,
+                        poll_endpoint = EXCLUDED.poll_endpoint,
+                        requested_scopes = EXCLUDED.requested_scopes,
+                        created_at = EXCLUDED.created_at,
+                        expires_at = EXCLUDED.expires_at
                     """,
                     (
                         user_id,
@@ -1933,12 +2223,12 @@ class RefreshTokenStorage:
                 await db.commit()
 
             duration = time.time() - start_time
-            record_db_operation("sqlite", "insert", duration, "success")
+            record_db_operation(self._dialect, "insert", duration, "success")
             logger.info("Stored login flow session for user %s", user_id)
 
         except Exception:
             duration = time.time() - start_time
-            record_db_operation("sqlite", "insert", duration, "error")
+            record_db_operation(self._dialect, "insert", duration, "error")
             raise
 
     async def get_login_flow_session(self, user_id: str) -> dict[str, Any] | None:
@@ -1965,7 +2255,7 @@ class RefreshTokenStorage:
         now = int(time.time())
         start_time = time.time()
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._db() as db:
                 async with db.execute(
                     """
                     SELECT encrypted_poll_token, poll_endpoint, requested_scopes,
@@ -1979,7 +2269,7 @@ class RefreshTokenStorage:
 
             if not row:
                 duration = time.time() - start_time
-                record_db_operation("sqlite", "select", duration, "success")
+                record_db_operation(self._dialect, "select", duration, "success")
                 return None
 
             encrypted_token, poll_endpoint, scopes_json, created_at, expires_at = row
@@ -1987,7 +2277,7 @@ class RefreshTokenStorage:
             requested_scopes = json.loads(scopes_json) if scopes_json else None
 
             duration = time.time() - start_time
-            record_db_operation("sqlite", "select", duration, "success")
+            record_db_operation(self._dialect, "select", duration, "success")
 
             return {
                 "poll_token": poll_token,
@@ -1999,7 +2289,7 @@ class RefreshTokenStorage:
 
         except Exception as e:
             duration = time.time() - start_time
-            record_db_operation("sqlite", "select", duration, "error")
+            record_db_operation(self._dialect, "select", duration, "error")
             logger.error(
                 "Failed to retrieve login flow session for user %s: %s", user_id, e
             )
@@ -2019,7 +2309,7 @@ class RefreshTokenStorage:
 
         start_time = time.time()
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._db() as db:
                 cursor = await db.execute(
                     "DELETE FROM login_flow_sessions WHERE user_id = ?",
                     (user_id,),
@@ -2028,7 +2318,7 @@ class RefreshTokenStorage:
                 deleted = cursor.rowcount > 0
 
             duration = time.time() - start_time
-            record_db_operation("sqlite", "delete", duration, "success")
+            record_db_operation(self._dialect, "delete", duration, "success")
 
             if deleted:
                 logger.info("Deleted login flow session for user %s", user_id)
@@ -2042,7 +2332,7 @@ class RefreshTokenStorage:
 
         except Exception:
             duration = time.time() - start_time
-            record_db_operation("sqlite", "delete", duration, "error")
+            record_db_operation(self._dialect, "delete", duration, "error")
             raise
 
     async def delete_expired_login_flow_sessions(self) -> int:
@@ -2057,7 +2347,7 @@ class RefreshTokenStorage:
         now = int(time.time())
         start_time = time.time()
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._db() as db:
                 cursor = await db.execute(
                     "DELETE FROM login_flow_sessions WHERE expires_at <= ?",
                     (now,),
@@ -2066,7 +2356,7 @@ class RefreshTokenStorage:
                 count = cursor.rowcount
 
             duration = time.time() - start_time
-            record_db_operation("sqlite", "delete", duration, "success")
+            record_db_operation(self._dialect, "delete", duration, "success")
 
             if count > 0:
                 logger.info("Cleaned up %s expired login flow sessions", count)
@@ -2080,7 +2370,7 @@ class RefreshTokenStorage:
 
         except Exception:
             duration = time.time() - start_time
-            record_db_operation("sqlite", "delete", duration, "error")
+            record_db_operation(self._dialect, "delete", duration, "error")
             raise
 
 

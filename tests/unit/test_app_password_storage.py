@@ -3,6 +3,12 @@ Unit tests for App Password Storage functionality.
 
 Tests the app password methods in RefreshTokenStorage for multi-user
 BasicAuth mode background sync.
+
+These tests are parametrized over both supported backends so the storage
+layer is exercised against SQLite (default, always runs) and Postgres (gated
+on ``TEST_DATABASE_URL``; bring up ``docker compose --profile postgres up
+-d postgres-test`` and export ``TEST_DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp``
+to opt in).
 """
 
 import tempfile
@@ -23,15 +29,32 @@ def encryption_key():
 
 
 @pytest.fixture
-async def temp_storage(encryption_key):
-    """Create temporary storage instance with encryption for testing."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "test_app_passwords.db"
+async def temp_storage(encryption_key, storage_backend):
+    """Create a storage instance backed by either SQLite or Postgres.
+
+    The ``storage_backend`` fixture is parametrized by pytest, so every test
+    that uses ``temp_storage`` runs once per backend that is available in
+    the current environment.
+    """
+    if storage_backend["kind"] == "sqlite":
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test_app_passwords.db"
+            storage = RefreshTokenStorage(
+                db_path=str(db_path), encryption_key=encryption_key
+            )
+            await storage.initialize()
+            yield storage
+    else:
         storage = RefreshTokenStorage(
-            db_path=str(db_path), encryption_key=encryption_key
+            database_url=storage_backend["url"], encryption_key=encryption_key
         )
         await storage.initialize()
-        yield storage
+        try:
+            yield storage
+        finally:
+            # Each test gets an isolated schema; tear it down so the next
+            # parametrized run starts clean.
+            await storage_backend["reset"]()
 
 
 async def test_store_app_password(temp_storage):

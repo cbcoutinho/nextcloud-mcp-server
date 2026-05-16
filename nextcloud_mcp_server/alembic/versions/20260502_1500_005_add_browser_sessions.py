@@ -10,6 +10,8 @@ Revises: 004
 Create Date: 2026-05-02 15:00:00.000000
 """
 
+import sqlalchemy as sa
+
 from alembic import op
 
 revision = "005"
@@ -19,31 +21,19 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS browser_sessions (
-            session_id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            expires_at INTEGER NOT NULL
-        )
-        """
+    op.create_table(
+        "browser_sessions",
+        sa.Column("session_id", sa.Text, primary_key=True),
+        sa.Column("user_id", sa.Text, nullable=False),
+        # BigInteger to keep unix epochs in range on Postgres (see 001).
+        sa.Column("created_at", sa.BigInteger, nullable=False),
+        sa.Column("expires_at", sa.BigInteger, nullable=False),
     )
-    op.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_browser_sessions_user
-        ON browser_sessions(user_id)
-        """
-    )
-    op.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_browser_sessions_expires
-        ON browser_sessions(expires_at)
-        """
-    )
+    op.create_index("idx_browser_sessions_user", "browser_sessions", ["user_id"])
+    op.create_index("idx_browser_sessions_expires", "browser_sessions", ["expires_at"])
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX IF EXISTS idx_browser_sessions_expires")
-    op.execute("DROP INDEX IF EXISTS idx_browser_sessions_user")
-    op.execute("DROP TABLE IF EXISTS browser_sessions")
+    op.drop_index("idx_browser_sessions_expires", table_name="browser_sessions")
+    op.drop_index("idx_browser_sessions_user", table_name="browser_sessions")
+    op.drop_table("browser_sessions")

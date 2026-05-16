@@ -10,6 +10,8 @@ Create Date: 2026-01-13 12:00:00.000000
 
 """
 
+import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -22,29 +24,19 @@ depends_on = None
 def upgrade() -> None:
     """Add app_passwords table for multi-user BasicAuth mode."""
 
-    # App passwords table for multi-user BasicAuth background sync
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS app_passwords (
-            user_id TEXT PRIMARY KEY,
-            encrypted_password BLOB NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        )
-        """
+    op.create_table(
+        "app_passwords",
+        sa.Column("user_id", sa.Text, primary_key=True),
+        sa.Column("encrypted_password", sa.LargeBinary, nullable=False),
+        # BigInteger to keep unix epochs in range on Postgres (see 001).
+        sa.Column("created_at", sa.BigInteger, nullable=False),
+        sa.Column("updated_at", sa.BigInteger, nullable=False),
     )
-
-    # Index for efficient user lookups
-    op.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_app_passwords_updated
-        ON app_passwords(updated_at)
-        """
-    )
+    op.create_index("idx_app_passwords_updated", "app_passwords", ["updated_at"])
 
 
 def downgrade() -> None:
     """Drop app_passwords table."""
 
-    op.execute("DROP INDEX IF EXISTS idx_app_passwords_updated")
-    op.execute("DROP TABLE IF EXISTS app_passwords")
+    op.drop_index("idx_app_passwords_updated", table_name="app_passwords")
+    op.drop_table("app_passwords")

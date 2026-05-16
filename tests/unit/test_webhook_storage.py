@@ -3,6 +3,9 @@ Unit tests for Webhook Storage functionality.
 
 Tests the webhook tracking methods in RefreshTokenStorage without
 requiring real database connections or network calls.
+
+Runs against both SQLite and Postgres backends — see the docstring on
+``tests.fixtures.storage_backend`` for opt-in instructions.
 """
 
 import tempfile
@@ -17,14 +20,23 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-async def temp_storage():
-    """Create temporary storage instance for testing."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "test_webhooks.db"
-        # No encryption key needed for webhook tracking
-        storage = RefreshTokenStorage(db_path=str(db_path), encryption_key=None)
+async def temp_storage(storage_backend):
+    """Create a storage instance backed by either SQLite or Postgres."""
+    if storage_backend["kind"] == "sqlite":
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test_webhooks.db"
+            storage = RefreshTokenStorage(db_path=str(db_path), encryption_key=None)
+            await storage.initialize()
+            yield storage
+    else:
+        storage = RefreshTokenStorage(
+            database_url=storage_backend["url"], encryption_key=None
+        )
         await storage.initialize()
-        yield storage
+        try:
+            yield storage
+        finally:
+            await storage_backend["reset"]()
 
 
 async def test_store_webhook(temp_storage):

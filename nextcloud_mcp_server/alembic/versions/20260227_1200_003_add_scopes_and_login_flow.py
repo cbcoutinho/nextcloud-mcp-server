@@ -12,6 +12,8 @@ Create Date: 2026-02-27 12:00:00.000000
 
 """
 
+import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -24,72 +26,37 @@ depends_on = None
 def upgrade() -> None:
     """Add scopes/username to app_passwords and create login_flow_sessions."""
 
-    # Add scopes column (nullable JSON array, NULL = all scopes allowed)
-    op.execute(
-        """
-        ALTER TABLE app_passwords ADD COLUMN scopes TEXT
-        """
-    )
+    # Nullable scope columns on the existing app_passwords table.
+    op.add_column("app_passwords", sa.Column("scopes", sa.Text))
+    op.add_column("app_passwords", sa.Column("username", sa.Text))
 
-    # Add username column (Nextcloud loginName from Login Flow v2)
-    op.execute(
-        """
-        ALTER TABLE app_passwords ADD COLUMN username TEXT
-        """
+    op.create_table(
+        "login_flow_sessions",
+        sa.Column("user_id", sa.Text, primary_key=True),
+        sa.Column("encrypted_poll_token", sa.LargeBinary, nullable=False),
+        sa.Column("poll_endpoint", sa.Text, nullable=False),
+        sa.Column("requested_scopes", sa.Text),
+        # BigInteger to keep unix epochs in range on Postgres (see 001).
+        sa.Column("created_at", sa.BigInteger, nullable=False),
+        sa.Column("expires_at", sa.BigInteger, nullable=False),
     )
-
-    # Login Flow v2 session tracking
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS login_flow_sessions (
-            user_id TEXT PRIMARY KEY,
-            encrypted_poll_token BLOB NOT NULL,
-            poll_endpoint TEXT NOT NULL,
-            requested_scopes TEXT,
-            created_at INTEGER NOT NULL,
-            expires_at INTEGER NOT NULL
-        )
-        """
-    )
-
-    # Index for efficient cleanup of expired sessions
-    op.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_login_flow_sessions_expires
-        ON login_flow_sessions(expires_at)
-        """
+    op.create_index(
+        "idx_login_flow_sessions_expires",
+        "login_flow_sessions",
+        ["expires_at"],
     )
 
 
 def downgrade() -> None:
-    """Drop login_flow_sessions and remove added columns."""
+    """Drop login_flow_sessions and remove added columns.
 
-    op.execute("DROP INDEX IF EXISTS idx_login_flow_sessions_expires")
-    op.execute("DROP TABLE IF EXISTS login_flow_sessions")
+    ``batch_alter_table`` handles SQLite's pre-3.35 lack of ``DROP COLUMN``
+    by recreating the table; on Postgres it issues a native ``DROP COLUMN``.
+    """
 
-    # SQLite doesn't support DROP COLUMN before 3.35.0
-    # Recreate app_passwords without the new columns
-    op.execute(
-        """
-        CREATE TABLE app_passwords_backup (
-            user_id TEXT PRIMARY KEY,
-            encrypted_password BLOB NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        )
-        """
-    )
-    op.execute(
-        """
-        INSERT INTO app_passwords_backup (user_id, encrypted_password, created_at, updated_at)
-        SELECT user_id, encrypted_password, created_at, updated_at FROM app_passwords
-        """
-    )
-    op.execute("DROP TABLE app_passwords")
-    op.execute("ALTER TABLE app_passwords_backup RENAME TO app_passwords")
-    op.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_app_passwords_updated
-        ON app_passwords(updated_at)
-        """
-    )
+    op.drop_index("idx_login_flow_sessions_expires", table_name="login_flow_sessions")
+    op.drop_table("login_flow_sessions")
+
+    with op.batch_alter_table("app_passwords") as batch_op:
+        batch_op.drop_column("username")
+        batch_op.drop_column("scopes")

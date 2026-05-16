@@ -118,6 +118,48 @@ See [Login Flow v2](login-flow-v2.md) for full setup, scope reference, and troub
 
 ---
 
+## Centralized Token Storage (DATABASE_URL, Optional)
+
+By default the MCP server stores tokens / sessions / app passwords in a
+local SQLite file (`TOKEN_STORAGE_DB`, falling back to a per-process
+tempfile). For HA Kubernetes deployments where you need multiple
+stateless pods to share state, point the server at a centralized
+database via `DATABASE_URL`.
+
+```env
+# Centralized Postgres backend (HA k8s deployments)
+DATABASE_URL=postgresql+asyncpg://mcp:secret@postgres.svc.cluster.local:5432/mcp
+TOKEN_ENCRYPTION_KEY=<fernet-key>
+```
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | Optional | SQLAlchemy async URL for any supported backend. When set, wins over `TOKEN_STORAGE_DB`. Primary supported targets: `postgresql+asyncpg://...` (recommended for HA) and `sqlite+aiosqlite:///...` (development). |
+| `TOKEN_STORAGE_DB` | Optional | Legacy SQLite-only path. Used when `DATABASE_URL` is unset. Falls back to a per-process ephemeral tempfile when both are unset. |
+
+Notes:
+
+- **Bring-your-own DB.** The MCP server doesn't provision the database;
+  it just consumes the URL. Use CNPG, RDS, your existing Helm chart's
+  Postgres sub-chart, etc.
+- **Encryption stays in the app.** `TOKEN_ENCRYPTION_KEY` (Fernet) is
+  applied in Python; the database only ever sees ciphertext for
+  sensitive columns. You don't need `pgcrypto`.
+- **Schema is managed automatically.** On startup the server runs
+  Alembic migrations against the configured backend. Existing SQLite
+  deployments are stamped at the current revision and skip re-execution.
+- **No data migration tool.** Moving from SQLite to Postgres is a clean
+  cutover — tokens are reissued on the next login, webhooks
+  re-register on the next sync tick.
+- **Testing a Postgres backend locally:** `docker compose --profile
+  postgres up -d postgres-test` then export
+  `DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp`.
+
+See [ADR-026 Pluggable database backend](ADR-026-pluggable-database-backend.md)
+for the architecture rationale.
+
+---
+
 ## SSL/TLS Configuration (Optional)
 
 If your Nextcloud instance uses a self-signed certificate or a private CA (common with reverse proxies like Traefik or Caddy), the MCP server will reject the connection by default. Use these settings to configure certificate verification.
