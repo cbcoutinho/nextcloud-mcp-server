@@ -162,3 +162,59 @@ async def test_audit_log_capture(storage: RefreshTokenStorage):
     await storage.store_app_password(user_id="carol", app_password="x")
     logs = await storage.get_audit_logs(user_id="carol", limit=10)
     assert any(entry["event"] == "store_app_password" for entry in logs)
+
+
+async def test_cleanup_expired_roundtrip(storage: RefreshTokenStorage):
+    """``cleanup_expired_*`` paths rely on DELETE rowcount across dialects.
+
+    Regression guard for the bot review on PR #798 — the original
+    integration tests didn't exercise these methods, which historically
+    have been a source of dialect-portability bugs.
+    """
+    # Insert one fresh + one expired refresh token.
+    await storage.store_refresh_token(
+        user_id="fresh-user", refresh_token="fresh", expires_at=9_999_999_999
+    )
+    await storage.store_refresh_token(
+        user_id="expired-user", refresh_token="stale", expires_at=1
+    )
+
+    # Insert one fresh + one expired OAuth session.
+    await storage.store_oauth_session(
+        session_id="sess-fresh",
+        client_redirect_uri="http://localhost/cb",
+        mcp_authorization_code="code-fresh",
+        ttl_seconds=600,
+    )
+    await storage.store_oauth_session(
+        session_id="sess-stale",
+        client_redirect_uri="http://localhost/cb",
+        mcp_authorization_code="code-stale",
+        ttl_seconds=-3600,  # expires_at = now - 1h
+    )
+
+    # Insert one fresh + one expired browser session.
+    await storage.create_browser_session(
+        session_id="bs-fresh", user_id="alice", ttl_seconds=600
+    )
+    await storage.create_browser_session(
+        session_id="bs-stale", user_id="alice", ttl_seconds=-3600
+    )
+
+    tokens_deleted = await storage.cleanup_expired_tokens()
+    sessions_deleted = await storage.cleanup_expired_sessions()
+    browser_deleted = await storage.cleanup_expired_browser_sessions()
+
+    assert tokens_deleted == 1, f"expected 1 expired token, got {tokens_deleted}"
+    assert sessions_deleted == 1, (
+        f"expected 1 expired oauth session, got {sessions_deleted}"
+    )
+    assert browser_deleted == 1, (
+        f"expected 1 expired browser session, got {browser_deleted}"
+    )
+
+    # Fresh rows survived.
+    assert await storage.get_refresh_token("fresh-user") is not None
+    assert await storage.get_refresh_token("expired-user") is None
+    assert await storage.get_oauth_session("sess-fresh") is not None
+    assert await storage.get_oauth_session("sess-stale") is None

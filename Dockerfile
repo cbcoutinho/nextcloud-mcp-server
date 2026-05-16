@@ -16,11 +16,11 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md .
 
-RUN uv sync --locked --no-dev --no-install-project --no-cache
+RUN uv sync --locked --no-dev --no-install-project --no-cache --extra postgres
 
 COPY . .
 
-RUN uv sync --locked --no-dev --no-editable --no-cache
+RUN uv sync --locked --no-dev --no-editable --no-cache --extra postgres
 
 ENV PYTHONUNBUFFERED=1
 ENV VIRTUAL_ENV=/app/.venv

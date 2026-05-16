@@ -136,9 +136,27 @@ TOKEN_ENCRYPTION_KEY=<fernet-key>
 |----------|----------|-------------|
 | `DATABASE_URL` | Optional | SQLAlchemy async URL for any supported backend. When set, wins over `TOKEN_STORAGE_DB`. Primary supported targets: `postgresql+asyncpg://...` (recommended for HA) and `sqlite+aiosqlite:///...` (development). |
 | `TOKEN_STORAGE_DB` | Optional | Legacy SQLite-only path. Used when `DATABASE_URL` is unset. Falls back to a per-process ephemeral tempfile when both are unset. |
+| `DATABASE_VERIFY_SSL` | Optional | TLS verification toggle for the Postgres backend. Unset (default) → asyncpg's `prefer` mode (TLS if offered, no verification — keeps cluster-internal Postgres working). `true` → full cert verification. `false` → silence cert errors (homelab / self-signed). |
+| `DATABASE_CA_BUNDLE` | Optional | Path to a PEM file containing a private CA. Implies `DATABASE_VERIFY_SSL=true`. Use this for self-hosted Postgres signed by your homelab CA instead of disabling verification. |
+| `DATABASE_POOL_SIZE` | Optional (default `10`) | Per-pod SQLAlchemy connection pool size for the Postgres backend. Multiplied by `replicas`, this can exceed managed-Postgres `max_connections=100` defaults — tune down for large fleets. |
+| `DATABASE_MAX_OVERFLOW` | Optional (default `20`) | Per-pod overflow connections beyond `DATABASE_POOL_SIZE`. Max per-pod connections = `pool_size + max_overflow`. Set to `0` to make `pool_size` a hard cap. |
+
+Homelab example (self-signed Postgres with a private CA):
+
+```env
+DATABASE_URL=postgresql+asyncpg://mcp:secret@pg.lan:5432/mcp
+DATABASE_CA_BUNDLE=/etc/ssl/certs/homelab-ca.pem
+TOKEN_ENCRYPTION_KEY=<fernet-key>
+```
 
 Notes:
 
+- **PyPI extra required.** The `asyncpg` driver is an optional extra so
+  the default `pip install nextcloud-mcp-server` stays lean. Install
+  with `pip install 'nextcloud-mcp-server[postgres]'` when using a
+  Postgres URL. The Docker image bundles it by default. When
+  `DATABASE_URL=postgresql+asyncpg://...` is set without the extra,
+  the server fails fast with a clear actionable error.
 - **Bring-your-own DB.** The MCP server doesn't provision the database;
   it just consumes the URL. Use CNPG, RDS, your existing Helm chart's
   Postgres sub-chart, etc.

@@ -17,7 +17,7 @@ from sqlalchemy import create_engine, inspect, text
 
 import nextcloud_mcp_server.alembic as alembic_package
 from alembic import command
-from nextcloud_mcp_server.config import get_database_url
+from nextcloud_mcp_server.config import get_database_url, mask_db_password
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ def get_alembic_config(database_url: str | Path | None = None) -> Config:
     config.set_main_option("sqlalchemy.url", url)
 
     logger.debug("Alembic script location: %s", script_location)
-    logger.debug("Database URL: %s", url)
+    logger.debug("Database URL: %s", mask_db_password(url))
 
     return config
 

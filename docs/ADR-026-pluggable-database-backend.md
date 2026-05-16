@@ -63,6 +63,70 @@ the fly. The seven `INSERT OR REPLACE` statements were rewritten as
 portable `INSERT ... ON CONFLICT (...) DO UPDATE` (SQLite ≥ 3.24, Postgres
 ≥ 9.5; we already require SQLite ≥ 3.35 elsewhere).
 
+### Distribution: asyncpg is an optional extra, bundled in Docker
+
+`asyncpg` carries a compiled C extension (~5 MB plus a build toolchain on
+source installs) — too heavy a default for the
+`pip install nextcloud-mcp-server` audience, the majority of whom run the
+SQLite path. It is shipped as a PyPI optional dependency::
+
+    pip install 'nextcloud-mcp-server[postgres]'
+
+The published Docker image runs `uv sync --extra postgres` so the
+container always has the driver, matching the HA-deployment audience
+that exercises the Postgres backend. When `DATABASE_URL=postgresql+asyncpg://...`
+is set on a venv without the extra installed, `RefreshTokenStorage`
+raises a clear actionable error before the engine is built — operators
+see "install with `[postgres]` extra" rather than a generic
+`ModuleNotFoundError: No module named 'asyncpg'`.
+
+### Alembic env.py runs the async engine inside a worker thread
+
+`nextcloud_mcp_server/alembic/env.py` uses
+`async_engine_from_config(...)` + `anyio.run(run_async_migrations)`, and
+the runtime invokes it from `RefreshTokenStorage.initialize()` via
+`anyio.to_thread.run_sync(upgrade_database, ...)`. This is intentional:
+
+- Alembic wants a synchronous entry point (`upgrade_database()`), but
+  `async_engine_from_config` returns an async engine.
+- Running `anyio.run()` directly inside an already-running event loop
+  would deadlock; we have to be on a different thread.
+- `to_thread.run_sync` puts the call on a worker thread, which has no
+  running event loop — `anyio.run()` is then free to spin up its own.
+
+The pattern is non-obvious; this note exists so a future maintainer
+doesn't try to "simplify" it back into the main loop.
+
+### TLS for the Postgres backend
+
+Two settings mirror the existing `NEXTCLOUD_VERIFY_SSL` /
+`NEXTCLOUD_CA_BUNDLE` pattern: `DATABASE_VERIFY_SSL` and
+`DATABASE_CA_BUNDLE`. `get_database_ssl()` (in `nextcloud_mcp_server/config.py`)
+returns the value to pass to asyncpg via SQLAlchemy's `connect_args={"ssl": ...}`.
+
+The default is deliberately **less strict than the Nextcloud HTTPS
+default**: `DATABASE_VERIFY_SSL` defaults to `None` rather than `True`.
+When both env vars are unset we omit the `ssl` kwarg entirely and asyncpg's
+default (`prefer`) applies — TLS if the server offers it, no certificate
+validation. The reasoning:
+
+- Cluster-internal Postgres (CNPG via a Service, RDS over a private VPC,
+  PgBouncer sidecar) is the common HA pattern and frequently runs without
+  TLS or with cert hostnames asyncpg wouldn't match anyway.
+- The HTTPS analogy doesn't carry over: the Nextcloud client talks to
+  *external* hostnames over public networks where verify-full is the
+  right default. The database client talks to a controlled peer.
+- Just-shipped PR #798 had no TLS knobs and worked against cluster-local
+  Postgres-test; flipping the default to `True` here would break that
+  flow on upgrade.
+
+Operators in production with a managed Postgres opt in with
+`DATABASE_VERIFY_SSL=true`. Homelab operators with a private CA set
+`DATABASE_CA_BUNDLE=/path/to/ca.pem` (which implies `verify=true`).
+`DATABASE_VERIFY_SSL=false` is the escape hatch for incident response —
+it wins over `DATABASE_CA_BUNDLE` so an operator can quickly silence
+cert errors without editing the secret store.
+
 ### Encryption stays in Python (Fernet), not the DB
 
 The DB only ever sees ciphertext for sensitive columns

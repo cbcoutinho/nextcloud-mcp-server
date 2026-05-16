@@ -2177,7 +2177,6 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "alembic" },
     { name = "anthropic" },
-    { name = "asyncpg" },
     { name = "authlib" },
     { name = "boto3" },
     { name = "caldav" },
@@ -2212,6 +2211,11 @@ dependencies = [
     { name = "starlette" },
 ]
 
+[package.optional-dependencies]
+postgres = [
+    { name = "asyncpg" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "commitizen" },
@@ -2234,7 +2238,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "alembic", specifier = ">=1.14.0" },
     { name = "anthropic", specifier = ">=0.42.0" },
-    { name = "asyncpg", specifier = ">=0.29" },
+    { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29" },
     { name = "authlib", specifier = ">=1.6.5" },
     { name = "boto3", specifier = ">=1.35.0" },
     { name = "caldav", specifier = ">=3.0.1,<4.0" },
@@ -2268,6 +2272,7 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "starlette", specifier = "<1.0" },
 ]
+provides-extras = ["postgres"]
 
 [package.metadata.requires-dev]
 dev = [

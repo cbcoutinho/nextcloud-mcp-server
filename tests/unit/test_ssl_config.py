@@ -1,4 +1,16 @@
-"""Tests for SSL/TLS configuration (NEXTCLOUD_VERIFY_SSL, NEXTCLOUD_CA_BUNDLE)."""
+"""Tests for SSL/TLS configuration.
+
+Covers two parallel patterns:
+
+- ``NEXTCLOUD_VERIFY_SSL`` / ``NEXTCLOUD_CA_BUNDLE`` for the httpx
+  client talking to Nextcloud.
+- ``DATABASE_VERIFY_SSL`` / ``DATABASE_CA_BUNDLE`` for the asyncpg
+  driver talking to a centralized Postgres backend (ADR-026).
+
+The DB-side helper has a different default (``None`` instead of
+``True``) because asyncpg's default ``prefer`` is the right back-compat
+posture for cluster-internal Postgres — see ``get_database_ssl()``.
+"""
 
 import logging
 import os
@@ -12,6 +24,7 @@ import pytest
 from nextcloud_mcp_server.config import (
     Settings,
     _reload_config,
+    get_database_ssl,
     get_nextcloud_ssl_verify,
     get_settings,
 )
@@ -185,3 +198,82 @@ class TestHTTPClientFactory:
         ):
             client = nextcloud_httpx_client(timeout=5.0, follow_redirects=True)
             assert isinstance(client, httpx.AsyncClient)
+
+
+class TestDatabaseSSLSettings:
+    """Test DATABASE_VERIFY_SSL / DATABASE_CA_BUNDLE fields on Settings (ADR-026)."""
+
+    def test_defaults(self):
+        """Default is None / None — preserves PR #798's asyncpg ``prefer``."""
+        settings = Settings()
+        assert settings.database_verify_ssl is None
+        assert settings.database_ca_bundle is None
+
+    def test_verify_false_logs_warning(self, caplog):
+        caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
+        Settings(database_verify_ssl=False)
+        assert "DATABASE_VERIFY_SSL is disabled" in caplog.text
+
+    def test_ca_bundle_nonexistent_path_raises(self):
+        with pytest.raises(ValueError, match="DATABASE_CA_BUNDLE path does not exist"):
+            Settings(database_ca_bundle="/nonexistent/path/ca.pem")
+
+    def test_ca_bundle_existing_path_logs_info(self, caplog, tmp_path):
+        ca_file = tmp_path / "ca.pem"
+        ca_file.write_text(
+            "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"
+        )
+        caplog.set_level(logging.INFO, logger="nextcloud_mcp_server.config")
+        Settings(database_ca_bundle=str(ca_file))
+        assert "custom CA bundle for Postgres backend" in caplog.text
+
+
+class TestGetDatabaseSSL:
+    """Test the get_database_ssl() helper (ADR-026)."""
+
+    def test_both_unset_returns_none(self):
+        """The asyncpg-default opt-out path — no `ssl` kwarg passed."""
+        with patch(
+            "nextcloud_mcp_server.config.get_settings",
+            return_value=Settings(),
+        ):
+            assert get_database_ssl() is None
+
+    def test_verify_true_returns_true(self):
+        with patch(
+            "nextcloud_mcp_server.config.get_settings",
+            return_value=Settings(database_verify_ssl=True),
+        ):
+            assert get_database_ssl() is True
+
+    def test_verify_false_returns_false(self):
+        with patch(
+            "nextcloud_mcp_server.config.get_settings",
+            return_value=Settings(database_verify_ssl=False),
+        ):
+            assert get_database_ssl() is False
+
+    def test_ca_bundle_returns_ssl_context(self):
+        ca_bundle = certifi.where()
+        with patch(
+            "nextcloud_mcp_server.config.get_settings",
+            return_value=Settings(database_ca_bundle=ca_bundle),
+        ):
+            result = get_database_ssl()
+            assert isinstance(result, ssl.SSLContext)
+            assert result.cert_store_stats()["x509_ca"] > 0
+
+    def test_verify_false_wins_over_ca_bundle(self, tmp_path):
+        """False is the explicit-opt-out and must override a stale bundle path."""
+        ca_file = tmp_path / "ca.pem"
+        ca_file.write_text(
+            "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"
+        )
+        with patch(
+            "nextcloud_mcp_server.config.get_settings",
+            return_value=Settings(
+                database_verify_ssl=False,
+                database_ca_bundle=str(ca_file),
+            ),
+        ):
+            assert get_database_ssl() is False

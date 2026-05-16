@@ -60,6 +60,19 @@ _DEFAULTS: dict[str, Any] = {
     # when set. Use postgresql+asyncpg://user:pw@host/db for HA k8s
     # deployments so pods can be stateless. See ADR-026.
     "database_url": None,
+    # TLS for the Postgres backend (mirror NEXTCLOUD_VERIFY_SSL pattern).
+    # Default is None — preserve asyncpg's `prefer` mode so cluster-local
+    # Postgres without TLS works out of the box. Set to True for full
+    # verification or False to silence cert errors against self-signed
+    # homelab servers. DATABASE_CA_BUNDLE points at a private-CA PEM.
+    "database_verify_ssl": None,
+    "database_ca_bundle": None,
+    # Postgres connection pool sizing (ADR-026, reviewer feedback on #798).
+    # Per-pod pool defaults to 10 + 20 overflow = 30 max connections.
+    # With many replicas this can blow past managed-Postgres
+    # `max_connections=100`; tune down via env when needed.
+    "database_pool_size": 10,
+    "database_max_overflow": 20,
     # Webhook delivery authentication (ADR-010): when set, registrations
     # tell NC to add `Authorization: Bearer <secret>` to webhook deliveries
     # and the receiver rejects unauthenticated requests.
@@ -304,7 +317,30 @@ def is_sqlite_url(url: str) -> bool:
     """Return True for SQLite SQLAlchemy URLs (used to gate sqlite-only logic
     like file-permission hardening and ``sqlite_master`` legacy lookups).
     """
-    return url.startswith("sqlite")
+    return url.lower().startswith("sqlite")
+
+
+def mask_db_password(url: str) -> str:
+    """Return a logger-safe rendering of a SQLAlchemy URL.
+
+    DATABASE_URL routinely carries a password (e.g.
+    ``postgresql+asyncpg://mcp:secret@db/mcp``); logging it raw leaks the
+    secret to stdout/stderr and any aggregator. SQLAlchemy's
+    :func:`make_url` + ``render_as_string(hide_password=True)`` substitutes
+    a fixed ``***`` placeholder while keeping the rest of the URL intact
+    so operators can still see which host / driver they're hitting.
+    """
+    try:
+        from sqlalchemy.engine.url import make_url  # noqa: PLC0415
+
+        return make_url(url).render_as_string(hide_password=True)
+    except Exception:
+        # If parsing fails (e.g. an explicit ssl-disable test URL with an
+        # exotic shape), fall back to a regex that scrubs any
+        # ``://user:password@`` pattern. Never raise from a logging path.
+        import re  # noqa: PLC0415
+
+        return re.sub(r"(://[^:/]+):[^@]*@", r"\1:***@", url)
 
 
 LOGGING_CONFIG = {
@@ -470,6 +506,19 @@ class Settings:
     nextcloud_verify_ssl: bool = True
     nextcloud_ca_bundle: str | None = None
 
+    # Postgres backend TLS settings (ADR-026). Default verify_ssl is None,
+    # not True: when DATABASE_URL is unset there's nothing to verify, and
+    # when it is set we don't want to break cluster-internal Postgres that
+    # commonly runs without TLS. Operators opt in to verify-full with True
+    # or supply a private-CA bundle.
+    database_verify_ssl: bool | None = None
+    database_ca_bundle: str | None = None
+    # Postgres connection pool sizing (ADR-026). The asyncpg engine maps
+    # these to its underlying QueuePool. Per-pod max = pool_size +
+    # max_overflow. Validate >= 1 in __post_init__.
+    database_pool_size: int = 10
+    database_max_overflow: int = 20
+
     # ADR-005: Token Audience Validation (required for OAuth mode)
     nextcloud_mcp_server_url: str | None = None  # MCP server URL (used as audience)
     nextcloud_resource_uri: str | None = None  # Nextcloud resource identifier
@@ -602,6 +651,35 @@ class Settings:
                     f"NEXTCLOUD_CA_BUNDLE path does not exist: {self.nextcloud_ca_bundle}"
                 )
             logger.info("Using custom CA bundle: %s", self.nextcloud_ca_bundle)
+
+        # Validate Postgres backend TLS configuration (ADR-026)
+        if self.database_verify_ssl is False:
+            logger.warning(
+                "DATABASE_VERIFY_SSL is disabled. "
+                "TLS certificate verification is turned off for the Postgres "
+                "backend. Only acceptable for homelab / self-signed setups; "
+                "prefer DATABASE_CA_BUNDLE for production."
+            )
+        if self.database_ca_bundle:
+            if not os.path.isfile(self.database_ca_bundle):
+                raise ValueError(
+                    f"DATABASE_CA_BUNDLE path does not exist: {self.database_ca_bundle}"
+                )
+            logger.info(
+                "Using custom CA bundle for Postgres backend: %s",
+                self.database_ca_bundle,
+            )
+
+        # Pool sizing must be sensible — guard against operators accidentally
+        # setting 0 / negative via env (would deadlock at first request).
+        if self.database_pool_size < 1:
+            raise ValueError(
+                f"DATABASE_POOL_SIZE must be >= 1; got {self.database_pool_size}"
+            )
+        if self.database_max_overflow < 0:
+            raise ValueError(
+                f"DATABASE_MAX_OVERFLOW must be >= 0; got {self.database_max_overflow}"
+            )
 
         # Ensure mutual exclusivity
         if self.qdrant_url and self.qdrant_location:
@@ -958,6 +1036,12 @@ def get_settings() -> Settings:
         # Nextcloud SSL/TLS settings
         "nextcloud_verify_ssl": "NEXTCLOUD_VERIFY_SSL",
         "nextcloud_ca_bundle": "NEXTCLOUD_CA_BUNDLE",
+        # Postgres backend TLS (ADR-026)
+        "database_verify_ssl": "DATABASE_VERIFY_SSL",
+        "database_ca_bundle": "DATABASE_CA_BUNDLE",
+        # Postgres backend pool sizing (ADR-026)
+        "database_pool_size": "DATABASE_POOL_SIZE",
+        "database_max_overflow": "DATABASE_MAX_OVERFLOW",
         # ADR-005: Token Audience Validation
         "nextcloud_mcp_server_url": "NEXTCLOUD_MCP_SERVER_URL",
         "nextcloud_resource_uri": "NEXTCLOUD_RESOURCE_URI",
@@ -1056,3 +1140,33 @@ def get_nextcloud_ssl_verify() -> bool | ssl.SSLContext:
         ctx = ssl.create_default_context(cafile=settings.nextcloud_ca_bundle)
         return ctx
     return True
+
+
+def get_database_ssl() -> bool | ssl.SSLContext | None:
+    """Return the asyncpg ``ssl`` arg for the Postgres backend (ADR-026).
+
+    Returns:
+        - ``None`` when both DATABASE_VERIFY_SSL and DATABASE_CA_BUNDLE are
+          unset — caller skips passing ``ssl`` so asyncpg keeps its default
+          (``prefer``). Preserves PR #798 behavior for cluster-local
+          Postgres without TLS.
+        - ``False`` if DATABASE_VERIFY_SSL=false (silence cert errors).
+        - ``ssl.SSLContext`` if DATABASE_CA_BUNDLE is set (custom private
+          CA, implies verify-full).
+        - ``True`` if DATABASE_VERIFY_SSL=true and no bundle (verify-full
+          against system trust store).
+
+    DATABASE_VERIFY_SSL=false wins over DATABASE_CA_BUNDLE so an operator
+    can quickly silence cert errors during incident response without
+    having to delete the bundle path from their secret store. Matches the
+    Nextcloud-pattern precedence for symmetry with
+    :func:`get_nextcloud_ssl_verify`.
+    """
+    settings = get_settings()
+    if settings.database_verify_ssl is False:
+        return False
+    if settings.database_ca_bundle:
+        return ssl.create_default_context(cafile=settings.database_ca_bundle)
+    if settings.database_verify_ssl is True:
+        return True
+    return None

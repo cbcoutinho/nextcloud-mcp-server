@@ -125,7 +125,10 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
         sa.Column("webhook_id", sa.Integer, nullable=False, unique=True),
         sa.Column("preset_id", sa.Text, nullable=False),
-        sa.Column("created_at", sa.Float, nullable=False),
+        # BigInteger for consistency with every other *_at column (PR #798
+        # review): subsecond precision wasn't load-bearing for webhook
+        # bookkeeping. ``store_webhook()`` casts to ``int(time.time())``.
+        sa.Column("created_at", sa.BigInteger, nullable=False),
     )
     op.create_index("idx_webhooks_preset", "registered_webhooks", ["preset_id"])
     op.create_index("idx_webhooks_created", "registered_webhooks", ["created_at"])

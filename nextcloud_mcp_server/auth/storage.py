@@ -25,6 +25,7 @@ Token storage requires TOKEN_ENCRYPTION_KEY, but webhook tracking does not.
 Sensitive data (tokens, secrets) is encrypted at rest using Fernet symmetric encryption.
 """
 
+import importlib.util
 import json
 import logging
 import os
@@ -44,9 +45,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_en
 from sqlalchemy.pool import NullPool
 
 from nextcloud_mcp_server.config import (
+    get_database_ssl,
     get_database_url,
+    get_settings,
     is_ephemeral_token_db,
     is_sqlite_url,
+    mask_db_password,
 )
 from nextcloud_mcp_server.migrations import stamp_database, upgrade_database
 from nextcloud_mcp_server.observability.metrics import record_db_operation
@@ -345,7 +349,9 @@ class RefreshTokenStorage:
                     sqlite_path,
                 )
         else:
-            logger.info("Using centralized token storage at %s", database_url)
+            logger.info(
+                "Using centralized token storage at %s", mask_db_password(database_url)
+            )
         encryption_key_b64 = os.getenv("TOKEN_ENCRYPTION_KEY")
 
         encryption_key = None
@@ -423,11 +429,43 @@ class RefreshTokenStorage:
                 future=True,
             )
         else:
+            # Postgres ships as an optional PyPI extra (`[postgres]`) so the
+            # default `pip install nextcloud-mcp-server` audience doesn't
+            # pull in asyncpg's C extension. The Docker image bundles it.
+            # Surface a clear actionable error when the driver is missing
+            # rather than the generic ModuleNotFoundError SQLAlchemy emits.
+            if "+asyncpg" in self.database_url.lower() and (
+                importlib.util.find_spec("asyncpg") is None
+            ):
+                raise RuntimeError(
+                    "DATABASE_URL points at Postgres via asyncpg but the "
+                    "'asyncpg' driver is not installed. Install with "
+                    "`pip install nextcloud-mcp-server[postgres]` or use "
+                    "the Docker image, which bundles it. See ADR-026."
+                )
+            # Conditionally pass TLS config through to asyncpg. When
+            # get_database_ssl() returns None we omit ``ssl`` entirely so
+            # asyncpg's default (``prefer``) applies — keeps cluster-local
+            # Postgres without TLS working out of the box. See ADR-026.
+            connect_args: dict[str, object] = {}
+            ssl_arg = get_database_ssl()
+            if ssl_arg is not None:
+                connect_args["ssl"] = ssl_arg
+                logger.info(
+                    "Postgres backend TLS: %s",
+                    "disabled"
+                    if ssl_arg is False
+                    else "custom CA bundle"
+                    if not isinstance(ssl_arg, bool)
+                    else "verify-full (system CAs)",
+                )
+            settings = get_settings()
             self.engine = create_async_engine(
                 self.database_url,
-                pool_size=10,
-                max_overflow=20,
+                pool_size=settings.database_pool_size,
+                max_overflow=settings.database_max_overflow,
                 pool_pre_ping=True,
+                connect_args=connect_args,
                 future=True,
             )
         self._dialect = self.engine.dialect.name
@@ -446,7 +484,7 @@ class RefreshTokenStorage:
             if has_schema:
                 logger.info(
                     "Detected pre-Alembic database at %s, stamping with initial revision",
-                    self.database_url,
+                    mask_db_password(self.database_url),
                 )
                 await to_thread.run_sync(stamp_database, self.database_url, "001")
                 logger.info(
@@ -456,7 +494,7 @@ class RefreshTokenStorage:
             else:
                 logger.info(
                     "Initializing new database at %s with migrations",
-                    self.database_url,
+                    mask_db_password(self.database_url),
                 )
                 await to_thread.run_sync(upgrade_database, self.database_url, "head")
                 logger.info("Database initialized with migrations")
@@ -468,7 +506,10 @@ class RefreshTokenStorage:
             os.chmod(self.db_path, 0o600)
 
         self._initialized = True
-        logger.info("Initialized refresh token storage at %s", self.database_url)
+        logger.info(
+            "Initialized refresh token storage at %s",
+            mask_db_password(self.database_url),
+        )
 
     @asynccontextmanager
     async def _db(self):
@@ -1638,7 +1679,7 @@ class RefreshTokenStorage:
                     preset_id = EXCLUDED.preset_id,
                     created_at = EXCLUDED.created_at
                 """,
-                (webhook_id, preset_id, time.time()),
+                (webhook_id, preset_id, int(time.time())),
             )
             await db.commit()
 
