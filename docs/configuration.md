@@ -138,8 +138,15 @@ TOKEN_ENCRYPTION_KEY=<fernet-key>
 | `TOKEN_STORAGE_DB` | Optional | Legacy SQLite-only path. Used when `DATABASE_URL` is unset. Falls back to a per-process ephemeral tempfile when both are unset. |
 | `DATABASE_VERIFY_SSL` | Optional | TLS verification toggle for the Postgres backend. Unset (default) → asyncpg's `prefer` mode (TLS if offered, no verification — keeps cluster-internal Postgres working). `true` → full cert verification. `false` → silence cert errors (homelab / self-signed). |
 | `DATABASE_CA_BUNDLE` | Optional | Path to a PEM file containing a private CA. Implies `DATABASE_VERIFY_SSL=true`. Use this for self-hosted Postgres signed by your homelab CA instead of disabling verification. |
-| `DATABASE_POOL_SIZE` | Optional (default `10`) | Per-pod SQLAlchemy connection pool size for the Postgres backend. Multiplied by `replicas`, this can exceed managed-Postgres `max_connections=100` defaults — tune down for large fleets. |
-| `DATABASE_MAX_OVERFLOW` | Optional (default `20`) | Per-pod overflow connections beyond `DATABASE_POOL_SIZE`. Max per-pod connections = `pool_size + max_overflow`. Set to `0` to make `pool_size` a hard cap. |
+| `DATABASE_POOL_SIZE` | Optional (default `2`) | Per-pod SQLAlchemy connection pool size for the Postgres backend. asyncpg connections are single-flight, so this only needs to cover concurrent storage ops (not concurrent tool calls). See [ADR-026 § Concurrency model and pool sizing](ADR-026-pluggable-database-backend.md). |
+| `DATABASE_MAX_OVERFLOW` | Optional (default `5`) | Per-pod burst connections beyond `DATABASE_POOL_SIZE`. Max per-pod = `pool_size + max_overflow` (default 7). Set to `0` for a hard cap. With 3 replicas the default totals 21 connections — well under managed-Postgres `max_connections=100`. |
+
+Operators with very high concurrency (many MCP clients per pod, or
+expensive Nextcloud round-trips holding storage locks) should tune these
+up; single-user / homelab deployments can drop to `DATABASE_POOL_SIZE=1
+DATABASE_MAX_OVERFLOW=2` for the smallest possible footprint. The
+server logs the configured sizes at startup so over-allocation is
+visible without grepping config.
 
 Homelab example (self-signed Postgres with a private CA):
 

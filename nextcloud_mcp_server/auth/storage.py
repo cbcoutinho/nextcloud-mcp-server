@@ -1,8 +1,14 @@
 """
 Persistent Storage for MCP Server State
 
-This module provides SQLite-based storage for multiple concerns across both
-BasicAuth and OAuth authentication modes:
+This module provides SQL-backed storage for multiple concerns across both
+BasicAuth and OAuth authentication modes. The default backend is SQLite
+(file-based or per-process tempfile); set ``DATABASE_URL`` to a
+``postgresql+asyncpg://...`` URL for HA k8s deployments where pods need
+to be stateless. See :doc:`ADR-026 </docs/ADR-026-pluggable-database-backend>`
+for the design.
+
+Concerns covered:
 
 1. **Refresh Tokens** (OAuth mode only, for background jobs)
    - Securely stores encrypted refresh tokens for offline access
@@ -145,7 +151,24 @@ class _Row:
 def _wrap_row(row) -> _Row | None:
     if row is None:
         return None
+    # ``row._mapping`` is the documented public RowMapping accessor in
+    # SQLAlchemy 2.x (the leading underscore is historical); it returns
+    # a column-name → value mapping that survives the row being
+    # tuple-iterated. See SQLAlchemy 2.x ``Row.mapping`` docs.
     return _Row(tuple(row), dict(row._mapping))
+
+
+def _describe_ssl_arg(ssl_arg: object) -> str:
+    """Render the ``ssl`` value for the startup log line.
+
+    Split out of the engine factory to avoid a nested-ternary
+    SonarQube finding (``S3358``) and to make the cases readable.
+    """
+    if ssl_arg is False:
+        return "disabled"
+    if isinstance(ssl_arg, bool):
+        return "verify-full (system CAs)"
+    return "custom CA bundle"
 
 
 def _wrap_rows(rows) -> list[_Row]:
@@ -182,10 +205,14 @@ class _Cursor:
     async def fetchall(self) -> list[_Row]:
         return _wrap_rows(self._result.fetchall())
 
-    async def __aenter__(self) -> "_Cursor":
+    # NOSONAR S7503 on the next two methods — Python's async-context-manager
+    # protocol *requires* ``__aenter__`` / ``__aexit__`` to be coroutines
+    # even when the body has nothing to await; dropping ``async`` would
+    # break ``async with _Cursor(...)``.
+    async def __aenter__(self) -> "_Cursor":  # NOSONAR S7503
         return self
 
-    async def __aexit__(self, *exc: object) -> None:
+    async def __aexit__(self, *exc: object) -> None:  # NOSONAR S7503
         # SQLAlchemy Result closes when the connection closes; no-op here.
         return None
 
@@ -419,8 +446,8 @@ class RefreshTokenStorage:
 
         # Create the shared async engine for the chosen backend. SQLite uses
         # NullPool (per-call connections, matches the prior aiosqlite-direct
-        # behavior); Postgres uses the default pool with pre-ping so dropped
-        # connections from idle k8s networks are retried transparently.
+        # behavior); Postgres uses a small bounded pool — see
+        # ``_build_postgres_engine`` for sizing rationale.
         if is_sqlite:
             self.engine = create_async_engine(
                 self.database_url,
@@ -429,45 +456,7 @@ class RefreshTokenStorage:
                 future=True,
             )
         else:
-            # Postgres ships as an optional PyPI extra (`[postgres]`) so the
-            # default `pip install nextcloud-mcp-server` audience doesn't
-            # pull in asyncpg's C extension. The Docker image bundles it.
-            # Surface a clear actionable error when the driver is missing
-            # rather than the generic ModuleNotFoundError SQLAlchemy emits.
-            if "+asyncpg" in self.database_url.lower() and (
-                importlib.util.find_spec("asyncpg") is None
-            ):
-                raise RuntimeError(
-                    "DATABASE_URL points at Postgres via asyncpg but the "
-                    "'asyncpg' driver is not installed. Install with "
-                    "`pip install nextcloud-mcp-server[postgres]` or use "
-                    "the Docker image, which bundles it. See ADR-026."
-                )
-            # Conditionally pass TLS config through to asyncpg. When
-            # get_database_ssl() returns None we omit ``ssl`` entirely so
-            # asyncpg's default (``prefer``) applies — keeps cluster-local
-            # Postgres without TLS working out of the box. See ADR-026.
-            connect_args: dict[str, object] = {}
-            ssl_arg = get_database_ssl()
-            if ssl_arg is not None:
-                connect_args["ssl"] = ssl_arg
-                logger.info(
-                    "Postgres backend TLS: %s",
-                    "disabled"
-                    if ssl_arg is False
-                    else "custom CA bundle"
-                    if not isinstance(ssl_arg, bool)
-                    else "verify-full (system CAs)",
-                )
-            settings = get_settings()
-            self.engine = create_async_engine(
-                self.database_url,
-                pool_size=settings.database_pool_size,
-                max_overflow=settings.database_max_overflow,
-                pool_pre_ping=True,
-                connect_args=connect_args,
-                future=True,
-            )
+            self.engine = self._build_postgres_engine()
         self._dialect = self.engine.dialect.name
 
         # Check database state with the SQLAlchemy inspector so the legacy
@@ -510,6 +499,64 @@ class RefreshTokenStorage:
             "Initialized refresh token storage at %s",
             mask_db_password(self.database_url),
         )
+
+    def _build_postgres_engine(self) -> AsyncEngine:
+        """Construct the AsyncEngine for a Postgres ``DATABASE_URL``.
+
+        Split out from :meth:`initialize` so cognitive complexity stays
+        under the SonarQube ``S3776`` threshold and so a future
+        engine-arg unit test has a single seam to mock.
+
+        Defaults to ``pool_size=2, max_overflow=5`` (max 7 connections
+        per pod) — see ADR-026 § "Concurrency model and pool sizing"
+        for the rationale. asyncpg connections are single-flight, so
+        the pool only needs to cover the typical multi-user MCP burst,
+        not every potential in-flight tool call.
+        """
+        # asyncpg ships as an optional PyPI extra (`[postgres]`) so the
+        # default `pip install nextcloud-mcp-server` audience doesn't
+        # pull in the C extension. The Docker image bundles it. Surface
+        # a clear actionable error when the driver is missing rather
+        # than the generic ``ModuleNotFoundError`` SQLAlchemy emits.
+        if "+asyncpg" in self.database_url.lower() and (
+            importlib.util.find_spec("asyncpg") is None
+        ):
+            raise RuntimeError(
+                "DATABASE_URL points at Postgres via asyncpg but the "
+                "'asyncpg' driver is not installed. Install with "
+                "`pip install nextcloud-mcp-server[postgres]` or use "
+                "the Docker image, which bundles it. See ADR-026."
+            )
+
+        # Conditionally pass TLS config through to asyncpg. When
+        # ``get_database_ssl()`` returns None we omit ``ssl`` entirely
+        # so asyncpg's default (``prefer``) applies — keeps
+        # cluster-local Postgres without TLS working out of the box.
+        connect_args: dict[str, object] = {}
+        ssl_arg = get_database_ssl()
+        if ssl_arg is not None:
+            connect_args["ssl"] = ssl_arg
+            logger.info("Postgres backend TLS: %s", _describe_ssl_arg(ssl_arg))
+
+        settings = get_settings()
+        engine = create_async_engine(
+            self.database_url,
+            pool_size=settings.database_pool_size,
+            max_overflow=settings.database_max_overflow,
+            pool_pre_ping=True,
+            connect_args=connect_args,
+            future=True,
+        )
+        # Log the configured sizing so operators can spot
+        # over-allocation at startup without grepping config.
+        logger.info(
+            "Postgres engine ready: pool_size=%d max_overflow=%d "
+            "(per-pod max %d connections)",
+            settings.database_pool_size,
+            settings.database_max_overflow,
+            settings.database_pool_size + settings.database_max_overflow,
+        )
+        return engine
 
     @asynccontextmanager
     async def _db(self):

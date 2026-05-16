@@ -111,13 +111,23 @@ async def test_refresh_token_roundtrip(storage: RefreshTokenStorage):
 
 
 async def test_app_password_roundtrip(storage: RefreshTokenStorage):
-    """Store + retrieve + replace + delete a scoped app password."""
-    await storage.store_app_password(user_id="bob", app_password="pw-1")
-    assert await storage.get_app_password("bob") == "pw-1"
+    """Store + retrieve + replace + delete a scoped app password.
+
+    The ``app_password=`` keyword-arg literals below trigger SonarQube's
+    hard-coded-credential heuristic (``S2068``) even though these are
+    obvious test fixtures with no production reach. The literals are
+    bound to local variables so the NOSONAR marker can anchor to the
+    same line as the literal — SQ doesn't pick up the marker if it
+    sits on a different physical line.
+    """
+    bob_pw_v1 = "pw-1"  # NOSONAR S2068 — localhost test fixture, never deployed
+    await storage.store_app_password(user_id="bob", app_password=bob_pw_v1)
+    assert await storage.get_app_password("bob") == bob_pw_v1
 
     # Replace path exercises the ON CONFLICT DO UPDATE on the singleton row.
-    await storage.store_app_password(user_id="bob", app_password="pw-2")
-    assert await storage.get_app_password("bob") == "pw-2"
+    bob_pw_v2 = "pw-2"  # NOSONAR S2068 — localhost test fixture, never deployed
+    await storage.store_app_password(user_id="bob", app_password=bob_pw_v2)
+    assert await storage.get_app_password("bob") == bob_pw_v2
 
     assert await storage.delete_app_password("bob") is True
     assert await storage.get_app_password("bob") is None
@@ -159,7 +169,8 @@ async def test_webhook_tracking(storage: RefreshTokenStorage):
 
 async def test_audit_log_capture(storage: RefreshTokenStorage):
     """Audit events from upstream methods land in audit_logs."""
-    await storage.store_app_password(user_id="carol", app_password="x")
+    carol_pw = "x"  # NOSONAR S2068 — localhost test fixture, never deployed
+    await storage.store_app_password(user_id="carol", app_password=carol_pw)
     logs = await storage.get_audit_logs(user_id="carol", limit=10)
     assert any(entry["event"] == "store_app_password" for entry in logs)
 
@@ -218,3 +229,26 @@ async def test_cleanup_expired_roundtrip(storage: RefreshTokenStorage):
     assert await storage.get_refresh_token("expired-user") is None
     assert await storage.get_oauth_session("sess-fresh") is not None
     assert await storage.get_oauth_session("sess-stale") is None
+
+
+async def test_browser_session_delete_returning(storage: RefreshTokenStorage):
+    """Exercise the ``DELETE … RETURNING user_id`` path on Postgres.
+
+    ``delete_browser_session`` is the only RETURNING clause in the
+    storage layer and the most dialect-sensitive SQL in this PR — it
+    needed SQLite ≥ 3.35 specifically because of RETURNING. Bot review
+    on PR #798 round 2 flagged that the existing cleanup test didn't
+    actually exercise this path. Asserts both the present and absent
+    cases so the asyncpg result-handling for RETURNING is covered.
+    """
+    await storage.create_browser_session(
+        session_id="bs-returning", user_id="alice", ttl_seconds=600
+    )
+    assert await storage.get_browser_session_user("bs-returning") == "alice"
+
+    assert await storage.delete_browser_session("bs-returning") is True
+    assert await storage.get_browser_session_user("bs-returning") is None
+
+    # Deleting a nonexistent session returns False (RETURNING yields no
+    # row → rowcount path).
+    assert await storage.delete_browser_session("never-existed") is False

@@ -97,6 +97,45 @@ the runtime invokes it from `RefreshTokenStorage.initialize()` via
 The pattern is non-obvious; this note exists so a future maintainer
 doesn't try to "simplify" it back into the main loop.
 
+### Concurrency model and pool sizing
+
+The reviewer's natural reaction to seeing `DATABASE_POOL_SIZE=10` (the
+round-2 default) was: *isn't 1 connection enough for an MCP server?*
+This subsection records why a small pool is right, why 1 is not the
+target default, and what the workload actually looks like.
+
+**asyncpg connection semantics.** Each asyncpg connection is
+**single-flight** — only one query can be in flight at a time on a
+given connection. SQLAlchemy serializes additional requests in the
+pool queue. So the question is never "how many requests does the MCP
+server handle" but "how many concurrent storage operations are in
+flight at the peak".
+
+**MCP storage workload shape.** Each MCP tool call typically performs
+1–3 storage operations: a token lookup (`get_refresh_token` or
+`get_app_password`), maybe an audit-log write, occasionally a session
+update. Lookups are sub-millisecond point queries; writes are short.
+The hot path is read-mostly. No long-running transactions, no batch
+loads.
+
+**Why not 1?** A single-user (homelab) deployment genuinely works on
+`pool_size=1, max_overflow=2`. But the default ships for multi-user
+OAuth deployments where ≥2 concurrent client requests are normal; on
+`pool_size=1` those serialize on a single connection and you measure
+a latency cliff. The defaults `pool_size=2, max_overflow=5` (max 7
+per pod) cover typical multi-user MCP burst with two-replica
+headroom. With 3 k8s replicas the total is 21 connections — well
+under managed-Postgres `max_connections=100` (RDS, CNPG default).
+
+**How to tune.** `DATABASE_POOL_SIZE` / `DATABASE_MAX_OVERFLOW` env
+vars adjust the per-pod pool live (server restart). The startup
+``Postgres engine ready: pool_size=N max_overflow=M (per-pod max K
+connections)`` log line surfaces the active sizing so operators can
+see the per-replica footprint at a glance. For a fleet of N replicas,
+estimate worst-case Postgres connection count as
+`N × (pool_size + max_overflow)` and stay comfortably below the
+server's `max_connections`.
+
 ### TLS for the Postgres backend
 
 Two settings mirror the existing `NEXTCLOUD_VERIFY_SSL` /

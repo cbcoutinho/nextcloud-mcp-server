@@ -111,14 +111,18 @@ def upgrade() -> None:
         ["mcp_authorization_code"],
     )
 
-    # Legacy schema-version table; superseded by alembic_version. Retained
-    # so pre-Alembic databases that get stamped into the migration chain
-    # still match the schema fingerprint they had on disk.
-    op.create_table(
-        "schema_version",
-        sa.Column("version", sa.Integer, primary_key=True, autoincrement=False),
-        sa.Column("applied_at", sa.Float, nullable=False),
-    )
+    # Legacy schema-version table; superseded by alembic_version. Only
+    # created on SQLite because it exists *purely* to match the
+    # fingerprint of pre-Alembic SQLite databases that get stamped into
+    # the migration chain (see ``RefreshTokenStorage.initialize()``).
+    # Fresh Postgres installs have no pre-Alembic history and don't
+    # need it. PR #798 round-3 review (#4).
+    if op.get_bind().dialect.name == "sqlite":
+        op.create_table(
+            "schema_version",
+            sa.Column("version", sa.Integer, primary_key=True, autoincrement=False),
+            sa.Column("applied_at", sa.Float, nullable=False),
+        )
 
     op.create_table(
         "registered_webhooks",
@@ -144,7 +148,9 @@ def downgrade() -> None:
     op.drop_index("idx_webhooks_created", table_name="registered_webhooks")
     op.drop_index("idx_webhooks_preset", table_name="registered_webhooks")
     op.drop_table("registered_webhooks")
-    op.drop_table("schema_version")
+    # ``schema_version`` is only created on SQLite (see ``upgrade()``).
+    if op.get_bind().dialect.name == "sqlite":
+        op.drop_table("schema_version")
     op.drop_index("idx_oauth_sessions_mcp_code", table_name="oauth_sessions")
     op.drop_table("oauth_sessions")
     op.drop_table("oauth_clients")

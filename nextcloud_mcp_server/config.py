@@ -67,12 +67,14 @@ _DEFAULTS: dict[str, Any] = {
     # homelab servers. DATABASE_CA_BUNDLE points at a private-CA PEM.
     "database_verify_ssl": None,
     "database_ca_bundle": None,
-    # Postgres connection pool sizing (ADR-026, reviewer feedback on #798).
-    # Per-pod pool defaults to 10 + 20 overflow = 30 max connections.
-    # With many replicas this can blow past managed-Postgres
-    # `max_connections=100`; tune down via env when needed.
-    "database_pool_size": 10,
-    "database_max_overflow": 20,
+    # Postgres connection pool sizing (ADR-026 → "Concurrency model and
+    # pool sizing"). Per-pod defaults to 2 + 5 overflow = 7 max
+    # connections. asyncpg connections are single-flight, so the pool
+    # only needs to cover typical multi-user MCP burst — not every
+    # potential in-flight tool call. Tune up with DATABASE_POOL_SIZE /
+    # DATABASE_MAX_OVERFLOW for high-traffic prod fleets.
+    "database_pool_size": 2,
+    "database_max_overflow": 5,
     # Webhook delivery authentication (ADR-010): when set, registrations
     # tell NC to add `Authorization: Bearer <secret>` to webhook deliveries
     # and the receiver rejects unauthenticated requests.
@@ -515,9 +517,12 @@ class Settings:
     database_ca_bundle: str | None = None
     # Postgres connection pool sizing (ADR-026). The asyncpg engine maps
     # these to its underlying QueuePool. Per-pod max = pool_size +
-    # max_overflow. Validate >= 1 in __post_init__.
-    database_pool_size: int = 10
-    database_max_overflow: int = 20
+    # max_overflow. Defaults are intentionally small (2 + 5 = 7) because
+    # asyncpg connections are single-flight and the typical MCP workload
+    # is light read-mostly point lookups. Validate >= 1 / >= 0 in
+    # __post_init__.
+    database_pool_size: int = 2
+    database_max_overflow: int = 5
 
     # ADR-005: Token Audience Validation (required for OAuth mode)
     nextcloud_mcp_server_url: str | None = None  # MCP server URL (used as audience)
@@ -1166,7 +1171,15 @@ def get_database_ssl() -> bool | ssl.SSLContext | None:
     if settings.database_verify_ssl is False:
         return False
     if settings.database_ca_bundle:
-        return ssl.create_default_context(cafile=settings.database_ca_bundle)
+        # ``ssl.create_default_context()`` on Python 3.10+ already negotiates
+        # the strongest available protocol (TLS 1.2+ with secure ciphers);
+        # we pin Python 3.11+ in pyproject.toml. ``purpose=SERVER_AUTH`` is
+        # the default but spelt out here so static analysers (SonarQube
+        # ``S4423``) can see it explicitly. NOSONAR S4423
+        return ssl.create_default_context(  # NOSONAR S4423
+            purpose=ssl.Purpose.SERVER_AUTH,
+            cafile=settings.database_ca_bundle,
+        )
     if settings.database_verify_ssl is True:
         return True
     return None

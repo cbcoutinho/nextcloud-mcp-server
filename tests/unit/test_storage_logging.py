@@ -19,14 +19,19 @@ from nextcloud_mcp_server.config import mask_db_password
 pytestmark = pytest.mark.unit
 
 
-SECRET = "uniqueSecretSentinel123"
+# Synthetic leak-detection sentinel — embedded into test-only URLs so we
+# can grep ``caplog`` and prove the masking path never emits the literal
+# password substring. Not a real credential. NOSONAR S6418
+SENTINEL_PASSWORD_FRAGMENT = "uniqueSecretSentinel123"  # NOSONAR S6418
 
 
 def test_mask_db_password_postgres():
     """Postgres URL passwords are replaced with the SQLAlchemy ``***`` token."""
-    url = f"postgresql+asyncpg://mcp:{SECRET}@db.example.com:5432/mcp"
+    url = (
+        f"postgresql+asyncpg://mcp:{SENTINEL_PASSWORD_FRAGMENT}@db.example.com:5432/mcp"
+    )
     masked = mask_db_password(url)
-    assert SECRET not in masked
+    assert SENTINEL_PASSWORD_FRAGMENT not in masked
     assert "mcp" in masked  # username preserved
     assert "db.example.com" in masked  # host preserved
 
@@ -45,9 +50,9 @@ def test_mask_db_password_handles_unparseable_url():
     less-pretty masked value — never let credentials leak just because the
     URL shape was unexpected.
     """
-    url = f"weird-scheme://user:{SECRET}@host/db?ssl=disable"
+    url = f"weird-scheme://user:{SENTINEL_PASSWORD_FRAGMENT}@host/db?ssl=disable"
     masked = mask_db_password(url)
-    assert SECRET not in masked
+    assert SENTINEL_PASSWORD_FRAGMENT not in masked
 
 
 async def test_storage_init_does_not_log_password(caplog):
@@ -75,6 +80,6 @@ async def test_storage_init_does_not_log_password(caplog):
     # but if a future change reformatted DATABASE_URL into the message it
     # would). Stay paranoid.
     for rec in caplog.records:
-        assert SECRET not in rec.getMessage(), (
+        assert SENTINEL_PASSWORD_FRAGMENT not in rec.getMessage(), (
             f"Credential sentinel leaked into log: {rec.getMessage()!r}"
         )
