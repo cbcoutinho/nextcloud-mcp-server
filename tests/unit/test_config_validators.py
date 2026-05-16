@@ -698,6 +698,85 @@ class TestConfigurationConsolidation:
             # Verify background operations were auto-enabled
             assert settings.enable_offline_access is True
 
+    def test_auto_enable_info_log_emitted_at_most_once(self, caplog):
+        """Auto-enable INFO advisory must fire once per process, not per get_settings() call.
+
+        Regression: `get_settings()` is non-cached and called per-request from
+        `get_client()`, so unguarded `logger.info` calls in
+        `_get_background_operations_enabled()` spammed every MCP tool invocation
+        (observed: 569 entries/hour in tenant `tenant-e2e-disc-0033`).
+        """
+        import logging
+
+        with patch.dict(
+            os.environ,
+            {
+                "NEXTCLOUD_HOST": "http://localhost:8080",
+                "ENABLE_SEMANTIC_SEARCH": "true",
+                "QDRANT_LOCATION": ":memory:",
+                "TOKEN_ENCRYPTION_KEY": "test-key",
+                "TOKEN_STORAGE_DB": "/tmp/test.db",
+                # No NEXTCLOUD_USERNAME/PASSWORD → multi-user mode → auto-enable triggers
+            },
+            clear=True,
+        ):
+            from nextcloud_mcp_server.config import get_settings
+
+            _reload_config()
+            caplog.set_level(logging.INFO, logger="nextcloud_mcp_server.config")
+
+            for _ in range(5):
+                settings = get_settings()
+            assert settings.enable_offline_access is True
+
+            auto_enable_records = [
+                r
+                for r in caplog.records
+                if r.name == "nextcloud_mcp_server.config"
+                and "Automatically enabled background operations" in r.message
+            ]
+            assert len(auto_enable_records) == 1, (
+                f"Expected exactly one auto-enable advisory log, "
+                f"got {len(auto_enable_records)}: "
+                f"{[r.message for r in auto_enable_records]}"
+            )
+
+    def test_legacy_offline_access_deprecation_warning_emitted_at_most_once(
+        self, caplog
+    ):
+        """Legacy `ENABLE_OFFLINE_ACCESS` deprecation WARNING is also one-shot."""
+        import logging
+
+        with patch.dict(
+            os.environ,
+            {
+                "NEXTCLOUD_HOST": "http://localhost:8080",
+                "ENABLE_OFFLINE_ACCESS": "true",
+                "TOKEN_ENCRYPTION_KEY": "test-key",
+                "TOKEN_STORAGE_DB": "/tmp/test.db",
+            },
+            clear=True,
+        ):
+            from nextcloud_mcp_server.config import get_settings
+
+            _reload_config()
+            caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
+
+            for _ in range(5):
+                get_settings()
+
+            deprecation_records = [
+                r
+                for r in caplog.records
+                if r.name == "nextcloud_mcp_server.config"
+                and "ENABLE_OFFLINE_ACCESS is deprecated" in r.message
+            ]
+            assert len(deprecation_records) == 1, (
+                f"Expected exactly one deprecation warning, "
+                f"got {len(deprecation_records)}: "
+                f"{[r.message for r in deprecation_records]}"
+            )
+
 
 class TestExplicitModeSelection:
     """Test ADR-021 explicit mode selection via MCP_DEPLOYMENT_MODE.

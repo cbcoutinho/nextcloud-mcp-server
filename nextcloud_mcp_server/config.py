@@ -819,23 +819,25 @@ def _is_multi_user_mode() -> bool:
     return True
 
 
-def _get_background_operations_enabled() -> bool:
-    """Get background operations enabled status with auto-enablement for semantic search.
+# Per-process guard for the three advisory log messages emitted by
+# `_get_background_operations_enabled()`. The function runs on every
+# `get_settings()` call (per ADR-024 / dynaconf design `get_settings()` is
+# intentionally non-cached), so unguarded `logger.info`/`logger.warning`
+# calls spam every MCP tool invocation. Mirrors the precedent at
+# `nextcloud_mcp_server/vector/webhook_receiver.py:_warn_missing_secret_once`.
+_bg_ops_advisories_logged: bool = False
 
-    Supports:
-    - ENABLE_BACKGROUND_OPERATIONS (new, preferred)
-    - ENABLE_OFFLINE_ACCESS (old, deprecated)
-    - Auto-enabled if ENABLE_SEMANTIC_SEARCH=true in multi-user modes
 
-    Returns:
-        True if background operations should be enabled
-    """
+def _log_bg_ops_advisories_once(
+    explicit: bool, legacy: bool, auto_enabled: bool
+) -> None:
+    """Emit ENABLE_BACKGROUND_OPERATIONS advisory logs at most once per process."""
+    global _bg_ops_advisories_logged
+    if _bg_ops_advisories_logged:
+        return
+    _bg_ops_advisories_logged = True
+
     logger = logging.getLogger(__name__)
-
-    # Check new and old variable names
-    explicit = _dynaconf.get("ENABLE_BACKGROUND_OPERATIONS", False)
-    legacy = _dynaconf.get("ENABLE_OFFLINE_ACCESS", False)
-
     if explicit and legacy:
         logger.warning(
             "Both ENABLE_BACKGROUND_OPERATIONS and ENABLE_OFFLINE_ACCESS are set. "
@@ -848,17 +850,31 @@ def _get_background_operations_enabled() -> bool:
             "Please use ENABLE_BACKGROUND_OPERATIONS instead. "
             "Support for ENABLE_OFFLINE_ACCESS will be removed in v1.0.0."
         )
-
-    # Auto-enable if semantic search is enabled in multi-user mode
-    semantic_search_enabled = _get_semantic_search_enabled()
-    is_multi_user = _is_multi_user_mode()
-    auto_enabled = semantic_search_enabled and is_multi_user
-
     if auto_enabled and not (explicit or legacy):
         logger.info(
             "Automatically enabled background operations for semantic search in multi-user mode. "
             "Set ENABLE_BACKGROUND_OPERATIONS=false to disable (this will also disable semantic search)."
         )
+
+
+def _get_background_operations_enabled() -> bool:
+    """Get background operations enabled status with auto-enablement for semantic search.
+
+    Supports:
+    - ENABLE_BACKGROUND_OPERATIONS (new, preferred)
+    - ENABLE_OFFLINE_ACCESS (old, deprecated)
+    - Auto-enabled if ENABLE_SEMANTIC_SEARCH=true in multi-user modes
+
+    Returns:
+        True if background operations should be enabled
+    """
+    explicit = _dynaconf.get("ENABLE_BACKGROUND_OPERATIONS", False)
+    legacy = _dynaconf.get("ENABLE_OFFLINE_ACCESS", False)
+    semantic_search_enabled = _get_semantic_search_enabled()
+    is_multi_user = _is_multi_user_mode()
+    auto_enabled = semantic_search_enabled and is_multi_user
+
+    _log_bg_ops_advisories_once(explicit, legacy, auto_enabled)
 
     return explicit or legacy or auto_enabled
 

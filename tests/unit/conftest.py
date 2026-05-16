@@ -16,6 +16,7 @@ def _reload_dynaconf_after_test():
     validation should call _reload_config() explicitly.
     """
     yield
-    from nextcloud_mcp_server.config import _dynaconf
+    from nextcloud_mcp_server import config as _config
 
-    _dynaconf.reload()
+    _config._dynaconf.reload()
+    _config._bg_ops_advisories_logged = False
