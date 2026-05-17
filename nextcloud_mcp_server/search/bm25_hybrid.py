@@ -120,7 +120,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
 
         # Generate sparse embedding for BM25 keyword search
         with trace_operation("search.get_bm25_service"):
-            bm25_service = get_bm25_service()
+            bm25_service = await get_bm25_service()
         with trace_operation("search.sparse_embedding_bm25"):
             sparse_embedding = await bm25_service.encode_async(query)
         logger.debug(
