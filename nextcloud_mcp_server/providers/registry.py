@@ -55,18 +55,22 @@ class ProviderRegistry:
             settings.aws_region
             or settings.bedrock_embedding_model
             or settings.bedrock_generation_model
+            or settings.bedrock_image_embedding_model
         ):
             logger.info(
                 "Using Bedrock provider: region=%s, embedding_model=%s, "
-                "generation_model=%s",
+                "generation_model=%s, image_embedding_model=%s",
                 settings.aws_region,
                 settings.bedrock_embedding_model,
                 settings.bedrock_generation_model,
+                settings.bedrock_image_embedding_model,
             )
             return BedrockProvider(
                 region_name=settings.aws_region,
                 embedding_model=settings.bedrock_embedding_model,
                 generation_model=settings.bedrock_generation_model,
+                image_embedding_model=settings.bedrock_image_embedding_model,
+                image_output_dim=settings.bedrock_image_output_dim,
                 aws_access_key_id=settings.aws_access_key_id,
                 aws_secret_access_key=settings.aws_secret_access_key,
             )

@@ -1,5 +1,6 @@
 """Amazon Bedrock provider for embeddings and text generation."""
 
+import base64
 import json
 import logging
 from typing import Any
@@ -15,6 +16,10 @@ except ImportError:
 from .base import Provider
 
 logger = logging.getLogger(__name__)
+
+# Cohere Embed v4 documents up to 96 images per /v2/embed call; chunk well
+# under that to leave headroom for serialization and avoid 400s on edge sizes.
+_COHERE_IMAGE_BATCH_SIZE = 64
 
 
 class BedrockProvider(Provider):
@@ -36,6 +41,8 @@ class BedrockProvider(Provider):
         region_name: str | None = None,
         embedding_model: str | None = None,
         generation_model: str | None = None,
+        image_embedding_model: str | None = None,
+        image_output_dim: int = 1024,
         aws_access_key_id: str | None = None,
         aws_secret_access_key: str | None = None,
     ):
@@ -44,10 +51,15 @@ class BedrockProvider(Provider):
 
         Args:
             region_name: AWS region (e.g., "us-east-1"). Defaults to AWS_REGION env var.
-            embedding_model: Model ID for embeddings (e.g., "amazon.titan-embed-text-v2:0").
-                None disables embeddings.
+            embedding_model: Model ID for text embeddings (e.g., "amazon.titan-embed-text-v2:0").
+                None disables text embeddings.
             generation_model: Model ID for text generation (e.g., "anthropic.claude-3-sonnet-20240229-v1:0").
                 None disables generation.
+            image_embedding_model: Model ID for joint text-image embeddings
+                (e.g., "amazon.titan-embed-image-v1", "cohere.embed-v4:0").
+                None disables image embeddings.
+            image_output_dim: Output dimension for Titan Multimodal G1 (256, 384, or 1024).
+                Ignored by Cohere and other models.
             aws_access_key_id: AWS access key (optional, uses default credential chain if not provided)
             aws_secret_access_key: AWS secret key (optional, uses default credential chain if not provided)
 
@@ -61,7 +73,10 @@ class BedrockProvider(Provider):
 
         self.embedding_model = embedding_model
         self.generation_model = generation_model
+        self.image_embedding_model = image_embedding_model
+        self.image_output_dim = image_output_dim
         self._dimension: int | None = None  # Detected dynamically
+        self._image_dimension: int | None = None  # Detected on first image embed
 
         # Initialize bedrock-runtime client
         client_kwargs: dict[str, Any] = {}
@@ -75,10 +90,12 @@ class BedrockProvider(Provider):
         self.client = boto3.client("bedrock-runtime", **client_kwargs)
 
         logger.info(
-            "Initialized Bedrock provider in region %s (embedding_model=%s, generation_model=%s)",
+            "Initialized Bedrock provider in region %s "
+            "(embedding_model=%s, generation_model=%s, image_embedding_model=%s)",
             region_name or "default",
             embedding_model,
             generation_model,
+            image_embedding_model,
         )
 
     @property
@@ -254,6 +271,173 @@ class BedrockProvider(Provider):
                 "Call _detect_dimension() first or generate an embedding."
             )
         return self._dimension
+
+    @property
+    def supports_image_embeddings(self) -> bool:
+        return self.image_embedding_model is not None
+
+    def _create_image_embedding_request(
+        self,
+        *,
+        image_b64s: list[str] | None = None,
+        text: str | None = None,
+        mime_type: str = "image/jpeg",
+        cohere_input_type: str = "search_document",
+    ) -> dict[str, Any]:
+        """Build the Bedrock invoke_model body for the configured image model.
+
+        For Cohere, pass 1+ images via ``image_b64s`` (the API natively batches).
+        For Titan G1, ``image_b64s`` must have length ≤1 — it only accepts a
+        single image per call.
+        """
+        if not self.image_embedding_model:
+            raise NotImplementedError(
+                "Image embeddings not supported - no image_embedding_model configured"
+            )
+
+        if self.image_embedding_model.startswith("amazon.titan-embed-image"):
+            if image_b64s and len(image_b64s) > 1:
+                raise ValueError(
+                    "Titan Multimodal G1 accepts only one image per call; "
+                    "callers must iterate via embed_image()"
+                )
+            body: dict[str, Any] = {
+                "embeddingConfig": {"outputEmbeddingLength": self.image_output_dim},
+            }
+            if image_b64s:
+                body["inputImage"] = image_b64s[0]
+            if text is not None:
+                body["inputText"] = text
+            return body
+
+        if self.image_embedding_model.startswith("cohere.embed"):
+            body = {
+                "input_type": cohere_input_type,
+                "embedding_types": ["float"],
+            }
+            if image_b64s:
+                body["images"] = [f"data:{mime_type};base64,{b}" for b in image_b64s]
+            if text is not None:
+                body["texts"] = [text]
+            return body
+
+        raise ValueError(
+            f"Unsupported image embedding model: {self.image_embedding_model}"
+        )
+
+    def _parse_image_embedding_response(
+        self, response: dict[str, Any]
+    ) -> list[list[float]]:
+        """Return the list of vectors from a multimodal embedding response.
+
+        Always returns a list (length 1 for single-input models like Titan).
+        """
+        model = self.image_embedding_model or ""
+        if model.startswith("amazon.titan-embed-image"):
+            if response.get("message"):
+                raise RuntimeError(
+                    f"Titan multimodal embedding error: {response['message']}"
+                )
+            return [response["embedding"]]
+        if model.startswith("cohere.embed"):
+            return response["embeddings"]["float"]
+        raise ValueError(f"Unsupported image embedding model: {model}")
+
+    def _invoke_image_model(self, body: dict[str, Any]) -> dict[str, Any]:
+        if not self.image_embedding_model:
+            raise NotImplementedError(
+                "Image embeddings not supported - no image_embedding_model configured"
+            )
+        try:
+            response = self.client.invoke_model(
+                modelId=self.image_embedding_model,
+                body=json.dumps(body),
+                accept="application/json",
+                contentType="application/json",
+            )
+            return json.loads(response["body"].read())
+        except (BotoCoreError, ClientError) as e:
+            logger.error("Bedrock image embedding error: %s", e)
+            raise
+
+    def _remember_image_dim(self, vector: list[float]) -> None:
+        if self._image_dimension is None:
+            self._image_dimension = len(vector)
+            logger.info(
+                "Detected image embedding dimension: %s for model %s",
+                self._image_dimension,
+                self.image_embedding_model,
+            )
+
+    async def embed_image(
+        self, image: bytes, mime_type: str = "image/jpeg"
+    ) -> list[float]:
+        if not self.supports_image_embeddings:
+            raise NotImplementedError(
+                "Image embeddings not supported - no image_embedding_model configured"
+            )
+        b64 = base64.b64encode(image).decode()
+        body = self._create_image_embedding_request(
+            image_b64s=[b64], mime_type=mime_type
+        )
+        vectors = self._parse_image_embedding_response(self._invoke_image_model(body))
+        self._remember_image_dim(vectors[0])
+        return vectors[0]
+
+    async def embed_image_batch(
+        self, images: list[bytes], mime_type: str = "image/jpeg"
+    ) -> list[list[float]]:
+        if not self.supports_image_embeddings:
+            raise NotImplementedError(
+                "Image embeddings not supported - no image_embedding_model configured"
+            )
+        if not images:
+            return []
+
+        model = self.image_embedding_model or ""
+
+        if model.startswith("cohere.embed"):
+            results: list[list[float]] = []
+            for i in range(0, len(images), _COHERE_IMAGE_BATCH_SIZE):
+                chunk = images[i : i + _COHERE_IMAGE_BATCH_SIZE]
+                b64s = [base64.b64encode(img).decode() for img in chunk]
+                body = self._create_image_embedding_request(
+                    image_b64s=b64s, mime_type=mime_type
+                )
+                vectors = self._parse_image_embedding_response(
+                    self._invoke_image_model(body)
+                )
+                results.extend(vectors)
+            self._remember_image_dim(results[0])
+            return results
+
+        # Titan and unknown models: sequential fallback
+        return [await self.embed_image(img, mime_type) for img in images]
+
+    async def embed_for_image_space(self, text: str) -> list[float]:
+        if not self.supports_image_embeddings:
+            raise NotImplementedError(
+                "Image embeddings not supported - no image_embedding_model configured"
+            )
+        body = self._create_image_embedding_request(
+            text=text, cohere_input_type="search_query"
+        )
+        vectors = self._parse_image_embedding_response(self._invoke_image_model(body))
+        self._remember_image_dim(vectors[0])
+        return vectors[0]
+
+    def get_image_dimension(self) -> int:
+        if not self.supports_image_embeddings:
+            raise NotImplementedError(
+                "Image embeddings not supported - no image_embedding_model configured"
+            )
+        if self._image_dimension is None:
+            raise RuntimeError(
+                f"Image embedding dimension not detected yet for model "
+                f"{self.image_embedding_model}. Call embed_image() or "
+                f"embed_for_image_space() first."
+            )
+        return self._image_dimension
 
     def _create_generation_request(
         self, prompt: str, max_tokens: int
