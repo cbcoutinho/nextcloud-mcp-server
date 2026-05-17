@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.87.0 (2026-05-17)
+
+### Feat
+
+- **storage**: pluggable database backend via DATABASE_URL (ADR-026)
+
+### Fix
+
+- **storage**: address PR #798 round-4 review (NOSONAR syntax + pg_advisory_lock + engine dispose + nits)
+- **storage**: address PR #798 round-3 review (SonarQube + pool sizing + RETURNING test)
+- **storage**: address PR #798 review feedback (credentials, asyncpg extra, TLS, pool)
+
 ## v0.86.4 (2026-05-16)
 
 ### Fix
