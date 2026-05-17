@@ -600,7 +600,7 @@ async def _index_document(
                 "vector_sync.chunk_count": len(chunk_texts),
             },
         ):
-            bm25_service = get_bm25_service()
+            bm25_service = await get_bm25_service()
             sparse_embeddings = await bm25_service.encode_batch(chunk_texts)
 
     async def generate_highlights():
