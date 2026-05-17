@@ -138,15 +138,15 @@ TOKEN_ENCRYPTION_KEY=<fernet-key>
 | `TOKEN_STORAGE_DB` | Optional | Legacy SQLite-only path. Used when `DATABASE_URL` is unset. Falls back to a per-process ephemeral tempfile when both are unset. |
 | `DATABASE_VERIFY_SSL` | Optional | TLS verification toggle for the Postgres backend. Unset (default) → asyncpg's `prefer` mode (TLS if offered, no verification — keeps cluster-internal Postgres working). `true` → full cert verification. `false` → silence cert errors (homelab / self-signed). |
 | `DATABASE_CA_BUNDLE` | Optional | Path to a PEM file containing a private CA. Implies `DATABASE_VERIFY_SSL=true`. Use this for self-hosted Postgres signed by your homelab CA instead of disabling verification. |
-| `DATABASE_POOL_SIZE` | Optional (default `2`) | Per-pod SQLAlchemy connection pool size for the Postgres backend. asyncpg connections are single-flight, so this only needs to cover concurrent storage ops (not concurrent tool calls). See [ADR-026 § Concurrency model and pool sizing](ADR-026-pluggable-database-backend.md). |
-| `DATABASE_MAX_OVERFLOW` | Optional (default `5`) | Per-pod burst connections beyond `DATABASE_POOL_SIZE`. Max per-pod = `pool_size + max_overflow` (default 7). Set to `0` for a hard cap. With 3 replicas the default totals 21 connections — well under managed-Postgres `max_connections=100`. |
+| `DATABASE_POOL_SIZE` | Deprecated, no-op | Was per-pod SQLAlchemy pool size for the Postgres backend. The engine now uses `NullPool` (one fresh asyncpg connection per checkout) to avoid cross-event-loop crashes under anyio TaskGroups — see [ADR-026 § Connection pool](ADR-026-pluggable-database-backend.md) and [#799](https://github.com/cbcoutinho/nextcloud-mcp-server/pull/799). Still accepted for backward compatibility; setting it has no effect. |
+| `DATABASE_MAX_OVERFLOW` | Deprecated, no-op | Was per-pod burst connection cap on top of `DATABASE_POOL_SIZE`. Now ignored (see above). |
 
-Operators with very high concurrency (many MCP clients per pod, or
-expensive Nextcloud round-trips holding storage locks) should tune these
-up; single-user / homelab deployments can drop to `DATABASE_POOL_SIZE=1
-DATABASE_MAX_OVERFLOW=2` for the smallest possible footprint. The
-server logs the configured sizes at startup so over-allocation is
-visible without grepping config.
+The asyncpg engine is `NullPool`-only: each `engine.connect()` opens
+and tears down a fresh asyncpg connection in the caller's current
+event loop. On LAN-local Postgres the per-connection overhead is a
+single round-trip (~5 ms), so the throughput cost is negligible for
+the MCP server's traffic shape (low concurrency, bursty per-user
+requests).
 
 Homelab example (self-signed Postgres with a private CA):
 
