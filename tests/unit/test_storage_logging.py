@@ -21,8 +21,8 @@ pytestmark = pytest.mark.unit
 
 # Synthetic leak-detection sentinel — embedded into test-only URLs so we
 # can grep ``caplog`` and prove the masking path never emits the literal
-# password substring. Not a real credential. NOSONAR S6418
-SENTINEL_PASSWORD_FRAGMENT = "uniqueSecretSentinel123"  # NOSONAR S6418
+# password substring. Not a real credential.
+SENTINEL_PASSWORD_FRAGMENT = "uniqueSecretSentinel123"  # NOSONAR
 
 
 def test_mask_db_password_postgres():

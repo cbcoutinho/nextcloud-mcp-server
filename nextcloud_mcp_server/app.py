@@ -599,6 +599,12 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
         logger.info("Shutting down BasicAuth session")
         if client is not None:
             await client.close()
+        # Dispose the storage engine so pooled asyncpg connections drain
+        # cleanly on SIGTERM (ADR-026, PR #798 round-4).
+        try:
+            await storage.close()
+        except Exception as e:
+            logger.warning("Error disposing storage: %s", e)
 
 
 async def setup_oauth_config():
@@ -1229,7 +1235,15 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 )
             finally:
                 logger.info("Shutting down MCP server")
-                # RefreshTokenStorage uses context managers, no close() needed
+                # Dispose the RefreshTokenStorage engine so pooled
+                # asyncpg connections drain cleanly on SIGTERM instead
+                # of leaking server-side slots until the Postgres
+                # idle-timeout fires (ADR-026, PR #798 round-4).
+                if refresh_token_storage is not None:
+                    try:
+                        await refresh_token_storage.close()
+                    except Exception as e:
+                        logger.warning("Error disposing refresh-token storage: %s", e)
                 # OAuth client cleanup (if it has a close method)
                 if oauth_client and hasattr(oauth_client, "close"):
                     try:

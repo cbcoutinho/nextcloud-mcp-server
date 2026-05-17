@@ -318,6 +318,11 @@ def get_database_url() -> str:
 def is_sqlite_url(url: str) -> bool:
     """Return True for SQLite SQLAlchemy URLs (used to gate sqlite-only logic
     like file-permission hardening and ``sqlite_master`` legacy lookups).
+
+    Recognizes both file-backed (``sqlite+aiosqlite:///path/to/db``) and
+    in-memory (``sqlite+aiosqlite:///:memory:``) URLs. The caller is
+    responsible for handling ``:memory:`` as a magic value where a real
+    filesystem path is expected.
     """
     return url.lower().startswith("sqlite")
 
@@ -1169,14 +1174,18 @@ def get_database_ssl() -> bool | ssl.SSLContext | None:
     """
     settings = get_settings()
     if settings.database_verify_ssl is False:
-        return False
+        # Operator-explicit opt-out (DATABASE_VERIFY_SSL=false) — semantics
+        # are documented in the docstring above and ADR-026 TLS section.
+        # Bare NOSONAR silences any cert-verification-required rule that
+        # may fire on this branch (defensive; no such rule fires today).
+        return False  # NOSONAR
     if settings.database_ca_bundle:
         # ``ssl.create_default_context()`` on Python 3.10+ already negotiates
         # the strongest available protocol (TLS 1.2+ with secure ciphers);
         # we pin Python 3.11+ in pyproject.toml. ``purpose=SERVER_AUTH`` is
-        # the default but spelt out here so static analysers (SonarQube
-        # ``S4423``) can see it explicitly. NOSONAR S4423
-        return ssl.create_default_context(  # NOSONAR S4423
+        # the default but spelt out here so the intent is visible to
+        # static analysers and human readers alike.
+        return ssl.create_default_context(  # NOSONAR
             purpose=ssl.Purpose.SERVER_AUTH,
             cafile=settings.database_ca_bundle,
         )

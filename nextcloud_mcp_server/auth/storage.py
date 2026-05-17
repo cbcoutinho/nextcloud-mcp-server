@@ -31,6 +31,7 @@ Token storage requires TOKEN_ENCRYPTION_KEY, but webhook tracking does not.
 Sensitive data (tokens, secrets) is encrypted at rest using Fernet symmetric encryption.
 """
 
+import hashlib
 import importlib.util
 import json
 import logging
@@ -62,6 +63,17 @@ from nextcloud_mcp_server.migrations import stamp_database, upgrade_database
 from nextcloud_mcp_server.observability.metrics import record_db_operation
 
 logger = logging.getLogger(__name__)
+
+
+# Stable 64-bit signed integer used for the Postgres advisory-lock that
+# serializes concurrent Alembic migrations across pods (ADR-026 →
+# "Concurrent migrations"). Derived from a SHA-256 of a project-scoped
+# string so we can't collide with other apps sharing the same DB.
+_MIGRATION_LOCK_ID = int.from_bytes(
+    hashlib.sha256(b"nextcloud-mcp-server:migrations").digest()[:8],
+    "big",
+    signed=True,
+)
 
 
 def _qmark_to_named(sql: str) -> tuple[str, list[str]]:
@@ -205,14 +217,15 @@ class _Cursor:
     async def fetchall(self) -> list[_Row]:
         return _wrap_rows(self._result.fetchall())
 
-    # NOSONAR S7503 on the next two methods — Python's async-context-manager
-    # protocol *requires* ``__aenter__`` / ``__aexit__`` to be coroutines
-    # even when the body has nothing to await; dropping ``async`` would
-    # break ``async with _Cursor(...)``.
-    async def __aenter__(self) -> "_Cursor":  # NOSONAR S7503
+    # Python's async-context-manager protocol *requires* ``__aenter__`` and
+    # ``__aexit__`` to be coroutines even when the body has nothing to
+    # await; dropping ``async`` would break ``async with _Cursor(...)``.
+    # The bare ``# NOSONAR`` markers below silence ``python:S7503``
+    # ("async function with no await") for that protocol-mandated reason.
+    async def __aenter__(self) -> "_Cursor":  # NOSONAR
         return self
 
-    async def __aexit__(self, *exc: object) -> None:  # NOSONAR S7503
+    async def __aexit__(self, *exc: object) -> None:  # NOSONAR
         # SQLAlchemy Result closes when the connection closes; no-op here.
         return None
 
@@ -334,10 +347,17 @@ class RefreshTokenStorage:
         self.database_url = database_url
         # Legacy attribute retained for sqlite-only code paths (file perms,
         # ephemeral tempfile detection, log messages). Empty string for
-        # non-sqlite URLs so accidental file ops fail loudly.
-        self.db_path = (
-            database_url.split("///", 1)[1] if is_sqlite_url(database_url) else ""
-        )
+        # non-sqlite URLs so accidental file ops fail loudly. We delegate
+        # the parsing to SQLAlchemy's ``make_url`` rather than splitting
+        # on ``///`` — same result for both 3-slash (relative) and
+        # 4-slash (absolute) SQLite URLs, plus correct handling of the
+        # in-memory ``:memory:`` form (``.database`` is ``None`` there).
+        if is_sqlite_url(database_url):
+            from sqlalchemy.engine.url import make_url  # noqa: PLC0415
+
+            self.db_path = make_url(database_url).database or ""
+        else:
+            self.db_path = ""
         self.cipher = Fernet(encryption_key) if encryption_key else None
         self.engine: AsyncEngine | None = None
         self._dialect: str = "unknown"
@@ -466,30 +486,37 @@ class RefreshTokenStorage:
             tables = set(insp.get_table_names())
             return ("alembic_version" in tables), ("refresh_tokens" in tables)
 
-        async with self.engine.connect() as conn:
-            has_alembic, has_schema = await conn.run_sync(_inspect)
+        # Hold the advisory lock across BOTH the inspect and the migration
+        # call so two pods racing the rolling-update can't both see "no
+        # alembic_version" and both try to run from scratch. The lock is a
+        # no-op on SQLite (file-level locking serializes writes natively).
+        async with self._migration_lock():
+            async with self.engine.connect() as conn:
+                has_alembic, has_schema = await conn.run_sync(_inspect)
 
-        if not has_alembic:
-            if has_schema:
-                logger.info(
-                    "Detected pre-Alembic database at %s, stamping with initial revision",
-                    mask_db_password(self.database_url),
-                )
-                await to_thread.run_sync(stamp_database, self.database_url, "001")
-                logger.info(
-                    "Pre-Alembic database stamped successfully. "
-                    "Future schema changes will use migrations."
-                )
+            if not has_alembic:
+                if has_schema:
+                    logger.info(
+                        "Detected pre-Alembic database at %s, stamping with initial revision",
+                        mask_db_password(self.database_url),
+                    )
+                    await to_thread.run_sync(stamp_database, self.database_url, "001")
+                    logger.info(
+                        "Pre-Alembic database stamped successfully. "
+                        "Future schema changes will use migrations."
+                    )
+                else:
+                    logger.info(
+                        "Initializing new database at %s with migrations",
+                        mask_db_password(self.database_url),
+                    )
+                    await to_thread.run_sync(
+                        upgrade_database, self.database_url, "head"
+                    )
+                    logger.info("Database initialized with migrations")
             else:
-                logger.info(
-                    "Initializing new database at %s with migrations",
-                    mask_db_password(self.database_url),
-                )
                 await to_thread.run_sync(upgrade_database, self.database_url, "head")
-                logger.info("Database initialized with migrations")
-        else:
-            await to_thread.run_sync(upgrade_database, self.database_url, "head")
-            logger.info("Database upgraded to latest version")
+                logger.info("Database upgraded to latest version")
 
         if is_sqlite:
             os.chmod(self.db_path, 0o600)
@@ -557,6 +584,64 @@ class RefreshTokenStorage:
             settings.database_pool_size + settings.database_max_overflow,
         )
         return engine
+
+    async def close(self) -> None:
+        """Dispose the underlying AsyncEngine on shutdown.
+
+        Without an explicit dispose, asyncpg's pooled connections leak
+        server-side slots until the Postgres
+        ``idle_in_transaction_session_timeout`` reaps them — with the
+        small pool defaults and frequent k8s rolling restarts this can
+        starve ``max_connections``. Idempotent: safe to call from any
+        number of shutdown hooks.
+        """
+        if self.engine is None:
+            return
+        await self.engine.dispose()
+        self.engine = None
+        self._initialized = False
+        logger.info("Disposed token storage engine")
+
+    @asynccontextmanager
+    async def _migration_lock(self):
+        """Serialize concurrent Alembic migrations across pods (ADR-026).
+
+        Without this, two pods rolling-updating at the same time can race
+        Alembic's version-table UPDATE and both try to apply migrations
+        from scratch — the second one crashes with "relation already
+        exists". On Postgres we acquire a session-level
+        :func:`pg_advisory_lock` so the second pod blocks until the
+        first finishes. SQLite serializes writes via its own file lock
+        and needs no extra coordination, so this is a no-op there.
+
+        The lock is held on a separate connection from the engine pool
+        so it survives the worker-thread ``to_thread.run_sync`` call
+        that actually runs Alembic.
+        """
+        assert self.engine is not None, "engine must be built before migration lock"
+        if is_sqlite_url(self.database_url):
+            yield
+            return
+
+        async with self.engine.connect() as conn:
+            await conn.execute(
+                sa.text("SELECT pg_advisory_lock(:lock_id)"),
+                {"lock_id": _MIGRATION_LOCK_ID},
+            )
+            logger.debug(
+                "Acquired Postgres advisory migration lock %s", _MIGRATION_LOCK_ID
+            )
+            try:
+                yield
+            finally:
+                await conn.execute(
+                    sa.text("SELECT pg_advisory_unlock(:lock_id)"),
+                    {"lock_id": _MIGRATION_LOCK_ID},
+                )
+                logger.debug(
+                    "Released Postgres advisory migration lock %s",
+                    _MIGRATION_LOCK_ID,
+                )
 
     @asynccontextmanager
     async def _db(self):
@@ -1312,7 +1397,12 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        query = "SELECT * FROM audit_logs WHERE 1=1"
+        # Explicit column list (not ``SELECT *``) so future audit_logs
+        # schema additions don't silently leak into the dict return.
+        query = (
+            "SELECT id, timestamp, event, user_id, resource_type, "
+            "resource_id, auth_method, hostname FROM audit_logs WHERE 1=1"
+        )
         params = []
 
         if user_id:
@@ -1327,7 +1417,11 @@ class RefreshTokenStorage:
         params.append(limit)
 
         async with self._db() as db:
-            async with db.execute(query, params) as cursor:
+            # ``query`` is built via string concatenation, but the fragments
+            # come only from this function's branches above (no
+            # user-controlled SQL); user input flows through ``params``.
+            # Bare ``# NOSONAR`` silences taint analysers; defensive.
+            async with db.execute(query, params) as cursor:  # NOSONAR
                 rows = await cursor.fetchall()
 
         return [dict(row) for row in rows]
@@ -1503,12 +1597,18 @@ class RefreshTokenStorage:
         params.append(session_id)
 
         async with self._db() as db:
+            # ``update_fields`` only ever contains hardcoded ``"col = ?"``
+            # literals from this function's branches above — there is no
+            # user-controlled input in the SQL string itself, only in the
+            # ``params`` bound below. Bare ``# NOSONAR`` silences taint
+            # analysers that flag f-string SQL construction (e.g.
+            # ``python:S2077``); no such rule fires today, defensive.
             cursor = await db.execute(
                 f"""
                 UPDATE oauth_sessions
                 SET {", ".join(update_fields)}
                 WHERE session_id = ?
-                """,
+                """,  # NOSONAR
                 params,
             )
             await db.commit()

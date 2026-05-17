@@ -136,6 +136,30 @@ estimate worst-case Postgres connection count as
 `N × (pool_size + max_overflow)` and stay comfortably below the
 server's `max_connections`.
 
+### Concurrent migrations across pods
+
+When `replicas: N` rolling-update restarts, multiple pods race
+`RefreshTokenStorage.initialize()` simultaneously. Alembic's
+version-table UPDATE isn't write-locked across connections by
+default; without coordination, two pods can both observe
+"no `alembic_version` table" and both try to apply migrations from
+scratch — the second one crashes with `relation … already exists`.
+
+We serialize this with a session-level Postgres advisory lock
+(`SELECT pg_advisory_lock(:lock_id)`) acquired in `_migration_lock()`
+and held across BOTH the schema inspection and the migration call.
+The lock ID is a stable 64-bit integer derived from
+`sha256("nextcloud-mcp-server:migrations")[:8]` so we can't collide
+with other apps that happen to share the same Postgres instance.
+The second pod blocks at the advisory-lock call until the first pod
+finishes; it then re-inspects the schema, sees the now-populated
+`alembic_version` table, and takes the no-op upgrade fast path.
+
+SQLite needs no equivalent: file-level locking serializes writes
+natively, so the second process waits on the file lock and then
+sees the migrated schema. Covered by
+`tests/integration/test_storage_postgres.py::test_concurrent_initialize_serialized_by_advisory_lock`.
+
 ### TLS for the Postgres backend
 
 Two settings mirror the existing `NEXTCLOUD_VERIFY_SSL` /

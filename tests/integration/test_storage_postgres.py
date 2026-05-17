@@ -113,19 +113,18 @@ async def test_refresh_token_roundtrip(storage: RefreshTokenStorage):
 async def test_app_password_roundtrip(storage: RefreshTokenStorage):
     """Store + retrieve + replace + delete a scoped app password.
 
-    The ``app_password=`` keyword-arg literals below trigger SonarQube's
-    hard-coded-credential heuristic (``S2068``) even though these are
-    obvious test fixtures with no production reach. The literals are
-    bound to local variables so the NOSONAR marker can anchor to the
-    same line as the literal — SQ doesn't pick up the marker if it
-    sits on a different physical line.
+    The ``app_password=`` keyword-arg literals are bound to local
+    variables so the bare ``# NOSONAR`` marker can anchor to the same
+    physical line as the literal — SonarQube's hard-coded-credential
+    heuristic ignores the marker otherwise. These are localhost test
+    fixtures with no production reach.
     """
-    bob_pw_v1 = "pw-1"  # NOSONAR S2068 — localhost test fixture, never deployed
+    bob_pw_v1 = "pw-1"  # NOSONAR
     await storage.store_app_password(user_id="bob", app_password=bob_pw_v1)
     assert await storage.get_app_password("bob") == bob_pw_v1
 
     # Replace path exercises the ON CONFLICT DO UPDATE on the singleton row.
-    bob_pw_v2 = "pw-2"  # NOSONAR S2068 — localhost test fixture, never deployed
+    bob_pw_v2 = "pw-2"  # NOSONAR
     await storage.store_app_password(user_id="bob", app_password=bob_pw_v2)
     assert await storage.get_app_password("bob") == bob_pw_v2
 
@@ -169,7 +168,7 @@ async def test_webhook_tracking(storage: RefreshTokenStorage):
 
 async def test_audit_log_capture(storage: RefreshTokenStorage):
     """Audit events from upstream methods land in audit_logs."""
-    carol_pw = "x"  # NOSONAR S2068 — localhost test fixture, never deployed
+    carol_pw = "x"  # NOSONAR
     await storage.store_app_password(user_id="carol", app_password=carol_pw)
     logs = await storage.get_audit_logs(user_id="carol", limit=10)
     assert any(entry["event"] == "store_app_password" for entry in logs)
@@ -252,3 +251,75 @@ async def test_browser_session_delete_returning(storage: RefreshTokenStorage):
     # Deleting a nonexistent session returns False (RETURNING yields no
     # row → rowcount path).
     assert await storage.delete_browser_session("never-existed") is False
+
+
+async def test_close_disposes_engine(postgres_url: str, reset_schema):
+    """``close()`` releases pooled asyncpg connections and is idempotent.
+
+    PR #798 round-4 review (bot #4): the engine wasn't being disposed on
+    shutdown, leaking server-side connection slots until the Postgres
+    idle-in-transaction timeout fired. This test confirms ``close()``
+    nulls the engine, leaves the storage in a non-initialized state,
+    and a second ``close()`` call is a no-op rather than an exception.
+    """
+    s = RefreshTokenStorage(
+        database_url=postgres_url, encryption_key=Fernet.generate_key()
+    )
+    await s.initialize()
+    assert s.engine is not None
+    assert s._initialized is True
+
+    await s.close()
+    assert s.engine is None
+    assert s._initialized is False
+
+    # Idempotent — second close is a no-op, no AttributeError.
+    await s.close()
+    assert s.engine is None
+
+
+async def test_concurrent_initialize_serialized_by_advisory_lock(
+    postgres_url: str, reset_schema
+):
+    """Concurrent pod startup must serialize on pg_advisory_lock.
+
+    PR #798 round-4 review (bot #3): without a migration lock, two
+    pods racing the rolling-update can both detect ``has_alembic=False``
+    and both run ``upgrade_database(URL, "head")``; the second crashes
+    with "relation already exists". This test spawns three concurrent
+    ``RefreshTokenStorage.initialize()`` calls against a fresh schema
+    and asserts all of them complete successfully (the advisory lock
+    serializes them; the second/third observe ``has_alembic=True``
+    after the first commits and take the upgrade fast-path).
+    """
+    import anyio
+
+    async def init_one() -> None:
+        s = RefreshTokenStorage(
+            database_url=postgres_url, encryption_key=Fernet.generate_key()
+        )
+        try:
+            await s.initialize()
+        finally:
+            await s.close()
+
+    # No exception = serialization worked. Without the lock, this
+    # raised ``relation "refresh_tokens" already exists`` on the second
+    # task in CI runs prior to this fix.
+    async with anyio.create_task_group() as tg:
+        for _ in range(3):
+            tg.start_soon(init_one)
+
+    # Verify the schema actually landed once, not three times: the
+    # alembic_version table should exist with one row at the head revision.
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(postgres_url, future=True)
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(text("SELECT count(*) FROM alembic_version"))
+            (count,) = result.fetchone()
+            assert count == 1, f"expected 1 alembic_version row, got {count}"
+    finally:
+        await engine.dispose()
