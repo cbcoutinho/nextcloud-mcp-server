@@ -352,6 +352,29 @@ services:
     profiles:
       - qdrant
 
+  # Centralized Postgres backend for token storage. Used by:
+  #   1. Integration tests gated on @pytest.mark.postgres — they read
+  #      TEST_DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp.
+  #   2. Manual smoke testing of the HA (multi-replica) deployment story.
+  # Bring up with:  docker compose --profile postgres up -d postgres-test
+  # See ADR-026 for the pluggable-database-backend design.
+  postgres-test:
+    image: docker.io/library/postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mcp
+      POSTGRES_PASSWORD: mcp
+      POSTGRES_DB: mcp
+    ports:
+      - 127.0.0.1:5433:5432
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcp -d mcp"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    profiles:
+      - postgres
+
 volumes:
   nextcloud:
   db:

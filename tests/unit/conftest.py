@@ -2,6 +2,11 @@
 
 import pytest
 
+# Re-export the parametrized storage backend fixture so it's auto-discovered
+# by every unit test that names it as a parameter, without each test module
+# having to import it explicitly.
+from tests.fixtures.storage_backend import storage_backend  # noqa: F401
+
 
 @pytest.fixture(autouse=True)
 def _reload_dynaconf_after_test():

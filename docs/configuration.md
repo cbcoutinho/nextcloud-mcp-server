@@ -118,6 +118,73 @@ See [Login Flow v2](login-flow-v2.md) for full setup, scope reference, and troub
 
 ---
 
+## Centralized Token Storage (DATABASE_URL, Optional)
+
+By default the MCP server stores tokens / sessions / app passwords in a
+local SQLite file (`TOKEN_STORAGE_DB`, falling back to a per-process
+tempfile). For HA Kubernetes deployments where you need multiple
+stateless pods to share state, point the server at a centralized
+database via `DATABASE_URL`.
+
+```env
+# Centralized Postgres backend (HA k8s deployments)
+DATABASE_URL=postgresql+asyncpg://mcp:secret@postgres.svc.cluster.local:5432/mcp
+TOKEN_ENCRYPTION_KEY=<fernet-key>
+```
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | Optional | SQLAlchemy async URL for any supported backend. When set, wins over `TOKEN_STORAGE_DB`. Primary supported targets: `postgresql+asyncpg://...` (recommended for HA) and `sqlite+aiosqlite:///...` (development). |
+| `TOKEN_STORAGE_DB` | Optional | Legacy SQLite-only path. Used when `DATABASE_URL` is unset. Falls back to a per-process ephemeral tempfile when both are unset. |
+| `DATABASE_VERIFY_SSL` | Optional | TLS verification toggle for the Postgres backend. Unset (default) → asyncpg's `prefer` mode (TLS if offered, no verification — keeps cluster-internal Postgres working). `true` → full cert verification. `false` → silence cert errors (homelab / self-signed). |
+| `DATABASE_CA_BUNDLE` | Optional | Path to a PEM file containing a private CA. Implies `DATABASE_VERIFY_SSL=true`. Use this for self-hosted Postgres signed by your homelab CA instead of disabling verification. |
+| `DATABASE_POOL_SIZE` | Optional (default `2`) | Per-pod SQLAlchemy connection pool size for the Postgres backend. asyncpg connections are single-flight, so this only needs to cover concurrent storage ops (not concurrent tool calls). See [ADR-026 § Concurrency model and pool sizing](ADR-026-pluggable-database-backend.md). |
+| `DATABASE_MAX_OVERFLOW` | Optional (default `5`) | Per-pod burst connections beyond `DATABASE_POOL_SIZE`. Max per-pod = `pool_size + max_overflow` (default 7). Set to `0` for a hard cap. With 3 replicas the default totals 21 connections — well under managed-Postgres `max_connections=100`. |
+
+Operators with very high concurrency (many MCP clients per pod, or
+expensive Nextcloud round-trips holding storage locks) should tune these
+up; single-user / homelab deployments can drop to `DATABASE_POOL_SIZE=1
+DATABASE_MAX_OVERFLOW=2` for the smallest possible footprint. The
+server logs the configured sizes at startup so over-allocation is
+visible without grepping config.
+
+Homelab example (self-signed Postgres with a private CA):
+
+```env
+DATABASE_URL=postgresql+asyncpg://mcp:secret@pg.lan:5432/mcp
+DATABASE_CA_BUNDLE=/etc/ssl/certs/homelab-ca.pem
+TOKEN_ENCRYPTION_KEY=<fernet-key>
+```
+
+Notes:
+
+- **PyPI extra required.** The `asyncpg` driver is an optional extra so
+  the default `pip install nextcloud-mcp-server` stays lean. Install
+  with `pip install 'nextcloud-mcp-server[postgres]'` when using a
+  Postgres URL. The Docker image bundles it by default. When
+  `DATABASE_URL=postgresql+asyncpg://...` is set without the extra,
+  the server fails fast with a clear actionable error.
+- **Bring-your-own DB.** The MCP server doesn't provision the database;
+  it just consumes the URL. Use CNPG, RDS, your existing Helm chart's
+  Postgres sub-chart, etc.
+- **Encryption stays in the app.** `TOKEN_ENCRYPTION_KEY` (Fernet) is
+  applied in Python; the database only ever sees ciphertext for
+  sensitive columns. You don't need `pgcrypto`.
+- **Schema is managed automatically.** On startup the server runs
+  Alembic migrations against the configured backend. Existing SQLite
+  deployments are stamped at the current revision and skip re-execution.
+- **No data migration tool.** Moving from SQLite to Postgres is a clean
+  cutover — tokens are reissued on the next login, webhooks
+  re-register on the next sync tick.
+- **Testing a Postgres backend locally:** `docker compose --profile
+  postgres up -d postgres-test` then export
+  `DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp`.
+
+See [ADR-026 Pluggable database backend](ADR-026-pluggable-database-backend.md)
+for the architecture rationale.
+
+---
+
 ## SSL/TLS Configuration (Optional)
 
 If your Nextcloud instance uses a self-signed certificate or a private CA (common with reverse proxies like Traefik or Caddy), the MCP server will reject the connection by default. Use these settings to configure certificate verification.

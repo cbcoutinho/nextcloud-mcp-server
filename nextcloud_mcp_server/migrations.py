@@ -3,22 +3,72 @@
 This module provides helper functions for managing Alembic database migrations
 programmatically. It enables automatic migration on application startup and
 provides CLI integration.
+
+All helpers accept a SQLAlchemy URL (``sqlite+aiosqlite:///...`` or
+``postgresql+asyncpg://...``). When called without an explicit URL they fall
+back to :func:`nextcloud_mcp_server.config.get_database_url`.
 """
 
 import logging
-import sqlite3
 from pathlib import Path
 
 from alembic.config import Config
+from sqlalchemy import create_engine, inspect, text
 
 import nextcloud_mcp_server.alembic as alembic_package
 from alembic import command
-from nextcloud_mcp_server.config import get_token_db_path
+from nextcloud_mcp_server.config import get_database_url, mask_db_password
 
 logger = logging.getLogger(__name__)
 
 
-def get_alembic_config(database_path: str | Path | None = None) -> Config:
+def _coerce_url(database_url: str | Path | None) -> str:
+    """Accept either a URL string, a Path (legacy SQLite path), or None.
+
+    A bare ``Path`` is interpreted as a SQLite database file for backward
+    compatibility with the prior path-based API.
+    """
+    if database_url is None:
+        return get_database_url()
+    if isinstance(database_url, Path):
+        return f"sqlite+aiosqlite:///{database_url.resolve()}"
+    return database_url
+
+
+_KNOWN_ASYNC_DRIVERS = ("aiosqlite", "asyncpg")
+
+
+def _to_sync_url(database_url: str) -> str:
+    """Map an async driver URL to its sync equivalent for blocking inspection.
+
+    SQLAlchemy's :func:`inspect` and :func:`create_engine` used below are
+    synchronous APIs. The runtime uses async drivers (``aiosqlite``,
+    ``asyncpg``) but Alembic and these utility queries don't need them.
+
+    Emits a one-shot warning when the URL carries an async-driver
+    suffix we don't recognize — the sync engine creation downstream
+    will still fail, but with a clearer hint than SQLAlchemy's generic
+    "Can't load plugin" error.
+    """
+    out = database_url
+    for driver in _KNOWN_ASYNC_DRIVERS:
+        out = out.replace(f"+{driver}", "")
+    # Detect a leftover ``+<driver>`` token (we know the URL is
+    # ``scheme[+driver]://...``, so a remaining ``+`` before ``://``
+    # means an unrecognized async driver). Log once and pass through.
+    head = out.split("://", 1)[0]
+    if "+" in head:
+        unknown = head.split("+", 1)[1]
+        logger.warning(
+            "_to_sync_url: unrecognized driver %r in DATABASE_URL; "
+            "passing through unchanged. Supported async drivers: %s",
+            unknown,
+            ", ".join(_KNOWN_ASYNC_DRIVERS),
+        )
+    return out
+
+
+def get_alembic_config(database_url: str | Path | None = None) -> Config:
     """
     Get Alembic configuration for programmatic use.
 
@@ -26,145 +76,102 @@ def get_alembic_config(database_path: str | Path | None = None) -> Config:
     package location instead of alembic.ini file.
 
     Args:
-        database_path: Path to SQLite database file. If None, resolves via
-                      config.get_token_db_path() (ephemeral tempfile unless
-                      TOKEN_STORAGE_DB is set).
+        database_url: SQLAlchemy URL. If None, resolves via
+            :func:`get_database_url` (DATABASE_URL env var, falling back
+            to the ephemeral SQLite tempfile under ``TOKEN_STORAGE_DB``).
+            For backward compatibility a ``Path`` is treated as a SQLite
+            file path.
 
     Returns:
-        Alembic Config object configured for the specified database
+        Alembic Config object configured for the resolved URL.
     """
-    # Use package location (works in both editable and installed modes)
     if alembic_package.__file__ is None:
         raise RuntimeError("alembic package __file__ is None")
     script_location = Path(alembic_package.__file__).parent
 
-    # Create config programmatically (no alembic.ini needed at runtime)
     config = Config()
     config.set_main_option("script_location", str(script_location))
-    config.set_main_option("path_separator", "os")  # Suppress deprecation warning
+    config.set_main_option("path_separator", "os")
 
-    # Set database URL
-    if database_path:
-        db_path = Path(database_path).resolve()
-    else:
-        db_path = Path(get_token_db_path()).resolve()
-
-    url = f"sqlite+aiosqlite:///{db_path}"
+    url = _coerce_url(database_url)
     config.set_main_option("sqlalchemy.url", url)
 
     logger.debug("Alembic script location: %s", script_location)
-    logger.debug("Database: %s", db_path)
+    logger.debug("Database URL: %s", mask_db_password(url))
 
     return config
 
 
 def upgrade_database(
-    database_path: str | Path | None = None, revision: str = "head"
+    database_url: str | Path | None = None, revision: str = "head"
 ) -> None:
-    """
-    Upgrade database to a specific revision.
-
-    Args:
-        database_path: Path to SQLite database file
-        revision: Target revision (default: "head" for latest)
-    """
-    config = get_alembic_config(database_path)
+    """Upgrade database to a specific revision (default: latest)."""
+    config = get_alembic_config(database_url)
     logger.info("Upgrading database to revision: %s", revision)
     command.upgrade(config, revision)
     logger.info("Database upgrade completed successfully")
 
 
 def downgrade_database(
-    database_path: str | Path | None = None, revision: str = "-1"
+    database_url: str | Path | None = None, revision: str = "-1"
 ) -> None:
-    """
-    Downgrade database to a specific revision.
-
-    Args:
-        database_path: Path to SQLite database file
-        revision: Target revision (default: "-1" for previous version)
-    """
-    config = get_alembic_config(database_path)
+    """Downgrade database to a specific revision (default: previous)."""
+    config = get_alembic_config(database_url)
     logger.warning("Downgrading database to revision: %s", revision)
     command.downgrade(config, revision)
     logger.info("Database downgrade completed successfully")
 
 
-def get_current_revision(database_path: str | Path | None = None) -> str | None:
+def get_current_revision(database_url: str | Path | None = None) -> str | None:
     """
-    Get the current database revision by directly querying the alembic_version table.
+    Get the current database revision by reading the ``alembic_version`` table.
 
-    Args:
-        database_path: Path to SQLite database file
-
-    Returns:
-        Current revision ID or None if not versioned
+    Returns ``None`` when the database does not exist or has no
+    ``alembic_version`` table (i.e. has never been migrated).
     """
+    url = _to_sync_url(_coerce_url(database_url))
 
-    if database_path is None:
-        database_path = get_token_db_path()
-
-    db_path = Path(database_path).resolve()
-
-    if not db_path.exists():
-        logger.debug("Database does not exist: %s", db_path)
-        return None
-
-    try:
-        # Query alembic_version table directly
-        conn = sqlite3.connect(str(db_path))
-        cursor = conn.cursor()
-
-        # Check if alembic_version table exists
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'"
-        )
-        has_table = cursor.fetchone() is not None
-
-        if not has_table:
-            conn.close()
+    if url.startswith("sqlite:///"):
+        path = url[len("sqlite:///") :]
+        if path and not Path(path).exists():
+            logger.debug("Database does not exist: %s", path)
             return None
 
-        # Get current version
-        cursor.execute("SELECT version_num FROM alembic_version")
-        row = cursor.fetchone()
-        conn.close()
-
-        return row[0] if row else None
-
+    try:
+        engine = create_engine(url, future=True)
+        try:
+            inspector = inspect(engine)
+            if not inspector.has_table("alembic_version"):
+                return None
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text("SELECT version_num FROM alembic_version")
+                ).fetchone()
+            return row[0] if row else None
+        finally:
+            engine.dispose()
     except Exception as e:
         logger.error("Failed to get current revision: %s", e)
         return None
 
 
 def stamp_database(
-    database_path: str | Path | None = None, revision: str = "head"
+    database_url: str | Path | None = None, revision: str = "head"
 ) -> None:
     """
     Stamp database with a specific revision without running migrations.
 
-    This is useful for marking existing databases that were created before
-    Alembic was introduced. It tells Alembic "this database is at revision X"
-    without actually running the migration.
-
-    Args:
-        database_path: Path to SQLite database file
-        revision: Revision to stamp (default: "head" for latest)
+    Useful for marking pre-Alembic databases as already at a known revision.
     """
-    config = get_alembic_config(database_path)
+    config = get_alembic_config(database_url)
     logger.info("Stamping database with revision: %s", revision)
     command.stamp(config, revision)
     logger.info("Database stamped successfully")
 
 
-def show_migration_history(database_path: str | Path | None = None) -> None:
-    """
-    Display migration history.
-
-    Args:
-        database_path: Path to SQLite database file
-    """
-    config = get_alembic_config(database_path)
+def show_migration_history(database_url: str | Path | None = None) -> None:
+    """Display migration history."""
+    config = get_alembic_config(database_url)
     command.history(config, verbose=True)
 
 
@@ -178,7 +185,9 @@ def create_migration(message: str, autogenerate: bool = False) -> None:
 
     Note:
         Since we don't use SQLAlchemy models, autogenerate will be disabled
-        and migrations must be written manually.
+        and migrations must be written manually using portable Alembic
+        operations (``op.create_table``, ``op.add_column`` …) rather than
+        raw SQL so they work on both SQLite and Postgres.
     """
     config = get_alembic_config()
     logger.info("Creating new migration: %s", message)

@@ -3,6 +3,9 @@ Unit tests for Webhook Storage functionality.
 
 Tests the webhook tracking methods in RefreshTokenStorage without
 requiring real database connections or network calls.
+
+Runs against both SQLite and Postgres backends — see the docstring on
+``tests.fixtures.storage_backend`` for opt-in instructions.
 """
 
 import tempfile
@@ -17,14 +20,23 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-async def temp_storage():
-    """Create temporary storage instance for testing."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "test_webhooks.db"
-        # No encryption key needed for webhook tracking
-        storage = RefreshTokenStorage(db_path=str(db_path), encryption_key=None)
+async def temp_storage(storage_backend):
+    """Create a storage instance backed by either SQLite or Postgres."""
+    if storage_backend["kind"] == "sqlite":
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test_webhooks.db"
+            storage = RefreshTokenStorage(db_path=str(db_path), encryption_key=None)
+            await storage.initialize()
+            yield storage
+    else:
+        storage = RefreshTokenStorage(
+            database_url=storage_backend["url"], encryption_key=None
+        )
         await storage.initialize()
-        yield storage
+        try:
+            yield storage
+        finally:
+            await storage_backend["reset"]()
 
 
 async def test_store_webhook(temp_storage):
@@ -144,7 +156,7 @@ async def test_clear_preset_webhooks_nonexistent(temp_storage):
 
 
 async def test_webhook_timestamps(temp_storage):
-    """Test that webhook timestamps are properly stored."""
+    """Test that webhook timestamps are properly stored as int epochs."""
     start_time = time.time()
     await temp_storage.store_webhook(webhook_id=123, preset_id="notes_sync")
     end_time = time.time()
@@ -152,8 +164,12 @@ async def test_webhook_timestamps(temp_storage):
     webhooks = await temp_storage.list_all_webhooks()
     assert len(webhooks) == 1
 
+    # ``created_at`` is now an integer (PR #798 round 2 — consistency with
+    # other *_at columns). Allow +1s slack for the second boundary the
+    # ``int()`` truncation can fall on.
     created_at = webhooks[0]["created_at"]
-    assert start_time <= created_at <= end_time
+    assert isinstance(created_at, int)
+    assert int(start_time) <= created_at <= int(end_time) + 1
 
 
 async def test_storage_without_encryption_key():
