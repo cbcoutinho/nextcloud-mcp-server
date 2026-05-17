@@ -54,7 +54,6 @@ from sqlalchemy.pool import NullPool
 from nextcloud_mcp_server.config import (
     get_database_ssl,
     get_database_url,
-    get_settings,
     is_ephemeral_token_db,
     is_sqlite_url,
     mask_db_password,
@@ -534,11 +533,30 @@ class RefreshTokenStorage:
         under the SonarQube ``S3776`` threshold and so a future
         engine-arg unit test has a single seam to mock.
 
-        Defaults to ``pool_size=2, max_overflow=5`` (max 7 connections
-        per pod) — see ADR-026 § "Concurrency model and pool sizing"
-        for the rationale. asyncpg connections are single-flight, so
-        the pool only needs to cover the typical multi-user MCP burst,
-        not every potential in-flight tool call.
+        Uses :class:`NullPool` (one fresh asyncpg connection per
+        checkout, no caching). The original ADR-026 design used a
+        small bounded ``QueuePool`` with ``pool_pre_ping=True``, but
+        that combination is unsafe under the server's anyio task
+        layout: cached asyncpg connections are bound to the event
+        loop they were opened on, and a checkout from a task running
+        under a different anyio TaskGroup / loop triggers
+        ``RuntimeError: got Future attached to a different loop`` on
+        the pre-ping probe (and then the pool closes the connection
+        with another ``Event loop is closed`` while cleaning up).
+        Observed in production against shared-postgres on cloudfleet,
+        where the background ``vector.oauth_sync.user_manager_task``
+        and the request-path code paths share an engine across loops.
+
+        NullPool sidesteps the entire class of bugs: every
+        ``engine.connect()`` opens a fresh asyncpg connection in the
+        caller's current loop, and disposes it on close. asyncpg
+        connection setup is cheap (~5 ms LAN, single round-trip when
+        the server is local) so the throughput cost is negligible for
+        the MCP server's traffic shape (low-concurrency, bursty).
+        ``DATABASE_POOL_SIZE`` / ``DATABASE_MAX_OVERFLOW`` are still
+        accepted for backward compat but no longer have an effect on
+        the Postgres backend — they were never propagated to SQLite,
+        which has always used NullPool.
         """
         # asyncpg ships as an optional PyPI extra (`[postgres]`) so the
         # default `pip install nextcloud-mcp-server` audience doesn't
@@ -565,23 +583,15 @@ class RefreshTokenStorage:
             connect_args["ssl"] = ssl_arg
             logger.info("Postgres backend TLS: %s", _describe_ssl_arg(ssl_arg))
 
-        settings = get_settings()
         engine = create_async_engine(
             self.database_url,
-            pool_size=settings.database_pool_size,
-            max_overflow=settings.database_max_overflow,
-            pool_pre_ping=True,
+            poolclass=NullPool,
             connect_args=connect_args,
             future=True,
         )
-        # Log the configured sizing so operators can spot
-        # over-allocation at startup without grepping config.
         logger.info(
-            "Postgres engine ready: pool_size=%d max_overflow=%d "
-            "(per-pod max %d connections)",
-            settings.database_pool_size,
-            settings.database_max_overflow,
-            settings.database_pool_size + settings.database_max_overflow,
+            "Postgres engine ready: NullPool (one connection per "
+            "checkout, see ADR-026 § 'Connection pool')"
         )
         return engine
 
