@@ -463,10 +463,11 @@ class RefreshTokenStorage:
             if Path(self.db_path).exists():
                 os.chmod(self.db_path, 0o600)
 
-        # Create the shared async engine for the chosen backend. SQLite uses
-        # NullPool (per-call connections, matches the prior aiosqlite-direct
-        # behavior); Postgres uses a small bounded pool — see
-        # ``_build_postgres_engine`` for sizing rationale.
+        # Create the shared async engine for the chosen backend. Both
+        # SQLite and Postgres use NullPool (per-call connections, no
+        # cross-loop bookkeeping). SQLite mirrors the prior
+        # aiosqlite-direct behavior; see ``_build_postgres_engine`` for
+        # the Postgres rationale.
         if is_sqlite:
             self.engine = create_async_engine(
                 self.database_url,
@@ -598,12 +599,11 @@ class RefreshTokenStorage:
     async def close(self) -> None:
         """Dispose the underlying AsyncEngine on shutdown.
 
-        Without an explicit dispose, asyncpg's pooled connections leak
-        server-side slots until the Postgres
-        ``idle_in_transaction_session_timeout`` reaps them — with the
-        small pool defaults and frequent k8s rolling restarts this can
-        starve ``max_connections``. Idempotent: safe to call from any
-        number of shutdown hooks.
+        With ``NullPool`` the dispose call has no idle pool to drain,
+        but it still cleanly tears down any in-flight asyncpg
+        connections held by active checkouts so shutdown hooks don't
+        leave dangling transports behind. Idempotent: safe to call
+        from any number of shutdown hooks.
         """
         if self.engine is None:
             return

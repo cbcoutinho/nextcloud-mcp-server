@@ -520,12 +520,14 @@ class Settings:
     # or supply a private-CA bundle.
     database_verify_ssl: bool | None = None
     database_ca_bundle: str | None = None
-    # Postgres connection pool sizing (ADR-026). The asyncpg engine maps
-    # these to its underlying QueuePool. Per-pod max = pool_size +
-    # max_overflow. Defaults are intentionally small (2 + 5 = 7) because
-    # asyncpg connections are single-flight and the typical MCP workload
-    # is light read-mostly point lookups. Validate >= 1 / >= 0 in
-    # __post_init__.
+    # Postgres connection pool sizing — DEPRECATED, retained for
+    # backward compatibility. The asyncpg engine switched to NullPool
+    # in #799 (cross-event-loop crashes under anyio TaskGroups made
+    # the original QueuePool + pool_pre_ping setup unsafe). These
+    # fields no longer affect the Postgres engine; the validators
+    # below still reject invalid values so misconfigured deploys
+    # fail loudly rather than silently. See ADR-026 § Connection
+    # pool and docs/configuration.md.
     database_pool_size: int = 2
     database_max_overflow: int = 5
 
