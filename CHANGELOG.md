@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.88.1 (2026-05-20)
+
+### Fix
+
+- **contacts**: warn on unsupported dict/list email/tel update inputs
+- **contacts**: two PR #719 review bugs
+- **contacts**: close PR #719 second-pass review gaps
+- **contacts**: persist all documented fields on create (fixes #716)
+
+### Refactor
+
+- **contacts**: address PR #719 follow-up review
+
 ## v0.88.0 (2026-05-20)
 
 ### Feat
