@@ -273,7 +273,23 @@ def configure_contacts_tools(mcp: FastMCP):
                 not the display name. Use nc_contacts_list_addressbooks to
                 find available URI slugs.
             uid: The unique ID for the contact.
-            contact_data: A dictionary with the contact's details, e.g. {"fn": "John Doe", "email": "john.doe@example.com"}.
+            contact_data: A dictionary with the contact's details. Supported keys:
+
+                - ``fn`` (str, required): Formatted full name.
+                - ``email`` (str or list of str/dicts): Email address(es).
+                - ``tel`` / ``phone`` (str or list): Phone number(s).
+                - ``org`` / ``organization`` (str or list of str): Organization.
+                  Lists become semicolon-separated ORG components per RFC 6350.
+                - ``title`` (str): Job title.
+                - ``note`` (str): Free-form note.
+                - ``nickname`` (str or list of str).
+                - ``bday`` (ISO date str ``"YYYY-MM-DD"`` or ``datetime.date``).
+                - ``categories`` (list of str, or comma-separated str).
+                - ``url`` (str or list of str).
+
+                Unknown keys are ignored. Example:
+                ``{"fn": "John Doe", "email": "john@example.com",
+                "organization": "Acme", "note": "Met at conference"}``.
         """
         client = await get_client(ctx)
         return await client.contacts.create_contact(
@@ -316,7 +332,30 @@ def configure_contacts_tools(mcp: FastMCP):
                 not the display name. Use nc_contacts_list_addressbooks to
                 find available URI slugs.
             uid: The unique ID of the contact to update.
-            contact_data: A dictionary with the contact's updated details, e.g. {"fn": "Jane Doe", "email": "jane.doe@example.com"}.
+            contact_data: A dictionary with the contact's updated details. Supported
+                keys mirror nc_contacts_create_contact:
+
+                - ``fn`` (str): Formatted full name.
+                - ``email`` (str): Email address. **Update path supports plain
+                  strings only**; dict / list-form inputs are not applied — the
+                  existing EMAIL line is preserved unchanged and a warning is
+                  logged. Use create_contact for multi-entry support with TYPE
+                  annotations.
+                - ``tel`` / ``phone`` (str): Phone number. Same single-string
+                  limitation as ``email`` above.
+                - ``org`` / ``organization`` (str or list of str): Organization.
+                  Lists become semicolon-separated ORG components per RFC 6350.
+                - ``title`` (str): Job title.
+                - ``note`` (str): Free-form note.
+                - ``nickname`` (str or list of str).
+                - ``bday`` (ISO date str ``"YYYY-MM-DD"`` or ``datetime.date``).
+                  Non-ISO strings are rejected with a warning; the existing
+                  BDAY line is preserved.
+                - ``categories`` (list of str, or comma-separated str).
+                - ``url`` (str or list of str). Only the first URL is written
+                  on update; multi-URL contacts should use create_contact.
+
+                Example: ``{"fn": "Jane Doe", "email": "jane.doe@example.com"}``.
             etag: Optional ETag for optimistic concurrency control.
         """
         client = await get_client(ctx)
