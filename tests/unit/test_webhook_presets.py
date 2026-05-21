@@ -11,15 +11,16 @@ from nextcloud_mcp_server.server.webhook_presets import (
 
 @pytest.mark.unit
 def test_list_all_presets():
-    """Test listing all presets returns 5 presets."""
+    """Test listing all presets returns the full preset catalogue."""
     presets = list_presets()
-    assert len(presets) == 5
+    assert len(presets) == 6
     preset_ids = [preset_id for preset_id, _ in presets]
     assert "notes_sync" in preset_ids
     assert "calendar_sync" in preset_ids
     assert "tables_sync" in preset_ids
     assert "forms_sync" in preset_ids
     assert "files_sync" in preset_ids
+    assert "deck_sync" in preset_ids
 
 
 @pytest.mark.unit
@@ -42,15 +43,50 @@ def test_get_preset_nonexistent():
 @pytest.mark.unit
 def test_filter_presets_all_apps_installed():
     """Test filtering when all apps are installed."""
-    installed_apps = ["notes", "calendar", "tables", "forms"]
+    installed_apps = ["notes", "calendar", "tables", "forms", "deck"]
     filtered = filter_presets_by_installed_apps(installed_apps)
-    assert len(filtered) == 5  # All 5 presets (files is always included)
+    assert len(filtered) == 6  # All 6 presets (files is always included)
     preset_ids = [preset_id for preset_id, _ in filtered]
     assert "notes_sync" in preset_ids
     assert "calendar_sync" in preset_ids
     assert "tables_sync" in preset_ids
     assert "forms_sync" in preset_ids
     assert "files_sync" in preset_ids
+    assert "deck_sync" in preset_ids
+
+
+@pytest.mark.unit
+def test_filter_presets_deck_included_when_installed():
+    """Test that the deck preset is included when the Deck app is installed."""
+    installed_apps = ["deck"]
+    filtered = filter_presets_by_installed_apps(installed_apps)
+    preset_ids = [preset_id for preset_id, _ in filtered]
+    assert "deck_sync" in preset_ids
+    assert len(filtered) == 2  # deck + files
+
+
+@pytest.mark.unit
+def test_filter_presets_deck_excluded_when_not_installed():
+    """Test that the deck preset is excluded when the Deck app is not installed."""
+    installed_apps = ["notes", "calendar", "tables", "forms"]
+    filtered = filter_presets_by_installed_apps(installed_apps)
+    preset_ids = [preset_id for preset_id, _ in filtered]
+    assert "deck_sync" not in preset_ids
+
+
+@pytest.mark.unit
+def test_get_deck_preset():
+    """Test getting the deck_sync preset returns the expected shape."""
+    preset = get_preset("deck_sync")
+    assert preset is not None
+    assert preset["app"] == "deck"
+    assert preset["name"] == "Deck Sync"
+    assert len(preset["events"]) == 4
+    event_classes = [e["event"] for e in preset["events"]]
+    assert "OCA\\Deck\\Event\\CardCreatedEvent" in event_classes
+    assert "OCA\\Deck\\Event\\CardUpdatedEvent" in event_classes
+    assert "OCA\\Deck\\Event\\CardDeletedEvent" in event_classes
+    assert "OCA\\Deck\\Event\\BoardUpdatedEvent" in event_classes
 
 
 @pytest.mark.unit

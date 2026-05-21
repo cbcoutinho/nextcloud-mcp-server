@@ -69,6 +69,68 @@ _NOTE_DELETED = {
 }
 
 
+# Deck PR #7910 (CardCreatedEvent etc.) emits ``{"card": Card::jsonSerialize()}``
+# — see ~/Software/deck/lib/Event/ACardEvent.php. Card::jsonSerialize() includes
+# id and stackId but not boardId (the processor falls back to iteration for
+# that). BoardUpdatedEvent emits only ``{"boardId": int}``.
+_DECK_CARD_CREATED = {
+    "user": {"uid": "admin"},
+    "time": 1762900000,
+    "event": {
+        "class": "OCA\\Deck\\Event\\CardCreatedEvent",
+        "card": {
+            "id": 4242,
+            "title": "Webhook smoke test",
+            "stackId": 16,
+        },
+    },
+}
+
+
+_DECK_CARD_DELETED = {
+    "user": {"uid": "alice"},
+    "time": 1762900100,
+    "event": {
+        "class": "OCA\\Deck\\Event\\CardDeletedEvent",
+        "card": {
+            "id": 4242,
+            "title": "Webhook smoke test",
+            "stackId": 16,
+        },
+    },
+}
+
+
+_DECK_BOARD_UPDATED = {
+    "user": {"uid": "admin"},
+    "time": 1762900200,
+    "event": {
+        "class": "OCA\\Deck\\Event\\BoardUpdatedEvent",
+        "boardId": 5,
+    },
+}
+
+
+_NOTE_CREATED_MISSING_ID = {
+    "user": {"uid": "admin"},
+    "time": 1762850300,
+    "event": {
+        "class": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
+        "node": {"path": "/admin/files/Notes/no-id.md"},
+    },
+}
+
+
+_DECK_CARD_CREATED_MISSING_ID = {
+    "user": {"uid": "admin"},
+    "time": 1762900300,
+    "event": {
+        "class": "OCA\\Deck\\Event\\CardCreatedEvent",
+        "card": {"title": "Card without id", "stackId": 16},
+    },
+}
+
+
 def test_index_event_queues_task_and_returns_200():
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
@@ -119,6 +181,93 @@ def test_unsupported_event_is_ignored():
 
     with TestClient(app) as client:
         response = client.post("/webhooks/nextcloud", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ignored"
+
+    with pytest.raises(anyio.WouldBlock):
+        receive_stream.receive_nowait()
+
+
+def test_deck_card_created_queues_index_task():
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
+    app = _make_app(send_stream=send_stream)
+
+    with TestClient(app) as client:
+        response = client.post("/webhooks/nextcloud", json=_DECK_CARD_CREATED)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    assert response.json()["operation"] == "index"
+    assert response.json()["doc_id"] == "4242"
+
+    task = receive_stream.receive_nowait()
+    assert task.user_id == "admin"
+    assert task.doc_id == "4242"
+    assert task.doc_type == "deck_card"
+    assert task.operation == "index"
+    assert task.metadata == {"stack_id": 16}
+
+
+def test_deck_card_deleted_queues_delete_task():
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
+    app = _make_app(send_stream=send_stream)
+
+    with TestClient(app) as client:
+        response = client.post("/webhooks/nextcloud", json=_DECK_CARD_DELETED)
+
+    assert response.status_code == 200
+    assert response.json()["operation"] == "delete"
+
+    task = receive_stream.receive_nowait()
+    assert task.doc_type == "deck_card"
+    assert task.operation == "delete"
+    assert task.doc_id == "4242"
+    assert task.user_id == "alice"
+
+
+def test_deck_board_updated_is_ignored():
+    """BoardUpdatedEvent carries no card id, so the parser logs delivery and
+    returns None — the polling scanner picks up the actual card changes."""
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
+    app = _make_app(send_stream=send_stream)
+
+    with TestClient(app) as client:
+        response = client.post("/webhooks/nextcloud", json=_DECK_BOARD_UPDATED)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ignored"
+
+    with pytest.raises(anyio.WouldBlock):
+        receive_stream.receive_nowait()
+
+
+def test_deck_card_missing_id_is_ignored():
+    """A card event without ``card.id`` can't address Qdrant points, so the
+    parser logs a warning and returns None — the polling scanner reconciles."""
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
+    app = _make_app(send_stream=send_stream)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/nextcloud", json=_DECK_CARD_CREATED_MISSING_ID
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ignored"
+
+    with pytest.raises(anyio.WouldBlock):
+        receive_stream.receive_nowait()
+
+
+def test_note_missing_node_id_is_ignored():
+    """Symmetric coverage for the file-event fail-open branch: a notes path
+    without ``node.id`` falls back to the polling scanner."""
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
+    app = _make_app(send_stream=send_stream)
+
+    with TestClient(app) as client:
+        response = client.post("/webhooks/nextcloud", json=_NOTE_CREATED_MISSING_ID)
 
     assert response.status_code == 200
     assert response.json()["status"] == "ignored"

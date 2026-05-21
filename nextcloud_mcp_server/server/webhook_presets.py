@@ -43,11 +43,18 @@ TABLES_EVENT_ROW_DELETED = "OCA\\Tables\\Event\\RowDeletedEvent"
 # Forms webhook events (Nextcloud 30+)
 FORMS_EVENT_FORM_SUBMITTED = "OCA\\Forms\\Events\\FormSubmittedEvent"
 
-# NOTE: Deck and Contacts do NOT support webhooks
-# Their event classes do not implement IWebhookCompatibleEvent interface.
-# Alternative sync strategies:
-# - Deck: Use polling with ETag-based change detection
-# - Contacts: Use CardDAV sync-token mechanism for efficient syncing
+# Deck webhook events (require nextcloud/deck PR #7910, which adds
+# IWebhookCompatibleEvent to these event classes). BoardUpdatedEvent only
+# carries a board ID and is used as a fan-out signal; the polling scanner
+# reconciles affected cards.
+DECK_EVENT_CARD_CREATED = "OCA\\Deck\\Event\\CardCreatedEvent"
+DECK_EVENT_CARD_UPDATED = "OCA\\Deck\\Event\\CardUpdatedEvent"
+DECK_EVENT_CARD_DELETED = "OCA\\Deck\\Event\\CardDeletedEvent"
+DECK_EVENT_BOARD_UPDATED = "OCA\\Deck\\Event\\BoardUpdatedEvent"
+
+# NOTE: Contacts does NOT support webhooks — its event classes do not
+# implement IWebhookCompatibleEvent. Use CardDAV sync-token mechanism for
+# efficient syncing.
 
 
 WEBHOOK_PRESETS: Dict[str, WebhookPreset] = {
@@ -134,6 +141,29 @@ WEBHOOK_PRESETS: Dict[str, WebhookPreset] = {
             },
             {
                 "event": FILE_EVENT_DELETED,
+                "filter": {},
+            },
+        ],
+    },
+    "deck_sync": {
+        "name": "Deck Sync",
+        "description": "Real-time synchronization for Deck cards (create, update, delete) and board updates",
+        "app": "deck",
+        "events": [
+            {
+                "event": DECK_EVENT_CARD_CREATED,
+                "filter": {},
+            },
+            {
+                "event": DECK_EVENT_CARD_UPDATED,
+                "filter": {},
+            },
+            {
+                "event": DECK_EVENT_CARD_DELETED,
+                "filter": {},
+            },
+            {
+                "event": DECK_EVENT_BOARD_UPDATED,
                 "filter": {},
             },
         ],
