@@ -1,5 +1,6 @@
 """Integration tests for Contacts MCP tools."""
 
+import json
 import logging
 import uuid
 
@@ -10,6 +11,11 @@ from nextcloud_mcp_server.client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration
+
+
+def _extract_payload(tool_result) -> dict:
+    """Return the JSON-decoded text content of an MCP tool result."""
+    return json.loads(tool_result.content[0].text)
 
 
 async def test_mcp_contacts_workflow(
@@ -61,6 +67,23 @@ async def test_mcp_contacts_workflow(
         raw_vcard = created.get("addressdata", "")
         assert "ORG:MCP Test Corp" in raw_vcard
         assert f"NOTE:Created by test {unique_suffix}" in raw_vcard
+
+        # 4a. Read-side round-trip — issue #716 follow-up. The write side has
+        # been correct since PR #719, but the MCP list/search tools returned
+        # ``organization: null`` / ``note: null`` because pythonvCard4 stashes
+        # ORG/TITLE in ``custom`` and the server's _raw_contact_to_model never
+        # surfaced ``note`` / ``urls`` either.
+        search_result = await nc_mcp_client.call_tool(
+            "nc_contacts_search_contacts",
+            {"query": unique_suffix, "addressbook": addressbook_name},
+        )
+        assert search_result.isError is False
+        search_payload = _extract_payload(search_result)
+        assert search_payload["total_count"] == 1
+        searched = search_payload["contacts"][0]
+        assert searched["uid"] == contact_uid
+        assert searched["organization"] == "MCP Test Corp"
+        assert searched["note"] == f"Created by test {unique_suffix}"
 
         # 4b. Update with a URL — regression guard for PR #719 review:
         # _merge_vcard_properties previously had no URL handler, silently dropping it.

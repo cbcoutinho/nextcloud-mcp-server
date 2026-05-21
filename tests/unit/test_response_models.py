@@ -389,6 +389,73 @@ def test_contact_mapping_missing_optional_fields():
 
 
 @pytest.mark.unit
+def test_contact_mapping_surfaces_org_title_note_url_categories_photo():
+    """Issue #716 follow-up: ORG / TITLE / NOTE / URL / CATEGORIES / PHOTO must
+    round-trip from the raw client dict onto the response model.
+
+    Before this fix, the server-side mapper ignored these keys even when the
+    client supplied them, so MCP responses returned ``organization: null`` /
+    ``note: null`` for contacts that did have the fields set in their vCard.
+    """
+    raw_contact = {
+        "vcard_id": "full-1",
+        "getetag": '"etag"',
+        "contact": {
+            "fullname": "Alice",
+            "org": "Acme Corp",
+            "title": "Engineer",
+            "note": "Met at conference",
+            "url": ["https://acme.example.com"],
+            "categories": ["vip", "customer"],
+            "photo": "https://photos.example.com/alice.jpg",
+        },
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert contact.organization == "Acme Corp"
+    assert contact.title == "Engineer"
+    assert contact.note == "Met at conference"
+    assert len(contact.urls) == 1
+    assert contact.urls[0].value == "https://acme.example.com"
+    assert contact.urls[0].type == "url"
+    assert contact.categories == ["vip", "customer"]
+    assert contact.photo == "https://photos.example.com/alice.jpg"
+
+
+@pytest.mark.unit
+def test_contact_mapping_accepts_url_as_plain_string():
+    """The client dict normally carries ``url`` as a list, but accept a plain
+    string for forward-compat with library changes that might collapse single
+    entries.
+    """
+    raw_contact = {
+        "vcard_id": "url-str-1",
+        "contact": {"fullname": "Bob", "url": "https://bob.example.com"},
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert len(contact.urls) == 1
+    assert contact.urls[0].value == "https://bob.example.com"
+
+
+@pytest.mark.unit
+def test_contact_mapping_categories_accepts_comma_string():
+    """A comma-separated string is split into discrete categories on the read
+    side, matching how the write side parses ``categories``.
+    """
+    raw_contact = {
+        "vcard_id": "cat-1",
+        "contact": {"fullname": "Carol", "categories": "vip, customer, archived"},
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert contact.categories == ["vip", "customer", "archived"]
+
+
+@pytest.mark.unit
 def test_list_contacts_response_wraps_contacts():
     """Test ListContactsResponse wraps contacts correctly for MCP output."""
     contacts = [
