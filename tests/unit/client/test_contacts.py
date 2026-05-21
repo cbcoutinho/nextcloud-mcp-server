@@ -11,6 +11,7 @@ import pytest
 
 from nextcloud_mcp_server.client.contacts import (
     _build_contact_from_data,
+    _first_custom,
     _normalize_contact_data,
     _wrap_contact_field,
 )
@@ -199,6 +200,31 @@ def test_missing_fn_logs_warning(caplog):
             # pythonvCard4 may raise on missing fn; we only care about the warning log.
             pass
     assert any("fn" in r.message.lower() for r in caplog.records)
+
+
+class TestFirstCustom:
+    """``_first_custom`` is the read-side companion to PR #719 — it pulls
+    ORG / TITLE / unencoded PHOTO out of pythonvCard4's ``custom`` dict because
+    the library has no typed parser for them.
+    """
+
+    def test_returns_first_value_from_list(self):
+        assert _first_custom({"ORG": ["Acme Corp"]}, "ORG") == "Acme Corp"
+
+    def test_returns_first_value_when_library_uses_bare_string(self):
+        """The library's typeshed allows ``str`` as a value shape too. Accept it
+        so we don't break if the parser changes shape upstream.
+        """
+        assert _first_custom({"TITLE": "Engineer"}, "TITLE") == "Engineer"
+
+    def test_returns_none_for_missing_key(self):
+        assert _first_custom({"ORG": ["Acme"]}, "TITLE") is None
+
+    def test_returns_none_for_empty_list(self):
+        assert _first_custom({"ORG": []}, "ORG") is None
+
+    def test_returns_none_for_empty_string(self):
+        assert _first_custom({"ORG": ""}, "ORG") is None
 
 
 class TestNormalizeContactData:

@@ -65,14 +65,34 @@ def _parse_vcard_fields(
 def _raw_contact_to_model(raw: dict) -> Contact:
     """Convert a raw contact dict from the contacts client to a Contact model.
 
-    Maps fullname, nickname, birthday, email, and tel fields.
-    Email/tel values may be plain strings, dicts with ``value``/``type`` keys,
-    or lists of either – see :func:`_parse_vcard_fields`.
+    Maps fullname, nickname, birthday, email, tel, org, title, note, url,
+    categories, and photo fields. Email/tel values may be plain strings, dicts
+    with ``value``/``type`` keys, or lists of either – see
+    :func:`_parse_vcard_fields`.
     """
     contact_info = raw.get("contact", {})
 
     emails = _parse_vcard_fields(contact_info.get("email"), "email")
     phones = _parse_vcard_fields(contact_info.get("tel"), "phone")
+
+    # URL is parsed by pythonvCard4 into a plain ``list[str]``. Single-string
+    # inputs surface as such too. Either way wrap each into a ContactField.
+    raw_urls = contact_info.get("url")
+    if isinstance(raw_urls, str):
+        raw_urls = [raw_urls] if raw_urls else []
+    urls = [
+        ContactField(type="url", value=u)
+        for u in (raw_urls or [])
+        if isinstance(u, str) and u
+    ]
+
+    # CATEGORIES is parsed as ``list[str]``. Accept a comma-separated string
+    # too for forward-compat with library updates that might change shape.
+    raw_categories = contact_info.get("categories") or []
+    if isinstance(raw_categories, str):
+        categories = [c.strip() for c in raw_categories.split(",") if c.strip()]
+    else:
+        categories = [c for c in raw_categories if isinstance(c, str) and c]
 
     # Nickname goes into custom_fields (no dedicated model field)
     custom_fields: dict[str, Any] = {}
@@ -84,11 +104,17 @@ def _raw_contact_to_model(raw: dict) -> Contact:
         uid=raw["vcard_id"],
         fn=contact_info.get("fullname", ""),
         etag=raw.get("getetag"),
+        organization=contact_info.get("org"),
+        title=contact_info.get("title"),
+        note=contact_info.get("note"),
+        photo=contact_info.get("photo"),
         birthday=contact_info["birthday"].isoformat()
         if isinstance(contact_info.get("birthday"), date)
         else contact_info.get("birthday"),
         emails=emails,
         phones=phones,
+        urls=urls,
+        categories=categories,
         custom_fields=custom_fields,
     )
 

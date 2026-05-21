@@ -119,6 +119,24 @@ def _parse_bday(value: str | date | None) -> date | None:
     return None
 
 
+def _first_custom(custom: dict[str, str | list[str]], key: str) -> str | None:
+    """Return the first raw value pythonvCard4 stashed in ``custom[key]``.
+
+    The library has no typed parser for ORG / TITLE / unencoded PHOTO, so they
+    end up in ``Contact.custom`` keyed by property name. The library's typeshed
+    declares the values as ``str | list[str]`` even though the current parser
+    always appends to a list — accept both shapes so we don't break on a future
+    library version that switches to bare strings. Returns ``None`` when the
+    key is absent or the value is empty.
+    """
+    values = custom.get(key)
+    if isinstance(values, list):
+        return values[0] if values else None
+    if isinstance(values, str):
+        return values or None
+    return None
+
+
 def _safe_vcard_value(value: Any) -> Any:
     """Escape newlines in a value so it can't inject additional vCard properties.
 
@@ -446,6 +464,16 @@ class ContactsClient(BaseNextcloudClient):
 
             contact = Contact.from_vcard(addressdata)
 
+            # pythonvCard4's parser has no branch for ORG / TITLE — they fall
+            # through into ``contact.custom`` as a list of raw values. PHOTO
+            # only gets typed-parsed when the line carries an ``ENCODING=``
+            # parameter; otherwise it lands in ``custom`` too. Pull them out
+            # here so the read side surfaces what the write side persisted
+            # (issue #716 follow-up).
+            org_value = _first_custom(contact.custom, "ORG")
+            title_value = _first_custom(contact.custom, "TITLE")
+            photo_value = contact.photo_data or _first_custom(contact.custom, "PHOTO")
+
             contacts.append(
                 {
                     "vcard_id": vcard_id,
@@ -458,6 +486,12 @@ class ContactsClient(BaseNextcloudClient):
                         else contact.bday,
                         "email": contact.email,
                         "tel": contact.tel,
+                        "org": org_value,
+                        "title": title_value,
+                        "note": contact.note,
+                        "url": contact.url,
+                        "categories": contact.categories,
+                        "photo": photo_value,
                     },
                     "addressdata": addressdata,
                 }
