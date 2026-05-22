@@ -21,7 +21,7 @@ import logging
 import time
 import uuid
 
-from qdrant_client import models
+from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
 from nextcloud_mcp_server.config import get_settings
@@ -340,8 +340,8 @@ _ORPHAN_SWEEP_BATCH_SIZE = 100
 
 
 async def sweep_orphan_placeholders(
-    qdrant_client,
-    collection_name: str,
+    qdrant_client: AsyncQdrantClient,
+    collection: str,
     *,
     batch_size: int = _ORPHAN_SWEEP_BATCH_SIZE,
 ) -> tuple[int, int]:
@@ -362,7 +362,8 @@ async def sweep_orphan_placeholders(
 
     Args:
         qdrant_client: Async Qdrant client.
-        collection_name: Target collection.
+        collection: Target collection (resolved name from
+            ``settings.get_collection_name()``, not the raw config key).
         batch_size: Scroll page size. Default 100 — small enough that
             a single delete payload is reasonable, large enough that
             round-trip count stays bounded for typical placeholder
@@ -383,7 +384,7 @@ async def sweep_orphan_placeholders(
 
     while True:
         points, offset = await qdrant_client.scroll(
-            collection_name=collection_name,
+            collection_name=collection,
             scroll_filter=placeholder_filter,
             limit=batch_size,
             offset=offset,
@@ -404,7 +405,7 @@ async def sweep_orphan_placeholders(
 
         if orphan_ids:
             await qdrant_client.delete(
-                collection_name=collection_name,
+                collection_name=collection,
                 points_selector=orphan_ids,
             )
             swept += len(orphan_ids)

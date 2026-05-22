@@ -1452,15 +1452,14 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             return
         try:
             qdrant_client = await get_qdrant_client()
-            swept, kept = await sweep_orphan_placeholders(
-                qdrant_client, settings.qdrant_collection
-            )
+            collection = settings.get_collection_name()
+            swept, kept = await sweep_orphan_placeholders(qdrant_client, collection)
             logger.info(
                 "vector_sync.orphan_sweep",
                 extra={
                     "swept": swept,
                     "kept": kept,
-                    "collection": settings.qdrant_collection,
+                    "collection": collection,
                 },
             )
         except Exception:
