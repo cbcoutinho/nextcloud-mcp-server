@@ -129,6 +129,7 @@ from nextcloud_mcp_server.vector.oauth_sync import (
     oauth_processor_task,
     user_manager_task,
 )
+from nextcloud_mcp_server.vector.placeholder import sweep_orphan_placeholders
 from nextcloud_mcp_server.vector.processor import processor_task
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 from nextcloud_mcp_server.vector.scanner import scanner_task
@@ -1437,6 +1438,33 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             await stack.enter_async_context(_maybe_login_flow_cleanup(app))
             yield
 
+    async def _sweep_orphan_placeholders_if_enabled() -> None:
+        """One-shot Pod-startup sweep of cross-restart placeholder orphans.
+
+        See ``vector.placeholder.sweep_orphan_placeholders`` and Deck
+        card #101. Both lifespan branches (single-user BasicAuth and
+        OAuth / multi-user BasicAuth) call this after the qdrant
+        client is initialised and before the scanner / user-manager
+        tasks spawn. Failures are non-fatal — the existing staleness
+        gate will eventually re-queue orphans on the slow ~5h path.
+        """
+        if not settings.vector_sync_orphan_sweep_enabled:
+            return
+        try:
+            qdrant_client = await get_qdrant_client()
+            collection = settings.get_collection_name()
+            swept, kept = await sweep_orphan_placeholders(qdrant_client, collection)
+            logger.info(
+                "vector_sync.orphan_sweep",
+                extra={
+                    "swept": swept,
+                    "kept": kept,
+                    "collection": collection,
+                },
+            )
+        except Exception:
+            logger.exception("vector_sync.orphan_sweep_failed")
+
     @asynccontextmanager
     async def starlette_lifespan(app: Starlette):
         # Set OAuth context for OAuth login routes (ADR-004)
@@ -1612,6 +1640,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     f"Cannot start vector sync - Qdrant initialization failed: {e}"
                 ) from e
 
+            # Orphan-sweep before scanner starts — card #101.
+            await _sweep_orphan_placeholders_if_enabled()
+
             # Initialize shared state
             send_stream, receive_stream = anyio.create_memory_object_stream(
                 max_buffer_size=settings.vector_sync_queue_max_size
@@ -1773,6 +1804,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     raise RuntimeError(
                         f"Cannot start vector sync - Qdrant initialization failed: {e}"
                     ) from e
+
+                # Orphan-sweep before scanners spawn — card #101. Runs once
+                # across the shared (per-tenant) collection regardless of
+                # how many per-user scanners the user-manager later starts.
+                await _sweep_orphan_placeholders_if_enabled()
 
                 # Clean up stale app passwords at startup (BasicAuth mode only)
                 if not oauth_enabled:

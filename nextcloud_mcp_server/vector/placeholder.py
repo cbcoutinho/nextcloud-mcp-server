@@ -21,7 +21,7 @@ import logging
 import time
 import uuid
 
-from qdrant_client import models
+from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
 from nextcloud_mcp_server.config import get_settings
@@ -29,6 +29,13 @@ from nextcloud_mcp_server.embedding import get_embedding_service
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
+
+# Stamped on every placeholder this Pod-process writes. A fresh UUID per
+# process means a restarted Pod sees its predecessor's placeholders as
+# "not mine" and deletes them in ``sweep_orphan_placeholders`` at startup,
+# instead of waiting out the ``5 × VECTOR_SYNC_SCAN_INTERVAL`` staleness
+# gate (~5h with the deployed 1h scan interval). Card #101.
+_INSTANCE_ID = str(uuid.uuid4())
 
 
 def _generate_placeholder_id(doc_type: str, doc_id: str) -> str:
@@ -98,6 +105,10 @@ async def write_placeholder_point(
             "modified_at": modified_at,
             "etag": etag,
             "queued_at": int(time.time()),
+            # Pod-process identity. ``sweep_orphan_placeholders`` uses
+            # the (placeholder.instance_id != _INSTANCE_ID) predicate to
+            # detect orphans from a crashed predecessor Pod.
+            "instance_id": _INSTANCE_ID,
         }
 
         # Add file_path for files
@@ -319,3 +330,89 @@ def get_placeholder_filter() -> FieldCondition:
         key="is_placeholder",
         match=MatchValue(value=False),
     )
+
+
+# Batch size for the orphan-sweep scroll + delete loop. Big enough to
+# keep round-trip count down, small enough that a single delete payload
+# isn't unreasonable. Matches the order of magnitude of a per-tenant
+# placeholder count (108 in the originating incident).
+_ORPHAN_SWEEP_BATCH_SIZE = 100
+
+
+async def sweep_orphan_placeholders(
+    qdrant_client: AsyncQdrantClient,
+    collection: str,
+    *,
+    batch_size: int = _ORPHAN_SWEEP_BATCH_SIZE,
+) -> tuple[int, int]:
+    """Delete placeholder points written by a previous Pod-process.
+
+    Scrolls all ``is_placeholder=true`` points in the collection,
+    paginated. For each batch, partitions points by whether their
+    ``instance_id`` payload field matches the current Pod's
+    ``_INSTANCE_ID``. Orphans (different ``instance_id`` OR field
+    absent — back-compat for placeholders written by pre-fix Pod
+    versions) are deleted by point ID; own-Pod placeholders are
+    left alone for the scanner's staleness gate to handle normally.
+
+    Called once at Pod startup from ``app.starlette_lifespan`` —
+    NOT periodically. The own-Pod path relies on the existing
+    ``5 × VECTOR_SYNC_SCAN_INTERVAL`` gate; this helper only
+    addresses the cross-Pod-restart gap. Card #101.
+
+    Args:
+        qdrant_client: Async Qdrant client.
+        collection: Target collection (resolved name from
+            ``settings.get_collection_name()``, not the raw config key).
+        batch_size: Scroll page size. Default 100 — small enough that
+            a single delete payload is reasonable, large enough that
+            round-trip count stays bounded for typical placeholder
+            counts (~hundreds per tenant).
+
+    Returns:
+        ``(swept, kept)`` — number of placeholders deleted as orphans,
+        and number left in place as belonging to the current Pod.
+    """
+    placeholder_filter = Filter(
+        must=[
+            FieldCondition(key="is_placeholder", match=MatchValue(value=True)),
+        ]
+    )
+    swept = 0
+    kept = 0
+    offset = None
+
+    while True:
+        points, offset = await qdrant_client.scroll(
+            collection_name=collection,
+            scroll_filter=placeholder_filter,
+            limit=batch_size,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not points:
+            break
+
+        orphan_ids = []
+        for point in points:
+            payload = point.payload or {}
+            point_instance = payload.get("instance_id")
+            if point_instance == _INSTANCE_ID:
+                kept += 1
+            else:
+                orphan_ids.append(point.id)
+
+        if orphan_ids:
+            await qdrant_client.delete(
+                collection_name=collection,
+                points_selector=orphan_ids,
+            )
+            swept += len(orphan_ids)
+
+        # ``offset is None`` signals the scroll cursor has been
+        # exhausted — Qdrant's contract for paginated scroll.
+        if offset is None:
+            break
+
+    return swept, kept

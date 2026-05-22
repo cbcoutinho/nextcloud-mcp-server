@@ -87,6 +87,12 @@ _DEFAULTS: dict[str, Any] = {
     "vector_sync_processor_workers": 3,
     "vector_sync_queue_max_size": 10000,
     "vector_sync_user_poll_interval": 60,
+    # Orphan-sweep at Pod startup (card #101). When True, delete any
+    # placeholders carrying a different / absent ``instance_id`` before
+    # the scanner's first cycle, so a Pod restart mid-batch doesn't
+    # leave work stuck behind the 5x-scan-interval staleness gate.
+    # Escape hatch only — leave on by default.
+    "vector_sync_orphan_sweep_enabled": True,
     # Verify-on-read concurrency cap (ADR-019)
     "verification_concurrency": 20,
     # Qdrant
@@ -585,6 +591,7 @@ class Settings:
     vector_sync_processor_workers: int = 3
     vector_sync_queue_max_size: int = 10000
     vector_sync_user_poll_interval: int = 60  # seconds - OAuth mode user discovery
+    vector_sync_orphan_sweep_enabled: bool = True  # card #101
 
     # Verify-on-read concurrency (ADR-019). Cap on parallel Nextcloud
     # round-trips during search-result verification fan-out. Lower this if the
@@ -1076,6 +1083,7 @@ def get_settings() -> Settings:
         "vector_sync_processor_workers": "VECTOR_SYNC_PROCESSOR_WORKERS",
         "vector_sync_queue_max_size": "VECTOR_SYNC_QUEUE_MAX_SIZE",
         "vector_sync_user_poll_interval": "VECTOR_SYNC_USER_POLL_INTERVAL",
+        "vector_sync_orphan_sweep_enabled": "VECTOR_SYNC_ORPHAN_SWEEP_ENABLED",
         # Verify-on-read (ADR-019)
         "verification_concurrency": "VERIFICATION_CONCURRENCY",
         # Qdrant settings
