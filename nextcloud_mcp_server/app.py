@@ -2511,6 +2511,29 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         response = await call_next(request)
         return response
 
+    # Log the inbound User-Agent on management API and webhook receiver routes
+    # so we can tell which Astrolabe (or other PHP-side client) build is
+    # talking to the backend. Astrolabe sends ``Nextcloud-Astrolabe/<version>``.
+    _UA_LOGGED_PATH_PREFIXES = ("/api/v1/", "/webhooks/nextcloud")
+
+    @app.middleware("http")
+    async def log_client_user_agent(request, call_next):
+        path = request.url.path
+        if path.startswith(_UA_LOGGED_PATH_PREFIXES):
+            ua = request.headers.get("user-agent") or "(none)"
+            logger.info(
+                "%s %s from %s",
+                request.method,
+                path,
+                ua,
+                extra={
+                    "user_agent": ua,
+                    "http_method": request.method,
+                    "http_path": path,
+                },
+            )
+        return await call_next(request)
+
     # Add CORS middleware to allow browser-based clients like MCP Inspector
     app.add_middleware(
         CORSMiddleware,  # type: ignore[invalid-argument-type]
