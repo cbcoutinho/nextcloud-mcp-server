@@ -335,7 +335,7 @@ services:
       - claude-funnel
 
   qdrant:
-    image: docker.io/qdrant/qdrant:v1.18.0@sha256:1cf3e07c9f269030c7cfed0d5c0beea7bb081848a88e2ae13b35a613d4dd5019
+    image: docker.io/qdrant/qdrant:v1.18.1@sha256:45f8e3ddc2570a4d029877e1b5ec1045c19b3852b4e22a55c7f43b05aea0ca89
     restart: always
     ports:
       - 127.0.0.1:6333:6333  # REST API
