@@ -8,6 +8,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_embedding_service
 from nextcloud_mcp_server.observability.metrics import record_qdrant_operation
+from nextcloud_mcp_server.search.access_filter import build_ownership_filter
 from nextcloud_mcp_server.search.algorithms import (
     SearchAlgorithm,
     SearchResult,
@@ -65,7 +66,11 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
             user_id: User ID for filtering
             limit: Maximum results to return
             doc_type: Optional document type filter
-            **kwargs: Additional parameters (score_threshold override)
+            **kwargs:
+                - score_threshold (float): override the instance default
+                - accessible_owners (list[str]): owner UIDs the user can read
+                  (self + share senders). Pre-computed by the caller from the
+                  OCS Sharing API. Defaults to ``[user_id]`` when omitted.
 
         Returns:
             List of unverified SearchResult objects ranked by similarity score
@@ -75,6 +80,7 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         """
         settings = get_settings()
         score_threshold = kwargs.get("score_threshold", self.score_threshold)
+        accessible_owners: list[str] | None = kwargs.get("accessible_owners")
 
         logger.info(
             "Semantic search: query='%s', user=%s, limit=%s, score_threshold=%s, doc_type=%s",
@@ -97,10 +103,7 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         # Build Qdrant filter
         filter_conditions = [
             get_placeholder_filter(),  # Always exclude placeholders from user-facing queries
-            FieldCondition(
-                key="user_id",
-                match=MatchValue(value=user_id),
-            ),
+            build_ownership_filter(user_id, accessible_owners),
         ]
 
         # Add doc_type filter if specified

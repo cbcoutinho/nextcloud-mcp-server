@@ -33,6 +33,7 @@ from nextcloud_mcp_server.search import (
     BM25HybridSearchAlgorithm,
     SemanticSearchAlgorithm,
 )
+from nextcloud_mcp_server.search.access_filter import list_accessible_owners
 from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
@@ -158,7 +159,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
         with trace_operation("vector_viz.get_auth_client"):
             auth_client_ctx = await _get_authenticated_client_for_userinfo(request)
 
-        async with auth_client_ctx as nc_client:  # noqa: F841
+        async with auth_client_ctx as nc_client:
             # Create search algorithm (no client needed - verification removed)
             if algorithm == "semantic":
                 search_algo = SemanticSearchAlgorithm(score_threshold=score_threshold)
@@ -171,6 +172,13 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                     {"success": False, "error": f"Unknown algorithm: {algorithm}"},
                     status_code=400,
                 )
+
+            # Expand the caller to every owner whose content they have
+            # read access to — same logic as the MCP tool path. See
+            # nextcloud_mcp_server.search.access_filter.
+            accessible_owners = await list_accessible_owners(
+                nc_client.sharing, username
+            )
 
             # Execute search (supports cross-app when doc_types=None)
             # Get unverified results with buffer for filtering
@@ -192,6 +200,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                         limit=limit * 2,  # Buffer for verification filtering
                         doc_type=None,  # Search all types
                         score_threshold=score_threshold,
+                        accessible_owners=accessible_owners,
                     )
                 all_results.extend(unverified_results)
             else:
@@ -211,6 +220,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                             limit=limit * 2,  # Buffer for verification filtering
                             doc_type=doc_type,
                             score_threshold=score_threshold,
+                            accessible_owners=accessible_owners,
                         )
                     all_results.extend(unverified_results)
                 # Sort by score before verification

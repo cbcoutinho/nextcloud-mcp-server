@@ -30,6 +30,7 @@ from nextcloud_mcp_server.models.semantic import (
 from nextcloud_mcp_server.observability.metrics import (
     instrument_tool,
 )
+from nextcloud_mcp_server.search.access_filter import list_accessible_owners
 from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
 from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.verification import verify_search_results
@@ -121,6 +122,12 @@ def configure_semantic_tools(mcp: FastMCP):
                 )
             )
 
+        # Expand the caller's identity to every owner whose content they
+        # have read access to via Nextcloud shares. Lets a user find files
+        # owners have shared with them without having to re-index those
+        # files under their own user_id.
+        accessible_owners = await list_accessible_owners(client.sharing, username)
+
         try:
             # Create BM25 hybrid search algorithm with specified fusion
             search_algo = BM25HybridSearchAlgorithm(
@@ -153,6 +160,7 @@ def configure_semantic_tools(mcp: FastMCP):
                     limit=limit * 2,
                     doc_type=None,  # Signal to search all types
                     score_threshold=score_threshold,
+                    accessible_owners=accessible_owners,
                 )
                 all_results.extend(unverified_results)
             else:
@@ -177,6 +185,7 @@ def configure_semantic_tools(mcp: FastMCP):
                         limit=limit * 2,
                         doc_type=dtype,
                         score_threshold=score_threshold,
+                        accessible_owners=accessible_owners,
                     )
                     all_results.extend(unverified_results)
 
