@@ -38,8 +38,11 @@ async def test_status_reports_provisioned_for_app_password_store(
     """A Login Flow v2 app password in storage => is_provisioned with the
     app_password credential type (was previously reported as not provisioned)."""
     storage = MagicMock()
+    # Only truthiness + "scopes" are read by _get_provisioning_status; omit the
+    # app_password value entirely (avoids a false-positive hard-coded-credential
+    # finding and keeps the mock to what the code under test actually uses).
     storage.get_app_password_with_scopes = AsyncMock(
-        return_value={"app_password": "tok", "scopes": ["notes.read"]}
+        return_value={"scopes": ["notes.read"]}
     )
     storage.get_refresh_token = AsyncMock(return_value=None)
     mocker.patch.object(
@@ -58,9 +61,7 @@ async def test_status_reports_provisioned_for_app_password_store(
 async def test_revoke_deletes_app_password(mocker, _no_astrolabe_settings):
     """Revoke must delete the app password from storage (not just refresh tokens)."""
     storage = MagicMock()
-    storage.get_app_password_with_scopes = AsyncMock(
-        return_value={"app_password": "tok", "scopes": None}
-    )
+    storage.get_app_password_with_scopes = AsyncMock(return_value={"scopes": None})
     storage.get_refresh_token = AsyncMock(return_value=None)
     storage.delete_app_password = AsyncMock(return_value=True)
     mocker.patch.object(

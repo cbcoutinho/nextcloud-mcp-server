@@ -129,7 +129,7 @@ async def enable_background_sync(page: Page, username: str) -> bool:
         logger.info("✓ Background indexing enabled for %s", username)
         return True
     except Exception:
-        screenshot_path = f"/tmp/astrolabe_enable_failed_{username}.png"
+        screenshot_path = f"/tmp/astrolabe_enable_failed_{username}.png"  # NOSONAR: test debug artifact, matches this file's convention
         await page.screenshot(path=screenshot_path)
         raise ValueError(
             f"Background indexing did not enable for {username}. "

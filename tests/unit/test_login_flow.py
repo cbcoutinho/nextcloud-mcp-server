@@ -169,7 +169,7 @@ async def test_initiate_rewrites_login_url_to_public_host():
             "login": "https://nc-internal.test/login/v2/flow/tok123",
             "poll": {
                 "endpoint": "https://nc-internal.test/login/v2/poll",
-                "token": "secret-poll-token",
+                "token": "secret-poll-token",  # NOSONAR: test fixture, not a real secret
             },
         },
     )
