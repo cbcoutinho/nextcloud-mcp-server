@@ -180,6 +180,25 @@ async def test_provision_app_password_invalid_format():
     assert "Invalid app password format" in response.json()["error"]
 
 
+def test_app_password_pattern_accepts_dashed_and_raw_tokens():
+    """The format guard accepts both the dashed Security-settings format and
+    the raw token from the one-click ``core/getapppassword`` flow, and still
+    rejects short / illegal-character input."""
+    from nextcloud_mcp_server.api.passwords import APP_PASSWORD_PATTERN
+
+    # Dashed format a user copies from Security settings.
+    assert APP_PASSWORD_PATTERN.match("abcde-ABCDE-12345-fghij-67890")
+    # Raw 72-char token returned by core/getapppassword (one-click opt-in).
+    assert APP_PASSWORD_PATTERN.match(
+        "kZmgLDQnqQHUAxhRq4d2VssBfjsI0PaHbL4JySWtwJkzVgAf34c0sZshEjZjuj1PLbwrf83q"
+    )
+    # Still rejects obviously-bad input.
+    assert not APP_PASSWORD_PATTERN.match("short")
+    assert not APP_PASSWORD_PATTERN.match("invalid-password")  # < 20 chars
+    assert not APP_PASSWORD_PATTERN.match("has spaces not allowed in this token")
+    assert not APP_PASSWORD_PATTERN.match("contains/slash/" + "a" * 20)
+
+
 async def test_provision_app_password_success(temp_storage, mocker):
     """Test successful app password provisioning."""
     # Mock settings (imported locally in the function)
