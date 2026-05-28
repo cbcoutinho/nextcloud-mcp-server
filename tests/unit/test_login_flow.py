@@ -152,21 +152,23 @@ async def test_poll_expired(flow_client):
 
 
 async def test_initiate_rewrites_login_url_to_public_host():
-    """When server↔Nextcloud uses an internal host, the browser-facing login
-    URL must be rewritten to the configured public host; the poll endpoint
-    stays on the internal host for server-side polling."""
+    """When server↔Nextcloud uses an internal host (e.g. the ``app`` Docker
+    service), the browser-facing login URL must be rewritten to the configured
+    public host; the poll endpoint stays on the internal host for server-side
+    polling. Mock URLs use https to match this file's convention (the rewrite
+    is scheme-agnostic, so this exercises the same origin-replacement logic)."""
     client = LoginFlowV2Client(
-        nextcloud_host="http://app:80",  # internal Docker host
+        nextcloud_host="https://nc-internal.test",  # server↔Nextcloud origin
         verify_ssl=False,
-        public_host="http://localhost:8080",  # browser-reachable
+        public_host="https://cloud.example.com",  # browser-reachable origin
     )
     mock_response = _mock_response(
         200,
         {
             # Nextcloud builds these from the request (internal) host.
-            "login": "http://app/login/v2/flow/tok123",
+            "login": "https://nc-internal.test/login/v2/flow/tok123",
             "poll": {
-                "endpoint": "http://app/login/v2/poll",
+                "endpoint": "https://nc-internal.test/login/v2/poll",
                 "token": "secret-poll-token",
             },
         },
@@ -183,9 +185,9 @@ async def test_initiate_rewrites_login_url_to_public_host():
         result = await client.initiate()
 
     # Browser-facing URL uses the public host...
-    assert result.login_url == "http://localhost:8080/login/v2/flow/tok123"
+    assert result.login_url == "https://cloud.example.com/login/v2/flow/tok123"
     # ...while the poll endpoint stays on the internal host (server polls it).
-    assert result.poll_endpoint == "http://app:80/login/v2/poll"
+    assert result.poll_endpoint == "https://nc-internal.test/login/v2/poll"
 
 
 async def test_initiate_with_custom_user_agent(flow_client):
