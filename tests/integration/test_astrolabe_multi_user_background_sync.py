@@ -524,7 +524,9 @@ async def revoke_background_sync_access(page: Page, username: str) -> bool:
         await revoke_button.wait_for(timeout=5000, state="visible")
         logger.info("Found 'Disable background indexing' button")
     except Exception:
-        screenshot_path = f"/tmp/astrolabe_no_revoke_button_{username}.png"
+        screenshot_path = (
+            f"{tempfile.gettempdir()}/astrolabe_no_revoke_button_{username}.png"
+        )
         await page.screenshot(path=screenshot_path)
         raise ValueError(
             f"Could not find revoke button for {username}. Screenshot: {screenshot_path}"
@@ -561,7 +563,9 @@ async def revoke_background_sync_access(page: Page, username: str) -> bool:
     else:
         logger.warning("No response found for credentials/revoke endpoint!")
         # Take screenshot for debugging
-        screenshot_path = f"/tmp/astrolabe_revoke_no_response_{username}.png"
+        screenshot_path = (
+            f"{tempfile.gettempdir()}/astrolabe_revoke_no_response_{username}.png"
+        )
         await page.screenshot(path=screenshot_path)
         return False
 
@@ -586,7 +590,9 @@ async def revoke_background_sync_access(page: Page, username: str) -> bool:
     try:
         if await page.locator("#mcp-revoke-background-button").is_visible(timeout=2000):
             logger.error("Revoke button still visible for %s after revoke!", username)
-            screenshot_path = f"/tmp/astrolabe_revoke_still_enabled_{username}.png"
+            screenshot_path = (
+                f"{tempfile.gettempdir()}/astrolabe_revoke_still_enabled_{username}.png"
+            )
             await page.screenshot(path=screenshot_path)
             return False
     except Exception:
