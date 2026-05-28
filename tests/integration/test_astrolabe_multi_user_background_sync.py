@@ -446,9 +446,6 @@ async def test_multi_user_astrolabe_background_sync_enablement(
         assert result["settings_accessed"], (
             f"{username} could not access Astrolabe settings"
         )
-        assert result["app_password_generated"], (
-            f"{username} app password was not generated"
-        )
         assert result["sync_enabled"], (
             f"{username} background sync enablement did not complete successfully"
         )

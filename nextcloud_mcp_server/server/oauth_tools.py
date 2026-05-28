@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.auth.astrolabe_client import AstrolabeClient
+from nextcloud_mcp_server.auth.scope_authorization import invalidate_scope_cache
 from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
 
@@ -131,6 +132,26 @@ async def _get_provisioning_status(ctx: Context, user_id: str) -> ProvisioningSt
         "  get_provisioning_status: looking up refresh token for user_id=%s", user_id
     )
     storage = await get_shared_storage()
+
+    # Login Flow v2 app password stored directly in this server's storage —
+    # written by nc_auth_provision_access and the management app-password API,
+    # and the credential that require_provisioning / get_client actually use.
+    # Checked here so check_provisioning_status and revoke_nextcloud_access stay
+    # consistent with what actually grants tool access (the dual-store drift in
+    # the original code reported "not provisioned" while tools still worked).
+    app_pw = await storage.get_app_password_with_scopes(user_id)
+    if app_pw:
+        logger.debug(
+            "  get_provisioning_status: app password (login-flow store) FOUND "
+            "for user_id=%s",
+            user_id,
+        )
+        return ProvisioningStatus(
+            is_provisioned=True,
+            credential_type="app_password",
+            scopes=app_pw.get("scopes"),
+            flow_type="login_flow_v2",
+        )
 
     token_data = await storage.get_refresh_token(user_id)
 
@@ -297,8 +318,29 @@ async def _revoke_nextcloud_access(ctx: Context, user_id: str) -> RevocationResu
                 message="No Nextcloud access to revoke.",
             )
 
-        # Initialize Token Broker to handle revocation
         storage = await get_shared_storage()
+
+        # App-password credential (Login Flow v2 / management API): there is no
+        # IdP token to revoke — removing it from this server's storage drops the
+        # server's access. Without this, revoke previously only handled refresh
+        # tokens and left the app password in place (tools kept working).
+        if status.credential_type == "app_password":
+            deleted = await storage.delete_app_password(user_id)
+            invalidate_scope_cache(user_id)
+            if deleted:
+                return RevocationResult(
+                    success=True,
+                    message=(
+                        "Successfully revoked Nextcloud access (app password "
+                        "removed). You can run provisioning again if needed."
+                    ),
+                )
+            return RevocationResult(
+                success=True,
+                message="No Nextcloud access to revoke.",
+            )
+
+        # Refresh-token credential: revoke via the Token Broker (IdP revocation).
 
         # Get OAuth client credentials from storage
         client_creds = await storage.get_oauth_client()
