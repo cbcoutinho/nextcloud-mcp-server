@@ -138,39 +138,39 @@ async def _verify_files(
     async def check(result: SearchResult) -> None:
         doc_id = result.id
         # file_path is propagated from the Qdrant payload by the algorithm
-        # layer (bm25_hybrid.py / semantic.py). No extra Qdrant round-trip.
+        # layer (bm25_hybrid.py / semantic.py); kept here only for log context.
         file_path = (result.metadata or {}).get("path")
-        if not file_path:
-            # Cannot verify without a path; treat as accessible to avoid
-            # silently dropping legitimate results when payload is missing
-            # (legacy data, or a future doc_type that doesn't propagate path).
+
+        # Verify by *global* file ID via an ACL-aware WebDAV SEARCH, NOT by
+        # path. For files the vector ``doc_id`` IS the Nextcloud file ID, and
+        # file_accessible_by_id searches the user's whole tree (incl. mounted
+        # shares), so a file an owner shared with this user verifies as
+        # accessible even though it lives at a different path under the owner's
+        # root. A path-based check (the old behaviour) would 404 on shared
+        # files mounted at the recipient's root by basename and silently drop
+        # legitimate ACL-aware-search results.
+        #
+        # Hoisted cast mirrors _verify_notes: a malformed id keeps the result
+        # (fail open) with a specific log line rather than a generic
+        # "unexpected error" from the catch-all below.
+        try:
+            file_id_int = int(doc_id)
+        except (TypeError, ValueError) as e:
             logger.warning(
-                "No file path in metadata for file_id %s; keeping result "
-                "(verification skipped)",
+                "Non-numeric file id %r (%s): %s; keeping result",
                 doc_id,
+                file_path,
+                e,
             )
             accessible.add(doc_id)
             return
 
         async with semaphore:
             try:
-                info = await client.webdav.get_file_info(file_path)
-                if info is None:
-                    # Contract (see WebDAVClient.get_file_info docstring):
-                    # `None` means a malformed PROPFIND response — an
-                    # ambiguous state, not a definitive 404. Treat as
-                    # transient and KEEP the result rather than evicting.
-                    # Real 404s raise HTTPStatusError and land in the
-                    # _is_definitive_404_or_403 branch below.
-                    logger.warning(
-                        "Malformed PROPFIND response verifying file %s (%s); "
-                        "keeping result (ambiguous state, not a definitive 404)",
-                        doc_id,
-                        file_path,
-                    )
+                if await client.webdav.file_accessible_by_id(file_id_int):
                     accessible.add(doc_id)
-                    return
-                accessible.add(doc_id)
+                # else: definitively inaccessible (not owned, not shared) —
+                # drop and let the caller schedule eviction.
             except HTTPStatusError as e:
                 if _is_definitive_404_or_403(e):
                     return
@@ -183,6 +183,8 @@ async def _verify_files(
                 )
                 accessible.add(doc_id)
             except Exception as e:
+                # Network blip / unexpected WebDAV error — ambiguous, not a
+                # definitive denial. Keep the result; the next query re-verifies.
                 logger.warning(
                     "Unexpected error verifying file %s (%s): %s; keeping result",
                     doc_id,
