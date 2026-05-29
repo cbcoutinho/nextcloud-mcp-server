@@ -190,7 +190,13 @@ async def _get_deck_metadata_from_qdrant(
         qdrant_client = await get_qdrant_client()
         settings = get_settings()
 
-        # Query for any chunk of this card (we just need metadata)
+        # Query for any chunk of this card (we just need metadata).
+        # Intentionally self-only (raw user_id, not build_ownership_filter):
+        # deck cards are a documented cross-user gap — the Deck API is per-user,
+        # so cross-user deck context can't be fetched with the caller's
+        # credentials anyway (see the doc_type=="file"-only gate in
+        # get_chunk_with_context). Every other internal Qdrant lookup here is
+        # ACL-aware; this one is the deliberate exception.
         scroll_result = await qdrant_client.scroll(
             collection_name=settings.get_collection_name(),
             scroll_filter=Filter(

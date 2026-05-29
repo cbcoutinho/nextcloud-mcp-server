@@ -247,7 +247,15 @@ async def unified_search(request: Request) -> JSONResponse:
                                 accessible_owners=owners,
                             )
                         )
+                # Sort, then cap to a fixed over-fetch budget before the result
+                # reaches verify-on-read. Without this, N doc_types each fetched
+                # at search_limit would send N*search_limit candidates into
+                # verification — one Nextcloud round-trip each — scaling the cost
+                # with len(doc_types). 2x leaves headroom for verify-on-read
+                # drops before pagination, matching the nc_semantic_search and
+                # viz_routes pattern.
                 results.sort(key=lambda r: r.score, reverse=True)
+                results = results[: search_limit * 2]
             else:
                 results = await search_algo.search(
                     query=query,
