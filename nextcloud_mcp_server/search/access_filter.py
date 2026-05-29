@@ -136,13 +136,15 @@ def build_ownership_filter(
 ) -> Filter:
     """Build the Qdrant ``Filter`` constraining a search to readable points.
 
-    Matches points whose ``owner_id`` is in ``accessible_owners`` OR whose
-    legacy ``user_id`` equals ``user_id``. The legacy branch keeps points
-    indexed before this change reachable until they're re-indexed.
+    Matches points whose ``owner_id`` is in ``accessible_owners`` (excluding
+    self) OR whose ``user_id`` equals ``user_id``. The ``user_id`` branch covers
+    *all* of the caller's own content — both new points (where
+    ``owner_id == user_id``) and legacy points indexed before ``owner_id``
+    existed — so self is intentionally NOT repeated in the ``owner_id`` branch.
 
     Args:
-        user_id: Querying user (used for the legacy ``user_id`` fallback
-            and as the only-self default when ``accessible_owners`` is None).
+        user_id: Querying user (matched by the ``user_id`` branch, which is the
+            self-only default when ``accessible_owners`` is None).
         accessible_owners: Pre-computed list of owner UIDs the user has
             access to. When None, defaults to ``[user_id]`` (no shares
             expansion — used by callers that genuinely want self-only
@@ -152,15 +154,18 @@ def build_ownership_filter(
         A Qdrant ``Filter`` ready to be nested under a parent ``must`` clause.
     """
     owners = accessible_owners if accessible_owners is not None else [user_id]
-    # The legacy ``user_id`` branch is always present (self-owned content,
-    # incl. pre-migration points). The ``owner_id`` branch is appended only for
-    # a non-empty owner set: an empty list is handled explicitly here rather
-    # than relying on ``MatchAny(any=[])`` matching nothing, which is not a
-    # documented Qdrant guarantee and could change across versions. Self always
-    # matches via the ``user_id`` branch, so an empty owner set is safe.
+    # The ``user_id`` branch is always present and already covers self-owned
+    # content (new + legacy). The ``owner_id`` branch is added only for OTHER
+    # owners (share senders) — listing self there too would overlap the
+    # ``user_id`` branch for no benefit. When there are no other owners the
+    # ``owner_id`` branch is omitted entirely, so we never depend on
+    # ``MatchAny(any=[])`` matching nothing (not a documented Qdrant guarantee).
+    other_owners = [owner for owner in owners if owner != user_id]
     conditions: list[Condition] = [
         FieldCondition(key="user_id", match=MatchValue(value=user_id)),
     ]
-    if owners:
-        conditions.insert(0, FieldCondition(key="owner_id", match=MatchAny(any=owners)))
+    if other_owners:
+        conditions.insert(
+            0, FieldCondition(key="owner_id", match=MatchAny(any=other_owners))
+        )
     return Filter(should=conditions)

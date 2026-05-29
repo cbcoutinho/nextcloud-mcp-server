@@ -244,6 +244,16 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 verified_results, _dropped = await verify_search_results(
                     nc_client, all_results
                 )
+            # Safe to log titles now: these passed verify-on-read (unverified
+            # titles are never logged — see the search algorithms).
+            if verified_results:
+                logger.debug(
+                    "Top verified results: %s",
+                    ", ".join(
+                        f"{r.doc_type}_{r.id} (score={r.score:.3f}, title='{r.title}')"
+                        for r in verified_results[:5]
+                    ),
+                )
             search_results = verified_results[:limit]
             search_duration = time.perf_counter() - search_start
 
@@ -661,6 +671,10 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
             )
 
         async with nc_client:
+            # Expand to owners who shared content with the caller so the cached
+            # chunk lookup can resolve cross-user SHARED FILES (gated per-file
+            # inside get_chunk_with_context). Same expansion as the search path.
+            accessible_owners = await list_accessible_owners(nc_client.sharing, user_id)
             chunk_context = await get_chunk_with_context(
                 nc_client=nc_client,
                 user_id=user_id,
@@ -671,6 +685,7 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
                 chunk_index=chunk_index,
                 total_chunks=total_chunks,
                 context_chars=context_chars,
+                accessible_owners=accessible_owners,
             )
 
         # Check if context expansion succeeded
@@ -699,12 +714,16 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
         chunk_bbox = None
         page_number = chunk_context.page_number
         if doc_type == "file":
+            # Reaching here means the file chunk context resolved, so access was
+            # already confirmed (get_chunk_with_context gates files by id);
+            # the bbox/page lookup uses the same owner scope for cross-user files.
             qdrant_bbox, qdrant_page = await get_chunk_bbox_and_page_from_qdrant(
                 user_id=user_id,
                 doc_id=doc_id,
                 chunk_index=chunk_index,
                 chunk_start=start,
                 chunk_end=end,
+                accessible_owners=accessible_owners,
             )
             if qdrant_bbox is not None:
                 chunk_bbox = qdrant_bbox

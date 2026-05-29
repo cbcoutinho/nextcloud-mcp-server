@@ -24,6 +24,7 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
 from nextcloud_mcp_server.search.algorithms import get_indexed_doc_types
+from nextcloud_mcp_server.search.context import _get_chunk_by_index_from_qdrant
 from nextcloud_mcp_server.search.semantic import SemanticSearchAlgorithm
 
 pytestmark = pytest.mark.integration
@@ -96,6 +97,11 @@ async def seeded_collection(monkeypatch):
     # get_indexed_doc_types reads the client from the algorithms module.
     monkeypatch.setattr(
         "nextcloud_mcp_server.search.algorithms.get_qdrant_client",
+        AsyncMock(return_value=client),
+    )
+    # The cached-chunk lookups read the client from the context module.
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.search.context.get_qdrant_client",
         AsyncMock(return_value=client),
     )
 
@@ -189,3 +195,18 @@ async def test_get_indexed_doc_types_is_acl_aware(seeded_collection):
     }
     # Self-only (default): Bob owns nothing here → discovers nothing.
     assert await get_indexed_doc_types("bob") == set()
+
+
+async def test_cached_chunk_lookup_is_acl_aware(seeded_collection):
+    """The cached-chunk Qdrant lookup honours accessible_owners: Bob retrieves
+    the excerpt of Alice's file point (owner_id=alice, chunk_index=0) when alice
+    is in his accessible owners, but not when scoped self-only. This is the
+    Qdrant-layer half of cross-user file chunk context (the per-file access
+    gate lives in get_chunk_with_context / file_accessible_by_id)."""
+    # Alice's seeded file point (_ALICE_FILE) carries excerpt=_DOC_TEXT at chunk 0.
+    text = await _get_chunk_by_index_from_qdrant(
+        "bob", "101", "file", 0, accessible_owners=["bob", "alice"]
+    )
+    assert text == _DOC_TEXT
+    # Self-only Bob cannot reach Alice's cached chunk.
+    assert await _get_chunk_by_index_from_qdrant("bob", "101", "file", 0) is None

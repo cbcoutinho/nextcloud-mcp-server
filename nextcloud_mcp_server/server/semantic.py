@@ -129,7 +129,12 @@ def configure_semantic_tools(mcp: FastMCP):
         accessible_owners = await list_accessible_owners(client.sharing, username)
 
         try:
-            # Create BM25 hybrid search algorithm with specified fusion
+            # The nc_semantic_search tool deliberately uses BM25-hybrid (dense +
+            # sparse with RRF/DBSF fusion) as the single tool-layer algorithm.
+            # SemanticSearchAlgorithm is not dead code — it backs the dense-only
+            # option that the visualization/API surfaces expose explicitly
+            # (auth/viz_routes.py and api/visualization.py). Both algorithms take
+            # accessible_owners, so ACL-aware search works on every surface.
             search_algo = BM25HybridSearchAlgorithm(
                 score_threshold=score_threshold, fusion=fusion
             )
@@ -230,6 +235,17 @@ def configure_semantic_tools(mcp: FastMCP):
                 verified_chunk_count,
                 dropped_count,
             )
+            # Safe to log titles now: these results passed verify-on-read, so the
+            # caller is confirmed to have access (unverified titles were never
+            # logged — see the search algorithms).
+            if verified_results:
+                logger.debug(
+                    "Top verified results: %s",
+                    ", ".join(
+                        f"{r.doc_type}_{r.id} (score={r.score:.3f}, title='{r.title}')"
+                        for r in verified_results[:5]
+                    ),
+                )
             search_results = verified_results[:limit]
 
             # Convert SearchResult objects to SemanticSearchResult for response.

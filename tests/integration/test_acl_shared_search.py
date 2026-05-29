@@ -37,6 +37,7 @@ from nextcloud_mcp_server.search.access_filter import (
     clear_accessible_owners_cache,
     list_accessible_owners,
 )
+from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.semantic import SemanticSearchAlgorithm
 from nextcloud_mcp_server.search.verification import verify_search_results
 
@@ -149,6 +150,12 @@ async def seeded_semantic(monkeypatch, shared_file):
         "nextcloud_mcp_server.search.semantic.get_embedding_service",
         lambda: provider,
     )
+    # The cached-chunk lookups (get_chunk_with_context) read the client from the
+    # context module — point it at the same in-memory Qdrant.
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.search.context.get_qdrant_client",
+        AsyncMock(return_value=client),
+    )
     yield file_id
     await client.close()
 
@@ -215,3 +222,50 @@ async def test_file_accessible_by_id_resolves_shares(acl_users, shared_file):
     assert await acl_users["bob"].webdav.file_accessible_by_id(fid) is True
     # ...the non-recipient cannot.
     assert await acl_users["diana"].webdav.file_accessible_by_id(fid) is False
+
+
+async def test_cross_user_file_chunk_context(acl_users, seeded_semantic):
+    """End-to-end cross-user FILE chunk context: Bob (a share recipient) gets
+    Alice's cached chunk text, Diana (no share) gets None.
+
+    Exercises the full secure path: the ACL-aware Qdrant cached-chunk lookup
+    (owner_id=alice surfaces for Bob) gated by a real per-file
+    ``file_accessible_by_id`` check against live Nextcloud. Diana fails the gate
+    and is denied even though the chunk is cached. Per-user types are covered by
+    the self-only behaviour elsewhere — this is the file path the feature adds.
+    """
+    file_id = seeded_semantic
+    bob = acl_users["bob"]
+    diana = acl_users["diana"]
+
+    bob_owners = await list_accessible_owners(bob.sharing, "bob")
+    assert "alice" in bob_owners
+
+    ctx = await get_chunk_with_context(
+        nc_client=bob,
+        user_id="bob",
+        doc_id=str(file_id),
+        doc_type="file",
+        chunk_start=0,
+        chunk_end=len(_DOC_TEXT),
+        chunk_index=0,
+        total_chunks=1,
+        accessible_owners=bob_owners,
+    )
+    assert ctx is not None, "Bob (share recipient) must get Alice's cached chunk"
+    assert ctx.chunk_text == _DOC_TEXT
+
+    # Diana has no share → per-file gate denies even though the chunk is cached.
+    diana_owners = await list_accessible_owners(diana.sharing, "diana")
+    denied = await get_chunk_with_context(
+        nc_client=diana,
+        user_id="diana",
+        doc_id=str(file_id),
+        doc_type="file",
+        chunk_start=0,
+        chunk_end=len(_DOC_TEXT),
+        chunk_index=0,
+        total_chunks=1,
+        accessible_owners=diana_owners,
+    )
+    assert denied is None, "Diana (no share) must not get cross-user chunk context"

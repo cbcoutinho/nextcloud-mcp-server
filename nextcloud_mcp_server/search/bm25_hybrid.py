@@ -241,12 +241,10 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                 if len(results) >= limit:
                     break
 
+        # Log the count only — NOT titles. These results are unverified: with
+        # owner-level share expansion the candidate set can include other users'
+        # documents that verify-on-read will drop, so titles must not be logged
+        # until after verification (the verifying callers log verified titles).
         logger.info("Returning %s unverified results after deduplication", len(results))
-        if results:
-            result_details = [
-                f"{r.doc_type}_{r.id} (score={r.score:.3f}, title='{r.title}')"
-                for r in results[:5]  # Show top 5
-            ]
-            logger.debug("Top results: %s", ", ".join(result_details))
 
         return results

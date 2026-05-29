@@ -156,11 +156,11 @@ class TestBuildOwnershipFilter:
     def test_defaults_to_self_only_when_owners_omitted(self) -> None:
         flt = build_ownership_filter("alice")
 
+        # Self-only: just the user_id branch. Self is NOT duplicated into an
+        # owner_id branch (the user_id branch already covers self-owned content).
         assert flt.should is not None
-        assert len(flt.should) == 2  # owner_id branch + legacy user_id branch
-        owner_branch, user_branch = flt.should
-        assert owner_branch.key == "owner_id"
-        assert owner_branch.match.any == ["alice"]
+        assert len(flt.should) == 1
+        (user_branch,) = flt.should
         assert user_branch.key == "user_id"
         assert user_branch.match.value == "alice"
 
@@ -168,10 +168,10 @@ class TestBuildOwnershipFilter:
         flt = build_ownership_filter("alice", ["alice", "bob", "carol"])
 
         owner_branch, user_branch = flt.should
-        # Owner branch reflects the expanded set.
-        assert set(owner_branch.match.any) == {"alice", "bob", "carol"}
-        # Legacy user_id branch keeps the original user — that's the only
-        # legacy match path, so it must NOT widen to other owners.
+        # Owner branch holds only the OTHER owners — self ("alice") is excluded
+        # because the user_id branch already matches self-owned content.
+        assert set(owner_branch.match.any) == {"bob", "carol"}
+        assert user_branch.key == "user_id"
         assert user_branch.match.value == "alice"
 
     def test_explicit_empty_list_omits_owner_branch_keeps_legacy(self) -> None:
