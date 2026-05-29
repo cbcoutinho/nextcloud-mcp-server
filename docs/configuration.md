@@ -750,6 +750,40 @@ docker-compose up
 
 ---
 
+## Decomposition Hook Points (Optional, Advanced)
+
+The server can optionally offload document processing and embeddings to external
+services (the Astrolabe Cloud document-processor and embedding-gateway). These
+are **opt-in**; every default reproduces the in-process monolith behavior, so
+self-hosters can ignore this section.
+
+```bash
+# Embeddings via an OpenAI-compatible gateway (else: autodetect — see above)
+EMBEDDING_PROVIDER=gateway
+EMBEDDING_GATEWAY_URL=https://embedding-gateway.internal
+# Gateway M2M OIDC client (its own realm; leave unset to call it unauthenticated)
+EMBEDDING_GATEWAY_TOKEN_URL=...
+EMBEDDING_GATEWAY_CLIENT_ID=...
+EMBEDDING_GATEWAY_CLIENT_SECRET=...
+
+# External ingest: publish to NATS instead of the in-process processor pool
+INGEST_MODE=external          # local (default) | external
+STATUS_BACKEND=bus            # local (default) | bus — REQUIRED with external
+INGEST_BUS_URL=nats://nats:4222
+TENANT_ID=<uuid>              # NATS per-tenant subject token
+```
+
+Notes:
+- `STATUS_BACKEND=local` with `INGEST_MODE=external` is rejected at startup
+  (the in-process job state is empty for externally-dispatched work).
+- **`nats-py` ships as a core dependency** (small, pure-Python) and is imported
+  lazily — only when `INGEST_MODE=external`. Self-hosters who never enable
+  external ingest pay no runtime cost.
+- `INGEST_MODE=external` + `STATUS_BACKEND=bus` opens **two** NATS connections
+  per pod (the ingest producer and the status subscriber are separate roles).
+
+---
+
 ## Tag-Based File Exclusion (Optional)
 
 Some files (contracts, medical records, credentials, private notes) should

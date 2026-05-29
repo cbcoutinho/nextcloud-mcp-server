@@ -36,7 +36,13 @@ def _modified_at_rfc3339(modified_at: int) -> str:
 
 def _content_hash(task: DocumentTask) -> str:
     """etag is the change-detection token; fall back to modified_at when it is
-    absent (e.g. deletes, or sources whose etag we don't thread through)."""
+    absent (e.g. deletes, or sources whose etag we don't thread through).
+
+    TODO(follow-up): thread etags for file / deck_card / news_item scans too
+    (only note scans pass etag today). Until then their JetStream Nats-Msg-Id
+    dedup keys off modified_at, which misses content changes that leave
+    modified_at unchanged (e.g. a file move/rename).
+    """
     return task.etag or str(task.modified_at)
 
 
@@ -133,7 +139,7 @@ class NatsTaskProducer:
     ) -> None:
         return None
 
-    async def aclose(self) -> None:
+    async def aclose(self) -> None:  # NOSONAR: async required by TaskProducer protocol
         # Per-handle close (e.g. a per-user scanner clone exiting). The bus
         # connection is shared and owned by the lifespan, so this is a no-op;
         # the connection is torn down once via ``drain()`` on shutdown.

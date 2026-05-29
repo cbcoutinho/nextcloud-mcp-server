@@ -1120,9 +1120,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         and settings.vector_sync_enabled
         and settings.enable_background_operations
     ):
-        print(
-            f"DEBUG: Multi-user BasicAuth mode detected, vector_sync={settings.vector_sync_enabled}, background_operations={settings.enable_background_operations}"
-        )
         logger.info(
             "Multi-user BasicAuth with vector sync - checking for OAuth/app password credentials"
         )
@@ -1132,12 +1129,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         static_client_secret = os.getenv("NEXTCLOUD_OIDC_CLIENT_SECRET")
 
         if static_client_id and static_client_secret:
-            print("DEBUG: Using static OAuth credentials")
             logger.info("Using static OAuth credentials for background operations")
             multi_user_basic_oauth_creds = (static_client_id, static_client_secret)
         else:
             # Perform DCR before uvicorn starts (same lifecycle as OAuth modes)
-            print("DEBUG: No static credentials, attempting DCR...")
             logger.info(
                 "OAuth credentials not configured - attempting Dynamic Client Registration..."
             )

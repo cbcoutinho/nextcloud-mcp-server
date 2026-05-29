@@ -5,8 +5,10 @@ values for any *missing* decomposition payload keys (so existing corpora gain
 them without a re-index), then upserts the collection-metadata sentinel.
 
 Scope: this backfills the cheap, deployment-level scalar keys
-(``processor_version``, ``parsed_at``, ``pipeline_tier``, ``embedding_identity``)
-only. It deliberately does NOT synthesize ``acl_hash`` — a correct value needs
+(``processor_version``, ``pipeline_tier``, ``embedding_identity``) only.
+``parsed_at`` is per-document state (the local processor sets it at index time),
+not a deployment-level scalar, so it is intentionally not backfilled. It also
+deliberately does NOT synthesize ``acl_hash`` — a correct value needs
 per-document share enumeration (a separate job), and writing a placeholder
 ``acl_hash`` would be unsafe to pre-filter on. The query-side ACL pre-filter
 therefore stays disabled until a real ACL backfill runs (see
@@ -38,6 +40,14 @@ logger = logging.getLogger(__name__)
 
 
 async def handle_payload_backfill(request: Request) -> JSONResponse:
+    # require_admin_scope authenticates via the OAuth token verifier; in
+    # BasicAuth-only deployments there is no oauth_context, so surface a clean
+    # 404 rather than a confusing 401 from the broad except below.
+    if getattr(request.app.state, "oauth_context", None) is None:
+        return JSONResponse(
+            {"error": "admin API requires an OAuth-capable deployment"},
+            status_code=404,
+        )
     try:
         await require_admin_scope(request)
     except AdminScopeRequired:

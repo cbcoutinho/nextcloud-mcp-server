@@ -134,7 +134,7 @@ class NatsStatusSubscriber:
         self,
         shutdown_event: anyio.Event,
         *,
-        task_status: TaskStatus = None,  # type: ignore[assignment]
+        task_status: TaskStatus | None = None,
     ) -> None:
         """Durable pull-consumer loop. Requires a live broker (integration)."""
         import anyio  # noqa: PLC0415
@@ -149,8 +149,9 @@ class NatsStatusSubscriber:
             try:
                 msgs = await sub.fetch(batch=16, timeout=5)
             except Exception:
-                # fetch timeout when idle — loop and re-check shutdown.
-                await anyio.sleep(0)
+                # fetch timeout when idle — brief pause before re-checking
+                # shutdown, avoiding a tight check-and-sleep spin on quiet tenants.
+                await anyio.sleep(0.1)
                 continue
             for msg in msgs:
                 self.handle_message(msg.subject, msg.data)

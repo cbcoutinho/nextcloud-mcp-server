@@ -45,5 +45,5 @@ class PostgresTaskProducer:
     ) -> None:  # pragma: no cover
         return None
 
-    async def aclose(self) -> None:  # pragma: no cover
+    async def aclose(self) -> None:  # pragma: no cover  # NOSONAR: protocol stub
         return None

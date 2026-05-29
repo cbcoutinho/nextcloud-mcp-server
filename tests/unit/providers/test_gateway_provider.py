@@ -29,7 +29,7 @@ def _patch_settings(monkeypatch, settings):
 def test_gateway_selected_unauthenticated(monkeypatch):
     settings = Settings(
         embedding_provider="gateway",
-        embedding_gateway_url="http://gateway:8083",
+        embedding_gateway_url="https://gateway:8083",
         embedding_gateway_model="mistral-embed",
     )
     _patch_settings(monkeypatch, settings)
@@ -44,7 +44,7 @@ def test_gateway_selected_unauthenticated(monkeypatch):
 def test_gateway_selected_with_m2m_oidc(monkeypatch):
     settings = Settings(
         embedding_provider="gateway",
-        embedding_gateway_url="http://gateway:8083",
+        embedding_gateway_url="https://gateway:8083",
         embedding_gateway_token_url="https://idp.example/oauth2/token",
         embedding_gateway_client_id="mcp-server",
         embedding_gateway_client_secret="shh",
@@ -60,7 +60,7 @@ def test_partial_m2m_creds_rejected():
     with pytest.raises(ValueError, match="must be set together"):
         Settings(
             embedding_provider="gateway",
-            embedding_gateway_url="http://gateway:8083",
+            embedding_gateway_url="https://gateway:8083",
             embedding_gateway_client_id="mcp-server",  # missing token_url/secret
         )
 
@@ -111,6 +111,7 @@ async def test_token_provider_caches_and_refreshes(monkeypatch):
     assert calls["n"] == 1
 
     # Expire the cache → next call refreshes.
+    assert tp._cache is not None
     tp._cache = (tp._cache[0], time.time() - 1)
     t3 = await tp.get_token()
     assert t3 == "tok2"

@@ -350,7 +350,7 @@ async def scan_user_documents(
                         doc_type="note",
                         operation="index",
                         modified_at=modified_at,
-                        etag=note.get("etag", ""),
+                        etag=note.get("etag"),
                     )
                 )
                 queued += 1
@@ -417,7 +417,7 @@ async def scan_user_documents(
                             doc_type="note",
                             operation="index",
                             modified_at=modified_at,
-                            etag=note.get("etag", ""),
+                            etag=note.get("etag"),
                         )
                     )
                     queued += 1

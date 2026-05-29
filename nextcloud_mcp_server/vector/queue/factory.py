@@ -9,16 +9,25 @@ later) so moving the external processor to Postgres needs no new INGEST_MODE.
 
 from __future__ import annotations
 
+import logging
 from urllib.parse import urlsplit
 
 from ...config import Settings
 from .ports import TaskProducer
+
+logger = logging.getLogger(__name__)
 
 
 def _transport_for(url: str) -> str:
     scheme = urlsplit(url).scheme.lower()
     if scheme.startswith("postgres"):
         return "postgres"
+    if not scheme.startswith("nats"):
+        logger.warning(
+            "INGEST_BUS_URL scheme %r is neither nats:// nor postgres://; "
+            "defaulting to the NATS transport",
+            scheme,
+        )
     return "nats"
 
 
@@ -28,8 +37,13 @@ async def build_external_producer(settings: Settings) -> TaskProducer:
     Precondition: ``settings.ingest_mode == "external"`` (so __post_init__ has
     guaranteed ``ingest_bus_url`` and ``tenant_id`` are set).
     """
-    assert settings.ingest_bus_url is not None
-    assert settings.tenant_id is not None
+    # Defence-in-depth (robust under ``python -O``, which strips asserts):
+    # __post_init__ already guarantees these when ingest_mode == external.
+    if settings.ingest_bus_url is None or settings.tenant_id is None:
+        raise ValueError(
+            "build_external_producer requires INGEST_BUS_URL and TENANT_ID "
+            "(guaranteed by Settings validation when INGEST_MODE=external)"
+        )
 
     transport = _transport_for(settings.ingest_bus_url)
     if transport == "postgres":

@@ -45,7 +45,7 @@ async def test_qdrant_error_falls_back_to_env(mocker):
 async def test_api_source(mocker):
     settings = Settings(
         collection_metadata_source="api",
-        collection_metadata_api_url="http://cp",
+        collection_metadata_api_url="https://cp",
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -85,7 +85,7 @@ async def test_upsert_sentinel_builds_point(mocker):
     point = kwargs["points"][0]
     assert str(point.id) == cm.SENTINEL_POINT_ID
     # Non-zero dense (cosine-safe), empty sparse.
-    assert point.vector["dense"][0] != 0.0
+    assert point.vector["dense"][0] > 0.0
     assert len(point.vector["dense"]) == 4
     assert point.payload[EMBEDDING_IDENTITY] == "mistral-embed"
     assert point.payload[cm.IS_SENTINEL] is True

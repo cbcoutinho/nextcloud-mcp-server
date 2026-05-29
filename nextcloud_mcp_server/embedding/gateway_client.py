@@ -35,6 +35,11 @@ logger = logging.getLogger(__name__)
 # token never expires mid-flight (matches AstrolabeClient / CP CLI behavior).
 _EARLY_REFRESH_SECONDS = 60
 
+# Non-secret placeholder for AsyncOpenAI, which rejects an empty key. In
+# unauthenticated mode the gateway ignores the bearer; when a token provider is
+# configured, the real M2M token replaces this before each request.
+_UNAUTHENTICATED_PLACEHOLDER = "unauthenticated"
+
 
 class GatewayTokenProvider:
     """Caches a gateway M2M access token via the ``client_credentials`` grant.
@@ -106,7 +111,7 @@ class GatewayProvider(OpenAIProvider):
         # the gateway is unauthenticated. When a token provider is configured,
         # the real Bearer is set on the client before each request.
         super().__init__(
-            api_key="gateway-unauthenticated",
+            api_key=_UNAUTHENTICATED_PLACEHOLDER,  # NOSONAR: placeholder, not a secret
             base_url=base_url,
             embedding_model=embedding_model,
             generation_model=None,  # gateway never generates

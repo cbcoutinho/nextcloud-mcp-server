@@ -124,7 +124,7 @@ def test_publisher_matches_shared_fixture(mocker):
         ("nats://nats:4222", "nats"),
         ("postgres://h/db", "postgres"),
         ("postgresql://h/db", "postgres"),
-        ("http://elsewhere", "nats"),
+        ("https://elsewhere", "nats"),
     ],
 )
 def test_transport_for(url, expected):

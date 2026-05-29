@@ -95,7 +95,7 @@ class TestConditionalRequired:
     def test_gateway_happy_path(self):
         s = Settings(
             embedding_provider="gateway",
-            embedding_gateway_url="http://gateway:8083",
+            embedding_gateway_url="https://gateway:8083",
         )
         assert s.embedding_provider == "gateway"
 
