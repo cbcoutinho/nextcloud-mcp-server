@@ -174,13 +174,15 @@ class TestBuildOwnershipFilter:
         # legacy match path, so it must NOT widen to other owners.
         assert user_branch.match.value == "alice"
 
-    def test_explicit_empty_list_still_keeps_legacy_branch(self) -> None:
-        # Edge case: caller passed an explicit empty list. We shouldn't
-        # silently re-default to [user_id] in the owner branch, but the
-        # legacy branch is still the safety net so the user can find their
-        # own content from before the migration.
+    def test_explicit_empty_list_omits_owner_branch_keeps_legacy(self) -> None:
+        # Edge case: caller passed an explicit empty list. The owner_id branch
+        # is omitted entirely (rather than relying on MatchAny(any=[]) matching
+        # nothing); the legacy user_id branch remains as the safety net so the
+        # user still finds their own content from before the migration.
         flt = build_ownership_filter("alice", [])
 
-        owner_branch, user_branch = flt.should
-        assert owner_branch.match.any == []
+        assert flt.should is not None
+        assert len(flt.should) == 1
+        (user_branch,) = flt.should
+        assert user_branch.key == "user_id"
         assert user_branch.match.value == "alice"

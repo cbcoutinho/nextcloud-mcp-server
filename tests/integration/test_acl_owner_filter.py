@@ -23,6 +23,7 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
+from nextcloud_mcp_server.search.algorithms import get_indexed_doc_types
 from nextcloud_mcp_server.search.semantic import SemanticSearchAlgorithm
 
 pytestmark = pytest.mark.integration
@@ -91,6 +92,11 @@ async def seeded_collection(monkeypatch):
     monkeypatch.setattr(
         "nextcloud_mcp_server.search.semantic.get_embedding_service",
         lambda: provider,
+    )
+    # get_indexed_doc_types reads the client from the algorithms module.
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.search.algorithms.get_qdrant_client",
+        AsyncMock(return_value=client),
     )
 
     yield provider
@@ -170,3 +176,16 @@ async def test_owner_sees_own_new_style_point(seeded_collection):
     assert "101" in found
     assert "102" not in found
     assert "103" not in found
+
+
+async def test_get_indexed_doc_types_is_acl_aware(seeded_collection):
+    """get_indexed_doc_types respects the ownership scope: with the expanded
+    accessible_owners Bob discovers the shared "file" type, but self-only Bob
+    (who owns nothing here) discovers nothing — proving it is no longer
+    ACL-blind."""
+    # ACL-aware: Bob can read Alice's shared file → discovers "file".
+    assert await get_indexed_doc_types("bob", accessible_owners=["bob", "alice"]) == {
+        "file"
+    }
+    # Self-only (default): Bob owns nothing here → discovers nothing.
+    assert await get_indexed_doc_types("bob") == set()

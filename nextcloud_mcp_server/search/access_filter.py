@@ -12,6 +12,14 @@ This module turns "who can user X read?" into a Qdrant filter:
 A second OR-branch matches the legacy ``user_id`` field so points indexed
 before this change (which carry only ``user_id``) continue to be findable
 by their original indexer. New points carry both fields.
+
+Operator note (existing data): a Qdrant ``owner_id`` field condition matches
+nothing on points that lack the field, so documents indexed *before* this
+change never surface to share recipients — only to their original indexer via
+the legacy ``user_id`` branch. ACL-aware search is therefore effectively a
+no-op for pre-existing data until each owner's scanner re-indexes it. Trigger a
+re-index after deploying this feature if it should apply to already-indexed
+content immediately.
 """
 
 from __future__ import annotations
@@ -21,7 +29,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Protocol
 
-from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue
+from qdrant_client.models import Condition, FieldCondition, Filter, MatchAny, MatchValue
 
 logger = logging.getLogger(__name__)
 
@@ -106,10 +114,13 @@ async def list_accessible_owners(
     for share in shares:
         # OCS returns the share owner under `uid_owner` (the file owner,
         # not the share recipient). Some Nextcloud versions also surface
-        # `owner` as a fallback display field — we tolerate both.
-        owner = share.get("uid_owner") or share.get("owner")
-        if isinstance(owner, str) and owner:
-            owners.add(owner)
+        # `owner` as a fallback display field — we tolerate both. The intent is
+        # "absent, not empty": a missing/blank `uid_owner` falls through to
+        # `owner`, and a non-string or empty result skips the (malformed) share.
+        owner = share.get("uid_owner") or share.get("owner") or None
+        if not isinstance(owner, str) or not owner:
+            continue
+        owners.add(owner)
 
     result = list(owners)
     _owners_cache[user_id] = (now, result)
@@ -141,14 +152,15 @@ def build_ownership_filter(
         A Qdrant ``Filter`` ready to be nested under a parent ``must`` clause.
     """
     owners = accessible_owners if accessible_owners is not None else [user_id]
-    # Edge case: an explicit empty ``accessible_owners`` yields
-    # ``MatchAny(any=[])``, which Qdrant treats as matching nothing — so the
-    # owner_id branch contributes no results and access comes solely from the
-    # legacy ``user_id`` branch below (self-owned content). Callers that want
-    # share expansion must pass a non-empty list.
-    return Filter(
-        should=[
-            FieldCondition(key="owner_id", match=MatchAny(any=owners)),
-            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-        ]
-    )
+    # The legacy ``user_id`` branch is always present (self-owned content,
+    # incl. pre-migration points). The ``owner_id`` branch is appended only for
+    # a non-empty owner set: an empty list is handled explicitly here rather
+    # than relying on ``MatchAny(any=[])`` matching nothing, which is not a
+    # documented Qdrant guarantee and could change across versions. Self always
+    # matches via the ``user_id`` branch, so an empty owner set is safe.
+    conditions: list[Condition] = [
+        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+    ]
+    if owners:
+        conditions.insert(0, FieldCondition(key="owner_id", match=MatchAny(any=owners)))
+    return Filter(should=conditions)

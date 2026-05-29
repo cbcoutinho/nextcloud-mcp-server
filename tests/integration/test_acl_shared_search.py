@@ -195,3 +195,23 @@ async def test_non_recipient_does_not_find_file(acl_users, seeded_semantic):
     kept = await _search_as(acl_users["diana"], seeded_semantic)
 
     assert kept == [], "diana (no share) must not find alice's file"
+
+
+async def test_file_accessible_by_id_resolves_shares(acl_users, shared_file):
+    """Lock the verify-on-read contract directly on ``file_accessible_by_id``.
+
+    The WebDAV SEARCH-by-fileid with ``scope=""`` must resolve a file that the
+    caller does NOT own but which is shared with them. This is the exact check
+    verify-on-read depends on for shared, nested files; a Nextcloud change to
+    how ``scope=""`` is interpreted would otherwise silently break ACL-aware
+    verification. The file lives in a subfolder, so a path-based check would
+    404 for the recipient — only the by-id SEARCH gets it right.
+    """
+    file_id, _path = shared_file
+    fid = int(file_id)
+
+    # Owner and share recipient can both reach it...
+    assert await acl_users["alice"].webdav.file_accessible_by_id(fid) is True
+    assert await acl_users["bob"].webdav.file_accessible_by_id(fid) is True
+    # ...the non-recipient cannot.
+    assert await acl_users["diana"].webdav.file_accessible_by_id(fid) is False

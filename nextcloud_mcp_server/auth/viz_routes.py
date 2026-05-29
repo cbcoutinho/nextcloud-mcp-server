@@ -234,6 +234,12 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
             # exactly as the nc_semantic_search tool path does. Skipping this
             # would let the viz surface stale titles/excerpts from another
             # user's index after a share is revoked.
+            # Eviction of dropped (e.g. revoked-share) points runs INLINE here
+            # by design: this is a Starlette route with no access to the
+            # FastMCP lifespan-owned ``eviction_task_group`` that the
+            # nc_semantic_search tool path passes for fire-and-forget eviction.
+            # The visualization is an interactive, low-QPS endpoint, so blocking
+            # briefly on the Qdrant delete is acceptable.
             with trace_operation("vector_viz.verify_on_read"):
                 verified_results, _dropped = await verify_search_results(
                     nc_client, all_results

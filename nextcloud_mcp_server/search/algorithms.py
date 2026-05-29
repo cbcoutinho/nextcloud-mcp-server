@@ -5,9 +5,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from qdrant_client.models import FieldCondition, Filter, MatchValue, ScoredPoint
+from qdrant_client.models import Filter, ScoredPoint
 
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.search.access_filter import build_ownership_filter
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -75,14 +76,24 @@ class NextcloudClientProtocol(Protocol):
         ...
 
 
-async def get_indexed_doc_types(user_id: str) -> set[str]:
+async def get_indexed_doc_types(
+    user_id: str, accessible_owners: list[str] | None = None
+) -> set[str]:
     """Query Qdrant to get actually-indexed document types for a user.
 
     This enables search algorithms to check which document types are available
     before attempting to search/verify them, allowing graceful cross-app search.
 
     Args:
-        user_id: User ID to filter by
+        user_id: User ID to filter by.
+        accessible_owners: Owner UIDs the user may read (self + share senders),
+            as computed by ``access_filter.list_accessible_owners``. When
+            provided, doc-type discovery is ACL-aware and matches the same
+            ownership scope as the actual search (so a share recipient discovers
+            cross-user doc_types). When ``None`` (the default), discovery is
+            **self-only** — a recipient won't see doc_types that exist only in
+            another owner's shared content. Pass the expanded set for cross-user
+            discovery.
 
     Returns:
         Set of document type strings (e.g., {"note", "file", "calendar"})
@@ -106,7 +117,9 @@ async def get_indexed_doc_types(user_id: str) -> set[str]:
             scroll_filter=Filter(
                 must=[
                     get_placeholder_filter(),  # Exclude placeholders from doc_type discovery
-                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    # ACL-aware ownership scope (owner_id IN owners OR legacy
+                    # user_id == user_id), matching the real search filter.
+                    build_ownership_filter(user_id, accessible_owners),
                 ]
             ),
             limit=1000,  # Sample size to discover types
