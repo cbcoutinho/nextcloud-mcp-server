@@ -43,6 +43,38 @@ class NotProvisionedError(Exception):
     pass
 
 
+# Process-wide app-password storage for the BasicAuth client path.
+#
+# get_user_client_basic_auth is on the search hot path (Unified Search and the
+# /api/v1 viz endpoints call it per request). Creating a fresh
+# RefreshTokenStorage and running ``initialize()`` — a full Alembic upgrade in
+# a worker thread — on every call is both wasteful and unsafe: concurrent
+# upgrades race on Alembic's non-thread-safe module-global EnvironmentContext
+# proxy, surfacing as ``KeyError: 'script'``. Cache one initialized instance,
+# guarded by a lock so the one-time migration runs exactly once. The lock is
+# created lazily inside an async context (anyio primitives must not be built at
+# import time — trio compatibility), mirroring vector/qdrant_client.py.
+_basic_auth_storage: "RefreshTokenStorage | None" = None
+_basic_auth_storage_lock: anyio.Lock | None = None
+
+
+async def _get_initialized_basic_auth_storage() -> "RefreshTokenStorage":
+    """Return the process-wide, already-initialized app-password storage."""
+    global _basic_auth_storage, _basic_auth_storage_lock
+    if _basic_auth_storage is not None:
+        return _basic_auth_storage
+    # Safe under cooperative scheduling: no await between the None-check and the
+    # assignment, so two coroutines cannot both create a lock.
+    if _basic_auth_storage_lock is None:
+        _basic_auth_storage_lock = anyio.Lock()
+    async with _basic_auth_storage_lock:
+        if _basic_auth_storage is None:
+            storage = RefreshTokenStorage.from_env()
+            await storage.initialize()
+            _basic_auth_storage = storage
+    return _basic_auth_storage
+
+
 @dataclass
 class UserSyncState:
     """State for a single user's scanner task."""
@@ -74,10 +106,11 @@ async def get_user_client_basic_auth(
     Raises:
         NotProvisionedError: If user has not provisioned an app password
     """
-    # Get or create storage instance
+    # Get or create storage instance. Reuse a process-wide initialized instance
+    # rather than building one (and running an Alembic upgrade) per call — see
+    # _get_initialized_basic_auth_storage for why (hot path + Alembic race).
     if storage is None:
-        storage = RefreshTokenStorage.from_env()
-        await storage.initialize()
+        storage = await _get_initialized_basic_auth_storage()
 
     # Retrieve app password from local storage
     app_password = await storage.get_app_password(user_id)

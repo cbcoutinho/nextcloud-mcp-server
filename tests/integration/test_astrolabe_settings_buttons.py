@@ -1,96 +1,63 @@
-"""Integration tests for Astrolabe personal settings page buttons.
+"""Integration tests for Astrolabe personal-settings background-sync endpoints.
 
-Cross-system interface test: Tests the MCP server's integration with the
-Astrolabe Nextcloud app, which is installed from the Nextcloud app store via
-app-hooks/post-installation/20-install-astrolabe-app.sh. Astrolabe source
-lives in a separate repository (https://github.com/cbcoutinho/astrolabe).
+Cross-system interface test. The astrolabe app (installed by
+app-hooks/post-installation/20-install-astrolabe-app.sh; source in
+./third_party/astrolabe) was refactored to session-minted JWTs — the old
+per-user OAuth flow and its ``/apps/astrolabe/oauth/disconnect`` route are
+gone. Background indexing is now an app-password opt-in with a single revoke
+endpoint.
 
-Tests the button functionality on /settings/user/astrolabe:
-1. Disable Indexing button (POST to /apps/astrolabe/api/revoke)
-2. Disconnect button (POST to /apps/astrolabe/oauth/disconnect)
-
-These tests verify that:
-- The endpoints respond correctly to POST requests
-- CSRF token validation works
-- User actions are properly handled
-- Appropriate redirects occur
+These tests assert the *current* HTTP surface of the settings page:
+- the revoke endpoint exists and is auth-gated
+  (POST /apps/astrolabe/api/v1/background-sync/credentials/revoke)
+- the obsolete OAuth disconnect route is gone (404)
+- the personal settings page route resolves
 """
 
 import httpx
 import pytest
 
+pytestmark = pytest.mark.integration
 
-@pytest.mark.integration
-async def test_disable_indexing_button_endpoint_exists():
-    """Test that the Disable Indexing endpoint is accessible."""
-    async with httpx.AsyncClient() as client:
-        # Try without authentication - should return 401 or redirect
-        response = await client.post(
-            "http://localhost:8080/apps/astrolabe/api/revoke",
-            follow_redirects=False,
+NEXTCLOUD_URL = "http://localhost:8080"
+ASTROLABE = f"{NEXTCLOUD_URL}/apps/astrolabe"
+
+# Auth failures (no session) surface as 401 or a login redirect.
+_UNAUTH = {401, 302, 303, 307, 308}
+
+
+async def test_revoke_endpoint_requires_auth():
+    """The background-sync revoke endpoint exists and rejects anonymous calls."""
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        resp = await client.post(
+            f"{ASTROLABE}/api/v1/background-sync/credentials/revoke",
+            headers={"OCS-APIRequest": "true"},
         )
-
-        # Should get 401 Unauthorized or 30x redirect
-        assert response.status_code in [401, 301, 302, 303, 307, 308], (
-            f"Expected 401 or redirect without auth, got {response.status_code}"
-        )
-
-
-@pytest.mark.integration
-async def test_disconnect_button_endpoint_exists():
-    """Test that the Disconnect endpoint is accessible."""
-    async with httpx.AsyncClient() as client:
-        # Try without authentication - should return 401 or redirect
-        response = await client.post(
-            "http://localhost:8080/apps/astrolabe/oauth/disconnect",
-            follow_redirects=False,
-        )
-
-        # Should get 401 Unauthorized or 30x redirect
-        assert response.status_code in [401, 301, 302, 303, 307, 308], (
-            f"Expected 401 or redirect without auth, got {response.status_code}"
-        )
+    # Must NOT be 404 — the route must exist — and must be auth-gated.
+    assert resp.status_code != 404, "revoke route missing"
+    assert resp.status_code in _UNAUTH, (
+        f"expected auth rejection, got {resp.status_code}"
+    )
 
 
-@pytest.mark.integration
-async def test_settings_page_renders_buttons():
-    """Test that the settings page template includes button forms.
+async def test_obsolete_oauth_disconnect_route_removed():
+    """The pre-refactor OAuth disconnect route must no longer exist.
 
-    This test verifies that the PHP template renders the form elements.
-    It doesn't require authentication since we're just checking the route exists.
+    Regression guard for the auth refactor: ``/apps/astrolabe/oauth/disconnect``
+    (and the rest of the OAuth authorize/callback/disconnect surface) was
+    removed in favour of session-minted JWTs.
     """
     async with httpx.AsyncClient(follow_redirects=False) as client:
-        # Try to access settings page
-        response = await client.get("http://localhost:8080/settings/user/astrolabe")
-
-        # Should get 401/redirect if not authenticated (expected)
-        # or 200 if user session exists from browser testing
-        assert response.status_code in [200, 401, 302, 303, 307, 308], (
-            f"Unexpected status code: {response.status_code}"
-        )
+        resp = await client.post(f"{ASTROLABE}/oauth/disconnect")
+    assert resp.status_code == 404, (
+        f"obsolete oauth/disconnect route still resolves ({resp.status_code})"
+    )
 
 
-@pytest.mark.integration
-@pytest.mark.skip(
-    reason="Requires manual authentication - test with Playwright instead"
-)
-async def test_disconnect_button_functionality():
-    """Test that clicking Disconnect button clears user OAuth tokens.
-
-    NOTE: This test is skipped because programmatic login to Nextcloud is complex.
-    Use Playwright-based tests or manual testing instead.
-    """
-    pass
-
-
-@pytest.mark.integration
-@pytest.mark.skip(
-    reason="Requires manual authentication - test with Playwright instead"
-)
-async def test_disable_indexing_button_functionality():
-    """Test that clicking Disable Indexing button revokes background access.
-
-    NOTE: This test is skipped because programmatic login to Nextcloud is complex.
-    Use Playwright-based tests or manual testing instead.
-    """
-    pass
+async def test_settings_page_route_resolves():
+    """The personal settings page route exists (auth-gated when no session)."""
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        resp = await client.get(f"{NEXTCLOUD_URL}/settings/user/astrolabe")
+    assert resp.status_code in ({200} | _UNAUTH), (
+        f"unexpected status for settings page: {resp.status_code}"
+    )

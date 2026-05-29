@@ -68,17 +68,27 @@ class LoginFlowV2Client:
     2. Poll for completion to receive the app password
 
     Args:
-        nextcloud_host: Base URL of the Nextcloud instance
+        nextcloud_host: Base URL of the Nextcloud instance, reachable by this
+            server (may be an internal/Docker hostname, e.g. http://app:80).
         verify_ssl: SSL verification setting (True, False, or SSLContext)
+        public_host: Externally-reachable Nextcloud base URL for the
+            browser-facing login URL (e.g. https://cloud.example.com). When the
+            server talks to Nextcloud over an internal hostname, Nextcloud
+            builds the login URL with that internal host — unusable in the
+            user's browser. If set, the login URL's origin is rewritten to this
+            public host. When None, the login URL is returned unchanged
+            (correct when nextcloud_host is already the public URL).
     """
 
     def __init__(
         self,
         nextcloud_host: str,
         verify_ssl: bool | ssl.SSLContext = True,
+        public_host: str | None = None,
     ):
         self.nextcloud_host = nextcloud_host.rstrip("/")
         self.verify_ssl = verify_ssl
+        self.public_host = public_host.rstrip("/") if public_host else None
 
     async def initiate(
         self, user_agent: str = "nextcloud-mcp-server"
@@ -119,8 +129,23 @@ class LoginFlowV2Client:
             # so server-side polling works across Docker networks.
             poll_endpoint = self._rewrite_to_nextcloud_host(raw_poll_endpoint)
 
+            # The login URL is opened in the *user's browser*, so it must use
+            # the externally-reachable host. Nextcloud builds it from the
+            # request host (our internal nextcloud_host), so rewrite it to the
+            # public host when one is configured (internal != external).
+            login_url = data["login"]
+            if self.public_host:
+                rewritten = rewrite_url_origin(login_url, self.public_host)
+                if rewritten != login_url:
+                    logger.debug(
+                        "Rewrote Login Flow v2 login_url to public host: %s → %s",
+                        login_url,
+                        rewritten,
+                    )
+                login_url = rewritten
+
             result = LoginFlowInitResponse(
-                login_url=data["login"],
+                login_url=login_url,
                 poll_endpoint=poll_endpoint,
                 poll_token=poll_data["token"],
             )

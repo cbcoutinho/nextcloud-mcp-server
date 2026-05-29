@@ -113,6 +113,12 @@ class DocumentTask:
     # when it is None (deletes, or sources whose etag isn't threaded). Harmless
     # in local mode — the in-process processor reads its own etag.
     etag: str | None = None
+    # UID of the true owner of the indexed object, used by the search-time
+    # ACL filter. None today (scanner always runs as the owner, so the
+    # processor falls back to user_id), but settable so a future
+    # shared-with-me crawl can pass through the actual owner without
+    # reshaping the payload contract.
+    owner_id: str | None = None
 
 
 # Track documents potentially deleted (grace period before actual deletion)

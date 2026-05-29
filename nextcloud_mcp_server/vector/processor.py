@@ -717,6 +717,16 @@ async def _index_document(
                 },
                 payload={
                     "user_id": doc_task.user_id,
+                    # owner_id is the UID of the file's owner — what
+                    # search-time ACL expansion filters on. Today the scanner
+                    # always runs as the file's owner (per-user crawl, only
+                    # surfaces files the user owns or that fall under their
+                    # WebDAV root), so owner_id == user_id is correct for
+                    # every doc type indexed here. The fields are kept
+                    # separate so a future indexer change that lets a user
+                    # crawl shared-with-them content can set owner_id to the
+                    # true owner without losing the "who indexed this" trail.
+                    "owner_id": doc_task.owner_id or doc_task.user_id,
                     "doc_id": doc_task.doc_id,
                     "doc_type": doc_task.doc_type,
                     "is_placeholder": False,  # Real indexed document (not placeholder)

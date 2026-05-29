@@ -23,10 +23,11 @@ behaviour separately.
 """
 
 import logging
+import os
 import uuid
 
 import pytest
-from httpx import HTTPStatusError
+from httpx import BasicAuth, HTTPStatusError
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.search import verification
@@ -45,6 +46,28 @@ def _result_for_note(note_id: int) -> SearchResult:
         title=f"note_{note_id}",
         excerpt="...",
         score=0.9,
+    )
+
+
+def _result_for_file(file_id: int, path: str) -> SearchResult:
+    # Mirrors what the algorithm layer propagates: doc_id IS the global file id,
+    # ``path`` is carried in metadata (owner-relative) for log context only.
+    return SearchResult(
+        id=file_id,
+        doc_type="file",
+        title=path.split("/")[-1],
+        excerpt="...",
+        score=0.9,
+        metadata={"path": path},
+    )
+
+
+def _user_client(username: str, password: str) -> NextcloudClient:
+    return NextcloudClient(
+        base_url=os.environ["NEXTCLOUD_HOST"],
+        username=username,
+        auth=BasicAuth(username, password),
+        password=password,
     )
 
 
@@ -170,3 +193,95 @@ async def test_verify_dedupes_chunks_of_same_document(
     assert dropped_count == 0
     # ...but verification only fetched the note ONCE
     assert spy_get_note.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# File verifier — cross-user shared access (ACL-aware search, PR #813)
+# ---------------------------------------------------------------------------
+#
+# These exercise the verifier fix that makes ACL-aware search actually work
+# end-to-end: a file an owner shared with another user must survive
+# verify-on-read for the *recipient*, even when it lives in a subfolder of the
+# owner's tree (Nextcloud mounts received shares at the recipient's root by
+# basename, so the owner-relative path does NOT resolve under the recipient's
+# root). The fix verifies by global file id, which is ACL-aware.
+
+
+@pytest.fixture
+async def alice_bob_clients(test_users_setup):
+    """Direct NextcloudClients for alice (owner) and bob (recipient)."""
+    alice = _user_client("alice", test_users_setup["alice"]["password"])
+    bob = _user_client("bob", test_users_setup["bob"]["password"])
+    try:
+        yield alice, bob
+    finally:
+        await alice._client.aclose()
+        await bob._client.aclose()
+
+
+async def test_verify_keeps_nested_file_shared_with_recipient(
+    alice_bob_clients, mocker
+):
+    """The PR #813 acceptance check at the verifier layer.
+
+    Alice owns a file in a *subfolder* and shares it with Bob. Verifying the
+    result as Bob must KEEP it — proving the id-based check sees the share.
+    A path-based check (the old behaviour) would 404 here and wrongly drop it.
+    """
+    spy_evict = mocker.AsyncMock()
+    mocker.patch.object(verification, "delete_document_points", spy_evict)
+
+    alice, bob = alice_bob_clients
+    suffix = uuid.uuid4().hex[:8]
+    test_dir = f"acl_verify_{suffix}"
+    nested_dir = f"{test_dir}/reports"
+    shared_path = f"{nested_dir}/shared.txt"
+
+    await alice.webdav.create_directory(test_dir)
+    await alice.webdav.create_directory(nested_dir)
+    await alice.webdav.write_file(shared_path, b"alice's shared report", "text/plain")
+    file_id = (await alice.webdav.get_file_info(shared_path))["id"]
+
+    await alice.sharing.create_share(
+        path=f"/{shared_path}", share_with="bob", share_type=0, permissions=1
+    )
+
+    try:
+        kept, dropped_count = await verify_search_results(
+            bob, [_result_for_file(file_id, shared_path)]
+        )
+
+        assert [r.id for r in kept] == [file_id], (
+            "a nested file shared with bob must pass verification for bob"
+        )
+        assert dropped_count == 0
+        spy_evict.assert_not_awaited()
+    finally:
+        await alice.webdav.delete_resource(test_dir)
+
+
+async def test_verify_drops_unshared_file_for_other_user(alice_bob_clients, mocker):
+    """Negative control: a file Alice did NOT share is inaccessible to Bob and
+    must be dropped + scheduled for eviction under his identity."""
+    spy_evict = mocker.AsyncMock()
+    mocker.patch.object(verification, "delete_document_points", spy_evict)
+
+    alice, bob = alice_bob_clients
+    suffix = uuid.uuid4().hex[:8]
+    test_dir = f"acl_verify_priv_{suffix}"
+    private_path = f"{test_dir}/private.txt"
+
+    await alice.webdav.create_directory(test_dir)
+    await alice.webdav.write_file(private_path, b"alice's private note", "text/plain")
+    file_id = (await alice.webdav.get_file_info(private_path))["id"]
+
+    try:
+        kept, dropped_count = await verify_search_results(
+            bob, [_result_for_file(file_id, private_path)]
+        )
+
+        assert kept == [], "an unshared file must not pass verification for bob"
+        assert dropped_count == 1
+        spy_evict.assert_awaited_once_with(file_id, "file", bob.username)
+    finally:
+        await alice.webdav.delete_resource(test_dir)

@@ -33,10 +33,12 @@ from nextcloud_mcp_server.search import (
     BM25HybridSearchAlgorithm,
     SemanticSearchAlgorithm,
 )
+from nextcloud_mcp_server.search.access_filter import list_accessible_owners
 from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
 )
+from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.oauth_sync import (
     NotProvisionedError,
@@ -158,7 +160,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
         with trace_operation("vector_viz.get_auth_client"):
             auth_client_ctx = await _get_authenticated_client_for_userinfo(request)
 
-        async with auth_client_ctx as nc_client:  # noqa: F841
+        async with auth_client_ctx as nc_client:
             # Create search algorithm (no client needed - verification removed)
             if algorithm == "semantic":
                 search_algo = SemanticSearchAlgorithm(score_threshold=score_threshold)
@@ -171,6 +173,13 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                     {"success": False, "error": f"Unknown algorithm: {algorithm}"},
                     status_code=400,
                 )
+
+            # Expand the caller to every owner whose content they have
+            # read access to — same logic as the MCP tool path. See
+            # nextcloud_mcp_server.search.access_filter.
+            accessible_owners = await list_accessible_owners(
+                nc_client.sharing, username
+            )
 
             # Execute search (supports cross-app when doc_types=None)
             # Get unverified results with buffer for filtering
@@ -192,6 +201,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                         limit=limit * 2,  # Buffer for verification filtering
                         doc_type=None,  # Search all types
                         score_threshold=score_threshold,
+                        accessible_owners=accessible_owners,
                     )
                 all_results.extend(unverified_results)
             else:
@@ -211,15 +221,45 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                             limit=limit * 2,  # Buffer for verification filtering
                             doc_type=doc_type,
                             score_threshold=score_threshold,
+                            accessible_owners=accessible_owners,
                         )
                     all_results.extend(unverified_results)
-                # Sort by score before verification
+                # Sort by score, then cap to the same limit*2 over-fetch budget
+                # as the cross-app branch and the nc_semantic_search tool path
+                # (server/semantic.py). Without this, N doc_types each fetched
+                # at limit*2 would send N*limit*2 candidates into verify-on-read,
+                # multiplying the Nextcloud round-trip cost (and latency) by N.
                 all_results.sort(key=lambda r: r.score, reverse=True)
+                all_results = all_results[: limit * 2]
 
-            # No verification needed for visualization - we only need Qdrant metadata
-            # (title, excerpt, doc_type) which is already in search results.
-            # Verification is only needed for sampling (LLM needs full content).
-            search_results = all_results[:limit]
+            # Verify-on-read (ADR-019). Now that accessible_owners is expanded
+            # via OCS shares, the result set can include OTHER users' shared
+            # documents — so we must drop any the caller can no longer access
+            # (e.g. a revoked share whose index entry hasn't reconciled yet),
+            # exactly as the nc_semantic_search tool path does. Skipping this
+            # would let the viz surface stale titles/excerpts from another
+            # user's index after a share is revoked.
+            # Eviction of dropped (e.g. revoked-share) points runs INLINE here
+            # by design: this is a Starlette route with no access to the
+            # FastMCP lifespan-owned ``eviction_task_group`` that the
+            # nc_semantic_search tool path passes for fire-and-forget eviction.
+            # The visualization is an interactive, low-QPS endpoint, so blocking
+            # briefly on the Qdrant delete is acceptable.
+            with trace_operation("vector_viz.verify_on_read"):
+                verified_results, _dropped = await verify_search_results(
+                    nc_client, all_results
+                )
+            # Safe to log titles now: these passed verify-on-read (unverified
+            # titles are never logged — see the search algorithms).
+            if verified_results:
+                logger.debug(
+                    "Top verified results: %s",
+                    ", ".join(
+                        f"{r.doc_type}_{r.id} (score={r.score:.3f}, title='{r.title}')"
+                        for r in verified_results[:5]
+                    ),
+                )
+            search_results = verified_results[:limit]
             search_duration = time.perf_counter() - search_start
 
         # Store original scores and normalize for visualization
@@ -636,6 +676,10 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
             )
 
         async with nc_client:
+            # Expand to owners who shared content with the caller so the cached
+            # chunk lookup can resolve cross-user SHARED FILES (gated per-file
+            # inside get_chunk_with_context). Same expansion as the search path.
+            accessible_owners = await list_accessible_owners(nc_client.sharing, user_id)
             chunk_context = await get_chunk_with_context(
                 nc_client=nc_client,
                 user_id=user_id,
@@ -646,6 +690,7 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
                 chunk_index=chunk_index,
                 total_chunks=total_chunks,
                 context_chars=context_chars,
+                accessible_owners=accessible_owners,
             )
 
         # Check if context expansion succeeded
@@ -674,12 +719,16 @@ async def chunk_context_endpoint(request: Request) -> JSONResponse:
         chunk_bbox = None
         page_number = chunk_context.page_number
         if doc_type == "file":
+            # Reaching here means the file chunk context resolved, so access was
+            # already confirmed (get_chunk_with_context gates files by id);
+            # the bbox/page lookup uses the same owner scope for cross-user files.
             qdrant_bbox, qdrant_page = await get_chunk_bbox_and_page_from_qdrant(
                 user_id=user_id,
                 doc_id=doc_id,
                 chunk_index=chunk_index,
                 chunk_start=start,
                 chunk_end=end,
+                accessible_owners=accessible_owners,
             )
             if qdrant_bbox is not None:
                 chunk_bbox = qdrant_bbox

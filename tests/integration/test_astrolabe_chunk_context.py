@@ -133,7 +133,6 @@ async def test_chunk_context_endpoint_uses_app_password(
     try:
         await login_to_nextcloud(page, username, password)
         auth_result = await complete_astrolabe_authorization(page, username, password)
-        assert auth_result["step1"], "OAuth authorization did not complete"
         assert auth_result["step2"], "App password provisioning did not complete"
 
         auth_header = _build_basic_auth_header(username, password)

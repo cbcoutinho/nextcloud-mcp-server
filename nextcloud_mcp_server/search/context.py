@@ -7,10 +7,12 @@ position markers for better visualization and understanding of search results.
 import logging
 from dataclasses import dataclass
 
+from httpx import HTTPStatusError
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.search.access_filter import build_ownership_filter
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
@@ -20,7 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 async def _get_chunk_from_qdrant(
-    user_id: str, doc_id: str, doc_type: str, chunk_start: int, chunk_end: int
+    user_id: str,
+    doc_id: str,
+    doc_type: str,
+    chunk_start: int,
+    chunk_end: int,
+    accessible_owners: list[str] | None = None,
 ) -> str | None:
     """Retrieve full chunk text from Qdrant payload.
 
@@ -28,11 +35,15 @@ async def _get_chunk_from_qdrant(
     chunk content already stored in Qdrant.
 
     Args:
-        user_id: User ID who owns the document
+        user_id: Querying user.
         doc_id: Document ID
         doc_type: Document type (e.g., "note", "file")
         chunk_start: Character offset where chunk starts
         chunk_end: Character offset where chunk ends
+        accessible_owners: Owner UIDs the caller may read (self + share senders).
+            When None, the lookup is self-only. Callers must only pass an
+            expanded set after confirming the caller can access the document
+            (see ``get_chunk_with_context``) — the filter is owner-level.
 
     Returns:
         Full chunk text from Qdrant excerpt field, or None if not found
@@ -46,7 +57,7 @@ async def _get_chunk_from_qdrant(
             collection_name=settings.get_collection_name(),
             scroll_filter=Filter(
                 must=[
-                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    build_ownership_filter(user_id, accessible_owners),
                     FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
                     FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
                     FieldCondition(
@@ -93,17 +104,24 @@ async def _get_chunk_from_qdrant(
 
 
 async def _get_chunk_by_index_from_qdrant(
-    user_id: str, doc_id: str, doc_type: str, chunk_index: int
+    user_id: str,
+    doc_id: str,
+    doc_type: str,
+    chunk_index: int,
+    accessible_owners: list[str] | None = None,
 ) -> str | None:
     """Retrieve chunk text by chunk_index from Qdrant payload.
 
     Used to fetch adjacent chunks for context expansion.
 
     Args:
-        user_id: User ID who owns the document
+        user_id: Querying user.
         doc_id: Document ID
         doc_type: Document type (e.g., "note", "file")
         chunk_index: Zero-based chunk index in document
+        accessible_owners: Owner UIDs the caller may read; None ⇒ self-only.
+            Only pass an expanded set after a per-document access check (see
+            ``get_chunk_with_context``).
 
     Returns:
         Full chunk text from Qdrant excerpt field, or None if not found
@@ -117,7 +135,7 @@ async def _get_chunk_by_index_from_qdrant(
             collection_name=settings.get_collection_name(),
             scroll_filter=Filter(
                 must=[
-                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    build_ownership_filter(user_id, accessible_owners),
                     FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
                     FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
                     FieldCondition(
@@ -172,7 +190,13 @@ async def _get_deck_metadata_from_qdrant(
         qdrant_client = await get_qdrant_client()
         settings = get_settings()
 
-        # Query for any chunk of this card (we just need metadata)
+        # Query for any chunk of this card (we just need metadata).
+        # Intentionally self-only (raw user_id, not build_ownership_filter):
+        # deck cards are a documented cross-user gap — the Deck API is per-user,
+        # so cross-user deck context can't be fetched with the caller's
+        # credentials anyway (see the doc_type=="file"-only gate in
+        # get_chunk_with_context). Every other internal Qdrant lookup here is
+        # ACL-aware; this one is the deliberate exception.
         scroll_result = await qdrant_client.scroll(
             collection_name=settings.get_collection_name(),
             scroll_filter=Filter(
@@ -217,6 +241,7 @@ async def get_chunk_bbox_and_page_from_qdrant(
     chunk_index: int | None,
     chunk_start: int,
     chunk_end: int,
+    accessible_owners: list[str] | None = None,
 ) -> tuple[list | None, int | None]:
     """Fetch chunk_bbox and page_number for a chunk from Qdrant payload.
 
@@ -256,7 +281,7 @@ async def get_chunk_bbox_and_page_from_qdrant(
                     must=[
                         get_placeholder_filter(),
                         FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
-                        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                        build_ownership_filter(user_id, accessible_owners),
                         FieldCondition(
                             key="chunk_index", match=MatchValue(value=chunk_index)
                         ),
@@ -273,7 +298,7 @@ async def get_chunk_bbox_and_page_from_qdrant(
                     must=[
                         get_placeholder_filter(),
                         FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
-                        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                        build_ownership_filter(user_id, accessible_owners),
                         FieldCondition(
                             key="chunk_start_offset",
                             match=MatchValue(value=chunk_start),
@@ -352,6 +377,7 @@ async def get_chunk_with_context(
     chunk_index: int | None = None,
     total_chunks: int = 1,
     context_chars: int = 300,
+    accessible_owners: list[str] | None = None,
 ) -> ChunkContext | None:
     """Fetch chunk with surrounding context.
 
@@ -361,7 +387,7 @@ async def get_chunk_with_context(
 
     Args:
         nc_client: Authenticated Nextcloud client
-        user_id: User ID who owns the document
+        user_id: Querying user.
         doc_id: Document ID (str — keyword-indexed in Qdrant payload)
         doc_type: Type of document ("note", "file", etc.)
         chunk_start: Character offset where chunk starts
@@ -372,6 +398,10 @@ async def get_chunk_with_context(
             field). When None, falls back to the (chunk_start, chunk_end) lookup.
         total_chunks: Total number of chunks in document
         context_chars: Number of characters to include before/after chunk
+        accessible_owners: Owner UIDs the caller may read (self + share senders).
+            Used to support cross-user context for SHARED FILES only, and only
+            after a per-file access check (see ``lookup_owners`` below). For
+            non-file types the lookup stays self-only.
 
     Returns:
         ChunkContext with expanded context and markers, or None if document
@@ -380,13 +410,53 @@ async def get_chunk_with_context(
     # doc_id is keyword-indexed in Qdrant as str — pass through verbatim
     # (no int coercion; producers always stringify on write).
 
+    # Determine the ownership scope for the Qdrant cached-chunk lookups.
+    #
+    # ``accessible_owners`` is OWNER-level (every owner who shared anything with
+    # the caller), so widening the lookup to it unconditionally would let a
+    # recipient of a single shared file read ANY of that owner's cached chunks
+    # by guessing doc_ids. We therefore honour it only for FILES, and only after
+    # confirming the caller can access THIS file by id (``file_accessible_by_id``
+    # is cross-user-safe: a WebDAV SEARCH over the caller's whole tree incl.
+    # mounted shares). For per-user types (note/deck/news) there is no
+    # share-mounted by-id access via the caller's credentials, so the lookup
+    # stays self-only — cross-user context for those types is a known gap.
+    lookup_owners: list[str] | None = None  # None ⇒ self-only
+    if doc_type == "file" and accessible_owners:
+        try:
+            if await nc_client.webdav.file_accessible_by_id(int(doc_id)):
+                lookup_owners = accessible_owners
+            else:
+                # Not owned and not shared with the caller → no access. Return
+                # early rather than falling back to a self-only lookup that
+                # would also miss (and so the result is the same None, but this
+                # is explicit and skips a pointless Qdrant round-trip).
+                logger.debug(
+                    "File %s not accessible to %s; no cross-user chunk context",
+                    doc_id,
+                    user_id,
+                )
+                return None
+        except (ValueError, TypeError):
+            # Non-numeric doc_id: shouldn't happen (endpoints validate), but
+            # degrade to self-only rather than raising.
+            logger.warning("Non-numeric file doc_id %r; using self-only scope", doc_id)
+        except HTTPStatusError as exc:
+            # Transient transport/server error — treat as inconclusive and fall
+            # back to self-only so the caller's own files still resolve.
+            logger.warning(
+                "file_accessible_by_id(%s) failed (%s); using self-only scope",
+                doc_id,
+                exc,
+            )
+
     # Try to get chunk from Qdrant (fast path).
     # Prefer chunk_index lookup (always-indexed field) when caller supplied it;
     # fall back to (chunk_start, chunk_end) lookup otherwise.
     chunk_text: str | None = None
     if chunk_index is not None:
         chunk_text = await _get_chunk_by_index_from_qdrant(
-            user_id, doc_id, doc_type, chunk_index
+            user_id, doc_id, doc_type, chunk_index, accessible_owners=lookup_owners
         )
     # When chunk_index is supplied, the indexed lookup is canonical: both the
     # index path and the offset path query the same Qdrant collection, so an
@@ -398,7 +468,12 @@ async def get_chunk_with_context(
     skip_offset_lookup = chunk_index is not None
     if chunk_text is None and not skip_offset_lookup:
         chunk_text = await _get_chunk_from_qdrant(
-            user_id, doc_id, doc_type, chunk_start, chunk_end
+            user_id,
+            doc_id,
+            doc_type,
+            chunk_start,
+            chunk_end,
+            accessible_owners=lookup_owners,
         )
 
     if chunk_text:
@@ -422,7 +497,11 @@ async def get_chunk_with_context(
             # Fetch previous chunk if not first chunk
             if chunk_index > 0:
                 before_chunk = await _get_chunk_by_index_from_qdrant(
-                    user_id, doc_id, doc_type, chunk_index - 1
+                    user_id,
+                    doc_id,
+                    doc_type,
+                    chunk_index - 1,
+                    accessible_owners=lookup_owners,
                 )
                 if before_chunk:
                     # Remove overlap: the last chunk_overlap chars of previous chunk
@@ -443,7 +522,11 @@ async def get_chunk_with_context(
             # Fetch next chunk if not last chunk
             if chunk_index < total_chunks - 1:
                 after_chunk = await _get_chunk_by_index_from_qdrant(
-                    user_id, doc_id, doc_type, chunk_index + 1
+                    user_id,
+                    doc_id,
+                    doc_type,
+                    chunk_index + 1,
+                    accessible_owners=lookup_owners,
                 )
                 if after_chunk:
                     # Remove overlap: the first chunk_overlap chars of next chunk
