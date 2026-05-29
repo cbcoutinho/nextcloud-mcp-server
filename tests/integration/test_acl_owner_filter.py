@@ -15,6 +15,8 @@ real-Nextcloud flow (share + verify-on-read) lives in
 ``test_acl_shared_search.py``.
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
@@ -82,12 +84,9 @@ async def seeded_collection(monkeypatch):
     await client.upsert(collection_name=collection, points=points, wait=True)
 
     # Point the algorithm at the in-memory client + deterministic embeddings.
-    async def _fake_get_qdrant_client():
-        return client
-
     monkeypatch.setattr(
         "nextcloud_mcp_server.search.semantic.get_qdrant_client",
-        _fake_get_qdrant_client,
+        AsyncMock(return_value=client),
     )
     monkeypatch.setattr(
         "nextcloud_mcp_server.search.semantic.get_embedding_service",

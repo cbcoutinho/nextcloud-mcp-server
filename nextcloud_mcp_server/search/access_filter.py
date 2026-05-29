@@ -17,11 +17,25 @@ by their original indexer. New points carry both fields.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Protocol
 
 from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue
 
 logger = logging.getLogger(__name__)
+
+# Short-lived per-user cache for the OCS shares lookup, which otherwise runs on
+# every search/viz request. Trades up to this many seconds of share-visibility
+# staleness (a freshly-granted share is searchable a little late) for avoiding
+# an OCS round-trip per query. Safe: verify-on-read still gates each result
+# against Nextcloud, so a revoked share is caught there regardless of this cache.
+_OWNERS_CACHE_TTL_SECONDS = 30.0
+_owners_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+def clear_accessible_owners_cache() -> None:
+    """Drop all cached accessible-owners entries (used by tests)."""
+    _owners_cache.clear()
 
 
 class _SharingClientProtocol(Protocol):
@@ -42,9 +56,22 @@ async def list_accessible_owners(
     Duplicates are removed; ordering is not significant (Qdrant ``MatchAny``
     treats the list as a set).
 
+    Results are cached per user for ``_OWNERS_CACHE_TTL_SECONDS`` to keep the
+    OCS round-trip off the search hot path. Failures are not cached.
+
+    Note: ``list_shares(shared_with_me=True)`` returns whatever the OCS endpoint
+    yields in a single page (SharingClient does not paginate today). A user with
+    more incoming shares than the OCS page size could have some owners omitted;
+    if that becomes real, add pagination to SharingClient.
+
     Sharing API failures are non-fatal — we degrade to ``[user_id]`` and log
     so a hiccup in OCS doesn't black-hole the user's own search.
     """
+    now = time.monotonic()
+    cached = _owners_cache.get(user_id)
+    if cached is not None and now - cached[0] < _OWNERS_CACHE_TTL_SECONDS:
+        return list(cached[1])  # copy so callers can't mutate the cached value
+
     owners: set[str] = {user_id}
     try:
         shares = await sharing_client.list_shares(shared_with_me=True)
@@ -55,7 +82,7 @@ async def list_accessible_owners(
             user_id,
             exc,
         )
-        return [user_id]
+        return [user_id]  # don't cache failures — retry on the next search
 
     for share in shares:
         # OCS returns the share owner under `uid_owner` (the file owner,
@@ -65,8 +92,10 @@ async def list_accessible_owners(
         if isinstance(owner, str) and owner:
             owners.add(owner)
 
-    logger.debug("Accessible owners for user %s: %d entries", user_id, len(owners))
-    return list(owners)
+    result = list(owners)
+    _owners_cache[user_id] = (now, result)
+    logger.debug("Accessible owners for user %s: %d entries", user_id, len(result))
+    return list(result)
 
 
 def build_ownership_filter(
@@ -90,6 +119,11 @@ def build_ownership_filter(
         A Qdrant ``Filter`` ready to be nested under a parent ``must`` clause.
     """
     owners = accessible_owners if accessible_owners is not None else [user_id]
+    # Edge case: an explicit empty ``accessible_owners`` yields
+    # ``MatchAny(any=[])``, which Qdrant treats as matching nothing — so the
+    # owner_id branch contributes no results and access comes solely from the
+    # legacy ``user_id`` branch below (self-owned content). Callers that want
+    # share expansion must pass a non-empty list.
     return Filter(
         should=[
             FieldCondition(key="owner_id", match=MatchAny(any=owners)),

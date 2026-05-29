@@ -586,6 +586,15 @@ async def verify_search_results(
     if evict_on_missing and inaccessible:
 
         async def evict(doc_id: str, doc_type: str) -> None:
+            # Eviction is scoped to the QUERYING user's own points
+            # (user_id == the searcher). For a cross-user shared document
+            # (owner_id=alice surfaced to bob via accessible_owners), bob
+            # failing verification evicts with user_id=bob — a deliberate
+            # no-op, because alice's points carry user_id=alice and must NOT
+            # be deleted just because bob's share was revoked. Bob's view
+            # self-heals via list_accessible_owners (alice drops out of his
+            # accessible owners once OCS no longer reports the share). See the
+            # legacy-user_id semantics note in build_ownership_filter.
             try:
                 await delete_document_points(doc_id, doc_type, user_id)
             except Exception as e:

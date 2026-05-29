@@ -23,6 +23,7 @@ proves the real share → accessible_owners → filter → verify chain.
 
 import os
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import BasicAuth
@@ -32,11 +33,24 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import SimpleEmbeddingProvider
-from nextcloud_mcp_server.search.access_filter import list_accessible_owners
+from nextcloud_mcp_server.search.access_filter import (
+    clear_accessible_owners_cache,
+    list_accessible_owners,
+)
 from nextcloud_mcp_server.search.semantic import SemanticSearchAlgorithm
 from nextcloud_mcp_server.search.verification import verify_search_results
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _reset_owners_cache():
+    """Reset the process-global accessible-owners cache around each test so a
+    real OCS share created in a fixture isn't masked by a stale cached entry."""
+    clear_accessible_owners_cache()
+    yield
+    clear_accessible_owners_cache()
+
 
 _DOC_TEXT = "Confidential quarterly infrastructure budget and capacity plan"
 
@@ -127,12 +141,9 @@ async def seeded_semantic(monkeypatch, shared_file):
         wait=True,
     )
 
-    async def _fake_get_qdrant_client():
-        return client
-
     monkeypatch.setattr(
         "nextcloud_mcp_server.search.semantic.get_qdrant_client",
-        _fake_get_qdrant_client,
+        AsyncMock(return_value=client),
     )
     monkeypatch.setattr(
         "nextcloud_mcp_server.search.semantic.get_embedding_service",

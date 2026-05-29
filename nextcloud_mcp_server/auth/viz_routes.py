@@ -38,6 +38,7 @@ from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
 )
+from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.oauth_sync import (
     NotProvisionedError,
@@ -226,10 +227,18 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                 # Sort by score before verification
                 all_results.sort(key=lambda r: r.score, reverse=True)
 
-            # No verification needed for visualization - we only need Qdrant metadata
-            # (title, excerpt, doc_type) which is already in search results.
-            # Verification is only needed for sampling (LLM needs full content).
-            search_results = all_results[:limit]
+            # Verify-on-read (ADR-019). Now that accessible_owners is expanded
+            # via OCS shares, the result set can include OTHER users' shared
+            # documents — so we must drop any the caller can no longer access
+            # (e.g. a revoked share whose index entry hasn't reconciled yet),
+            # exactly as the nc_semantic_search tool path does. Skipping this
+            # would let the viz surface stale titles/excerpts from another
+            # user's index after a share is revoked.
+            with trace_operation("vector_viz.verify_on_read"):
+                verified_results, _dropped = await verify_search_results(
+                    nc_client, all_results
+                )
+            search_results = verified_results[:limit]
             search_duration = time.perf_counter() - search_start
 
         # Store original scores and normalize for visualization

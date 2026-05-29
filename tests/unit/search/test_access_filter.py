@@ -8,8 +8,18 @@ import pytest
 
 from nextcloud_mcp_server.search.access_filter import (
     build_ownership_filter,
+    clear_accessible_owners_cache,
     list_accessible_owners,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_owners_cache():
+    """The accessible-owners cache is process-global; reset it around each test
+    so the shared "alice" user_id can't leak cached results between tests."""
+    clear_accessible_owners_cache()
+    yield
+    clear_accessible_owners_cache()
 
 
 class TestListAccessibleOwners:

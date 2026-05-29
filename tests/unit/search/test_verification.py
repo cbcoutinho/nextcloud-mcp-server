@@ -875,6 +875,37 @@ async def test_verify_search_results_drops_inaccessible_and_evicts(mocker):
 
 
 @pytest.mark.unit
+async def test_verify_evicts_cross_user_file_under_querying_user_id(mocker):
+    """A shared file the recipient can no longer access is evicted under the
+    QUERYING user's id, never the owner's.
+
+    This guards the cross-user eviction no-op: a point owned by alice
+    (user_id=alice) surfaced to bob via accessible_owners and then found
+    inaccessible must be evicted with user_id=bob — which deletes nothing of
+    alice's (her points carry user_id=alice). So a recipient's revoked access
+    can never delete the owner's index entries; bob's view self-heals via
+    list_accessible_owners instead. A future change that evicted under the
+    owner's id would corrupt the owner's index, and this test would catch it.
+    """
+    spy_evict = mocker.AsyncMock()
+    mocker.patch.object(verification, "delete_document_points", spy_evict)
+
+    webdav_client = SimpleNamespace(
+        file_accessible_by_id=mocker.AsyncMock(return_value=False)
+    )
+    client = SimpleNamespace(webdav=webdav_client, username="bob")
+
+    kept, dropped_count = await verify_search_results(
+        client,
+        [_make_result(777, doc_type="file", metadata={"path": "shared.txt"})],
+    )
+
+    assert kept == []
+    assert dropped_count == 1
+    spy_evict.assert_awaited_once_with("777", "file", "bob")
+
+
+@pytest.mark.unit
 async def test_verify_search_results_fire_and_forget_eviction(mocker):
     """When eviction_task_group is provided, eviction does not block the response.
 

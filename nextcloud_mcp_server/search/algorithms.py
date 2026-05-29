@@ -168,6 +168,9 @@ class SearchResult:
     chunk_index: int = 0
     total_chunks: int = 1
     point_id: str | None = None
+    # Pre-normalization score, set by the visualization route before it rescales
+    # ``score`` to [0, 1] for visual encoding (see auth/viz_routes.py).
+    original_score: float | None = None
 
     def __post_init__(self):
         """Validate score is non-negative.
