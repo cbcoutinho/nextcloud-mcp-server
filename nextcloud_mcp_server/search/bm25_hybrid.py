@@ -71,6 +71,8 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         user_id: str,
         limit: int = 10,
         doc_type: str | None = None,
+        *,
+        accessible_owners: list[str] | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """
@@ -89,6 +91,9 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             user_id: User ID for filtering
             limit: Maximum results to return
             doc_type: Optional document type filter
+            accessible_owners: Owner UIDs the user can read (self + share
+                senders), pre-computed by the caller from the OCS Sharing API.
+                Defaults to ``[user_id]`` (self-only) when ``None``.
             **kwargs: Additional parameters (score_threshold override)
 
         Returns:
@@ -99,7 +104,6 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         """
         settings = get_settings()
         score_threshold = kwargs.get("score_threshold", self.score_threshold)
-        accessible_owners: list[str] | None = kwargs.get("accessible_owners")
 
         logger.info(
             "BM25 hybrid search: query='%s', user=%s, limit=%s, score_threshold=%s, doc_type=%s, fusion=%s",

@@ -49,6 +49,8 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         user_id: str,
         limit: int = 10,
         doc_type: str | None = None,
+        *,
+        accessible_owners: list[str] | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """Execute semantic search using vector similarity.
@@ -66,11 +68,11 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
             user_id: User ID for filtering
             limit: Maximum results to return
             doc_type: Optional document type filter
+            accessible_owners: Owner UIDs the user can read (self + share
+                senders), pre-computed by the caller from the OCS Sharing API.
+                Defaults to ``[user_id]`` (self-only) when ``None``.
             **kwargs:
                 - score_threshold (float): override the instance default
-                - accessible_owners (list[str]): owner UIDs the user can read
-                  (self + share senders). Pre-computed by the caller from the
-                  OCS Sharing API. Defaults to ``[user_id]`` when omitted.
 
         Returns:
             List of unverified SearchResult objects ranked by similarity score
@@ -80,7 +82,6 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         """
         settings = get_settings()
         score_threshold = kwargs.get("score_threshold", self.score_threshold)
-        accessible_owners: list[str] | None = kwargs.get("accessible_owners")
 
         logger.info(
             "Semantic search: query='%s', user=%s, limit=%s, score_threshold=%s, doc_type=%s",

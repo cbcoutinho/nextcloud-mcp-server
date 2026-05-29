@@ -38,6 +38,15 @@ logger = logging.getLogger(__name__)
 _PAYLOAD_INDEX_FIELDS: dict[str, PayloadSchemaType] = {
     "doc_id": PayloadSchemaType.KEYWORD,
     "user_id": PayloadSchemaType.KEYWORD,
+    # owner_id is the ACL-aware filter field: every search applies
+    # MatchAny(key="owner_id", any=accessible_owners) (see
+    # search/access_filter.py). Without a keyword index Qdrant full-scans the
+    # collection to evaluate it — invisible at small scale, but a latency
+    # regression at tens of thousands of points and an HTTP 400 on Qdrant
+    # Cloud strict payload-validation mode. Mirrors the user_id treatment;
+    # _ensure_payload_indexes is idempotent so existing collections migrate
+    # at startup without operator intervention.
+    "owner_id": PayloadSchemaType.KEYWORD,
     "doc_type": PayloadSchemaType.KEYWORD,
     "is_placeholder": PayloadSchemaType.BOOL,
     "chunk_index": PayloadSchemaType.INTEGER,

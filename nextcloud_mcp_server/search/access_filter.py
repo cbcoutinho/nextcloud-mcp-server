@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import OrderedDict
 from typing import Any, Protocol
 
 from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue
@@ -30,7 +31,13 @@ logger = logging.getLogger(__name__)
 # an OCS round-trip per query. Safe: verify-on-read still gates each result
 # against Nextcloud, so a revoked share is caught there regardless of this cache.
 _OWNERS_CACHE_TTL_SECONDS = 30.0
-_owners_cache: dict[str, tuple[float, list[str]]] = {}
+# Cap the number of cached users so the process-global cache can't grow
+# unboundedly in a long-running multi-user deployment (one entry per active
+# user, never evicted otherwise). LRU eviction by insertion/access order via
+# OrderedDict; the cap is generous relative to any realistic concurrent-user
+# count, so steady state is effectively all-hit.
+_OWNERS_CACHE_MAXSIZE = 1024
+_owners_cache: OrderedDict[str, tuple[float, list[str]]] = OrderedDict()
 
 
 def clear_accessible_owners_cache() -> None:
@@ -64,12 +71,24 @@ async def list_accessible_owners(
     more incoming shares than the OCS page size could have some owners omitted;
     if that becomes real, add pagination to SharingClient.
 
+    Granularity / over-fetch limitation (TODO, finer-grained filtering): this
+    expansion is *owner-level*, not *file-level*. If a prolific content creator
+    shares a single item with the querying user, that owner's whole indexed
+    corpus becomes a Qdrant candidate set for the querier even though only the
+    shared item is accessible. Verify-on-read correctly drops the inaccessible
+    "ghost" candidates, but because there is no second Qdrant pass to replenish,
+    a ``limit=N`` search can return fewer than N results when the over-fetch
+    buffer (2× in nc_semantic_search / viz_routes) is dominated by ghosts. A
+    per-file ownership index would remove this tension and is the natural
+    starting point for future work (intentionally out of scope here).
+
     Sharing API failures are non-fatal — we degrade to ``[user_id]`` and log
     so a hiccup in OCS doesn't black-hole the user's own search.
     """
     now = time.monotonic()
     cached = _owners_cache.get(user_id)
     if cached is not None and now - cached[0] < _OWNERS_CACHE_TTL_SECONDS:
+        _owners_cache.move_to_end(user_id)  # mark as recently used (LRU)
         return list(cached[1])  # copy so callers can't mutate the cached value
 
     owners: set[str] = {user_id}
@@ -94,6 +113,9 @@ async def list_accessible_owners(
 
     result = list(owners)
     _owners_cache[user_id] = (now, result)
+    _owners_cache.move_to_end(user_id)  # newest = most-recently-used
+    while len(_owners_cache) > _OWNERS_CACHE_MAXSIZE:
+        _owners_cache.popitem(last=False)  # evict least-recently-used
     logger.debug("Accessible owners for user %s: %d entries", user_id, len(result))
     return list(result)
 

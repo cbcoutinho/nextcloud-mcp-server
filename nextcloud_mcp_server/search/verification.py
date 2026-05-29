@@ -132,6 +132,16 @@ async def _verify_files(
     results: list[SearchResult],
     semaphore: anyio.Semaphore,
 ) -> set[str]:
+    """Return the doc_ids of file results this user may actually access.
+
+    Verifies each file by its *global* Nextcloud file id via an ACL-aware
+    WebDAV SEARCH (``webdav.file_accessible_by_id``), NOT by path. This is the
+    ACL-aware-search fix: a file an owner shared with the querying user mounts
+    at a different path under each tree, so the previous path-based check
+    (``get_file_info``) produced false 404s and dropped legitimate shared-file
+    hits. Definitive 403/404 → inaccessible (dropped + scheduled for eviction
+    by the caller); transient/ambiguous errors → kept (fail-open).
+    """
     # safe: cooperative concurrency, no lock needed (see verify_search_results)
     accessible: set[str] = set()
 

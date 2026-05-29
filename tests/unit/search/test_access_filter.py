@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from nextcloud_mcp_server.search import access_filter
 from nextcloud_mcp_server.search.access_filter import (
     build_ownership_filter,
     clear_accessible_owners_cache,
@@ -92,6 +93,63 @@ class TestListAccessibleOwners:
 
         await list_accessible_owners(sharing, "alice")
         sharing.list_shares.assert_awaited_once_with(shared_with_me=True)
+
+
+class TestOwnersCacheBehavior:
+    @pytest.mark.unit
+    async def test_second_call_within_ttl_uses_cache(self) -> None:
+        sharing = AsyncMock()
+        sharing.list_shares.return_value = [{"uid_owner": "bob"}]
+
+        first = await list_accessible_owners(sharing, "alice")
+        second = await list_accessible_owners(sharing, "alice")
+
+        assert sorted(first) == ["alice", "bob"]
+        assert second == first
+        # Only one OCS round-trip — the second call was served from cache.
+        sharing.list_shares.assert_awaited_once()
+
+    @pytest.mark.unit
+    async def test_expired_entry_triggers_fresh_ocs_call(self) -> None:
+        sharing = AsyncMock()
+        sharing.list_shares.return_value = [{"uid_owner": "bob"}]
+
+        await list_accessible_owners(sharing, "alice")
+        # Age the cached entry past the TTL without sleeping/patching the clock.
+        ts, value = access_filter._owners_cache["alice"]
+        access_filter._owners_cache["alice"] = (
+            ts - access_filter._OWNERS_CACHE_TTL_SECONDS - 1.0,
+            value,
+        )
+        await list_accessible_owners(sharing, "alice")
+
+        assert sharing.list_shares.await_count == 2
+
+    @pytest.mark.unit
+    async def test_failure_is_not_cached(self) -> None:
+        sharing = AsyncMock()
+        sharing.list_shares.side_effect = RuntimeError("OCS down")
+
+        await list_accessible_owners(sharing, "alice")  # degrades to self-only
+        # A later success must not be masked by a cached failure.
+        sharing.list_shares.side_effect = None
+        sharing.list_shares.return_value = [{"uid_owner": "bob"}]
+
+        owners = await list_accessible_owners(sharing, "alice")
+        assert sorted(owners) == ["alice", "bob"]
+
+    @pytest.mark.unit
+    async def test_cache_is_bounded_lru(self, monkeypatch) -> None:
+        monkeypatch.setattr(access_filter, "_OWNERS_CACHE_MAXSIZE", 2)
+        sharing = AsyncMock()
+        sharing.list_shares.return_value = []
+
+        await list_accessible_owners(sharing, "u1")
+        await list_accessible_owners(sharing, "u2")
+        await list_accessible_owners(sharing, "u3")  # evicts u1 (least recent)
+
+        assert set(access_filter._owners_cache.keys()) == {"u2", "u3"}
+        assert len(access_filter._owners_cache) == 2
 
 
 class TestBuildOwnershipFilter:

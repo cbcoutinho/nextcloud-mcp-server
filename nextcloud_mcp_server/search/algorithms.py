@@ -274,6 +274,8 @@ class SearchAlgorithm(ABC):
         user_id: str,
         limit: int = 10,
         doc_type: str | None = None,
+        *,
+        accessible_owners: list[str] | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """Execute search with the given parameters.
@@ -283,6 +285,12 @@ class SearchAlgorithm(ABC):
             user_id: User ID for multi-tenant filtering
             limit: Maximum number of results to return
             doc_type: Optional document type filter (note, file, calendar, etc.)
+            accessible_owners: Owner UIDs the user is allowed to read (self plus
+                the owners of content shared with them), pre-computed from the
+                OCS Sharing API by the caller. Declared explicitly — rather than
+                buried in ``**kwargs`` — so a misspelled keyword is a type error
+                instead of a silent fall back to self-only scope. ``None`` means
+                self-only (``[user_id]``).
             **kwargs: Algorithm-specific parameters
 
         Returns:
