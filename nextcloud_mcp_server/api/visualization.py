@@ -11,6 +11,7 @@ All endpoints require OAuth bearer token authentication via UnifiedTokenVerifier
 
 import base64
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pymupdf
@@ -44,6 +45,70 @@ from nextcloud_mcp_server.vector.oauth_sync import (
 from nextcloud_mcp_server.vector.visualization import compute_pca_coordinates
 
 logger = logging.getLogger(__name__)
+
+_NEXTCLOUD_HOST_NOT_CONFIGURED = "Nextcloud host not configured"
+
+
+async def _search_with_acl(
+    request: Request,
+    user_id: str,
+    execute: Callable[[list[str] | None], Awaitable[list]],
+) -> list:
+    """Resolve the caller's Nextcloud client, run ``execute(accessible_owners)``,
+    and verify-on-read — shared by the /api/v1 search endpoints.
+
+    The OAuth bearer only authenticates Astrolabe → MCP Server; MCP Server →
+    Nextcloud uses the provisioned app password. When the caller never
+    provisioned background sync there is no client to expand shares or verify
+    with, so we fall back to self-only, unverified search (the pre-ACL
+    behaviour) rather than 401 — keeping search working for users who haven't
+    opted into background indexing.
+
+    Args:
+        request: The Starlette request (carries ``app.state.oauth_context``).
+        user_id: The authenticated caller.
+        execute: Coroutine that runs the search for a given owner scope
+            (``None`` ⇒ self-only).
+
+    Returns:
+        The result list (verified for provisioned callers).
+
+    Raises:
+        ValueError: If the Nextcloud host is not configured.
+    """
+    oauth_ctx = request.app.state.oauth_context
+    nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
+    if not nextcloud_host:
+        raise ValueError(_NEXTCLOUD_HOST_NOT_CONFIGURED)
+
+    try:
+        nc_client = await get_user_client_basic_auth(user_id, nextcloud_host)
+    except NotProvisionedError:
+        logger.debug("User %s not provisioned; self-only unverified search", user_id)
+        results = await execute(None)
+    else:
+        async with nc_client:
+            # Expand to owners who shared content with the caller (same as the
+            # MCP tool path) so shared documents are searchable.
+            accessible_owners = await list_accessible_owners(nc_client.sharing, user_id)
+            results = await execute(accessible_owners)
+            # Verify-on-read (ADR-019): drop documents the caller can no longer
+            # access (e.g. a revoked share). Eviction runs inline — this
+            # Starlette route has no FastMCP lifespan task group.
+            results, _dropped = await verify_search_results(nc_client, results)
+
+    # Safe to log titles now: provisioned callers passed verify-on-read;
+    # non-provisioned ran self-only (unverified titles are never logged — see
+    # the search algorithms).
+    if results:
+        logger.debug(
+            "Top verified results: %s",
+            ", ".join(
+                f"{r.doc_type}_{r.id} (score={r.score:.3f}, title='{r.title}')"
+                for r in results[:5]
+            ),
+        )
+    return results
 
 
 async def unified_search(request: Request) -> JSONResponse:
@@ -192,50 +257,7 @@ async def unified_search(request: Request) -> JSONResponse:
                 )
             return results
 
-        # Resolve a Nextcloud client so search is ACL-aware and verify-on-read
-        # can confirm access. The OAuth bearer only authenticates Astrolabe →
-        # MCP Server; MCP Server → Nextcloud uses the provisioned app password.
-        # If the caller never provisioned background sync there is no client to
-        # expand shares or verify with — fall back to self-only, unverified
-        # search (the pre-ACL behaviour) rather than 401, so unified search keeps
-        # working for users who haven't opted into background indexing.
-        oauth_ctx = request.app.state.oauth_context
-        nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
-        if not nextcloud_host:
-            raise ValueError("Nextcloud host not configured")
-        try:
-            nc_client = await get_user_client_basic_auth(user_id, nextcloud_host)
-        except NotProvisionedError:
-            logger.debug(
-                "User %s not provisioned; self-only unverified search", user_id
-            )
-            all_results = await _execute(None)
-        else:
-            async with nc_client:
-                # Expand to owners who shared content with the caller (same as
-                # the MCP tool path) so shared documents are searchable.
-                accessible_owners = await list_accessible_owners(
-                    nc_client.sharing, user_id
-                )
-                all_results = await _execute(accessible_owners)
-                # Verify-on-read (ADR-019): drop documents the caller can no
-                # longer access (e.g. a revoked share) before formatting.
-                # Eviction runs inline — this Starlette route has no FastMCP
-                # lifespan task group.
-                all_results, _dropped = await verify_search_results(
-                    nc_client, all_results
-                )
-
-        # Safe to log titles now: provisioned callers passed verify-on-read;
-        # non-provisioned ran self-only (unverified titles are never logged).
-        if all_results:
-            logger.debug(
-                "Top verified results: %s",
-                ", ".join(
-                    f"{r.doc_type}_{r.id} (score={r.score:.3f}, title='{r.title}')"
-                    for r in all_results[:5]
-                ),
-            )
+        all_results = await _search_with_acl(request, user_id, _execute)
 
         # Sort results by score (no deduplication - show all chunks)
         sorted_results = sorted(all_results, key=lambda r: r.score, reverse=True)
@@ -440,47 +462,7 @@ async def vector_search(request: Request) -> JSONResponse:
                 )
             return results
 
-        # Resolve a Nextcloud client so search is ACL-aware and verify-on-read
-        # can confirm access (same pattern as /api/v1/search). If the caller
-        # never provisioned background sync there is no client to expand shares
-        # or verify with — fall back to self-only, unverified search (pre-ACL
-        # behaviour) rather than 401.
-        oauth_ctx = request.app.state.oauth_context
-        nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
-        if not nextcloud_host:
-            raise ValueError("Nextcloud host not configured")
-        try:
-            nc_client = await get_user_client_basic_auth(user_id, nextcloud_host)
-        except NotProvisionedError:
-            logger.debug(
-                "User %s not provisioned; self-only unverified search", user_id
-            )
-            all_results = await _execute(None)
-        else:
-            async with nc_client:
-                # Expand to owners who shared content with the caller (same as
-                # the MCP tool path) so shared documents are searchable.
-                accessible_owners = await list_accessible_owners(
-                    nc_client.sharing, user_id
-                )
-                all_results = await _execute(accessible_owners)
-                # Verify-on-read (ADR-019): drop now-inaccessible docs before
-                # formatting (inline eviction — no FastMCP lifespan task group
-                # on this Starlette route).
-                all_results, _dropped = await verify_search_results(
-                    nc_client, all_results
-                )
-
-        # Safe to log titles now: provisioned callers passed verify-on-read;
-        # non-provisioned ran self-only (unverified titles are never logged).
-        if all_results:
-            logger.debug(
-                "Top verified results: %s",
-                ", ".join(
-                    f"{r.doc_type}_{r.id} (score={r.score:.3f}, title='{r.title}')"
-                    for r in all_results[:5]
-                ),
-            )
+        all_results = await _search_with_acl(request, user_id, _execute)
 
         # Format results for PHP client
         formatted_results = []
@@ -655,7 +637,7 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
 
         if not nextcloud_host:
-            raise ValueError("Nextcloud host not configured")
+            raise ValueError(_NEXTCLOUD_HOST_NOT_CONFIGURED)
 
         # Use the user's stored app password for Nextcloud calls.
         # The OAuth bearer is only used to authenticate Astrolabe → MCP Server;
@@ -821,7 +803,7 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
         nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
 
         if not nextcloud_host:
-            raise ValueError("Nextcloud host not configured")
+            raise ValueError(_NEXTCLOUD_HOST_NOT_CONFIGURED)
 
         # Use the user's stored app password for Nextcloud calls.
         # The OAuth bearer is only used to authenticate Astrolabe → MCP Server;

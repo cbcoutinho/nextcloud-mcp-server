@@ -124,10 +124,18 @@ async def list_accessible_owners(
 
     result = list(owners)
     _owners_cache[user_id] = (now, result)
-    _owners_cache.move_to_end(user_id)  # newest = most-recently-used
+    # Promote to the most-recently-used end. This is a no-op for a brand-new
+    # key (dict insertion already appends) but is needed when re-inserting an
+    # existing key after its TTL expired.
+    _owners_cache.move_to_end(user_id)
     while len(_owners_cache) > _OWNERS_CACHE_MAXSIZE:
-        _owners_cache.popitem(last=False)  # evict least-recently-used
-    logger.debug("Accessible owners for user %s: %d entries", user_id, len(result))
+        _owners_cache.popitem(last=False)  # evict the least-recently-used entry
+    logger.debug(
+        "Accessible owners for user %s: %d entries (%d other owner(s))",
+        user_id,
+        len(result),
+        len(result) - 1,
+    )
     return list(result)
 
 

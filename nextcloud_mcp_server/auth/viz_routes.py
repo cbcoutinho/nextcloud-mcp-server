@@ -224,8 +224,13 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                             accessible_owners=accessible_owners,
                         )
                     all_results.extend(unverified_results)
-                # Sort by score before verification
+                # Sort by score, then cap to the same limit*2 over-fetch budget
+                # as the cross-app branch and the nc_semantic_search tool path
+                # (server/semantic.py). Without this, N doc_types each fetched
+                # at limit*2 would send N*limit*2 candidates into verify-on-read,
+                # multiplying the Nextcloud round-trip cost (and latency) by N.
                 all_results.sort(key=lambda r: r.score, reverse=True)
+                all_results = all_results[: limit * 2]
 
             # Verify-on-read (ADR-019). Now that accessible_owners is expanded
             # via OCS shares, the result set can include OTHER users' shared

@@ -339,6 +339,12 @@ def configure_semantic_tools(mcp: FastMCP):
                                 chunk_index=result.chunk_index,
                                 total_chunks=result.total_chunks,
                                 context_chars=context_chars,
+                                # Forward the share-expanded owner set so context
+                                # expansion works for shared files (the per-file
+                                # file_accessible_by_id gate inside still enforces
+                                # access). Without this the lookup stays self-only
+                                # and silently falls back to the plain excerpt.
+                                accessible_owners=accessible_owners,
                             )
 
                             if chunk_context:
