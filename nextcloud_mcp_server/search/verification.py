@@ -132,45 +132,55 @@ async def _verify_files(
     results: list[SearchResult],
     semaphore: anyio.Semaphore,
 ) -> set[str]:
+    """Return the doc_ids of file results this user may actually access.
+
+    Verifies each file by its *global* Nextcloud file id via an ACL-aware
+    WebDAV SEARCH (``webdav.file_accessible_by_id``), NOT by path. This is the
+    ACL-aware-search fix: a file an owner shared with the querying user mounts
+    at a different path under each tree, so the previous path-based check
+    (``get_file_info``) produced false 404s and dropped legitimate shared-file
+    hits. Definitive 403/404 → inaccessible (dropped + scheduled for eviction
+    by the caller); transient/ambiguous errors → kept (fail-open).
+    """
     # safe: cooperative concurrency, no lock needed (see verify_search_results)
     accessible: set[str] = set()
 
     async def check(result: SearchResult) -> None:
         doc_id = result.id
         # file_path is propagated from the Qdrant payload by the algorithm
-        # layer (bm25_hybrid.py / semantic.py). No extra Qdrant round-trip.
+        # layer (bm25_hybrid.py / semantic.py); kept here only for log context.
         file_path = (result.metadata or {}).get("path")
-        if not file_path:
-            # Cannot verify without a path; treat as accessible to avoid
-            # silently dropping legitimate results when payload is missing
-            # (legacy data, or a future doc_type that doesn't propagate path).
+
+        # Verify by *global* file ID via an ACL-aware WebDAV SEARCH, NOT by
+        # path. For files the vector ``doc_id`` IS the Nextcloud file ID, and
+        # file_accessible_by_id searches the user's whole tree (incl. mounted
+        # shares), so a file an owner shared with this user verifies as
+        # accessible even though it lives at a different path under the owner's
+        # root. A path-based check (the old behaviour) would 404 on shared
+        # files mounted at the recipient's root by basename and silently drop
+        # legitimate ACL-aware-search results.
+        #
+        # Hoisted cast mirrors _verify_notes: a malformed id keeps the result
+        # (fail open) with a specific log line rather than a generic
+        # "unexpected error" from the catch-all below.
+        try:
+            file_id_int = int(doc_id)
+        except (TypeError, ValueError) as e:
             logger.warning(
-                "No file path in metadata for file_id %s; keeping result "
-                "(verification skipped)",
+                "Non-numeric file id %r (%s): %s; keeping result",
                 doc_id,
+                file_path,
+                e,
             )
             accessible.add(doc_id)
             return
 
         async with semaphore:
             try:
-                info = await client.webdav.get_file_info(file_path)
-                if info is None:
-                    # Contract (see WebDAVClient.get_file_info docstring):
-                    # `None` means a malformed PROPFIND response — an
-                    # ambiguous state, not a definitive 404. Treat as
-                    # transient and KEEP the result rather than evicting.
-                    # Real 404s raise HTTPStatusError and land in the
-                    # _is_definitive_404_or_403 branch below.
-                    logger.warning(
-                        "Malformed PROPFIND response verifying file %s (%s); "
-                        "keeping result (ambiguous state, not a definitive 404)",
-                        doc_id,
-                        file_path,
-                    )
+                if await client.webdav.file_accessible_by_id(file_id_int):
                     accessible.add(doc_id)
-                    return
-                accessible.add(doc_id)
+                # else: definitively inaccessible (not owned, not shared) —
+                # drop and let the caller schedule eviction.
             except HTTPStatusError as e:
                 if _is_definitive_404_or_403(e):
                     return
@@ -183,6 +193,8 @@ async def _verify_files(
                 )
                 accessible.add(doc_id)
             except Exception as e:
+                # Network blip / unexpected WebDAV error — ambiguous, not a
+                # definitive denial. Keep the result; the next query re-verifies.
                 logger.warning(
                     "Unexpected error verifying file %s (%s): %s; keeping result",
                     doc_id,
@@ -584,6 +596,15 @@ async def verify_search_results(
     if evict_on_missing and inaccessible:
 
         async def evict(doc_id: str, doc_type: str) -> None:
+            # Eviction is scoped to the QUERYING user's own points
+            # (user_id == the searcher). For a cross-user shared document
+            # (owner_id=alice surfaced to bob via accessible_owners), bob
+            # failing verification evicts with user_id=bob — a deliberate
+            # no-op, because alice's points carry user_id=alice and must NOT
+            # be deleted just because bob's share was revoked. Bob's view
+            # self-heals via list_accessible_owners (alice drops out of his
+            # accessible owners once OCS no longer reports the share). See the
+            # legacy-user_id semantics note in build_ownership_filter.
             try:
                 await delete_document_points(doc_id, doc_type, user_id)
             except Exception as e:

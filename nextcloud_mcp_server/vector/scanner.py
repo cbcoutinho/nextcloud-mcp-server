@@ -108,6 +108,12 @@ class DocumentTask:
     metadata: dict[str, int | str] | None = (
         None  # Additional metadata (e.g., board_id/stack_id for deck_card)
     )
+    # UID of the true owner of the indexed object, used by the search-time
+    # ACL filter. None today (scanner always runs as the owner, so the
+    # processor falls back to user_id), but settable so a future
+    # shared-with-me crawl can pass through the actual owner without
+    # reshaping the payload contract.
+    owner_id: str | None = None
 
 
 # Track documents potentially deleted (grace period before actual deletion)

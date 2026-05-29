@@ -1073,6 +1073,49 @@ class WebDAVClient(BaseNextcloudClient):
             limit=limit,
         )
 
+    async def file_accessible_by_id(self, file_id: int) -> bool:
+        """ACL-aware access check for a file by its global Nextcloud file ID.
+
+        Used by verify-on-read (ADR-019). Searches the authenticated user's
+        whole files tree — which *includes mounted shares* — via WebDAV SEARCH
+        (RFC 5323) filtered on ``oc:fileid``, returning True iff the user can
+        currently access the file.
+
+        This is the only check that resolves shared files correctly:
+
+        - :meth:`get_file_info` resolves a path under the caller's *own* root,
+          so it 404s on a file shared into the caller's account (Nextcloud
+          mounts received shares at the recipient's root by basename, a
+          different path than the owner indexed).
+        - The ``/remote.php/dav/meta/{id}/`` endpoint resolves only the user's
+          *own* storage, so it 404s on shared files too.
+
+        SEARCH-by-fileid handles all cases: owned files, directly-shared files,
+        and files reachable via a shared parent folder (verified empirically).
+
+        Args:
+            file_id: Nextcloud internal (global) file ID.
+
+        Returns:
+            True if the user can access the file, False if it is not present
+            in their tree (not owned and not shared with them).
+
+        Raises:
+            HTTPStatusError: On transport/server errors — callers treat these
+                as transient (keep the result), not as a definitive denial.
+        """
+        where = (
+            "<d:eq><d:prop><oc:fileid/></d:prop>"
+            f"<d:literal>{int(file_id)}</d:literal></d:eq>"
+        )
+        results = await self.search_files(
+            scope="",  # user's whole files tree, incl. mounted shares
+            where_conditions=where,
+            properties=["fileid"],
+            limit=1,
+        )
+        return len(results) > 0
+
     async def _get_file_info_by_id(self, file_id: int) -> Dict[str, Any]:
         """Get file information by Nextcloud file ID using WebDAV.
 

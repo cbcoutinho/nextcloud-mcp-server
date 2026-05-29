@@ -30,6 +30,7 @@ from nextcloud_mcp_server.models.semantic import (
 from nextcloud_mcp_server.observability.metrics import (
     instrument_tool,
 )
+from nextcloud_mcp_server.search.access_filter import list_accessible_owners
 from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
 from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.verification import verify_search_results
@@ -121,8 +122,19 @@ def configure_semantic_tools(mcp: FastMCP):
                 )
             )
 
+        # Expand the caller's identity to every owner whose content they
+        # have read access to via Nextcloud shares. Lets a user find files
+        # owners have shared with them without having to re-index those
+        # files under their own user_id.
+        accessible_owners = await list_accessible_owners(client.sharing, username)
+
         try:
-            # Create BM25 hybrid search algorithm with specified fusion
+            # The nc_semantic_search tool deliberately uses BM25-hybrid (dense +
+            # sparse with RRF/DBSF fusion) as the single tool-layer algorithm.
+            # SemanticSearchAlgorithm is not dead code — it backs the dense-only
+            # option that the visualization/API surfaces expose explicitly
+            # (auth/viz_routes.py and api/visualization.py). Both algorithms take
+            # accessible_owners, so ACL-aware search works on every surface.
             search_algo = BM25HybridSearchAlgorithm(
                 score_threshold=score_threshold, fusion=fusion
             )
@@ -153,6 +165,7 @@ def configure_semantic_tools(mcp: FastMCP):
                     limit=limit * 2,
                     doc_type=None,  # Signal to search all types
                     score_threshold=score_threshold,
+                    accessible_owners=accessible_owners,
                 )
                 all_results.extend(unverified_results)
             else:
@@ -177,6 +190,7 @@ def configure_semantic_tools(mcp: FastMCP):
                         limit=limit * 2,
                         doc_type=dtype,
                         score_threshold=score_threshold,
+                        accessible_owners=accessible_owners,
                     )
                     all_results.extend(unverified_results)
 
@@ -221,6 +235,17 @@ def configure_semantic_tools(mcp: FastMCP):
                 verified_chunk_count,
                 dropped_count,
             )
+            # Safe to log titles now: these results passed verify-on-read, so the
+            # caller is confirmed to have access (unverified titles were never
+            # logged — see the search algorithms).
+            if verified_results:
+                logger.debug(
+                    "Top verified results: %s",
+                    ", ".join(
+                        f"{r.doc_type}_{r.id} (score={r.score:.3f}, title='{r.title}')"
+                        for r in verified_results[:5]
+                    ),
+                )
             search_results = verified_results[:limit]
 
             # Convert SearchResult objects to SemanticSearchResult for response.
@@ -314,6 +339,12 @@ def configure_semantic_tools(mcp: FastMCP):
                                 chunk_index=result.chunk_index,
                                 total_chunks=result.total_chunks,
                                 context_chars=context_chars,
+                                # Forward the share-expanded owner set so context
+                                # expansion works for shared files (the per-file
+                                # file_accessible_by_id gate inside still enforces
+                                # access). Without this the lookup stays self-only
+                                # and silently falls back to the plain excerpt.
+                                accessible_owners=accessible_owners,
                             )
 
                             if chunk_context:

@@ -438,10 +438,16 @@ async def test_verify_news_items_malformed_api_response_keeps_all(mocker):
 
 
 @pytest.mark.unit
-async def test_verify_files_uses_path_from_metadata(mocker):
-    """File verifier reads path from SearchResult.metadata, no Qdrant round-trip."""
+async def test_verify_files_accessible_by_global_id_is_kept(mocker):
+    """File verifier resolves the file by its global ID (the doc_id), ACL-aware.
+
+    This is what lets a recipient verify a file an owner shared with them:
+    file_accessible_by_id searches the user's whole tree (incl. mounted
+    shares) by global file id, not a path under the caller's own root (which
+    would 404 on shared files mounted at a different path).
+    """
     webdav_client = SimpleNamespace(
-        get_file_info=mocker.AsyncMock(return_value={"id": 100})
+        file_accessible_by_id=mocker.AsyncMock(return_value=True)
     )
     client = SimpleNamespace(webdav=webdav_client, username="alice")
 
@@ -452,14 +458,15 @@ async def test_verify_files_uses_path_from_metadata(mocker):
     )
 
     assert result == {"100"}
-    webdav_client.get_file_info.assert_awaited_once_with("Documents/foo.txt")
+    webdav_client.file_accessible_by_id.assert_awaited_once_with(100)
 
 
 @pytest.mark.unit
-async def test_verify_files_404_drops(mocker):
-    """get_file_info raising HTTPStatusError(404) is a definitive drop."""
+async def test_verify_files_inaccessible_id_drops(mocker):
+    """file_accessible_by_id returning False (file not in the user's tree) is a
+    definitive drop — the file is neither owned by nor shared with the user."""
     webdav_client = SimpleNamespace(
-        get_file_info=mocker.AsyncMock(side_effect=_http_error(404))
+        file_accessible_by_id=mocker.AsyncMock(return_value=False)
     )
     client = SimpleNamespace(webdav=webdav_client, username="alice")
 
@@ -473,68 +480,49 @@ async def test_verify_files_404_drops(mocker):
 
 
 @pytest.mark.unit
-async def test_verify_files_malformed_propfind_keeps_result(mocker):
-    """get_file_info returning None means malformed PROPFIND — keep the result.
+async def test_verify_files_403_404_drops(mocker):
+    """A 403/404 raised by the SEARCH call is treated as a definitive drop,
+    consistent with the shared _is_definitive_404_or_403 policy used by every
+    verifier. (Normal inaccessibility surfaces as an empty result set, not a
+    status code, and is covered by test_verify_files_inaccessible_id_drops.)"""
+    for status in (403, 404):
+        webdav_client = SimpleNamespace(
+            file_accessible_by_id=mocker.AsyncMock(side_effect=_http_error(status))
+        )
+        client = SimpleNamespace(webdav=webdav_client, username="alice")
 
-    Per the contract change in webdav.py: ``None`` is now reserved for the
-    ambiguous "malformed XML" case. Real 404s raise HTTPStatusError. The
-    file verifier must NOT evict on the ambiguous case (we cannot tell
-    whether the file exists), only log a warning and keep the result.
-    """
-    webdav_client = SimpleNamespace(get_file_info=mocker.AsyncMock(return_value=None))
+        result = await _verify_files(
+            client,
+            [_make_result(124, doc_type="file", metadata={"path": "x.txt"})],
+            _sem(),
+        )
+
+        assert result == set(), f"{status} on the SEARCH call must drop"
+
+
+@pytest.mark.unit
+async def test_verify_files_non_numeric_id_keeps_unverified(mocker):
+    """Without a numeric file id we cannot verify — fail open, don't drop."""
+    webdav_client = SimpleNamespace(
+        file_accessible_by_id=mocker.AsyncMock(
+            side_effect=AssertionError("must not be called")
+        )
+    )
     client = SimpleNamespace(webdav=webdav_client, username="alice")
 
     result = await _verify_files(
         client,
-        [_make_result(123, doc_type="file", metadata={"path": "brittle.txt"})],
+        [_make_result("not-a-file-id", doc_type="file", metadata={"path": "x.txt"})],
         _sem(),
     )
-
-    assert result == {"123"}, "ambiguous None must keep result, not evict"
-
-
-@pytest.mark.unit
-async def test_verify_files_403_drops(mocker):
-    """get_file_info raising HTTPStatusError(403) is a definitive drop."""
-    webdav_client = SimpleNamespace(
-        get_file_info=mocker.AsyncMock(side_effect=_http_error(403))
-    )
-    client = SimpleNamespace(webdav=webdav_client, username="alice")
-
-    result = await _verify_files(
-        client,
-        [_make_result(124, doc_type="file", metadata={"path": "forbidden.txt"})],
-        _sem(),
-    )
-
-    assert result == set()
-
-
-@pytest.mark.unit
-async def test_verify_files_missing_path_metadata_keeps_unverified(mocker):
-    """Without a path in metadata we cannot verify — fail open, don't drop."""
-    webdav_client = SimpleNamespace(
-        get_file_info=mocker.AsyncMock(side_effect=AssertionError("must not be called"))
-    )
-    client = SimpleNamespace(webdav=webdav_client, username="alice")
-
-    # No metadata at all
-    result = await _verify_files(client, [_make_result(555, doc_type="file")], _sem())
-    assert result == {"555"}
-    webdav_client.get_file_info.assert_not_awaited()
-
-    # Metadata present but no "path" key
-    result = await _verify_files(
-        client, [_make_result(556, doc_type="file", metadata={})], _sem()
-    )
-    assert result == {"556"}
-    webdav_client.get_file_info.assert_not_awaited()
+    assert result == {"not-a-file-id"}
+    webdav_client.file_accessible_by_id.assert_not_awaited()
 
 
 @pytest.mark.unit
 async def test_verify_files_transient_5xx_keeps(mocker):
     webdav_client = SimpleNamespace(
-        get_file_info=mocker.AsyncMock(side_effect=_http_error(503))
+        file_accessible_by_id=mocker.AsyncMock(side_effect=_http_error(503))
     )
     client = SimpleNamespace(webdav=webdav_client, username="alice")
 
@@ -549,9 +537,9 @@ async def test_verify_files_transient_5xx_keeps(mocker):
 
 @pytest.mark.unit
 async def test_verify_files_429_keeps_as_transient(mocker):
-    """HTTP 429 from get_file_info must NOT silently drop file results."""
+    """HTTP 429 from the SEARCH call must NOT silently drop file results."""
     webdav_client = SimpleNamespace(
-        get_file_info=mocker.AsyncMock(side_effect=_http_error(429))
+        file_accessible_by_id=mocker.AsyncMock(side_effect=_http_error(429))
     )
     client = SimpleNamespace(webdav=webdav_client, username="alice")
 
@@ -566,14 +554,14 @@ async def test_verify_files_429_keeps_as_transient(mocker):
 
 @pytest.mark.unit
 async def test_verify_files_unexpected_exception_keeps(mocker):
-    """A non-HTTP exception from get_file_info must not drop the result.
+    """A non-HTTP exception from file_accessible_by_id must not drop the result.
 
     The catch-all ``except Exception`` branch in the file verifier exists
     so a bug in the WebDAV client (or an httpx ConnectError on a flaky
     network) cannot silently shrink result pages.
     """
     webdav_client = SimpleNamespace(
-        get_file_info=mocker.AsyncMock(side_effect=RuntimeError("dav blew up"))
+        file_accessible_by_id=mocker.AsyncMock(side_effect=RuntimeError("dav blew up"))
     )
     client = SimpleNamespace(webdav=webdav_client, username="alice")
 
@@ -884,6 +872,37 @@ async def test_verify_search_results_drops_inaccessible_and_evicts(mocker):
     assert [r.id for r in kept] == ["1"]
     assert dropped_count == 1
     spy_evict.assert_awaited_once_with("99", "note", "alice")
+
+
+@pytest.mark.unit
+async def test_verify_evicts_cross_user_file_under_querying_user_id(mocker):
+    """A shared file the recipient can no longer access is evicted under the
+    QUERYING user's id, never the owner's.
+
+    This guards the cross-user eviction no-op: a point owned by alice
+    (user_id=alice) surfaced to bob via accessible_owners and then found
+    inaccessible must be evicted with user_id=bob — which deletes nothing of
+    alice's (her points carry user_id=alice). So a recipient's revoked access
+    can never delete the owner's index entries; bob's view self-heals via
+    list_accessible_owners instead. A future change that evicted under the
+    owner's id would corrupt the owner's index, and this test would catch it.
+    """
+    spy_evict = mocker.AsyncMock()
+    mocker.patch.object(verification, "delete_document_points", spy_evict)
+
+    webdav_client = SimpleNamespace(
+        file_accessible_by_id=mocker.AsyncMock(return_value=False)
+    )
+    client = SimpleNamespace(webdav=webdav_client, username="bob")
+
+    kept, dropped_count = await verify_search_results(
+        client,
+        [_make_result(777, doc_type="file", metadata={"path": "shared.txt"})],
+    )
+
+    assert kept == []
+    assert dropped_count == 1
+    spy_evict.assert_awaited_once_with("777", "file", "bob")
 
 
 @pytest.mark.unit

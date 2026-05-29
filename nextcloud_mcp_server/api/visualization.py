@@ -11,6 +11,7 @@ All endpoints require OAuth bearer token authentication via UnifiedTokenVerifier
 
 import base64
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pymupdf
@@ -30,10 +31,12 @@ from nextcloud_mcp_server.search import (
     BM25HybridSearchAlgorithm,
     SemanticSearchAlgorithm,
 )
+from nextcloud_mcp_server.search.access_filter import list_accessible_owners
 from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
 )
+from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.oauth_sync import (
     NotProvisionedError,
@@ -42,6 +45,70 @@ from nextcloud_mcp_server.vector.oauth_sync import (
 from nextcloud_mcp_server.vector.visualization import compute_pca_coordinates
 
 logger = logging.getLogger(__name__)
+
+_NEXTCLOUD_HOST_NOT_CONFIGURED = "Nextcloud host not configured"
+
+
+async def _search_with_acl(
+    request: Request,
+    user_id: str,
+    execute: Callable[[list[str] | None], Awaitable[list]],
+) -> list:
+    """Resolve the caller's Nextcloud client, run ``execute(accessible_owners)``,
+    and verify-on-read — shared by the /api/v1 search endpoints.
+
+    The OAuth bearer only authenticates Astrolabe → MCP Server; MCP Server →
+    Nextcloud uses the provisioned app password. When the caller never
+    provisioned background sync there is no client to expand shares or verify
+    with, so we fall back to self-only, unverified search (the pre-ACL
+    behaviour) rather than 401 — keeping search working for users who haven't
+    opted into background indexing.
+
+    Args:
+        request: The Starlette request (carries ``app.state.oauth_context``).
+        user_id: The authenticated caller.
+        execute: Coroutine that runs the search for a given owner scope
+            (``None`` ⇒ self-only).
+
+    Returns:
+        The result list (verified for provisioned callers).
+
+    Raises:
+        ValueError: If the Nextcloud host is not configured.
+    """
+    oauth_ctx = request.app.state.oauth_context
+    nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
+    if not nextcloud_host:
+        raise ValueError(_NEXTCLOUD_HOST_NOT_CONFIGURED)
+
+    try:
+        nc_client = await get_user_client_basic_auth(user_id, nextcloud_host)
+    except NotProvisionedError:
+        logger.debug("User %s not provisioned; self-only unverified search", user_id)
+        results = await execute(None)
+    else:
+        async with nc_client:
+            # Expand to owners who shared content with the caller (same as the
+            # MCP tool path) so shared documents are searchable.
+            accessible_owners = await list_accessible_owners(nc_client.sharing, user_id)
+            results = await execute(accessible_owners)
+            # Verify-on-read (ADR-019): drop documents the caller can no longer
+            # access (e.g. a revoked share). Eviction runs inline — this
+            # Starlette route has no FastMCP lifespan task group.
+            results, _dropped = await verify_search_results(nc_client, results)
+
+    # Safe to log titles now: provisioned callers passed verify-on-read;
+    # non-provisioned ran self-only (unverified titles are never logged — see
+    # the search algorithms).
+    if results:
+        logger.debug(
+            "Top verified results: %s",
+            ", ".join(
+                f"{r.doc_type}_{r.id} (score={r.score:.3f}, title='{r.title}')"
+                for r in results[:5]
+            ),
+        )
+    return results
 
 
 async def unified_search(request: Request) -> JSONResponse:
@@ -164,25 +231,41 @@ async def unified_search(request: Request) -> JSONResponse:
         # Request extra results to handle offset
         search_limit = limit + offset
 
-        # Execute search
-        all_results = []
-        if doc_types and isinstance(doc_types, list):
-            for doc_type in doc_types:
-                if doc_type:
-                    results = await search_algo.search(
-                        query=query,
-                        user_id=user_id,
-                        limit=search_limit,
-                        doc_type=doc_type,
-                    )
-                    all_results.extend(results)
-            all_results.sort(key=lambda r: r.score, reverse=True)
-        else:
-            all_results = await search_algo.search(
-                query=query,
-                user_id=user_id,
-                limit=search_limit,
-            )
+        async def _execute(owners: list[str] | None) -> list:
+            """Run the search across requested doc_types with the given owner
+            scope (None ⇒ self-only)."""
+            results: list = []
+            if doc_types and isinstance(doc_types, list):
+                for doc_type in doc_types:
+                    if doc_type:
+                        results.extend(
+                            await search_algo.search(
+                                query=query,
+                                user_id=user_id,
+                                limit=search_limit,
+                                doc_type=doc_type,
+                                accessible_owners=owners,
+                            )
+                        )
+                # Sort, then cap to a fixed over-fetch budget before the result
+                # reaches verify-on-read. Without this, N doc_types each fetched
+                # at search_limit would send N*search_limit candidates into
+                # verification — one Nextcloud round-trip each — scaling the cost
+                # with len(doc_types). 2x leaves headroom for verify-on-read
+                # drops before pagination, matching the nc_semantic_search and
+                # viz_routes pattern.
+                results.sort(key=lambda r: r.score, reverse=True)
+                results = results[: search_limit * 2]
+            else:
+                results = await search_algo.search(
+                    query=query,
+                    user_id=user_id,
+                    limit=search_limit,
+                    accessible_owners=owners,
+                )
+            return results
+
+        all_results = await _search_with_acl(request, user_id, _execute)
 
         # Sort results by score (no deduplication - show all chunks)
         sorted_results = sorted(all_results, key=lambda r: r.score, reverse=True)
@@ -357,29 +440,37 @@ async def vector_search(request: Request) -> JSONResponse:
                 score_threshold=score_threshold, fusion=fusion
             )
 
-        # Execute search for each doc_type if specified, otherwise search all
-        all_results = []
-        if doc_types and isinstance(doc_types, list):
-            # Search each doc_type separately and merge results
-            for doc_type in doc_types:
-                if doc_type:  # Skip empty strings
-                    results = await search_algo.search(
-                        query=query,
-                        user_id=user_id,
-                        limit=limit,
-                        doc_type=doc_type,
-                    )
-                    all_results.extend(results)
-            # Sort merged results by score and limit
-            all_results.sort(key=lambda r: r.score, reverse=True)
-            all_results = all_results[:limit]
-        else:
-            # Search all document types
-            all_results = await search_algo.search(
-                query=query,
-                user_id=user_id,
-                limit=limit,
-            )
+        async def _execute(owners: list[str] | None) -> list:
+            """Run the search across requested doc_types with the given owner
+            scope (None ⇒ self-only)."""
+            results: list = []
+            if doc_types and isinstance(doc_types, list):
+                # Search each doc_type separately and merge results
+                for doc_type in doc_types:
+                    if doc_type:  # Skip empty strings
+                        results.extend(
+                            await search_algo.search(
+                                query=query,
+                                user_id=user_id,
+                                limit=limit,
+                                doc_type=doc_type,
+                                accessible_owners=owners,
+                            )
+                        )
+                # Sort merged results by score and limit
+                results.sort(key=lambda r: r.score, reverse=True)
+                results = results[:limit]
+            else:
+                # Search all document types
+                results = await search_algo.search(
+                    query=query,
+                    user_id=user_id,
+                    limit=limit,
+                    accessible_owners=owners,
+                )
+            return results
+
+        all_results = await _search_with_acl(request, user_id, _execute)
 
         # Format results for PHP client
         formatted_results = []
@@ -554,7 +645,7 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
 
         if not nextcloud_host:
-            raise ValueError("Nextcloud host not configured")
+            raise ValueError(_NEXTCLOUD_HOST_NOT_CONFIGURED)
 
         # Use the user's stored app password for Nextcloud calls.
         # The OAuth bearer is only used to authenticate Astrolabe → MCP Server;
@@ -569,6 +660,10 @@ async def get_chunk_context(request: Request) -> JSONResponse:
             )
 
         async with nc_client:
+            # Expand to owners who shared content with the caller so the cached
+            # chunk lookup can resolve cross-user SHARED FILES (gated per-file
+            # inside get_chunk_with_context). Same expansion as the search path.
+            accessible_owners = await list_accessible_owners(nc_client.sharing, user_id)
             chunk_context = await get_chunk_with_context(
                 nc_client=nc_client,
                 user_id=user_id,
@@ -579,6 +674,7 @@ async def get_chunk_context(request: Request) -> JSONResponse:
                 chunk_index=chunk_index,
                 total_chunks=total_chunks,
                 context_chars=context_chars,
+                accessible_owners=accessible_owners,
             )
 
         if chunk_context is None:
@@ -598,12 +694,16 @@ async def get_chunk_context(request: Request) -> JSONResponse:
         page_number = chunk_context.page_number
 
         if doc_type == "file":
+            # Reaching here means the file chunk context resolved, so access was
+            # already confirmed (get_chunk_with_context gates files by id);
+            # the bbox/page lookup uses the same owner scope for cross-user files.
             qdrant_bbox, qdrant_page = await get_chunk_bbox_and_page_from_qdrant(
                 user_id=user_id,
                 doc_id=doc_id,
                 chunk_index=chunk_index,
                 chunk_start=start,
                 chunk_end=end,
+                accessible_owners=accessible_owners,
             )
             if qdrant_bbox is not None:
                 chunk_bbox = qdrant_bbox
@@ -711,7 +811,7 @@ async def get_pdf_preview(request: Request) -> JSONResponse:
         nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
 
         if not nextcloud_host:
-            raise ValueError("Nextcloud host not configured")
+            raise ValueError(_NEXTCLOUD_HOST_NOT_CONFIGURED)
 
         # Use the user's stored app password for Nextcloud calls.
         # The OAuth bearer is only used to authenticate Astrolabe → MCP Server;

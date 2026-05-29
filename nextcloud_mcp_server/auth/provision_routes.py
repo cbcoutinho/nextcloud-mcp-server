@@ -74,6 +74,7 @@ async def _poll_and_store(provision_id: str) -> None:
     flow_client = LoginFlowV2Client(
         nextcloud_host=nextcloud_host,
         verify_ssl=get_nextcloud_ssl_verify(),
+        public_host=settings.nextcloud_public_issuer_url,
     )
 
     poll_endpoint = session["poll_endpoint"]
@@ -205,6 +206,7 @@ async def provision_page(
         flow_client = LoginFlowV2Client(
             nextcloud_host=nextcloud_host,
             verify_ssl=get_nextcloud_ssl_verify(),
+            public_host=settings.nextcloud_public_issuer_url,
         )
         init_response = await flow_client.initiate()
     except Exception as e:

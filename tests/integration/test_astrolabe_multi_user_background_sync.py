@@ -7,19 +7,19 @@ lives in a separate repository (https://github.com/cbcoutinho/astrolabe).
 
 This test verifies that multiple users can independently:
 1. Log in to Nextcloud
-2. Generate an app password in Security settings
-3. Enter the app password in Astrolabe personal settings
-4. Enable background sync for the mcp-multi-user-basic service
-5. Verify app password is stored in the database
+2. Click the one-click "Enable background indexing" opt-in in Astrolabe settings
+3. Have a dedicated app password minted from their session and handed to the
+   MCP server (core/getapppassword — no Security-settings step, no copy-paste)
+4. Verify the app password is stored in the database
 
-Tests the complete app password provisioning flow:
-user login → Security settings → app password generation → Astrolabe settings →
-app password entry → background sync activation → database verification.
+Tests the one-click background-indexing provisioning flow:
+user login → Astrolabe settings → Enable background indexing → session app
+password minted + forwarded to MCP → background sync active → DB verification.
 """
 
 import logging
-import re
 import subprocess
+import tempfile
 
 import anyio
 import pytest
@@ -91,621 +91,64 @@ async def navigate_to_astrolabe_settings(page: Page):
     logger.info("✓ Successfully loaded Astrolabe settings page")
 
 
-async def authorize_search_access(page: Page, username: str) -> bool:
-    """Complete Step 1: OAuth Authorization for Astrolabe.
+async def enable_background_sync(page: Page, username: str) -> bool:
+    """Provision background indexing via the one-click opt-in button.
 
-    Handles the OAuth flow:
-    1. Check if already authorized (Step 1 shows "Complete")
-    2. Click "Authorize" link
-    3. Handle Nextcloud OIDC consent screen
-    4. Wait for redirect back to Astrolabe settings
-    5. Verify "Complete" badge appears on Step 1
-
-    Args:
-        page: Playwright page instance (must be on Astrolabe settings page)
-        username: Username for logging
-
-    Returns:
-        True if authorization completed successfully
-    """
-    nextcloud_url = "http://localhost:8080"
-
-    logger.info("Authorizing search access (Step 1) for %s...", username)
-
-    # Check if already on Astrolabe settings page, if not navigate there
-    if "/settings/user/astrolabe" not in page.url:
-        await navigate_to_astrolabe_settings(page)
-
-    # Wait for page to fully render
-    await anyio.sleep(1)
-
-    # Check if already authorized (either "Active" badge or Step 1 "Complete" badge)
-    try:
-        # Check for "Active" badge (fully configured state)
-        active_badge = page.get_by_text("Active", exact=True)
-        if await active_badge.count() > 0 and await active_badge.is_visible():
-            logger.info("✓ Already fully authorized for %s (Active badge)", username)
-            return True
-    except Exception:
-        pass
-
-    try:
-        step1_section = page.locator('h4:has-text("Step 1")')
-        if await step1_section.count() > 0:
-            # Look for "Complete" text in the Step 1 section's parent
-            step1_parent = step1_section.locator("..")
-            complete_badge = step1_parent.get_by_text("Complete", exact=True)
-            if await complete_badge.count() > 0 and await complete_badge.is_visible():
-                logger.info("✓ Step 1 already complete for %s", username)
-                return True
-    except Exception:
-        pass
-
-    # Find and click the "Authorize" button
-    authorize_button = page.locator('a.button.primary:has-text("Authorize")')
-
-    try:
-        await authorize_button.wait_for(timeout=5000, state="visible")
-        logger.info("Found Authorize button for %s", username)
-    except Exception:
-        # Take screenshot for debugging
-        screenshot_path = f"/tmp/astrolabe_no_authorize_button_{username}.png"
-        await page.screenshot(path=screenshot_path)
-        logger.error(
-            "Could not find Authorize button for %s. Screenshot: %s",
-            username,
-            screenshot_path,
-        )
-        raise ValueError(f"Authorize button not found for {username}")
-
-    # Click the Authorize button - this will redirect to OAuth provider
-    # Use force=True to bypass stability check which can timeout due to CSS transitions
-    await authorize_button.click(force=True)
-    logger.info("Clicked Authorize button for %s", username)
-
-    # Wait for OAuth redirect to complete
-    await page.wait_for_load_state("networkidle", timeout=30000)
-    logger.info("After networkidle, current URL: %s", page.url)
-
-    # Take screenshot to see current state
-    await page.screenshot(path=f"/tmp/astrolabe_after_authorize_{username}.png")
-    logger.info("Screenshot saved: /tmp/astrolabe_after_authorize_%s.png", username)
-
-    # Handle OIDC consent screen if present
-    consent_handled = await _handle_oauth_consent_screen(page, username)
-    if consent_handled:
-        logger.info("✓ OAuth consent granted for %s", username)
-    else:
-        logger.info(
-            "No consent screen required for %s (may be previously authorized)", username
-        )
-
-    # Wait for redirect back to Astrolabe settings
-    # The OAuth callback will redirect back to /settings/user/astrolabe
-    try:
-        await page.wait_for_url(
-            f"**{nextcloud_url}/settings/user/astrolabe**", timeout=30000
-        )
-        logger.info("Redirected back to Astrolabe settings for %s", username)
-    except Exception:
-        # Check if we're already on settings page
-        if "/settings/user/astrolabe" not in page.url:
-            logger.warning(
-                "Not redirected to Astrolabe settings, current URL: %s", page.url
-            )
-            # Navigate manually
-            await page.goto(
-                f"{nextcloud_url}/settings/user/astrolabe", wait_until="networkidle"
-            )
-
-    # Wait for page to reload and render
-    await anyio.sleep(2)
-
-    # Verify authorization completed - check for various success indicators
-    # When fully configured, shows "Active" badge; when only Step 1 done, shows "Complete"
-    try:
-        # First check if "Active" badge is shown (fully configured state)
-        active_badge = page.get_by_text("Active", exact=True)
-        if await active_badge.count() > 0 and await active_badge.is_visible():
-            logger.info(
-                "✓ OAuth authorization complete for %s (Active badge)", username
-            )
-            return True
-    except Exception:
-        pass
-
-    try:
-        # Check for Step 1 "Complete" badge (partial configuration)
-        step1_section = page.locator('h4:has-text("Step 1")')
-        if await step1_section.count() > 0:
-            step1_parent = step1_section.locator("..")
-            complete_badge = step1_parent.get_by_text("Complete", exact=True)
-            await complete_badge.wait_for(timeout=5000, state="visible")
-            logger.info("✓ Step 1 OAuth authorization complete for %s", username)
-            return True
-    except Exception:
-        pass
-
-    # Neither badge found - authorization failed
-    screenshot_path = f"/tmp/astrolabe_step1_not_complete_{username}.png"
-    await page.screenshot(path=screenshot_path)
-    logger.error(
-        "Authorization badge not visible for %s. Screenshot: %s",
-        username,
-        screenshot_path,
-    )
-    raise ValueError(f"OAuth authorization did not complete for {username}")
-
-
-async def _handle_oauth_consent_screen(page: Page, username: str) -> bool:
-    """Handle the OIDC consent screen during OAuth flow.
-
-    Reuses the proven pattern from tests/conftest.py.
+    The refactored settings page mints a dedicated app password from the
+    current Nextcloud session (core/getapppassword) and hands it to the MCP
+    server — there is no app-password generation in Security settings and no
+    copy-paste. Idempotent: if already enabled (the revoke form is shown
+    instead of the enable button), returns True without acting.
 
     Args:
-        page: Playwright page instance
-        username: Username for logging
-
-    Returns:
-        True if consent was handled, False if no consent screen was found
-    """
-    try:
-        logger.info("Checking for consent screen at URL: %s", page.url)
-
-        # Check if consent screen is present - try multiple selectors
-        # The consent screen may be #oidc-consent or use a different format
-        consent_div = await page.query_selector("#oidc-consent")
-
-        if consent_div:
-            logger.info("Consent screen detected via #oidc-consent for %s", username)
-            # Get consent screen data attributes for logging
-            client_name = await consent_div.get_attribute("data-client-name")
-            scopes_attr = await consent_div.get_attribute("data-scopes")
-            logger.info("  Client: %s", client_name)
-            logger.info("  Requested scopes: %s", scopes_attr)
-        else:
-            # Check for Allow button directly (different consent screen format)
-            allow_button = page.locator('button:has-text("Allow")')
-            if await allow_button.count() > 0:
-                logger.info("Consent screen detected via Allow button for %s", username)
-            else:
-                logger.info("No consent screen found for %s at %s", username, page.url)
-                await page.screenshot(path=f"/tmp/no_consent_screen_{username}.png")
-                logger.info("Screenshot: /tmp/no_consent_screen_%s.png", username)
-                return False
-
-        # Wait for Vue.js to render the Allow button
-        try:
-            await page.wait_for_selector('button:has-text("Allow")', timeout=10000)
-            logger.info("  Allow button rendered by Vue.js")
-        except Exception as e:
-            screenshot_path = f"/tmp/consent_no_allow_button_{username}.png"
-            await page.screenshot(path=screenshot_path)
-            logger.error("  Timeout waiting for Allow button: %s", e)
-            raise
-
-        # Check all scope checkboxes
-        scope_checkboxes = await page.query_selector_all('input[type="checkbox"]')
-        if scope_checkboxes:
-            logger.info("  Found %s scope checkboxes", len(scope_checkboxes))
-            for i, checkbox in enumerate(scope_checkboxes):
-                is_checked = await checkbox.is_checked()
-                is_disabled = await checkbox.is_disabled()
-                if not is_checked and not is_disabled:
-                    await checkbox.check()
-                    logger.info("    ✓ Checked scope checkbox %s", i + 1)
-
-        # Click the Allow button using JavaScript (handles viewport issues)
-        allow_button_locator = page.locator('button:has-text("Allow")')
-
-        # Debug: take screenshot before clicking Allow
-        await page.screenshot(path=f"/tmp/consent_before_allow_{username}.png")
-        logger.info(
-            "  Screenshot before Allow: /tmp/consent_before_allow_%s.png", username
-        )
-
-        button_count = await allow_button_locator.count()
-        logger.info("  Found %s Allow button(s)", button_count)
-
-        if button_count > 0:
-            current_url = page.url
-            logger.info("  Current URL: %s", current_url)
-            logger.info("  Clicking Allow button for %s...", username)
-
-            # Use JavaScript click to handle consent buttons (proven pattern from conftest.py)
-            # This is more reliable than Playwright's click for Vue.js rendered buttons
-            await page.evaluate(
-                """
-                const buttons = document.querySelectorAll('button');
-                for (const btn of buttons) {
-                    if (btn.textContent.trim() === 'Allow') {
-                        btn.click();
-                        break;
-                    }
-                }
-                """
-            )
-
-            # Wait for URL to change (Vue.js uses window.location.href after fetch)
-            # networkidle doesn't detect fetch-based redirects
-            try:
-                await page.wait_for_url(
-                    lambda url: url != current_url,
-                    timeout=30000,
-                )
-                logger.info("  URL changed to: %s", page.url)
-            except Exception as wait_error:
-                # If URL didn't change, check console for errors
-                logger.warning("  URL didn't change after click: %s", wait_error)
-                await page.screenshot(path=f"/tmp/consent_after_allow_{username}.png")
-
-                # Try alternative: manually POST consent and navigate
-                logger.info("  Trying manual consent submission...")
-                try:
-                    redirect_url = await page.evaluate(
-                        """
-                        async () => {
-                            const selectedScopes = Array.from(document.querySelectorAll('input[type="checkbox"]:checked'))
-                                .map(cb => cb.value).join(' ');
-
-                            const response = await fetch('/index.php/apps/oidc/consent/grant', {
-                                method: 'POST',
-                                headers: {
-                                    'Content-Type': 'application/x-www-form-urlencoded',
-                                    'requesttoken': OC.requestToken,
-                                },
-                                body: 'scopes=' + encodeURIComponent(selectedScopes),
-                                redirect: 'follow',
-                            });
-
-                            return response.url || '/index.php/apps/oidc/authorize';
-                        }
-                        """
-                    )
-                    logger.info("  Manual consent returned URL: %s", redirect_url)
-                    await page.goto(redirect_url, wait_until="networkidle")
-                except Exception as manual_error:
-                    logger.error("  Manual consent also failed: %s", manual_error)
-                    raise
-
-            await page.screenshot(path=f"/tmp/consent_after_allow_{username}.png")
-            logger.info("  Consent granted for %s", username)
-            return True
-        else:
-            logger.error("  Allow button not found for %s", username)
-            return False
-
-    except Exception as e:
-        logger.error("Error handling consent screen for %s: %s", username, e)
-        raise
-
-
-async def generate_app_password(
-    page: Page, username: str, app_name: str = "Astrolabe Background Sync"
-) -> str:
-    """Generate an app password in Nextcloud Security settings.
-
-    Args:
-        page: Playwright page instance (must be authenticated)
+        page: Playwright page instance (must be logged in)
         username: Username (for logging)
-        app_name: Name for the app password
 
     Returns:
-        The generated app password string
+        True once background indexing is enabled.
     """
-    logger.info("Generating app password for %s...", username)
-
-    nextcloud_url = "http://localhost:8080"
-
-    # Navigate to Security settings
-    await page.goto(f"{nextcloud_url}/settings/user/security", wait_until="networkidle")
-    logger.info("Navigated to Security settings")
-
-    # Fill the app password input field (selector confirmed via Playwright MCP)
-    app_password_input = page.locator('input[placeholder="App name"]')
-    await app_password_input.fill(app_name)
-    logger.info("Entered app name: %s", app_name)
-
-    # Wait for Vue.js to react and enable the button (needs 1 second, not 0.5)
-    await anyio.sleep(1.0)
-    logger.info("Waited for Vue.js to process input and enable button")
-
-    # Click the create button - use force=True to bypass stability check (CSS transitions)
-    create_button = page.locator(
-        'button[type="submit"]:has-text("Create new app password")'
-    )
-    try:
-        await create_button.click(force=True, timeout=10000)
-    except Exception:
-        # Fallback: JavaScript click
-        logger.info("Using JavaScript click for create button...")
-        await page.evaluate(
-            """
-            const btn = document.querySelector('button[type="submit"]');
-            if (btn) btn.click();
-            """
-        )
-    logger.info("Clicked create app password button")
-
-    # Wait for app password to be generated and displayed in the dialog
-    await anyio.sleep(3)  # Give it more time to generate and display
-
-    # Debug screenshot after clicking create
-    await page.screenshot(path=f"/tmp/app_password_after_create_{username}.png")
-    logger.info(
-        "Screenshot after create: /tmp/app_password_after_create_%s.png", username
-    )
-
-    # Find the Login input field which should have the username value
-    # Then find the Password input field which is in the same form
-    app_password = None
-    try:
-        # Wait for heading "New app password" to appear
-        await page.wait_for_selector('text="New app password"', timeout=10000)
-        logger.info("App password dialog appeared with heading")
-
-        # Get all visible input elements
-        all_inputs = await page.locator('input[type="text"]').all()
-        logger.info("Found %s text input elements", len(all_inputs))
-
-        # Check each input to find the one with the app password
-        for idx, input_elem in enumerate(all_inputs):
-            try:
-                value = await input_elem.input_value()
-                if value and "-" in value and len(value) > 20:
-                    app_password = value.strip()
-                    logger.info(
-                        "Found app password in input %s: '%s' (length: %s)",
-                        idx,
-                        app_password,
-                        len(app_password),
-                    )
-                    break
-            except Exception as e:
-                logger.debug("Could not get value from input %s: %s", idx, e)
-                continue
-
-    except Exception as e:
-        logger.error("Failed to find app password dialog or extract password: %s", e)
-
-    if not app_password:
-        # Take screenshot for debugging
-        screenshot_path = f"/tmp/app_password_generation_{username}.png"
-        await page.screenshot(path=screenshot_path)
-        raise ValueError(
-            f"Could not find generated app password. Screenshot: {screenshot_path}"
-        )
-
-    # Validate password format before returning
-
-    if not re.match(
-        r"^[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}$",
-        app_password,
-    ):
-        logger.error(
-            "Extracted password does not match expected format: '%s'", app_password
-        )
-        logger.error("Password repr: %s", repr(app_password))
-        screenshot_path = f"/tmp/app_password_invalid_format_{username}.png"
-        await page.screenshot(path=screenshot_path)
-        raise ValueError(
-            f"App password format validation failed. Screenshot: {screenshot_path}"
-        )
-
-    logger.info(
-        "✓ Generated app password for %s: %s... (validated)",
-        username,
-        app_password[:10],
-    )
-
-    # Close dialog with Escape key (bypasses CSS layout issues with h2 intercepting clicks)
-    logger.info("Closing app password dialog with Escape key...")
-    await page.keyboard.press("Escape")
-    await anyio.sleep(0.5)  # Wait for dialog close animation
-    logger.info("Closed app password dialog")
-
-    return app_password
-
-
-async def enable_background_sync_via_app_password(
-    page: Page, username: str, app_password: str
-):
-    """Enable background sync by entering app password in Astrolabe settings.
-
-    Args:
-        page: Playwright page instance
-        username: Username (for logging)
-        app_password: App password to enter
-
-    Returns:
-        True if background sync was enabled successfully
-    """
-    logger.info("Enabling background sync via app password for %s...", username)
-
-    nextcloud_url = "http://localhost:8080"
-
-    # Set up network request and console listeners BEFORE navigation
-    network_requests = []
-    network_responses = []
-    console_messages = []
-
-    def log_request(req):
-        network_requests.append(f"{req.method} {req.url}")
-
-    def log_response(resp):
-        response_info = f"{resp.status} {resp.url}"
-        network_responses.append(response_info)
-        logger.info("Response: %s", response_info)
-
-    def log_console(msg):
-        console_messages.append(f"[{msg.type}] {msg.text}")
-
-    page.on("request", log_request)
-    page.on("response", log_response)
-    page.on("console", log_console)
-
-    # Navigate to Astrolabe settings
+    logger.info("Enabling background indexing for %s...", username)
     await page.goto(
-        f"{nextcloud_url}/settings/user/astrolabe", wait_until="networkidle"
+        "http://localhost:8080/settings/user/astrolabe", wait_until="networkidle"
     )
-
-    # Wait for page to load
     await anyio.sleep(1)
 
-    # Check if already complete (look for Step 2 "Complete" badge or overall "Active" state)
-    try:
-        # First check for overall "Active" badge (both steps complete)
-        active_text = page.get_by_text("Active", exact=True)
-        if await active_text.is_visible(timeout=2000):
-            logger.info("✓ Background sync already active for %s", username)
-            return True
-    except Exception:
-        pass
+    if await page.locator("#mcp-revoke-background-button").count() > 0:
+        logger.info("✓ Background indexing already enabled for %s", username)
+        return True
 
-    try:
-        # Check for Step 2 "Complete" badge (app password already set)
-        step2_section = page.locator('h4:has-text("Step 2")')
-        if await step2_section.count() > 0:
-            step2_parent = step2_section.locator("..")
-            complete_badge = step2_parent.get_by_text("Complete", exact=True)
-            if await complete_badge.count() > 0 and await complete_badge.is_visible():
-                logger.info("✓ Step 2 (app password) already complete for %s", username)
-                return True
-    except Exception:
-        pass
+    enable_button = page.locator("#mcp-enable-background-button")
+    await enable_button.wait_for(timeout=5000, state="visible")
+    await enable_button.click()
+    logger.info("Clicked 'Enable background indexing' for %s", username)
 
-    # Find the app password input field using the placeholder text
-    # Based on manual testing: textbox with placeholder "xxxxx-xxxxx-xxxxx-xxxxx-xxxxx"
-    app_password_input = page.get_by_placeholder("xxxxx-xxxxx-xxxxx-xxxxx-xxxxx")
-
+    # On success the page JS reloads to the enabled state (revoke form shown).
     try:
-        await app_password_input.wait_for(timeout=5000, state="visible")
-        logger.info("Found app password input field")
+        await page.locator("#mcp-revoke-background-button").wait_for(
+            timeout=15000, state="visible"
+        )
+        logger.info("✓ Background indexing enabled for %s", username)
+        return True
     except Exception:
-        # Take screenshot for debugging
-        screenshot_path = f"/tmp/astrolabe_no_password_field_{username}.png"
+        screenshot_path = (
+            f"{tempfile.gettempdir()}/astrolabe_enable_failed_{username}.png"
+        )
         await page.screenshot(path=screenshot_path)
         raise ValueError(
-            f"Could not find app password input field for {username}. Screenshot: {screenshot_path}"
+            f"Background indexing did not enable for {username}. "
+            f"Screenshot: {screenshot_path}"
         )
-
-    # Enter the app password
-    await app_password_input.fill(app_password)
-    logger.info("Entered app password for %s", username)
-
-    # Wait a moment for any validation to complete
-    await anyio.sleep(0.5)
-
-    # Take screenshot before clicking Save to check for warnings
-    screenshot_path = f"/tmp/before_save_{username}.png"
-    await page.screenshot(path=screenshot_path)
-    logger.info("Screenshot taken before Save: %s", screenshot_path)
-
-    # Find and click the Save button
-    save_button = page.get_by_role("button", name="Save")
-
-    # Check if Save button is enabled
-    is_disabled = await save_button.is_disabled()
-    logger.info("Save button disabled state: %s", is_disabled)
-
-    await save_button.click()
-    logger.info("Clicked Save button")
-
-    # Give the request time to complete before checking logs
-    await anyio.sleep(0.5)
-
-    # Log network requests after clicking Save
-    logger.info("Network requests after Save for %s:", username)
-    for req in network_requests[-10:]:  # Last 10 requests
-        logger.info("  %s", req)
-
-    # Log network responses after clicking Save
-    logger.info("Network responses after Save for %s:", username)
-    for resp in network_responses[-10:]:  # Last 10 responses
-        logger.info("  %s", resp)
-
-    # Check specifically for the credentials POST response
-    credentials_responses = [
-        r for r in network_responses if "background-sync/credentials" in r
-    ]
-    if credentials_responses:
-        logger.info("Credentials endpoint response: %s", credentials_responses[-1])
-        if "200" not in credentials_responses[-1]:
-            logger.error(
-                "Credentials POST did not return 200 OK: %s", credentials_responses[-1]
-            )
-    else:
-        logger.warning("No response found for credentials endpoint!")
-
-    # Wait for the page to reload after successful save
-    # The JavaScript in personalSettings.js does: setTimeout(() => window.location.reload(), 1000)
-    await page.wait_for_load_state("networkidle", timeout=15000)
-    await anyio.sleep(2)
-
-    # Log any console messages
-    if console_messages:
-        logger.info("Console messages for %s:", username)
-        for msg in console_messages:
-            logger.info("  %s", msg)
-
-    # Check for error notifications (toast messages)
-    try:
-        error_toast = page.locator(".toastify.toast-error, .toast-error")
-        if await error_toast.count() > 0:
-            error_text = await error_toast.first.text_content()
-            logger.error("Error notification for %s: %s", username, error_text)
-    except Exception:
-        pass
-
-    # Verify Step 2 "Complete" badge or overall "Active" badge appears after reload
-    try:
-        # First try to find "Active" badge (both steps complete)
-        active_text = page.get_by_text("Active", exact=True)
-        if await active_text.count() > 0:
-            await active_text.wait_for(timeout=5000, state="visible")
-            logger.info(
-                "✓ Background sync enabled for %s - Active badge visible", username
-            )
-            return True
-    except Exception:
-        pass
-
-    try:
-        # Check for Step 2 "Complete" badge
-        step2_section = page.locator('h4:has-text("Step 2")')
-        if await step2_section.count() > 0:
-            step2_parent = step2_section.locator("..")
-            complete_badge = step2_parent.get_by_text("Complete", exact=True)
-            await complete_badge.wait_for(timeout=5000, state="visible")
-            logger.info(
-                "✓ Step 2 (app password) enabled for %s - Complete badge visible",
-                username,
-            )
-            return True
-    except Exception:
-        pass
-
-    # If neither badge found, raise error
-    screenshot_path = f"/tmp/astrolabe_after_password_{username}.png"
-    await page.screenshot(path=screenshot_path)
-    logger.error(
-        "Neither Active nor Complete badge appeared for %s. Screenshot: %s",
-        username,
-        screenshot_path,
-    )
-    raise ValueError(f"Background sync setup did not complete for {username}")
 
 
 async def complete_astrolabe_authorization(
     page: Page, username: str, password: str
 ) -> dict:
-    """Complete full Astrolabe two-step authorization.
+    """Provision background indexing for a user (one-click app-password opt-in).
 
-    Performs the complete authorization flow:
-    1. Navigate to Astrolabe settings
-    2. OAuth authorization (Step 1) if needed
-    3. Generate app password in Security settings
-    4. App password entry (Step 2) if needed
+    The auth refactor dropped the per-user OAuth step entirely — search now
+    uses a session-minted JWT, so the only remaining "authorization" is the
+    one-click background-indexing opt-in (a dedicated app password minted from
+    the session and handed to the MCP server).
 
     Args:
         page: Playwright page instance (must be logged in)
@@ -713,64 +156,15 @@ async def complete_astrolabe_authorization(
         password: Nextcloud password (for reference, not used directly)
 
     Returns:
-        Dict with {"step1": bool, "step2": bool, "app_password": str | None}
+        Dict with {"step1": True (no-op, kept for caller compat),
+        "step2": bool, "app_password": None}
     """
-    logger.info("Starting full Astrolabe authorization for %s...", username)
+    logger.info("Provisioning Astrolabe background indexing for %s...", username)
 
-    result = {"step1": False, "step2": False, "app_password": None}
-
-    # Navigate to Astrolabe settings
-    await navigate_to_astrolabe_settings(page)
-
-    # Step 1: OAuth authorization
-    try:
-        result["step1"] = await authorize_search_access(page, username)
-        logger.info("✓ Step 1 complete for %s", username)
-    except Exception as e:
-        logger.error("Step 1 failed for %s: %s", username, e)
-        raise
-
-    # Navigate back to settings if needed (OAuth might have redirected elsewhere)
-    if "/settings/user/astrolabe" not in page.url:
-        await navigate_to_astrolabe_settings(page)
-
-    # Check if Step 2 is already complete
-    try:
-        step2_section = page.locator('h4:has-text("Step 2")')
-        if await step2_section.count() > 0:
-            step2_parent = step2_section.locator("..")
-            complete_badge = step2_parent.get_by_text("Complete", exact=True)
-            if await complete_badge.count() > 0 and await complete_badge.is_visible():
-                logger.info("✓ Step 2 already complete for %s", username)
-                result["step2"] = True
-                return result
-    except Exception:
-        pass
-
-    # Also check for overall "Active" badge
-    try:
-        active_text = page.get_by_text("Active", exact=True)
-        if await active_text.count() > 0 and await active_text.is_visible():
-            logger.info("✓ Authorization already fully active for %s", username)
-            result["step2"] = True
-            return result
-    except Exception:
-        pass
-
-    # Step 2: Generate app password and enter it
-    app_password = await generate_app_password(page, username)
-    result["app_password"] = app_password
-
-    try:
-        result["step2"] = await enable_background_sync_via_app_password(
-            page, username, app_password
-        )
-        logger.info("✓ Step 2 complete for %s", username)
-    except Exception as e:
-        logger.error("Step 2 failed for %s: %s", username, e)
-        raise
-
-    logger.info("✓ Full Astrolabe authorization complete for %s", username)
+    # step1 is retained as always-True for backward compat with callers — there
+    # is no longer an OAuth authorize step to perform.
+    result = {"step1": True, "step2": False, "app_password": None}
+    result["step2"] = await enable_background_sync(page, username)
     return result
 
 
@@ -993,15 +387,11 @@ async def test_multi_user_astrolabe_background_sync_enablement(
             # Step 1: Login to Nextcloud
             await login_to_nextcloud(page, username, password)
 
-            # Step 2: Generate app password in Security settings
-            app_password = await generate_app_password(page, username)
+            # Step 2: One-click "Enable background indexing" (mints a dedicated
+            # app password from the session and hands it to the MCP server).
+            sync_enabled = await enable_background_sync(page, username)
 
-            # Step 3: Enable background sync by entering app password in Astrolabe
-            sync_enabled = await enable_background_sync_via_app_password(
-                page, username, app_password
-            )
-
-            # Step 4: Verify app password was stored in database
+            # Step 3: Verify app password was stored in database
             app_password_stored = await verify_app_password_created(username)
 
             # Give it time to complete
@@ -1009,7 +399,6 @@ async def test_multi_user_astrolabe_background_sync_enablement(
 
             results[username] = {
                 "settings_accessed": True,
-                "app_password_generated": bool(app_password),
                 "sync_enabled": sync_enabled,
                 "app_password_stored": app_password_stored,
                 "background_sync_active": sync_enabled and app_password_stored,
@@ -1017,7 +406,6 @@ async def test_multi_user_astrolabe_background_sync_enablement(
 
             logger.info("\\n%s results:", username)
             logger.info("  Settings accessed: ✓")
-            logger.info("  App password generated: %s", "✓" if app_password else "✗")
             logger.info("  Sync enabled: %s", "✓" if sync_enabled else "✗")
             logger.info(
                 "  App password stored: %s", "✓" if app_password_stored else "✗"
@@ -1061,9 +449,6 @@ async def test_multi_user_astrolabe_background_sync_enablement(
         assert result["settings_accessed"], (
             f"{username} could not access Astrolabe settings"
         )
-        assert result["app_password_generated"], (
-            f"{username} app password was not generated"
-        )
         assert result["sync_enabled"], (
             f"{username} background sync enablement did not complete successfully"
         )
@@ -1081,7 +466,7 @@ async def test_multi_user_astrolabe_background_sync_enablement(
 
 
 async def revoke_background_sync_access(page: Page, username: str) -> bool:
-    """Revoke background sync access by clicking the Revoke Access button.
+    """Revoke background sync access by clicking the "Disable background indexing" button.
 
     Args:
         page: Playwright page instance (must be authenticated)
@@ -1122,37 +507,37 @@ async def revoke_background_sync_access(page: Page, username: str) -> bool:
     # Wait for page to load
     await anyio.sleep(1)
 
-    # Check if "Active" badge is visible (indicating background sync is enabled)
+    # The revoke form (#mcp-revoke-background-form) is only rendered while
+    # background indexing is enabled.
+    revoke_button = page.locator("#mcp-revoke-background-button")
     try:
-        active_text = page.get_by_text("Active", exact=True)
-        if not await active_text.is_visible(timeout=2000):
+        if await revoke_button.count() == 0:
             logger.warning(
-                "Background sync not active for %s, nothing to revoke", username
+                "Background indexing not enabled for %s, nothing to revoke", username
             )
             return False
     except Exception:
-        logger.warning("Could not find Active badge for %s", username)
+        logger.warning("Could not find revoke button for %s", username)
         return False
-
-    # Find the "Revoke Access" button
-    revoke_button = page.get_by_role("button", name="Revoke Access")
 
     try:
         await revoke_button.wait_for(timeout=5000, state="visible")
-        logger.info("Found Revoke Access button")
+        logger.info("Found 'Disable background indexing' button")
     except Exception:
-        screenshot_path = f"/tmp/astrolabe_no_revoke_button_{username}.png"
+        screenshot_path = (
+            f"{tempfile.gettempdir()}/astrolabe_no_revoke_button_{username}.png"
+        )
         await page.screenshot(path=screenshot_path)
         raise ValueError(
-            f"Could not find Revoke Access button for {username}. Screenshot: {screenshot_path}"
+            f"Could not find revoke button for {username}. Screenshot: {screenshot_path}"
         )
 
     # Set up dialog handler for confirmation dialog
     page.once("dialog", lambda dialog: dialog.accept())
 
-    # Click the Revoke Access button
+    # Click the "Disable background indexing" button
     await revoke_button.click()
-    logger.info("Clicked Revoke Access button")
+    logger.info("Clicked the revoke button")
 
     # Wait for the request to complete and page to reload
     await page.wait_for_load_state("networkidle", timeout=15000)
@@ -1178,7 +563,9 @@ async def revoke_background_sync_access(page: Page, username: str) -> bool:
     else:
         logger.warning("No response found for credentials/revoke endpoint!")
         # Take screenshot for debugging
-        screenshot_path = f"/tmp/astrolabe_revoke_no_response_{username}.png"
+        screenshot_path = (
+            f"{tempfile.gettempdir()}/astrolabe_revoke_no_response_{username}.png"
+        )
         await page.screenshot(path=screenshot_path)
         return False
 
@@ -1198,12 +585,14 @@ async def revoke_background_sync_access(page: Page, username: str) -> bool:
     except Exception:
         pass
 
-    # Verify "Active" badge is no longer visible
+    # After revoke + reload the settings page returns to the un-provisioned
+    # state: the revoke button is gone and the app-password input is shown again.
     try:
-        active_text = page.get_by_text("Active", exact=True)
-        if await active_text.is_visible(timeout=2000):
-            logger.error("Active badge still visible for %s after revoke!", username)
-            screenshot_path = f"/tmp/astrolabe_revoke_still_active_{username}.png"
+        if await page.locator("#mcp-revoke-background-button").is_visible(timeout=2000):
+            logger.error("Revoke button still visible for %s after revoke!", username)
+            screenshot_path = (
+                f"{tempfile.gettempdir()}/astrolabe_revoke_still_enabled_{username}.png"
+            )
             await page.screenshot(path=screenshot_path)
             return False
     except Exception:
@@ -1280,11 +669,11 @@ async def test_revoke_background_sync_access(
     test_users_setup,
     configure_astrolabe_for_mcp_server,
 ):
-    """Test that users can revoke background sync access via the Revoke Access button.
+    """Test that users can revoke background sync access via the "Disable background indexing" button.
 
     This test verifies:
     1. User enables background sync via app password
-    2. User clicks "Revoke Access" button
+    2. User clicks "Disable background indexing" button
     3. Confirmation dialog is handled
     4. POST request is sent to /api/v1/background-sync/credentials/revoke
     5. "Active" badge disappears from settings page
@@ -1319,14 +708,9 @@ async def test_revoke_background_sync_access(
         # Step 1: Login to Nextcloud
         await login_to_nextcloud(page, username, password)
 
-        # Step 2: Complete full authorization (OAuth Step 1 + App Password Step 2)
+        # Provision background indexing (app-password opt-in; no OAuth step).
         auth_result = await complete_astrolabe_authorization(page, username, password)
-        assert auth_result["step1"], (
-            f"OAuth authorization (Step 1) failed for {username}"
-        )
-        assert auth_result["step2"], (
-            f"App password setup (Step 2) failed for {username}"
-        )
+        assert auth_result["step2"], f"App password provisioning failed for {username}"
 
         # Step 3: Verify background sync is enabled
         assert await verify_app_password_created(username), (

@@ -151,6 +151,45 @@ async def test_poll_expired(flow_client):
     assert result.app_password is None
 
 
+async def test_initiate_rewrites_login_url_to_public_host():
+    """When server↔Nextcloud uses an internal host (e.g. the ``app`` Docker
+    service), the browser-facing login URL must be rewritten to the configured
+    public host; the poll endpoint stays on the internal host for server-side
+    polling. Mock URLs use https to match this file's convention (the rewrite
+    is scheme-agnostic, so this exercises the same origin-replacement logic)."""
+    client = LoginFlowV2Client(
+        nextcloud_host="https://nc-internal.test",  # server↔Nextcloud origin
+        verify_ssl=False,
+        public_host="https://cloud.example.com",  # browser-reachable origin
+    )
+    mock_response = _mock_response(
+        200,
+        {
+            # Nextcloud builds these from the request (internal) host.
+            "login": "https://nc-internal.test/login/v2/flow/tok123",
+            "poll": {
+                "endpoint": "https://nc-internal.test/login/v2/poll",
+                "token": "tok",  # value irrelevant here; this test asserts the URLs
+            },
+        },
+    )
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(
+        "nextcloud_mcp_server.auth.login_flow.nextcloud_httpx_client",
+        return_value=mock_client,
+    ):
+        result = await client.initiate()
+
+    # Browser-facing URL uses the public host...
+    assert result.login_url == "https://cloud.example.com/login/v2/flow/tok123"
+    # ...while the poll endpoint stays on the internal host (server polls it).
+    assert result.poll_endpoint == "https://nc-internal.test/login/v2/poll"
+
+
 async def test_initiate_with_custom_user_agent(flow_client):
     """Test that custom user agent is passed in the request."""
     mock_response = _mock_response(

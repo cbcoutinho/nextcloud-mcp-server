@@ -30,9 +30,11 @@ from ..http import nextcloud_httpx_client
 logger = logging.getLogger(__name__)
 
 # App password format regex (Nextcloud format: xxxxx-xxxxx-xxxxx-xxxxx-xxxxx)
-APP_PASSWORD_PATTERN = re.compile(
-    r"^[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}-[a-zA-Z0-9]{5}$"
-)
+# Shape guard only — the authoritative check is the BasicAuth validation
+# against Nextcloud below. Accepts both the dashed format a user copies from
+# Security settings (xxxxx-xxxxx-xxxxx-xxxxx-xxxxx) and the raw token returned
+# by the one-click ``core/getapppassword`` flow (a long alphanumeric string).
+APP_PASSWORD_PATTERN = re.compile(r"^[a-zA-Z0-9-]{20,256}$")
 
 # Timeout for Nextcloud API validation requests (seconds)
 NEXTCLOUD_VALIDATION_TIMEOUT = 10.0

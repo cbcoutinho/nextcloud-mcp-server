@@ -108,7 +108,7 @@ async def navigate_to_astrolabe_main(page: Page):
 @pytest.mark.multi_user_basic
 @pytest.mark.timeout(
     300
-)  # 5 minutes - this test involves OAuth, app password, and vector sync
+)  # 5 minutes - this test involves app-password provisioning + vector sync
 async def test_astrolabe_plotly_visualization_with_basic_auth(
     browser,
     test_users_setup,
@@ -143,7 +143,7 @@ async def test_astrolabe_plotly_visualization_with_basic_auth(
     page = await context.new_page()
 
     try:
-        # Phase 2: Complete full Astrolabe authorization (OAuth + app password)
+        # Phase 2: Provision background indexing (app-password opt-in; no OAuth)
         await login_to_nextcloud(page, username, password)
         auth_result = await complete_astrolabe_authorization(page, username, password)
         logger.info("Authorization result: %s", auth_result)

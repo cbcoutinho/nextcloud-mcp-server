@@ -68,7 +68,11 @@ class TestIndexedPath:
         # One scroll call, and the filter must include chunk_index (not offsets)
         qdrant_client.scroll.assert_awaited_once()
         scroll_kwargs = qdrant_client.scroll.await_args.kwargs
-        filter_keys = [c.key for c in scroll_kwargs["scroll_filter"].must]
+        # Skip nested Filters (the ACL ownership sub-filter) — only field
+        # conditions carry a `.key`.
+        filter_keys = [
+            c.key for c in scroll_kwargs["scroll_filter"].must if hasattr(c, "key")
+        ]
         assert "chunk_index" in filter_keys
         assert "chunk_start_offset" not in filter_keys
         assert "chunk_end_offset" not in filter_keys
@@ -92,7 +96,11 @@ class TestOffsetFallbackPath:
 
         assert result == (bbox, 2)
         scroll_kwargs = qdrant_client.scroll.await_args.kwargs
-        filter_keys = [c.key for c in scroll_kwargs["scroll_filter"].must]
+        # Skip nested Filters (the ACL ownership sub-filter) — only field
+        # conditions carry a `.key`.
+        filter_keys = [
+            c.key for c in scroll_kwargs["scroll_filter"].must if hasattr(c, "key")
+        ]
         assert "chunk_start_offset" in filter_keys
         assert "chunk_end_offset" in filter_keys
         assert "chunk_index" not in filter_keys

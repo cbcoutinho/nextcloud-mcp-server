@@ -10,6 +10,7 @@ from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
 from nextcloud_mcp_server.observability.metrics import record_qdrant_operation
 from nextcloud_mcp_server.observability.tracing import trace_operation
+from nextcloud_mcp_server.search.access_filter import build_ownership_filter
 from nextcloud_mcp_server.search.algorithms import (
     SearchAlgorithm,
     SearchResult,
@@ -70,6 +71,8 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         user_id: str,
         limit: int = 10,
         doc_type: str | None = None,
+        *,
+        accessible_owners: list[str] | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """
@@ -88,6 +91,9 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             user_id: User ID for filtering
             limit: Maximum results to return
             doc_type: Optional document type filter
+            accessible_owners: Owner UIDs the user can read (self + share
+                senders), pre-computed by the caller from the OCS Sharing API.
+                Defaults to ``[user_id]`` (self-only) when ``None``.
             **kwargs: Additional parameters (score_threshold override)
 
         Returns:
@@ -131,10 +137,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         # Build Qdrant filter
         filter_conditions = [
             get_placeholder_filter(),  # Always exclude placeholders from user-facing queries
-            FieldCondition(
-                key="user_id",
-                match=MatchValue(value=user_id),
-            ),
+            build_ownership_filter(user_id, accessible_owners),
         ]
 
         # Add doc_type filter if specified
@@ -238,12 +241,10 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                 if len(results) >= limit:
                     break
 
+        # Log the count only — NOT titles. These results are unverified: with
+        # owner-level share expansion the candidate set can include other users'
+        # documents that verify-on-read will drop, so titles must not be logged
+        # until after verification (the verifying callers log verified titles).
         logger.info("Returning %s unverified results after deduplication", len(results))
-        if results:
-            result_details = [
-                f"{r.doc_type}_{r.id} (score={r.score:.3f}, title='{r.title}')"
-                for r in results[:5]  # Show top 5
-            ]
-            logger.debug("Top results: %s", ", ".join(result_details))
 
         return results
