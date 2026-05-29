@@ -5,6 +5,25 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.90.0 (2026-05-29)
+
+### Feat
+
+- **search**: ACL-aware vector filter via Nextcloud Shares lookup
+
+### Fix
+
+- PR #813 review — cap unified_search multi-type pool; document deck self-only
+- cache app-password storage to avoid per-request Alembic upgrade race
+- PR #813 review — shared-file context in MCP tool path + viz over-fetch cap
+- address PR #813 review round 4 (log leak, cross-user chunk ctx, algo, overlap)
+- address PR #813 latest review (ACL-aware doc-type discovery, robustness)
+- address PR #813 review (owner_id index, cache bound, explicit param)
+- **search**: address PR #813 review (viz verify-on-read, owners cache, docs)
+- **auth**: make provision/revoke consistent with the app-password store
+- **auth**: login-flow provisioning — public login_url + session app passwords
+- **search**: verify shared files by global file id (ACL-aware)
+
 ## v0.89.0 (2026-05-24)
 
 ### Feat
