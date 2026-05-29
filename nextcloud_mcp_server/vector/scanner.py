@@ -13,7 +13,6 @@ from typing import cast
 
 import anyio
 from anyio.abc import TaskStatus
-from anyio.streams.memory import MemoryObjectSendStream
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue, Record
 
@@ -31,6 +30,7 @@ from nextcloud_mcp_server.vector.placeholder import (
     write_placeholder_point,
 )
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+from nextcloud_mcp_server.vector.queue.ports import TaskProducer
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,11 @@ class DocumentTask:
     metadata: dict[str, int | str] | None = (
         None  # Additional metadata (e.g., board_id/stack_id for deck_card)
     )
+    # Change-detection token (Nextcloud etag). Used as the external ingest
+    # content_hash when present; the bus producer falls back to modified_at
+    # when it is None (deletes, or sources whose etag isn't threaded). Harmless
+    # in local mode — the in-process processor reads its own etag.
+    etag: str | None = None
 
 
 # Track documents potentially deleted (grace period before actual deletion)
@@ -179,7 +184,7 @@ async def get_last_indexed_timestamp(user_id: str) -> int | None:
 
 
 async def scanner_task(
-    send_stream: MemoryObjectSendStream[DocumentTask],
+    send_stream: TaskProducer,
     shutdown_event: anyio.Event,
     wake_event: anyio.Event,
     nc_client: NextcloudClient,
@@ -233,7 +238,7 @@ async def scanner_task(
 
 async def scan_user_documents(
     user_id: str,
-    send_stream: MemoryObjectSendStream[DocumentTask],
+    send_stream: TaskProducer,
     nc_client: NextcloudClient,
     initial_sync: bool = False,
 ):
@@ -339,6 +344,7 @@ async def scan_user_documents(
                         doc_type="note",
                         operation="index",
                         modified_at=modified_at,
+                        etag=note.get("etag", ""),
                     )
                 )
                 queued += 1
@@ -405,6 +411,7 @@ async def scan_user_documents(
                             doc_type="note",
                             operation="index",
                             modified_at=modified_at,
+                            etag=note.get("etag", ""),
                         )
                     )
                     queued += 1
@@ -740,7 +747,7 @@ async def scan_user_documents(
 
 async def scan_news_items(
     user_id: str,
-    send_stream: MemoryObjectSendStream[DocumentTask],
+    send_stream: TaskProducer,
     nc_client: NextcloudClient,
     initial_sync: bool,
     scan_id: int,
@@ -928,7 +935,7 @@ async def scan_news_items(
 
 async def scan_deck_cards(
     user_id: str,
-    send_stream: MemoryObjectSendStream[DocumentTask],
+    send_stream: TaskProducer,
     nc_client: NextcloudClient,
     initial_sync: bool,
     scan_id: int,

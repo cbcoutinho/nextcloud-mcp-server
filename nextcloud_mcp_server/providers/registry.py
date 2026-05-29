@@ -50,6 +50,44 @@ class ProviderRegistry:
         """
         settings = get_settings()
 
+        # 0. Gateway (manual-only; never autodetected). When
+        #    EMBEDDING_PROVIDER=gateway, bypass the autodetect chain entirely
+        #    and route embeddings through the Astrolabe Cloud embedding gateway
+        #    (design §10.1/§10.2). Lazy import to avoid an import cycle
+        #    (embedding/gateway_client → providers/openai → ... → registry).
+        if settings.embedding_provider == "gateway":
+            from ..embedding.gateway_client import (  # noqa: PLC0415
+                GatewayProvider,
+                GatewayTokenProvider,
+            )
+
+            # Settings.__post_init__ guarantees the URL is set when the
+            # provider is gateway; assert narrows the type for the checker.
+            assert settings.embedding_gateway_url is not None
+            # __post_init__ enforces all-or-nothing on the M2M creds, so
+            # checking one is enough to know the full triple is present.
+            token_provider = None
+            if settings.embedding_gateway_client_id:
+                assert settings.embedding_gateway_token_url is not None
+                assert settings.embedding_gateway_client_secret is not None
+                token_provider = GatewayTokenProvider(
+                    token_url=settings.embedding_gateway_token_url,
+                    client_id=settings.embedding_gateway_client_id,
+                    client_secret=settings.embedding_gateway_client_secret,
+                    scope=settings.embedding_gateway_scope,
+                )
+            logger.info(
+                "Using embedding gateway provider: url=%s, model=%s, auth=%s",
+                settings.embedding_gateway_url,
+                settings.embedding_gateway_model,
+                "oidc-m2m" if token_provider else "none",
+            )
+            return GatewayProvider(
+                base_url=settings.embedding_gateway_url,
+                embedding_model=settings.embedding_gateway_model,
+                token_provider=token_provider,
+            )
+
         # 1. Bedrock
         if (
             settings.aws_region

@@ -3,8 +3,9 @@
 import logging
 from typing import Any
 
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue
 
+from nextcloud_mcp_server.acl_hash import accessible_hash_set
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_embedding_service
 from nextcloud_mcp_server.observability.metrics import record_qdrant_operation
@@ -13,6 +14,7 @@ from nextcloud_mcp_server.search.algorithms import (
     SearchResult,
     build_search_result_from_point,
 )
+from nextcloud_mcp_server.vector.payload_keys import ACL_HASH
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -110,6 +112,20 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
                     key="doc_type",
                     match=MatchValue(value=doc_type),
                 )
+            )
+
+        # ACL pre-filter (design §11), opt-in via ACL_PREFILTER_ENABLED and OFF
+        # by default. Additive `must` condition — it can only narrow results,
+        # never broaden them, and verify-on-read remains the correctness
+        # backstop. Only enable after a real acl_hash backfill: a MatchAny on
+        # acl_hash excludes points missing the key (legacy docs), so enabling
+        # it on an un-backfilled collection would silently drop results.
+        if settings.acl_prefilter_enabled:
+            # Groups are not yet threaded into the search signature; user +
+            # public principals are covered. Group support is a follow-up.
+            accessible = accessible_hash_set(user_id)
+            filter_conditions.append(
+                FieldCondition(key=ACL_HASH, match=MatchAny(any=sorted(accessible)))
             )
 
         # Search Qdrant

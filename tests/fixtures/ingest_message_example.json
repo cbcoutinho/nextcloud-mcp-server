@@ -1,0 +1,10 @@
+{
+  "tenant_id": "00000000-0000-0000-0000-000000000001",
+  "doc_id": "12345",
+  "content_hash": "etag-abc123",
+  "modified_at": "2026-05-27T00:00:00Z",
+  "doc_type": "file",
+  "operation": "index",
+  "user_id": "alice",
+  "file_path": "/Documents/report.pdf"
+}

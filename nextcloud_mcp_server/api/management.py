@@ -122,6 +122,25 @@ async def validate_token_and_get_user(
     return user_id, validated
 
 
+class AdminScopeRequired(Exception):
+    """Raised when an authenticated caller lacks the ``admin`` scope."""
+
+
+async def require_admin_scope(request: Request) -> str:
+    """Authenticate the caller and require the ``admin`` scope.
+
+    This is the first ``/api/v1/admin/*`` guard; it establishes the pattern
+    (auth via :func:`validate_token_and_get_user`, then an explicit scope check).
+    Raises ``ValueError`` on auth failure and :class:`AdminScopeRequired` on a
+    valid token that lacks ``admin``; callers map these to 401 / 403.
+    """
+    user_id, validated = await validate_token_and_get_user(request)
+    scopes = validated.get("scopes") or []
+    if "admin" not in scopes:
+        raise AdminScopeRequired("admin scope required")
+    return user_id
+
+
 def _sanitize_error_for_client(error: Exception, context: str = "") -> str:
     """
     Return a safe, generic error message for clients.
@@ -274,6 +293,31 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
         )
 
     try:
+        # Bus status backend (INGEST_MODE=external): there is no in-process
+        # queue; pending/terminal state comes from the NATS status subscriber's
+        # store. indexed_documents stays the mode-independent Qdrant count.
+        if settings.status_backend == "bus":
+            store = getattr(request.app.state, "status_store", None)
+            indexed_count = 0
+            try:
+                qdrant_client = await get_qdrant_client()
+                count_result = await qdrant_client.count(
+                    collection_name=settings.get_collection_name(),
+                    count_filter=Filter(must=[get_placeholder_filter()]),
+                )
+                indexed_count = count_result.count
+            except Exception as e:
+                logger.warning("Failed to query Qdrant for indexed count: %s", e)
+            return JSONResponse(
+                {
+                    "status": "idle",
+                    "indexed_documents": indexed_count,
+                    "pending_documents": 0,
+                    "status_backend": "bus",
+                    "recent_states": store.counts() if store is not None else {},
+                }
+            )
+
         # Get document receive stream from app state (set by starlette_lifespan in app.py)
         document_receive_stream = getattr(
             request.app.state, "document_receive_stream", None
