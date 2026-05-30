@@ -238,6 +238,24 @@ async def provision_app_password(request: Request) -> JSONResponse:
             status_code=400,
         )
 
+    # Parse optional scopes and the Nextcloud loginName from the request body
+    # up front. Nextcloud authenticates app passwords against the *loginName*,
+    # which can differ from the UID — e.g. OIDC-provisioned users whose UID is
+    # their display name (UID "Chris Coutinho", loginName "chris@coutinho.io").
+    # Use the loginName for the BasicAuth validation below, falling back to the
+    # path user_id for legacy callers that don't send one (where UID ==
+    # loginName).
+    scopes = None
+    nc_username = None
+    try:
+        body = await request.json()
+        scopes = body.get("scopes")  # list[str] | None
+        nc_username = body.get("username")  # Nextcloud loginName
+    except Exception:
+        pass  # No JSON body = legacy call without scopes / loginName
+
+    login_name = nc_username or username
+
     # Get Nextcloud host from settings
     settings = get_settings()
     nextcloud_host = settings.nextcloud_host
@@ -249,7 +267,10 @@ async def provision_app_password(request: Request) -> JSONResponse:
             status_code=500,
         )
 
-    # Validate app password against Nextcloud
+    # Validate app password against Nextcloud. BasicAuth places the user-id
+    # literally in the header (RFC 7617 — no URL-encoding) and Nextcloud keys
+    # app-password auth on the loginName, so authenticate as the loginName, not
+    # the UID.
     try:
         async with nextcloud_httpx_client(
             timeout=NEXTCLOUD_VALIDATION_TIMEOUT
@@ -258,7 +279,7 @@ async def provision_app_password(request: Request) -> JSONResponse:
             test_url = f"{nextcloud_host}/ocs/v1.php/cloud/user"
             response = await client.get(
                 test_url,
-                auth=(username, app_password),
+                auth=(login_name, app_password),
                 params={"format": "json"},
                 headers={"OCS-APIRequest": "true"},
             )
@@ -274,10 +295,11 @@ async def provision_app_password(request: Request) -> JSONResponse:
                     status_code=401,
                 )
 
-            # Verify the user ID from response matches
+            # Verify the authenticated account maps to the path user_id (UID):
+            # the loginName must resolve to the UID claimed in the URL path.
             data = response.json()
             ocs_user_id = data.get("ocs", {}).get("data", {}).get("id")
-            if ocs_user_id != username:
+            if ocs_user_id != path_user_id:
                 logger.warning("User ID mismatch in OCS response")
                 _record_rate_limit_attempt(path_user_id, success=False)
                 return JSONResponse(
@@ -291,16 +313,6 @@ async def provision_app_password(request: Request) -> JSONResponse:
             {"success": False, "error": "Failed to validate credentials"},
             status_code=500,
         )
-
-    # Parse optional scopes and username from request body
-    scopes = None
-    nc_username = None
-    try:
-        body = await request.json()
-        scopes = body.get("scopes")  # list[str] | None
-        nc_username = body.get("username")  # Nextcloud loginName
-    except Exception:
-        pass  # No JSON body = legacy call without scopes
 
     # Store the validated app password
     try:

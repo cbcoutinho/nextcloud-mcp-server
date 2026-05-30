@@ -248,6 +248,64 @@ async def test_provision_app_password_success(temp_storage, mocker):
     stored_password = await temp_storage.get_app_password("testuser")
     assert stored_password == "aaaaa-bbbbb-ccccc-ddddd-eeeee"
 
+    # Legacy callers send no loginName in the body → the OCS validation falls
+    # back to authenticating as the UID (here UID == loginName).
+    _, get_kwargs = mock_client.get.call_args
+    assert get_kwargs["auth"] == ("testuser", "aaaaa-bbbbb-ccccc-ddddd-eeeee")
+
+
+async def test_provision_app_password_uses_loginname_not_uid(temp_storage, mocker):
+    """Regression: when the Nextcloud UID differs from the loginName (e.g.
+    OIDC-provisioned users whose UID is their display name — UID
+    "Chris Coutinho", loginName "chris@coutinho.io"), the OCS BasicAuth
+    validation must authenticate as the loginName from the request body, not
+    the UID. Authenticating as the UID is rejected by Nextcloud with HTTP 401.
+    """
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="http://localhost:8080",
+            nextcloud_verify_ssl=True,
+            nextcloud_ca_bundle=None,
+        ),
+    )
+
+    # OCS validation succeeds and reports the UID as the account id.
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"ocs": {"data": {"id": "Chris Coutinho"}}}
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock()
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.nextcloud_httpx_client",
+        return_value=mock_client,
+    )
+
+    app = create_test_app(temp_storage)
+    client = TestClient(app)
+
+    pw = "aaaaa-bbbbb-ccccc-ddddd-eeeee"
+    # A literal space in the path is encoded by the client and decoded back to
+    # the UID; the BasicAuth username matches that UID.
+    response = client.post(
+        "/api/v1/users/Chris Coutinho/app-password",
+        headers={"Authorization": create_basic_auth_header("Chris Coutinho", pw)},
+        json={"username": "chris@coutinho.io"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+
+    # The OCS BasicAuth used the loginName from the body, not the UID.
+    _, get_kwargs = mock_client.get.call_args
+    assert get_kwargs["auth"] == ("chris@coutinho.io", pw)
+
+    # Stored under the UID (the identity key).
+    assert await temp_storage.get_app_password("Chris Coutinho") == pw
+
 
 async def test_provision_app_password_nextcloud_validation_fails(mocker):
     """Test that failed Nextcloud validation returns 401."""
