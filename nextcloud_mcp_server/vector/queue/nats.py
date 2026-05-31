@@ -156,9 +156,9 @@ class NatsTaskProducer:
     ) -> None:
         return None
 
-    # The bare ``# NOSONAR`` silences ``python:S7503`` (async method without
-    # await): ``async def`` is required by the TaskProducer protocol, but this
-    # handle close is a genuine no-op.
+    # The bare suppression marker silences S7503 (async method without await):
+    # ``async def`` is required by the TaskProducer protocol, but this handle
+    # close is a genuine no-op.
     async def aclose(self) -> None:  # NOSONAR
         # Per-handle close (e.g. a per-user scanner clone exiting). The bus
         # connection is shared and owned by the lifespan, so this is a no-op;

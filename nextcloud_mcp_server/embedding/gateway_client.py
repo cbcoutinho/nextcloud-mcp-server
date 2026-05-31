@@ -122,8 +122,8 @@ class GatewayProvider(OpenAIProvider):
         # AsyncOpenAI rejects an empty key; use a non-secret placeholder when
         # the gateway is unauthenticated. When a token provider is configured,
         # the real Bearer is set on the client before each request. The bare
-        # ``# NOSONAR`` silences the hard-coded-credential hotspot — this is a
-        # public placeholder string, not a secret.
+        # suppression marker below silences the hard-coded-credential hotspot —
+        # this is a public placeholder string, not a secret.
         super().__init__(
             api_key=_UNAUTHENTICATED_PLACEHOLDER,  # NOSONAR
             base_url=base_url,
