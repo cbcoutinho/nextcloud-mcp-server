@@ -54,10 +54,10 @@ def _content_hash(task: DocumentTask) -> str:
     """etag is the change-detection token; fall back to modified_at when it is
     absent (e.g. deletes, or sources whose etag we don't thread through).
 
-    TODO(follow-up): thread etags for file / deck_card / news_item scans too
-    (only note scans pass etag today). Until then their JetStream Nats-Msg-Id
-    dedup keys off modified_at, which misses content changes that leave
-    modified_at unchanged (e.g. a file move/rename).
+    TODO(follow-up, PR #814 review): thread etags for file / deck_card /
+    news_item scans too (only note scans pass etag today). Until then their
+    JetStream Nats-Msg-Id dedup keys off modified_at, which misses content
+    changes that leave modified_at unchanged (e.g. a file move/rename).
     """
     return task.etag or str(task.modified_at)
 

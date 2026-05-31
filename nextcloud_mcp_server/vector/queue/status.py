@@ -144,12 +144,29 @@ class NatsStatusSubscriber:
         import nats.errors  # noqa: PLC0415
 
         subject = f"mcp.document.*.{self.tenant_id}"
-        sub = await self._js.pull_subscribe(
-            subject, durable=f"mcp-status-{self.tenant_id}"
-        )
+        # Signal "task running" *before* the first (fallible) subscribe: bus
+        # status is a non-critical observability path, so a broker that isn't
+        # ready at startup should retry below rather than crash the lifespan.
+        # ``started()`` therefore means "the subscriber loop is running", not
+        # "the subscription succeeded".
         if task_status is not None:
             task_status.started()
+
+        sub = None
         while not shutdown_event.is_set():
+            if sub is None:
+                try:
+                    sub = await self._js.pull_subscribe(
+                        subject, durable=f"mcp-status-{self.tenant_id}"
+                    )
+                except Exception:
+                    # Broker not ready / transient connect error: back off and
+                    # retry the subscribe instead of giving up.
+                    logger.warning(
+                        "NATS status subscribe failed; retrying", exc_info=True
+                    )
+                    await anyio.sleep(5)
+                    continue
             try:
                 msgs = await sub.fetch(batch=16, timeout=5)
             except nats.errors.TimeoutError:
@@ -157,11 +174,14 @@ class NatsStatusSubscriber:
                 # straight back to re-check shutdown — no log, no extra sleep.
                 continue
             except Exception:
-                # Real broker error (disconnect, auth failure, stream deleted).
-                # Log it and back off so we don't hot-spin against a dead broker.
+                # Real broker error (disconnect, auth failure, stream deleted):
+                # drop the (possibly dead) subscription, back off, and
+                # re-subscribe on the next iteration rather than hot-spinning.
                 logger.warning(
-                    "NATS status subscriber fetch failed; retrying", exc_info=True
+                    "NATS status subscriber fetch failed; re-subscribing",
+                    exc_info=True,
                 )
+                sub = None
                 await anyio.sleep(5)
                 continue
             for msg in msgs:

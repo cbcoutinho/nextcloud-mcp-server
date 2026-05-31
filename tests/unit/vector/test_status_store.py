@@ -68,3 +68,100 @@ def test_handle_message_ignores_bad_payload_and_subject():
     sub.handle_message("mcp.document.ready.t1", b"not json")
     sub.handle_message("mcp.ingest.requested.t1", b'{"doc_id":"x"}')
     assert len(store) == 0
+
+
+async def test_run_signals_started_then_retries_subscribe(mocker, monkeypatch):
+    """run() signals started before subscribing, retries a failed subscribe,
+    and consumes messages once subscribed."""
+    import anyio
+
+    # Make backoff sleeps instant so the retry path doesn't stall the test.
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(anyio, "sleep", _no_sleep)
+
+    store = StatusStore()
+    js = mocker.AsyncMock()
+
+    # First subscribe attempt fails (broker not ready), second succeeds.
+    fake_sub = mocker.AsyncMock()
+    js.pull_subscribe.side_effect = [ConnectionError("broker not ready"), fake_sub]
+
+    shutdown = anyio.Event()
+    msg = mocker.Mock()
+    msg.subject = "mcp.document.ready.t1"
+    msg.data = json.dumps({"doc_id": "d1", "content_hash": "h1"}).encode()
+    msg.ack = mocker.AsyncMock()
+
+    fetches = {"n": 0}
+
+    async def _fetch(*_a, **_k):
+        fetches["n"] += 1
+        if fetches["n"] == 1:
+            return [msg]
+        shutdown.set()  # stop the loop after the first batch is handled
+        return []
+
+    fake_sub.fetch.side_effect = _fetch
+
+    task_status = mocker.Mock()
+    subscriber = NatsStatusSubscriber(
+        nc=mocker.AsyncMock(), js=js, tenant_id="t1", store=store
+    )
+
+    await subscriber.run(shutdown, task_status=task_status)
+
+    # started() fires before any subscribe attempt and exactly once.
+    task_status.started.assert_called_once()
+    # The failed first subscribe was retried (two attempts total).
+    assert js.pull_subscribe.call_count == 2
+    # The message from the successful subscription was recorded + acked.
+    assert store.get("d1") == {
+        "state": "ready",
+        "content_hash": "h1",
+        "transitioned_at": None,
+    }
+    msg.ack.assert_awaited_once()
+
+
+async def test_run_resubscribes_after_fetch_error(mocker, monkeypatch):
+    """A non-timeout fetch error drops the subscription and re-subscribes."""
+    import anyio
+    import nats.errors
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(anyio, "sleep", _no_sleep)
+
+    store = StatusStore()
+    js = mocker.AsyncMock()
+    first_sub = mocker.AsyncMock()
+    second_sub = mocker.AsyncMock()
+    js.pull_subscribe.side_effect = [first_sub, second_sub]
+
+    shutdown = anyio.Event()
+
+    # first_sub.fetch raises a real broker error → re-subscribe.
+    first_sub.fetch.side_effect = ConnectionResetError("broker dropped")
+
+    # second_sub.fetch idles once (timeout) then stops the loop.
+    fetches = {"n": 0}
+
+    async def _second_fetch(*_a, **_k):
+        fetches["n"] += 1
+        if fetches["n"] == 1:
+            raise nats.errors.TimeoutError
+        shutdown.set()
+        return []
+
+    second_sub.fetch.side_effect = _second_fetch
+
+    subscriber = NatsStatusSubscriber(
+        nc=mocker.AsyncMock(), js=js, tenant_id="t1", store=store
+    )
+    await subscriber.run(shutdown)
+
+    # Re-subscribed after the fetch error (two subscriptions used).
+    assert js.pull_subscribe.call_count == 2
