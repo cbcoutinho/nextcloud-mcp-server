@@ -31,6 +31,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Send
 from starlette.types import Scope as StarletteScope
 
+from nextcloud_mcp_server.admin.payload_backfill import handle_payload_backfill
 from nextcloud_mcp_server.api import (
     create_webhook,
     delete_app_password,
@@ -132,7 +133,13 @@ from nextcloud_mcp_server.vector.oauth_sync import (
 from nextcloud_mcp_server.vector.placeholder import sweep_orphan_placeholders
 from nextcloud_mcp_server.vector.processor import processor_task
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
-from nextcloud_mcp_server.vector.scanner import scanner_task
+from nextcloud_mcp_server.vector.queue import (
+    MemoryTaskProducer,
+    TaskProducer,
+    build_external_producer,
+)
+from nextcloud_mcp_server.vector.queue.status import NatsStatusSubscriber, StatusStore
+from nextcloud_mcp_server.vector.scanner import DocumentTask, scanner_task
 from nextcloud_mcp_server.vector.webhook_receiver import handle_nextcloud_webhook
 
 logger = logging.getLogger(__name__)
@@ -324,6 +331,13 @@ class VectorSyncState:
 
     document_send_stream: MemoryObjectSendStream | None = None
     document_receive_stream: MemoryObjectReceiveStream | None = None
+    # Ingest producer the scanner/webhook send to: the in-memory send stream
+    # (local mode) or the NATS bus producer (external mode). The webhook reads
+    # this; in local mode it is the same object as document_send_stream.
+    task_producer: "TaskProducer | None" = None
+    # Bus status store (STATUS_BACKEND=bus): populated by the NATS status
+    # subscriber, read by the vector-sync status endpoint. None in local mode.
+    status_store: "StatusStore | None" = None
     shutdown_event: anyio.Event | None = None
     scanner_wake_event: anyio.Event | None = None
     # Long-lived task group used for fire-and-forget background work spawned
@@ -336,6 +350,33 @@ class VectorSyncState:
 _vector_sync_state = VectorSyncState()
 
 
+async def _build_status_subscriber(
+    settings: "Settings",
+) -> "tuple[StatusStore | None, NatsStatusSubscriber | None]":
+    """Build the bus status store + subscriber when STATUS_BACKEND=bus.
+
+    Returns ``(None, None)`` for local status (the status endpoint reads the
+    in-memory stream buffer instead). __post_init__ guarantees that bus status
+    only pairs with external ingest, so ingest_bus_url/tenant_id are set.
+    """
+    if not (settings.ingest_mode == "external" and settings.status_backend == "bus"):
+        return None, None
+    # Defence-in-depth (robust under ``python -O``, which strips asserts):
+    # __post_init__ already guarantees these when status_backend == "bus".
+    if settings.ingest_bus_url is None or settings.tenant_id is None:
+        raise ValueError(
+            "STATUS_BACKEND=bus requires INGEST_BUS_URL and TENANT_ID "
+            "(guaranteed by Settings validation)"
+        )
+    store = StatusStore(max_size=settings.vector_sync_queue_max_size)
+    subscriber = await NatsStatusSubscriber.connect(
+        url=settings.ingest_bus_url,
+        tenant_id=settings.tenant_id,
+        store=store,
+    )
+    return store, subscriber
+
+
 @dataclass
 class AppContext:
     """Application context for BasicAuth mode."""
@@ -344,6 +385,7 @@ class AppContext:
     storage: "RefreshTokenStorage | None" = None
     document_send_stream: MemoryObjectSendStream | None = None
     document_receive_stream: MemoryObjectReceiveStream | None = None
+    task_producer: "TaskProducer | None" = None
     shutdown_event: anyio.Event | None = None
     scanner_wake_event: anyio.Event | None = None
 
@@ -369,6 +411,7 @@ class OAuthAppContext:
     server_client_id: str | None = None  # MCP server's OAuth client ID (static or DCR)
     document_send_stream: MemoryObjectSendStream | None = None
     document_receive_stream: MemoryObjectReceiveStream | None = None
+    task_producer: "TaskProducer | None" = None
     shutdown_event: anyio.Event | None = None
     scanner_wake_event: anyio.Event | None = None
 
@@ -1082,9 +1125,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         and settings.vector_sync_enabled
         and settings.enable_background_operations
     ):
-        print(
-            f"DEBUG: Multi-user BasicAuth mode detected, vector_sync={settings.vector_sync_enabled}, background_operations={settings.enable_background_operations}"
-        )
         logger.info(
             "Multi-user BasicAuth with vector sync - checking for OAuth/app password credentials"
         )
@@ -1094,12 +1134,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         static_client_secret = os.getenv("NEXTCLOUD_OIDC_CLIENT_SECRET")
 
         if static_client_id and static_client_secret:
-            print("DEBUG: Using static OAuth credentials")
             logger.info("Using static OAuth credentials for background operations")
             multi_user_basic_oauth_creds = (static_client_id, static_client_secret)
         else:
             # Perform DCR before uvicorn starts (same lifecycle as OAuth modes)
-            print("DEBUG: No static credentials, attempting DCR...")
             logger.info(
                 "OAuth credentials not configured - attempting Dynamic Client Registration..."
             )
@@ -1643,22 +1681,47 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # Orphan-sweep before scanner starts — card #101.
             await _sweep_orphan_placeholders_if_enabled()
 
-            # Initialize shared state
-            send_stream, receive_stream = anyio.create_memory_object_stream(
-                max_buffer_size=settings.vector_sync_queue_max_size
-            )
+            # Initialize shared state. INGEST_MODE selects the transport
+            # (design §10.1): local uses the in-memory anyio stream + the
+            # in-process processor pool; external publishes to NATS and runs no
+            # in-process consumer (the document-processor consumes).
+            external = settings.ingest_mode == "external"
             shutdown_event = anyio.Event()
             scanner_wake_event = anyio.Event()
 
-            # Store in app state for access from routes (ADR-007)
+            send_stream = None
+            receive_stream = None
+            task_producer: TaskProducer
+            if external:
+                task_producer = await build_external_producer(settings)
+                logger.info(
+                    "Ingest mode external: publishing to %s", settings.ingest_bus_url
+                )
+            else:
+                send_stream, receive_stream = anyio.create_memory_object_stream[
+                    DocumentTask
+                ](max_buffer_size=settings.vector_sync_queue_max_size)
+                task_producer = MemoryTaskProducer(send_stream)
+
+            # Bus status backend: subscribe to mcp.document.* into a store the
+            # status endpoint reads (STATUS_BACKEND=bus; external mode only).
+            status_store, status_subscriber = await _build_status_subscriber(settings)
+
+            # Store in app state for access from routes (ADR-007). In external
+            # mode there is no in-memory stream, so document_send/receive_stream
+            # stay None; task_producer is the bus producer.
             app.state.document_send_stream = send_stream
             app.state.document_receive_stream = receive_stream
+            app.state.task_producer = task_producer
+            app.state.status_store = status_store
             app.state.shutdown_event = shutdown_event
             app.state.scanner_wake_event = scanner_wake_event
 
             # Also store in module singleton for FastMCP session lifespans
             _vector_sync_state.document_send_stream = send_stream
             _vector_sync_state.document_receive_stream = receive_stream
+            _vector_sync_state.task_producer = task_producer
+            _vector_sync_state.status_store = status_store
             _vector_sync_state.shutdown_event = shutdown_event
             _vector_sync_state.scanner_wake_event = scanner_wake_event
             logger.info("Vector sync state stored in module singleton")
@@ -1669,6 +1732,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     browser_app = cast(Starlette, route.app)
                     browser_app.state.document_send_stream = send_stream
                     browser_app.state.document_receive_stream = receive_stream
+                    browser_app.state.task_producer = task_producer
+                    browser_app.state.status_store = status_store
                     browser_app.state.shutdown_event = shutdown_event
                     browser_app.state.scanner_wake_event = scanner_wake_event
                     logger.info("Vector sync state shared with browser_app for /app")
@@ -1676,26 +1741,33 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
             # Start background tasks using anyio TaskGroup
             async with anyio.create_task_group() as tg:
-                # Start scanner task
+                # Start scanner task (publishes to task_producer)
                 await tg.start(
                     scanner_task,
-                    send_stream,
+                    task_producer,
                     shutdown_event,
                     scanner_wake_event,
                     client,
                     username,
                 )
 
-                # Start processor pool (each gets a cloned receive stream)
-                for i in range(settings.vector_sync_processor_workers):
-                    await tg.start(
-                        processor_task,
-                        i,
-                        receive_stream.clone(),
-                        shutdown_event,
-                        client,
-                        username,
-                    )
+                # The in-process processor pool runs only in local mode; in
+                # external mode the document-processor service is the consumer.
+                if not external:
+                    assert receive_stream is not None
+                    for i in range(settings.vector_sync_processor_workers):
+                        await tg.start(
+                            processor_task,
+                            i,
+                            receive_stream.clone(),
+                            shutdown_event,
+                            client,
+                            username,
+                        )
+
+                # Bus status subscriber (STATUS_BACKEND=bus).
+                if status_subscriber is not None:
+                    await tg.start(status_subscriber.run, shutdown_event)
 
                 # Expose this long-lived task group to request-path code that
                 # wants to spawn background work (e.g. ADR-019 verify-on-read
@@ -1704,8 +1776,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 _vector_sync_state.eviction_task_group = tg
 
                 logger.info(
-                    "Background sync tasks started: 1 scanner + %s processors",
-                    settings.vector_sync_processor_workers,
+                    "Background sync tasks started: 1 scanner + %s processors (ingest=%s)",
+                    0 if external else settings.vector_sync_processor_workers,
+                    settings.ingest_mode,
                 )
 
                 # Run MCP session manager and yield
@@ -1718,6 +1791,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         shutdown_event.set()
                         # Request path must not spawn into a cancelling group.
                         _vector_sync_state.eviction_task_group = None
+                        # Drain the shared bus connection (external mode only).
+                        _drain = getattr(task_producer, "drain", None)
+                        if external and _drain is not None:
+                            await _drain()
+                        if status_subscriber is not None:
+                            await status_subscriber.aclose()
                         await client.close()
                         # TaskGroup automatically cancels all tasks on exit
 
@@ -1825,25 +1904,51 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     except Exception as e:
                         logger.warning("App password cleanup failed (non-fatal): %s", e)
 
-                # Initialize shared state
-                send_stream, receive_stream = anyio.create_memory_object_stream(
-                    max_buffer_size=settings.vector_sync_queue_max_size
-                )
+                # Initialize shared state. INGEST_MODE selects the transport
+                # (design §10.1): local uses the in-memory anyio stream + the
+                # in-process processor pool; external publishes to NATS and runs
+                # no in-process consumer (the document-processor consumes).
+                external = settings.ingest_mode == "external"
                 shutdown_event = anyio.Event()
                 scanner_wake_event = anyio.Event()
 
                 # User state tracking for user manager
                 user_states: dict = {}
 
+                send_stream = None
+                receive_stream = None
+                task_producer: TaskProducer
+                if external:
+                    task_producer = await build_external_producer(settings)
+                    logger.info(
+                        "Ingest mode external: publishing to %s",
+                        settings.ingest_bus_url,
+                    )
+                else:
+                    send_stream, receive_stream = anyio.create_memory_object_stream[
+                        DocumentTask
+                    ](max_buffer_size=settings.vector_sync_queue_max_size)
+                    task_producer = MemoryTaskProducer(send_stream)
+
+                # Bus status backend: subscribe to mcp.document.* into a store
+                # the status endpoint reads (STATUS_BACKEND=bus; external only).
+                status_store, status_subscriber = await _build_status_subscriber(
+                    settings
+                )
+
                 # Store in app state for access from routes (ADR-007)
                 app.state.document_send_stream = send_stream
                 app.state.document_receive_stream = receive_stream
+                app.state.task_producer = task_producer
+                app.state.status_store = status_store
                 app.state.shutdown_event = shutdown_event
                 app.state.scanner_wake_event = scanner_wake_event
 
                 # Also store in module singleton for FastMCP session lifespans
                 _vector_sync_state.document_send_stream = send_stream
                 _vector_sync_state.document_receive_stream = receive_stream
+                _vector_sync_state.task_producer = task_producer
+                _vector_sync_state.status_store = status_store
                 _vector_sync_state.shutdown_event = shutdown_event
                 _vector_sync_state.scanner_wake_event = scanner_wake_event
                 logger.info("Vector sync state stored in module singleton")
@@ -1854,6 +1959,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         browser_app = cast(Starlette, route.app)
                         browser_app.state.document_send_stream = send_stream
                         browser_app.state.document_receive_stream = receive_stream
+                        browser_app.state.task_producer = task_producer
+                        browser_app.state.status_store = status_store
                         browser_app.state.shutdown_event = shutdown_event
                         browser_app.state.scanner_wake_event = scanner_wake_event
                         logger.info(
@@ -1870,10 +1977,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # `token_broker` constructed above is still used by the
                 # management API revoke endpoint (via app.state.oauth_context).
                 async with anyio.create_task_group() as tg:
-                    # Start user manager task (supervises per-user scanners)
+                    # Start user manager task (supervises per-user scanners).
+                    # Each per-user scanner clones task_producer; for the bus
+                    # producer clone() returns the shared connection.
                     await tg.start(
                         user_manager_task,
-                        send_stream,
+                        task_producer,
                         shutdown_event,
                         scanner_wake_event,
                         token_storage,
@@ -1882,15 +1991,22 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         tg,
                     )
 
-                    # Start processor pool (each gets a cloned receive stream)
-                    for i in range(settings.vector_sync_processor_workers):
-                        await tg.start(
-                            oauth_processor_task,
-                            i,
-                            receive_stream.clone(),
-                            shutdown_event,
-                            nextcloud_host_for_sync,
-                        )
+                    # In-process processor pool runs only in local mode; in
+                    # external mode the document-processor service consumes.
+                    if not external:
+                        assert receive_stream is not None
+                        for i in range(settings.vector_sync_processor_workers):
+                            await tg.start(
+                                oauth_processor_task,
+                                i,
+                                receive_stream.clone(),
+                                shutdown_event,
+                                nextcloud_host_for_sync,
+                            )
+
+                    # Bus status subscriber (STATUS_BACKEND=bus).
+                    if status_subscriber is not None:
+                        await tg.start(status_subscriber.run, shutdown_event)
 
                     # Expose this long-lived task group to request-path code
                     # that wants to spawn background work (e.g. ADR-019
@@ -1899,8 +2015,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     _vector_sync_state.eviction_task_group = tg
 
                     logger.info(
-                        "Background sync tasks started: 1 user manager + %s processors",
-                        settings.vector_sync_processor_workers,
+                        "Background sync tasks started: 1 user manager + %s processors (ingest=%s)",
+                        0 if external else settings.vector_sync_processor_workers,
+                        settings.ingest_mode,
                     )
 
                     # Run MCP session manager and yield
@@ -1913,6 +2030,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                             shutdown_event.set()
                             # Request path must not spawn into a cancelling group.
                             _vector_sync_state.eviction_task_group = None
+                            # Drain the shared bus connection (external only).
+                            _drain = getattr(task_producer, "drain", None)
+                            if external and _drain is not None:
+                                await _drain()
+                            if status_subscriber is not None:
+                                await status_subscriber.aclose()
                             # Close token broker HTTP client
                             if token_broker._http_client:
                                 await token_broker._http_client.aclose()
@@ -2114,6 +2237,15 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         settings.enable_multi_user_basic_auth and settings.enable_offline_access
     )
     if enable_authenticated_management_apis:
+        # Admin: one-shot payload backfill (design §10.2). Requires the `admin`
+        # scope (enforced inside the handler via require_admin_scope).
+        routes.append(
+            Route(
+                "/api/v1/admin/payload-backfill",
+                handle_payload_backfill,
+                methods=["POST"],
+            )
+        )
         routes.append(
             Route(
                 "/api/v1/users/{user_id}/session",

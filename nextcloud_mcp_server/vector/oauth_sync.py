@@ -24,16 +24,14 @@ from dataclasses import dataclass, field
 
 import anyio
 from anyio.abc import TaskGroup, TaskStatus
-from anyio.streams.memory import (
-    MemoryObjectReceiveStream,
-    MemoryObjectSendStream,
-)
+from anyio.streams.memory import MemoryObjectReceiveStream
 from httpx import BasicAuth, HTTPStatusError
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector.processor import process_document
+from nextcloud_mcp_server.vector.queue.ports import TaskProducer
 from nextcloud_mcp_server.vector.scanner import DocumentTask, scan_user_documents
 
 logger = logging.getLogger(__name__)
@@ -134,7 +132,7 @@ async def get_user_client_basic_auth(
 
 async def user_scanner_task(
     user_id: str,
-    send_stream: MemoryObjectSendStream[DocumentTask],
+    send_stream: TaskProducer,
     shutdown_event: anyio.Event,
     wake_event: anyio.Event,
     nextcloud_host: str,
@@ -363,7 +361,7 @@ oauth_processor_task = multi_user_processor_task
 async def _run_user_scanner_with_scope(
     user_id: str,
     cancel_scope: anyio.CancelScope,
-    send_stream: MemoryObjectSendStream[DocumentTask],
+    send_stream: TaskProducer,
     shutdown_event: anyio.Event,
     wake_event: anyio.Event,
     nextcloud_host: str,
@@ -391,7 +389,7 @@ async def _run_user_scanner_with_scope(
 
 
 async def user_manager_task(
-    send_stream: MemoryObjectSendStream[DocumentTask],
+    send_stream: TaskProducer,
     shutdown_event: anyio.Event,
     wake_event: anyio.Event,
     refresh_token_storage: "RefreshTokenStorage",

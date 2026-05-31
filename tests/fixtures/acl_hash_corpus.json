@@ -1,0 +1,285 @@
+{
+  "_comment": "Cross-impl ACL hash corpus (design §11.5). Pinned BLAKE2b-128 values; both repos must reproduce. Do not edit by hand.",
+  "cases": [
+    {
+      "name": "single_user_ascii",
+      "share_set": [
+        [
+          "user",
+          "alice"
+        ]
+      ],
+      "expected": [
+        "c63a5fa2d6df5c20ee3700dd85e39e1d"
+      ]
+    },
+    {
+      "name": "single_group",
+      "share_set": [
+        [
+          "group",
+          "admins"
+        ]
+      ],
+      "expected": [
+        "fe57bf2fd0682f713ff967073808b2c1"
+      ]
+    },
+    {
+      "name": "public_only",
+      "share_set": [
+        [
+          "public",
+          "public"
+        ]
+      ],
+      "expected": [
+        "97990046391027e6ec24575a3ebdd136"
+      ]
+    },
+    {
+      "name": "user_group_public",
+      "share_set": [
+        [
+          "user",
+          "alice"
+        ],
+        [
+          "group",
+          "admins"
+        ],
+        [
+          "public",
+          "public"
+        ]
+      ],
+      "expected": [
+        "c63a5fa2d6df5c20ee3700dd85e39e1d",
+        "fe57bf2fd0682f713ff967073808b2c1",
+        "97990046391027e6ec24575a3ebdd136"
+      ]
+    },
+    {
+      "name": "user_uppercase_distinct",
+      "share_set": [
+        [
+          "user",
+          "Alice"
+        ]
+      ],
+      "expected": [
+        "245e3e55068fbb623b397a8ca21b0126"
+      ]
+    },
+    {
+      "name": "unicode_precomposed",
+      "share_set": [
+        [
+          "user",
+          "café"
+        ]
+      ],
+      "expected": [
+        "053451c238fa2c6118b95b2ab2d7964a"
+      ]
+    },
+    {
+      "name": "unicode_decomposed_same_as_precomposed",
+      "share_set": [
+        [
+          "user",
+          "café"
+        ]
+      ],
+      "expected": [
+        "053451c238fa2c6118b95b2ab2d7964a"
+      ]
+    },
+    {
+      "name": "pipe_in_username",
+      "share_set": [
+        [
+          "user",
+          "a|b"
+        ]
+      ],
+      "expected": [
+        "a5f7e378a36ed9dd4e8e02007bca3624"
+      ]
+    },
+    {
+      "name": "colon_in_username",
+      "share_set": [
+        [
+          "user",
+          "a:b"
+        ]
+      ],
+      "expected": [
+        "7049ec93c0bf28a5f02a8527434dd0a0"
+      ]
+    },
+    {
+      "name": "newline_in_username",
+      "share_set": [
+        [
+          "user",
+          "a\nb"
+        ]
+      ],
+      "expected": [
+        "8e62aee620abaf9852e471d603cbe88b"
+      ]
+    },
+    {
+      "name": "backslash_in_username",
+      "share_set": [
+        [
+          "user",
+          "a\\b"
+        ]
+      ],
+      "expected": [
+        "c16a30d33ef2f834ebb642496206467e"
+      ]
+    },
+    {
+      "name": "quote_in_username",
+      "share_set": [
+        [
+          "user",
+          "a\"b"
+        ]
+      ],
+      "expected": [
+        "61405bcb3db7afd0fbf13693d2157bbb"
+      ]
+    },
+    {
+      "name": "space_in_group",
+      "share_set": [
+        [
+          "group",
+          "Dept 7"
+        ]
+      ],
+      "expected": [
+        "e80d92f6227d1ae64a8c8231491335d8"
+      ]
+    },
+    {
+      "name": "emoji_username",
+      "share_set": [
+        [
+          "user",
+          "🦏fox"
+        ]
+      ],
+      "expected": [
+        "52156572976858eec6361800b2f5ad03"
+      ]
+    },
+    {
+      "name": "cjk_group",
+      "share_set": [
+        [
+          "group",
+          "管理员"
+        ]
+      ],
+      "expected": [
+        "a3e5a6e8b405d5c749a031595309491c"
+      ]
+    },
+    {
+      "name": "email_style_user",
+      "share_set": [
+        [
+          "user",
+          "jane.doe@example.com"
+        ]
+      ],
+      "expected": [
+        "3216fecd6203036e6c23ff9c055031d9"
+      ]
+    },
+    {
+      "name": "numeric_group",
+      "share_set": [
+        [
+          "group",
+          "12345"
+        ]
+      ],
+      "expected": [
+        "1ae023f071c8d70bacdb388230fc2cfb"
+      ]
+    },
+    {
+      "name": "multi_group_large",
+      "share_set": [
+        [
+          "user",
+          "bob"
+        ],
+        [
+          "group",
+          "g1"
+        ],
+        [
+          "group",
+          "g2"
+        ],
+        [
+          "group",
+          "g3"
+        ],
+        [
+          "group",
+          "g4"
+        ],
+        [
+          "group",
+          "g5"
+        ]
+      ],
+      "expected": [
+        "830bb4f705bc0aa13929061db587b696",
+        "4eac98d1b59fec00e15e4fe28a32a3f9",
+        "2c76357c3f95284911f6be1a30d4850e",
+        "898271cc3d99563bf8dd396ef6c0f0b2",
+        "4704c80af47f56c566cf5b83f506e704",
+        "80bcc464007a51518f87876758c6ccf5"
+      ]
+    },
+    {
+      "name": "group_and_public",
+      "share_set": [
+        [
+          "group",
+          "staff"
+        ],
+        [
+          "public",
+          "public"
+        ]
+      ],
+      "expected": [
+        "b2d6c7e2a6bc94f2b0310492ac6316fc",
+        "97990046391027e6ec24575a3ebdd136"
+      ]
+    },
+    {
+      "name": "trailing_space_user_distinct",
+      "share_set": [
+        [
+          "user",
+          "alice "
+        ]
+      ],
+      "expected": [
+        "d7f07f4624e3e06b7f0b77f483e9941e"
+      ]
+    }
+  ]
+}

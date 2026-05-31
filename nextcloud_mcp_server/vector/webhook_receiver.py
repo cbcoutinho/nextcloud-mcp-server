@@ -41,8 +41,9 @@ def _warn_missing_secret_once() -> None:
 async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
     """Receive a Nextcloud webhook and queue a DocumentTask for vector sync.
 
-    Returns quickly so NC's webhook worker is not blocked. The send-stream is
-    read from ``request.app.state.document_send_stream``; when vector sync
+    Returns quickly so NC's webhook worker is not blocked. The task producer is
+    read from ``request.app.state.task_producer`` (the in-memory send stream in
+    local mode, or the NATS bus producer in external mode); when vector sync
     isn't running we return 503 so NC retries delivery.
 
     When ``WEBHOOK_SECRET`` is set, the request must carry
@@ -93,8 +94,8 @@ async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
             status_code=200,
         )
 
-    send_stream = getattr(request.app.state, "document_send_stream", None)
-    if send_stream is None:
+    producer = getattr(request.app.state, "task_producer", None)
+    if producer is None:
         logger.warning(
             "Webhook received but vector sync is not running; rejecting so NC retries"
         )
@@ -105,7 +106,7 @@ async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
 
     try:
         with anyio.fail_after(1.0):
-            await send_stream.send(task)
+            await producer.send(task)
     except TimeoutError:
         # Queue is saturated (default 10 000 tasks). Returning 503 lets NC
         # retry rather than pinning this handler until its outbound timeout

@@ -14,6 +14,7 @@ from anyio.streams.memory import MemoryObjectReceiveStream
 from httpx import HTTPStatusError
 from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
+from nextcloud_mcp_server.acl_hash import compute_acl_hash
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.document_processors import get_registry
@@ -25,6 +26,7 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.search.pdf_highlighter import PDFHighlighter
+from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.document_chunker import DocumentChunker
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
 from nextcloud_mcp_server.vector.placeholder import delete_placeholder_point
@@ -672,6 +674,15 @@ async def _index_document(
     indexed_at = int(time.time())
     points = []
 
+    # Decomposition payload keys (design §10.2) — written even in local mode so
+    # a future migration to the external processor is friction-free. Computed
+    # once per document (not per chunk). The local processor has no triage, so
+    # PIPELINE_TIER is "fast"; ACL hash records at least the owner principal
+    # (full share enumeration is a follow-up — a missing/partial acl_hash is
+    # safe because the query-side pre-filter only applies when present + enabled).
+    _embedding_identity = get_settings().get_embedding_model_name()
+    _acl_hash = compute_acl_hash([("user", doc_task.user_id)])
+
     # Surface deck card data quality issues at indexing time rather than
     # only at verification time (where _verify_deck_cards falls through to
     # legacy-data pass-through when board_id/stack_id are missing). This is
@@ -729,6 +740,12 @@ async def _index_document(
                     "chunk_start_offset": chunk.start_offset,
                     "chunk_end_offset": chunk.end_offset,
                     "metadata_version": 2,  # v2 includes position metadata
+                    # Decomposition payload keys (design §10.2), additive.
+                    payload_keys.PROCESSOR_VERSION: "monolith-v1",
+                    payload_keys.PARSED_AT: indexed_at,
+                    payload_keys.PIPELINE_TIER: "fast",
+                    payload_keys.EMBEDDING_IDENTITY: _embedding_identity,
+                    payload_keys.ACL_HASH: _acl_hash,
                     # File-specific metadata (PDF, etc.)
                     **(
                         {

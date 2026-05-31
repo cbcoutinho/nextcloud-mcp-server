@@ -42,7 +42,10 @@ def _make_app(send_stream=None) -> Starlette:
             Route("/webhooks/nextcloud", handle_nextcloud_webhook, methods=["POST"])
         ]
     )
+    # The webhook reads app.state.task_producer; a raw MemoryObjectSendStream
+    # satisfies the TaskProducer.send contract directly.
     app.state.document_send_stream = send_stream
+    app.state.task_producer = send_stream
     return app
 
 

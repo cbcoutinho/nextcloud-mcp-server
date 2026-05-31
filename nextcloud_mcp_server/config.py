@@ -161,6 +161,38 @@ _DEFAULTS: dict[str, Any] = {
     # Nextcloud system tag names. Files/folders carrying any of these tags
     # are hidden from WebDAV MCP tools. Empty = feature off.
     "excluded_tags": "",
+    # MCP decomposition hook points (design §10). Every default reproduces
+    # the current monolithic behavior; self-hosters who set none are
+    # unaffected. See docs/architecture/mcp-decomposition.md (sibling repo).
+    "embedding_provider": "autodetect",  # autodetect | gateway
+    "ingest_mode": "local",  # local | external
+    "status_backend": "local",  # local | bus
+    "collection_metadata_source": "qdrant",  # qdrant | api
+    # CP base URL for COLLECTION_METADATA_SOURCE=api (e.g. http://control-plane).
+    # Required only when the source is api.
+    "collection_metadata_api_url": None,
+    "fact_event_emitter": "none",  # none | nats | stdout
+    "ingest_bus_url": None,  # required when ingest_mode=external
+    "embedding_gateway_url": None,  # required when embedding_provider=gateway
+    # Logical model the gateway routes on (e.g. mistral-embed → Mistral for
+    # the MVP). Only consulted when embedding_provider=gateway.
+    "embedding_gateway_model": "mistral-embed",
+    # Gateway auth: the MCP server is an OIDC *client* in the gateway's own
+    # M2M realm (parallel to, and distinct from, the tenant realm it already
+    # serves). It obtains a client-credentials token and the gateway maps the
+    # client-id → the tenant's underlying provider API key. All four unset =
+    # call the gateway unauthenticated (matches today's not-yet-authed gateway).
+    "embedding_gateway_token_url": None,  # M2M token endpoint
+    "embedding_gateway_client_id": None,
+    "embedding_gateway_client_secret": None,
+    "embedding_gateway_scope": None,  # e.g. astrolabe-embedding-gateway/embed
+    "tenant_id": None,  # NATS per-tenant subject token (UUID form)
+    "ingest_bus_num_replicas": 1,  # JetStream stream replicas (prod: 3)
+    # Query-side ACL pre-filter (design §11). OFF by default: a Qdrant
+    # `match any` on `acl_hash` excludes points missing the key, so enabling
+    # this before a real ACL backfill would silently drop legacy results.
+    # verify-on-read remains the correctness backstop regardless.
+    "acl_prefilter_enabled": False,
 }
 
 
@@ -653,6 +685,26 @@ class Settings:
     # are hidden from WebDAV MCP tools.
     excluded_tags: str = ""
 
+    # MCP decomposition hook points (design §10, opt-in). All defaults
+    # reproduce the current monolith; validated in __post_init__.
+    embedding_provider: str = "autodetect"  # autodetect | gateway
+    ingest_mode: str = "local"  # local | external
+    status_backend: str = "local"  # local | bus
+    collection_metadata_source: str = "qdrant"  # qdrant | api
+    collection_metadata_api_url: str | None = None  # CP URL when source=api
+    fact_event_emitter: str = "none"  # none | nats | stdout
+    ingest_bus_url: str | None = None  # required when ingest_mode=external
+    embedding_gateway_url: str | None = None  # required when provider=gateway
+    embedding_gateway_model: str = "mistral-embed"  # logical model gateway routes
+    # Gateway M2M OIDC client creds (separate realm; see _DEFAULTS comment).
+    embedding_gateway_token_url: str | None = None
+    embedding_gateway_client_id: str | None = None
+    embedding_gateway_client_secret: str | None = None
+    embedding_gateway_scope: str | None = None
+    tenant_id: str | None = None  # NATS per-tenant subject token (UUID form)
+    ingest_bus_num_replicas: int = 1  # JetStream stream replicas (prod: 3)
+    acl_prefilter_enabled: bool = False  # query-side ACL pre-filter (§11); OFF
+
     def __post_init__(self):
         """Validate configuration and set defaults."""
         logger = logging.getLogger(__name__)
@@ -731,6 +783,84 @@ class Settings:
             logger.warning(
                 "DOCUMENT_CHUNK_SIZE is set to %s characters, which is quite small. Smaller chunks may lose context. Consider using at least 1024 characters.",
                 self.document_chunk_size,
+            )
+
+        # --- MCP decomposition hook points (design §10) ---
+        # Normalize + validate the opt-in enum settings. Defaults reproduce
+        # the monolith, so deployments that set none of these pass through.
+        _enum_fields = {
+            "embedding_provider": {"autodetect", "gateway"},
+            "ingest_mode": {"local", "external"},
+            "status_backend": {"local", "bus"},
+            "collection_metadata_source": {"qdrant", "api"},
+            "fact_event_emitter": {"none", "nats", "stdout"},
+        }
+        for _field, _allowed in _enum_fields.items():
+            _val = (getattr(self, _field) or "").strip().lower()
+            setattr(self, _field, _val)
+            if _val not in _allowed:
+                raise ValueError(
+                    f"{_field.upper()} must be one of {sorted(_allowed)}; got {_val!r}"
+                )
+
+        # Fail-fast: external ingest sources its status from the bus. With the
+        # in-process state machine empty, STATUS_BACKEND=local would leave
+        # status streams silently empty — crash loudly instead (design §10.1).
+        if self.status_backend == "local" and self.ingest_mode == "external":
+            raise RuntimeError(
+                "STATUS_BACKEND=local is incompatible with INGEST_MODE=external; "
+                "set STATUS_BACKEND=bus"
+            )
+
+        # Conditional-required settings for the active hook points.
+        if self.ingest_mode == "external":
+            if not self.ingest_bus_url:
+                raise ValueError("INGEST_BUS_URL is required when INGEST_MODE=external")
+            if not self.tenant_id:
+                raise ValueError("TENANT_ID is required when INGEST_MODE=external")
+        if self.embedding_provider == "gateway" and not self.embedding_gateway_url:
+            raise ValueError(
+                "EMBEDDING_GATEWAY_URL is required when EMBEDDING_PROVIDER=gateway"
+            )
+        if (
+            self.collection_metadata_source == "api"
+            and not self.collection_metadata_api_url
+        ):
+            raise ValueError(
+                "COLLECTION_METADATA_API_URL is required when "
+                "COLLECTION_METADATA_SOURCE=api"
+            )
+
+        # Gateway M2M OIDC creds are all-or-nothing: a partial set (e.g. a
+        # client_id with no token endpoint) is a misconfiguration that would
+        # silently fall back to unauthenticated calls. scope is optional.
+        _gw_creds = (
+            self.embedding_gateway_token_url,
+            self.embedding_gateway_client_id,
+            self.embedding_gateway_client_secret,
+        )
+        if any(_gw_creds) and not all(_gw_creds):
+            raise ValueError(
+                "EMBEDDING_GATEWAY_TOKEN_URL, EMBEDDING_GATEWAY_CLIENT_ID, and "
+                "EMBEDDING_GATEWAY_CLIENT_SECRET must be set together (M2M OIDC "
+                "client-credentials) or all left unset (unauthenticated gateway)"
+            )
+
+        # TENANT_ID is a NATS subject token; '.', '*', '>', and whitespace are
+        # reserved/illegal there and would silently break subscriptions (§3.4).
+        if self.tenant_id and (
+            any(c in self.tenant_id for c in ".*>")
+            or any(c.isspace() for c in self.tenant_id)
+        ):
+            raise ValueError(
+                "TENANT_ID must not contain '.', '*', '>', or whitespace "
+                "(it is used as a NATS subject token)"
+            )
+
+        if self.ingest_bus_num_replicas < 1:
+            raise ValueError(
+                f"INGEST_BUS_NUM_REPLICAS must be >= 1; "
+                f"got {self.ingest_bus_num_replicas}"
             )
 
         # --- ADR-022 follow-up: deployment mode is the single source of truth ---
@@ -1128,6 +1258,23 @@ def get_settings() -> Settings:
         "log_level": "LOG_LEVEL",
         "log_include_trace_context": "LOG_INCLUDE_TRACE_CONTEXT",
         "excluded_tags": "EXCLUDED_TAGS",
+        # MCP decomposition hook points (design §10)
+        "embedding_provider": "EMBEDDING_PROVIDER",
+        "ingest_mode": "INGEST_MODE",
+        "status_backend": "STATUS_BACKEND",
+        "collection_metadata_source": "COLLECTION_METADATA_SOURCE",
+        "collection_metadata_api_url": "COLLECTION_METADATA_API_URL",
+        "fact_event_emitter": "FACT_EVENT_EMITTER",
+        "ingest_bus_url": "INGEST_BUS_URL",
+        "embedding_gateway_url": "EMBEDDING_GATEWAY_URL",
+        "embedding_gateway_model": "EMBEDDING_GATEWAY_MODEL",
+        "embedding_gateway_token_url": "EMBEDDING_GATEWAY_TOKEN_URL",
+        "embedding_gateway_client_id": "EMBEDDING_GATEWAY_CLIENT_ID",
+        "embedding_gateway_client_secret": "EMBEDDING_GATEWAY_CLIENT_SECRET",
+        "embedding_gateway_scope": "EMBEDDING_GATEWAY_SCOPE",
+        "tenant_id": "TENANT_ID",
+        "ingest_bus_num_replicas": "INGEST_BUS_NUM_REPLICAS",
+        "acl_prefilter_enabled": "ACL_PREFILTER_ENABLED",
     }
 
     # Only pass values that dynaconf actually has; omit unset keys so
