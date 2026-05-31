@@ -13,6 +13,7 @@ from typing import cast
 
 import anyio
 from anyio.abc import TaskStatus
+from httpx import HTTPStatusError
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue, Record
 
@@ -323,164 +324,41 @@ async def scan_user_documents(
 
             logger.debug("Found %s indexed documents in Qdrant", len(indexed_doc_ids))
 
-        # Stream notes from Nextcloud and process immediately
-        note_count = 0
+        # Notes (isolated so an uninstalled or disabled Notes app — whose API
+        # returns 404 — cannot abort scanning of the other apps; this mirrors the
+        # per-app try/except guards already wrapping files/news/deck below).
+        settings = get_settings()
+        grace_period = settings.vector_sync_scan_interval * 1.5
+        current_time = time.time()
         queued = 0
-        nextcloud_doc_ids = set()
 
-        async for note in nc_client.notes.get_all_notes(prune_before=prune_before):
-            note_count += 1
-            doc_id = str(note["id"])
-            nextcloud_doc_ids.add(doc_id)
-            modified_at = note.get("modified", 0)
-
-            if initial_sync:
-                # Send everything on first sync - write placeholder first
-                await write_placeholder_point(
-                    doc_id=doc_id,
-                    doc_type="note",
-                    user_id=user_id,
-                    modified_at=modified_at,
-                    etag=note.get("etag", ""),
+        try:
+            queued += await scan_notes(
+                user_id=user_id,
+                send_stream=send_stream,
+                nc_client=nc_client,
+                initial_sync=initial_sync,
+                scan_id=scan_id,
+                prune_before=prune_before,
+                indexed_doc_ids=indexed_doc_ids,
+                grace_period=grace_period,
+                current_time=current_time,
+            )
+        except HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.info(
+                    "[SCAN-%s] Notes app unavailable for %s (HTTP 404); skipping notes",
+                    scan_id,
+                    user_id,
                 )
-                await send_stream.send(
-                    DocumentTask(
-                        user_id=user_id,
-                        doc_id=doc_id,
-                        doc_type="note",
-                        operation="index",
-                        modified_at=modified_at,
-                        etag=note.get("etag"),
-                    )
-                )
-                queued += 1
             else:
-                # Incremental sync: check if document exists and compare modified_at
-                # If document reappeared, remove from potentially_deleted
-                doc_key = (user_id, doc_id)
-                if doc_key in _potentially_deleted:
-                    logger.debug(
-                        "Document %s reappeared, removing from deletion grace period",
-                        doc_id,
-                    )
-                    del _potentially_deleted[doc_key]
-
-                # Query Qdrant for existing entry (placeholder or real)
-                existing_metadata = await query_document_metadata(
-                    doc_id=doc_id, doc_type="note", user_id=user_id
-                )
-
-                # Send if never indexed or modified since last index
-                # Compare against stored modified_at (not indexed_at!)
-                needs_indexing = False
-                if existing_metadata is None:
-                    # Never seen before
-                    needs_indexing = True
-                elif existing_metadata.get("modified_at", 0) < modified_at:
-                    # Document modified since last indexing
-                    needs_indexing = True
-                elif existing_metadata.get("is_placeholder", False):
-                    # Placeholder exists - check if it's stale (processing may have failed)
-                    # Only requeue if placeholder is older than 5x scan interval
-                    # (Large PDFs can take 3-4 minutes to process)
-                    queued_at = existing_metadata.get("queued_at", 0)
-                    placeholder_age = time.time() - queued_at
-                    stale_threshold = get_settings().vector_sync_scan_interval * 5
-                    if placeholder_age > stale_threshold:
-                        logger.debug(
-                            "Found stale placeholder for note %s (age=%ss), requeuing",
-                            doc_id,
-                            format(placeholder_age, ".1f"),
-                        )
-                        needs_indexing = True
-                    else:
-                        logger.debug(
-                            "Skipping note %s with recent placeholder (age=%ss < %ss)",
-                            doc_id,
-                            format(placeholder_age, ".1f"),
-                            format(stale_threshold, ".1f"),
-                        )
-
-                if needs_indexing:
-                    # Write placeholder before queuing
-                    await write_placeholder_point(
-                        doc_id=doc_id,
-                        doc_type="note",
-                        user_id=user_id,
-                        modified_at=modified_at,
-                        etag=note.get("etag", ""),
-                    )
-                    await send_stream.send(
-                        DocumentTask(
-                            user_id=user_id,
-                            doc_id=doc_id,
-                            doc_type="note",
-                            operation="index",
-                            modified_at=modified_at,
-                            etag=note.get("etag"),
-                        )
-                    )
-                    queued += 1
-
-        # Log and record metrics after streaming
-        logger.info("[SCAN-%s] Found %s notes for %s", scan_id, note_count, user_id)
-        record_vector_sync_scan(note_count)
+                logger.warning("Failed to scan notes for %s: %s", user_id, e)
+        except Exception as e:
+            logger.warning("Failed to scan notes for %s: %s", user_id, e)
 
         if initial_sync:
             logger.info("Sent %s documents for initial sync: %s", queued, user_id)
             return
-
-        # Check for deleted documents (in Qdrant but not in Nextcloud)
-        # Use grace period: only delete after 2 consecutive scans confirm absence
-        settings = get_settings()
-        grace_period = (
-            settings.vector_sync_scan_interval * 1.5
-        )  # Allow 1.5 scan intervals
-        current_time = time.time()
-
-        for doc_id in indexed_doc_ids:
-            if doc_id not in nextcloud_doc_ids:
-                doc_key = (user_id, doc_id)
-
-                if doc_key in _potentially_deleted:
-                    # Already marked as potentially deleted, check if grace period elapsed
-                    first_missing_time = _potentially_deleted[doc_key]
-                    time_missing = current_time - first_missing_time
-
-                    if time_missing >= grace_period:
-                        # Grace period elapsed, send for deletion
-                        logger.info(
-                            "Document %s missing for %ss (>%ss grace period), sending deletion",
-                            doc_id,
-                            format(time_missing, ".1f"),
-                            format(grace_period, ".1f"),
-                        )
-                        await send_stream.send(
-                            DocumentTask(
-                                user_id=user_id,
-                                doc_id=doc_id,
-                                doc_type="note",
-                                operation="delete",
-                                modified_at=0,
-                            )
-                        )
-                        queued += 1
-                        # Remove from tracking after sending deletion
-                        del _potentially_deleted[doc_key]
-                    else:
-                        logger.debug(
-                            "Document %s still missing (%ss/%ss grace period)",
-                            doc_id,
-                            format(time_missing, ".1f"),
-                            format(grace_period, ".1f"),
-                        )
-                else:
-                    # First time missing, add to grace period tracking
-                    logger.debug(
-                        "Document %s missing for first time, starting grace period",
-                        doc_id,
-                    )
-                    _potentially_deleted[doc_key] = current_time
 
         # Scan tagged PDF files (after notes)
         # Get indexed file IDs from Qdrant (for deletion tracking)
@@ -749,6 +627,181 @@ async def scan_user_documents(
             )
         else:
             logger.debug("No changes detected for %s", user_id)
+
+
+async def scan_notes(
+    user_id: str,
+    send_stream: TaskProducer,
+    nc_client: NextcloudClient,
+    initial_sync: bool,
+    scan_id: int,
+    prune_before: int | None,
+    indexed_doc_ids: set[str],
+    grace_period: float,
+    current_time: float,
+) -> int:
+    """Scan a user's Notes and queue changed notes for indexing.
+
+    Extracted into its own function (like scan_news_items / scan_deck_cards) so a
+    failure here -- e.g. the Notes API returning 404 because the app is not
+    installed -- propagates to the caller's per-app guard instead of aborting the
+    whole user scan. The deletion-tracking pass runs only after the Notes fetch
+    succeeds, so a failed fetch never mass-deletes a user's indexed notes.
+
+    Returns:
+        Number of notes queued for processing (index + delete operations).
+    """
+    # Stream notes from Nextcloud and process immediately
+    note_count = 0
+    queued = 0
+    nextcloud_doc_ids: set[str] = set()
+
+    async for note in nc_client.notes.get_all_notes(prune_before=prune_before):
+        note_count += 1
+        doc_id = str(note["id"])
+        nextcloud_doc_ids.add(doc_id)
+        modified_at = note.get("modified", 0)
+
+        if initial_sync:
+            # Send everything on first sync - write placeholder first
+            await write_placeholder_point(
+                doc_id=doc_id,
+                doc_type="note",
+                user_id=user_id,
+                modified_at=modified_at,
+                etag=note.get("etag", ""),
+            )
+            await send_stream.send(
+                DocumentTask(
+                    user_id=user_id,
+                    doc_id=doc_id,
+                    doc_type="note",
+                    operation="index",
+                    modified_at=modified_at,
+                )
+            )
+            queued += 1
+        else:
+            # Incremental sync: check if document exists and compare modified_at
+            # If document reappeared, remove from potentially_deleted
+            doc_key = (user_id, doc_id)
+            if doc_key in _potentially_deleted:
+                logger.debug(
+                    "Document %s reappeared, removing from deletion grace period",
+                    doc_id,
+                )
+                del _potentially_deleted[doc_key]
+
+            # Query Qdrant for existing entry (placeholder or real)
+            existing_metadata = await query_document_metadata(
+                doc_id=doc_id, doc_type="note", user_id=user_id
+            )
+
+            # Send if never indexed or modified since last index
+            # Compare against stored modified_at (not indexed_at!)
+            needs_indexing = False
+            if existing_metadata is None:
+                # Never seen before
+                needs_indexing = True
+            elif existing_metadata.get("modified_at", 0) < modified_at:
+                # Document modified since last indexing
+                needs_indexing = True
+            elif existing_metadata.get("is_placeholder", False):
+                # Placeholder exists - check if it's stale (processing may have failed)
+                # Only requeue if placeholder is older than 5x scan interval
+                # (Large PDFs can take 3-4 minutes to process)
+                queued_at = existing_metadata.get("queued_at", 0)
+                placeholder_age = time.time() - queued_at
+                stale_threshold = get_settings().vector_sync_scan_interval * 5
+                if placeholder_age > stale_threshold:
+                    logger.debug(
+                        "Found stale placeholder for note %s (age=%ss), requeuing",
+                        doc_id,
+                        format(placeholder_age, ".1f"),
+                    )
+                    needs_indexing = True
+                else:
+                    logger.debug(
+                        "Skipping note %s with recent placeholder (age=%ss < %ss)",
+                        doc_id,
+                        format(placeholder_age, ".1f"),
+                        format(stale_threshold, ".1f"),
+                    )
+
+            if needs_indexing:
+                # Write placeholder before queuing
+                await write_placeholder_point(
+                    doc_id=doc_id,
+                    doc_type="note",
+                    user_id=user_id,
+                    modified_at=modified_at,
+                    etag=note.get("etag", ""),
+                )
+                await send_stream.send(
+                    DocumentTask(
+                        user_id=user_id,
+                        doc_id=doc_id,
+                        doc_type="note",
+                        operation="index",
+                        modified_at=modified_at,
+                    )
+                )
+                queued += 1
+
+    # Log and record metrics after streaming
+    logger.info("[SCAN-%s] Found %s notes for %s", scan_id, note_count, user_id)
+    record_vector_sync_scan(note_count)
+
+    if initial_sync:
+        return queued
+
+    # Check for deleted documents (in Qdrant but not in Nextcloud)
+    # Use grace period: only delete after 2 consecutive scans confirm absence
+    for doc_id in indexed_doc_ids:
+        if doc_id not in nextcloud_doc_ids:
+            doc_key = (user_id, doc_id)
+
+            if doc_key in _potentially_deleted:
+                # Already marked as potentially deleted, check if grace period elapsed
+                first_missing_time = _potentially_deleted[doc_key]
+                time_missing = current_time - first_missing_time
+
+                if time_missing >= grace_period:
+                    # Grace period elapsed, send for deletion
+                    logger.info(
+                        "Document %s missing for %ss (>%ss grace period), sending deletion",
+                        doc_id,
+                        format(time_missing, ".1f"),
+                        format(grace_period, ".1f"),
+                    )
+                    await send_stream.send(
+                        DocumentTask(
+                            user_id=user_id,
+                            doc_id=doc_id,
+                            doc_type="note",
+                            operation="delete",
+                            modified_at=0,
+                        )
+                    )
+                    queued += 1
+                    # Remove from tracking after sending deletion
+                    del _potentially_deleted[doc_key]
+                else:
+                    logger.debug(
+                        "Document %s still missing (%ss/%ss grace period)",
+                        doc_id,
+                        format(time_missing, ".1f"),
+                        format(grace_period, ".1f"),
+                    )
+            else:
+                # First time missing, add to grace period tracking
+                logger.debug(
+                    "Document %s missing for first time, starting grace period",
+                    doc_id,
+                )
+                _potentially_deleted[doc_key] = current_time
+
+    return queued
 
 
 async def scan_news_items(
