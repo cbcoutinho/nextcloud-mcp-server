@@ -241,7 +241,7 @@ async def provision_app_password(request: Request) -> JSONResponse:
     # Parse optional scopes and the Nextcloud loginName from the request body
     # up front. Nextcloud authenticates app passwords against the *loginName*,
     # which can differ from the UID — e.g. OIDC-provisioned users whose UID is
-    # their display name (UID "Chris Coutinho", loginName "chris@coutinho.io").
+    # their display name (UID "Ada Lovelace", loginName "ada@example.com").
     # Use the loginName for the BasicAuth validation below, falling back to the
     # path user_id for legacy callers that don't send one (where UID ==
     # loginName).

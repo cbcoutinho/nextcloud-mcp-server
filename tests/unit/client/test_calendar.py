@@ -97,3 +97,48 @@ def test_password_takes_precedence_over_token(mocker):
     call_kwargs = mock_dav_client.call_args.kwargs
     assert call_kwargs["password"] == "app-pw"
     assert call_kwargs["auth_type"] == "basic"
+
+
+def test_auth_username_used_for_credential_uid_for_path(mocker):
+    """OIDC users: the loginName authenticates, the UID builds the DAV path.
+
+    Nextcloud keys app-password auth on the loginName (which can differ from
+    the UID), but ``/remote.php/dav/calendars/<uid>/`` must use the UID. The
+    two must not be conflated.
+    """
+    mock_dav_client = mocker.patch(
+        "nextcloud_mcp_server.client.calendar.AsyncDAVClient"
+    )
+
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    client = CalendarClient(
+        "https://cloud.example.org",
+        "Ada Lovelace",  # UID
+        auth_username="ada@example.com",  # loginName
+        password="app-pw-1234",
+    )
+
+    # Credential identity → loginName
+    assert mock_dav_client.call_args.kwargs["username"] == "ada@example.com"
+    # Path identity → UID
+    assert client.username == "Ada Lovelace"
+    assert (
+        client._calendar_home_url
+        == "https://cloud.example.org/remote.php/dav/calendars/Ada Lovelace/"
+    )
+
+
+def test_auth_username_defaults_to_username(mocker):
+    """Backwards compat: without ``auth_username`` the UID is used for both,
+    so single-user / OAuth callers (UID == loginName) are unchanged.
+    """
+    mock_dav_client = mocker.patch(
+        "nextcloud_mcp_server.client.calendar.AsyncDAVClient"
+    )
+
+    from nextcloud_mcp_server.client.calendar import CalendarClient
+
+    CalendarClient("https://cloud.example.org", "alice", password="app-pw")
+
+    assert mock_dav_client.call_args.kwargs["username"] == "alice"

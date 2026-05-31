@@ -112,20 +112,28 @@ async def get_user_client_basic_auth(
     if storage is None:
         storage = await _get_initialized_basic_auth_storage()
 
-    # Retrieve app password from local storage
-    app_password = await storage.get_app_password(user_id)
+    # Retrieve app password (and the stored Nextcloud loginName) from local
+    # storage. Nextcloud authenticates app passwords against the loginName,
+    # which differs from the UID for OIDC-provisioned users; authenticate as
+    # the loginName while keeping the UID for DAV/API path construction. Falls
+    # back to the UID for legacy rows stored without a loginName.
+    app_data = await storage.get_app_password_with_scopes(user_id)
 
-    if not app_password:
+    if not app_data:
         raise NotProvisionedError(
             f"User {user_id} has not provisioned an app password. "
             f"User must configure background sync in Astrolabe personal settings."
         )
 
+    app_password = app_data["app_password"]
+    login_name = app_data.get("username") or user_id
+
     logger.info("Using app password for background sync: %s", user_id)
     return NextcloudClient(
         base_url=nextcloud_host,
         username=user_id,
-        auth=BasicAuth(user_id, app_password),
+        auth_username=login_name,
+        auth=BasicAuth(login_name, app_password),
         password=app_password,
     )
 

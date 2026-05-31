@@ -102,10 +102,21 @@ class NextcloudClient:
         username: str,
         auth: Auth | None = None,
         *,
+        auth_username: str | None = None,
         password: str | None = None,
         token: str | None = None,
     ):
+        # ``username`` is the Nextcloud UID — it drives DAV/API path
+        # construction (e.g. ``/remote.php/dav/files/<uid>/``). ``auth_username``
+        # is the credential identity Nextcloud authenticates the app password
+        # against (the loginName), which differs from the UID for
+        # OIDC-provisioned users. Defaults to ``username`` so single-user and
+        # OAuth modes (where UID == loginName) are unchanged. Callers pass the
+        # matching ``auth=BasicAuth(auth_username, ...)`` for the httpx leg;
+        # ``auth_username`` is threaded to the CalDAV client, which builds its
+        # own auth object from the raw credential.
         self.username = username
+        auth_username = auth_username or username
         self._client = AsyncClient(
             base_url=base_url,
             auth=auth,
@@ -122,7 +133,11 @@ class NextcloudClient:
         # its preferred backend in v3.x) builds a backend-compatible auth object
         # itself — passing httpx.BasicAuth here breaks under niquests (#731).
         self.calendar = CalendarClient(
-            base_url, username, password=password, token=token
+            base_url,
+            username,
+            auth_username=auth_username,
+            password=password,
+            token=token,
         )
         self.contacts = ContactsClient(self._client, username)
         self.cookbook = CookbookClient(self._client, username)

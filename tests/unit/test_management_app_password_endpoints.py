@@ -257,7 +257,7 @@ async def test_provision_app_password_success(temp_storage, mocker):
 async def test_provision_app_password_uses_loginname_not_uid(temp_storage, mocker):
     """Regression: when the Nextcloud UID differs from the loginName (e.g.
     OIDC-provisioned users whose UID is their display name — UID
-    "Chris Coutinho", loginName "chris@coutinho.io"), the OCS BasicAuth
+    "Ada Lovelace", loginName "ada@example.com"), the OCS BasicAuth
     validation must authenticate as the loginName from the request body, not
     the UID. Authenticating as the UID is rejected by Nextcloud with HTTP 401.
     """
@@ -273,7 +273,7 @@ async def test_provision_app_password_uses_loginname_not_uid(temp_storage, mocke
     # OCS validation succeeds and reports the UID as the account id.
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"ocs": {"data": {"id": "Chris Coutinho"}}}
+    mock_response.json.return_value = {"ocs": {"data": {"id": "Ada Lovelace"}}}
 
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(return_value=mock_response)
@@ -291,9 +291,9 @@ async def test_provision_app_password_uses_loginname_not_uid(temp_storage, mocke
     # A literal space in the path is encoded by the client and decoded back to
     # the UID; the BasicAuth username matches that UID.
     response = client.post(
-        "/api/v1/users/Chris Coutinho/app-password",
-        headers={"Authorization": create_basic_auth_header("Chris Coutinho", pw)},
-        json={"username": "chris@coutinho.io"},
+        "/api/v1/users/Ada Lovelace/app-password",
+        headers={"Authorization": create_basic_auth_header("Ada Lovelace", pw)},
+        json={"username": "ada@example.com"},
     )
 
     assert response.status_code == 200
@@ -301,10 +301,10 @@ async def test_provision_app_password_uses_loginname_not_uid(temp_storage, mocke
 
     # The OCS BasicAuth used the loginName from the body, not the UID.
     _, get_kwargs = mock_client.get.call_args
-    assert get_kwargs["auth"] == ("chris@coutinho.io", pw)
+    assert get_kwargs["auth"] == ("ada@example.com", pw)
 
     # Stored under the UID (the identity key).
-    assert await temp_storage.get_app_password("Chris Coutinho") == pw
+    assert await temp_storage.get_app_password("Ada Lovelace") == pw
 
 
 async def test_provision_app_password_nextcloud_validation_fails(mocker):
