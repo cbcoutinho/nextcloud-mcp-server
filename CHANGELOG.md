@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.91.0 (2026-05-31)
+
+### Feat
+
+- add opt-in MCP decomposition hook points (design §10)
+
+### Fix
+
+- stop S7632 flagging NOSONAR mentioned in prose comments
+- well-form NOSONAR suppressions (SonarCloud S7632/S7503)
+- address PR #814 reviewer follow-ups
+- address PR #814 review + SonarCloud gate
+
 ## v0.90.2 (2026-05-30)
 
 ### Fix
