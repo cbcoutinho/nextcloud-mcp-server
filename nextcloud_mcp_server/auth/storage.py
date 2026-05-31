@@ -2130,14 +2130,22 @@ class RefreshTokenStorage:
         removed: list[str] = []
 
         async def _validate_user(user_id: str) -> None:
-            app_password = await self.get_app_password(user_id)
-            if not app_password:
-                return
-
             try:
+                app_data = await self.get_app_password_with_scopes(user_id)
+                if not app_data:
+                    return
+
+                app_password = app_data["app_password"]
+                # Authenticate as the stored loginName, not the UID: Nextcloud
+                # keys app-password auth on the loginName, which differs from
+                # the UID for OIDC-provisioned users. Using the UID here would
+                # 401 a *valid* password and wrongly delete it. Falls back to
+                # the UID for legacy rows without a stored loginName.
+                login_name = app_data.get("username") or user_id
+
                 async with httpx.AsyncClient(
                     base_url=nextcloud_host,
-                    auth=httpx.BasicAuth(user_id, app_password),
+                    auth=httpx.BasicAuth(login_name, app_password),
                     timeout=10.0,
                 ) as client:
                     response = await client.get(

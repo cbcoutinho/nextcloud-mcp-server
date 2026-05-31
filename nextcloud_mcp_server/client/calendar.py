@@ -42,6 +42,7 @@ class CalendarClient:
         base_url: str,
         username: str,
         *,
+        auth_username: str | None = None,
         password: str | None = None,
         token: str | None = None,
     ):
@@ -55,7 +56,10 @@ class CalendarClient:
 
         Args:
             base_url: Nextcloud base URL
-            username: Nextcloud username
+            username: Nextcloud username (UID) — used for DAV path construction
+            auth_username: Credential identity (loginName) the app password
+                authenticates against; defaults to ``username``. Differs from
+                the UID for OIDC-provisioned users.
             password: App password / login password — selects ``auth_type="basic"``
             token: OAuth bearer token — selects ``auth_type="bearer"``
 
@@ -64,6 +68,11 @@ class CalendarClient:
         """
         self.username = username
         self.base_url = base_url
+        # The UID (``username``) drives DAV path construction; the loginName
+        # (``auth_username``) is the credential the app password authenticates
+        # against. They differ for OIDC-provisioned users. Defaults to the UID
+        # so existing single-user / OAuth callers are unchanged.
+        auth_username = auth_username or username
 
         auth_kwargs: dict[str, Any] = {}
         if password is not None:
@@ -74,7 +83,7 @@ class CalendarClient:
         # AsyncDAVClient needs the full base URL for proper URL construction
         self._dav_client = AsyncDAVClient(
             url=f"{base_url}/remote.php/dav/",
-            username=username,
+            username=auth_username,
             ssl_verify_cert=get_nextcloud_ssl_verify(),  # type: ignore[arg-type]  # caldav types say bool|str but passes through to niquests which accepts SSLContext
             **auth_kwargs,
         )

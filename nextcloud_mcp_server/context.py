@@ -191,13 +191,27 @@ async def _get_client_from_login_flow(
             "Call nc_auth_provision_access to complete Login Flow."
         )
 
-    username = app_data.get("username") or user_id
+    # Authenticate with the stored Nextcloud loginName, but build DAV/API paths
+    # with ``user_id`` — the identity the rest of the system is keyed on (the
+    # app-password store, vector payloads, scopes, and the background-sync
+    # ``get_user_client_basic_auth`` all use it). For OIDC-provisioned users the
+    # loginName (e.g. an email) differs from this identity, and Nextcloud
+    # authenticates app passwords against the loginName. Falls back to
+    # ``user_id`` for legacy rows stored without a loginName.
+    login_name = app_data.get("username") or user_id
+    app_password = app_data["app_password"]
 
-    logger.debug("Creating Login Flow v2 client for %s as %s", nextcloud_host, username)
+    logger.debug(
+        "Creating Login Flow v2 client for %s (id=%s, login=%s)",
+        nextcloud_host,
+        user_id,
+        login_name,
+    )
 
     return NextcloudClient(
         base_url=nextcloud_host,
-        username=username,
-        auth=BasicAuth(username, app_data["app_password"]),
-        password=app_data["app_password"],
+        username=user_id,
+        auth_username=login_name,
+        auth=BasicAuth(login_name, app_password),
+        password=app_password,
     )
