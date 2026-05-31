@@ -126,6 +126,9 @@ class NatsStatusSubscriber:
     ) -> NatsStatusSubscriber:
         import nats  # noqa: PLC0415
 
+        from .nats import warn_if_insecure_nats_url  # noqa: PLC0415
+
+        warn_if_insecure_nats_url(url)
         nc = await nats.connect(url)
         js = nc.jetstream()
         return cls(nc, js, tenant_id, store)
@@ -138,6 +141,7 @@ class NatsStatusSubscriber:
     ) -> None:
         """Durable pull-consumer loop. Requires a live broker (integration)."""
         import anyio  # noqa: PLC0415
+        import nats.errors  # noqa: PLC0415
 
         subject = f"mcp.document.*.{self.tenant_id}"
         sub = await self._js.pull_subscribe(
@@ -148,10 +152,17 @@ class NatsStatusSubscriber:
         while not shutdown_event.is_set():
             try:
                 msgs = await sub.fetch(batch=16, timeout=5)
+            except nats.errors.TimeoutError:
+                # Expected when idle: no messages within the fetch window. Loop
+                # straight back to re-check shutdown — no log, no extra sleep.
+                continue
             except Exception:
-                # fetch timeout when idle — brief pause before re-checking
-                # shutdown, avoiding a tight check-and-sleep spin on quiet tenants.
-                await anyio.sleep(0.1)
+                # Real broker error (disconnect, auth failure, stream deleted).
+                # Log it and back off so we don't hot-spin against a dead broker.
+                logger.warning(
+                    "NATS status subscriber fetch failed; retrying", exc_info=True
+                )
+                await anyio.sleep(5)
                 continue
             for msg in msgs:
                 self.handle_message(msg.subject, msg.data)

@@ -70,6 +70,29 @@ async def test_api_source(mocker):
     assert meta["embedding_identity"] == "amazon.titan-embed-text-v2:0"
 
 
+async def test_api_source_uses_shared_http_client():
+    """When a caller passes http_client, the read reuses it (no own client)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/qdrant-collections/col/metadata"
+        return httpx.Response(200, json={"embedding_identity": "mistral-embed"})
+
+    shared = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    async with shared:
+        meta = await cm._read_from_api("https://cp", "col", client=shared)
+    assert meta["embedding_identity"] == "mistral-embed"
+
+
+async def test_api_missing_url_falls_back_to_env(mocker):
+    """COLLECTION_METADATA_SOURCE=api with no URL must not crash the query path."""
+    # Bypass Settings validation to simulate a -O / mutated-state edge case.
+    settings = Settings()
+    settings.collection_metadata_source = "api"
+    settings.collection_metadata_api_url = None
+    meta = await cm.read_collection_metadata(mocker.AsyncMock(), "col", settings)
+    assert meta == cm.env_default_metadata(settings)
+
+
 async def test_upsert_sentinel_builds_point(mocker):
     client = mocker.AsyncMock()
     await cm.upsert_sentinel(

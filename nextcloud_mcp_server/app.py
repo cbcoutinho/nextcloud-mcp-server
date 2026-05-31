@@ -361,8 +361,13 @@ async def _build_status_subscriber(
     """
     if not (settings.ingest_mode == "external" and settings.status_backend == "bus"):
         return None, None
-    assert settings.ingest_bus_url is not None
-    assert settings.tenant_id is not None
+    # Defence-in-depth (robust under ``python -O``, which strips asserts):
+    # __post_init__ already guarantees these when status_backend == "bus".
+    if settings.ingest_bus_url is None or settings.tenant_id is None:
+        raise ValueError(
+            "STATUS_BACKEND=bus requires INGEST_BUS_URL and TENANT_ID "
+            "(guaranteed by Settings validation)"
+        )
     store = StatusStore(max_size=settings.vector_sync_queue_max_size)
     subscriber = await NatsStatusSubscriber.connect(
         url=settings.ingest_bus_url,

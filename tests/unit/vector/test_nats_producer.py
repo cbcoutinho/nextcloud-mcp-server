@@ -12,6 +12,7 @@ from nextcloud_mcp_server.vector.queue.nats import (
     NatsTaskProducer,
     _modified_at_rfc3339,
     msg_id,
+    warn_if_insecure_nats_url,
 )
 from nextcloud_mcp_server.vector.queue.postgres import PostgresTaskProducer
 from nextcloud_mcp_server.vector.scanner import DocumentTask
@@ -134,3 +135,21 @@ def test_transport_for(url, expected):
 async def test_postgres_producer_is_a_seam():
     with pytest.raises(NotImplementedError, match="documented seam"):
         await PostgresTaskProducer.connect(object())
+
+
+@pytest.mark.parametrize(
+    "url,should_warn",
+    [
+        ("nats://nats:4222", True),
+        ("ws://nats:8080", True),
+        ("tls://nats:4222", False),
+        ("wss://nats:8080", False),
+    ],
+)
+def test_warn_if_insecure_nats_url(url, should_warn, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        warn_if_insecure_nats_url(url)
+    warned = any("unencrypted transport" in r.getMessage() for r in caplog.records)
+    assert warned is should_warn

@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 # Deterministic sentinel point id (design §10.1). Carries collection metadata
 # and never matches a search (no user_id/doc_id/doc_type payload to match).
+# The nil UUID is used deliberately: real chunk point ids are UUID5s derived
+# from (namespace, doc_id, chunk_index), so the all-zero id can never collide
+# with a content point — and it is trivially recognisable in Qdrant's UI.
 SENTINEL_POINT_ID = "00000000-0000-0000-0000-000000000000"
 
 # Sentinel payload keys.
@@ -112,29 +115,67 @@ async def _read_from_qdrant(
     }
 
 
-async def _read_from_api(api_url: str, collection_name: str) -> dict[str, Any] | None:
+async def _read_from_api(
+    api_url: str,
+    collection_name: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, Any] | None:
+    """GET the control-plane metadata for a collection.
+
+    ``client`` lets the caller pass a shared, lifespan-managed
+    :class:`httpx.AsyncClient`; when omitted we create a short-lived one.
+
+    Auth note: the control-plane metadata endpoint is currently unauthenticated
+    (read-only collection identity, no tenant secrets), matching the gateway's
+    present state. When the control plane gains M2M auth this should reuse the
+    same OIDC credentials as ``GatewayTokenProvider`` (design §10.2).
+    """
     url = f"{api_url.rstrip('/')}/v1/qdrant-collections/{collection_name}/metadata"
-    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
-        resp = await client.get(url)
+
+    async def _do(c: httpx.AsyncClient) -> dict[str, Any] | None:
+        resp = await c.get(url)
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
         return resp.json()
+
+    if client is not None:
+        return await _do(client)
+    # httpx verifies TLS by default (verify=True); stated here to be explicit.
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(10.0, connect=5.0), verify=True
+    ) as owned:
+        return await _do(owned)
 
 
 async def read_collection_metadata(
     client: AsyncQdrantClient,
     collection_name: str,
     settings: Settings | None = None,
+    *,
+    http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Read collection metadata from the configured source, falling back to env
-    defaults on any miss/error (preserves query availability — §10.1)."""
+    defaults on any miss/error (preserves query availability — §10.1).
+
+    ``http_client`` is forwarded to the ``api`` source so callers on the query
+    path can share a lifespan-managed client instead of opening one per read.
+    """
     s = settings or get_settings()
     meta: dict[str, Any] | None = None
     try:
         if s.collection_metadata_source == "api":
-            assert s.collection_metadata_api_url is not None
-            meta = await _read_from_api(s.collection_metadata_api_url, collection_name)
+            # Defence-in-depth (robust under ``python -O``): __post_init__
+            # guarantees the URL when COLLECTION_METADATA_SOURCE=api.
+            if s.collection_metadata_api_url is None:
+                raise ValueError(
+                    "COLLECTION_METADATA_SOURCE=api requires "
+                    "COLLECTION_METADATA_API_URL"
+                )
+            meta = await _read_from_api(
+                s.collection_metadata_api_url, collection_name, client=http_client
+            )
         else:
             meta = await _read_from_qdrant(client, collection_name)
     except Exception:

@@ -29,6 +29,22 @@ STREAM_NAME = "mcp"
 INGEST_SUBJECT_PREFIX = "mcp.ingest.requested"
 
 
+def warn_if_insecure_nats_url(url: str) -> None:
+    """Log a warning when the bus URL is not TLS-encrypted.
+
+    ``nats://`` (and ``ws://``) carry tenant document metadata in cleartext;
+    production deployments should use ``tls://`` (or ``wss://``). We connect
+    regardless — this is an operator alert, not a hard failure.
+    """
+    scheme = url.split("://", 1)[0].lower()
+    if scheme not in ("tls", "wss"):
+        logger.warning(
+            "NATS bus URL uses unencrypted transport (scheme=%s://); "
+            "use tls:// in production to protect document metadata in transit",
+            scheme,
+        )
+
+
 def _modified_at_rfc3339(modified_at: int) -> str:
     """DocumentTask.modified_at is an epoch int (0 for deletes)."""
     return datetime.fromtimestamp(int(modified_at), tz=timezone.utc).isoformat()
@@ -74,6 +90,7 @@ class NatsTaskProducer:
     ) -> NatsTaskProducer:
         import nats  # noqa: PLC0415  (lazy: optional dependency for external mode)
 
+        warn_if_insecure_nats_url(url)
         nc = await nats.connect(url)
         js = nc.jetstream()
         await cls._ensure_stream(js, num_replicas)

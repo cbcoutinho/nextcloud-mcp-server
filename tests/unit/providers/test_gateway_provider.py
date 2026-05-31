@@ -116,3 +116,47 @@ async def test_token_provider_caches_and_refreshes(monkeypatch):
     t3 = await tp.get_token()
     assert t3 == "tok2"
     assert calls["n"] == 2
+
+
+async def test_token_provider_concurrent_callers_issue_single_request(monkeypatch):
+    """Two concurrent get_token() calls must share one token request, not race."""
+    import anyio
+
+    calls = {"n": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        # Hold the "network" open so a second caller arrives mid-flight.
+        await anyio.sleep(0.05)
+        return httpx.Response(
+            200, json={"access_token": f"tok{calls['n']}", "expires_in": 3600}
+        )
+
+    transport = httpx.MockTransport(handler)
+    orig_async_client = httpx.AsyncClient
+
+    def _client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return orig_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _client)
+
+    tp = GatewayTokenProvider(
+        token_url="https://idp.example/oauth2/token",
+        client_id="cid",
+        client_secret="sec",
+    )
+
+    results: list[str] = []
+
+    async def _fetch():
+        results.append(await tp.get_token())
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(_fetch)
+        tg.start_soon(_fetch)
+
+    # The lock serialises the check-then-fetch cycle: only one HTTP request,
+    # and both callers observe the same cached token.
+    assert calls["n"] == 1
+    assert results == ["tok1", "tok1"]

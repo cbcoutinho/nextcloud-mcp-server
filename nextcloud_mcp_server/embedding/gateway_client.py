@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import time
 
+import anyio
 import httpx
 
 from ..providers.openai import OpenAIProvider
@@ -63,37 +64,48 @@ class GatewayTokenProvider:
         self.scope = scope
         self.timeout = timeout
         self._cache: tuple[str, float] | None = None  # (token, expires_at)
+        # Serialises the check-then-fetch cycle so concurrent embed calls don't
+        # each issue a token request (and silently discard all-but-one token).
+        # Lazy-init: anyio primitives must not be created at import time (trio).
+        self._lock: anyio.Lock | None = None
 
     async def get_token(self, *, force_refresh: bool = False) -> str:
-        if (
-            self._cache is not None
-            and not force_refresh
-            and time.time() < self._cache[1]
-        ):
-            return self._cache[0]
+        if self._lock is None:
+            self._lock = anyio.Lock()
+        async with self._lock:
+            # Re-check inside the lock: a concurrent caller may have just
+            # refreshed the cache while we waited to acquire it.
+            if (
+                self._cache is not None
+                and not force_refresh
+                and time.time() < self._cache[1]
+            ):
+                return self._cache[0]
 
-        data = {"grant_type": "client_credentials"}
-        if self.scope:
-            data["scope"] = self.scope
+            data = {"grant_type": "client_credentials"}
+            if self.scope:
+                data["scope"] = self.scope
 
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(self.timeout, connect=5.0)
-        ) as client:
-            resp = await client.post(
-                self.token_url,
-                data=data,
-                auth=(self.client_id, self.client_secret),
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(self.timeout, connect=5.0)
+            ) as client:
+                resp = await client.post(
+                    self.token_url,
+                    data=data,
+                    auth=(self.client_id, self.client_secret),
+                )
+                resp.raise_for_status()
+                body = resp.json()
+
+            expires_in = body.get("expires_in", 3600)
+            self._cache = (
+                body["access_token"],
+                time.time() + expires_in - _EARLY_REFRESH_SECONDS,
             )
-            resp.raise_for_status()
-            body = resp.json()
-
-        expires_in = body.get("expires_in", 3600)
-        self._cache = (
-            body["access_token"],
-            time.time() + expires_in - _EARLY_REFRESH_SECONDS,
-        )
-        logger.info("Obtained embedding-gateway M2M token (expires in %ss)", expires_in)
-        return self._cache[0]
+            logger.info(
+                "Obtained embedding-gateway M2M token (expires in %ss)", expires_in
+            )
+            return self._cache[0]
 
 
 class GatewayProvider(OpenAIProvider):
