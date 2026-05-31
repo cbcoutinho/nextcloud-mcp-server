@@ -45,5 +45,8 @@ class PostgresTaskProducer:
     ) -> None:  # pragma: no cover
         return None
 
-    async def aclose(self) -> None:  # pragma: no cover  # NOSONAR: protocol stub
+    # Bare ``# NOSONAR`` silences ``python:S7503`` (async method without await):
+    # ``async def`` is required by the TaskProducer protocol; this stub is a
+    # no-op until the Postgres transport lands.
+    async def aclose(self) -> None:  # NOSONAR  # pragma: no cover
         return None
