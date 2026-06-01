@@ -353,3 +353,71 @@ async def test_deck_card_comment_message_too_long_mcp(
         {"card_id": card_id, "message": too_long},
     )
     assert result.isError is True, "Expected validation error for >1000 char message"
+
+
+# Compact retrieval (summary projection + board overview)
+
+
+async def test_deck_get_stacks_summary_default_omits_full_card_fields_mcp(
+    nc_mcp_client: ClientSession, temporary_board_with_card: tuple
+):
+    """deck_get_stacks defaults to compact summaries: the card row carries
+    title/labels but not the heavy full-card fields (owner/type/etag)."""
+    board_data, stack_data, card_data = temporary_board_with_card
+    board_id = board_data["id"]
+
+    result = await nc_mcp_client.call_tool("deck_get_stacks", {"board_id": board_id})
+    assert result.isError is False, f"deck_get_stacks failed: {result.content}"
+    payload = json.loads(result.content[0].text)
+
+    cards = [c for stack in payload["stacks"] for c in (stack.get("cards") or [])]
+    card = next(c for c in cards if c["id"] == card_data["id"])
+    # Summary fields present...
+    assert card["title"] == card_data["title"]
+    assert "hasDescription" in card
+    assert "labels" in card and isinstance(card["labels"], list)
+    # ...heavy full-card fields absent.
+    assert "owner" not in card
+    assert "type" not in card
+
+
+async def test_deck_get_stacks_detail_full_keeps_card_fields_mcp(
+    nc_mcp_client: ClientSession, temporary_board_with_card: tuple
+):
+    """detail="full" restores the complete card objects (owner/type present)."""
+    board_data, _, card_data = temporary_board_with_card
+    board_id = board_data["id"]
+
+    result = await nc_mcp_client.call_tool(
+        "deck_get_stacks", {"board_id": board_id, "detail": "full"}
+    )
+    assert result.isError is False, f"deck_get_stacks(full) failed: {result.content}"
+    payload = json.loads(result.content[0].text)
+
+    cards = [c for stack in payload["stacks"] for c in (stack.get("cards") or [])]
+    card = next(c for c in cards if c["id"] == card_data["id"])
+    assert "owner" in card
+    assert "type" in card
+
+
+async def test_deck_get_board_overview_mcp(
+    nc_mcp_client: ClientSession, temporary_board_with_card: tuple
+):
+    """deck_get_board_overview returns board title + stacks with compact rows."""
+    board_data, stack_data, card_data = temporary_board_with_card
+    board_id = board_data["id"]
+
+    result = await nc_mcp_client.call_tool(
+        "deck_get_board_overview", {"board_id": board_id}
+    )
+    assert result.isError is False, f"board overview failed: {result.content}"
+    payload = json.loads(result.content[0].text)
+
+    assert payload["board_id"] == board_id
+    assert payload["title"] == board_data["title"]
+    assert payload["total_cards"] >= 1
+
+    stack = next(s for s in payload["stacks"] if s["id"] == stack_data["id"])
+    assert stack["card_count"] == len(stack["cards"])
+    card_ids = [c["id"] for c in stack["cards"]]
+    assert card_data["id"] in card_ids
