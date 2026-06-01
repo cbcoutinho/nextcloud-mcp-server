@@ -147,6 +147,66 @@ class GatewayProvider(OpenAIProvider):
         if self._token_provider is not None:
             self.client.api_key = await self._token_provider.get_token()
 
+    async def _detect_dimension(self) -> None:
+        """Resolve the embedding dimension from the gateway's ``GET /v1/models``
+        before the first embed.
+
+        Qdrant collection init needs the vector size at startup (it calls
+        ``get_dimension()`` before any ``embed()``); the vector-sync bootstrap
+        invokes this hook first (``vector/qdrant_client.py`` —
+        ``hasattr(provider, "_detect_dimension")``). The gateway is the
+        authority on the dimensions of the models it serves, so we read it from
+        there rather than hardcoding (``mistral-embed`` isn't an OpenAI model,
+        so the OpenAI-wire base class can't know its size statically).
+
+        Best-effort: any failure (old gateway without /v1/models, model absent,
+        network) leaves ``_dimension`` unset so the inherited lazy
+        detect-on-first-embed path still applies. Never raises.
+        """
+        if self._dimension is not None:
+            return  # already known (e.g. an OpenAI model in the static map)
+
+        # ``models`` is a sibling of ``embeddings`` under the gateway's base —
+        # derive it from the same base_url the OpenAI client uses for embeds so
+        # the two stay consistent (str(base_url) has a trailing slash).
+        models_url = str(self.client.base_url).rstrip("/") + "/models"
+        headers: dict[str, str] = {}
+        if self._token_provider is not None:
+            headers["Authorization"] = (
+                f"Bearer {await self._token_provider.get_token()}"
+            )
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(10.0, connect=5.0)
+            ) as client:
+                resp = await client.get(models_url, headers=headers)
+                resp.raise_for_status()
+                catalog = resp.json().get("data", [])
+            for entry in catalog:
+                if entry.get("id") == self.embedding_model:
+                    dim = entry.get("dimension")
+                    if isinstance(dim, int):
+                        self._dimension = dim
+                        logger.info(
+                            "Resolved embedding dimension %d for model %s via "
+                            "gateway /v1/models",
+                            dim,
+                            self.embedding_model,
+                        )
+                        return
+            logger.warning(
+                "Gateway /v1/models reported no dimension for model %s; "
+                "falling back to lazy detection on first embed",
+                self.embedding_model,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort, never fatal
+            logger.warning(
+                "Could not fetch model dimensions from gateway %s: %s; "
+                "falling back to lazy detection on first embed",
+                models_url,
+                exc,
+            )
+
     async def embed(self, text: str) -> list[float]:
         await self._ensure_bearer()
         return await super().embed(text)

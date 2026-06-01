@@ -174,9 +174,10 @@ _DEFAULTS: dict[str, Any] = {
     "fact_event_emitter": "none",  # none | nats | stdout
     "ingest_bus_url": None,  # required when ingest_mode=external
     "embedding_gateway_url": None,  # required when embedding_provider=gateway
-    # Logical model the gateway routes on (e.g. mistral-embed → Mistral for
-    # the MVP). Only consulted when embedding_provider=gateway.
-    "embedding_gateway_model": "mistral-embed",
+    # Provider-namespaced model the gateway serves, "<provider>/<model>"
+    # (the gateway routes on the "/"-prefix; mistral/mistral-embed → Mistral
+    # for the MVP). Only consulted when embedding_provider=gateway.
+    "embedding_gateway_model": "mistral/mistral-embed",
     # Gateway auth: the MCP server is an OIDC *client* in the gateway's own
     # M2M realm (parallel to, and distinct from, the tenant realm it already
     # serves). It obtains a client-credentials token and the gateway maps the

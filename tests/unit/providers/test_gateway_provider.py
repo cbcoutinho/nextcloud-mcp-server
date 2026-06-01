@@ -30,12 +30,12 @@ def test_gateway_selected_unauthenticated(monkeypatch):
     settings = Settings(
         embedding_provider="gateway",
         embedding_gateway_url="https://gateway:8083",
-        embedding_gateway_model="mistral-embed",
+        embedding_gateway_model="mistral/mistral-embed",
     )
     _patch_settings(monkeypatch, settings)
     provider = ProviderRegistry.create_provider()
     assert isinstance(provider, GatewayProvider)
-    assert provider.embedding_model == "mistral-embed"
+    assert provider.embedding_model == "mistral/mistral-embed"
     assert provider.supports_embeddings is True
     assert provider.supports_generation is False
     assert provider._token_provider is None  # unauthenticated
@@ -160,3 +160,132 @@ async def test_token_provider_concurrent_callers_issue_single_request(monkeypatc
     # and both callers observe the same cached token.
     assert calls["n"] == 1
     assert results == ["tok1", "tok1"]
+
+
+# --- Dimension discovery via gateway GET /v1/models -------------------------
+
+
+def _mock_async_client(monkeypatch, handler):
+    """Route every httpx.AsyncClient through a MockTransport (mirrors the
+    token-provider tests above)."""
+    transport = httpx.MockTransport(handler)
+    orig = httpx.AsyncClient
+
+    def _client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _client)
+
+
+async def test_detect_dimension_from_models_endpoint(monkeypatch):
+    """_detect_dimension() resolves the dimension from /v1/models with no embed
+    call — the regression that crashed external-mode startup."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("Authorization")
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [
+                    {
+                        "id": "mistral/mistral-embed",
+                        "object": "model",
+                        "dimension": 1024,
+                    },
+                    {
+                        "id": "text-embedding-3-large",
+                        "object": "model",
+                        "dimension": 3072,
+                    },
+                ],
+            },
+        )
+
+    _mock_async_client(monkeypatch, handler)
+    provider = GatewayProvider(
+        base_url="http://gw:8083/v1", embedding_model="mistral/mistral-embed"
+    )
+    await provider._detect_dimension()
+    assert provider.get_dimension() == 1024
+    assert seen["url"].endswith("/v1/models")
+    assert seen["auth"] is None  # unauthenticated gateway
+
+
+async def test_detect_dimension_sends_bearer(monkeypatch):
+    """When a token provider is configured, discovery presents the M2M bearer."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/token"):
+            return httpx.Response(200, json={"access_token": "tok", "expires_in": 3600})
+        captured["auth"] = request.headers.get("Authorization")
+        return httpx.Response(
+            200, json={"data": [{"id": "mistral/mistral-embed", "dimension": 1024}]}
+        )
+
+    _mock_async_client(monkeypatch, handler)
+    tp = GatewayTokenProvider(
+        token_url="http://idp.example/token", client_id="c", client_secret="s"
+    )
+    provider = GatewayProvider(
+        base_url="http://gw:8083/v1",
+        embedding_model="mistral/mistral-embed",
+        token_provider=tp,
+    )
+    await provider._detect_dimension()
+    assert provider.get_dimension() == 1024
+    assert captured["auth"] == "Bearer tok"
+
+
+async def test_detect_dimension_non_fatal_on_http_error(monkeypatch):
+    """An old gateway without /v1/models (404) must not crash startup —
+    dimension stays unknown so lazy detect-on-first-embed still applies."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "not found"})
+
+    _mock_async_client(monkeypatch, handler)
+    provider = GatewayProvider(
+        base_url="http://gw:8083/v1", embedding_model="mistral/mistral-embed"
+    )
+    await provider._detect_dimension()  # must not raise
+    with pytest.raises(RuntimeError):
+        provider.get_dimension()  # still unknown
+
+
+async def test_detect_dimension_model_absent(monkeypatch):
+    """Gateway reachable but doesn't list our model → no dimension set,
+    no raise."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"id": "other", "dimension": 99}]})
+
+    _mock_async_client(monkeypatch, handler)
+    provider = GatewayProvider(
+        base_url="http://gw:8083/v1", embedding_model="mistral/mistral-embed"
+    )
+    await provider._detect_dimension()
+    with pytest.raises(RuntimeError):
+        provider.get_dimension()
+
+
+async def test_detect_dimension_skips_when_already_known(monkeypatch):
+    """If the dimension is already known, discovery makes no HTTP call."""
+    called = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called["n"] += 1
+        return httpx.Response(200, json={"data": []})
+
+    _mock_async_client(monkeypatch, handler)
+    provider = GatewayProvider(
+        base_url="http://gw:8083/v1", embedding_model="mistral/mistral-embed"
+    )
+    provider._dimension = 1024  # pre-set (e.g. explicit override / OpenAI model)
+    await provider._detect_dimension()
+    assert called["n"] == 0
+    assert provider.get_dimension() == 1024
