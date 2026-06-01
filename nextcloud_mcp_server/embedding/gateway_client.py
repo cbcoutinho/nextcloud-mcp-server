@@ -119,6 +119,16 @@ class GatewayProvider(OpenAIProvider):
         token_provider: GatewayTokenProvider | None = None,
         timeout: float = 120.0,
     ):
+        # The gateway exposes its OpenAI-compatible API under the /v1 base path
+        # (/v1/embeddings, /v1/models). Callers configure EMBEDDING_GATEWAY_URL
+        # as a bare origin (scheme://host:port) — the deployment's Service URL —
+        # so we append /v1 here. This base path is then used uniformly: the
+        # OpenAI SDK posts embeds to {base_url}/embeddings and _detect_dimension
+        # GETs {base_url}/models, both correctly landing under /v1. Idempotent —
+        # a URL already ending in /v1 (or /v1/) is left as-is.
+        normalized_base_url = base_url.rstrip("/")
+        if not normalized_base_url.endswith("/v1"):
+            normalized_base_url = f"{normalized_base_url}/v1"
         # AsyncOpenAI rejects an empty key; use a non-secret placeholder when
         # the gateway is unauthenticated. When a token provider is configured,
         # the real Bearer is set on the client before each request. The bare
@@ -126,7 +136,7 @@ class GatewayProvider(OpenAIProvider):
         # this is a public placeholder string, not a secret.
         super().__init__(
             api_key=_UNAUTHENTICATED_PLACEHOLDER,  # NOSONAR
-            base_url=base_url,
+            base_url=normalized_base_url,
             embedding_model=embedding_model,
             generation_model=None,  # gateway never generates
             timeout=timeout,
@@ -134,7 +144,7 @@ class GatewayProvider(OpenAIProvider):
         self._token_provider = token_provider
         logger.info(
             "Initialized gateway embedding provider: base_url=%s, model=%s, auth=%s",
-            base_url,
+            normalized_base_url,
             embedding_model,
             "oidc-m2m" if token_provider else "none",
         )

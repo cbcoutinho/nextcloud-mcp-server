@@ -696,7 +696,9 @@ class Settings:
     fact_event_emitter: str = "none"  # none | nats | stdout
     ingest_bus_url: str | None = None  # required when ingest_mode=external
     embedding_gateway_url: str | None = None  # required when provider=gateway
-    embedding_gateway_model: str = "mistral-embed"  # logical model gateway routes
+    embedding_gateway_model: str = (
+        "mistral/mistral-embed"  # provider-namespaced id the gateway routes on
+    )
     # Gateway M2M OIDC client creds (separate realm; see _DEFAULTS comment).
     embedding_gateway_token_url: str | None = None
     embedding_gateway_client_id: str | None = None
