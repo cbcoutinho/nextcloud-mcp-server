@@ -22,6 +22,8 @@ capitals (`Admin`) and spaces (`Test User`) — which is exactly the path that
 used to 500.
 """
 
+import base64
+
 import httpx
 import pytest
 
@@ -30,12 +32,14 @@ LOGIN_FLOW_API_BASE_URL = "http://localhost:8004"
 pytestmark = [pytest.mark.integration, pytest.mark.login_flow]
 
 # A syntactically valid app password (matches APP_PASSWORD_PATTERN) that is not
-# a real credential for any account — so the OCS validation always fails.
-_WRONG_APP_PASSWORD = "aaaaa-bbbbb-ccccc-ddddd-eeeee"
+# a real credential for any account — so the OCS validation always fails. This
+# is a throwaway test fixture, not a real secret.
+_WRONG_APP_PASSWORD = "aaaaa-bbbbb-ccccc-ddddd-eeeee"  # NOSONAR(S2068)
 
 
 def _basic_auth_header(username: str, password: str) -> str:
-    return httpx.BasicAuth(username, password)._auth_header
+    credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+    return f"Basic {credentials}"
 
 
 @pytest.mark.parametrize(

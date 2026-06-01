@@ -492,6 +492,79 @@ async def test_provision_app_password_non_json_response_returns_502(mocker):
     assert "Unexpected response" in response.json()["error"]
 
 
+async def test_provision_app_password_request_error_returns_502(mocker):
+    """A transport-level failure reaching Nextcloud returns a clean 502."""
+    import httpx
+
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="http://localhost:8080",
+            nextcloud_verify_ssl=True,
+            nextcloud_ca_bundle=None,
+        ),
+    )
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    # return_value=False so the context manager does not suppress the raised error
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.nextcloud_httpx_client",
+        return_value=mock_client,
+    )
+
+    client = TestClient(_provision_only_app())
+    response = client.post(
+        "/api/v1/users/testuser/app-password",
+        headers={
+            "Authorization": create_basic_auth_header(
+                "testuser", "aaaaa-bbbbb-ccccc-ddddd-eeeee"
+            )
+        },
+    )
+
+    assert response.status_code == 502
+    assert "Failed to validate credentials" in response.json()["error"]
+
+
+async def test_provision_app_password_standard_v2_success(temp_storage, mocker):
+    """A standard OCS v2 success payload (``meta.statuscode: 200`` + ``data``)
+    provisions normally — exercises the ``statuscode in success`` branch rather
+    than the no-meta fallback."""
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="http://localhost:8080",
+            nextcloud_verify_ssl=True,
+            nextcloud_ca_bundle=None,
+        ),
+    )
+    _mock_ocs_client(
+        mocker,
+        status_code=200,
+        json_payload={"ocs": {"meta": {"statuscode": 200}, "data": {"id": "testuser"}}},
+    )
+
+    client = TestClient(create_test_app(temp_storage))
+    response = client.post(
+        "/api/v1/users/testuser/app-password",
+        headers={
+            "Authorization": create_basic_auth_header(
+                "testuser", "aaaaa-bbbbb-ccccc-ddddd-eeeee"
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert (
+        await temp_storage.get_app_password("testuser")
+        == "aaaaa-bbbbb-ccccc-ddddd-eeeee"
+    )
+
+
 async def test_get_app_password_status_provisioned(temp_storage, mocker):
     """Test checking status when app password is provisioned."""
     # Store an app password
@@ -754,6 +827,54 @@ async def test_delete_app_password_ocs_failure_payload_returns_401(mocker):
 
     assert response.status_code == 401
     assert "Invalid credentials" in response.json()["error"]
+
+
+async def test_delete_app_password_cross_user_uid_mismatch_returns_403(
+    temp_storage, mocker
+):
+    """Regression: the authenticated account must own the path UID.
+
+    An attacker authenticating as their own loginName (via the body) while
+    targeting another user's path must be rejected with 403 — otherwise they
+    could delete the victim's stored password. The OCS validation resolves to a
+    different UID than the path, so the UID-mismatch guard must fire.
+    """
+    await temp_storage.store_app_password("victim", "aaaaa-bbbbb-ccccc-ddddd-eeeee")
+
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="http://localhost:8080",
+            nextcloud_verify_ssl=True,
+            nextcloud_ca_bundle=None,
+        ),
+    )
+    # The supplied credential authenticates, but as "attacker", not "victim".
+    _mock_ocs_client(
+        mocker,
+        status_code=200,
+        json_payload={"ocs": {"meta": {"statuscode": 200}, "data": {"id": "attacker"}}},
+    )
+
+    app = create_test_app(temp_storage)
+    client = TestClient(app)
+    response = client.request(
+        "DELETE",
+        "/api/v1/users/victim/app-password",
+        headers={
+            "Authorization": create_basic_auth_header(
+                "victim", "fffff-ggggg-hhhhh-iiiii-jjjjj"
+            )
+        },
+        json={"username": "attacker-loginname"},
+    )
+
+    assert response.status_code == 403
+    assert "mismatch" in response.json()["error"].lower()
+    # Victim's password must be untouched.
+    assert (
+        await temp_storage.get_app_password("victim") == "aaaaa-bbbbb-ccccc-ddddd-eeeee"
+    )
 
 
 async def test_delete_app_password_username_mismatch():

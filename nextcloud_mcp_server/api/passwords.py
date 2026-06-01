@@ -495,7 +495,7 @@ async def delete_app_password(request: Request) -> JSONResponse:
             status_code=500,
         )
 
-    _, error_response = await _validate_nextcloud_credentials(
+    ocs_user_id, error_response = await _validate_nextcloud_credentials(
         nextcloud_host, login_name, password
     )
     if error_response is not None:
@@ -506,6 +506,19 @@ async def delete_app_password(request: Request) -> JSONResponse:
                 status_code=401,
             )
         return error_response
+
+    # The authenticated account must be the UID whose password is being deleted.
+    # ``_extract_basic_auth`` only checks the BasicAuth *name* field equals the
+    # path UID, not that the supplied credential authenticates as that account —
+    # without this guard a user could authenticate with their own loginName (via
+    # the body) while targeting another user's path and delete the victim's
+    # stored password.
+    if ocs_user_id != path_user_id:
+        logger.warning("User ID mismatch in OCS response for delete")
+        return JSONResponse(
+            {"success": False, "error": "User ID mismatch"},
+            status_code=403,
+        )
 
     try:
         storage = await _get_app_password_storage(request)
