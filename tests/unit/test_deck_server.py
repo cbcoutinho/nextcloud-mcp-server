@@ -1,9 +1,15 @@
+from datetime import datetime, timezone
+
 import pytest
 
 from nextcloud_mcp_server.models.deck import (
     DeckACL,
+    DeckAssignedUser,
     DeckBoard,
     DeckCard,
+    DeckCardSummary,
+    DeckComment,
+    DeckCommentSummary,
     DeckLabel,
     DeckPermissions,
     DeckStack,
@@ -12,12 +18,17 @@ from nextcloud_mcp_server.models.deck import (
 from nextcloud_mcp_server.server.deck import (
     _SHARE_TYPE_DECK,
     _apply_board_filters,
-    _apply_card_filters,
     _apply_stack_filters,
+    _extract_uid,
+    _filter_cards,
     _resolve_note_attach_path,
     _resolve_note_path,
+    _shape_cards,
+    _shape_comments,
+    _summarize_card,
     _truncate_card_descriptions,
-    _validate_description_max_length,
+    _truncate_comment_message,
+    _validate_positive_length,
 )
 
 pytestmark = pytest.mark.unit
@@ -30,6 +41,12 @@ def _make_card(
     card_id: int,
     description: str | None = "desc",
     archived: bool = False,
+    *,
+    done: datetime | None = None,
+    labels: list[DeckLabel] | None = None,
+    assigned_users: list | None = None,
+    attachment_count: int | None = None,
+    comments_unread: int | None = None,
 ) -> DeckCard:
     return DeckCard(
         id=card_id,
@@ -40,6 +57,30 @@ def _make_card(
         archived=archived,
         owner="testuser",
         description=description,
+        done=done,
+        labels=labels,
+        assignedUsers=assigned_users,
+        attachmentCount=attachment_count,
+        commentsUnread=comments_unread,
+    )
+
+
+def _make_comment(
+    comment_id: int,
+    message: str = "hello",
+    *,
+    actor: str = "alice",
+    created: datetime | None = None,
+) -> DeckComment:
+    return DeckComment(
+        id=comment_id,
+        objectId=1,
+        message=message,
+        actorId=actor,
+        actorType="users",
+        actorDisplayName=actor.title(),
+        creationDateTime=created or datetime(2024, 1, comment_id, tzinfo=timezone.utc),
+        mentions=[],
     )
 
 
@@ -141,30 +182,30 @@ def test_truncate_card_descriptions_shorter_than_limit_no_ellipsis():
     assert cards[0].description == "hello"
 
 
-# _validate_description_max_length ----------------------------------------
+# _validate_positive_length ----------------------------------------
 
 
-def test_validate_description_max_length_accepts_none():
+def test_validate_positive_length_accepts_none():
     """None is the documented sentinel for "no truncation"."""
-    _validate_description_max_length(None)
+    _validate_positive_length(None)
 
 
-def test_validate_description_max_length_accepts_positive():
+def test_validate_positive_length_accepts_positive():
     """Positive values pass through silently."""
-    _validate_description_max_length(1)
-    _validate_description_max_length(1000)
+    _validate_positive_length(1)
+    _validate_positive_length(1000)
 
 
-def test_validate_description_max_length_rejects_zero():
+def test_validate_positive_length_rejects_zero():
     """Zero would wipe descriptions to a single ellipsis — reject at the boundary."""
     with pytest.raises(ValueError, match="must be positive"):
-        _validate_description_max_length(0)
+        _validate_positive_length(0)
 
 
-def test_validate_description_max_length_rejects_negative():
+def test_validate_positive_length_rejects_negative():
     """Negative values produce surprising slice semantics — reject at the boundary."""
     with pytest.raises(ValueError, match="must be positive"):
-        _validate_description_max_length(-10)
+        _validate_positive_length(-10)
 
 
 # _apply_board_filters ------------------------------------------------------
@@ -231,67 +272,231 @@ def test_apply_board_filters_excludes_all():
     assert result.labels == []
 
 
+# Shared default kwargs for _apply_stack_filters in summary mode ------------
+
+_STACK_DEFAULTS = dict(
+    detail="summary",
+    status="open",
+    label=None,
+    assigned_to=None,
+    description_max_length=None,
+    description_preview_length=140,
+)
+
+
+# _filter_cards -------------------------------------------------------------
+
+
+def test_filter_cards_open_excludes_archived_and_done():
+    """status="open" drops both archived and explicitly-done cards."""
+    done_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    cards = [
+        _make_card(1),
+        _make_card(2, archived=True),
+        _make_card(3, done=done_at),
+    ]
+    result = _filter_cards(cards, status="open", label=None, assigned_to=None)
+    assert [c.id for c in result] == [1]
+
+
+def test_filter_cards_done_keeps_only_done_and_not_archived():
+    """status="done" keeps done cards that are not archived."""
+    done_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    cards = [_make_card(1), _make_card(2, done=done_at)]
+    result = _filter_cards(cards, status="done", label=None, assigned_to=None)
+    assert [c.id for c in result] == [2]
+
+
+def test_filter_cards_archived_keeps_only_archived():
+    """status="archived" keeps only archived cards."""
+    cards = [_make_card(1), _make_card(2, archived=True)]
+    result = _filter_cards(cards, status="archived", label=None, assigned_to=None)
+    assert [c.id for c in result] == [2]
+
+
+def test_filter_cards_statuses_partition_the_board():
+    """open/done/archived are non-overlapping; a done+archived card counts
+    only as "archived", not "done"."""
+    done_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    open_card = _make_card(1)
+    done_card = _make_card(2, done=done_at)
+    done_and_archived = _make_card(3, done=done_at, archived=True)
+    cards = [open_card, done_card, done_and_archived]
+
+    assert [
+        c.id for c in _filter_cards(cards, status="open", label=None, assigned_to=None)
+    ] == [1]
+    assert [
+        c.id for c in _filter_cards(cards, status="done", label=None, assigned_to=None)
+    ] == [2]
+    assert [
+        c.id
+        for c in _filter_cards(cards, status="archived", label=None, assigned_to=None)
+    ] == [3]
+
+
+def test_filter_cards_all_keeps_everything():
+    """status="all" applies no status filter."""
+    cards = [_make_card(1), _make_card(2, archived=True)]
+    result = _filter_cards(cards, status="all", label=None, assigned_to=None)
+    assert [c.id for c in result] == [1, 2]
+
+
+def test_filter_cards_by_label_matches_title_exactly():
+    """label filtering matches the exact label title."""
+    a = _make_card(1, labels=[DeckLabel(id=1, title="bug", color="f00")])
+    b = _make_card(2, labels=[DeckLabel(id=2, title="feature", color="0f0")])
+    result = _filter_cards([a, b], status="all", label="bug", assigned_to=None)
+    assert [c.id for c in result] == [1]
+
+
+def test_filter_cards_by_assignee_handles_both_user_shapes():
+    """assigned_to matches DeckUser and DeckAssignedUser shapes alike."""
+    direct = _make_card(1, assigned_users=[_make_user("alice")])
+    wrapped = _make_card(
+        2,
+        assigned_users=[
+            DeckAssignedUser(id=9, participant=_make_user("bob"), cardId=2, type=0)
+        ],
+    )
+    result = _filter_cards(
+        [direct, wrapped], status="all", label=None, assigned_to="bob"
+    )
+    assert [c.id for c in result] == [2]
+
+
+# _extract_uid --------------------------------------------------------------
+
+
+def test_extract_uid_from_deck_user():
+    assert _extract_uid(_make_user("alice")) == "alice"
+
+
+def test_extract_uid_from_assigned_user():
+    assigned = DeckAssignedUser(id=1, participant=_make_user("bob"), cardId=1, type=0)
+    assert _extract_uid(assigned) == "bob"
+
+
+# _summarize_card -----------------------------------------------------------
+
+
+def test_summarize_card_projects_compact_fields():
+    """Summary carries flat label titles, assignee uids, counts, and a preview."""
+    card = _make_card(
+        1,
+        description="x" * 50,
+        labels=[DeckLabel(id=1, title="bug", color="f00")],
+        assigned_users=[_make_user("alice")],
+        attachment_count=3,
+        comments_unread=2,
+    )
+    summary = _summarize_card(card, description_preview_length=10)
+    assert isinstance(summary, DeckCardSummary)
+    assert summary.labels == ["bug"]
+    assert summary.assignedUsers == ["alice"]
+    assert summary.attachmentCount == 3
+    assert summary.commentsUnread == 2
+    assert summary.hasDescription is True
+    assert summary.descriptionPreview is not None
+    assert summary.descriptionPreview.endswith("…")
+    assert len(summary.descriptionPreview) == 11  # 10 chars + ellipsis
+
+
+def test_summarize_card_short_description_has_no_ellipsis():
+    """A description within the preview length is carried verbatim."""
+    summary = _summarize_card(_make_card(1, description="hi"), 140)
+    assert summary.descriptionPreview == "hi"
+    assert summary.hasDescription is True
+
+
+def test_summarize_card_empty_description():
+    """An empty/whitespace description yields hasDescription=False, no preview."""
+    summary = _summarize_card(_make_card(1, description="   "), 140)
+    assert summary.hasDescription is False
+    assert summary.descriptionPreview is None
+
+
+# _shape_cards --------------------------------------------------------------
+
+
+def test_shape_cards_summary_returns_summaries():
+    """detail="summary" projects every (filtered) card to a DeckCardSummary."""
+    cards = [_make_card(1), _make_card(2, archived=True)]
+    result = _shape_cards(
+        cards,
+        detail="summary",
+        status="open",
+        label=None,
+        assigned_to=None,
+        description_max_length=None,
+        description_preview_length=140,
+    )
+    assert [type(c) for c in result] == [DeckCardSummary]
+    assert result[0].id == 1
+
+
+def test_shape_cards_full_returns_truncated_full_cards():
+    """detail="full" returns DeckCard objects with descriptions truncated."""
+    cards = [_make_card(1, description="x" * 50)]
+    result = _shape_cards(
+        cards,
+        detail="full",
+        status="all",
+        label=None,
+        assigned_to=None,
+        description_max_length=10,
+        description_preview_length=140,
+    )
+    assert isinstance(result[0], DeckCard)
+    assert result[0].description is not None
+    assert result[0].description.endswith("…")
+
+
 # _apply_stack_filters ------------------------------------------------------
 
 
 def test_apply_stack_filters_include_cards_false_strips_cards():
     """include_cards=False sets cards to None regardless of other flags."""
     stack = _make_stack(cards=[_make_card(1), _make_card(2, archived=True)])
-    result = _apply_stack_filters(
-        stack,
-        include_cards=False,
-        include_archived_cards=True,
-        description_max_length=None,
-    )
+    result = _apply_stack_filters(stack, include_cards=False, **_STACK_DEFAULTS)
     assert result.cards is None
 
 
-def test_apply_stack_filters_excludes_archived_by_default():
-    """include_archived_cards=False filters out archived cards."""
+def test_apply_stack_filters_summary_excludes_archived_by_default():
+    """Default status="open" filters out archived cards and returns summaries."""
     stack = _make_stack(
         cards=[_make_card(1, archived=False), _make_card(2, archived=True)]
     )
-    result = _apply_stack_filters(
-        stack,
-        include_cards=True,
-        include_archived_cards=False,
-        description_max_length=None,
-    )
+    result = _apply_stack_filters(stack, include_cards=True, **_STACK_DEFAULTS)
     assert result.cards is not None
     assert [c.id for c in result.cards] == [1]
+    assert all(isinstance(c, DeckCardSummary) for c in result.cards)
 
 
-def test_apply_stack_filters_keeps_archived_when_requested():
-    """include_archived_cards=True retains archived cards."""
+def test_apply_stack_filters_status_all_keeps_archived():
+    """status="all" retains archived cards."""
     stack = _make_stack(
         cards=[_make_card(1, archived=False), _make_card(2, archived=True)]
     )
-    result = _apply_stack_filters(
-        stack,
-        include_cards=True,
-        include_archived_cards=True,
-        description_max_length=None,
-    )
+    kwargs = {**_STACK_DEFAULTS, "status": "all"}
+    result = _apply_stack_filters(stack, include_cards=True, **kwargs)
     assert result.cards is not None
     assert [c.id for c in result.cards] == [1, 2]
 
 
-def test_apply_stack_filters_truncates_descriptions_after_archive_filter():
-    """Truncation runs on the post-archive-filter card set."""
+def test_apply_stack_filters_full_truncates_descriptions_after_filter():
+    """detail="full" truncation runs on the post-status-filter card set."""
     stack = _make_stack(
         cards=[
             _make_card(1, description="x" * 50, archived=False),
             _make_card(2, description="y" * 50, archived=True),
         ]
     )
-    result = _apply_stack_filters(
-        stack,
-        include_cards=True,
-        include_archived_cards=False,
-        description_max_length=10,
-    )
+    kwargs = {**_STACK_DEFAULTS, "detail": "full", "description_max_length": 10}
+    result = _apply_stack_filters(stack, include_cards=True, **kwargs)
     assert result.cards is not None
     assert len(result.cards) == 1
+    assert isinstance(result.cards[0], DeckCard)
     assert result.cards[0].description is not None
     assert result.cards[0].description.endswith("…")
 
@@ -299,78 +504,72 @@ def test_apply_stack_filters_truncates_descriptions_after_archive_filter():
 def test_apply_stack_filters_handles_none_cards():
     """A stack with no cards (cards=None) is left untouched."""
     stack = _make_stack(cards=None)
-    result = _apply_stack_filters(
-        stack,
-        include_cards=True,
-        include_archived_cards=False,
-        description_max_length=10,
-    )
+    result = _apply_stack_filters(stack, include_cards=True, **_STACK_DEFAULTS)
     assert result.cards is None
 
 
-def test_apply_stack_filters_all_archived_yields_empty_list_not_none():
-    """A stack whose cards are all archived yields cards == [], not None.
+def test_apply_stack_filters_all_filtered_yields_empty_list_not_none():
+    """A stack whose cards are all filtered out yields cards == [], not None.
 
     Pin the contract: include_cards=True with all cards filtered out
     means "the stack was loaded but had nothing to show", which is
     semantically distinct from include_cards=False (cards=None,
-    "explicitly suppressed"). Callers checking ``stack.cards is None``
-    can use that to distinguish the two states.
+    "explicitly suppressed").
     """
     stack = _make_stack(
         cards=[_make_card(1, archived=True), _make_card(2, archived=True)]
     )
-    result = _apply_stack_filters(
-        stack,
-        include_cards=True,
-        include_archived_cards=False,
-        description_max_length=None,
-    )
+    result = _apply_stack_filters(stack, include_cards=True, **_STACK_DEFAULTS)
     assert result.cards == []
     assert result.cards is not None
 
 
-# _apply_card_filters -------------------------------------------------------
+# _shape_comments -----------------------------------------------------------
 
 
-def test_apply_card_filters_excludes_archived_by_default():
-    """include_archived_cards=False filters archived cards out of the flat list."""
-    cards = [
-        _make_card(1, archived=False),
-        _make_card(2, archived=True),
-        _make_card(3, archived=False),
-    ]
-    result = _apply_card_filters(
-        cards, include_archived_cards=False, description_max_length=None
+def test_shape_comments_summary_drops_actor_metadata():
+    """detail="summary" projects comments to compact DeckCommentSummary rows."""
+    comments = [_make_comment(1, "hi", actor="alice")]
+    result = _shape_comments(
+        comments, detail="summary", message_max_length=None, order="newest"
     )
-    assert [c.id for c in result] == [1, 3]
+    assert isinstance(result[0], DeckCommentSummary)
+    assert result[0].actorId == "alice"
+    assert result[0].message == "hi"
 
 
-def test_apply_card_filters_keeps_archived_when_requested():
-    """include_archived_cards=True retains archived cards."""
-    cards = [_make_card(1, archived=False), _make_card(2, archived=True)]
-    result = _apply_card_filters(
-        cards, include_archived_cards=True, description_max_length=None
+def test_shape_comments_newest_first():
+    """order="newest" sorts the page by creation time descending."""
+    comments = [_make_comment(1), _make_comment(3), _make_comment(2)]
+    result = _shape_comments(
+        comments, detail="summary", message_max_length=None, order="newest"
     )
-    assert [c.id for c in result] == [1, 2]
+    assert [c.id for c in result] == [3, 2, 1]
 
 
-def test_apply_card_filters_truncates_descriptions():
-    """description_max_length is honored on the returned cards."""
-    cards = [_make_card(1, description="x" * 50)]
-    result = _apply_card_filters(
-        cards, include_archived_cards=True, description_max_length=10
+def test_shape_comments_oldest_first():
+    """order="oldest" sorts the page by creation time ascending."""
+    comments = [_make_comment(3), _make_comment(1), _make_comment(2)]
+    result = _shape_comments(
+        comments, detail="summary", message_max_length=None, order="oldest"
     )
-    assert result[0].description is not None
-    assert result[0].description.endswith("…")
+    assert [c.id for c in result] == [1, 2, 3]
 
 
-def test_apply_card_filters_empty_list_is_noop():
-    """An empty input returns an empty output."""
-    result = _apply_card_filters(
-        [], include_archived_cards=False, description_max_length=10
+def test_shape_comments_full_truncates_message():
+    """detail="full" keeps DeckComment but truncates long messages when asked."""
+    comments = [_make_comment(1, "x" * 50)]
+    result = _shape_comments(
+        comments, detail="full", message_max_length=10, order="newest"
     )
-    assert result == []
+    assert isinstance(result[0], DeckComment)
+    assert result[0].message.endswith("…")
+    assert len(result[0].message) == 11
+
+
+def test_truncate_comment_message_no_op_when_within_limit():
+    assert _truncate_comment_message("short", 100) == "short"
+    assert _truncate_comment_message("short", None) == "short"
 
 
 # _resolve_note_path -------------------------------------------------------

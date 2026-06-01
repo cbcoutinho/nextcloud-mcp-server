@@ -129,6 +129,44 @@ class DeckCard(BaseModel):
         return validated_users
 
 
+class DeckCardSummary(BaseModel):
+    """Compact projection of a :class:`DeckCard` for list/overview views.
+
+    Drops the heavy fields that dominate token cost when many cards are
+    returned at once — the full ``description`` (kept only as a short
+    ``descriptionPreview``), the nested ``labels``/``assignedUsers``/
+    ``attachments`` objects (kept as flat title/uid lists + counts), and the
+    ``etag``/``order``/``*Modified``/``createdAt``/``deletedAt``/``overdue``/
+    ``type``/``owner`` bookkeeping fields. Fetch a single card with
+    ``deck_get_card`` (or ``detail="full"``) when the full body is needed.
+    """
+
+    id: int
+    title: str
+    stackId: int
+    archived: bool = False
+    duedate: datetime | None = None
+    done: datetime | None = None
+    labels: list[str] = Field(
+        default_factory=list, description="Label titles assigned to the card"
+    )
+    assignedUsers: list[str] = Field(
+        default_factory=list, description="UIDs of users assigned to the card"
+    )
+    attachmentCount: int | None = Field(
+        default=None, description="Number of attachments on the card"
+    )
+    commentsUnread: int | None = Field(
+        default=None, description="Number of unread comments (Deck exposes no total)"
+    )
+    hasDescription: bool = Field(
+        default=False, description="Whether the card has a non-empty description"
+    )
+    descriptionPreview: str | None = Field(
+        default=None, description="Truncated preview of the card description"
+    )
+
+
 class DeckStack(BaseModel):
     id: int
     title: str
@@ -136,7 +174,9 @@ class DeckStack(BaseModel):
     order: int
     deletedAt: int
     lastModified: Optional[int] = None
-    cards: Optional[List[DeckCard]] = None
+    # Cards may be projected to DeckCardSummary when a tool is called with
+    # detail="summary" (the default for list tools).
+    cards: list[DeckCard | DeckCardSummary] | None = None
     etag: Optional[str] = Field(default=None, alias="ETag")
 
 
@@ -173,6 +213,20 @@ class DeckComment(BaseModel):
     creationDateTime: datetime
     mentions: List[Dict[str, str]]
     replyTo: Optional[Any] = None  # Self-referencing, handle later if needed
+
+
+class DeckCommentSummary(BaseModel):
+    """Compact projection of a :class:`DeckComment` for list views.
+
+    Drops ``mentions``, ``actorType``, ``actorDisplayName`` and ``replyTo``,
+    keeping only the fields needed to read the conversation. Long messages are
+    truncated by the tool layer via ``message_max_length``.
+    """
+
+    id: int
+    actorId: str
+    message: str
+    creationDateTime: datetime
 
 
 class DeckSession(BaseModel):
@@ -218,6 +272,36 @@ class ListStacksResponse(BaseResponse):
 
     stacks: List[DeckStack] = Field(description="List of deck stacks")
     total: int = Field(description="Total number of stacks")
+
+
+class StackOverview(BaseModel):
+    """A stack plus its compact card rows, for the board-overview tool."""
+
+    id: int = Field(description="Stack ID")
+    title: str = Field(description="Stack title")
+    order: int | None = Field(default=None, description="Stack sort order")
+    card_count: int = Field(description="Number of cards returned for this stack")
+    cards: list[DeckCardSummary] = Field(
+        default_factory=list, description="Compact card rows in this stack"
+    )
+
+
+class BoardOverviewResponse(BaseResponse):
+    """Compact whole-board snapshot: board → stacks → summary card rows.
+
+    A single-call replacement for deck_get_board + deck_get_stacks that keeps
+    the response small enough to fit the token budget on large boards.
+    """
+
+    board_id: int = Field(description="Board ID")
+    title: str = Field(description="Board title")
+    labels: list[str] = Field(
+        default_factory=list, description="Board label titles (legend)"
+    )
+    stacks: list[StackOverview] = Field(
+        default_factory=list, description="Stacks with compact card rows"
+    )
+    total_cards: int = Field(description="Total cards across all returned stacks")
 
 
 class CreateStackResponse(BaseResponse):
@@ -269,7 +353,9 @@ class CreateLabelResponse(BaseResponse):
 class ListCardsResponse(BaseResponse):
     """Response model for listing deck cards."""
 
-    cards: list[DeckCard] = Field(description="List of deck cards")
+    cards: list[DeckCard | DeckCardSummary] = Field(
+        description="List of deck cards (summaries unless detail='full')"
+    )
     total: int = Field(description="Total number of cards")
 
 
@@ -293,7 +379,9 @@ class LabelOperationResponse(StatusResponse):
 class ListCardCommentsResponse(BaseResponse):
     """Response model for listing card comments."""
 
-    results: list[DeckComment] = Field(description="Card comments in this page")
+    results: list[DeckComment | DeckCommentSummary] = Field(
+        description="Card comments in this page (summaries unless detail='full')"
+    )
     count: int = Field(
         description=(
             "Number of comments returned in this page (page size, not the "

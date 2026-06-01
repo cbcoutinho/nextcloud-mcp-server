@@ -1,4 +1,5 @@
 import logging
+from typing import Literal, cast
 
 import anyio
 from mcp.server.fastmcp import Context, FastMCP
@@ -9,6 +10,7 @@ from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.deck import (
     AttachFileResponse,
     AttachmentOperationResponse,
+    BoardOverviewResponse,
     CardCommentOperationResponse,
     CardCommentResponse,
     CardOperationResponse,
@@ -16,10 +18,15 @@ from nextcloud_mcp_server.models.deck import (
     CreateCardResponse,
     CreateLabelResponse,
     CreateStackResponse,
+    DeckAssignedUser,
     DeckBoard,
     DeckCard,
+    DeckCardSummary,
+    DeckComment,
+    DeckCommentSummary,
     DeckLabel,
     DeckStack,
+    DeckUser,
     LabelOperationResponse,
     ListAttachmentsResponse,
     ListBoardsResponse,
@@ -28,18 +35,33 @@ from nextcloud_mcp_server.models.deck import (
     ListLabelsResponse,
     ListStacksResponse,
     StackOperationResponse,
+    StackOverview,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
 
+# Card status filter applied before serialization. "open" (the default for
+# list tools) hides archived and explicitly-done cards — the actionable set.
+CardStatus = Literal["all", "open", "done", "archived"]
+# Per-card detail level. "summary" (the default for list tools) projects each
+# card to a compact DeckCardSummary; "full" returns the heavy DeckCard.
+DetailLevel = Literal["summary", "full"]
+# Default length for the description preview carried in card summaries.
+_DEFAULT_DESCRIPTION_PREVIEW = 140
 
-def _validate_description_max_length(description_max_length: int | None) -> None:
-    """Tool-layer guard: reject zero/negative truncation thresholds."""
-    if description_max_length is not None and description_max_length <= 0:
-        raise ValueError(
-            f"description_max_length must be positive, got {description_max_length}"
-        )
+
+def _validate_positive_length(
+    value: int | None, name: str = "description_max_length"
+) -> None:
+    """Tool-layer guard: reject zero/negative length thresholds.
+
+    Reused for every positive-length knob (description truncation/preview,
+    comment message truncation); ``name`` keeps the error message pointed at
+    the parameter the caller actually passed.
+    """
+    if value is not None and value <= 0:
+        raise ValueError(f"{name} must be positive, got {value}")
 
 
 def _truncate_card_descriptions(
@@ -71,38 +93,161 @@ def _apply_board_filters(
     return board
 
 
+def _extract_uid(user: "DeckUser | DeckAssignedUser") -> str | None:
+    """Pull the bare UID out of either assigned-user shape the API returns."""
+    if isinstance(user, DeckAssignedUser):
+        return user.participant.uid
+    if isinstance(user, DeckUser):
+        return user.uid
+    return None
+
+
+def _filter_cards(
+    cards: list[DeckCard],
+    *,
+    status: CardStatus,
+    label: str | None,
+    assigned_to: str | None,
+) -> list[DeckCard]:
+    """Narrow a flat card list by status/label/assignee before serialization.
+
+    The upstream Deck API returns every card (including archived ones) inline,
+    so this filtering reduces the tokens the caller sees but not network
+    bandwidth.
+
+    ``open``/``done``/``archived`` partition the cards (no overlap): a card
+    that is both done and archived is reported only under ``archived``, since
+    archiving is the stronger "off the active board" state.
+    """
+    if status == "open":
+        cards = [c for c in cards if not c.archived and c.done is None]
+    elif status == "done":
+        cards = [c for c in cards if c.done is not None and not c.archived]
+    elif status == "archived":
+        cards = [c for c in cards if c.archived]
+    # status == "all": no status filter
+
+    if label is not None:
+        cards = [
+            c for c in cards if any(lbl.title == label for lbl in (c.labels or []))
+        ]
+    if assigned_to is not None:
+        cards = [
+            c
+            for c in cards
+            if assigned_to in {_extract_uid(u) for u in (c.assignedUsers or [])}
+        ]
+    return cards
+
+
+def _summarize_card(card: DeckCard, description_preview_length: int) -> DeckCardSummary:
+    """Project a full DeckCard down to its compact DeckCardSummary."""
+    description = card.description or ""
+    has_description = bool(description.strip())
+    preview: str | None = None
+    if has_description:
+        preview = description[:description_preview_length]
+        if len(description) > description_preview_length:
+            preview += "…"
+    assignees = [
+        uid for u in (card.assignedUsers or []) if (uid := _extract_uid(u)) is not None
+    ]
+    return DeckCardSummary(
+        id=card.id,
+        title=card.title,
+        stackId=card.stackId,
+        archived=card.archived,
+        duedate=card.duedate,
+        done=card.done,
+        labels=[lbl.title for lbl in (card.labels or [])],
+        assignedUsers=assignees,
+        attachmentCount=card.attachmentCount,
+        commentsUnread=card.commentsUnread,
+        hasDescription=has_description,
+        descriptionPreview=preview,
+    )
+
+
+def _shape_cards(
+    cards: list[DeckCard],
+    *,
+    detail: DetailLevel,
+    status: CardStatus,
+    label: str | None,
+    assigned_to: str | None,
+    description_max_length: int | None,
+    description_preview_length: int,
+) -> list[DeckCard | DeckCardSummary]:
+    """Filter then project a card list according to the requested detail level."""
+    filtered = _filter_cards(cards, status=status, label=label, assigned_to=assigned_to)
+    if detail == "full":
+        _truncate_card_descriptions(filtered, description_max_length)
+        return list(filtered)
+    return [_summarize_card(c, description_preview_length) for c in filtered]
+
+
 def _apply_stack_filters(
     stack: DeckStack,
     *,
     include_cards: bool,
-    include_archived_cards: bool,
+    detail: DetailLevel,
+    status: CardStatus,
+    label: str | None,
+    assigned_to: str | None,
     description_max_length: int | None,
+    description_preview_length: int,
 ) -> DeckStack:
-    """Apply card-shaping filters to a single stack; returns the stack."""
-    # Note: the upstream Deck API returns archived cards inline within
-    # active stacks (the Deck UI filters them frontend-side). Defaulting
-    # include_archived_cards to False mirrors that UI behavior — this is
-    # the breaking change called out in the PR description.
+    """Apply card filtering + projection to a single stack; returns the stack."""
     if not include_cards:
         stack.cards = None
     elif stack.cards:
-        if not include_archived_cards:
-            stack.cards = [c for c in stack.cards if not c.archived]
-        _truncate_card_descriptions(stack.cards, description_max_length)
+        # Cards come straight from the client as DeckCard; the field type is a
+        # union only because summary projection writes summaries back into it.
+        stack.cards = _shape_cards(
+            cast(list[DeckCard], stack.cards),
+            detail=detail,
+            status=status,
+            label=label,
+            assigned_to=assigned_to,
+            description_max_length=description_max_length,
+            description_preview_length=description_preview_length,
+        )
     return stack
 
 
-def _apply_card_filters(
-    cards: list[DeckCard],
+def _truncate_comment_message(message: str, message_max_length: int | None) -> str:
+    """Truncate a comment strictly longer than the limit; appends "…"."""
+    if message_max_length is not None and len(message) > message_max_length:
+        return message[:message_max_length] + "…"
+    return message
+
+
+def _shape_comments(
+    comments: list[DeckComment],
     *,
-    include_archived_cards: bool,
-    description_max_length: int | None,
-) -> list[DeckCard]:
-    """Apply filters to a flat list of cards; returns the (possibly new) list."""
-    if not include_archived_cards:
-        cards = [c for c in cards if not c.archived]
-    _truncate_card_descriptions(cards, description_max_length)
-    return cards
+    detail: DetailLevel,
+    message_max_length: int | None,
+    order: Literal["newest", "oldest"],
+) -> list[DeckComment | DeckCommentSummary]:
+    """Order, truncate and (optionally) project a page of card comments."""
+    ordered = sorted(
+        comments, key=lambda c: c.creationDateTime, reverse=(order == "newest")
+    )
+    if detail == "full":
+        for comment in ordered:
+            comment.message = _truncate_comment_message(
+                comment.message, message_max_length
+            )
+        return list(ordered)
+    return [
+        DeckCommentSummary(
+            id=c.id,
+            actorId=c.actorId,
+            message=_truncate_comment_message(c.message, message_max_length),
+            creationDateTime=c.creationDateTime,
+        )
+        for c in ordered
+    ]
 
 
 # Card attachments — file shares ("Share from Files" picker in the Deck UI).
@@ -311,31 +456,53 @@ def configure_deck_tools(mcp: FastMCP):
         ctx: Context,
         board_id: int,
         include_cards: bool = True,
-        include_archived_cards: bool = False,
+        detail: DetailLevel = "summary",
+        status: CardStatus = "open",
+        label: str | None = None,
+        assigned_to: str | None = None,
         description_max_length: int | None = None,
+        description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
     ) -> ListStacksResponse:
         """Get all stacks in a Nextcloud Deck board.
+
+        Cards are returned as compact summaries by default to keep the
+        response small on large boards. Filtering/projection happen
+        client-side after the API returns the full board, so they reduce the
+        tokens the caller sees but not network bandwidth.
 
         Args:
             board_id: The ID of the board
             include_cards: Include cards inside each stack (default True). Set
                 False for a lightweight stack listing; fetch cards separately
                 via deck_get_cards.
-            include_archived_cards: Include archived cards (default False).
-                Only relevant when include_cards is True.
-            description_max_length: If set, truncate each card's description
-                to this many characters. Useful for keeping responses compact
-                on boards with long card specs.
+            detail: "summary" (default) returns compact card rows; "full"
+                returns the complete card objects (the old behavior).
+            status: Which cards to include — "open" (default), "done",
+                "archived", or "all". The first three partition the board
+                (a card that is both done and archived counts as "archived").
+            label: If set, only cards carrying a label with this exact title.
+            assigned_to: If set, only cards assigned to this user UID.
+            description_max_length: In detail="full", truncate each card's
+                description to this many characters.
+            description_preview_length: In detail="summary", length of the
+                description preview carried on each card (default 140).
         """
-        _validate_description_max_length(description_max_length)
+        _validate_positive_length(description_max_length)
+        _validate_positive_length(
+            description_preview_length, "description_preview_length"
+        )
         client = await get_client(ctx)
         stacks = await client.deck.get_stacks(board_id)
         stacks = [
             _apply_stack_filters(
                 stack,
                 include_cards=include_cards,
-                include_archived_cards=include_archived_cards,
+                detail=detail,
+                status=status,
+                label=label,
+                assigned_to=assigned_to,
                 description_max_length=description_max_length,
+                description_preview_length=description_preview_length,
             )
             for stack in stacks
         ]
@@ -352,28 +519,45 @@ def configure_deck_tools(mcp: FastMCP):
         board_id: int,
         stack_id: int,
         include_cards: bool = True,
-        include_archived_cards: bool = False,
+        detail: DetailLevel = "summary",
+        status: CardStatus = "open",
+        label: str | None = None,
+        assigned_to: str | None = None,
         description_max_length: int | None = None,
+        description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
     ) -> DeckStack:
         """Get details of a specific Nextcloud Deck stack.
+
+        Cards are returned as compact summaries by default; see
+        deck_get_stacks for the shared parameter semantics.
 
         Args:
             board_id: The ID of the board
             stack_id: The ID of the stack
             include_cards: Include cards in the stack (default True).
-            include_archived_cards: Include archived cards (default False).
-                Only relevant when include_cards is True.
-            description_max_length: If set, truncate each card's description
-                to this many characters.
+            detail: "summary" (default) or "full".
+            status: "open" (default), "done", "archived", or "all"
+                (non-overlapping; a done+archived card counts as "archived").
+            label: If set, only cards carrying a label with this exact title.
+            assigned_to: If set, only cards assigned to this user UID.
+            description_max_length: In detail="full", truncate descriptions.
+            description_preview_length: In detail="summary", preview length.
         """
-        _validate_description_max_length(description_max_length)
+        _validate_positive_length(description_max_length)
+        _validate_positive_length(
+            description_preview_length, "description_preview_length"
+        )
         client = await get_client(ctx)
         stack = await client.deck.get_stack(board_id, stack_id)
         return _apply_stack_filters(
             stack,
             include_cards=include_cards,
-            include_archived_cards=include_archived_cards,
+            detail=detail,
+            status=status,
+            label=label,
+            assigned_to=assigned_to,
             description_max_length=description_max_length,
+            description_preview_length=description_preview_length,
         )
 
     @mcp.tool(
@@ -385,7 +569,11 @@ def configure_deck_tools(mcp: FastMCP):
     async def deck_get_archived_stacks(
         ctx: Context,
         board_id: int,
+        detail: DetailLevel = "summary",
+        label: str | None = None,
+        assigned_to: str | None = None,
         description_max_length: int | None = None,
+        description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
     ) -> ListStacksResponse:
         """List archived stacks (with their archived cards) for a Nextcloud
         Deck board.
@@ -395,26 +583,38 @@ def configure_deck_tools(mcp: FastMCP):
         archived via deck_archive_card). The shape mirrors deck_get_stacks.
 
         Cards are always included on the returned stacks (an archived stack
-        without its cards would have no audit value); pass
-        ``description_max_length`` if you need to keep the response compact.
+        without its cards would have no audit value) and returned as compact
+        summaries by default. There is no ``status`` filter — every card here
+        is archived by definition — but ``label``/``assigned_to`` narrow the
+        set just like the active-stack tools.
 
         Args:
             board_id: The ID of the board
-            description_max_length: If set, truncate each card's description
-                to this many characters.
+            detail: "summary" (default) or "full".
+            label: If set, only cards carrying a label with this exact title.
+            assigned_to: If set, only cards assigned to this user UID.
+            description_max_length: In detail="full", truncate descriptions.
+            description_preview_length: In detail="summary", preview length.
         """
-        _validate_description_max_length(description_max_length)
+        _validate_positive_length(description_max_length)
+        _validate_positive_length(
+            description_preview_length, "description_preview_length"
+        )
         client = await get_client(ctx)
         stacks = await client.deck.get_archived_stacks(board_id)
-        # All cards in archived stacks are themselves archived; route through
-        # the same helper as the active-stack path so future filter additions
-        # apply uniformly.
+        # All cards in archived stacks are themselves archived; status="all"
+        # keeps them (an "open"/"done" filter would drop the whole point).
+        # label/assigned_to still apply for targeted audits.
         stacks = [
             _apply_stack_filters(
                 stack,
                 include_cards=True,
-                include_archived_cards=True,
+                detail=detail,
+                status="all",
+                label=label,
+                assigned_to=assigned_to,
                 description_max_length=description_max_length,
+                description_preview_length=description_preview_length,
             )
             for stack in stacks
         ]
@@ -430,35 +630,135 @@ def configure_deck_tools(mcp: FastMCP):
         ctx: Context,
         board_id: int,
         stack_id: int,
-        include_archived_cards: bool = False,
+        detail: DetailLevel = "summary",
+        status: CardStatus = "open",
+        label: str | None = None,
+        assigned_to: str | None = None,
         description_max_length: int | None = None,
+        description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
     ) -> ListCardsResponse:
         """Get all cards in a Nextcloud Deck stack.
 
-        Filtering is applied client-side after the API returns the full
-        stack, so ``include_archived_cards=False`` and
-        ``description_max_length`` reduce response size visible to the
-        caller but not network bandwidth — network-wise this tool is
-        equivalent to deck_get_stack(include_cards=True).
+        Cards are returned as compact summaries by default. Filtering and
+        projection are applied client-side after the API returns the full
+        stack, so they reduce the tokens the caller sees but not network
+        bandwidth — network-wise this tool is equivalent to
+        deck_get_stack(include_cards=True).
 
         Args:
             board_id: The ID of the board
             stack_id: The ID of the stack
-            include_archived_cards: Include archived cards (default False).
-                Archived cards can also be retrieved per-board via
-                deck_get_archived_stacks.
-            description_max_length: If set, truncate each card's description
-                to this many characters.
+            detail: "summary" (default) returns compact card rows; "full"
+                returns the complete card objects.
+            status: "open" (default), "done", "archived", or "all". The first
+                three partition the board (a done+archived card counts as
+                "archived").
+            label: If set, only cards carrying a label with this exact title.
+            assigned_to: If set, only cards assigned to this user UID.
+            description_max_length: In detail="full", truncate descriptions.
+            description_preview_length: In detail="summary", preview length.
         """
-        _validate_description_max_length(description_max_length)
+        _validate_positive_length(description_max_length)
+        _validate_positive_length(
+            description_preview_length, "description_preview_length"
+        )
         client = await get_client(ctx)
         stack = await client.deck.get_stack(board_id, stack_id)
-        cards = _apply_card_filters(
-            stack.cards or [],
-            include_archived_cards=include_archived_cards,
+        cards = _shape_cards(
+            cast(list[DeckCard], stack.cards or []),
+            detail=detail,
+            status=status,
+            label=label,
+            assigned_to=assigned_to,
             description_max_length=description_max_length,
+            description_preview_length=description_preview_length,
         )
         return ListCardsResponse(cards=cards, total=len(cards))
+
+    @mcp.tool(
+        title="Get Deck Board Overview",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("deck.read")
+    @instrument_tool
+    async def deck_get_board_overview(
+        ctx: Context,
+        board_id: int,
+        status: CardStatus = "open",
+        label: str | None = None,
+        assigned_to: str | None = None,
+        description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
+    ) -> BoardOverviewResponse:
+        """Get a compact, whole-board snapshot in a single call.
+
+        Returns the board title, its label legend, and every stack with its
+        cards projected to compact summary rows. Prefer it for "show me the
+        board" / "what's in progress" style requests on large boards — it is
+        the token-efficient way to view board *state*. It intentionally omits
+        the board-management fields (ACL, user list, full label objects) that
+        deck_get_board exposes; reach for deck_get_board when you need those.
+
+        Args:
+            board_id: The ID of the board
+            status: Which cards to include — "open" (default), "done",
+                "archived", or "all". The first three partition the board
+                (a card that is both done and archived counts as "archived").
+            label: If set, only cards carrying a label with this exact title.
+            assigned_to: If set, only cards assigned to this user UID.
+            description_preview_length: Length of the description preview
+                carried on each card summary (default 140).
+        """
+        _validate_positive_length(
+            description_preview_length, "description_preview_length"
+        )
+        client = await get_client(ctx)
+
+        board_holder: list[DeckBoard] = []
+        stacks_holder: list[list[DeckStack]] = []
+
+        async def _get_board() -> None:
+            board_holder.append(await client.deck.get_board(board_id))
+
+        async def _get_stacks() -> None:
+            stacks_holder.append(await client.deck.get_stacks(board_id))
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_get_board)
+            tg.start_soon(_get_stacks)
+
+        board = board_holder[0]
+        stacks = stacks_holder[0]
+
+        stack_overviews: list[StackOverview] = []
+        total_cards = 0
+        for stack in stacks:
+            summaries = [
+                _summarize_card(c, description_preview_length)
+                for c in _filter_cards(
+                    cast(list[DeckCard], stack.cards or []),
+                    status=status,
+                    label=label,
+                    assigned_to=assigned_to,
+                )
+            ]
+            total_cards += len(summaries)
+            stack_overviews.append(
+                StackOverview(
+                    id=stack.id,
+                    title=stack.title,
+                    order=stack.order,
+                    card_count=len(summaries),
+                    cards=summaries,
+                )
+            )
+
+        return BoardOverviewResponse(
+            board_id=board.id,
+            title=board.title,
+            labels=[lbl.title for lbl in (board.labels or [])],
+            stacks=stack_overviews,
+            total_cards=total_cards,
+        )
 
     @mcp.tool(
         title="Get Deck Card",
@@ -1016,18 +1316,40 @@ def configure_deck_tools(mcp: FastMCP):
     @require_scopes("deck.read")
     @instrument_tool
     async def deck_get_card_comments(
-        ctx: Context, card_id: int, limit: int = 20, offset: int = 0
+        ctx: Context,
+        card_id: int,
+        limit: int = 20,
+        offset: int = 0,
+        detail: DetailLevel = "summary",
+        message_max_length: int | None = None,
+        order: Literal["newest", "oldest"] = "newest",
     ) -> ListCardCommentsResponse:
-        """List comments on a Nextcloud Deck card
+        """List comments on a Nextcloud Deck card.
+
+        Returns compact comments by default (dropping mentions, actor type and
+        display name). Ordering and truncation apply within the returned page.
 
         Args:
             card_id: The ID of the card
             limit: Maximum number of comments to return (default 20, max 200)
             offset: Pagination offset (default 0)
+            detail: "summary" (default) returns compact comments; "full"
+                returns the complete comment objects.
+            message_max_length: If set, truncate each comment message to this
+                many characters.
+            order: "newest" (default) or "oldest" — sort the page by creation
+                time.
         """
+        _validate_positive_length(message_max_length, "message_max_length")
         client = await get_client(ctx)
         comments = await client.deck.get_comments(card_id, limit=limit, offset=offset)
-        return ListCardCommentsResponse(results=comments, count=len(comments))
+        shaped = _shape_comments(
+            comments,
+            detail=detail,
+            message_max_length=message_max_length,
+            order=order,
+        )
+        return ListCardCommentsResponse(results=shaped, count=len(shaped))
 
     @mcp.tool(
         title="Create Deck Card Comment",
