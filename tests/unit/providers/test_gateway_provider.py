@@ -289,3 +289,59 @@ async def test_detect_dimension_skips_when_already_known(monkeypatch):
     await provider._detect_dimension()
     assert called["n"] == 0
     assert provider.get_dimension() == 1024
+
+
+# --- /v1 base-path normalization --------------------------------------------
+# EMBEDDING_GATEWAY_URL is configured as a bare origin (scheme://host:port);
+# the provider appends the gateway's /v1 base path so both the OpenAI SDK's
+# embed posts ({base}/embeddings) and discovery ({base}/models) land under /v1.
+
+
+def _client_base(provider: GatewayProvider) -> str:
+    return str(provider.client.base_url).rstrip("/")
+
+
+def test_bare_base_url_gets_v1_base_path():
+    provider = GatewayProvider(
+        base_url="http://gw:8083", embedding_model="mistral/mistral-embed"
+    )
+    assert _client_base(provider).endswith("/v1")
+
+
+def test_v1_base_url_is_idempotent():
+    # A URL that already carries /v1 (e.g. legacy config) is not doubled.
+    provider = GatewayProvider(
+        base_url="http://gw:8083/v1", embedding_model="mistral/mistral-embed"
+    )
+    base = _client_base(provider)
+    assert base.endswith("/v1")
+    assert not base.endswith("/v1/v1")
+
+
+def test_trailing_slash_base_url_normalized():
+    provider = GatewayProvider(
+        base_url="http://gw:8083/", embedding_model="mistral/mistral-embed"
+    )
+    base = _client_base(provider)
+    assert base.endswith("/v1")
+    assert not base.endswith("/v1/v1")
+
+
+async def test_detect_dimension_with_bare_base_url_hits_v1_models(monkeypatch):
+    """End-to-end of the fix: a bare-origin base_url still resolves the
+    dimension because discovery lands on /v1/models."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(
+            200, json={"data": [{"id": "mistral/mistral-embed", "dimension": 1024}]}
+        )
+
+    _mock_async_client(monkeypatch, handler)
+    provider = GatewayProvider(
+        base_url="http://gw:8083", embedding_model="mistral/mistral-embed"
+    )
+    await provider._detect_dimension()
+    assert provider.get_dimension() == 1024
+    assert seen["url"].endswith("/v1/models")
