@@ -145,24 +145,24 @@ class DeckCardSummary(BaseModel):
     title: str
     stackId: int
     archived: bool = False
-    duedate: Optional[datetime] = None
-    done: Optional[datetime] = None
-    labels: List[str] = Field(
+    duedate: datetime | None = None
+    done: datetime | None = None
+    labels: list[str] = Field(
         default_factory=list, description="Label titles assigned to the card"
     )
-    assignedUsers: List[str] = Field(
+    assignedUsers: list[str] = Field(
         default_factory=list, description="UIDs of users assigned to the card"
     )
-    attachmentCount: Optional[int] = Field(
+    attachmentCount: int | None = Field(
         default=None, description="Number of attachments on the card"
     )
-    commentsUnread: Optional[int] = Field(
+    commentsUnread: int | None = Field(
         default=None, description="Number of unread comments (Deck exposes no total)"
     )
     hasDescription: bool = Field(
         default=False, description="Whether the card has a non-empty description"
     )
-    descriptionPreview: Optional[str] = Field(
+    descriptionPreview: str | None = Field(
         default=None, description="Truncated preview of the card description"
     )
 
@@ -176,7 +176,7 @@ class DeckStack(BaseModel):
     lastModified: Optional[int] = None
     # Cards may be projected to DeckCardSummary when a tool is called with
     # detail="summary" (the default for list tools).
-    cards: Optional[List[Union[DeckCard, DeckCardSummary]]] = None
+    cards: list[DeckCard | DeckCardSummary] | None = None
     etag: Optional[str] = Field(default=None, alias="ETag")
 
 
@@ -279,9 +279,9 @@ class StackOverview(BaseModel):
 
     id: int = Field(description="Stack ID")
     title: str = Field(description="Stack title")
-    order: Optional[int] = Field(default=None, description="Stack sort order")
+    order: int | None = Field(default=None, description="Stack sort order")
     card_count: int = Field(description="Number of cards returned for this stack")
-    cards: List[DeckCardSummary] = Field(
+    cards: list[DeckCardSummary] = Field(
         default_factory=list, description="Compact card rows in this stack"
     )
 
@@ -295,10 +295,10 @@ class BoardOverviewResponse(BaseResponse):
 
     board_id: int = Field(description="Board ID")
     title: str = Field(description="Board title")
-    labels: List[str] = Field(
+    labels: list[str] = Field(
         default_factory=list, description="Board label titles (legend)"
     )
-    stacks: List[StackOverview] = Field(
+    stacks: list[StackOverview] = Field(
         default_factory=list, description="Stacks with compact card rows"
     )
     total_cards: int = Field(description="Total cards across all returned stacks")
@@ -353,7 +353,7 @@ class CreateLabelResponse(BaseResponse):
 class ListCardsResponse(BaseResponse):
     """Response model for listing deck cards."""
 
-    cards: list[Union[DeckCard, DeckCardSummary]] = Field(
+    cards: list[DeckCard | DeckCardSummary] = Field(
         description="List of deck cards (summaries unless detail='full')"
     )
     total: int = Field(description="Total number of cards")
@@ -379,7 +379,7 @@ class LabelOperationResponse(StatusResponse):
 class ListCardCommentsResponse(BaseResponse):
     """Response model for listing card comments."""
 
-    results: list[Union[DeckComment, DeckCommentSummary]] = Field(
+    results: list[DeckComment | DeckCommentSummary] = Field(
         description="Card comments in this page (summaries unless detail='full')"
     )
     count: int = Field(

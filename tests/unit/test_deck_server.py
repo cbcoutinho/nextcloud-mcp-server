@@ -28,7 +28,7 @@ from nextcloud_mcp_server.server.deck import (
     _summarize_card,
     _truncate_card_descriptions,
     _truncate_comment_message,
-    _validate_description_max_length,
+    _validate_positive_length,
 )
 
 pytestmark = pytest.mark.unit
@@ -182,30 +182,30 @@ def test_truncate_card_descriptions_shorter_than_limit_no_ellipsis():
     assert cards[0].description == "hello"
 
 
-# _validate_description_max_length ----------------------------------------
+# _validate_positive_length ----------------------------------------
 
 
-def test_validate_description_max_length_accepts_none():
+def test_validate_positive_length_accepts_none():
     """None is the documented sentinel for "no truncation"."""
-    _validate_description_max_length(None)
+    _validate_positive_length(None)
 
 
-def test_validate_description_max_length_accepts_positive():
+def test_validate_positive_length_accepts_positive():
     """Positive values pass through silently."""
-    _validate_description_max_length(1)
-    _validate_description_max_length(1000)
+    _validate_positive_length(1)
+    _validate_positive_length(1000)
 
 
-def test_validate_description_max_length_rejects_zero():
+def test_validate_positive_length_rejects_zero():
     """Zero would wipe descriptions to a single ellipsis — reject at the boundary."""
     with pytest.raises(ValueError, match="must be positive"):
-        _validate_description_max_length(0)
+        _validate_positive_length(0)
 
 
-def test_validate_description_max_length_rejects_negative():
+def test_validate_positive_length_rejects_negative():
     """Negative values produce surprising slice semantics — reject at the boundary."""
     with pytest.raises(ValueError, match="must be positive"):
-        _validate_description_max_length(-10)
+        _validate_positive_length(-10)
 
 
 # _apply_board_filters ------------------------------------------------------
@@ -299,8 +299,8 @@ def test_filter_cards_open_excludes_archived_and_done():
     assert [c.id for c in result] == [1]
 
 
-def test_filter_cards_done_keeps_only_done():
-    """status="done" keeps only cards with a done timestamp."""
+def test_filter_cards_done_keeps_only_done_and_not_archived():
+    """status="done" keeps done cards that are not archived."""
     done_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
     cards = [_make_card(1), _make_card(2, done=done_at)]
     result = _filter_cards(cards, status="done", label=None, assigned_to=None)
@@ -312,6 +312,27 @@ def test_filter_cards_archived_keeps_only_archived():
     cards = [_make_card(1), _make_card(2, archived=True)]
     result = _filter_cards(cards, status="archived", label=None, assigned_to=None)
     assert [c.id for c in result] == [2]
+
+
+def test_filter_cards_statuses_partition_the_board():
+    """open/done/archived are non-overlapping; a done+archived card counts
+    only as "archived", not "done"."""
+    done_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    open_card = _make_card(1)
+    done_card = _make_card(2, done=done_at)
+    done_and_archived = _make_card(3, done=done_at, archived=True)
+    cards = [open_card, done_card, done_and_archived]
+
+    assert [
+        c.id for c in _filter_cards(cards, status="open", label=None, assigned_to=None)
+    ] == [1]
+    assert [
+        c.id for c in _filter_cards(cards, status="done", label=None, assigned_to=None)
+    ] == [2]
+    assert [
+        c.id
+        for c in _filter_cards(cards, status="archived", label=None, assigned_to=None)
+    ] == [3]
 
 
 def test_filter_cards_all_keeps_everything():

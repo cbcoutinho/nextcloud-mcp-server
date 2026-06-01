@@ -51,7 +51,7 @@ DetailLevel = Literal["summary", "full"]
 _DEFAULT_DESCRIPTION_PREVIEW = 140
 
 
-def _validate_description_max_length(
+def _validate_positive_length(
     value: int | None, name: str = "description_max_length"
 ) -> None:
     """Tool-layer guard: reject zero/negative length thresholds.
@@ -113,12 +113,16 @@ def _filter_cards(
 
     The upstream Deck API returns every card (including archived ones) inline,
     so this filtering reduces the tokens the caller sees but not network
-    bandwidth. ``status="open"`` excludes archived and explicitly-done cards.
+    bandwidth.
+
+    ``open``/``done``/``archived`` partition the cards (no overlap): a card
+    that is both done and archived is reported only under ``archived``, since
+    archiving is the stronger "off the active board" state.
     """
     if status == "open":
         cards = [c for c in cards if not c.archived and c.done is None]
     elif status == "done":
-        cards = [c for c in cards if c.done is not None]
+        cards = [c for c in cards if c.done is not None and not c.archived]
     elif status == "archived":
         cards = [c for c in cards if c.archived]
     # status == "all": no status filter
@@ -473,8 +477,9 @@ def configure_deck_tools(mcp: FastMCP):
                 via deck_get_cards.
             detail: "summary" (default) returns compact card rows; "full"
                 returns the complete card objects (the old behavior).
-            status: Which cards to include — "open" (default; excludes
-                archived and done), "done", "archived", or "all".
+            status: Which cards to include — "open" (default), "done",
+                "archived", or "all". The first three partition the board
+                (a card that is both done and archived counts as "archived").
             label: If set, only cards carrying a label with this exact title.
             assigned_to: If set, only cards assigned to this user UID.
             description_max_length: In detail="full", truncate each card's
@@ -482,8 +487,8 @@ def configure_deck_tools(mcp: FastMCP):
             description_preview_length: In detail="summary", length of the
                 description preview carried on each card (default 140).
         """
-        _validate_description_max_length(description_max_length)
-        _validate_description_max_length(
+        _validate_positive_length(description_max_length)
+        _validate_positive_length(
             description_preview_length, "description_preview_length"
         )
         client = await get_client(ctx)
@@ -531,14 +536,15 @@ def configure_deck_tools(mcp: FastMCP):
             stack_id: The ID of the stack
             include_cards: Include cards in the stack (default True).
             detail: "summary" (default) or "full".
-            status: "open" (default), "done", "archived", or "all".
+            status: "open" (default), "done", "archived", or "all"
+                (non-overlapping; a done+archived card counts as "archived").
             label: If set, only cards carrying a label with this exact title.
             assigned_to: If set, only cards assigned to this user UID.
             description_max_length: In detail="full", truncate descriptions.
             description_preview_length: In detail="summary", preview length.
         """
-        _validate_description_max_length(description_max_length)
-        _validate_description_max_length(
+        _validate_positive_length(description_max_length)
+        _validate_positive_length(
             description_preview_length, "description_preview_length"
         )
         client = await get_client(ctx)
@@ -564,6 +570,8 @@ def configure_deck_tools(mcp: FastMCP):
         ctx: Context,
         board_id: int,
         detail: DetailLevel = "summary",
+        label: str | None = None,
+        assigned_to: str | None = None,
         description_max_length: int | None = None,
         description_preview_length: int = _DEFAULT_DESCRIPTION_PREVIEW,
     ) -> ListStacksResponse:
@@ -576,30 +584,35 @@ def configure_deck_tools(mcp: FastMCP):
 
         Cards are always included on the returned stacks (an archived stack
         without its cards would have no audit value) and returned as compact
-        summaries by default.
+        summaries by default. There is no ``status`` filter — every card here
+        is archived by definition — but ``label``/``assigned_to`` narrow the
+        set just like the active-stack tools.
 
         Args:
             board_id: The ID of the board
             detail: "summary" (default) or "full".
+            label: If set, only cards carrying a label with this exact title.
+            assigned_to: If set, only cards assigned to this user UID.
             description_max_length: In detail="full", truncate descriptions.
             description_preview_length: In detail="summary", preview length.
         """
-        _validate_description_max_length(description_max_length)
-        _validate_description_max_length(
+        _validate_positive_length(description_max_length)
+        _validate_positive_length(
             description_preview_length, "description_preview_length"
         )
         client = await get_client(ctx)
         stacks = await client.deck.get_archived_stacks(board_id)
         # All cards in archived stacks are themselves archived; status="all"
         # keeps them (an "open"/"done" filter would drop the whole point).
+        # label/assigned_to still apply for targeted audits.
         stacks = [
             _apply_stack_filters(
                 stack,
                 include_cards=True,
                 detail=detail,
                 status="all",
-                label=None,
-                assigned_to=None,
+                label=label,
+                assigned_to=assigned_to,
                 description_max_length=description_max_length,
                 description_preview_length=description_preview_length,
             )
@@ -637,15 +650,16 @@ def configure_deck_tools(mcp: FastMCP):
             stack_id: The ID of the stack
             detail: "summary" (default) returns compact card rows; "full"
                 returns the complete card objects.
-            status: "open" (default; excludes archived and done), "done",
-                "archived", or "all".
+            status: "open" (default), "done", "archived", or "all". The first
+                three partition the board (a done+archived card counts as
+                "archived").
             label: If set, only cards carrying a label with this exact title.
             assigned_to: If set, only cards assigned to this user UID.
             description_max_length: In detail="full", truncate descriptions.
             description_preview_length: In detail="summary", preview length.
         """
-        _validate_description_max_length(description_max_length)
-        _validate_description_max_length(
+        _validate_positive_length(description_max_length)
+        _validate_positive_length(
             description_preview_length, "description_preview_length"
         )
         client = await get_client(ctx)
@@ -678,21 +692,23 @@ def configure_deck_tools(mcp: FastMCP):
         """Get a compact, whole-board snapshot in a single call.
 
         Returns the board title, its label legend, and every stack with its
-        cards projected to compact summary rows. This is the token-efficient
-        replacement for calling deck_get_board + deck_get_stacks when you just
-        need to see the state of the board — prefer it for "show me the
-        board" / "what's in progress" style requests on large boards.
+        cards projected to compact summary rows. Prefer it for "show me the
+        board" / "what's in progress" style requests on large boards — it is
+        the token-efficient way to view board *state*. It intentionally omits
+        the board-management fields (ACL, user list, full label objects) that
+        deck_get_board exposes; reach for deck_get_board when you need those.
 
         Args:
             board_id: The ID of the board
-            status: Which cards to include — "open" (default; excludes
-                archived and done), "done", "archived", or "all".
+            status: Which cards to include — "open" (default), "done",
+                "archived", or "all". The first three partition the board
+                (a card that is both done and archived counts as "archived").
             label: If set, only cards carrying a label with this exact title.
             assigned_to: If set, only cards assigned to this user UID.
             description_preview_length: Length of the description preview
                 carried on each card summary (default 140).
         """
-        _validate_description_max_length(
+        _validate_positive_length(
             description_preview_length, "description_preview_length"
         )
         client = await get_client(ctx)
@@ -1324,7 +1340,7 @@ def configure_deck_tools(mcp: FastMCP):
             order: "newest" (default) or "oldest" — sort the page by creation
                 time.
         """
-        _validate_description_max_length(message_max_length, "message_max_length")
+        _validate_positive_length(message_max_length, "message_max_length")
         client = await get_client(ctx)
         comments = await client.deck.get_comments(card_id, limit=limit, offset=offset)
         shaped = _shape_comments(

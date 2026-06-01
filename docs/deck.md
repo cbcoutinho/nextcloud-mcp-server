@@ -59,7 +59,7 @@ default** and support filtering so you fetch only what you need.
 | Parameter | Default | Effect |
 |-----------|---------|--------|
 | `detail` | `summary` | `summary` returns compact rows (id, title, stackId, labels as titles, assignee UIDs, due/done, counts, a short `descriptionPreview`); `full` returns the complete card objects (the pre-0.92 shape). |
-| `status` | `open` | Filter before serialization: `open` (excludes archived **and** done), `done`, `archived`, or `all`. |
+| `status` | `open` | Filter before serialization: `open`, `done`, `archived`, or `all`. The first three **partition** the board (no overlap) — a card that is both done and archived is reported only under `archived`. |
 | `label` | – | Only cards carrying a label with this exact title. |
 | `assigned_to` | – | Only cards assigned to this user UID. |
 | `description_max_length` | – | In `detail="full"`, truncate each description. |
