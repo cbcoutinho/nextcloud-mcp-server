@@ -356,6 +356,142 @@ async def test_provision_app_password_nextcloud_validation_fails(mocker):
     assert "Invalid app password" in response.json()["error"]
 
 
+def _mock_ocs_client(mocker, *, status_code: int, json_payload=None, json_error=None):
+    """Build a mocked ``nextcloud_httpx_client`` returning a canned OCS response.
+
+    ``json_payload`` sets ``response.json()`` return value; ``json_error`` makes
+    ``response.json()`` raise (simulating a non-JSON body).
+    """
+    mock_response = MagicMock()
+    mock_response.status_code = status_code
+    if json_error is not None:
+        mock_response.json.side_effect = json_error
+    else:
+        mock_response.json.return_value = json_payload
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock()
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.nextcloud_httpx_client",
+        return_value=mock_client,
+    )
+    return mock_client
+
+
+def _provision_only_app():
+    return Starlette(
+        routes=[
+            Route(
+                "/api/v1/users/{user_id}/app-password",
+                provision_app_password,
+                methods=["POST"],
+            ),
+        ]
+    )
+
+
+async def test_provision_app_password_ocs_v1_failure_payload_returns_401(mocker):
+    """Regression for #824: an OCS auth-failure payload (HTTP 200 +
+    ``meta.statuscode: 997`` + ``data: []``) must return 401, never 500.
+
+    OCS v1 always returns HTTP 200; the old ``status_code != 200`` guard never
+    fired, so execution fell through to ``[].get("id")`` and raised
+    ``AttributeError: 'list' object has no attribute 'get'`` as an unhandled
+    500.
+    """
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="http://localhost:8080",
+            nextcloud_verify_ssl=True,
+            nextcloud_ca_bundle=None,
+        ),
+    )
+    _mock_ocs_client(
+        mocker,
+        status_code=200,
+        json_payload={"ocs": {"meta": {"statuscode": 997}, "data": []}},
+    )
+
+    client = TestClient(_provision_only_app())
+    response = client.post(
+        "/api/v1/users/Admin/app-password",
+        headers={
+            "Authorization": create_basic_auth_header(
+                "Admin", "aaaaa-bbbbb-ccccc-ddddd-eeeee"
+            )
+        },
+    )
+
+    assert response.status_code == 401
+    assert "Invalid app password" in response.json()["error"]
+
+
+async def test_provision_app_password_nondict_data_does_not_500(mocker):
+    """Regression for #824: a non-dict ``ocs.data`` under HTTP 200 (list, or
+    ``null``) is handled gracefully (401), not as an unhandled 500/
+    AttributeError."""
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="http://localhost:8080",
+            nextcloud_verify_ssl=True,
+            nextcloud_ca_bundle=None,
+        ),
+    )
+
+    for bad_data in ([], None, "unexpected"):
+        passwords._rate_limit_attempts.clear()
+        _mock_ocs_client(
+            mocker,
+            status_code=200,
+            json_payload={"ocs": {"data": bad_data}},
+        )
+        client = TestClient(_provision_only_app())
+        response = client.post(
+            "/api/v1/users/testuser/app-password",
+            headers={
+                "Authorization": create_basic_auth_header(
+                    "testuser", "aaaaa-bbbbb-ccccc-ddddd-eeeee"
+                )
+            },
+        )
+        assert response.status_code == 401, f"data={bad_data!r} should yield 401"
+        assert "Invalid app password" in response.json()["error"]
+
+
+async def test_provision_app_password_non_json_response_returns_502(mocker):
+    """A non-JSON OCS body under HTTP 200 returns a clean 502, not a 500."""
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="http://localhost:8080",
+            nextcloud_verify_ssl=True,
+            nextcloud_ca_bundle=None,
+        ),
+    )
+    _mock_ocs_client(
+        mocker,
+        status_code=200,
+        json_error=ValueError("Expecting value: line 1 column 1 (char 0)"),
+    )
+
+    client = TestClient(_provision_only_app())
+    response = client.post(
+        "/api/v1/users/testuser/app-password",
+        headers={
+            "Authorization": create_basic_auth_header(
+                "testuser", "aaaaa-bbbbb-ccccc-ddddd-eeeee"
+            )
+        },
+    )
+
+    assert response.status_code == 502
+    assert "Unexpected response" in response.json()["error"]
+
+
 async def test_get_app_password_status_provisioned(temp_storage, mocker):
     """Test checking status when app password is provisioned."""
     # Store an app password
@@ -441,9 +577,12 @@ async def test_delete_app_password_success(temp_storage, mocker):
         ),
     )
 
-    # Mock httpx client for Nextcloud validation
+    # Mock httpx client for Nextcloud validation (OCS v2 success shape)
     mock_response = MagicMock()
     mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "ocs": {"meta": {"statuscode": 200}, "data": {"id": "testuser"}}
+    }
 
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(return_value=mock_response)
@@ -489,9 +628,12 @@ async def test_delete_app_password_not_found(temp_storage, mocker):
         ),
     )
 
-    # Mock httpx client for Nextcloud validation
+    # Mock httpx client for Nextcloud validation (OCS v2 success shape)
     mock_response = MagicMock()
     mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "ocs": {"meta": {"statuscode": 200}, "data": {"id": "testuser"}}
+    }
 
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(return_value=mock_response)
@@ -562,6 +704,50 @@ async def test_delete_app_password_invalid_credentials(mocker):
         headers={
             "Authorization": create_basic_auth_header(
                 "testuser", "wrong-password-xxxxx"
+            )
+        },
+    )
+
+    assert response.status_code == 401
+    assert "Invalid credentials" in response.json()["error"]
+
+
+async def test_delete_app_password_ocs_failure_payload_returns_401(mocker):
+    """Regression for #824: delete shares the OCS v2 + defensive parsing path.
+
+    An OCS auth-failure payload (HTTP 200 + ``data: []``) must reject the
+    deletion with 401 — previously the ``!= 200`` guard on v1.php never fired,
+    so a wrong password silently passed validation (an auth bypass on delete).
+    """
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="http://localhost:8080",
+            nextcloud_verify_ssl=True,
+            nextcloud_ca_bundle=None,
+        ),
+    )
+    _mock_ocs_client(
+        mocker,
+        status_code=200,
+        json_payload={"ocs": {"meta": {"statuscode": 997}, "data": []}},
+    )
+
+    app = Starlette(
+        routes=[
+            Route(
+                "/api/v1/users/{user_id}/app-password",
+                delete_app_password,
+                methods=["DELETE"],
+            ),
+        ]
+    )
+    client = TestClient(app)
+    response = client.delete(
+        "/api/v1/users/testuser/app-password",
+        headers={
+            "Authorization": create_basic_auth_header(
+                "testuser", "aaaaa-bbbbb-ccccc-ddddd-eeeee"
             )
         },
     )

@@ -39,6 +39,11 @@ APP_PASSWORD_PATTERN = re.compile(r"^[a-zA-Z0-9-]{20,256}$")
 # Timeout for Nextcloud API validation requests (seconds)
 NEXTCLOUD_VALIDATION_TIMEOUT = 10.0
 
+# OCS meta status codes that indicate success. OCS v1 (``/ocs/v1.php``) reports
+# 100; OCS v2 (``/ocs/v2.php``) reports 200. We query v2 (see
+# ``_validate_nextcloud_credentials``) but accept both for robustness.
+_OCS_SUCCESS_STATUSCODES = frozenset({100, 200})
+
 # Rate limiting configuration for app password provisioning
 # Limits: 5 attempts per user per hour
 RATE_LIMIT_MAX_ATTEMPTS = 5
@@ -182,6 +187,94 @@ async def _get_app_password_storage(request: Request) -> RefreshTokenStorage:
     return storage
 
 
+async def _validate_nextcloud_credentials(
+    nextcloud_host: str, login_name: str, password: str
+) -> tuple[str | None, JSONResponse | None]:
+    """Validate a credential against Nextcloud and return the account UID.
+
+    Authenticates against the OCS ``/cloud/user`` endpoint as ``login_name``.
+    Nextcloud keys app-password auth on the *loginName*, which may differ from
+    the UID (e.g. OIDC-provisioned users, or the ``admin`` account whose display
+    name is ``Admin``).
+
+    Queries OCS **v2** (``/ocs/v2.php``) deliberately. OCS **v1**
+    (``/ocs/v1.php``) always returns HTTP 200 — even on auth failure, where it
+    wraps the real status in ``ocs.meta.statuscode`` (997 = unauthenticated) and
+    returns ``ocs.data`` as an empty list ``[]``. v2 maps the OCS status onto
+    the HTTP status, so a failed credential is a real 401. The payload is also
+    parsed defensively so a non-dict ``ocs.data`` can never raise — this is the
+    crash behind issue #824 (``AttributeError: 'list' object has no attribute
+    'get'`` escaping as an unhandled 500).
+
+    Returns:
+        ``(ocs_user_id, None)`` on success, otherwise ``(None, error_response)``
+        with a ready-to-return :class:`JSONResponse`: 401 for an invalid
+        credential, 502 when Nextcloud is unreachable or returns something we
+        cannot parse.
+    """
+    try:
+        async with nextcloud_httpx_client(
+            timeout=NEXTCLOUD_VALIDATION_TIMEOUT
+        ) as client:
+            response = await client.get(
+                f"{nextcloud_host}/ocs/v2.php/cloud/user",
+                auth=(login_name, password),
+                params={"format": "json"},
+                headers={"OCS-APIRequest": "true"},
+            )
+    except httpx.RequestError as e:
+        logger.error("Failed to reach Nextcloud for credential validation: %s", e)
+        return None, JSONResponse(
+            {"success": False, "error": "Failed to validate credentials"},
+            status_code=502,
+        )
+
+    # v2.php maps an OCS auth failure onto a real HTTP status (e.g. 401).
+    if response.status_code != 200:
+        logger.warning("Credential validation failed: HTTP %s", response.status_code)
+        return None, JSONResponse(
+            {"success": False, "error": "Invalid app password"},
+            status_code=401,
+        )
+
+    # Parse defensively: even on HTTP 200 the body may be malformed or carry a
+    # non-dict ``ocs.data`` (the v1.php auth-failure shape, kept as a guard
+    # against surprises). Never call ``.get`` on something that isn't a dict.
+    try:
+        payload = response.json()
+    except ValueError as e:
+        logger.error("Nextcloud returned a non-JSON OCS response: %s", e)
+        return None, JSONResponse(
+            {"success": False, "error": "Unexpected response from Nextcloud"},
+            status_code=502,
+        )
+
+    ocs = payload.get("ocs") if isinstance(payload, dict) else None
+    meta = ocs.get("meta") if isinstance(ocs, dict) else None
+    statuscode = meta.get("statuscode") if isinstance(meta, dict) else None
+    ocs_data = ocs.get("data") if isinstance(ocs, dict) else None
+    ocs_user_id = ocs_data.get("id") if isinstance(ocs_data, dict) else None
+
+    # Treat a non-success OCS status, or a payload we can't read a user id from,
+    # as a failed validation rather than crashing. ``statuscode`` is ``None``
+    # when ``meta`` is absent; fall back to "did we get a user id?" so a minimal
+    # but valid response still passes.
+    if (
+        statuscode is not None and statuscode not in _OCS_SUCCESS_STATUSCODES
+    ) or not ocs_user_id:
+        logger.warning(
+            "Credential validation failed: OCS statuscode=%s, user_id present=%s",
+            statuscode,
+            ocs_user_id is not None,
+        )
+        return None, JSONResponse(
+            {"success": False, "error": "Invalid app password"},
+            status_code=401,
+        )
+
+    return ocs_user_id, None
+
+
 async def provision_app_password(request: Request) -> JSONResponse:
     """POST /api/v1/users/{user_id}/app-password - Store app password for background sync.
 
@@ -271,47 +364,21 @@ async def provision_app_password(request: Request) -> JSONResponse:
     # literally in the header (RFC 7617 — no URL-encoding) and Nextcloud keys
     # app-password auth on the loginName, so authenticate as the loginName, not
     # the UID.
-    try:
-        async with nextcloud_httpx_client(
-            timeout=NEXTCLOUD_VALIDATION_TIMEOUT
-        ) as client:
-            # Use OCS API to verify credentials
-            test_url = f"{nextcloud_host}/ocs/v1.php/cloud/user"
-            response = await client.get(
-                test_url,
-                auth=(login_name, app_password),
-                params={"format": "json"},
-                headers={"OCS-APIRequest": "true"},
-            )
+    ocs_user_id, error_response = await _validate_nextcloud_credentials(
+        nextcloud_host, login_name, app_password
+    )
+    if error_response is not None:
+        _record_rate_limit_attempt(path_user_id, success=False)
+        return error_response
 
-            if response.status_code != 200:
-                logger.warning(
-                    "App password validation failed for user: HTTP %s",
-                    response.status_code,
-                )
-                _record_rate_limit_attempt(path_user_id, success=False)
-                return JSONResponse(
-                    {"success": False, "error": "Invalid app password"},
-                    status_code=401,
-                )
-
-            # Verify the authenticated account maps to the path user_id (UID):
-            # the loginName must resolve to the UID claimed in the URL path.
-            data = response.json()
-            ocs_user_id = data.get("ocs", {}).get("data", {}).get("id")
-            if ocs_user_id != path_user_id:
-                logger.warning("User ID mismatch in OCS response")
-                _record_rate_limit_attempt(path_user_id, success=False)
-                return JSONResponse(
-                    {"success": False, "error": "User ID mismatch"},
-                    status_code=403,
-                )
-
-    except httpx.RequestError as e:
-        logger.error("Failed to validate app password: %s", e)
+    # Verify the authenticated account maps to the path user_id (UID): the
+    # loginName must resolve to the UID claimed in the URL path.
+    if ocs_user_id != path_user_id:
+        logger.warning("User ID mismatch in OCS response")
+        _record_rate_limit_attempt(path_user_id, success=False)
         return JSONResponse(
-            {"success": False, "error": "Failed to validate credentials"},
-            status_code=500,
+            {"success": False, "error": "User ID mismatch"},
+            status_code=403,
         )
 
     # Store the validated app password
@@ -402,33 +469,43 @@ async def delete_app_password(request: Request) -> JSONResponse:
     if error_response is not None:
         return error_response
 
-    # Validate credentials against Nextcloud
+    # Nextcloud keys app-password auth on the loginName, which can differ from
+    # the UID (OIDC-provisioned users). Use the loginName from the body when
+    # present, falling back to the path UID for legacy callers — same contract
+    # as provisioning.
+    nc_username = None
+    try:
+        body = await request.json()
+        nc_username = body.get("username")
+    except Exception:
+        pass  # No JSON body = legacy call without an explicit loginName
+    login_name = nc_username or username
+
+    # Validate credentials against Nextcloud. Shares the OCS v2 + defensive
+    # parsing path with provisioning (issue #824): OCS v1 always returned HTTP
+    # 200, so the old ``!= 200`` guard never fired and a bad credential could
+    # silently pass — a genuine auth bypass on deletion.
     settings = get_settings()
     nextcloud_host = settings.nextcloud_host
 
-    try:
-        async with nextcloud_httpx_client(
-            timeout=NEXTCLOUD_VALIDATION_TIMEOUT
-        ) as client:
-            test_url = f"{nextcloud_host}/ocs/v1.php/cloud/user"
-            response = await client.get(
-                test_url,
-                auth=(username, password),
-                params={"format": "json"},
-                headers={"OCS-APIRequest": "true"},
-            )
-
-            if response.status_code != 200:
-                return JSONResponse(
-                    {"success": False, "error": "Invalid credentials"},
-                    status_code=401,
-                )
-    except httpx.RequestError as e:
-        logger.error("Failed to validate credentials: %s", e)
+    if not nextcloud_host:
+        logger.error("NEXTCLOUD_HOST not configured")
         return JSONResponse(
-            {"success": False, "error": "Failed to validate credentials"},
+            {"success": False, "error": "Server not configured"},
             status_code=500,
         )
+
+    _, error_response = await _validate_nextcloud_credentials(
+        nextcloud_host, login_name, password
+    )
+    if error_response is not None:
+        # Preserve the historical "Invalid credentials" wording for this route.
+        if error_response.status_code == 401:
+            return JSONResponse(
+                {"success": False, "error": "Invalid credentials"},
+                status_code=401,
+            )
+        return error_response
 
     try:
         storage = await _get_app_password_storage(request)
