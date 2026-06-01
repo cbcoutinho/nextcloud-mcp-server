@@ -5,6 +5,23 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.93.0 (2026-06-01)
+
+### BREAKING CHANGE
+
+- deck list tools now default to detail="summary" and
+status="open". The include_archived_cards parameter is replaced by status
+(use status="all" to include archived cards); pass detail="full" to restore
+the previous per-card shape.
+
+### Feat
+
+- **deck**: compact card/comment retrieval (summaries, filters, board overview)
+
+### Refactor
+
+- **deck**: address PR #826 review feedback
+
 ## v0.92.1 (2026-06-01)
 
 ### Fix
