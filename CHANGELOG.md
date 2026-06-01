@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.92.0 (2026-06-01)
+
+### Feat
+
+- **embedding**: gateway provider discovers dimension via GET /v1/models
+
 ## v0.91.3 (2026-06-01)
 
 ### Fix
