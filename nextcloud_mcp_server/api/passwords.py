@@ -188,7 +188,11 @@ async def _get_app_password_storage(request: Request) -> RefreshTokenStorage:
 
 
 async def _validate_nextcloud_credentials(
-    nextcloud_host: str, login_name: str, password: str
+    nextcloud_host: str,
+    login_name: str,
+    password: str,
+    *,
+    invalid_credential_error: str = "Invalid app password",
 ) -> tuple[str | None, JSONResponse | None]:
     """Validate a credential against Nextcloud and return the account UID.
 
@@ -206,11 +210,15 @@ async def _validate_nextcloud_credentials(
     crash behind issue #824 (``AttributeError: 'list' object has no attribute
     'get'`` escaping as an unhandled 500).
 
+    Args:
+        invalid_credential_error: client-facing error string for the 401 path,
+            so callers can keep their own wording.
+
     Returns:
         ``(ocs_user_id, None)`` on success, otherwise ``(None, error_response)``
-        with a ready-to-return :class:`JSONResponse`: 401 for an invalid
-        credential, 502 when Nextcloud is unreachable or returns something we
-        cannot parse.
+        with a ready-to-return :class:`JSONResponse`: **401** for an invalid
+        credential, **502** when Nextcloud is unreachable, errors out (5xx /
+        maintenance mode), or returns something we cannot parse.
     """
     try:
         async with nextcloud_httpx_client(
@@ -229,12 +237,21 @@ async def _validate_nextcloud_credentials(
             status_code=502,
         )
 
-    # v2.php maps an OCS auth failure onto a real HTTP status (e.g. 401).
-    if response.status_code != 200:
+    # v2.php maps an OCS auth failure onto a real HTTP status. Only 401/403 mean
+    # "bad credential" — anything else non-200 (5xx, 503 maintenance mode) is a
+    # Nextcloud-side problem and must surface as 502, not a misleading "invalid
+    # password" that sends ops chasing the wrong cause.
+    if response.status_code in (401, 403):
         logger.warning("Credential validation failed: HTTP %s", response.status_code)
         return None, JSONResponse(
-            {"success": False, "error": "Invalid app password"},
+            {"success": False, "error": invalid_credential_error},
             status_code=401,
+        )
+    if response.status_code != 200:
+        logger.error("Nextcloud OCS returned HTTP %s", response.status_code)
+        return None, JSONResponse(
+            {"success": False, "error": "Nextcloud returned a server error"},
+            status_code=502,
         )
 
     # Parse defensively: even on HTTP 200 the body may be malformed or carry a
@@ -268,7 +285,7 @@ async def _validate_nextcloud_credentials(
             ocs_user_id is not None,
         )
         return None, JSONResponse(
-            {"success": False, "error": "Invalid app password"},
+            {"success": False, "error": invalid_credential_error},
             status_code=401,
         )
 
@@ -342,10 +359,11 @@ async def provision_app_password(request: Request) -> JSONResponse:
     nc_username = None
     try:
         body = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        body = None  # No / malformed JSON body = legacy call without extras
+    if isinstance(body, dict):
         scopes = body.get("scopes")  # list[str] | None
         nc_username = body.get("username")  # Nextcloud loginName
-    except Exception:
-        pass  # No JSON body = legacy call without scopes / loginName
 
     login_name = nc_username or username
 
@@ -476,9 +494,10 @@ async def delete_app_password(request: Request) -> JSONResponse:
     nc_username = None
     try:
         body = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        body = None  # No / malformed JSON body = legacy call without a loginName
+    if isinstance(body, dict):
         nc_username = body.get("username")
-    except Exception:
-        pass  # No JSON body = legacy call without an explicit loginName
     login_name = nc_username or username
 
     # Validate credentials against Nextcloud. Shares the OCS v2 + defensive
@@ -495,16 +514,15 @@ async def delete_app_password(request: Request) -> JSONResponse:
             status_code=500,
         )
 
+    # Keep this route's historical "Invalid credentials" wording via the helper
+    # rather than unwrapping and rebuilding its response.
     ocs_user_id, error_response = await _validate_nextcloud_credentials(
-        nextcloud_host, login_name, password
+        nextcloud_host,
+        login_name,
+        password,
+        invalid_credential_error="Invalid credentials",
     )
     if error_response is not None:
-        # Preserve the historical "Invalid credentials" wording for this route.
-        if error_response.status_code == 401:
-            return JSONResponse(
-                {"success": False, "error": "Invalid credentials"},
-                status_code=401,
-            )
         return error_response
 
     # The authenticated account must be the UID whose password is being deleted.

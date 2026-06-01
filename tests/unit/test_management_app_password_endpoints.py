@@ -429,6 +429,33 @@ async def test_provision_app_password_ocs_v1_failure_payload_returns_401(mocker)
     assert "Invalid app password" in response.json()["error"]
 
 
+async def test_provision_app_password_nextcloud_5xx_returns_502(mocker):
+    """A Nextcloud server error / maintenance mode (5xx) surfaces as 502, not a
+    misleading 401 that blames the user's password."""
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="http://localhost:8080",
+            nextcloud_verify_ssl=True,
+            nextcloud_ca_bundle=None,
+        ),
+    )
+    for status_code in (500, 503):
+        passwords._rate_limit_attempts.clear()
+        _mock_ocs_client(mocker, status_code=status_code, json_payload={})
+        client = TestClient(_provision_only_app())
+        response = client.post(
+            "/api/v1/users/testuser/app-password",
+            headers={
+                "Authorization": create_basic_auth_header(
+                    "testuser", "aaaaa-bbbbb-ccccc-ddddd-eeeee"
+                )
+            },
+        )
+        assert response.status_code == 502, f"HTTP {status_code} should map to 502"
+        assert "server error" in response.json()["error"].lower()
+
+
 async def test_provision_app_password_nondict_data_does_not_500(mocker):
     """Regression for #824: a non-dict ``ocs.data`` under HTTP 200 (list, or
     ``null``) is handled gracefully (401), not as an unhandled 500/
