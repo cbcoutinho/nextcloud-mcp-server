@@ -5,16 +5,16 @@ instance — the verification path's whole purpose is to consult Nextcloud as
 the source of truth, so unit-level mocks don't catch protocol or status-code
 mismatches between our verifier and the real API.
 
-**Coverage**: only the ``note`` verifier is exercised against real Nextcloud
-here. The ``file`` (WebDAV PROPFIND), ``deck_card`` (Deck app), and
-``news_item`` (News app) verifiers are unit-tested with mocked HTTP
-responses in ``tests/unit/search/test_verification.py``. Adding integration
-coverage for those types is tracked as a follow-up — it requires fixture
-data (tagged PDFs in user files, a Deck board with cards, a News feed) that
-is non-trivial to seed from CI. The mocked unit tests are accurate for
-status-code semantics but won't catch payload-shape regressions in those
-Nextcloud apps; the trade-off is documented here so future readers know
-which suite owns which verifier.
+**Coverage**: the ``note`` verifier and the ``file`` verifier (tag-membership
+gate, see the shared-recipient tests below) are exercised against real
+Nextcloud here. The ``deck_card`` (Deck app) and ``news_item`` (News app)
+verifiers are unit-tested with mocked HTTP responses in
+``tests/unit/search/test_verification.py``. Adding integration coverage for
+those types is tracked as a follow-up — it requires fixture data (a Deck board
+with cards, a News feed) that is non-trivial to seed from CI. The mocked unit
+tests are accurate for status-code semantics but won't catch payload-shape
+regressions in those Nextcloud apps; the trade-off is documented here so
+future readers know which suite owns which verifier.
 
 Qdrant is mocked out (``delete_document_points`` and the payload-resolution
 helpers) so these tests don't require a running vector database. The unit
@@ -30,6 +30,7 @@ import pytest
 from httpx import BasicAuth, HTTPStatusError
 
 from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.search import verification
 from nextcloud_mcp_server.search.algorithms import SearchResult
 from nextcloud_mcp_server.search.verification import verify_search_results
@@ -37,6 +38,17 @@ from nextcloud_mcp_server.search.verification import verify_search_results
 logger = logging.getLogger(__name__)
 
 pytestmark = pytest.mark.integration
+
+# Minimal valid PDF — the file verifier gates on the vector-index tag via
+# find_files_by_tag(..., mime_type_filter="application/pdf"), so file fixtures
+# must be PDFs (matching what the scanner indexes), not .txt.
+_PDF_BYTES = (
+    b"%PDF-1.4\n"
+    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\n"
+    b"trailer<</Root 1 0 R>>\n%%EOF\n"
+)
 
 
 def _result_for_note(note_id: int) -> SearchResult:
@@ -51,9 +63,10 @@ def _result_for_note(note_id: int) -> SearchResult:
 
 def _result_for_file(file_id: int, path: str) -> SearchResult:
     # Mirrors what the algorithm layer propagates: doc_id IS the global file id,
-    # ``path`` is carried in metadata (owner-relative) for log context only.
+    # stringified (SearchResult.id is always str), ``path`` is carried in
+    # metadata (owner-relative) for log context only.
     return SearchResult(
-        id=file_id,
+        id=str(file_id),
         doc_type="file",
         title=path.split("/")[-1],
         excerpt="...",
@@ -222,11 +235,13 @@ async def alice_bob_clients(test_users_setup):
 async def test_verify_keeps_nested_file_shared_with_recipient(
     alice_bob_clients, mocker
 ):
-    """The PR #813 acceptance check at the verifier layer.
+    """The PR #813 acceptance check at the verifier layer, under tag-gating.
 
-    Alice owns a file in a *subfolder* and shares it with Bob. Verifying the
-    result as Bob must KEEP it — proving the id-based check sees the share.
-    A path-based check (the old behaviour) would 404 here and wrongly drop it.
+    Alice owns a PDF in a *subfolder*, tags it ``vector-index`` (userVisible),
+    and shares it with Bob. Verifying the result as Bob must KEEP it — proving
+    the tag REPORT surfaces an owner-assigned tag on a file shared into Bob's
+    tree. If a future Nextcloud version stops surfacing the owner's tag to a
+    recipient, this is where strict tag-gating regresses shared search.
     """
     spy_evict = mocker.AsyncMock()
     mocker.patch.object(verification, "delete_document_points", spy_evict)
@@ -235,12 +250,18 @@ async def test_verify_keeps_nested_file_shared_with_recipient(
     suffix = uuid.uuid4().hex[:8]
     test_dir = f"acl_verify_{suffix}"
     nested_dir = f"{test_dir}/reports"
-    shared_path = f"{nested_dir}/shared.txt"
+    shared_path = f"{nested_dir}/shared.pdf"
 
     await alice.webdav.create_directory(test_dir)
     await alice.webdav.create_directory(nested_dir)
-    await alice.webdav.write_file(shared_path, b"alice's shared report", "text/plain")
+    await alice.webdav.write_file(shared_path, _PDF_BYTES, "application/pdf")
     file_id = (await alice.webdav.get_file_info(shared_path))["id"]
+    tag = await alice.webdav.get_or_create_tag(
+        name=get_settings().vector_sync_pdf_tag,
+        user_visible=True,
+        user_assignable=True,
+    )
+    await alice.webdav.assign_tag_to_file(file_id, tag["id"])
 
     await alice.sharing.create_share(
         path=f"/{shared_path}", share_with="bob", share_type=0, permissions=1
@@ -251,18 +272,23 @@ async def test_verify_keeps_nested_file_shared_with_recipient(
             bob, [_result_for_file(file_id, shared_path)]
         )
 
-        assert [r.id for r in kept] == [file_id], (
-            "a nested file shared with bob must pass verification for bob"
+        assert [r.id for r in kept] == [str(file_id)], (
+            "a nested tagged PDF shared with bob must pass verification for bob"
         )
         assert dropped_count == 0
         spy_evict.assert_not_awaited()
     finally:
+        try:
+            await alice.webdav.remove_tag_from_file(file_id, tag["id"])
+        except Exception:
+            pass
         await alice.webdav.delete_resource(test_dir)
 
 
 async def test_verify_drops_unshared_file_for_other_user(alice_bob_clients, mocker):
-    """Negative control: a file Alice did NOT share is inaccessible to Bob and
-    must be dropped + scheduled for eviction under his identity."""
+    """Negative control: a file Alice did NOT share is absent from Bob's
+    vector-index tag set (and his tree), so it must be dropped + scheduled for
+    eviction under his identity."""
     spy_evict = mocker.AsyncMock()
     mocker.patch.object(verification, "delete_document_points", spy_evict)
 
@@ -282,6 +308,6 @@ async def test_verify_drops_unshared_file_for_other_user(alice_bob_clients, mock
 
         assert kept == [], "an unshared file must not pass verification for bob"
         assert dropped_count == 1
-        spy_evict.assert_awaited_once_with(file_id, "file", bob.username)
+        spy_evict.assert_awaited_once_with(str(file_id), "file", bob.username)
     finally:
         await alice.webdav.delete_resource(test_dir)

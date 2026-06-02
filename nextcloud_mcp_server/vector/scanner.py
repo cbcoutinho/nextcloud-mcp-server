@@ -4,7 +4,6 @@ Periodically scans enabled users' content and queues changed documents for proce
 """
 
 import logging
-import os
 import random
 import time
 from dataclasses import dataclass
@@ -396,7 +395,7 @@ async def scan_user_documents(
             # PDF descendants (Depth: infinity SEARCH), so a tag on a
             # folder applies to every PDF beneath it.
             settings = get_settings()
-            tag_name = os.getenv("VECTOR_SYNC_PDF_TAG", "vector-index")
+            tag_name = settings.vector_sync_pdf_tag
             tagged_files = await nc_client.find_files_by_tag(
                 tag_name, mime_type_filter="application/pdf"
             )

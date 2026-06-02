@@ -645,10 +645,12 @@ This adds Nextcloud round-trips to the search path that operators should be
 aware of:
 
 - **Per-search cost**: one Nextcloud round-trip per *unique* `(doc_id, doc_type)`
-  in the result set. Chunking means a 10-result page typically references 3-5
-  unique documents, so verification adds 3-5 round-trips. With the default
-  20-way concurrency this is one parallel batch — usually under 100 ms on a
-  healthy connection.
+  in the result set — except `file` and `news_item`, which each batch into a
+  single call per search regardless of how many results they contribute (see
+  the Files and News caveats below). Chunking means a 10-result page typically
+  references 3-5 unique documents, so verification adds 3-5 round-trips. With
+  the default 20-way concurrency this is one parallel batch — usually under
+  100 ms on a healthy connection.
 - **Concurrency**: all verifications fan out under a shared semaphore.
   Tunable via the `VERIFICATION_CONCURRENCY` env var (settings field
   `verification_concurrency`, default 20) — lower it if your Nextcloud
@@ -664,14 +666,28 @@ aware of:
   search that surfaces news results. Disabling News in the indexer or running
   with a smaller backlog mitigates this; per-item paginated verification is
   tracked as a future improvement.
-- **Eviction**: when verification finds a definitive miss (404 / 403), the
-  corresponding Qdrant points are deleted in the background on a lifespan-owned
-  task group — fire-and-forget, does **not** block the search response.
-  Eviction failures are logged but never propagated; the next query will
-  re-verify and re-attempt (self-healing).
+- **Files caveat**: `file` results are gated on current **`vector-index` tag
+  membership**, not bare access — the verifier issues a single
+  `find_files_by_tag(<tag>, mime_type_filter="application/pdf")` REPORT per
+  search that contains any file result (plus a one-shot `EXCLUDED_TAGS`
+  lookup), then keeps only files in that set. This matches exactly what the
+  scanner indexes, so a file removed from the tag (or deleted, or moved under
+  an excluded folder) drops out of results immediately rather than waiting for
+  the scanner sweep. The REPORT expands tagged folders via a `Depth: infinity`
+  SEARCH, so deployments that tag whole directory trees pay that walk once per
+  search; configure `VECTOR_SYNC_PDF_TAG` to change the tag name. **Shared
+  files**: a file an owner tagged and shared with the searcher only survives
+  verification if the owner's (userVisible) tag surfaces in the *searcher's*
+  tag REPORT.
+- **Eviction**: when verification finds a definitive miss (a 404 / 403, or — for
+  files — absence from the tag set), the corresponding Qdrant points are deleted
+  in the background on a lifespan-owned task group — fire-and-forget, does
+  **not** block the search response. Eviction failures are logged but never
+  propagated; the next query will re-verify and re-attempt (self-healing).
 - **Failure modes**: transient errors (5xx, network) keep results visible
   (fail open) so a flaky link does not silently shrink result pages; only
-  *definitive* 404 / 403 drops them.
+  *definitive* misses (404 / 403, or a file no longer in the tag set) drop them.
+  If the file tag REPORT itself errors, all file results are kept (fail open).
 
 If eviction ever needs to be disabled (debugging, benchmarking), the
 `evict_on_missing=False` keyword argument on `verify_search_results()` skips

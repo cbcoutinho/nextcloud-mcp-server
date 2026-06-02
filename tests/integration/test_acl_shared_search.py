@@ -54,6 +54,16 @@ def _reset_owners_cache():
 
 
 _DOC_TEXT = "Confidential quarterly infrastructure budget and capacity plan"
+# Minimal valid PDF. verify-on-read gates file results on the vector-index tag
+# via find_files_by_tag(..., mime_type_filter="application/pdf"), so the shared
+# file must be a PDF (matching what the scanner actually indexes), not a .txt.
+_PDF_BYTES = (
+    b"%PDF-1.4\n"
+    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\n"
+    b"trailer<</Root 1 0 R>>\n%%EOF\n"
+)
 
 
 def _user_client(username: str, password: str) -> NextcloudClient:
@@ -81,7 +91,13 @@ async def acl_users(test_users_setup):
 
 @pytest.fixture
 async def shared_file(acl_users):
-    """alice creates a nested file and shares it with bob (not diana).
+    """alice creates a nested PDF, tags it ``vector-index``, and shares it with
+    bob (not diana).
+
+    The vector-index tag is required because verify-on-read now gates file
+    results on current tag membership (in addition to ACL access). The tag is
+    created userVisible so the owner's assignment surfaces in the recipient's
+    systemtag REPORT — this fixture is the live check of that assumption.
 
     Yields (file_id, owner_relative_path); cleans up the directory after.
     """
@@ -89,18 +105,28 @@ async def shared_file(acl_users):
     suffix = uuid.uuid4().hex[:8]
     test_dir = f"acl_e2e_{suffix}"
     nested = f"{test_dir}/reports"
-    path = f"{nested}/budget.txt"
+    path = f"{nested}/budget.pdf"
 
     await alice.webdav.create_directory(test_dir)
     await alice.webdav.create_directory(nested)
-    await alice.webdav.write_file(path, _DOC_TEXT.encode(), "text/plain")
+    await alice.webdav.write_file(path, _PDF_BYTES, "application/pdf")
     file_id = (await alice.webdav.get_file_info(path))["id"]
+    tag = await alice.webdav.get_or_create_tag(
+        name=get_settings().vector_sync_pdf_tag,
+        user_visible=True,
+        user_assignable=True,
+    )
+    await alice.webdav.assign_tag_to_file(file_id, tag["id"])
     await alice.sharing.create_share(
         path=f"/{path}", share_with="bob", share_type=0, permissions=1
     )
     try:
         yield file_id, path
     finally:
+        try:
+            await alice.webdav.remove_tag_from_file(file_id, tag["id"])
+        except Exception:
+            pass
         await alice.webdav.delete_resource(test_dir)
 
 
@@ -132,7 +158,7 @@ async def seeded_semantic(monkeypatch, shared_file):
                     "user_id": "alice",
                     "is_placeholder": False,
                     "file_path": path,
-                    "title": "budget.txt",
+                    "title": "budget.pdf",
                     "excerpt": _DOC_TEXT,
                     "chunk_index": 0,
                     "total_chunks": 1,
@@ -180,7 +206,13 @@ async def _search_as(user_client, file_id_unused) -> list:
 async def test_recipient_finds_shared_file_without_indexing(acl_users, seeded_semantic):
     """Bob finds alice's shared file end-to-end: real share lookup expands his
     accessible owners to include alice, the filter surfaces her point, and
-    real verification confirms his ACL access — all without bob indexing."""
+    real verification confirms both his ACL access AND that the file is still
+    in the vector-index tag set — all without bob indexing.
+
+    This also exercises the strict tag-gate's key assumption: a vector-index
+    tag alice assigned (userVisible) surfaces in bob's systemtag REPORT for a
+    file shared into his tree. If a future Nextcloud version stops surfacing an
+    owner's tag to a recipient, this assertion is where it fails first."""
     file_id = seeded_semantic
     # Sanity: the live OCS lookup really does expand bob to include alice.
     owners = await list_accessible_owners(acl_users["bob"].sharing, "bob")
