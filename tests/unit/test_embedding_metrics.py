@@ -10,16 +10,13 @@ Covers:
 from __future__ import annotations
 
 import pytest
-from prometheus_client import REGISTRY
 
 from nextcloud_mcp_server.config import Settings
 from nextcloud_mcp_server.observability.metrics import record_embedding
 
 pytestmark = pytest.mark.unit
 
-
-def _sample(name: str, labels: dict[str, str]) -> float:
-    return REGISTRY.get_sample_value(name, labels) or 0.0
+# ``metric_sample`` is provided as a shared fixture in tests/unit/conftest.py.
 
 
 class TestProviderFamily:
@@ -75,48 +72,51 @@ class TestProviderFamily:
     def test_gateway_uses_model_prefix(self):
         settings = Settings(
             embedding_provider="gateway",
-            embedding_gateway_url="http://gateway:8080",
+            embedding_gateway_url="https://gateway:8080",
             embedding_gateway_model="mistral/mistral-embed",
         )
         assert settings.get_embedding_provider_family() == "mistral"
 
 
 class TestRecordEmbedding:
-    def test_dense_success_increments_throughput(self):
+    def test_dense_success_increments_throughput(self, metric_sample):
         labels = {"kind": "dense", "provider": "uttest-prov"}
-        before_chunks = _sample("astrolabe_embedding_chunks_total", labels)
-        before_chars = _sample("astrolabe_embedding_chars_total", labels)
-        before_req = _sample(
+        before_chunks = metric_sample("astrolabe_embedding_chunks_total", labels)
+        before_chars = metric_sample("astrolabe_embedding_chars_total", labels)
+        before_req = metric_sample(
             "astrolabe_embedding_requests_total", {**labels, "status": "success"}
         )
 
         record_embedding("dense", "uttest-prov", 0.42, chunks=12, chars=3400)
 
-        assert _sample("astrolabe_embedding_chunks_total", labels) == (
-            before_chunks + 12
-        )
-        assert _sample("astrolabe_embedding_chars_total", labels) == (
-            before_chars + 3400
-        )
-        assert _sample(
+        assert metric_sample(
+            "astrolabe_embedding_chunks_total", labels
+        ) == pytest.approx(before_chunks + 12)
+        assert metric_sample(
+            "astrolabe_embedding_chars_total", labels
+        ) == pytest.approx(before_chars + 3400)
+        assert metric_sample(
             "astrolabe_embedding_requests_total", {**labels, "status": "success"}
-        ) == (before_req + 1)
+        ) == pytest.approx(before_req + 1)
         assert (
-            _sample(
+            metric_sample(
                 "astrolabe_embedding_duration_seconds_count",
                 {**labels, "status": "success"},
             )
             >= 1
         )
 
-    def test_sparse_error_skips_throughput(self):
+    def test_sparse_error_skips_throughput(self, metric_sample):
         labels = {"kind": "sparse", "provider": "bm25-uttest"}
         record_embedding(
             "sparse", "bm25-uttest", 0.1, chunks=5, chars=100, status="error"
         )
-        assert _sample("astrolabe_embedding_chunks_total", labels) == 0.0
-        assert _sample("astrolabe_embedding_chars_total", labels) == 0.0
-        assert (
-            _sample("astrolabe_embedding_requests_total", {**labels, "status": "error"})
-            == 1.0
-        )
+        assert metric_sample(
+            "astrolabe_embedding_chunks_total", labels
+        ) == pytest.approx(0.0)
+        assert metric_sample(
+            "astrolabe_embedding_chars_total", labels
+        ) == pytest.approx(0.0)
+        assert metric_sample(
+            "astrolabe_embedding_requests_total", {**labels, "status": "error"}
+        ) == pytest.approx(1.0)

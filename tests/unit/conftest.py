@@ -8,6 +8,21 @@ import pytest
 from tests.fixtures.storage_backend import storage_backend  # noqa: F401
 
 
+@pytest.fixture
+def metric_sample():
+    """Return a callable reading a Prometheus sample value (0.0 if absent).
+
+    Shared across the metric unit tests so the helper isn't duplicated per
+    module.
+    """
+    from prometheus_client import REGISTRY
+
+    def _sample(name: str, labels: dict[str, str]) -> float:
+        return REGISTRY.get_sample_value(name, labels) or 0.0
+
+    return _sample
+
+
 @pytest.fixture(autouse=True)
 def _reload_dynaconf_after_test():
     """Ensure dynaconf cache is clean between tests.

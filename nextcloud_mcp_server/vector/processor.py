@@ -37,6 +37,10 @@ from nextcloud_mcp_server.vector.scanner import DocumentTask
 
 logger = logging.getLogger(__name__)
 
+# Shared span-attribute key (avoids duplicating the string literal across the
+# many vector_sync spans that report a chunk count).
+_ATTR_CHUNK_COUNT = "vector_sync.chunk_count"
+
 
 def assign_page_numbers(chunks, page_boundaries):
     """Assign page numbers to chunks based on page boundaries.
@@ -218,12 +222,12 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
                     },
                 )
 
-                # Record successful deletion metrics
+                # Record successful deletion metrics. A delete is not an
+                # indexing event, so doc_type is intentionally omitted here to
+                # keep it out of astrolabe_documents_indexed_total.
                 duration = time.time() - start_time
                 record_qdrant_operation("delete", "success")
-                record_vector_sync_processing(
-                    duration, "success", doc_type=doc_task.doc_type
-                )
+                record_vector_sync_processing(duration, "success")
                 return
 
             # Handle indexing with retry
@@ -276,16 +280,16 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
                                 "status": "error",
                             },
                         )
-                        # Record failed processing metrics
-                        duration = time.time() - start_time
+                        # Record the failed Qdrant upsert. The processing-error
+                        # metric is recorded once by the outer handler below, so
+                        # exhausted-retry failures aren't double-counted.
                         record_qdrant_operation("upsert", "error")
-                        record_vector_sync_processing(
-                            duration, "error", doc_type=doc_task.doc_type
-                        )
                         raise
 
         except Exception:
-            # Catch any other unexpected errors
+            # Single processing-error call site: catches exhausted-retry
+            # re-raises, delete failures, and setup errors (get_qdrant_client /
+            # get_settings) — each counted exactly once.
             duration = time.time() - start_time
             record_vector_sync_processing(duration, "error", doc_type=doc_task.doc_type)
             raise
@@ -547,7 +551,7 @@ async def _index_document(
         chunks = await chunker.chunk_text(content)
         record_document_chunks(doc_task.doc_type, len(chunks))
         if chunk_span is not None:
-            chunk_span.set_attribute("vector_sync.chunk_count", len(chunks))
+            chunk_span.set_attribute(_ATTR_CHUNK_COUNT, len(chunks))
 
     # Assign page numbers to chunks if page boundaries are available (PDFs)
     page_boundaries = file_metadata.get("page_boundaries")
@@ -557,7 +561,7 @@ async def _index_document(
         with trace_operation(
             "vector_sync.assign_page_numbers",
             attributes={
-                "vector_sync.chunk_count": len(chunks),
+                _ATTR_CHUNK_COUNT: len(chunks),
                 "vector_sync.page_count": len(page_boundaries_list),
             },
         ):
@@ -618,7 +622,7 @@ async def _index_document(
         with trace_operation(
             "vector_sync.embed_dense",
             attributes={
-                "vector_sync.chunk_count": len(chunk_texts),
+                _ATTR_CHUNK_COUNT: len(chunk_texts),
                 "vector_sync.total_chars": total_chars,
                 "embedding.kind": "dense",
                 "embedding.provider": provider,
@@ -650,7 +654,7 @@ async def _index_document(
         with trace_operation(
             "vector_sync.embed_sparse",
             attributes={
-                "vector_sync.chunk_count": len(chunk_texts),
+                _ATTR_CHUNK_COUNT: len(chunk_texts),
                 "embedding.kind": "sparse",
                 "embedding.provider": "bm25",
                 "embedding.batch_size": len(chunk_texts),
@@ -685,7 +689,7 @@ async def _index_document(
         with trace_operation(
             "vector_sync.compute_chunk_bboxes",
             attributes={
-                "vector_sync.chunk_count": len(chunks),
+                _ATTR_CHUNK_COUNT: len(chunks),
                 "vector_sync.pdf_size": len(content_bytes),
             },
         ):
@@ -730,7 +734,7 @@ async def _index_document(
         "vector_sync.parallel_processing",
         attributes={
             "vector_sync.is_pdf": is_pdf,
-            "vector_sync.chunk_count": len(chunks),
+            _ATTR_CHUNK_COUNT: len(chunks),
         },
     ):
         async with anyio.create_task_group() as tg:
@@ -748,7 +752,7 @@ async def _index_document(
     # PIPELINE_TIER is "fast"; ACL hash records at least the owner principal
     # (full share enumeration is a follow-up — a missing/partial acl_hash is
     # safe because the query-side pre-filter only applies when present + enabled).
-    _embedding_identity = get_settings().get_embedding_model_name()
+    _embedding_identity = settings.get_embedding_model_name()
     _acl_hash = compute_acl_hash([("user", doc_task.user_id)])
 
     # Surface deck card data quality issues at indexing time rather than

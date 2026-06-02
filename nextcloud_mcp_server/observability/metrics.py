@@ -534,15 +534,15 @@ def record_document_parse(
     ).observe(duration)
     document_parse_total.labels(processor=processor, tier=tier, status=status).inc()
     if status == "success":
-        if pages:
+        if pages > 0:
             document_pages_processed_total.labels(processor=processor, tier=tier).inc(
                 pages
             )
-        if chars:
+        if chars > 0:
             document_chars_processed_total.labels(processor=processor, tier=tier).inc(
                 chars
             )
-        if byte_size:
+        if byte_size > 0:
             document_bytes_processed_total.labels(processor=processor, tier=tier).inc(
                 byte_size
             )
@@ -587,9 +587,9 @@ def record_embedding(
     ).observe(duration)
     embedding_requests_total.labels(kind=kind, provider=provider, status=status).inc()
     if status == "success":
-        if chunks:
+        if chunks > 0:
             embedding_chunks_total.labels(kind=kind, provider=provider).inc(chunks)
-        if chars:
+        if chars > 0:
             embedding_chars_total.labels(kind=kind, provider=provider).inc(chars)
 
 

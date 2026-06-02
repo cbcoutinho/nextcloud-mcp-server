@@ -13,10 +13,9 @@ Covers two layers:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from prometheus_client import REGISTRY
 
 from nextcloud_mcp_server.document_processors.base import (
     DocumentProcessor,
@@ -30,13 +29,12 @@ from nextcloud_mcp_server.observability.metrics import (
     record_document_parse,
     record_vector_sync_processing,
 )
+from nextcloud_mcp_server.vector import processor as proc
+from nextcloud_mcp_server.vector.scanner import DocumentTask
 
 pytestmark = pytest.mark.unit
 
-
-def _sample(name: str, labels: dict[str, str]) -> float:
-    """Return a Prometheus sample value, treating 'never observed' as 0."""
-    return REGISTRY.get_sample_value(name, labels) or 0.0
+# ``metric_sample`` is provided as a shared fixture in tests/unit/conftest.py.
 
 
 class _FakeProcessor(DocumentProcessor):
@@ -152,12 +150,12 @@ class TestRegistryParseInstrumentation:
 
 
 class TestParseMetricHelpers:
-    def test_success_increments_throughput_counters(self):
+    def test_success_increments_throughput_counters(self, metric_sample):
         labels = {"processor": "uttest-success", "tier": "fast"}
-        before_pages = _sample("astrolabe_document_pages_processed_total", labels)
-        before_chars = _sample("astrolabe_document_chars_processed_total", labels)
-        before_bytes = _sample("astrolabe_document_bytes_processed_total", labels)
-        before_total = _sample(
+        before_pages = metric_sample("astrolabe_document_pages_processed_total", labels)
+        before_chars = metric_sample("astrolabe_document_chars_processed_total", labels)
+        before_bytes = metric_sample("astrolabe_document_bytes_processed_total", labels)
+        before_total = metric_sample(
             "astrolabe_document_parse_total", {**labels, "status": "success"}
         )
 
@@ -171,28 +169,28 @@ class TestParseMetricHelpers:
             status="success",
         )
 
-        assert _sample("astrolabe_document_pages_processed_total", labels) == (
-            before_pages + 50
-        )
-        assert _sample("astrolabe_document_chars_processed_total", labels) == (
-            before_chars + 1000
-        )
-        assert _sample("astrolabe_document_bytes_processed_total", labels) == (
-            before_bytes + 99
-        )
-        assert _sample(
+        assert metric_sample(
+            "astrolabe_document_pages_processed_total", labels
+        ) == pytest.approx(before_pages + 50)
+        assert metric_sample(
+            "astrolabe_document_chars_processed_total", labels
+        ) == pytest.approx(before_chars + 1000)
+        assert metric_sample(
+            "astrolabe_document_bytes_processed_total", labels
+        ) == pytest.approx(before_bytes + 99)
+        assert metric_sample(
             "astrolabe_document_parse_total", {**labels, "status": "success"}
-        ) == (before_total + 1)
+        ) == pytest.approx(before_total + 1)
         # The duration histogram observed one sample.
         assert (
-            _sample(
+            metric_sample(
                 "astrolabe_document_parse_duration_seconds_count",
                 {**labels, "status": "success"},
             )
             >= 1
         )
 
-    def test_error_does_not_increment_throughput(self):
+    def test_error_does_not_increment_throughput(self, metric_sample):
         labels = {"processor": "uttest-error", "tier": "fast"}
         record_document_parse(
             "uttest-error",
@@ -204,36 +202,114 @@ class TestParseMetricHelpers:
             status="error",
         )
         # Error parses count the attempt + duration, but NOT pages/chars/bytes.
-        assert _sample("astrolabe_document_pages_processed_total", labels) == 0.0
-        assert _sample("astrolabe_document_chars_processed_total", labels) == 0.0
-        assert (
-            _sample("astrolabe_document_parse_total", {**labels, "status": "error"})
-            == 1.0
-        )
+        assert metric_sample(
+            "astrolabe_document_pages_processed_total", labels
+        ) == pytest.approx(0.0)
+        assert metric_sample(
+            "astrolabe_document_chars_processed_total", labels
+        ) == pytest.approx(0.0)
+        assert metric_sample(
+            "astrolabe_document_parse_total", {**labels, "status": "error"}
+        ) == pytest.approx(1.0)
 
-    def test_record_document_chunks(self):
+    def test_record_document_chunks(self, metric_sample):
         labels = {"doc_type": "uttest-chunks"}
-        before = _sample("astrolabe_document_chunks_total", labels)
+        before = metric_sample("astrolabe_document_chunks_total", labels)
         record_document_chunks("uttest-chunks", 7)
-        assert _sample("astrolabe_document_chunks_total", labels) == before + 7
+        assert metric_sample(
+            "astrolabe_document_chunks_total", labels
+        ) == pytest.approx(before + 7)
 
-    def test_vector_sync_processing_increments_documents_indexed(self):
+    def test_vector_sync_processing_increments_documents_indexed(self, metric_sample):
         labels = {"source": "uttest-doctype", "status": "success"}
-        before = _sample("astrolabe_documents_indexed_total", labels)
+        before = metric_sample("astrolabe_documents_indexed_total", labels)
         record_vector_sync_processing(0.1, "success", doc_type="uttest-doctype")
-        assert _sample("astrolabe_documents_indexed_total", labels) == before + 1
+        assert metric_sample(
+            "astrolabe_documents_indexed_total", labels
+        ) == pytest.approx(before + 1)
 
-    def test_vector_sync_processing_without_doc_type_is_noop_for_indexed(self):
+    def test_vector_sync_processing_without_doc_type_is_noop_for_indexed(
+        self, metric_sample
+    ):
         # Without doc_type, the per-type counter must not be touched (the legacy
         # mcp_* counter still increments, but that is out of scope here).
         labels = {"source": "uttest-absent", "status": "success"}
         record_vector_sync_processing(0.1, "success")
-        assert _sample("astrolabe_documents_indexed_total", labels) == 0.0
+        assert metric_sample(
+            "astrolabe_documents_indexed_total", labels
+        ) == pytest.approx(0.0)
 
-    def test_record_document_escalation(self):
+    def test_record_document_escalation(self, metric_sample):
         # Dormant until the tiered pipeline lands; pin its correctness now so the
         # first docling/OCR/LLM caller gets a working counter.
         labels = {"from_tier": "fast", "to_tier": "ocr", "reason": "empty_text"}
-        before = _sample("astrolabe_document_escalation_total", labels)
+        before = metric_sample("astrolabe_document_escalation_total", labels)
         record_document_escalation("fast", "ocr", "empty_text")
-        assert _sample("astrolabe_document_escalation_total", labels) == before + 1
+        assert metric_sample(
+            "astrolabe_document_escalation_total", labels
+        ) == pytest.approx(before + 1)
+
+
+class TestProcessDocumentMetricCounting:
+    """Regression tests for the error/delete counting fixes from PR #831 review."""
+
+    async def test_exhausted_retries_count_error_once(self, metric_sample):
+        # The inner final-retry branch and the outer except both used to record
+        # a processing error, double-counting exhausted-retry failures.
+        task = DocumentTask(
+            user_id="u", doc_id="1", doc_type="note", operation="index", modified_at=0
+        )
+        err_labels = {"status": "error"}
+        indexed_labels = {"source": "note", "status": "error"}
+        before_processed = metric_sample(
+            "mcp_vector_sync_documents_processed_total", err_labels
+        )
+        before_indexed = metric_sample(
+            "astrolabe_documents_indexed_total", indexed_labels
+        )
+
+        with (
+            patch.object(
+                proc, "get_qdrant_client", new=AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                proc, "_index_document", new=AsyncMock(side_effect=RuntimeError("boom"))
+            ),
+            patch.object(proc.anyio, "sleep", new=AsyncMock()),  # skip backoff
+        ):
+            with pytest.raises(RuntimeError):
+                await proc.process_document(task, MagicMock())
+
+        assert metric_sample(
+            "mcp_vector_sync_documents_processed_total", err_labels
+        ) == pytest.approx(before_processed + 1)
+        assert metric_sample(
+            "astrolabe_documents_indexed_total", indexed_labels
+        ) == pytest.approx(before_indexed + 1)
+
+    async def test_delete_is_processed_but_not_indexed(self, metric_sample):
+        # A delete is processed but is NOT an indexing event, so it must not
+        # touch astrolabe_documents_indexed_total.
+        task = DocumentTask(
+            user_id="u", doc_id="2", doc_type="note", operation="delete", modified_at=0
+        )
+        indexed_labels = {"source": "note", "status": "success"}
+        processed_labels = {"status": "success"}
+        before_indexed = metric_sample(
+            "astrolabe_documents_indexed_total", indexed_labels
+        )
+        before_processed = metric_sample(
+            "mcp_vector_sync_documents_processed_total", processed_labels
+        )
+
+        qmock = MagicMock()
+        qmock.delete = AsyncMock()
+        with patch.object(proc, "get_qdrant_client", new=AsyncMock(return_value=qmock)):
+            await proc.process_document(task, MagicMock())
+
+        assert metric_sample(
+            "astrolabe_documents_indexed_total", indexed_labels
+        ) == pytest.approx(before_indexed)
+        assert metric_sample(
+            "mcp_vector_sync_documents_processed_total", processed_labels
+        ) == pytest.approx(before_processed + 1)
