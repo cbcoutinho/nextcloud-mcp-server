@@ -176,6 +176,109 @@ qdrant_operations_total = Counter(
 )
 
 # =============================================================================
+# Astrolabe Document-Processing Pipeline Metrics
+# =============================================================================
+#
+# Product-signal metrics for the document-processing pipeline
+# (scan -> fetch -> parse -> chunk -> embed -> Qdrant upsert). These use the
+# ``astrolabe_`` prefix to distinguish the indexing/product pipeline from the
+# ``mcp_`` protocol metrics above. The tenant dimension is NOT a label here --
+# it is supplied by the Kubernetes ``namespace`` label at scrape time.
+#
+# Tiered-pipeline readiness: ``processor`` and ``tier`` are labels from day one
+# so that adding new extraction tiers (docling, OCR, LLM) later is purely
+# additive (new label values), never new metric names.
+#   tier vocabulary (escalation ladder): fast -> structured -> ocr -> llm
+#
+# Cardinality rule: ``mime_type`` and embedding ``model`` are span attributes
+# only, never metric labels.
+
+# --- Parse tier (recorded at the ProcessorRegistry.process() boundary) --------
+
+document_parse_duration_seconds = Histogram(
+    "astrolabe_document_parse_duration_seconds",
+    "Document text-extraction (parse) duration in seconds",
+    ["processor", "tier", "status"],  # status: success | error
+    # Buckets reach 300s: large PDFs exceed the 60s ceiling of the whole-doc
+    # histogram, which would otherwise pile every large parse into +Inf.
+    buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
+)
+
+document_parse_total = Counter(
+    "astrolabe_document_parse_total",
+    "Total document parse attempts",
+    ["processor", "tier", "status"],  # status: success | error
+)
+
+document_pages_processed_total = Counter(
+    "astrolabe_document_pages_processed_total",
+    "Total document pages processed (page-rate signal)",
+    ["processor", "tier"],
+)
+
+document_chars_processed_total = Counter(
+    "astrolabe_document_chars_processed_total",
+    "Total characters extracted from documents",
+    ["processor", "tier"],
+)
+
+document_bytes_processed_total = Counter(
+    "astrolabe_document_bytes_processed_total",
+    "Total bytes of source documents parsed",
+    ["processor", "tier"],
+)
+
+# --- Escalation (tiered-pipeline readiness; ~0 until extra tiers exist) --------
+
+document_escalation_total = Counter(
+    "astrolabe_document_escalation_total",
+    "Total document parse escalations between tiers",
+    # reason: low_confidence | empty_text | unsupported | error | forced
+    ["from_tier", "to_tier", "reason"],
+)
+
+# --- Embedding stages ---------------------------------------------------------
+
+embedding_duration_seconds = Histogram(
+    "astrolabe_embedding_duration_seconds",
+    "Embedding batch duration in seconds",
+    ["kind", "provider", "status"],  # kind: dense | sparse
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+)
+
+embedding_requests_total = Counter(
+    "astrolabe_embedding_requests_total",
+    "Total embedding batch calls",
+    ["kind", "provider", "status"],  # one per embed_batch / encode_batch call
+)
+
+embedding_chunks_total = Counter(
+    "astrolabe_embedding_chunks_total",
+    "Total chunks embedded",
+    ["kind", "provider"],
+)
+
+embedding_chars_total = Counter(
+    "astrolabe_embedding_chars_total",
+    "Total characters embedded",
+    ["kind", "provider"],
+)
+
+# --- Chunking & indexed-by-type -----------------------------------------------
+
+document_chunks_total = Counter(
+    "astrolabe_document_chunks_total",
+    "Total chunks produced by the chunker",
+    ["doc_type"],
+)
+
+documents_indexed_total = Counter(
+    "astrolabe_documents_indexed_total",
+    "Total documents indexed, by source type",
+    ["source", "status"],  # source: note | file | deck_card | news_item
+)
+
+# =============================================================================
 # Database Metrics
 # =============================================================================
 
@@ -363,16 +466,25 @@ def record_vector_sync_scan(documents_found: int) -> None:
     vector_sync_documents_scanned_total.inc(documents_found)
 
 
-def record_vector_sync_processing(duration: float, status: str = "success") -> None:
+def record_vector_sync_processing(
+    duration: float, status: str = "success", doc_type: str | None = None
+) -> None:
     """
     Record document processing with duration and status.
 
     Args:
         duration: Processing duration in seconds
         status: "success" or "error"
+        doc_type: Optional document source type (note, file, deck_card,
+            news_item). When supplied, also increments the per-type
+            ``astrolabe_documents_indexed_total`` counter. The legacy
+            ``mcp_vector_sync_documents_processed_total`` counter is always
+            incremented for backward compatibility.
     """
     vector_sync_documents_processed_total.labels(status=status).inc()
     vector_sync_processing_duration_seconds.observe(duration)
+    if doc_type is not None:
+        documents_indexed_total.labels(source=doc_type, status=status).inc()
 
 
 def record_qdrant_operation(operation: str, status: str = "success") -> None:
@@ -394,6 +506,102 @@ def update_vector_sync_queue_size(size: int) -> None:
         size: Current queue size
     """
     vector_sync_queue_size.set(size)
+
+
+def record_document_parse(
+    processor: str,
+    tier: str,
+    duration: float,
+    pages: int = 0,
+    chars: int = 0,
+    byte_size: int = 0,
+    status: str = "success",
+) -> None:
+    """
+    Record a document parse (text extraction) at the processor boundary.
+
+    Args:
+        processor: Processor name (e.g. "pymupdf", "unstructured", "tesseract")
+        tier: Extraction tier (fast | structured | ocr | llm)
+        duration: Parse duration in seconds
+        pages: Number of pages parsed (0 if not page-based)
+        chars: Number of characters extracted
+        byte_size: Size of the source document in bytes
+        status: "success" or "error"
+    """
+    document_parse_duration_seconds.labels(
+        processor=processor, tier=tier, status=status
+    ).observe(duration)
+    document_parse_total.labels(processor=processor, tier=tier, status=status).inc()
+    if status == "success":
+        if pages:
+            document_pages_processed_total.labels(processor=processor, tier=tier).inc(
+                pages
+            )
+        if chars:
+            document_chars_processed_total.labels(processor=processor, tier=tier).inc(
+                chars
+            )
+        if byte_size:
+            document_bytes_processed_total.labels(processor=processor, tier=tier).inc(
+                byte_size
+            )
+
+
+def record_document_escalation(from_tier: str, to_tier: str, reason: str) -> None:
+    """
+    Record a document parse escalation between tiers.
+
+    Args:
+        from_tier: Tier that could not satisfactorily parse the document
+        to_tier: Tier the document was escalated to
+        reason: low_confidence | empty_text | unsupported | error | forced
+    """
+    document_escalation_total.labels(
+        from_tier=from_tier, to_tier=to_tier, reason=reason
+    ).inc()
+
+
+def record_embedding(
+    kind: str,
+    provider: str,
+    duration: float,
+    chunks: int = 0,
+    chars: int = 0,
+    status: str = "success",
+) -> None:
+    """
+    Record an embedding batch call.
+
+    Args:
+        kind: "dense" or "sparse"
+        provider: Provider family (bedrock | openai | mistral | ollama | simple
+            for dense; "bm25" for sparse)
+        duration: Batch duration in seconds
+        chunks: Number of chunks embedded
+        chars: Total characters embedded
+        status: "success" or "error"
+    """
+    embedding_duration_seconds.labels(
+        kind=kind, provider=provider, status=status
+    ).observe(duration)
+    embedding_requests_total.labels(kind=kind, provider=provider, status=status).inc()
+    if status == "success":
+        if chunks:
+            embedding_chunks_total.labels(kind=kind, provider=provider).inc(chunks)
+        if chars:
+            embedding_chars_total.labels(kind=kind, provider=provider).inc(chars)
+
+
+def record_document_chunks(doc_type: str, count: int) -> None:
+    """
+    Record the number of chunks produced for a document.
+
+    Args:
+        doc_type: Document source type (note, file, deck_card, news_item)
+        count: Number of chunks produced
+    """
+    document_chunks_total.labels(doc_type=doc_type).inc(count)
 
 
 # =============================================================================

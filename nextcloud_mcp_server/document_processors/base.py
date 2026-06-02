@@ -57,6 +57,19 @@ class DocumentProcessor(ABC):
         pass
 
     @property
+    def tier(self) -> str:
+        """Extraction tier this processor belongs to (escalation ladder).
+
+        Used as the ``tier`` label/attribute in observability so that adding new
+        extraction tiers later (docling, OCR, LLM) is purely additive. Vocabulary
+        (cheapest first): ``fast`` -> ``structured`` -> ``ocr`` -> ``llm``.
+
+        Defaults to ``"fast"``; override in processors that belong to a higher
+        tier.
+        """
+        return "fast"
+
+    @property
     @abstractmethod
     def supported_mime_types(self) -> set[str]:
         """Set of MIME types this processor can handle.

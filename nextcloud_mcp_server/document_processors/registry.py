@@ -1,8 +1,12 @@
 """Central registry for document processors."""
 
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Optional
+
+from nextcloud_mcp_server.observability.metrics import record_document_parse
+from nextcloud_mcp_server.observability.tracing import trace_operation
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 
@@ -152,12 +156,85 @@ class ProcessorRegistry:
                     f"Registered processors: {', '.join(self.list_processors())}"
                 )
 
-        logger.info("Processing with '%s' processor", processor.name)
-
-        # Process
-        return await processor.process(
-            content, content_type, filename, options, progress_callback
+        tier = processor.tier
+        logger.info(
+            "Processing with '%s' processor",
+            processor.name,
+            extra={
+                "processor": processor.name,
+                "tier": tier,
+                "mime_type": content_type,
+            },
         )
+
+        # Process (instrumented: per-processor span + parse metrics).
+        # NOTE: when the tiered pipeline (docling/OCR/LLM) lands, escalation
+        # decisions are recorded here via record_document_escalation() and an
+        # add_span_event("document.escalation", ...) -- the escalated=False
+        # attribute and the metric are wired ahead of that.
+        byte_size = len(content)
+        start_time = time.time()
+        with trace_operation(
+            "document_processor.parse",
+            attributes={
+                "processor.name": processor.name,
+                "processor.tier": tier,
+                "mime_type": content_type,
+                "byte_size": byte_size,
+                "escalated": False,
+            },
+        ) as span:
+            try:
+                result = await processor.process(
+                    content, content_type, filename, options, progress_callback
+                )
+            except Exception:
+                duration = time.time() - start_time
+                record_document_parse(
+                    processor.name,
+                    tier,
+                    duration,
+                    byte_size=byte_size,
+                    status="error",
+                )
+                raise
+
+            duration = time.time() - start_time
+            pages = int(result.metadata.get("page_count", 0) or 0)
+            chars = len(result.text)
+            status = "success" if result.success else "error"
+            record_document_parse(
+                processor.name,
+                tier,
+                duration,
+                pages=pages,
+                chars=chars,
+                byte_size=byte_size,
+                status=status,
+            )
+            if span is not None:
+                span.set_attribute("page_count", pages)
+                span.set_attribute("char_count", chars)
+                span.set_attribute("processor.success", result.success)
+
+            logger.info(
+                "Parsed %s with '%s': %s pages, %s chars in %.2fs",
+                filename or "<bytes>",
+                processor.name,
+                pages,
+                chars,
+                duration,
+                extra={
+                    "processor": processor.name,
+                    "tier": tier,
+                    "pages": pages,
+                    "chars": chars,
+                    "byte_size": byte_size,
+                    "duration_ms": round(duration * 1000, 1),
+                    "status": status,
+                },
+            )
+            return result
 
 
 # Global registry instance

@@ -949,6 +949,50 @@ class Settings:
 
         return f"simple-{self.simple_embedding_dimension}"
 
+    def get_embedding_provider_family(self) -> str:
+        """
+        Get the active dense-embedding provider family (a low-cardinality label).
+
+        This is the single source of truth for the ``provider`` metric label and
+        the ``embedding.provider`` span attribute. It returns the provider
+        *family* (e.g. "bedrock"), never the model name, to keep metric
+        cardinality bounded.
+
+        Priority mirrors ``get_embedding_model_name`` / ProviderRegistry:
+        1. Gateway - if EMBEDDING_PROVIDER=gateway (family from the model prefix,
+           e.g. "mistral/mistral-embed" -> "mistral")
+        2. Bedrock - if AWS_REGION or BEDROCK_EMBEDDING_MODEL is set
+        3. OpenAI - if OPENAI_API_KEY is set
+        4. Mistral - if MISTRAL_API_KEY is set
+        5. Ollama - if OLLAMA_BASE_URL is set
+        6. Simple - fallback
+
+        Returns:
+            Provider family: gateway-routed family | bedrock | openai | mistral
+            | ollama | simple
+        """
+        if self.embedding_provider == "gateway":
+            model = self.embedding_gateway_model or ""
+            return model.split("/", 1)[0] if "/" in model else "gateway"
+
+        if (
+            self.aws_region
+            or self.bedrock_embedding_model
+            or self.bedrock_generation_model
+        ):
+            return "bedrock"
+
+        if self.openai_api_key:
+            return "openai"
+
+        if self.mistral_api_key:
+            return "mistral"
+
+        if self.ollama_base_url:
+            return "ollama"
+
+        return "simple"
+
     def get_collection_name(self) -> str:
         """
         Get Qdrant collection name.

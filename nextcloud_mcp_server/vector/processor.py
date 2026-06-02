@@ -20,6 +20,8 @@ from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.document_processors import get_registry
 from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
 from nextcloud_mcp_server.observability.metrics import (
+    record_document_chunks,
+    record_embedding,
     record_qdrant_operation,
     record_vector_sync_processing,
     update_vector_sync_queue_size,
@@ -209,12 +211,19 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
                     doc_task.doc_type,
                     doc_task.doc_id,
                     doc_task.user_id,
+                    extra={
+                        "doc_id": doc_task.doc_id,
+                        "doc_type": doc_task.doc_type,
+                        "status": "success",
+                    },
                 )
 
                 # Record successful deletion metrics
                 duration = time.time() - start_time
                 record_qdrant_operation("delete", "success")
-                record_vector_sync_processing(duration, "success")
+                record_vector_sync_processing(
+                    duration, "success", doc_type=doc_task.doc_type
+                )
                 return
 
             # Handle indexing with retry
@@ -228,7 +237,9 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
                     # Record successful processing metrics
                     duration = time.time() - start_time
                     record_qdrant_operation("upsert", "success")
-                    record_vector_sync_processing(duration, "success")
+                    record_vector_sync_processing(
+                        duration, "success", doc_type=doc_task.doc_type
+                    )
                     return  # Success
 
                 except (HTTPStatusError, Exception) as e:
@@ -240,6 +251,13 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
                             doc_task.doc_type,
                             doc_task.doc_id,
                             e,
+                            extra={
+                                "doc_id": doc_task.doc_id,
+                                "doc_type": doc_task.doc_type,
+                                "attempt": attempt + 1,
+                                "max_retries": max_retries,
+                                "status": "retry",
+                            },
                         )
                         await anyio.sleep(retry_delay)
                         retry_delay *= 2  # Exponential backoff
@@ -250,17 +268,26 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
                             doc_task.doc_id,
                             max_retries,
                             e,
+                            extra={
+                                "doc_id": doc_task.doc_id,
+                                "doc_type": doc_task.doc_type,
+                                "attempt": max_retries,
+                                "max_retries": max_retries,
+                                "status": "error",
+                            },
                         )
                         # Record failed processing metrics
                         duration = time.time() - start_time
                         record_qdrant_operation("upsert", "error")
-                        record_vector_sync_processing(duration, "error")
+                        record_vector_sync_processing(
+                            duration, "error", doc_type=doc_task.doc_type
+                        )
                         raise
 
         except Exception:
             # Catch any other unexpected errors
             duration = time.time() - start_time
-            record_vector_sync_processing(duration, "error")
+            record_vector_sync_processing(duration, "error", doc_type=doc_task.doc_type)
             raise
 
 
@@ -512,12 +539,15 @@ async def _index_document(
             "vector_sync.chunk_size": settings.document_chunk_size,
             "vector_sync.overlap": settings.document_chunk_overlap,
         },
-    ):
+    ) as chunk_span:
         chunker = DocumentChunker(
             chunk_size=settings.document_chunk_size,
             overlap=settings.document_chunk_overlap,
         )
         chunks = await chunker.chunk_text(content)
+        record_document_chunks(doc_task.doc_type, len(chunks))
+        if chunk_span is not None:
+            chunk_span.set_attribute("vector_sync.chunk_count", len(chunks))
 
     # Assign page numbers to chunks if page boundaries are available (PDFs)
     page_boundaries = file_metadata.get("page_boundaries")
@@ -583,27 +613,65 @@ async def _index_document(
     async def generate_dense_embeddings():
         """Generate dense embeddings (I/O bound - external API call)."""
         nonlocal dense_embeddings
+        provider = settings.get_embedding_provider_family()
+        total_chars = sum(len(t) for t in chunk_texts)
         with trace_operation(
             "vector_sync.embed_dense",
             attributes={
                 "vector_sync.chunk_count": len(chunk_texts),
-                "vector_sync.total_chars": sum(len(t) for t in chunk_texts),
+                "vector_sync.total_chars": total_chars,
+                "embedding.kind": "dense",
+                "embedding.provider": provider,
+                "embedding.model": settings.get_embedding_model_name(),
+                "embedding.batch_size": len(chunk_texts),
             },
         ):
             embedding_service = get_embedding_service()
-            dense_embeddings = await embedding_service.embed_batch(chunk_texts)
+            embed_start = time.time()
+            try:
+                dense_embeddings = await embedding_service.embed_batch(chunk_texts)
+            except Exception:
+                record_embedding(
+                    "dense", provider, time.time() - embed_start, status="error"
+                )
+                raise
+            record_embedding(
+                "dense",
+                provider,
+                time.time() - embed_start,
+                chunks=len(chunk_texts),
+                chars=total_chars,
+            )
 
     async def generate_sparse_embeddings():
         """Generate sparse embeddings (BM25 for keyword matching)."""
         nonlocal sparse_embeddings
+        total_chars = sum(len(t) for t in chunk_texts)
         with trace_operation(
             "vector_sync.embed_sparse",
             attributes={
                 "vector_sync.chunk_count": len(chunk_texts),
+                "embedding.kind": "sparse",
+                "embedding.provider": "bm25",
+                "embedding.batch_size": len(chunk_texts),
             },
         ):
             bm25_service = await get_bm25_service()
-            sparse_embeddings = await bm25_service.encode_batch(chunk_texts)
+            embed_start = time.time()
+            try:
+                sparse_embeddings = await bm25_service.encode_batch(chunk_texts)
+            except Exception:
+                record_embedding(
+                    "sparse", "bm25", time.time() - embed_start, status="error"
+                )
+                raise
+            record_embedding(
+                "sparse",
+                "bm25",
+                time.time() - embed_start,
+                chunks=len(chunk_texts),
+                chars=total_chars,
+            )
 
     async def generate_highlights():
         """Compute chunk bounding boxes for PDF chunks (CPU-bound, no rendering)."""
@@ -853,4 +921,10 @@ async def _index_document(
         doc_task.doc_id,
         doc_task.user_id,
         len(chunks),
+        extra={
+            "doc_id": doc_task.doc_id,
+            "doc_type": doc_task.doc_type,
+            "chunks": len(chunks),
+            "status": "success",
+        },
     )

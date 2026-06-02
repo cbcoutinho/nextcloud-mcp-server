@@ -181,6 +181,14 @@ class PyMuPDFProcessor(DocumentProcessor):
                 metadata["page_count"],
                 len(md_text),
                 metadata.get("image_count", 0),
+                extra={
+                    "processor": self.name,
+                    "tier": self.tier,
+                    "pages": metadata["page_count"],
+                    "chars": len(md_text),
+                    "images": metadata.get("image_count", 0),
+                    "byte_size": len(content),
+                },
             )
 
             return ProcessingResult(
