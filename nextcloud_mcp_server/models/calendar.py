@@ -18,6 +18,14 @@ class Calendar(BaseModel):
     timezone: Optional[str] = Field(None, description="Calendar timezone")
     enabled: bool = Field(default=True, description="Whether calendar is enabled")
     ctag: Optional[str] = Field(None, description="Calendar tag for synchronization")
+    read_only: bool = Field(
+        default=False,
+        description="Whether the calendar is read-only (e.g. an external subscription)",
+    )
+    source: Optional[str] = Field(
+        None,
+        description="Source URL of an external/subscribed read-only calendar",
+    )
 
 
 class CalendarEventSummary(BaseModel):

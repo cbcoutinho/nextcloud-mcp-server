@@ -89,8 +89,18 @@ async def test_list_calendars(nc_client: NextcloudClient):
         # Optional fields
         assert "description" in calendar
         assert "color" in calendar
+        # External subscription metadata (issue #830): always present, with
+        # read_only=True / a source URL for subscribed calendars.
+        assert "read_only" in calendar
+        assert isinstance(calendar["read_only"], bool)
+        assert "source" in calendar
 
-        logger.info("Calendar: %s - %s", calendar["name"], calendar["display_name"])
+        logger.info(
+            "Calendar: %s - %s (read_only=%s)",
+            calendar["name"],
+            calendar["display_name"],
+            calendar["read_only"],
+        )
 
 
 async def test_create_and_delete_event(
