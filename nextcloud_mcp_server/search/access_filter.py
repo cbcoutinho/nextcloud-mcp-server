@@ -29,7 +29,16 @@ import time
 from collections import OrderedDict
 from typing import Any, Protocol
 
-from qdrant_client.models import Condition, FieldCondition, Filter, MatchAny, MatchValue
+from qdrant_client.models import (
+    Condition,
+    FieldCondition,
+    Filter,
+    MatchAny,
+    MatchValue,
+    Range,
+)
+
+from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 
 logger = logging.getLogger(__name__)
 
@@ -177,3 +186,60 @@ def build_ownership_filter(
             0, FieldCondition(key="owner_id", match=MatchAny(any=other_owners))
         )
     return Filter(should=conditions)
+
+
+def build_base_filter_conditions(
+    user_id: str,
+    accessible_owners: list[str] | None = None,
+    doc_type: str | None = None,
+    modified_after: int | None = None,
+    modified_before: int | None = None,
+) -> list[Condition]:
+    """Build the common ``must`` conditions shared by every search algorithm.
+
+    This is the single place the structured-filter contract (ADR-027) lives, so
+    both the BM25-hybrid (MCP tool) and dense-only (visualization/API) algorithms
+    apply identical placeholder/ACL/doc_type/date filtering. Each algorithm wraps
+    the returned list in ``Filter(must=...)`` and may append its own additive
+    conditions afterward (e.g. the dense algorithm's opt-in ACL pre-filter).
+
+    The conditions, in order:
+
+    1. ``get_placeholder_filter()`` — exclude in-flight placeholder points.
+    2. ``build_ownership_filter(...)`` — ACL-aware ``owner_id``/``user_id`` scope.
+    3. ``doc_type`` exact match — only when ``doc_type`` is truthy.
+    4. ``modified_at`` range — only when at least one bound is given.
+
+    Args:
+        user_id: Querying user.
+        accessible_owners: Owner UIDs the user can read (see
+            ``build_ownership_filter``). ``None`` ⇒ self-only.
+        doc_type: Optional single document-type filter.
+        modified_after: Inclusive lower bound on ``modified_at`` (Unix seconds).
+        modified_before: Inclusive upper bound on ``modified_at`` (Unix seconds).
+
+    Returns:
+        A list of Qdrant ``Condition`` objects for a parent ``must`` clause.
+    """
+    conditions: list[Condition] = [
+        get_placeholder_filter(),
+        build_ownership_filter(user_id, accessible_owners),
+    ]
+
+    if doc_type:
+        conditions.append(
+            FieldCondition(key="doc_type", match=MatchValue(value=doc_type))
+        )
+
+    # ``Range`` treats ``None`` bounds as open-ended, so the same condition serves
+    # after-only, before-only, and both-bounds queries. Appended only when at
+    # least one bound is set so unfiltered searches add no condition.
+    if modified_after is not None or modified_before is not None:
+        conditions.append(
+            FieldCondition(
+                key="modified_at",
+                range=Range(gte=modified_after, lte=modified_before),
+            )
+        )
+
+    return conditions

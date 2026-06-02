@@ -1,6 +1,7 @@
 """Semantic search MCP tools using vector database."""
 
 import logging
+from typing import Annotated
 
 import anyio
 from httpx import RequestError
@@ -16,6 +17,7 @@ from mcp.types import (
     TextContent,
     ToolAnnotations,
 )
+from pydantic import Field
 from qdrant_client.models import Filter
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -34,6 +36,7 @@ from nextcloud_mcp_server.search.access_filter import list_accessible_owners
 from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
 from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.verification import verify_search_results
+from nextcloud_mcp_server.utils.validation import parse_modified_timestamp
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -55,12 +58,32 @@ def configure_semantic_tools(mcp: FastMCP):
     async def nc_semantic_search(
         query: str,
         ctx: Context,
-        limit: int = 10,
+        limit: Annotated[int, Field(ge=1, le=100)] = 10,
         doc_types: list[str] | None = None,
-        score_threshold: float = 0.0,
+        score_threshold: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
         fusion: str = "rrf",
         include_context: bool = False,
-        context_chars: int = 300,
+        context_chars: Annotated[int, Field(ge=0)] = 300,
+        modified_after: Annotated[
+            str | int | None,
+            Field(
+                description=(
+                    "Only return documents modified at or after this time. "
+                    "RFC 3339 / ISO 8601 datetime (e.g. '2026-01-01T00:00:00Z') "
+                    "or Unix seconds. None = no lower bound."
+                ),
+            ),
+        ] = None,
+        modified_before: Annotated[
+            str | int | None,
+            Field(
+                description=(
+                    "Only return documents modified at or before this time. "
+                    "RFC 3339 / ISO 8601 datetime or Unix seconds. "
+                    "None = no upper bound."
+                ),
+            ),
+        ] = None,
     ) -> SemanticSearchResponse:
         """
         Search Nextcloud content using BM25 hybrid search with cross-app support.
@@ -86,6 +109,13 @@ def configure_semantic_tools(mcp: FastMCP):
                    DBSF: Uses distribution-based normalization, may better balance different score ranges
             include_context: Whether to expand results with surrounding context (default: False)
             context_chars: Number of characters to include before/after matched chunk (default: 300)
+            modified_after: Only return documents whose last-modified time is at or after this
+                instant. Accepts an RFC 3339 / ISO 8601 datetime (e.g. "2026-01-01T00:00:00Z";
+                a naive datetime is treated as UTC) or Unix seconds. None = no lower bound
+                (default).
+            modified_before: Only return documents whose last-modified time is at or before this
+                instant. Same formats as modified_after. None = no upper bound (default). Must be
+                >= modified_after when both are supplied.
 
         Returns:
             SemanticSearchResponse with matching documents ranked by fusion scores.
@@ -119,6 +149,40 @@ def configure_semantic_tools(mcp: FastMCP):
                 ErrorData(
                     code=-1,
                     message="BM25 hybrid search requires VECTOR_SYNC_ENABLED=true",
+                )
+            )
+
+        # Normalize the RFC 3339 / Unix-seconds date bounds to int Unix seconds
+        # for the numeric ``modified_at`` Range filter (ADR-027). A bad format
+        # surfaces as a clean McpError rather than a 500.
+        try:
+            modified_after_ts = parse_modified_timestamp(
+                modified_after, param_name="modified_after"
+            )
+            modified_before_ts = parse_modified_timestamp(
+                modified_before, param_name="modified_before"
+            )
+        except ValueError as exc:
+            raise McpError(ErrorData(code=-1, message=str(exc))) from exc
+
+        # Cross-field invariant: a per-parameter pydantic ``Field`` constraint
+        # (validated by FastMCP from the signature) bounds each date on its own
+        # but cannot express the relationship between them. Guard it here so an
+        # inverted range surfaces a clean McpError rather than silently
+        # returning zero results (ADR-027).
+        if (
+            modified_after_ts is not None
+            and modified_before_ts is not None
+            and modified_after_ts > modified_before_ts
+        ):
+            raise McpError(
+                ErrorData(
+                    code=-1,
+                    message=(
+                        "modified_after must be <= modified_before "
+                        f"(got modified_after={modified_after!r}, "
+                        f"modified_before={modified_before!r})"
+                    ),
                 )
             )
 
@@ -166,6 +230,8 @@ def configure_semantic_tools(mcp: FastMCP):
                     doc_type=None,  # Signal to search all types
                     score_threshold=score_threshold,
                     accessible_owners=accessible_owners,
+                    modified_after=modified_after_ts,
+                    modified_before=modified_before_ts,
                 )
                 all_results.extend(unverified_results)
             else:
@@ -191,6 +257,8 @@ def configure_semantic_tools(mcp: FastMCP):
                         doc_type=dtype,
                         score_threshold=score_threshold,
                         accessible_owners=accessible_owners,
+                        modified_after=modified_after_ts,
+                        modified_before=modified_before_ts,
                     )
                     all_results.extend(unverified_results)
 

@@ -39,7 +39,10 @@ from nextcloud_mcp_server.search.context import (
     get_chunk_with_context,
 )
 from nextcloud_mcp_server.search.verification import verify_search_results
-from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
+from nextcloud_mcp_server.utils.validation import (
+    is_valid_nextcloud_doc_id,
+    parse_modified_timestamp,
+)
 from nextcloud_mcp_server.vector.oauth_sync import (
     NotProvisionedError,
     get_user_client_basic_auth,
@@ -141,6 +144,31 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
     doc_types_param = request.query_params.get("doc_types", "")
     doc_types = doc_types_param.split(",") if doc_types_param else None
 
+    # Parse ADR-027 modified-date range filter. Accepts RFC 3339 / ISO 8601
+    # datetimes or Unix seconds; normalized to int Unix seconds. Absent ⇒
+    # open-ended. Unparseable input or an inverted range returns 400.
+    try:
+        modified_after = parse_modified_timestamp(
+            request.query_params.get("modified_after"), param_name="modified_after"
+        )
+        modified_before = parse_modified_timestamp(
+            request.query_params.get("modified_before"), param_name="modified_before"
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            {"success": False, "error": str(exc)},
+            status_code=400,
+        )
+    if (
+        modified_after is not None
+        and modified_before is not None
+        and modified_after > modified_before
+    ):
+        return JSONResponse(
+            {"success": False, "error": "modified_after must be <= modified_before"},
+            status_code=400,
+        )
+
     logger.info(
         "Viz search: user=%s, query='%s', algorithm=%s, fusion=%s, limit=%s, doc_types=%s",
         username,
@@ -202,6 +230,8 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                         doc_type=None,  # Search all types
                         score_threshold=score_threshold,
                         accessible_owners=accessible_owners,
+                        modified_after=modified_after,
+                        modified_before=modified_before,
                     )
                 all_results.extend(unverified_results)
             else:
@@ -222,6 +252,8 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                             doc_type=doc_type,
                             score_threshold=score_threshold,
                             accessible_owners=accessible_owners,
+                            modified_after=modified_after,
+                            modified_before=modified_before,
                         )
                     all_results.extend(unverified_results)
                 # Sort by score, then cap to the same limit*2 over-fetch budget

@@ -74,6 +74,21 @@ def _record(point_id: int | str, doc_id: int | str | None) -> SimpleNamespace:
 
 
 # ---------------------------------------------------------------------------
+# _PAYLOAD_INDEX_FIELDS contract
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_modified_at_indexed_as_integer():
+    """ADR-027: the date-range filter needs a numeric index on modified_at.
+
+    INTEGER (not FLOAT/DATETIME) because the payload stores an int Unix-second
+    timestamp; a numeric Range filters it without a content re-index.
+    """
+    assert _PAYLOAD_INDEX_FIELDS.get("modified_at") == PayloadSchemaType.INTEGER
+
+
+# ---------------------------------------------------------------------------
 # _ensure_payload_indexes
 # ---------------------------------------------------------------------------
 

@@ -52,6 +52,16 @@ _PAYLOAD_INDEX_FIELDS: dict[str, PayloadSchemaType] = {
     "chunk_index": PayloadSchemaType.INTEGER,
     "chunk_start_offset": PayloadSchemaType.INTEGER,
     "chunk_end_offset": PayloadSchemaType.INTEGER,
+    # modified_at is the ADR-027 date-range filter field: searches apply
+    # Range(key="modified_at", gte=..., lte=...) (see
+    # search/access_filter.build_base_filter_conditions). Qdrant requires a
+    # payload index to evaluate a Range efficiently — without one every dated
+    # query full-scans the collection (and 400s on Qdrant Cloud strict mode).
+    # INTEGER (not FLOAT): modified_at is an int Unix-second timestamp on every
+    # point (vector/processor.py, vector/placeholder.py). _ensure_payload_indexes
+    # is idempotent, so existing collections gain this index at startup with no
+    # content re-index and no operator action.
+    "modified_at": PayloadSchemaType.INTEGER,
 }
 
 # Sentinel point that records "this collection has been backfilled to str

@@ -5,9 +5,11 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
+from qdrant_client.models import FieldCondition, Range
 
 from nextcloud_mcp_server.search import access_filter
 from nextcloud_mcp_server.search.access_filter import (
+    build_base_filter_conditions,
     build_ownership_filter,
     clear_accessible_owners_cache,
     list_accessible_owners,
@@ -186,3 +188,75 @@ class TestBuildOwnershipFilter:
         (user_branch,) = flt.should
         assert user_branch.key == "user_id"
         assert user_branch.match.value == "alice"
+
+
+class TestBuildBaseFilterConditions:
+    """The shared ADR-027 filter contract used by both search algorithms."""
+
+    @pytest.mark.unit
+    def test_minimal_is_placeholder_plus_ownership(self) -> None:
+        # No doc_type, no date bounds -> exactly placeholder + ownership.
+        conditions = build_base_filter_conditions("alice", None)
+        assert len(conditions) == 2
+        # No modified_at Range condition present.
+        assert not any(
+            isinstance(c, FieldCondition) and c.key == "modified_at" for c in conditions
+        )
+
+    @pytest.mark.unit
+    def test_doc_type_appends_match_condition(self) -> None:
+        conditions = build_base_filter_conditions("alice", None, doc_type="note")
+        doc_type_conds = [
+            c
+            for c in conditions
+            if isinstance(c, FieldCondition) and c.key == "doc_type"
+        ]
+        assert len(doc_type_conds) == 1
+        assert doc_type_conds[0].match.value == "note"
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "after,before,expected_gte,expected_lte",
+        [
+            (100, 200, 100, 200),
+            (100, None, 100, None),  # after-only
+            (None, 200, None, 200),  # before-only
+        ],
+    )
+    def test_modified_at_range_appended(
+        self, after, before, expected_gte, expected_lte
+    ) -> None:
+        conditions = build_base_filter_conditions(
+            "alice", None, modified_after=after, modified_before=before
+        )
+        range_conds = [
+            c
+            for c in conditions
+            if isinstance(c, FieldCondition) and c.key == "modified_at"
+        ]
+        assert len(range_conds) == 1
+        rng = range_conds[0].range
+        assert isinstance(rng, Range)
+        assert rng.gte == expected_gte
+        assert rng.lte == expected_lte
+
+    @pytest.mark.unit
+    def test_no_range_when_both_bounds_none(self) -> None:
+        conditions = build_base_filter_conditions(
+            "alice", None, modified_after=None, modified_before=None
+        )
+        assert not any(
+            isinstance(c, FieldCondition) and c.key == "modified_at" for c in conditions
+        )
+
+    @pytest.mark.unit
+    def test_all_filters_compose(self) -> None:
+        # placeholder + ownership + doc_type + modified_at range = 4 conditions.
+        conditions = build_base_filter_conditions(
+            "alice",
+            ["alice", "bob"],
+            doc_type="file",
+            modified_after=100,
+            modified_before=200,
+        )
+        assert len(conditions) == 4

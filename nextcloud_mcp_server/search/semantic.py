@@ -3,20 +3,19 @@
 import logging
 from typing import Any
 
-from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue
+from qdrant_client.models import FieldCondition, Filter, MatchAny
 
 from nextcloud_mcp_server.acl_hash import accessible_hash_set
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_embedding_service
 from nextcloud_mcp_server.observability.metrics import record_qdrant_operation
-from nextcloud_mcp_server.search.access_filter import build_ownership_filter
+from nextcloud_mcp_server.search.access_filter import build_base_filter_conditions
 from nextcloud_mcp_server.search.algorithms import (
     SearchAlgorithm,
     SearchResult,
     build_search_result_from_point,
 )
 from nextcloud_mcp_server.vector.payload_keys import ACL_HASH
-from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -53,6 +52,8 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         doc_type: str | None = None,
         *,
         accessible_owners: list[str] | None = None,
+        modified_after: int | None = None,
+        modified_before: int | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """Execute semantic search using vector similarity.
@@ -73,6 +74,10 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
             accessible_owners: Owner UIDs the user can read (self + share
                 senders), pre-computed by the caller from the OCS Sharing API.
                 Defaults to ``[user_id]`` (self-only) when ``None``.
+            modified_after: Inclusive lower bound on ``modified_at`` (Unix
+                seconds, UTC); ``None`` ⇒ open-ended (ADR-027).
+            modified_before: Inclusive upper bound on ``modified_at`` (Unix
+                seconds, UTC); ``None`` ⇒ open-ended (ADR-027).
             **kwargs:
                 - score_threshold (float): override the instance default
 
@@ -103,20 +108,17 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
             "Generated embedding for query (dimension=%s)", len(query_embedding)
         )
 
-        # Build Qdrant filter
-        filter_conditions = [
-            get_placeholder_filter(),  # Always exclude placeholders from user-facing queries
-            build_ownership_filter(user_id, accessible_owners),
-        ]
-
-        # Add doc_type filter if specified
-        if doc_type:
-            filter_conditions.append(
-                FieldCondition(
-                    key="doc_type",
-                    match=MatchValue(value=doc_type),
-                )
-            )
+        # Build Qdrant filter (placeholder + ACL + doc_type + modified_at range).
+        # Shared with BM25HybridSearchAlgorithm via the common ADR-027 helper so
+        # the dense-only (API/visualization) and hybrid (MCP tool) paths apply
+        # one filter contract.
+        filter_conditions = build_base_filter_conditions(
+            user_id=user_id,
+            accessible_owners=accessible_owners,
+            doc_type=doc_type,
+            modified_after=modified_after,
+            modified_before=modified_before,
+        )
 
         # ACL pre-filter (design §11), opt-in via ACL_PREFILTER_ENABLED and OFF
         # by default. Additive `must` condition — it can only narrow results,
