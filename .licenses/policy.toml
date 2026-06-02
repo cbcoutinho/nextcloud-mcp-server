@@ -1,0 +1,151 @@
+# License policy for nextcloud-mcp-server
+#
+# The project is distributed under AGPL-3.0-only and the maintainer (Astrolabe
+# Cloud) intends to offer commercial dual-licensed builds in the future. Every
+# direct or transitive Python dependency must therefore satisfy BOTH:
+#
+#   1. AGPL-3.0-only distribution (the public release), and
+#   2. proprietary/commercial distribution under separate terms.
+#
+# The lists below classify licenses by their compatibility with that goal.
+#
+# Maintenance: when a CI run flags a new dependency, either
+#   - move its license into `allowed` if it is permissive,
+#   - move it into the per-package `exceptions` table with rationale, or
+#   - replace the dependency.
+#
+# Reference: https://www.gnu.org/licenses/license-list.html
+
+# Permissive licences that are compatible with both AGPL-3 distribution and
+# proprietary re-licensing. These need no per-package review.
+[allowed]
+licenses = [
+    # Permissive
+    "MIT",
+    "MIT License",
+    "MIT-CMU",
+    "BSD",
+    "BSD License",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "3-Clause BSD License",
+    "Apache-2.0",
+    "Apache 2.0",
+    "Apache License",
+    "Apache License 2.0",
+    "Apache Software License",
+    "ISC",
+    "ISC License (ISCL)",
+    "PSF",
+    "PSF-2.0",
+    "Python Software Foundation License",
+    "Python-2.0",
+    "Unlicense",
+    "Artistic License",
+    "Artistic License 2.0",
+    # Weak copyleft — compatible via dynamic linking (Python import).
+    # Distributing a modified version of the LGPL component itself still
+    # requires source release, but linking from proprietary code is allowed.
+    "LGPL-3.0-or-later",
+    "GNU Lesser General Public License v3 or later (LGPLv3+)",
+    # File-level copyleft — only the MPL'd files themselves carry obligations,
+    # combinations with proprietary code are explicitly allowed (MPL-2.0 §3.3).
+    "MPL-2.0",
+    "Mozilla Public License 2.0 (MPL 2.0)",
+]
+
+# Composite SPDX expressions that resolve to an allowed arm. The checker
+# splits on " OR " / " AND " and accepts the expression if EVERY AND-arm
+# resolves to an allowed license, OR ANY OR-arm does.
+# (Handled in the script — listed here for documentation.)
+[allowed.composite_examples]
+explained = [
+    "Apache-2.0 OR BSD-3-Clause",          # accept Apache-2.0 arm
+    "Apache-2.0 OR MIT",                   # accept either
+    "Apache-2.0 AND BSD-2-Clause",         # both permissive — accept
+    "Apache-2.0 AND MIT",                  # both permissive — accept
+    "MIT AND Python-2.0",                  # both permissive — accept
+    "GPL-3.0-or-later OR Apache-2.0",      # accept Apache-2.0 arm
+    "Apache Software License; BSD License",# pip-licenses style — accept
+    "Apache Software License; MIT License",
+    "MIT License; Mozilla Public License 2.0 (MPL 2.0)",
+]
+
+# Strong copyleft (GPL/AGPL) and proprietary licenses are NOT allowed by
+# default. Each package below has been individually reviewed and accepted
+# with a recorded rationale. Re-review whenever the version changes.
+[exceptions]
+
+[exceptions.PyMuPDF]
+license = "Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License"
+rationale = """
+Dual-licensed AGPL-3 / Artifex Commercial. Compatible with our AGPL release
+out of the box. For any future commercial/proprietary build, Astrolabe Cloud
+must obtain an Artifex commercial license — track this requirement before
+shipping a non-AGPL artifact.
+"""
+allowed_for = ["agpl"]
+review_required_for = ["commercial"]
+
+[exceptions.pymupdf4llm]
+license = "Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License"
+rationale = "Same Artifex dual-license terms as PyMuPDF — see PyMuPDF entry."
+allowed_for = ["agpl"]
+review_required_for = ["commercial"]
+
+[exceptions."pymupdf-layout"]
+license = "Other/Proprietary License"
+rationale = """
+Artifex proprietary commercial-only package (LICENSE/COPYING contains only
+'Commercial license. See artifex.com for details.'). Currently declared in
+pyproject.toml but NOT imported anywhere in nextcloud_mcp_server/ — candidate
+for removal. If retained, requires an explicit Artifex commercial agreement
+even for the AGPL build.
+"""
+allowed_for = []
+review_required_for = ["agpl", "commercial"]
+action = "remove-or-license"
+
+[exceptions."icalendar-searcher"]
+license = "AGPL-3.0-or-later"
+rationale = """
+Pure AGPL — fine for our AGPL distribution but blocks commercial dual-licensing.
+Either replace with a permissive alternative or negotiate a separate license
+with the upstream author before any commercial release.
+"""
+allowed_for = ["agpl"]
+review_required_for = ["commercial"]
+
+# Packages whose license metadata is wrong/missing in the wheel. The actual
+# license file shipped inside the wheel is recorded here.
+[overrides]
+
+[overrides.fastembed]
+declared = "Other/Proprietary License"  # classifier is wrong
+actual = "Apache-2.0"
+source = ".dist-info/licenses/LICENSE — full Apache-2.0 text"
+
+[overrides."matplotlib-inline"]
+declared = "UNKNOWN"
+actual = "BSD-3-Clause"
+source = ".dist-info/licenses/LICENSE — BSD 3-Clause, IPython Development Team"
+
+[overrides.py_rust_stemmers]
+declared = "UNKNOWN"
+actual = "MIT"
+source = ".dist-info/licenses/LICENSE — MIT, Copyright (c) 2024 qdrant"
+
+# Packages explicitly NOT allowed under any circumstance. Kept here so the
+# checker emits a clear message instead of a generic 'unknown license'.
+[denied]
+licenses = [
+    # Strong copyleft without dual-licensing — would force AGPL on commercial builds
+    "GPL-2.0-only",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "GNU General Public License v3 (GPLv3)",
+    "GNU General Public License v2 (GPLv2)",
+    # SSPL is non-OSI and known-incompatible with our distribution model
+    "SSPL",
+    "Server Side Public License",
+]
