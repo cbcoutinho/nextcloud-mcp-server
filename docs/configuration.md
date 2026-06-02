@@ -675,10 +675,27 @@ aware of:
   an excluded folder) drops out of results immediately rather than waiting for
   the scanner sweep. The REPORT expands tagged folders via a `Depth: infinity`
   SEARCH, so deployments that tag whole directory trees pay that walk once per
-  search; configure `VECTOR_SYNC_PDF_TAG` to change the tag name. **Shared
-  files**: a file an owner tagged and shared with the searcher only survives
-  verification if the owner's (userVisible) tag surfaces in the *searcher's*
-  tag REPORT.
+  search; configure `VECTOR_SYNC_PDF_TAG` to change the tag name. The `file`
+  verifier's latency therefore scales with **both** the `Depth: infinity` folder
+  expansion **and** the `EXCLUDED_TAGS` lookup: that lookup fans out ~2 WebDAV
+  calls (1 PROPFIND + 1 REPORT) *per excluded tag*, concurrently, while holding
+  a single verification slot — so a deployment with a long `EXCLUDED_TAGS` list
+  and/or deeply tagged trees issues many parallel Nextcloud requests per search.
+  Operators in that situation may want to **lower `VERIFICATION_CONCURRENCY`** so
+  the file verifier's internal fan-out does not overwhelm the backend.
+- **Shared files**: a file an owner tagged and shared with the searcher only
+  survives verification if the owner's **`userVisible`** tag surfaces in the
+  *searcher's* tag REPORT. The MCP server's own tag-creation path
+  (`WebDAVClient.get_or_create_tag`) defaults to `user_visible=True`, so tags it
+  creates are fine. **Migration caveat**: if the `vector-index` tag was created
+  some other way — manually via `occ tag:add … --user-visible=false`, or in a
+  deployment predating this release — it may be `user_visible=False` (the
+  Nextcloud default for system-managed tags). In that case an owner's tag will
+  **not** surface in a recipient's systemtag REPORT, so every shared-file result
+  is *silently dropped* for recipients after upgrading — no error, just a
+  narrower result set. Verify the tag's visibility (Administration → *Collaborative
+  tags*, or `occ tag:list`) and, if it is not user-visible, recreate it as
+  user-visible so shared search keeps working.
 - **Eviction**: when verification finds a definitive miss (a 404 / 403, or — for
   files — absence from the tag set), the corresponding Qdrant points are deleted
   in the background on a lifespan-owned task group — fire-and-forget, does

@@ -529,10 +529,24 @@ async def test_verify_files_excluded_path_drops(mocker):
 
 @pytest.mark.unit
 async def test_verify_files_tag_fetch_failure_keeps_all(mocker):
-    """If the tag REPORT itself fails (HTTP or otherwise), keep every file
-    result (fail-open) — never silently shrink results on a backend blip."""
+    """If the tag REPORT itself fails, keep every file result (fail-open) —
+    never silently shrink results on a backend blip.
+
+    Unlike the per-access verifiers (notes/deck/news), where a definitive
+    403/404 is the DROP signal, the file verifier fails open on *every* HTTP
+    error — including 403/404. The whole result set hinges on one batch REPORT,
+    so a disabled systemtags endpoint (commonly 403) must not nuke all file
+    results; the next query re-verifies. 403 and 404 are pinned here alongside
+    the transient 503/429 to lock that contract against regression.
+    """
     _patch_excluded(mocker)
-    for exc in (_http_error(503), _http_error(429), RuntimeError("dav blew up")):
+    for exc in (
+        _http_error(403),
+        _http_error(404),
+        _http_error(503),
+        _http_error(429),
+        RuntimeError("dav blew up"),
+    ):
         client = _file_client(mocker, find_side_effect=exc)
         result = await _verify_files(
             client,
