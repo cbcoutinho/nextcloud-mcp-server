@@ -3,7 +3,7 @@
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any, Optional
+from typing import Any
 
 from nextcloud_mcp_server.observability.metrics import record_document_parse
 from nextcloud_mcp_server.observability.tracing import trace_operation
@@ -72,7 +72,7 @@ class ProcessorRegistry:
             len(processor.supported_mime_types),
         )
 
-    def get_processor(self, name: str) -> Optional[DocumentProcessor]:
+    def get_processor(self, name: str) -> DocumentProcessor | None:
         """Get a processor by name.
 
         Args:
@@ -85,7 +85,7 @@ class ProcessorRegistry:
             return self._processors[name][0]
         return None
 
-    def find_processor(self, content_type: str) -> Optional[DocumentProcessor]:
+    def find_processor(self, content_type: str) -> DocumentProcessor | None:
         """Find the first processor that supports the given MIME type.
 
         Processors are checked in priority order (highest priority first).
@@ -117,12 +117,12 @@ class ProcessorRegistry:
         self,
         content: bytes,
         content_type: str,
-        filename: Optional[str] = None,
-        processor_name: Optional[str] = None,
-        options: Optional[dict[str, Any]] = None,
-        progress_callback: Optional[
-            Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
-        ] = None,
+        filename: str | None = None,
+        processor_name: str | None = None,
+        options: dict[str, Any] | None = None,
+        progress_callback: (
+            Callable[[float, float | None, str | None], Awaitable[None]] | None
+        ) = None,
     ) -> ProcessingResult:
         """Process a document using available processors.
 
@@ -183,6 +183,7 @@ class ProcessorRegistry:
                 "byte_size": byte_size,
                 "escalated": False,
             },
+            record_exception=True,
         ) as span:
             try:
                 result = await processor.process(
@@ -196,6 +197,22 @@ class ProcessorRegistry:
                     duration,
                     byte_size=byte_size,
                     status="error",
+                )
+                # Structured error signal for Loki (the processor logs the
+                # traceback; this adds the aggregatable fields). The span
+                # records the exception itself via record_exception=True.
+                logger.warning(
+                    "Parse failed for %s with '%s' after %.2fs",
+                    filename or "<bytes>",
+                    processor.name,
+                    duration,
+                    extra={
+                        "processor": processor.name,
+                        "tier": tier,
+                        "byte_size": byte_size,
+                        "duration_ms": round(duration * 1000, 1),
+                        "status": "error",
+                    },
                 )
                 raise
 

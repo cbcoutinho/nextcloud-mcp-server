@@ -192,6 +192,14 @@ class TestParseMetricHelpers:
 
     def test_error_does_not_increment_throughput(self, metric_sample):
         labels = {"processor": "uttest-error", "tier": "fast"}
+        # Snapshot before — counters are global singletons, so assert the delta
+        # rather than an absolute value (consistent with the success test).
+        before_pages = metric_sample("astrolabe_document_pages_processed_total", labels)
+        before_chars = metric_sample("astrolabe_document_chars_processed_total", labels)
+        before_total = metric_sample(
+            "astrolabe_document_parse_total", {**labels, "status": "error"}
+        )
+
         record_document_parse(
             "uttest-error",
             "fast",
@@ -201,16 +209,17 @@ class TestParseMetricHelpers:
             byte_size=10,
             status="error",
         )
+
         # Error parses count the attempt + duration, but NOT pages/chars/bytes.
         assert metric_sample(
             "astrolabe_document_pages_processed_total", labels
-        ) == pytest.approx(0.0)
+        ) == pytest.approx(before_pages)
         assert metric_sample(
             "astrolabe_document_chars_processed_total", labels
-        ) == pytest.approx(0.0)
+        ) == pytest.approx(before_chars)
         assert metric_sample(
             "astrolabe_document_parse_total", {**labels, "status": "error"}
-        ) == pytest.approx(1.0)
+        ) == pytest.approx(before_total + 1)
 
     def test_record_document_chunks(self, metric_sample):
         labels = {"doc_type": "uttest-chunks"}
@@ -306,6 +315,34 @@ class TestProcessDocumentMetricCounting:
         qmock.delete = AsyncMock()
         with patch.object(proc, "get_qdrant_client", new=AsyncMock(return_value=qmock)):
             await proc.process_document(task, MagicMock())
+
+        assert metric_sample(
+            "astrolabe_documents_indexed_total", indexed_labels
+        ) == pytest.approx(before_indexed)
+        assert metric_sample(
+            "mcp_vector_sync_documents_processed_total", processed_labels
+        ) == pytest.approx(before_processed + 1)
+
+    async def test_failed_delete_is_processed_but_not_indexed(self, metric_sample):
+        # A *failed* delete also must not touch astrolabe_documents_indexed_total
+        # (the outer except gates doc_type on operation != "delete").
+        task = DocumentTask(
+            user_id="u", doc_id="3", doc_type="note", operation="delete", modified_at=0
+        )
+        indexed_labels = {"source": "note", "status": "error"}
+        processed_labels = {"status": "error"}
+        before_indexed = metric_sample(
+            "astrolabe_documents_indexed_total", indexed_labels
+        )
+        before_processed = metric_sample(
+            "mcp_vector_sync_documents_processed_total", processed_labels
+        )
+
+        qmock = MagicMock()
+        qmock.delete = AsyncMock(side_effect=RuntimeError("boom"))
+        with patch.object(proc, "get_qdrant_client", new=AsyncMock(return_value=qmock)):
+            with pytest.raises(RuntimeError):
+                await proc.process_document(task, MagicMock())
 
         assert metric_sample(
             "astrolabe_documents_indexed_total", indexed_labels

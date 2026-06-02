@@ -931,6 +931,12 @@ class Settings:
         Returns:
             Active embedding model name
         """
+        # NOTE: there is intentionally no "gateway" branch here. When
+        # EMBEDDING_PROVIDER=gateway this falls through to the underlying
+        # provider's model (used for the Qdrant collection name), whereas
+        # get_embedding_provider_family() short-circuits to the gateway-routed
+        # family. Keep that asymmetry in mind before joining metrics/labels
+        # derived from these two methods.
         if (
             self.aws_region
             or self.bedrock_embedding_model

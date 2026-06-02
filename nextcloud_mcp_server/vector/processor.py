@@ -11,7 +11,6 @@ from typing import Any, cast
 import anyio
 from anyio.abc import TaskStatus
 from anyio.streams.memory import MemoryObjectReceiveStream
-from httpx import HTTPStatusError
 from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
 from nextcloud_mcp_server.acl_hash import compute_acl_hash
@@ -246,7 +245,7 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
                     )
                     return  # Success
 
-                except (HTTPStatusError, Exception) as e:
+                except Exception as e:
                     if attempt < max_retries - 1:
                         logger.warning(
                             "Retry %s/%s for %s_%s: %s",
@@ -289,9 +288,14 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
         except Exception:
             # Single processing-error call site: catches exhausted-retry
             # re-raises, delete failures, and setup errors (get_qdrant_client /
-            # get_settings) — each counted exactly once.
+            # get_settings) — each counted exactly once. A failed delete is not
+            # an indexing event either, so doc_type is omitted for deletes to
+            # keep them out of astrolabe_documents_indexed_total.
             duration = time.time() - start_time
-            record_vector_sync_processing(duration, "error", doc_type=doc_task.doc_type)
+            indexed_doc_type = (
+                None if doc_task.operation == "delete" else doc_task.doc_type
+            )
+            record_vector_sync_processing(duration, "error", doc_type=indexed_doc_type)
             raise
 
 
