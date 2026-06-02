@@ -259,6 +259,8 @@ _dynaconf = Dynaconf(
         Validator("DOCUMENT_CHUNK_SIZE", gte=1),
         # Non-negative
         Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
+        # Non-empty strings
+        Validator("VECTOR_SYNC_PDF_TAG", len_min=1),
         # Enum constraints
         Validator("LOG_FORMAT", is_in=["text", "json"]),
         Validator(

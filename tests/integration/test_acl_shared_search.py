@@ -40,6 +40,7 @@ from nextcloud_mcp_server.search.access_filter import (
 from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.semantic import SemanticSearchAlgorithm
 from nextcloud_mcp_server.search.verification import verify_search_results
+from tests.integration.conftest import PDF_BYTES
 
 pytestmark = pytest.mark.integration
 
@@ -54,16 +55,6 @@ def _reset_owners_cache():
 
 
 _DOC_TEXT = "Confidential quarterly infrastructure budget and capacity plan"
-# Minimal valid PDF. verify-on-read gates file results on the vector-index tag
-# via find_files_by_tag(..., mime_type_filter="application/pdf"), so the shared
-# file must be a PDF (matching what the scanner actually indexes), not a .txt.
-_PDF_BYTES = (
-    b"%PDF-1.4\n"
-    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
-    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\n"
-    b"trailer<</Root 1 0 R>>\n%%EOF\n"
-)
 
 
 def _user_client(username: str, password: str) -> NextcloudClient:
@@ -109,7 +100,7 @@ async def shared_file(acl_users):
 
     await alice.webdav.create_directory(test_dir)
     await alice.webdav.create_directory(nested)
-    await alice.webdav.write_file(path, _PDF_BYTES, "application/pdf")
+    await alice.webdav.write_file(path, PDF_BYTES, "application/pdf")
     file_id = (await alice.webdav.get_file_info(path))["id"]
     tag = await alice.webdav.get_or_create_tag(
         name=get_settings().vector_sync_pdf_tag,

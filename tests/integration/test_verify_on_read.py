@@ -34,26 +34,16 @@ from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.search import verification
 from nextcloud_mcp_server.search.algorithms import SearchResult
 from nextcloud_mcp_server.search.verification import verify_search_results
+from tests.integration.conftest import PDF_BYTES
 
 logger = logging.getLogger(__name__)
 
 pytestmark = pytest.mark.integration
 
-# Minimal valid PDF — the file verifier gates on the vector-index tag via
-# find_files_by_tag(..., mime_type_filter="application/pdf"), so file fixtures
-# must be PDFs (matching what the scanner indexes), not .txt.
-_PDF_BYTES = (
-    b"%PDF-1.4\n"
-    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
-    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\n"
-    b"trailer<</Root 1 0 R>>\n%%EOF\n"
-)
-
 
 def _result_for_note(note_id: int) -> SearchResult:
     return SearchResult(
-        id=note_id,
+        id=str(note_id),
         doc_type="note",
         title=f"note_{note_id}",
         excerpt="...",
@@ -96,7 +86,7 @@ async def test_verify_keeps_accessible_note(
 
     kept, dropped_count = await verify_search_results(nc_client, results)
 
-    assert [r.id for r in kept] == [note_id]
+    assert [r.id for r in kept] == [str(note_id)]
     assert dropped_count == 0
     spy_evict.assert_not_awaited()
 
@@ -139,7 +129,7 @@ async def test_verify_drops_deleted_note_and_schedules_eviction(
 
     assert kept == [], "deleted note must not pass verification"
     assert dropped_count == 1
-    spy_evict.assert_awaited_once_with(note_id, "note", nc_client.username)
+    spy_evict.assert_awaited_once_with(str(note_id), "note", nc_client.username)
 
 
 async def test_verify_mixed_accessible_and_deleted(
@@ -168,9 +158,9 @@ async def test_verify_mixed_accessible_and_deleted(
     ]
     kept, dropped_count = await verify_search_results(nc_client, results)
 
-    assert [r.id for r in kept] == [accessible_id]
+    assert [r.id for r in kept] == [str(accessible_id)]
     assert dropped_count == 1
-    spy_evict.assert_awaited_once_with(ghost_id, "note", nc_client.username)
+    spy_evict.assert_awaited_once_with(str(ghost_id), "note", nc_client.username)
 
 
 async def test_verify_dedupes_chunks_of_same_document(
@@ -189,7 +179,7 @@ async def test_verify_dedupes_chunks_of_same_document(
     # Three chunks of the same note (chunk_index varies)
     results = [
         SearchResult(
-            id=note_id,
+            id=str(note_id),
             doc_type="note",
             title="note",
             excerpt=f"chunk {i}",
@@ -254,7 +244,7 @@ async def test_verify_keeps_nested_file_shared_with_recipient(
 
     await alice.webdav.create_directory(test_dir)
     await alice.webdav.create_directory(nested_dir)
-    await alice.webdav.write_file(shared_path, _PDF_BYTES, "application/pdf")
+    await alice.webdav.write_file(shared_path, PDF_BYTES, "application/pdf")
     file_id = (await alice.webdav.get_file_info(shared_path))["id"]
     tag = await alice.webdav.get_or_create_tag(
         name=get_settings().vector_sync_pdf_tag,
@@ -295,10 +285,10 @@ async def test_verify_drops_unshared_file_for_other_user(alice_bob_clients, mock
     alice, bob = alice_bob_clients
     suffix = uuid.uuid4().hex[:8]
     test_dir = f"acl_verify_priv_{suffix}"
-    private_path = f"{test_dir}/private.txt"
+    private_path = f"{test_dir}/private.pdf"
 
     await alice.webdav.create_directory(test_dir)
-    await alice.webdav.write_file(private_path, b"alice's private note", "text/plain")
+    await alice.webdav.write_file(private_path, PDF_BYTES, "application/pdf")
     file_id = (await alice.webdav.get_file_info(private_path))["id"]
 
     try:

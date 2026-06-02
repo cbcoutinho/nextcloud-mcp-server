@@ -174,10 +174,14 @@ async def _verify_files(
 
     tag_name = get_settings().vector_sync_pdf_tag
 
-    # One batch fetch per search, holding a single semaphore slot (same
+    # Two batch fetches per search held under a single semaphore slot (same
     # backpressure rationale as _verify_news_items): the tagged-file REPORT
-    # plus optional Depth:infinity folder expansion — and the EXCLUDED_TAGS
-    # lookup — are one round-trip set, not one per result.
+    # (plus optional Depth:infinity folder expansion) and the EXCLUDED_TAGS
+    # lookup (get_excluded_file_paths, itself ~2×N concurrent calls). Both are
+    # batched once per search, not once per result, and the slot bounds them.
+    # The pure-Python intersection that builds tagged_ids/accessible runs
+    # *outside* the slot — it needs no Nextcloud round-trip (mirrors the
+    # post-fetch present_ids build in _verify_news_items).
     #
     # TODO(perf): if folder expansion dominates query latency, cache the
     # tagged-id set per user with a short TTL (mirroring the
