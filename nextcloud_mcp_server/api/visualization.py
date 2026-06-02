@@ -225,6 +225,8 @@ async def unified_search(request: Request) -> JSONResponse:
         include_pca = body.get("include_pca", False)
         include_chunks = body.get("include_chunks", True)
         doc_types = body.get("doc_types")  # Optional filter
+        # ADR-027 Phase 2 path filter (files only); blank ⇒ no filter.
+        path_prefix = (body.get("path_prefix") or "").strip() or None
 
         if not query:
             return JSONResponse({"results": [], "total_found": 0})
@@ -266,6 +268,7 @@ async def unified_search(request: Request) -> JSONResponse:
                                 accessible_owners=owners,
                                 modified_after=modified_after,
                                 modified_before=modified_before,
+                                path_prefix=path_prefix,
                             )
                         )
                 # Sort, then cap to a fixed over-fetch budget before the result
@@ -285,6 +288,7 @@ async def unified_search(request: Request) -> JSONResponse:
                     accessible_owners=owners,
                     modified_after=modified_after,
                     modified_before=modified_before,
+                    path_prefix=path_prefix,
                 )
             return results
 
@@ -436,6 +440,8 @@ async def vector_search(request: Request) -> JSONResponse:
         limit = min(body.get("limit", 10), 50)  # Enforce max limit
         include_pca = body.get("include_pca", True)
         doc_types = body.get("doc_types")  # Optional list of document types
+        # ADR-027 Phase 2 path filter (files only); blank ⇒ no filter.
+        path_prefix = (body.get("path_prefix") or "").strip() or None
         # ADR-027 modified-date range filter. Accepts RFC 3339 / ISO 8601
         # datetimes or Unix seconds; normalized to int Unix seconds. None ⇒ open.
         try:
@@ -501,6 +507,7 @@ async def vector_search(request: Request) -> JSONResponse:
                                 accessible_owners=owners,
                                 modified_after=modified_after,
                                 modified_before=modified_before,
+                                path_prefix=path_prefix,
                             )
                         )
                 # Sort merged results by score and limit
@@ -515,6 +522,7 @@ async def vector_search(request: Request) -> JSONResponse:
                     accessible_owners=owners,
                     modified_after=modified_after,
                     modified_before=modified_before,
+                    path_prefix=path_prefix,
                 )
             return results
 

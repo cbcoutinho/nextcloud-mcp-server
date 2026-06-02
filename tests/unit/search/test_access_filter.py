@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
-from qdrant_client.models import FieldCondition, Range
+from qdrant_client.models import FieldCondition, MatchText, Range
 
 from nextcloud_mcp_server.search import access_filter
 from nextcloud_mcp_server.search.access_filter import (
@@ -250,13 +250,35 @@ class TestBuildBaseFilterConditions:
         )
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("prefix", ["/Projects/Reports", "/Archive"])
+    def test_path_prefix_appends_file_path_match_text(self, prefix) -> None:
+        conditions = build_base_filter_conditions("alice", None, path_prefix=prefix)
+        path_conds = [
+            c
+            for c in conditions
+            if isinstance(c, FieldCondition) and c.key == "file_path"
+        ]
+        assert len(path_conds) == 1
+        match = path_conds[0].match
+        assert isinstance(match, MatchText)
+        assert match.text == prefix
+
+    @pytest.mark.unit
+    def test_no_path_condition_when_prefix_absent(self) -> None:
+        conditions = build_base_filter_conditions("alice", None, path_prefix=None)
+        assert not any(
+            isinstance(c, FieldCondition) and c.key == "file_path" for c in conditions
+        )
+
+    @pytest.mark.unit
     def test_all_filters_compose(self) -> None:
-        # placeholder + ownership + doc_type + modified_at range = 4 conditions.
+        # placeholder + ownership + doc_type + modified_at range + file_path = 5.
         conditions = build_base_filter_conditions(
             "alice",
             ["alice", "bob"],
             doc_type="file",
             modified_after=100,
             modified_before=200,
+            path_prefix="/Projects",
         )
-        assert len(conditions) == 4
+        assert len(conditions) == 5

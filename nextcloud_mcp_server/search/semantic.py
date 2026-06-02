@@ -54,6 +54,7 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         accessible_owners: list[str] | None = None,
         modified_after: int | None = None,
         modified_before: int | None = None,
+        path_prefix: str | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """Execute semantic search using vector similarity.
@@ -78,6 +79,8 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
                 seconds, UTC); ``None`` ⇒ open-ended (ADR-027).
             modified_before: Inclusive upper bound on ``modified_at`` (Unix
                 seconds, UTC); ``None`` ⇒ open-ended (ADR-027).
+            path_prefix: Folder/path filter on ``file_path`` (files only);
+                ``None`` ⇒ no path filter (ADR-027 Phase 2).
             **kwargs:
                 - score_threshold (float): override the instance default
 
@@ -118,6 +121,7 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
             doc_type=doc_type,
             modified_after=modified_after,
             modified_before=modified_before,
+            path_prefix=path_prefix,
         )
 
         # ACL pre-filter (design §11), opt-in via ACL_PREFILTER_ENABLED and OFF

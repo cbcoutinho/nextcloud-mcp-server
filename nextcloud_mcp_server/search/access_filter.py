@@ -34,6 +34,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchAny,
+    MatchText,
     MatchValue,
     Range,
 )
@@ -194,6 +195,7 @@ def build_base_filter_conditions(
     doc_type: str | None = None,
     modified_after: int | None = None,
     modified_before: int | None = None,
+    path_prefix: str | None = None,
 ) -> list[Condition]:
     """Build the common ``must`` conditions shared by every search algorithm.
 
@@ -209,6 +211,7 @@ def build_base_filter_conditions(
     2. ``build_ownership_filter(...)`` — ACL-aware ``owner_id``/``user_id`` scope.
     3. ``doc_type`` exact match — only when ``doc_type`` is truthy.
     4. ``modified_at`` range — only when at least one bound is given.
+    5. ``file_path`` text match — only when ``path_prefix`` is given.
 
     Args:
         user_id: Querying user.
@@ -217,6 +220,16 @@ def build_base_filter_conditions(
         doc_type: Optional single document-type filter.
         modified_after: Inclusive lower bound on ``modified_at`` (Unix seconds).
         modified_before: Inclusive upper bound on ``modified_at`` (Unix seconds).
+        path_prefix: Optional folder/path filter on the ``file_path`` payload
+            field (ADR-027 Phase 2). Implemented with ``MatchText`` against the
+            text-indexed ``file_path``. ``file_path`` is only written for
+            ``doc_type == "file"`` points, so a non-empty ``path_prefix``
+            implicitly restricts results to files. NOTE the match semantics
+            differ by backend: server Qdrant tokenizes (AND-of-tokens, so
+            ``"/Projects/Reports"`` matches files whose path contains both the
+            ``Projects`` and ``Reports`` tokens), while the local/embedded
+            qdrant-client matches by substring containment. Both serve folder
+            scoping; neither is a strict left-anchored prefix.
 
     Returns:
         A list of Qdrant ``Condition`` objects for a parent ``must`` clause.
@@ -240,6 +253,11 @@ def build_base_filter_conditions(
                 key="modified_at",
                 range=Range(gte=modified_after, lte=modified_before),
             )
+        )
+
+    if path_prefix:
+        conditions.append(
+            FieldCondition(key="file_path", match=MatchText(text=path_prefix))
         )
 
     return conditions

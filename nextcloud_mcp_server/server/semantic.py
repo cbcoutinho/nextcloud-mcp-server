@@ -84,6 +84,17 @@ def configure_semantic_tools(mcp: FastMCP):
                 ),
             ),
         ] = None,
+        path_prefix: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Restrict to files under this folder/path "
+                    "(e.g. '/Projects/Reports'). Matches the file_path of "
+                    "indexed files only, so setting it implicitly limits "
+                    "results to files. None = no path filter."
+                ),
+            ),
+        ] = None,
     ) -> SemanticSearchResponse:
         """
         Search Nextcloud content using BM25 hybrid search with cross-app support.
@@ -116,6 +127,9 @@ def configure_semantic_tools(mcp: FastMCP):
             modified_before: Only return documents whose last-modified time is at or before this
                 instant. Same formats as modified_after. None = no upper bound (default). Must be
                 >= modified_after when both are supplied.
+            path_prefix: Restrict to files under this folder/path (e.g. "/Projects/Reports").
+                Matches the file_path of indexed files only — setting it implicitly limits results
+                to files. None = no path filter (default).
 
         Returns:
             SemanticSearchResponse with matching documents ranked by fusion scores.
@@ -186,6 +200,12 @@ def configure_semantic_tools(mcp: FastMCP):
                 )
             )
 
+        # Treat a blank/whitespace path_prefix as "no filter" so an empty UI
+        # field doesn't filter out every result (ADR-027 Phase 2).
+        path_prefix = path_prefix.strip() if path_prefix else None
+        if not path_prefix:
+            path_prefix = None
+
         # Expand the caller's identity to every owner whose content they
         # have read access to via Nextcloud shares. Lets a user find files
         # owners have shared with them without having to re-index those
@@ -232,6 +252,7 @@ def configure_semantic_tools(mcp: FastMCP):
                     accessible_owners=accessible_owners,
                     modified_after=modified_after_ts,
                     modified_before=modified_before_ts,
+                    path_prefix=path_prefix,
                 )
                 all_results.extend(unverified_results)
             else:
@@ -259,6 +280,7 @@ def configure_semantic_tools(mcp: FastMCP):
                         accessible_owners=accessible_owners,
                         modified_after=modified_after_ts,
                         modified_before=modified_before_ts,
+                        path_prefix=path_prefix,
                     )
                     all_results.extend(unverified_results)
 

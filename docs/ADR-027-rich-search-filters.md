@@ -1,6 +1,6 @@
 # ADR-027: Rich Search Filters for Semantic Search
 
-**Status**: Accepted (Phase 1 implemented; Phases 2–3 deferred)
+**Status**: Accepted (Phases 1–2 implemented; Phase 3 deferred)
 **Date**: 2026-06-02
 **Depends On**: ADR-012 (Unified Multi-Algorithm Search), ADR-014 (BM25 Search), ADR-019 (Verify-on-Read for Semantic Search)
 **Tracking**: Astrolabe Cloud POC Deck card #177
@@ -68,7 +68,7 @@ Filters can only be applied to fields that exist in the Qdrant payload (built in
 |---|---|---|---|
 | Modified-date range | `modified_at` | `int` (Unix ts) | ✅ **Ready** — value present on every point; needs a payload index (added in Phase 1, no content re-index) |
 | Document type | `doc_type` | keyword-indexed `str` | ✅ Implemented |
-| Directory / path | `file_path` (files only) | `str` | ⚠️ Stored but **not keyword-indexed** — prefix/match needs a payload index |
+| Directory / path | `file_path` (files only) | `str` | ✅ **Ready (Phase 2)** — value present on file points; TEXT payload index added (no content re-index), filtered with `MatchText` |
 | Tags | — | — | ❌ **Not indexed** — no `tags` field is written during scanning |
 | Category (notes) | — | — | ❌ Not in payload — fetched from the Notes API at verify time only |
 
@@ -186,11 +186,19 @@ express:
     it on the answer path. When demand appears it can be threaded through using exactly the same
     parameter + `parse_modified_timestamp` pattern; doing it now would add an unused parameter and
     widen the change for no user-visible gain.
-- **Phase 2 — directory / path.** Create a Qdrant payload index on `file_path`, add a `path_prefix`
-  parameter, and add an `NcFilePicker` folder chooser. Scoped to `doc_type == "file"`: the frontend
-  must **hide/disable the path filter unless the file doc type is selected**, because `file_path`
-  is only written to the payload for `doc_type == "file"` (`processor.py`) — a path condition on
-  any other type matches nothing and silently returns zero results.
+- **Phase 2 — directory / path (implemented).** Add a `path_prefix` parameter threaded through the
+  same shared contract (`build_base_filter_conditions` → `FieldCondition(key="file_path",
+  match=MatchText(text=path_prefix))`), and a `file_path` **TEXT** payload index in
+  `_PAYLOAD_INDEX_FIELDS` (no content re-index — `file_path` is already on every file point).
+  `MatchText` semantics differ by backend: **server Qdrant** tokenizes (AND-of-tokens, so
+  `/Projects/Reports` matches files whose path contains both the `Projects` and `Reports` tokens),
+  while **local/embedded qdrant-client** matches by substring containment — both serve folder
+  scoping, neither is a strict left-anchored prefix (a future strict-prefix would need an indexed
+  ancestor-path array, i.e. a re-index, so it stays out of Phase 2). Because `file_path` is only
+  written for `doc_type == "file"`, a non-empty `path_prefix` implicitly restricts results to
+  files; the frontend uses a native path text input enabled only when the **Files** doc type is in
+  scope (rather than `NcFilePicker`, to avoid a hard `@nextcloud/vue` component-version dependency —
+  same rationale as the date inputs). A blank value is treated as "no filter".
 - **Phase 3 — tags (and optionally category).** Add a `tags: list[str]` payload field in
   `processor.py`, propagate Nextcloud system tags during scanning, trigger a re-index, then wire
   `NcSelectTags` (`MatchAny` over tags). Re-index cost lives here, isolated from the cheap wins.

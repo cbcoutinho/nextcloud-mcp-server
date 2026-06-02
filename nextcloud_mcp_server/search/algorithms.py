@@ -291,6 +291,7 @@ class SearchAlgorithm(ABC):
         accessible_owners: list[str] | None = None,
         modified_after: int | None = None,
         modified_before: int | None = None,
+        path_prefix: str | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """Execute search with the given parameters.
@@ -312,6 +313,10 @@ class SearchAlgorithm(ABC):
                 ``accessible_owners`` (ADR-027). ``None`` ⇒ open-ended.
             modified_before: Optional inclusive upper bound on ``modified_at``
                 (Unix seconds, UTC). ``None`` ⇒ open-ended.
+            path_prefix: Optional folder/path filter on the ``file_path`` payload
+                field (ADR-027 Phase 2). Only ``doc_type == "file"`` points carry
+                ``file_path``, so a non-empty value implicitly restricts results
+                to files. ``None`` ⇒ no path filter.
             **kwargs: Algorithm-specific parameters
 
         Returns:
