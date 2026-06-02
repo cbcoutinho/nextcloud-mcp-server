@@ -289,6 +289,9 @@ class SearchAlgorithm(ABC):
         doc_type: str | None = None,
         *,
         accessible_owners: list[str] | None = None,
+        modified_after: int | None = None,
+        modified_before: int | None = None,
+        path_prefix: str | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """Execute search with the given parameters.
@@ -304,6 +307,16 @@ class SearchAlgorithm(ABC):
                 buried in ``**kwargs`` — so a misspelled keyword is a type error
                 instead of a silent fall back to self-only scope. ``None`` means
                 self-only (``[user_id]``).
+            modified_after: Optional inclusive lower bound on the document's
+                ``modified_at`` payload field (Unix seconds, UTC). Declared
+                explicitly for the same discoverability/type-safety reason as
+                ``accessible_owners`` (ADR-027). ``None`` ⇒ open-ended.
+            modified_before: Optional inclusive upper bound on ``modified_at``
+                (Unix seconds, UTC). ``None`` ⇒ open-ended.
+            path_prefix: Optional folder/path filter on the ``file_path`` payload
+                field (ADR-027 Phase 2). Only ``doc_type == "file"`` points carry
+                ``file_path``, so a non-empty value implicitly restricts results
+                to files. ``None`` ⇒ no path filter.
             **kwargs: Algorithm-specific parameters
 
         Returns:

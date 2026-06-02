@@ -74,6 +74,28 @@ def _record(point_id: int | str, doc_id: int | str | None) -> SimpleNamespace:
 
 
 # ---------------------------------------------------------------------------
+# _PAYLOAD_INDEX_FIELDS contract
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_modified_at_indexed_as_integer():
+    """ADR-027: the date-range filter needs a numeric index on modified_at.
+
+    INTEGER (not FLOAT/DATETIME) because the payload stores an int Unix-second
+    timestamp; a numeric Range filters it without a content re-index.
+    """
+    assert _PAYLOAD_INDEX_FIELDS.get("modified_at") == PayloadSchemaType.INTEGER
+
+
+@pytest.mark.unit
+def test_file_path_indexed_as_text():
+    """ADR-027 Phase 2: the path filter uses MatchText, which needs a TEXT index
+    on file_path (server Qdrant); local qdrant-client matches by substring."""
+    assert _PAYLOAD_INDEX_FIELDS.get("file_path") == PayloadSchemaType.TEXT
+
+
+# ---------------------------------------------------------------------------
 # _ensure_payload_indexes
 # ---------------------------------------------------------------------------
 
