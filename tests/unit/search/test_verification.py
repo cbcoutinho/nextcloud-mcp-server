@@ -505,6 +505,30 @@ async def test_verify_files_deleted_drops(mocker):
 
 
 @pytest.mark.unit
+async def test_verify_files_empty_tag_set_skips_exclusion_lookup(mocker):
+    """When the tag REPORT returns no files, the EXCLUDED_TAGS lookup is skipped
+    entirely: an empty tagged set drops every valid-id result regardless of
+    exclusions, so the lookup's 2xN WebDAV fan-out is wasted work. Malformed
+    doc_ids are still kept (fail-open), exactly as on the non-empty path."""
+    excluded = _patch_excluded(mocker, {"Secret"})
+    client = _file_client(mocker, tagged=[])
+
+    result = await _verify_files(
+        client,
+        [
+            _make_result(123, doc_type="file"),
+            _make_result("not-a-file-id", doc_type="file"),
+        ],
+        _sem(),
+    )
+
+    # Valid id absent from the (empty) tagged set → dropped; malformed id kept.
+    assert result == {"not-a-file-id"}
+    # The optimization: no exclusion fan-out when there is nothing to filter.
+    excluded.assert_not_awaited()
+
+
+@pytest.mark.unit
 async def test_verify_files_excluded_path_drops(mocker):
     """A tagged file under an EXCLUDED_TAGS folder must not surface — exclusion
     wins, parity with the scanner's defense-in-depth filter."""

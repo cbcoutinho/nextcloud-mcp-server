@@ -174,11 +174,20 @@ async def _verify_files(
 
     tag_name = get_settings().vector_sync_pdf_tag
 
-    # Two batch fetches per search held under a single semaphore slot (same
-    # backpressure rationale as _verify_news_items): the tagged-file REPORT
-    # (plus optional Depth:infinity folder expansion) and the EXCLUDED_TAGS
-    # lookup (get_excluded_file_paths, itself ~2×N concurrent calls). Both are
-    # batched once per search, not once per result, and the slot bounds them.
+    # One semaphore slot is held for both Nextcloud round-trips: the tagged-file
+    # REPORT (plus optional Depth:infinity folder expansion) and — only when the
+    # REPORT returned files — the EXCLUDED_TAGS lookup. Both are batched once per
+    # search, not once per result (same backpressure rationale as
+    # _verify_news_items).
+    #
+    # The slot caps how many *searches* verify files concurrently, but it does
+    # NOT bound the fan-out *within* one verification: get_excluded_file_paths
+    # internally spawns a task group issuing 2×len(EXCLUDED_TAGS) concurrent
+    # WebDAV calls (1 PROPFIND + 1 REPORT per excluded tag), so the live
+    # Nextcloud connection count can exceed VERIFICATION_CONCURRENCY when
+    # excluded tags are configured. See configuration.md → "Files caveat" for
+    # the latency/tuning guidance.
+    #
     # The pure-Python intersection that builds tagged_ids/accessible runs
     # *outside* the slot — it needs no Nextcloud round-trip (mirrors the
     # post-fetch present_ids build in _verify_news_items).
@@ -213,15 +222,23 @@ async def _verify_files(
         # Exclusion wins: a tagged file under an EXCLUDED_TAGS folder must not
         # surface, matching the scanner's defense-in-depth filter. A failure
         # here degrades to "no exclusion" rather than dropping legitimate hits.
-        try:
-            excluded_paths = await get_excluded_file_paths(client.webdav)
-        except Exception as e:
-            logger.warning(
-                "EXCLUDED_TAGS lookup failed during verification (%s); "
-                "proceeding without exclusion filter",
-                e,
-            )
-            excluded_paths = set()
+        #
+        # Skip the lookup entirely when the tag REPORT returned nothing: an empty
+        # `tagged` yields an empty `tagged_ids` regardless of the exclusion set,
+        # so the lookup's 2×len(EXCLUDED_TAGS) WebDAV fan-out cannot change the
+        # outcome — avoid it in the common "this tag matched nothing" case. The
+        # per-result loop below still runs, so malformed doc_ids are still kept
+        # (fail-open), exactly as when `tagged` is non-empty.
+        excluded_paths: set[str] = set()
+        if tagged:
+            try:
+                excluded_paths = await get_excluded_file_paths(client.webdav)
+            except Exception as e:
+                logger.warning(
+                    "EXCLUDED_TAGS lookup failed during verification (%s); "
+                    "proceeding without exclusion filter",
+                    e,
+                )
 
     tagged_ids: set[str] = set()
     for f in tagged:
