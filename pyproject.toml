@@ -46,7 +46,6 @@ dependencies = [
     "dynaconf>=3.2.13,<4.0",
     "mistralai>=2.4.5",
     "sqlalchemy[asyncio]>=2.0",
-    "nats-py>=2.14.0",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -134,6 +133,8 @@ nextcloud-mcp-server = "nextcloud_mcp_server.cli:cli"
 [project.optional-dependencies]
 postgres = [
     "asyncpg>=0.29",
+    "procrastinate>=3.8",
+    "psycopg[binary,pool]>=3.2",
 ]
 
 [[tool.uv.index]]

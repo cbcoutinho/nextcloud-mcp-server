@@ -115,17 +115,20 @@ async def _get_processing_status(request: Request) -> dict[str, Any] | None:
         return None
 
     try:
-        # Get document receive stream from app state
-        document_receive_stream = getattr(
-            request.app.state, "document_receive_stream", None
+        # Outstanding-work view depends on the queue backend (Deck #183):
+        # memory → stream buffer depth; postgres → procrastinate job counts (the
+        # in-memory stream is absent in postgres mode, so don't early-return on it).
+        from nextcloud_mcp_server.vector.ingest_status import (  # noqa: PLC0415
+            get_ingest_pending,
         )
-        if document_receive_stream is None:
-            logger.debug("document_receive_stream not available in app state")
-            return None
 
-        # Get pending count from stream statistics
-        stats = document_receive_stream.statistics()
-        pending_count = stats.current_buffer_used
+        pending = await get_ingest_pending(
+            task_producer=getattr(request.app.state, "task_producer", None),
+            document_receive_stream=getattr(
+                request.app.state, "document_receive_stream", None
+            ),
+            ingest_queue=settings.ingest_queue,
+        )
 
         # Get Qdrant client and query indexed count
         indexed_count = 0
@@ -147,11 +150,11 @@ async def _get_processing_status(request: Request) -> dict[str, Any] | None:
             # Continue with indexed_count = 0
 
         # Determine status
-        status = "syncing" if pending_count > 0 else "idle"
+        status = "syncing" if pending.pending > 0 else "idle"
 
         return {
             "indexed_count": indexed_count,
-            "pending_count": pending_count,
+            "pending_count": pending.pending,
             "status": status,
         }
 

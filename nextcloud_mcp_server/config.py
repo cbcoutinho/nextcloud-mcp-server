@@ -169,14 +169,19 @@ _DEFAULTS: dict[str, Any] = {
     # the current monolithic behavior; self-hosters who set none are
     # unaffected. See docs/architecture/mcp-decomposition.md (sibling repo).
     "embedding_provider": "autodetect",  # autodetect | gateway
-    "ingest_mode": "local",  # local | external
-    "status_backend": "local",  # local | bus
+    # Ingest queue backend (Deck #183). None → auto: ``postgres`` (procrastinate)
+    # when DATABASE_URL is Postgres, else ``memory`` (the in-process anyio queue
+    # for SQLite/dev). procrastinate requires PostgreSQL.
+    "ingest_queue": None,  # memory | postgres
+    # Process role for the per-tenant two-pod model (Deck #183). ``api`` runs the
+    # MCP/query server + scanner (defers jobs); the ``worker`` role is the
+    # `nextcloud-mcp-server worker` process that drains the queue. ``all`` keeps
+    # the monolithic behaviour (API + in-process SQLite pool).
+    "mcp_role": "all",  # api | worker | all
     "collection_metadata_source": "qdrant",  # qdrant | api
     # CP base URL for COLLECTION_METADATA_SOURCE=api (e.g. http://control-plane).
     # Required only when the source is api.
     "collection_metadata_api_url": None,
-    "fact_event_emitter": "none",  # none | nats | stdout
-    "ingest_bus_url": None,  # required when ingest_mode=external
     "embedding_gateway_url": None,  # required when embedding_provider=gateway
     # Provider-namespaced model the gateway serves, "<provider>/<model>"
     # (the gateway routes on the "/"-prefix; mistral/mistral-embed → Mistral
@@ -191,8 +196,7 @@ _DEFAULTS: dict[str, Any] = {
     "embedding_gateway_client_id": None,
     "embedding_gateway_client_secret": None,
     "embedding_gateway_scope": None,  # e.g. astrolabe-embedding-gateway/embed
-    "tenant_id": None,  # NATS per-tenant subject token (UUID form)
-    "ingest_bus_num_replicas": 1,  # JetStream stream replicas (prod: 3)
+    "tenant_id": None,  # per-tenant identity (UUID form); see vector/payload_keys
     # Query-side ACL pre-filter (design §11). OFF by default: a Qdrant
     # `match any` on `acl_hash` excludes points missing the key, so enabling
     # this before a real ACL backfill would silently drop legacy results.
@@ -699,12 +703,12 @@ class Settings:
     # MCP decomposition hook points (design §10, opt-in). All defaults
     # reproduce the current monolith; validated in __post_init__.
     embedding_provider: str = "autodetect"  # autodetect | gateway
-    ingest_mode: str = "local"  # local | external
-    status_backend: str = "local"  # local | bus
+    # Ingest queue backend (Deck #183). None → resolved in __post_init__ to
+    # ``postgres`` when DATABASE_URL is Postgres, else ``memory``.
+    ingest_queue: str | None = None  # memory | postgres
+    mcp_role: str = "all"  # api | worker | all (Deck #183 two-pod model)
     collection_metadata_source: str = "qdrant"  # qdrant | api
     collection_metadata_api_url: str | None = None  # CP URL when source=api
-    fact_event_emitter: str = "none"  # none | nats | stdout
-    ingest_bus_url: str | None = None  # required when ingest_mode=external
     embedding_gateway_url: str | None = None  # required when provider=gateway
     embedding_gateway_model: str = (
         "mistral/mistral-embed"  # provider-namespaced id the gateway routes on
@@ -714,8 +718,7 @@ class Settings:
     embedding_gateway_client_id: str | None = None
     embedding_gateway_client_secret: str | None = None
     embedding_gateway_scope: str | None = None
-    tenant_id: str | None = None  # NATS per-tenant subject token (UUID form)
-    ingest_bus_num_replicas: int = 1  # JetStream stream replicas (prod: 3)
+    tenant_id: str | None = None  # per-tenant identity (UUID form)
     acl_prefilter_enabled: bool = False  # query-side ACL pre-filter (§11); OFF
 
     def __post_init__(self):
@@ -803,10 +806,8 @@ class Settings:
         # the monolith, so deployments that set none of these pass through.
         _enum_fields = {
             "embedding_provider": {"autodetect", "gateway"},
-            "ingest_mode": {"local", "external"},
-            "status_backend": {"local", "bus"},
+            "mcp_role": {"api", "worker", "all"},
             "collection_metadata_source": {"qdrant", "api"},
-            "fact_event_emitter": {"none", "nats", "stdout"},
         }
         for _field, _allowed in _enum_fields.items():
             _val = (getattr(self, _field) or "").strip().lower()
@@ -816,21 +817,25 @@ class Settings:
                     f"{_field.upper()} must be one of {sorted(_allowed)}; got {_val!r}"
                 )
 
-        # Fail-fast: external ingest sources its status from the bus. With the
-        # in-process state machine empty, STATUS_BACKEND=local would leave
-        # status streams silently empty — crash loudly instead (design §10.1).
-        if self.status_backend == "local" and self.ingest_mode == "external":
-            raise RuntimeError(
-                "STATUS_BACKEND=local is incompatible with INGEST_MODE=external; "
-                "set STATUS_BACKEND=bus"
+        # Ingest queue backend (Deck #183). Unset → auto-derive from the
+        # database backend: procrastinate needs PostgreSQL, so SQLite/dev falls
+        # back to the in-process anyio queue. An explicit ``postgres`` against a
+        # SQLite DATABASE_URL is a misconfiguration — fail loudly.
+        _queue = (self.ingest_queue or "").strip().lower()
+        if not _queue:
+            _queue = "memory" if is_sqlite_url(get_database_url()) else "postgres"
+        if _queue not in {"memory", "postgres"}:
+            raise ValueError(
+                f"INGEST_QUEUE must be one of ['memory', 'postgres']; got {_queue!r}"
+            )
+        self.ingest_queue = _queue
+        if self.ingest_queue == "postgres" and is_sqlite_url(get_database_url()):
+            raise ValueError(
+                "INGEST_QUEUE=postgres requires a PostgreSQL DATABASE_URL "
+                "(procrastinate is Postgres-only); use INGEST_QUEUE=memory for "
+                "SQLite/dev"
             )
 
-        # Conditional-required settings for the active hook points.
-        if self.ingest_mode == "external":
-            if not self.ingest_bus_url:
-                raise ValueError("INGEST_BUS_URL is required when INGEST_MODE=external")
-            if not self.tenant_id:
-                raise ValueError("TENANT_ID is required when INGEST_MODE=external")
         if self.embedding_provider == "gateway" and not self.embedding_gateway_url:
             raise ValueError(
                 "EMBEDDING_GATEWAY_URL is required when EMBEDDING_PROVIDER=gateway"
@@ -857,23 +862,6 @@ class Settings:
                 "EMBEDDING_GATEWAY_TOKEN_URL, EMBEDDING_GATEWAY_CLIENT_ID, and "
                 "EMBEDDING_GATEWAY_CLIENT_SECRET must be set together (M2M OIDC "
                 "client-credentials) or all left unset (unauthenticated gateway)"
-            )
-
-        # TENANT_ID is a NATS subject token; '.', '*', '>', and whitespace are
-        # reserved/illegal there and would silently break subscriptions (§3.4).
-        if self.tenant_id and (
-            any(c in self.tenant_id for c in ".*>")
-            or any(c.isspace() for c in self.tenant_id)
-        ):
-            raise ValueError(
-                "TENANT_ID must not contain '.', '*', '>', or whitespace "
-                "(it is used as a NATS subject token)"
-            )
-
-        if self.ingest_bus_num_replicas < 1:
-            raise ValueError(
-                f"INGEST_BUS_NUM_REPLICAS must be >= 1; "
-                f"got {self.ingest_bus_num_replicas}"
             )
 
         # --- ADR-022 follow-up: deployment mode is the single source of truth ---
@@ -1316,12 +1304,10 @@ def get_settings() -> Settings:
         "excluded_tags": "EXCLUDED_TAGS",
         # MCP decomposition hook points (design §10)
         "embedding_provider": "EMBEDDING_PROVIDER",
-        "ingest_mode": "INGEST_MODE",
-        "status_backend": "STATUS_BACKEND",
+        "ingest_queue": "INGEST_QUEUE",
+        "mcp_role": "MCP_ROLE",
         "collection_metadata_source": "COLLECTION_METADATA_SOURCE",
         "collection_metadata_api_url": "COLLECTION_METADATA_API_URL",
-        "fact_event_emitter": "FACT_EVENT_EMITTER",
-        "ingest_bus_url": "INGEST_BUS_URL",
         "embedding_gateway_url": "EMBEDDING_GATEWAY_URL",
         "embedding_gateway_model": "EMBEDDING_GATEWAY_MODEL",
         "embedding_gateway_token_url": "EMBEDDING_GATEWAY_TOKEN_URL",
@@ -1329,7 +1315,6 @@ def get_settings() -> Settings:
         "embedding_gateway_client_secret": "EMBEDDING_GATEWAY_CLIENT_SECRET",
         "embedding_gateway_scope": "EMBEDDING_GATEWAY_SCOPE",
         "tenant_id": "TENANT_ID",
-        "ingest_bus_num_replicas": "INGEST_BUS_NUM_REPLICAS",
         "acl_prefilter_enabled": "ACL_PREFILTER_ENABLED",
     }
 
@@ -1405,3 +1390,76 @@ def get_database_ssl() -> bool | ssl.SSLContext | None:
     if settings.database_verify_ssl is True:
         return True
     return None
+
+
+def _pg_ssl_params() -> dict[str, str]:
+    """Map the DATABASE_VERIFY_SSL / DATABASE_CA_BUNDLE settings to libpq
+    keyword params for psycopg3 (used by procrastinate, Deck #183).
+
+    psycopg/libpq takes ``sslmode`` (and ``sslrootcert``) rather than an
+    ``ssl.SSLContext`` like asyncpg, so we translate :func:`get_database_ssl`'s
+    intent into the equivalent libpq settings:
+
+    - ``None``  (both unset)        → ``{}`` (omit; libpq default ``prefer``,
+      matching the asyncpg default for cluster-local Postgres without TLS).
+    - ``False`` (DATABASE_VERIFY_SSL=false) → ``sslmode=require`` (encrypt but
+      do not verify the certificate).
+    - CA bundle set                → ``sslmode=verify-full`` + ``sslrootcert``.
+    - ``True``  (verify, no bundle) → ``sslmode=verify-full`` (system trust).
+    """
+    ssl_setting = get_database_ssl()
+    if ssl_setting is None:
+        return {}
+    if ssl_setting is False:
+        return {"sslmode": "require"}
+    settings = get_settings()
+    if settings.database_ca_bundle:
+        return {"sslmode": "verify-full", "sslrootcert": settings.database_ca_bundle}
+    return {"sslmode": "verify-full"}
+
+
+def get_procrastinate_conninfo(database_url: str | None = None) -> str:
+    """Build a libpq conninfo string for procrastinate's psycopg3 connector.
+
+    Derives the connection from ``DATABASE_URL`` (a SQLAlchemy URL such as
+    ``postgresql+asyncpg://user:pass@host/db``): the SQLAlchemy driver suffix
+    (``+asyncpg``/``+psycopg``) is stripped and the parts are rendered via
+    :func:`psycopg.conninfo.make_conninfo`, which quotes values correctly (never
+    f-string the password). TLS settings are appended from :func:`_pg_ssl_params`.
+
+    This is driver-agnostic on purpose: procrastinate uses psycopg3 regardless of
+    which SQLAlchemy driver the app's own engine uses, so it works whether
+    ``DATABASE_URL`` carries ``+asyncpg`` or ``+psycopg``.
+
+    TODO(Deck #183 follow-up, out-of-tree): unify the app's SQLAlchemy engine on
+    psycopg3 too (``postgresql+psycopg://``) and drop asyncpg, so the deployment
+    ships a single Postgres driver. This belongs in the rendered Helm chart
+    (set ``DATABASE_URL`` to a ``+psycopg`` URL) rather than rewriting the driver
+    in code — see charts repo, not this repo.
+
+    Raises ``ValueError`` for a non-Postgres URL — procrastinate is Postgres-only.
+    """
+    from psycopg.conninfo import make_conninfo  # noqa: PLC0415
+    from sqlalchemy.engine.url import make_url  # noqa: PLC0415
+
+    url = make_url(database_url or get_database_url())
+    if not url.drivername.startswith("postgresql"):
+        raise ValueError(
+            "get_procrastinate_conninfo requires a PostgreSQL DATABASE_URL; "
+            f"got driver {url.drivername!r}"
+        )
+
+    params: dict[str, str] = {}
+    if url.host:
+        params["host"] = url.host
+    if url.port:
+        params["port"] = str(url.port)
+    if url.database:
+        params["dbname"] = url.database
+    if url.username:
+        params["user"] = url.username
+    if url.password:
+        params["password"] = url.password
+    params.update(_pg_ssl_params())
+
+    return make_conninfo(**params)

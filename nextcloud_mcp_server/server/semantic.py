@@ -945,23 +945,21 @@ def configure_semantic_tools(mcp: FastMCP):
             # missing attribute is a typo that should fail loudly. The
             # value itself can legitimately be ``None`` before sync starts,
             # which the check below handles.
+            # Outstanding-work view depends on the queue backend (Deck #183):
+            # memory → stream buffer depth; postgres → procrastinate job counts.
+            # Direct attribute access matches the eviction_task_group pattern at
+            # ``nc_semantic_search``: both AppContext and OAuthAppContext define
+            # these, so a missing attribute is a typo that should fail loudly.
+            from nextcloud_mcp_server.vector.ingest_status import (  # noqa: PLC0415
+                get_ingest_pending,
+            )
+
             lifespan_ctx = ctx.request_context.lifespan_context
-            document_receive_stream = lifespan_ctx.document_receive_stream
-
-            if document_receive_stream is None:
-                logger.debug(
-                    "document_receive_stream not available in lifespan context"
-                )
-                return VectorSyncStatusResponse(
-                    indexed_count=0,
-                    pending_count=0,
-                    status="unknown",
-                    enabled=True,
-                )
-
-            # Get pending count from stream statistics
-            stream_stats = document_receive_stream.statistics()
-            pending_count = stream_stats.current_buffer_used
+            pending = await get_ingest_pending(
+                task_producer=lifespan_ctx.task_producer,
+                document_receive_stream=lifespan_ctx.document_receive_stream,
+                ingest_queue=settings.ingest_queue,
+            )
 
             # Get Qdrant client and query indexed count
             indexed_count = 0
@@ -981,13 +979,15 @@ def configure_semantic_tools(mcp: FastMCP):
                 # Continue with indexed_count = 0
 
             # Determine status
-            status = "syncing" if pending_count > 0 else "idle"
+            status = "syncing" if pending.pending > 0 else "idle"
 
             return VectorSyncStatusResponse(
                 indexed_count=indexed_count,
-                pending_count=pending_count,
+                pending_count=pending.pending,
                 status=status,
                 enabled=True,
+                ingest_queue=settings.ingest_queue,
+                job_counts=pending.job_counts,
             )
 
         except Exception as e:

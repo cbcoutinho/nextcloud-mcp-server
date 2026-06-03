@@ -170,6 +170,17 @@ class VectorSyncStatusResponse(BaseResponse):
         description='Sync status: "idle", "syncing", or "disabled"',
     )
     enabled: bool = Field(default=False, description="Whether vector sync is enabled")
+    ingest_queue: str | None = Field(
+        default=None,
+        description='Ingest queue backend: "memory" or "postgres" (Deck #183)',
+    )
+    job_counts: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "Per-status ingest job counts (todo/doing/failed/…) on the postgres "
+            "queue backend; None on the in-memory backend"
+        ),
+    )
 
 
 __all__ = [

@@ -136,9 +136,8 @@ from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 from nextcloud_mcp_server.vector.queue import (
     MemoryTaskProducer,
     TaskProducer,
-    build_external_producer,
+    build_producer,
 )
-from nextcloud_mcp_server.vector.queue.status import NatsStatusSubscriber, StatusStore
 from nextcloud_mcp_server.vector.scanner import DocumentTask, scanner_task
 from nextcloud_mcp_server.vector.webhook_receiver import handle_nextcloud_webhook
 
@@ -332,12 +331,10 @@ class VectorSyncState:
     document_send_stream: MemoryObjectSendStream | None = None
     document_receive_stream: MemoryObjectReceiveStream | None = None
     # Ingest producer the scanner/webhook send to: the in-memory send stream
-    # (local mode) or the NATS bus producer (external mode). The webhook reads
-    # this; in local mode it is the same object as document_send_stream.
+    # (INGEST_QUEUE=memory) or the procrastinate producer (INGEST_QUEUE=postgres,
+    # Deck #183). The webhook reads this; in memory mode it is the same object as
+    # document_send_stream.
     task_producer: "TaskProducer | None" = None
-    # Bus status store (STATUS_BACKEND=bus): populated by the NATS status
-    # subscriber, read by the vector-sync status endpoint. None in local mode.
-    status_store: "StatusStore | None" = None
     shutdown_event: anyio.Event | None = None
     scanner_wake_event: anyio.Event | None = None
     # Long-lived task group used for fire-and-forget background work spawned
@@ -348,33 +345,6 @@ class VectorSyncState:
 
 # Module-level singleton for vector sync state
 _vector_sync_state = VectorSyncState()
-
-
-async def _build_status_subscriber(
-    settings: "Settings",
-) -> "tuple[StatusStore | None, NatsStatusSubscriber | None]":
-    """Build the bus status store + subscriber when STATUS_BACKEND=bus.
-
-    Returns ``(None, None)`` for local status (the status endpoint reads the
-    in-memory stream buffer instead). __post_init__ guarantees that bus status
-    only pairs with external ingest, so ingest_bus_url/tenant_id are set.
-    """
-    if not (settings.ingest_mode == "external" and settings.status_backend == "bus"):
-        return None, None
-    # Defence-in-depth (robust under ``python -O``, which strips asserts):
-    # __post_init__ already guarantees these when status_backend == "bus".
-    if settings.ingest_bus_url is None or settings.tenant_id is None:
-        raise ValueError(
-            "STATUS_BACKEND=bus requires INGEST_BUS_URL and TENANT_ID "
-            "(guaranteed by Settings validation)"
-        )
-    store = StatusStore(max_size=settings.vector_sync_queue_max_size)
-    subscriber = await NatsStatusSubscriber.connect(
-        url=settings.ingest_bus_url,
-        tenant_id=settings.tenant_id,
-        store=store,
-    )
-    return store, subscriber
 
 
 @dataclass
@@ -1681,39 +1651,40 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # Orphan-sweep before scanner starts — card #101.
             await _sweep_orphan_placeholders_if_enabled()
 
-            # Initialize shared state. INGEST_MODE selects the transport
-            # (design §10.1): local uses the in-memory anyio stream + the
-            # in-process processor pool; external publishes to NATS and runs no
-            # in-process consumer (the document-processor consumes).
-            external = settings.ingest_mode == "external"
+            # Initialize shared state. INGEST_QUEUE selects the transport
+            # (Deck #183): ``memory`` uses the in-process anyio stream + the
+            # in-process processor pool (SQLite/dev); ``postgres`` defers jobs to
+            # the per-tenant Postgres via procrastinate and runs no in-process
+            # consumer (the separate ``worker`` role drains the queue).
+            use_postgres = settings.ingest_queue == "postgres"
             shutdown_event = anyio.Event()
             scanner_wake_event = anyio.Event()
 
             send_stream = None
             receive_stream = None
             task_producer: TaskProducer
-            if external:
-                task_producer = await build_external_producer(settings)
-                logger.info(
-                    "Ingest mode external: publishing to %s", settings.ingest_bus_url
+            if use_postgres:
+                # Create procrastinate's tables before the scanner can defer.
+                # Lazy import: the procrastinate lib is a Postgres-only extra.
+                from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
+                    apply_ingest_queue_schema,
                 )
+
+                await apply_ingest_queue_schema()
+                task_producer = await build_producer(settings)
+                logger.info("Ingest queue: postgres (procrastinate); worker drains it")
             else:
                 send_stream, receive_stream = anyio.create_memory_object_stream[
                     DocumentTask
                 ](max_buffer_size=settings.vector_sync_queue_max_size)
                 task_producer = MemoryTaskProducer(send_stream)
 
-            # Bus status backend: subscribe to mcp.document.* into a store the
-            # status endpoint reads (STATUS_BACKEND=bus; external mode only).
-            status_store, status_subscriber = await _build_status_subscriber(settings)
-
-            # Store in app state for access from routes (ADR-007). In external
+            # Store in app state for access from routes (ADR-007). In postgres
             # mode there is no in-memory stream, so document_send/receive_stream
-            # stay None; task_producer is the bus producer.
+            # stay None; task_producer is the procrastinate producer.
             app.state.document_send_stream = send_stream
             app.state.document_receive_stream = receive_stream
             app.state.task_producer = task_producer
-            app.state.status_store = status_store
             app.state.shutdown_event = shutdown_event
             app.state.scanner_wake_event = scanner_wake_event
 
@@ -1721,7 +1692,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             _vector_sync_state.document_send_stream = send_stream
             _vector_sync_state.document_receive_stream = receive_stream
             _vector_sync_state.task_producer = task_producer
-            _vector_sync_state.status_store = status_store
             _vector_sync_state.shutdown_event = shutdown_event
             _vector_sync_state.scanner_wake_event = scanner_wake_event
             logger.info("Vector sync state stored in module singleton")
@@ -1733,7 +1703,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     browser_app.state.document_send_stream = send_stream
                     browser_app.state.document_receive_stream = receive_stream
                     browser_app.state.task_producer = task_producer
-                    browser_app.state.status_store = status_store
                     browser_app.state.shutdown_event = shutdown_event
                     browser_app.state.scanner_wake_event = scanner_wake_event
                     logger.info("Vector sync state shared with browser_app for /app")
@@ -1751,9 +1720,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     username,
                 )
 
-                # The in-process processor pool runs only in local mode; in
-                # external mode the document-processor service is the consumer.
-                if not external:
+                # The in-process processor pool runs only in memory mode; in
+                # postgres mode the out-of-process worker is the consumer.
+                if not use_postgres:
                     assert receive_stream is not None
                     for i in range(settings.vector_sync_processor_workers):
                         await tg.start(
@@ -1765,10 +1734,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                             username,
                         )
 
-                # Bus status subscriber (STATUS_BACKEND=bus).
-                if status_subscriber is not None:
-                    await tg.start(status_subscriber.run, shutdown_event)
-
                 # Expose this long-lived task group to request-path code that
                 # wants to spawn background work (e.g. ADR-019 verify-on-read
                 # eviction). Eviction coroutines have their own try/except, so
@@ -1776,9 +1741,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 _vector_sync_state.eviction_task_group = tg
 
                 logger.info(
-                    "Background sync tasks started: 1 scanner + %s processors (ingest=%s)",
-                    0 if external else settings.vector_sync_processor_workers,
-                    settings.ingest_mode,
+                    "Background sync tasks started: 1 scanner + %s processors (queue=%s)",
+                    0 if use_postgres else settings.vector_sync_processor_workers,
+                    settings.ingest_queue,
                 )
 
                 # Run MCP session manager and yield
@@ -1791,12 +1756,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         shutdown_event.set()
                         # Request path must not spawn into a cancelling group.
                         _vector_sync_state.eviction_task_group = None
-                        # Drain the shared bus connection (external mode only).
+                        # Close the procrastinate connector pool (postgres mode).
                         _drain = getattr(task_producer, "drain", None)
-                        if external and _drain is not None:
+                        if use_postgres and _drain is not None:
                             await _drain()
-                        if status_subscriber is not None:
-                            await status_subscriber.aclose()
                         await client.close()
                         # TaskGroup automatically cancels all tasks on exit
 
@@ -1904,11 +1867,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     except Exception as e:
                         logger.warning("App password cleanup failed (non-fatal): %s", e)
 
-                # Initialize shared state. INGEST_MODE selects the transport
-                # (design §10.1): local uses the in-memory anyio stream + the
-                # in-process processor pool; external publishes to NATS and runs
-                # no in-process consumer (the document-processor consumes).
-                external = settings.ingest_mode == "external"
+                # Initialize shared state. INGEST_QUEUE selects the transport
+                # (Deck #183): ``memory`` uses the in-process anyio stream + the
+                # in-process processor pool; ``postgres`` defers jobs via
+                # procrastinate and runs no in-process consumer (the separate
+                # ``worker`` role drains the queue).
+                use_postgres = settings.ingest_queue == "postgres"
                 shutdown_event = anyio.Event()
                 scanner_wake_event = anyio.Event()
 
@@ -1918,11 +1882,17 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 send_stream = None
                 receive_stream = None
                 task_producer: TaskProducer
-                if external:
-                    task_producer = await build_external_producer(settings)
+                if use_postgres:
+                    # Create procrastinate's tables before any scanner defers.
+                    # Lazy import: procrastinate is a Postgres-only extra.
+                    from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
+                        apply_ingest_queue_schema,
+                    )
+
+                    await apply_ingest_queue_schema()
+                    task_producer = await build_producer(settings)
                     logger.info(
-                        "Ingest mode external: publishing to %s",
-                        settings.ingest_bus_url,
+                        "Ingest queue: postgres (procrastinate); worker drains it"
                     )
                 else:
                     send_stream, receive_stream = anyio.create_memory_object_stream[
@@ -1930,17 +1900,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     ](max_buffer_size=settings.vector_sync_queue_max_size)
                     task_producer = MemoryTaskProducer(send_stream)
 
-                # Bus status backend: subscribe to mcp.document.* into a store
-                # the status endpoint reads (STATUS_BACKEND=bus; external only).
-                status_store, status_subscriber = await _build_status_subscriber(
-                    settings
-                )
-
                 # Store in app state for access from routes (ADR-007)
                 app.state.document_send_stream = send_stream
                 app.state.document_receive_stream = receive_stream
                 app.state.task_producer = task_producer
-                app.state.status_store = status_store
                 app.state.shutdown_event = shutdown_event
                 app.state.scanner_wake_event = scanner_wake_event
 
@@ -1948,7 +1911,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 _vector_sync_state.document_send_stream = send_stream
                 _vector_sync_state.document_receive_stream = receive_stream
                 _vector_sync_state.task_producer = task_producer
-                _vector_sync_state.status_store = status_store
                 _vector_sync_state.shutdown_event = shutdown_event
                 _vector_sync_state.scanner_wake_event = scanner_wake_event
                 logger.info("Vector sync state stored in module singleton")
@@ -1960,7 +1922,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         browser_app.state.document_send_stream = send_stream
                         browser_app.state.document_receive_stream = receive_stream
                         browser_app.state.task_producer = task_producer
-                        browser_app.state.status_store = status_store
                         browser_app.state.shutdown_event = shutdown_event
                         browser_app.state.scanner_wake_event = scanner_wake_event
                         logger.info(
@@ -1991,9 +1952,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         tg,
                     )
 
-                    # In-process processor pool runs only in local mode; in
-                    # external mode the document-processor service consumes.
-                    if not external:
+                    # In-process processor pool runs only in memory mode; in
+                    # postgres mode the out-of-process worker consumes.
+                    if not use_postgres:
                         assert receive_stream is not None
                         for i in range(settings.vector_sync_processor_workers):
                             await tg.start(
@@ -2004,10 +1965,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                                 nextcloud_host_for_sync,
                             )
 
-                    # Bus status subscriber (STATUS_BACKEND=bus).
-                    if status_subscriber is not None:
-                        await tg.start(status_subscriber.run, shutdown_event)
-
                     # Expose this long-lived task group to request-path code
                     # that wants to spawn background work (e.g. ADR-019
                     # verify-on-read eviction). Eviction coroutines have their
@@ -2015,9 +1972,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     _vector_sync_state.eviction_task_group = tg
 
                     logger.info(
-                        "Background sync tasks started: 1 user manager + %s processors (ingest=%s)",
-                        0 if external else settings.vector_sync_processor_workers,
-                        settings.ingest_mode,
+                        "Background sync tasks started: 1 user manager + %s processors (queue=%s)",
+                        0 if use_postgres else settings.vector_sync_processor_workers,
+                        settings.ingest_queue,
                     )
 
                     # Run MCP session manager and yield
@@ -2030,12 +1987,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                             shutdown_event.set()
                             # Request path must not spawn into a cancelling group.
                             _vector_sync_state.eviction_task_group = None
-                            # Drain the shared bus connection (external only).
+                            # Close the procrastinate connector pool (postgres).
                             _drain = getattr(task_producer, "drain", None)
-                            if external and _drain is not None:
+                            if use_postgres and _drain is not None:
                                 await _drain()
-                            if status_subscriber is not None:
-                                await status_subscriber.aclose()
                             # Close token broker HTTP client
                             if token_broker._http_client:
                                 await token_broker._http_client.aclose()
