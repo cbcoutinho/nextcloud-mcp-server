@@ -52,8 +52,14 @@ class TaskProducer(Protocol):
     async def aclose(self) -> None:
         """Close *this* handle (e.g. a per-user clone when its scanner exits).
 
-        For the memory stream this closes the clone; for the shared bus
-        connection it is a no-op (the connection is owned by the lifespan,
-        which drains it once on shutdown).
+        For the memory stream this closes the clone; for a shared connection it
+        is a no-op (the connection is owned by the lifespan, which tears it down
+        once on shutdown).
         """
         ...
+
+    # Note: this protocol deliberately omits ``drain()``. An implementation that
+    # owns a long-lived shared connection (e.g. ProcrastinateTaskProducer's
+    # connector pool) may additionally provide ``async def drain()`` for the
+    # lifespan to close that pool once on shutdown; the lifespan probes for it
+    # with ``getattr(task_producer, "drain", None)``, so it stays optional.

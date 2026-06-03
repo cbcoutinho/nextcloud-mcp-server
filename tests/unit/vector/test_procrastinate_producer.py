@@ -122,6 +122,32 @@ class TestProcessDocumentTask:
         assert captured["max_retries"] == 1
         fake_client.close.assert_awaited_once()
 
+    async def test_pipeline_error_propagates_and_closes_client(self, monkeypatch):
+        # A non-credential failure must propagate (so procrastinate's
+        # RetryStrategy picks it up) and still close the client via finally.
+        fake_client = AsyncMock()
+
+        async def fake_resolve(user_id):
+            return fake_client
+
+        async def fake_process(task, nc_client, *, max_retries):
+            raise RuntimeError("transient qdrant failure")
+
+        monkeypatch.setattr(pq, "_resolve_client", fake_resolve)
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.vector.processor.process_document", fake_process
+        )
+
+        with pytest.raises(RuntimeError, match="transient qdrant failure"):
+            await pq.process_document_task(
+                user_id="alice",
+                doc_id="42",
+                doc_type="note",
+                operation="index",
+                modified_at=100,
+            )
+        fake_client.close.assert_awaited_once()
+
     async def test_skips_on_missing_credentials(self, monkeypatch):
         from nextcloud_mcp_server.vector.oauth_sync import NotProvisionedError
 

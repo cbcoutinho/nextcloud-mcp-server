@@ -290,7 +290,15 @@ async def get_ingest_job_counts(app: App | None = None) -> dict[str, int]:
 
 
 def _doc_queueing_lock(task: DocumentTask) -> str:
-    """Per-document enqueue-dedup key (partial-unique on ``status='todo'``)."""
+    """Per-document enqueue-dedup key (partial-unique on ``status='todo'``).
+
+    Collision-safe with a raw ``:`` delimiter because the first two segments can
+    never themselves contain ``:``: ``user_id`` is a Nextcloud username/UID (no
+    colons) and ``doc_type`` is a controlled enum (``note``/``file``/
+    ``deck_card``/``news_item``). The trailing ``doc_id`` may contain anything —
+    it's the final unambiguous segment. A future ``doc_type`` containing ``:``
+    would break this invariant, so keep doc_type colon-free.
+    """
     return f"{task.user_id}:{task.doc_type}:{task.doc_id}"
 
 
@@ -327,6 +335,15 @@ class ProcrastinateTaskProducer:
             # re-evaluates freshness (placeholder/Qdrant modified_at only
             # advances after a successful index), so this is not a lost update.
             logger.debug("ingest.already_enqueued key=%s", key)
+
+    async def ensure_schema(self) -> None:
+        """Apply the ingest-queue schema on the producer's already-open pool.
+
+        Lets the API lifespan provision the schema without a second open/close
+        cycle (it already opened the connector to build this producer) — the
+        ``worker`` command shares the same single-open pattern.
+        """
+        await _apply_ingest_queue_schema_open(self._app)
 
     async def job_counts(self) -> dict[str, int]:
         """Ingest job counts by status (for the vector-sync status surface)."""

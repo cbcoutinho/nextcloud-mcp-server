@@ -12,19 +12,24 @@ The transport is selected from ``INGEST_QUEUE``:
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from ...config import Settings
-from .ports import TaskProducer
+
+if TYPE_CHECKING:
+    from .procrastinate import ProcrastinateTaskProducer
 
 logger = logging.getLogger(__name__)
 
 
-async def build_producer(settings: Settings) -> TaskProducer:
+async def build_producer(settings: Settings) -> ProcrastinateTaskProducer:
     """Build the Postgres (procrastinate) ingest producer.
 
-    Precondition: ``settings.ingest_queue == "postgres"`` (the memory transport
-    is constructed inline by the lifespan because it needs the paired receive
-    stream for the in-process processor pool).
+    Returns the concrete :class:`ProcrastinateTaskProducer` (not just the
+    ``TaskProducer`` protocol) so the lifespan can call ``ensure_schema()`` on
+    the open connector. Precondition: ``settings.ingest_queue == "postgres"``
+    (the memory transport is constructed inline by the lifespan because it needs
+    the paired receive stream for the in-process processor pool).
     """
     if settings.ingest_queue != "postgres":
         raise ValueError(

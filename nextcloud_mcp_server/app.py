@@ -1676,14 +1676,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             receive_stream = None
             task_producer: TaskProducer
             if use_postgres:
-                # Create procrastinate's tables before the scanner can defer.
-                # Lazy import: the procrastinate lib is a Postgres-only extra.
-                from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
-                    apply_ingest_queue_schema,
-                )
-
-                await apply_ingest_queue_schema()
-                task_producer = await build_producer(settings)
+                # Open the connector once (build_producer) and reuse it to create
+                # procrastinate's tables before the scanner can defer — a single
+                # open/close cycle, matching the worker command.
+                producer = await build_producer(settings)
+                await producer.ensure_schema()
+                task_producer = producer
                 logger.info("Ingest queue: postgres (procrastinate); worker drains it")
             else:
                 send_stream, receive_stream = anyio.create_memory_object_stream[
@@ -1895,14 +1893,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 receive_stream = None
                 task_producer: TaskProducer
                 if use_postgres:
-                    # Create procrastinate's tables before any scanner defers.
-                    # Lazy import: procrastinate is a Postgres-only extra.
-                    from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
-                        apply_ingest_queue_schema,
-                    )
-
-                    await apply_ingest_queue_schema()
-                    task_producer = await build_producer(settings)
+                    # Single open/close cycle: build_producer opens the connector
+                    # and ensure_schema reuses it to create procrastinate's tables
+                    # before any scanner defers (matches the worker command).
+                    producer = await build_producer(settings)
+                    await producer.ensure_schema()
+                    task_producer = producer
                     logger.info(
                         "Ingest queue: postgres (procrastinate); worker drains it"
                     )
