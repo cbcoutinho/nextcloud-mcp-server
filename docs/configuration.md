@@ -834,6 +834,13 @@ Notes:
 - KEDA scales the worker on
   `SELECT count(*) FROM procrastinate_jobs WHERE queue_name='ingest' AND status='todo'`.
 - `INGEST_QUEUE=postgres` with a SQLite `DATABASE_URL` is rejected at startup.
+- **Teardown:** because procrastinate's schema is a separate lineage,
+  `nextcloud-mcp-server db downgrade` (Alembic) does **not** drop the
+  `procrastinate_*` tables. To fully revert (e.g. back to NATS or SQLite-only),
+  drop them manually after downgrading:
+  `DROP TABLE IF EXISTS procrastinate_jobs, procrastinate_events,
+  procrastinate_periodic_defers, procrastinate_workers CASCADE;` (plus the
+  `procrastinate_*` types/functions if removing the extension entirely).
 
 ---
 

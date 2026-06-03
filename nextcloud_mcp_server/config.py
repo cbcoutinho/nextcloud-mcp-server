@@ -11,6 +11,8 @@ from typing import Any
 
 from dynaconf import Dynaconf, Validator
 
+logger = logging.getLogger(__name__)
+
 # Sentinel for "key not in dynaconf at all" vs "explicitly set to None".
 _UNSET = object()
 
@@ -734,7 +736,6 @@ class Settings:
 
     def __post_init__(self):
         """Validate configuration and set defaults."""
-        logger = logging.getLogger(__name__)
 
         # Validate SSL/TLS configuration
         if not self.nextcloud_verify_ssl:
@@ -1064,8 +1065,6 @@ def _get_semantic_search_enabled() -> bool:
     Returns:
         True if semantic search should be enabled
     """
-    logger = logging.getLogger(__name__)
-
     new_value = _dynaconf.get("ENABLE_SEMANTIC_SEARCH", False)
     old_value = _dynaconf.get("VECTOR_SYNC_ENABLED", False)
 
@@ -1146,7 +1145,6 @@ def _log_bg_ops_advisories_once(
         return
     _bg_ops_advisories_logged = True
 
-    logger = logging.getLogger(__name__)
     if explicit and legacy:
         logger.warning(
             "Both ENABLE_BACKGROUND_OPERATIONS and ENABLE_OFFLINE_ACCESS are set. "
@@ -1473,7 +1471,7 @@ def get_procrastinate_conninfo(database_url: str | None = None) -> str:
     # query string is dropped with a warning.
     dropped = sorted(k for k in url.query if k != "connect_timeout")
     if dropped:
-        logging.getLogger(__name__).warning(
+        logger.warning(
             "Dropping DATABASE_URL query parameters not forwarded to the "
             "procrastinate connector: %s",
             ", ".join(dropped),
@@ -1492,10 +1490,14 @@ def get_procrastinate_conninfo(database_url: str | None = None) -> str:
         params["password"] = url.password
     # Honor an operator-supplied connect_timeout, else default to 10s. (make_url
     # query values are str or a tuple of strs when repeated; take the last.)
+    # ``connect_timeout=0`` (disable) is preserved — only a missing/empty value
+    # falls back to the default, and an explicit-but-empty value is flagged.
     _ct = url.query.get("connect_timeout")
     if isinstance(_ct, (list, tuple)):
         _ct = _ct[-1] if _ct else None
-    params["connect_timeout"] = str(_ct) if _ct else "10"
+    if _ct == "":
+        logger.warning("DATABASE_URL has an empty connect_timeout=; using default 10s")
+    params["connect_timeout"] = _ct if _ct else "10"
     params.update(_pg_ssl_params())
 
     return make_conninfo(**params)

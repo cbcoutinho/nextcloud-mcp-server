@@ -133,9 +133,7 @@ async def test_ingest_queue_end_to_end(fresh_app):
         assert counts.get("todo") == 2
 
         # 4. Fresh todo jobs are not "doing", so none are stalled.
-        stalled = list(
-            await fresh_app.job_manager.get_stalled_jobs(
-                queue=INGEST_QUEUE_NAME, seconds_since_heartbeat=0
-            )
+        stalled = await fresh_app.job_manager.get_stalled_jobs(
+            queue=INGEST_QUEUE_NAME, seconds_since_heartbeat=0
         )
-        assert stalled == []
+        assert list(stalled) == []

@@ -136,6 +136,10 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
         reclaimed += 1
     if reclaimed:
         logger.warning("ingest.reclaimed_stalled_jobs count=%d", reclaimed)
+    else:
+        # Visible heartbeat under verbose logging when debugging a suspected
+        # reclaim failure, without noising up production logs.
+        logger.debug("ingest.reclaim_check stalled=0")
 
 
 async def _resolve_client(user_id: str) -> NextcloudClient:
@@ -293,11 +297,16 @@ def _doc_queueing_lock(task: DocumentTask) -> str:
     """Per-document enqueue-dedup key (partial-unique on ``status='todo'``).
 
     Collision-safe with a raw ``:`` delimiter because the first two segments can
-    never themselves contain ``:``: ``user_id`` is a Nextcloud username/UID (no
-    colons) and ``doc_type`` is a controlled enum (``note``/``file``/
-    ``deck_card``/``news_item``). The trailing ``doc_id`` may contain anything —
-    it's the final unambiguous segment. A future ``doc_type`` containing ``:``
-    would break this invariant, so keep doc_type colon-free.
+    never themselves contain ``:``:
+
+    - ``user_id`` — a Nextcloud username/UID; Nextcloud rejects ``:`` in
+      usernames (Web UI + provisioning validation), so it is colon-free.
+    - ``doc_type`` — a controlled enum (``note``/``file``/``deck_card``/
+      ``news_item``); a future ``doc_type`` containing ``:`` would break this
+      invariant, so keep doc_type colon-free.
+
+    The trailing ``doc_id`` may contain anything — it's the final unambiguous
+    segment.
     """
     return f"{task.user_id}:{task.doc_type}:{task.doc_id}"
 
