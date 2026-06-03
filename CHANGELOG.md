@@ -5,6 +5,27 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.98.0 (2026-06-03)
+
+### BREAKING CHANGE
+
+- the external-NATS-ingest env vars are removed
+(INGEST_MODE, STATUS_BACKEND, INGEST_BUS_URL, INGEST_BUS_NUM_REPLICAS,
+FACT_EVENT_EMITTER). Use INGEST_QUEUE (memory|postgres) and the `worker`
+command instead. TENANT_ID is retained (no longer NATS-subject-charset-validated).
+
+### Feat
+
+- replace NATS ingest with procrastinate Postgres queue (#183)
+
+### Fix
+
+- initialize document processors in the ingest worker (PR #836 round-5)
+- address PR #836 round-3 review (lock-key invariant, single open)
+- address PR #836 round-2 review (connect/timeout/observability)
+- address PR #836 review — forward task_producer to MCP contexts + cleanups
+- **ci**: install procrastinate in the dev group so ty + unit tests resolve it
+
 ## v0.97.0 (2026-06-03)
 
 ### Feat
