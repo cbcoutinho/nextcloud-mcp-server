@@ -437,141 +437,173 @@ async def test_verify_news_items_malformed_api_response_keeps_all(mocker):
 # ---------------------------------------------------------------------------
 
 
+def _patch_excluded(mocker, paths: set[str] | None = None, *, side_effect=None):
+    """Patch the lazily-imported EXCLUDED_TAGS lookup used by _verify_files."""
+    if side_effect is not None:
+        mock = mocker.AsyncMock(side_effect=side_effect)
+    else:
+        mock = mocker.AsyncMock(return_value=paths if paths is not None else set())
+    return mocker.patch(
+        "nextcloud_mcp_server.server.tag_exclusion.get_excluded_file_paths", mock
+    )
+
+
+def _file_client(mocker, *, tagged=None, find_side_effect=None, username="alice"):
+    """Build a client whose find_files_by_tag returns the given tagged files."""
+    if find_side_effect is not None:
+        find = mocker.AsyncMock(side_effect=find_side_effect)
+    else:
+        find = mocker.AsyncMock(return_value=tagged if tagged is not None else [])
+    return SimpleNamespace(
+        find_files_by_tag=find,
+        webdav=SimpleNamespace(),
+        username=username,
+    )
+
+
 @pytest.mark.unit
-async def test_verify_files_accessible_by_global_id_is_kept(mocker):
-    """File verifier resolves the file by its global ID (the doc_id), ACL-aware.
+async def test_verify_files_tagged_is_kept(mocker):
+    """A file currently carrying the vector-index tag is kept, and the tagged
+    set is fetched with a single batch call (not one per result)."""
+    _patch_excluded(mocker)
+    client = _file_client(mocker, tagged=[{"id": 100, "path": "/Documents/foo.pdf"}])
 
-    This is what lets a recipient verify a file an owner shared with them:
-    file_accessible_by_id searches the user's whole tree (incl. mounted
-    shares) by global file id, not a path under the caller's own root (which
-    would 404 on shared files mounted at a different path).
-    """
-    webdav_client = SimpleNamespace(
-        file_accessible_by_id=mocker.AsyncMock(return_value=True)
-    )
-    client = SimpleNamespace(webdav=webdav_client, username="alice")
-
-    result = await _verify_files(
-        client,
-        [_make_result(100, doc_type="file", metadata={"path": "Documents/foo.txt"})],
-        _sem(),
-    )
+    result = await _verify_files(client, [_make_result(100, doc_type="file")], _sem())
 
     assert result == {"100"}
-    webdav_client.file_accessible_by_id.assert_awaited_once_with(100)
+    client.find_files_by_tag.assert_awaited_once_with(
+        "vector-index", mime_type_filter="application/pdf"
+    )
 
 
 @pytest.mark.unit
-async def test_verify_files_inaccessible_id_drops(mocker):
-    """file_accessible_by_id returning False (file not in the user's tree) is a
-    definitive drop — the file is neither owned by nor shared with the user."""
-    webdav_client = SimpleNamespace(
-        file_accessible_by_id=mocker.AsyncMock(return_value=False)
-    )
-    client = SimpleNamespace(webdav=webdav_client, username="alice")
+async def test_verify_files_untagged_drops(mocker):
+    """A file removed from the vector-index tag (absent from the tagged set) is
+    dropped even though it may still exist and be readable by the user."""
+    _patch_excluded(mocker)
+    client = _file_client(mocker, tagged=[{"id": 100, "path": "/Documents/foo.pdf"}])
 
     result = await _verify_files(
         client,
-        [_make_result(123, doc_type="file", metadata={"path": "gone.txt"})],
+        [_make_result(100, doc_type="file"), _make_result(200, doc_type="file")],
         _sem(),
     )
+
+    # 100 is still tagged → kept; 200 was untagged → dropped.
+    assert result == {"100"}
+
+
+@pytest.mark.unit
+async def test_verify_files_deleted_drops(mocker):
+    """A deleted file is absent from the tagged set → dropped (caller evicts)."""
+    _patch_excluded(mocker)
+    client = _file_client(mocker, tagged=[])
+
+    result = await _verify_files(client, [_make_result(123, doc_type="file")], _sem())
 
     assert result == set()
 
 
 @pytest.mark.unit
-async def test_verify_files_403_404_drops(mocker):
-    """A 403/404 raised by the SEARCH call is treated as a definitive drop,
-    consistent with the shared _is_definitive_404_or_403 policy used by every
-    verifier. (Normal inaccessibility surfaces as an empty result set, not a
-    status code, and is covered by test_verify_files_inaccessible_id_drops.)"""
-    for status in (403, 404):
-        webdav_client = SimpleNamespace(
-            file_accessible_by_id=mocker.AsyncMock(side_effect=_http_error(status))
-        )
-        client = SimpleNamespace(webdav=webdav_client, username="alice")
+async def test_verify_files_empty_tag_set_skips_exclusion_lookup(mocker):
+    """When the tag REPORT returns no files, the EXCLUDED_TAGS lookup is skipped
+    entirely: an empty tagged set drops every valid-id result regardless of
+    exclusions, so the lookup's 2xN WebDAV fan-out is wasted work. Malformed
+    doc_ids are still kept (fail-open), exactly as on the non-empty path."""
+    excluded = _patch_excluded(mocker, {"Secret"})
+    client = _file_client(mocker, tagged=[])
 
+    result = await _verify_files(
+        client,
+        [
+            _make_result(123, doc_type="file"),
+            _make_result("not-a-file-id", doc_type="file"),
+        ],
+        _sem(),
+    )
+
+    # Valid id absent from the (empty) tagged set → dropped; malformed id kept.
+    assert result == {"not-a-file-id"}
+    # The optimization: no exclusion fan-out when there is nothing to filter.
+    excluded.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_verify_files_excluded_path_drops(mocker):
+    """A tagged file under an EXCLUDED_TAGS folder must not surface — exclusion
+    wins, parity with the scanner's defense-in-depth filter."""
+    # get_excluded_file_paths returns slash-stripped (normalised) paths.
+    _patch_excluded(mocker, {"Secret"})
+    client = _file_client(
+        mocker,
+        tagged=[
+            {"id": 100, "path": "/Documents/foo.pdf"},
+            {"id": 200, "path": "/Secret/bar.pdf"},
+        ],
+    )
+
+    result = await _verify_files(
+        client,
+        [_make_result(100, doc_type="file"), _make_result(200, doc_type="file")],
+        _sem(),
+    )
+
+    assert result == {"100"}
+
+
+@pytest.mark.unit
+async def test_verify_files_tag_fetch_failure_keeps_all(mocker):
+    """If the tag REPORT itself fails, keep every file result (fail-open) —
+    never silently shrink results on a backend blip.
+
+    Unlike the per-access verifiers (notes/deck/news), where a definitive
+    403/404 is the DROP signal, the file verifier fails open on *every* HTTP
+    error — including 403/404. The whole result set hinges on one batch REPORT,
+    so a disabled systemtags endpoint (commonly 403) must not nuke all file
+    results; the next query re-verifies. 403 and 404 are pinned here alongside
+    the transient 503/429 to lock that contract against regression.
+    """
+    _patch_excluded(mocker)
+    for exc in (
+        _http_error(403),
+        _http_error(404),
+        _http_error(503),
+        _http_error(429),
+        RuntimeError("dav blew up"),
+    ):
+        client = _file_client(mocker, find_side_effect=exc)
         result = await _verify_files(
             client,
-            [_make_result(124, doc_type="file", metadata={"path": "x.txt"})],
+            [_make_result(7, doc_type="file"), _make_result(8, doc_type="file")],
             _sem(),
         )
-
-        assert result == set(), f"{status} on the SEARCH call must drop"
+        assert result == {"7", "8"}, f"{exc!r} on the tag fetch must keep all results"
 
 
 @pytest.mark.unit
-async def test_verify_files_non_numeric_id_keeps_unverified(mocker):
-    """Without a numeric file id we cannot verify — fail open, don't drop."""
-    webdav_client = SimpleNamespace(
-        file_accessible_by_id=mocker.AsyncMock(
-            side_effect=AssertionError("must not be called")
-        )
-    )
-    client = SimpleNamespace(webdav=webdav_client, username="alice")
+async def test_verify_files_exclusion_lookup_failure_proceeds(mocker):
+    """If the EXCLUDED_TAGS lookup fails, proceed without the exclusion filter
+    rather than dropping legitimate tagged hits."""
+    _patch_excluded(mocker, side_effect=RuntimeError("ocs down"))
+    client = _file_client(mocker, tagged=[{"id": 100, "path": "/Documents/foo.pdf"}])
+
+    result = await _verify_files(client, [_make_result(100, doc_type="file")], _sem())
+
+    assert result == {"100"}
+
+
+@pytest.mark.unit
+async def test_verify_files_non_numeric_id_keeps(mocker):
+    """A malformed (non-numeric) doc_id cannot be matched against the numeric
+    tag REPORT, so it is kept (defense-in-depth, false-positive preferred)."""
+    _patch_excluded(mocker)
+    client = _file_client(mocker, tagged=[])
 
     result = await _verify_files(
-        client,
-        [_make_result("not-a-file-id", doc_type="file", metadata={"path": "x.txt"})],
-        _sem(),
+        client, [_make_result("not-a-file-id", doc_type="file")], _sem()
     )
+
     assert result == {"not-a-file-id"}
-    webdav_client.file_accessible_by_id.assert_not_awaited()
-
-
-@pytest.mark.unit
-async def test_verify_files_transient_5xx_keeps(mocker):
-    webdav_client = SimpleNamespace(
-        file_accessible_by_id=mocker.AsyncMock(side_effect=_http_error(503))
-    )
-    client = SimpleNamespace(webdav=webdav_client, username="alice")
-
-    result = await _verify_files(
-        client,
-        [_make_result(7, doc_type="file", metadata={"path": "x.txt"})],
-        _sem(),
-    )
-
-    assert result == {"7"}
-
-
-@pytest.mark.unit
-async def test_verify_files_429_keeps_as_transient(mocker):
-    """HTTP 429 from the SEARCH call must NOT silently drop file results."""
-    webdav_client = SimpleNamespace(
-        file_accessible_by_id=mocker.AsyncMock(side_effect=_http_error(429))
-    )
-    client = SimpleNamespace(webdav=webdav_client, username="alice")
-
-    result = await _verify_files(
-        client,
-        [_make_result(7, doc_type="file", metadata={"path": "x.txt"})],
-        _sem(),
-    )
-
-    assert result == {"7"}
-
-
-@pytest.mark.unit
-async def test_verify_files_unexpected_exception_keeps(mocker):
-    """A non-HTTP exception from file_accessible_by_id must not drop the result.
-
-    The catch-all ``except Exception`` branch in the file verifier exists
-    so a bug in the WebDAV client (or an httpx ConnectError on a flaky
-    network) cannot silently shrink result pages.
-    """
-    webdav_client = SimpleNamespace(
-        file_accessible_by_id=mocker.AsyncMock(side_effect=RuntimeError("dav blew up"))
-    )
-    client = SimpleNamespace(webdav=webdav_client, username="alice")
-
-    result = await _verify_files(
-        client,
-        [_make_result(8, doc_type="file", metadata={"path": "y.txt"})],
-        _sem(),
-    )
-
-    assert result == {"8"}
 
 
 # ---------------------------------------------------------------------------
@@ -889,11 +921,11 @@ async def test_verify_evicts_cross_user_file_under_querying_user_id(mocker):
     """
     spy_evict = mocker.AsyncMock()
     mocker.patch.object(verification, "delete_document_points", spy_evict)
+    _patch_excluded(mocker)
 
-    webdav_client = SimpleNamespace(
-        file_accessible_by_id=mocker.AsyncMock(return_value=False)
-    )
-    client = SimpleNamespace(webdav=webdav_client, username="bob")
+    # The shared file is no longer in bob's tagged set (share revoked → absent
+    # from his vector-index tag REPORT), so the file verifier drops it.
+    client = _file_client(mocker, tagged=[], username="bob")
 
     kept, dropped_count = await verify_search_results(
         client,

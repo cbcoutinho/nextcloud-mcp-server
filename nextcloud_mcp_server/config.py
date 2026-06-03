@@ -93,6 +93,10 @@ _DEFAULTS: dict[str, Any] = {
     # leave work stuck behind the 5x-scan-interval staleness gate.
     # Escape hatch only — leave on by default.
     "vector_sync_orphan_sweep_enabled": True,
+    # System tag that marks files for vector indexing. The scanner indexes
+    # files carrying this tag; verify-on-read gates results on current
+    # membership of this tag (ADR-019).
+    "vector_sync_pdf_tag": "vector-index",
     # Verify-on-read concurrency cap (ADR-019)
     "verification_concurrency": 20,
     # Qdrant
@@ -255,6 +259,8 @@ _dynaconf = Dynaconf(
         Validator("DOCUMENT_CHUNK_SIZE", gte=1),
         # Non-negative
         Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
+        # Non-empty strings
+        Validator("VECTOR_SYNC_PDF_TAG", len_min=1),
         # Enum constraints
         Validator("LOG_FORMAT", is_in=["text", "json"]),
         Validator(
@@ -625,6 +631,10 @@ class Settings:
     vector_sync_queue_max_size: int = 10000
     vector_sync_user_poll_interval: int = 60  # seconds - OAuth mode user discovery
     vector_sync_orphan_sweep_enabled: bool = True  # card #101
+    # System tag marking files for vector indexing. The scanner indexes files
+    # carrying this tag and verify-on-read gates results on current membership
+    # (ADR-019), so an untagged file drops out of search immediately.
+    vector_sync_pdf_tag: str = "vector-index"
 
     # Verify-on-read concurrency (ADR-019). Cap on parallel Nextcloud
     # round-trips during search-result verification fan-out. Lower this if the
@@ -1217,6 +1227,7 @@ def get_settings() -> Settings:
         "vector_sync_queue_max_size": "VECTOR_SYNC_QUEUE_MAX_SIZE",
         "vector_sync_user_poll_interval": "VECTOR_SYNC_USER_POLL_INTERVAL",
         "vector_sync_orphan_sweep_enabled": "VECTOR_SYNC_ORPHAN_SWEEP_ENABLED",
+        "vector_sync_pdf_tag": "VECTOR_SYNC_PDF_TAG",
         # Verify-on-read (ADR-019)
         "verification_concurrency": "VERIFICATION_CONCURRENCY",
         # Qdrant settings

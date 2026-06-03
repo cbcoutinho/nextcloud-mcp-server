@@ -8,18 +8,21 @@ access (deleted, unshared, etc.) and lazily evicting them from the index.
 Per-doc_type verifiers are registered in ``_VERIFIERS``. Each takes the
 authenticated client, the (deduplicated) list of ``SearchResult``s for that
 doc_type, and a shared concurrency semaphore. They return the subset of
-``doc_id`` values that are currently accessible. Verifiers read whatever
-metadata they need (file path, deck card board/stack ids) directly from the
+``doc_id`` values that are currently visible to the user. Verifiers read
+whatever metadata they need (e.g. deck card board/stack ids) directly from the
 SearchResult — these fields are populated at index-time and propagated by
 the algorithm layer (see ``search/bm25_hybrid.py`` and ``search/semantic.py``)
-so verification adds zero extra Qdrant round-trips.
+so verification adds zero extra Qdrant round-trips. The file verifier is the
+exception: it gates results on current ``vector-index`` tag membership via a
+single batch tag REPORT (which also confirms access), so it does not read
+per-result metadata.
 
 Concurrency is bounded by a shared semaphore (default 20) so a large search
 result page (or a multi-doc_type query) cannot exhaust the httpx connection
 pool or trigger Nextcloud rate limiting. The 20-slot default matches the
 context-expansion convention in ``server/semantic.py``.
 
-Failure policy:
+Failure policy (notes / deck_card / news_item — the per-access verifiers):
 
 - Definitive 403/404 from Nextcloud → drop the result and schedule eviction.
 - Transient errors (5xx, network blips, unexpected exceptions) → keep the
@@ -28,6 +31,12 @@ Failure policy:
 - Unsupported doc_type (no registered verifier) → keep the result and log a
   warning. Verification is opt-in per type; a missing verifier is a soft
   failure, not a search failure.
+
+The ``file`` verifier is the exception to the first rule: it gates on current
+``vector-index`` tag membership (a single batch tag REPORT), so a file is
+dropped+evicted when it is absent from the tag set — untagged, deleted, or
+under an ``EXCLUDED_TAGS`` folder — not on a per-file 403/404. A failed tag
+fetch still fails open. See ``_verify_files`` for the full contract.
 """
 
 import logging
@@ -132,81 +141,131 @@ async def _verify_files(
     results: list[SearchResult],
     semaphore: anyio.Semaphore,
 ) -> set[str]:
-    """Return the doc_ids of file results this user may actually access.
+    """Return the doc_ids of file results this user may currently see.
 
-    Verifies each file by its *global* Nextcloud file id via an ACL-aware
-    WebDAV SEARCH (``webdav.file_accessible_by_id``), NOT by path. This is the
-    ACL-aware-search fix: a file an owner shared with the querying user mounts
-    at a different path under each tree, so the previous path-based check
-    (``get_file_info``) produced false 404s and dropped legitimate shared-file
-    hits. Definitive 403/404 → inaccessible (dropped + scheduled for eviction
-    by the caller); transient/ambiguous errors → kept (fail-open).
+    A file is included iff it *currently* carries the ``vector-index`` tag (the
+    same tag the scanner indexes on) AND is not under an ``EXCLUDED_TAGS``
+    folder — full parity with the indexing rules. The tag REPORT runs over the
+    querying user's own files tree (including mounted shares), so membership in
+    the tagged set already implies the file is *accessible*; this single batch
+    fetch therefore subsumes the old per-file ``file_accessible_by_id`` check
+    and replaces N round-trips with one.
+
+    This is the verify-on-read fix for stale tags (ADR-019): a file removed
+    from the ``vector-index`` tag — or outright deleted — drops out of the
+    tagged set, so it is dropped from results and scheduled for eviction by the
+    caller immediately, rather than lingering until the scanner's grace-period
+    sweep reconciles it.
+
+    Failure policy mirrors ``_verify_news_items``: if the tag fetch itself
+    fails we keep every file result (fail-open, the next query re-verifies),
+    and malformed/non-numeric doc_ids are kept (defense-in-depth — the numeric
+    tag REPORT cannot match them, and producer-side validation is the real
+    boundary, so false-positive is preferred over false-negative).
     """
-    # safe: cooperative concurrency, no lock needed (see verify_search_results)
-    accessible: set[str] = set()
+    # Lazy import to break an import cycle: ``server/__init__`` imports
+    # ``server.semantic`` which imports this module, so importing
+    # ``server.tag_exclusion`` at module load time would re-enter a
+    # partially-initialised ``server`` package depending on import order.
+    from nextcloud_mcp_server.server.tag_exclusion import (  # noqa: PLC0415
+        get_excluded_file_paths,
+        is_path_excluded,
+    )
 
-    async def check(result: SearchResult) -> None:
-        doc_id = result.id
-        # file_path is propagated from the Qdrant payload by the algorithm
-        # layer (bm25_hybrid.py / semantic.py); kept here only for log context.
-        file_path = (result.metadata or {}).get("path")
+    tag_name = get_settings().vector_sync_pdf_tag
 
-        # Verify by *global* file ID via an ACL-aware WebDAV SEARCH, NOT by
-        # path. For files the vector ``doc_id`` IS the Nextcloud file ID, and
-        # file_accessible_by_id searches the user's whole tree (incl. mounted
-        # shares), so a file an owner shared with this user verifies as
-        # accessible even though it lives at a different path under the owner's
-        # root. A path-based check (the old behaviour) would 404 on shared
-        # files mounted at the recipient's root by basename and silently drop
-        # legitimate ACL-aware-search results.
-        #
-        # Hoisted cast mirrors _verify_notes: a malformed id keeps the result
-        # (fail open) with a specific log line rather than a generic
-        # "unexpected error" from the catch-all below.
+    # One semaphore slot is held for both Nextcloud round-trips: the tagged-file
+    # REPORT (plus optional Depth:infinity folder expansion) and — only when the
+    # REPORT returned files — the EXCLUDED_TAGS lookup. Both are batched once per
+    # search, not once per result (same backpressure rationale as
+    # _verify_news_items).
+    #
+    # The slot caps how many *searches* verify files concurrently, but it does
+    # NOT bound the fan-out *within* one verification: get_excluded_file_paths
+    # internally spawns a task group issuing 2×len(EXCLUDED_TAGS) concurrent
+    # WebDAV calls (1 PROPFIND + 1 REPORT per excluded tag), so the live
+    # Nextcloud connection count can exceed VERIFICATION_CONCURRENCY when
+    # excluded tags are configured. See configuration.md → "Files caveat" for
+    # the latency/tuning guidance.
+    #
+    # The pure-Python intersection that builds tagged_ids/accessible runs
+    # *outside* the slot — it needs no Nextcloud round-trip (mirrors the
+    # post-fetch present_ids build in _verify_news_items).
+    #
+    # TODO(perf): if folder expansion dominates query latency, cache the
+    # tagged-id set per user with a short TTL (mirroring the
+    # list_accessible_owners cache in search/access_filter.py). Skipped here so
+    # an untag is reflected on the very next search rather than after a TTL.
+    async with semaphore:
         try:
-            file_id_int = int(doc_id)
-        except (TypeError, ValueError) as e:
+            tagged = await client.find_files_by_tag(
+                tag_name, mime_type_filter="application/pdf"
+            )
+        except HTTPStatusError as e:
             logger.warning(
-                "Non-numeric file id %r (%s): %s; keeping result",
-                doc_id,
-                file_path,
+                "Transient error fetching %r-tagged files for verification: "
+                "%s %s; keeping all file results",
+                tag_name,
+                e.response.status_code,
                 e,
             )
-            accessible.add(doc_id)
-            return
+            return {r.id for r in results}
+        except Exception as e:
+            logger.warning(
+                "Unexpected error fetching %r-tagged files for verification: "
+                "%s; keeping all file results",
+                tag_name,
+                e,
+            )
+            return {r.id for r in results}
 
-        async with semaphore:
+        # Exclusion wins: a tagged file under an EXCLUDED_TAGS folder must not
+        # surface, matching the scanner's defense-in-depth filter. A failure
+        # here degrades to "no exclusion" rather than dropping legitimate hits.
+        #
+        # Skip the lookup entirely when the tag REPORT returned nothing: an empty
+        # `tagged` yields an empty `tagged_ids` regardless of the exclusion set,
+        # so the lookup's 2×len(EXCLUDED_TAGS) WebDAV fan-out cannot change the
+        # outcome — avoid it in the common "this tag matched nothing" case. The
+        # per-result loop below still runs, so malformed doc_ids are still kept
+        # (fail-open), exactly as when `tagged` is non-empty.
+        excluded_paths: set[str] = set()
+        if tagged:
             try:
-                if await client.webdav.file_accessible_by_id(file_id_int):
-                    accessible.add(doc_id)
-                # else: definitively inaccessible (not owned, not shared) —
-                # drop and let the caller schedule eviction.
-            except HTTPStatusError as e:
-                if _is_definitive_404_or_403(e):
-                    return
-                logger.warning(
-                    "Transient error verifying file %s (%s): %s %s; keeping result",
-                    doc_id,
-                    file_path,
-                    e.response.status_code,
-                    e,
-                )
-                accessible.add(doc_id)
+                excluded_paths = await get_excluded_file_paths(client.webdav)
             except Exception as e:
-                # Network blip / unexpected WebDAV error — ambiguous, not a
-                # definitive denial. Keep the result; the next query re-verifies.
                 logger.warning(
-                    "Unexpected error verifying file %s (%s): %s; keeping result",
-                    doc_id,
-                    file_path,
+                    "EXCLUDED_TAGS lookup failed during verification (%s); "
+                    "proceeding without exclusion filter",
                     e,
                 )
-                accessible.add(doc_id)
 
-    async with anyio.create_task_group() as tg:
-        for r in results:
-            tg.start_soon(check, r)
+    tagged_ids: set[str] = set()
+    for f in tagged:
+        file_id = f.get("id")
+        if file_id is None:
+            continue
+        if excluded_paths and is_path_excluded(f.get("path", ""), excluded_paths):
+            continue
+        # Normalise to str — Qdrant doc_id payload is keyword-indexed and the
+        # scanner stringifies file ids on write, so SearchResult.id is a str.
+        tagged_ids.add(str(file_id))
 
+    accessible: set[str] = set()
+    for r in results:
+        doc_id = r.id
+        if doc_id in tagged_ids:
+            accessible.add(doc_id)
+        elif not is_valid_nextcloud_doc_id(doc_id):
+            logger.warning(
+                "Malformed file doc_id %r in verifier; keeping to avoid "
+                "dropping a potentially legitimate result (cannot match "
+                "against the numeric tag REPORT)",
+                doc_id,
+            )
+            accessible.add(doc_id)
+        # else: a valid file id absent from the tagged set is untagged/deleted/
+        # excluded — drop it and let the caller schedule eviction.
     return accessible
 
 

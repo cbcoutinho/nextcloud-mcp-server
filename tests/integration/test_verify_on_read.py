@@ -5,16 +5,16 @@ instance — the verification path's whole purpose is to consult Nextcloud as
 the source of truth, so unit-level mocks don't catch protocol or status-code
 mismatches between our verifier and the real API.
 
-**Coverage**: only the ``note`` verifier is exercised against real Nextcloud
-here. The ``file`` (WebDAV PROPFIND), ``deck_card`` (Deck app), and
-``news_item`` (News app) verifiers are unit-tested with mocked HTTP
-responses in ``tests/unit/search/test_verification.py``. Adding integration
-coverage for those types is tracked as a follow-up — it requires fixture
-data (tagged PDFs in user files, a Deck board with cards, a News feed) that
-is non-trivial to seed from CI. The mocked unit tests are accurate for
-status-code semantics but won't catch payload-shape regressions in those
-Nextcloud apps; the trade-off is documented here so future readers know
-which suite owns which verifier.
+**Coverage**: the ``note`` verifier and the ``file`` verifier (tag-membership
+gate, see the shared-recipient tests below) are exercised against real
+Nextcloud here. The ``deck_card`` (Deck app) and ``news_item`` (News app)
+verifiers are unit-tested with mocked HTTP responses in
+``tests/unit/search/test_verification.py``. Adding integration coverage for
+those types is tracked as a follow-up — it requires fixture data (a Deck board
+with cards, a News feed) that is non-trivial to seed from CI. The mocked unit
+tests are accurate for status-code semantics but won't catch payload-shape
+regressions in those Nextcloud apps; the trade-off is documented here so
+future readers know which suite owns which verifier.
 
 Qdrant is mocked out (``delete_document_points`` and the payload-resolution
 helpers) so these tests don't require a running vector database. The unit
@@ -30,9 +30,11 @@ import pytest
 from httpx import BasicAuth, HTTPStatusError
 
 from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.search import verification
 from nextcloud_mcp_server.search.algorithms import SearchResult
 from nextcloud_mcp_server.search.verification import verify_search_results
+from tests.integration.conftest import PDF_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +43,7 @@ pytestmark = pytest.mark.integration
 
 def _result_for_note(note_id: int) -> SearchResult:
     return SearchResult(
-        id=note_id,
+        id=str(note_id),
         doc_type="note",
         title=f"note_{note_id}",
         excerpt="...",
@@ -51,9 +53,10 @@ def _result_for_note(note_id: int) -> SearchResult:
 
 def _result_for_file(file_id: int, path: str) -> SearchResult:
     # Mirrors what the algorithm layer propagates: doc_id IS the global file id,
-    # ``path`` is carried in metadata (owner-relative) for log context only.
+    # stringified (SearchResult.id is always str), ``path`` is carried in
+    # metadata (owner-relative) for log context only.
     return SearchResult(
-        id=file_id,
+        id=str(file_id),
         doc_type="file",
         title=path.split("/")[-1],
         excerpt="...",
@@ -83,7 +86,7 @@ async def test_verify_keeps_accessible_note(
 
     kept, dropped_count = await verify_search_results(nc_client, results)
 
-    assert [r.id for r in kept] == [note_id]
+    assert [r.id for r in kept] == [str(note_id)]
     assert dropped_count == 0
     spy_evict.assert_not_awaited()
 
@@ -126,7 +129,7 @@ async def test_verify_drops_deleted_note_and_schedules_eviction(
 
     assert kept == [], "deleted note must not pass verification"
     assert dropped_count == 1
-    spy_evict.assert_awaited_once_with(note_id, "note", nc_client.username)
+    spy_evict.assert_awaited_once_with(str(note_id), "note", nc_client.username)
 
 
 async def test_verify_mixed_accessible_and_deleted(
@@ -155,9 +158,9 @@ async def test_verify_mixed_accessible_and_deleted(
     ]
     kept, dropped_count = await verify_search_results(nc_client, results)
 
-    assert [r.id for r in kept] == [accessible_id]
+    assert [r.id for r in kept] == [str(accessible_id)]
     assert dropped_count == 1
-    spy_evict.assert_awaited_once_with(ghost_id, "note", nc_client.username)
+    spy_evict.assert_awaited_once_with(str(ghost_id), "note", nc_client.username)
 
 
 async def test_verify_dedupes_chunks_of_same_document(
@@ -176,7 +179,7 @@ async def test_verify_dedupes_chunks_of_same_document(
     # Three chunks of the same note (chunk_index varies)
     results = [
         SearchResult(
-            id=note_id,
+            id=str(note_id),
             doc_type="note",
             title="note",
             excerpt=f"chunk {i}",
@@ -222,11 +225,13 @@ async def alice_bob_clients(test_users_setup):
 async def test_verify_keeps_nested_file_shared_with_recipient(
     alice_bob_clients, mocker
 ):
-    """The PR #813 acceptance check at the verifier layer.
+    """The PR #813 acceptance check at the verifier layer, under tag-gating.
 
-    Alice owns a file in a *subfolder* and shares it with Bob. Verifying the
-    result as Bob must KEEP it — proving the id-based check sees the share.
-    A path-based check (the old behaviour) would 404 here and wrongly drop it.
+    Alice owns a PDF in a *subfolder*, tags it ``vector-index`` (userVisible),
+    and shares it with Bob. Verifying the result as Bob must KEEP it — proving
+    the tag REPORT surfaces an owner-assigned tag on a file shared into Bob's
+    tree. If a future Nextcloud version stops surfacing the owner's tag to a
+    recipient, this is where strict tag-gating regresses shared search.
     """
     spy_evict = mocker.AsyncMock()
     mocker.patch.object(verification, "delete_document_points", spy_evict)
@@ -235,12 +240,18 @@ async def test_verify_keeps_nested_file_shared_with_recipient(
     suffix = uuid.uuid4().hex[:8]
     test_dir = f"acl_verify_{suffix}"
     nested_dir = f"{test_dir}/reports"
-    shared_path = f"{nested_dir}/shared.txt"
+    shared_path = f"{nested_dir}/shared.pdf"
 
     await alice.webdav.create_directory(test_dir)
     await alice.webdav.create_directory(nested_dir)
-    await alice.webdav.write_file(shared_path, b"alice's shared report", "text/plain")
+    await alice.webdav.write_file(shared_path, PDF_BYTES, "application/pdf")
     file_id = (await alice.webdav.get_file_info(shared_path))["id"]
+    tag = await alice.webdav.get_or_create_tag(
+        name=get_settings().vector_sync_pdf_tag,
+        user_visible=True,
+        user_assignable=True,
+    )
+    await alice.webdav.assign_tag_to_file(file_id, tag["id"])
 
     await alice.sharing.create_share(
         path=f"/{shared_path}", share_with="bob", share_type=0, permissions=1
@@ -251,28 +262,33 @@ async def test_verify_keeps_nested_file_shared_with_recipient(
             bob, [_result_for_file(file_id, shared_path)]
         )
 
-        assert [r.id for r in kept] == [file_id], (
-            "a nested file shared with bob must pass verification for bob"
+        assert [r.id for r in kept] == [str(file_id)], (
+            "a nested tagged PDF shared with bob must pass verification for bob"
         )
         assert dropped_count == 0
         spy_evict.assert_not_awaited()
     finally:
+        try:
+            await alice.webdav.remove_tag_from_file(file_id, tag["id"])
+        except Exception:
+            pass
         await alice.webdav.delete_resource(test_dir)
 
 
 async def test_verify_drops_unshared_file_for_other_user(alice_bob_clients, mocker):
-    """Negative control: a file Alice did NOT share is inaccessible to Bob and
-    must be dropped + scheduled for eviction under his identity."""
+    """Negative control: a file Alice did NOT share is absent from Bob's
+    vector-index tag set (and his tree), so it must be dropped + scheduled for
+    eviction under his identity."""
     spy_evict = mocker.AsyncMock()
     mocker.patch.object(verification, "delete_document_points", spy_evict)
 
     alice, bob = alice_bob_clients
     suffix = uuid.uuid4().hex[:8]
     test_dir = f"acl_verify_priv_{suffix}"
-    private_path = f"{test_dir}/private.txt"
+    private_path = f"{test_dir}/private.pdf"
 
     await alice.webdav.create_directory(test_dir)
-    await alice.webdav.write_file(private_path, b"alice's private note", "text/plain")
+    await alice.webdav.write_file(private_path, PDF_BYTES, "application/pdf")
     file_id = (await alice.webdav.get_file_info(private_path))["id"]
 
     try:
@@ -282,6 +298,6 @@ async def test_verify_drops_unshared_file_for_other_user(alice_bob_clients, mock
 
         assert kept == [], "an unshared file must not pass verification for bob"
         assert dropped_count == 1
-        spy_evict.assert_awaited_once_with(file_id, "file", bob.username)
+        spy_evict.assert_awaited_once_with(str(file_id), "file", bob.username)
     finally:
         await alice.webdav.delete_resource(test_dir)

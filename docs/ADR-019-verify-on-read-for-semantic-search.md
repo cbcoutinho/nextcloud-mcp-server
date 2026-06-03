@@ -4,6 +4,22 @@
 **Date**: 2026-05-01
 **Depends On**: ADR-007 (Background Vector Sync), ADR-010 (Webhook-Based Vector Sync)
 
+> **Update (2026-06-02) — tag-aware file verification.** The `file` verifier
+> described below as a per-id WebDAV check (`PROPFIND`, later
+> `file_accessible_by_id`) now gates on current **`vector-index` tag
+> membership** instead. It issues a single
+> `find_files_by_tag(<VECTOR_SYNC_PDF_TAG>, mime_type_filter="application/pdf")`
+> REPORT per search (plus a one-shot `EXCLUDED_TAGS` lookup) and keeps only
+> files in that set — i.e. exactly what the scanner indexes. This is the
+> "fetch once and intersect" shape (like `news_item`), not per-id fan-out, and
+> it closes a gap the original design missed: a file *removed from the tag* (as
+> opposed to deleted/unshared) stayed accessible and so survived the old check,
+> lingering in results until the scanner's grace-period sweep. **Decision:** the
+> gate is strict for all file results, own and shared — a shared file survives
+> only if the owner's (userVisible) tag surfaces in the *searcher's* tag REPORT
+> (validated by `tests/integration/test_acl_shared_search.py`). See
+> `docs/configuration.md` → "Verify-on-Read Latency Budget" for the cost.
+
 ## Context
 
 The vector index in Qdrant is a *recall layer*, not the source of truth. Authoritative state for every indexed document — whether a note exists, whether a file is still shared with the user, whether a deck card is on a board the user can read — lives in Nextcloud, not in our index. Whenever those two views drift, semantic search returns **ghost records**: results that point to documents the user can no longer access (or that no longer exist at all).

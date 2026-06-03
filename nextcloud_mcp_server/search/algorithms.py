@@ -75,6 +75,14 @@ class NextcloudClientProtocol(Protocol):
         """News client for accessing news item documents."""
         ...
 
+    # Top-level client helper (not a sub-client) used by verify-on-read to
+    # gate file results on current vector-index tag membership.
+    async def find_files_by_tag(
+        self, tag_name: str, mime_type_filter: str | None = None
+    ) -> list[dict]:
+        """Return files carrying ``tag_name`` (folders expanded by MIME)."""
+        ...
+
 
 async def get_indexed_doc_types(
     user_id: str, accessible_owners: list[str] | None = None
