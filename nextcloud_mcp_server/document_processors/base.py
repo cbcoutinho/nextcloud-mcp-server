@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -22,7 +22,7 @@ class ProcessingResult(BaseModel):
     success: bool = True
     """Whether processing succeeded"""
 
-    error: Optional[str] = None
+    error: str | None = None
     """Error message if processing failed"""
 
 
@@ -57,6 +57,19 @@ class DocumentProcessor(ABC):
         pass
 
     @property
+    def tier(self) -> str:
+        """Extraction tier this processor belongs to (escalation ladder).
+
+        Used as the ``tier`` label/attribute in observability so that adding new
+        extraction tiers later (docling, OCR, LLM) is purely additive. Vocabulary
+        (cheapest first): ``fast`` -> ``structured`` -> ``ocr`` -> ``llm``.
+
+        Defaults to ``"fast"``; override in processors that belong to a higher
+        tier.
+        """
+        return "fast"
+
+    @property
     @abstractmethod
     def supported_mime_types(self) -> set[str]:
         """Set of MIME types this processor can handle.
@@ -70,11 +83,10 @@ class DocumentProcessor(ABC):
         self,
         content: bytes,
         content_type: str,
-        filename: Optional[str] = None,
-        options: Optional[dict[str, Any]] = None,
-        progress_callback: Optional[
-            Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
-        ] = None,
+        filename: str | None = None,
+        options: dict[str, Any] | None = None,
+        progress_callback: Callable[[float, float | None, str | None], Awaitable[None]]
+        | None = None,
     ) -> ProcessingResult:
         """Process a document and extract text.
 

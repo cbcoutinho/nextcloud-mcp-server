@@ -1,8 +1,12 @@
 """Central registry for document processors."""
 
 import logging
+import time
 from collections.abc import Awaitable, Callable
-from typing import Any, Optional
+from typing import Any
+
+from nextcloud_mcp_server.observability.metrics import record_document_parse
+from nextcloud_mcp_server.observability.tracing import trace_operation
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 
@@ -68,7 +72,7 @@ class ProcessorRegistry:
             len(processor.supported_mime_types),
         )
 
-    def get_processor(self, name: str) -> Optional[DocumentProcessor]:
+    def get_processor(self, name: str) -> DocumentProcessor | None:
         """Get a processor by name.
 
         Args:
@@ -81,7 +85,7 @@ class ProcessorRegistry:
             return self._processors[name][0]
         return None
 
-    def find_processor(self, content_type: str) -> Optional[DocumentProcessor]:
+    def find_processor(self, content_type: str) -> DocumentProcessor | None:
         """Find the first processor that supports the given MIME type.
 
         Processors are checked in priority order (highest priority first).
@@ -113,12 +117,12 @@ class ProcessorRegistry:
         self,
         content: bytes,
         content_type: str,
-        filename: Optional[str] = None,
-        processor_name: Optional[str] = None,
-        options: Optional[dict[str, Any]] = None,
-        progress_callback: Optional[
-            Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
-        ] = None,
+        filename: str | None = None,
+        processor_name: str | None = None,
+        options: dict[str, Any] | None = None,
+        progress_callback: (
+            Callable[[float, float | None, str | None], Awaitable[None]] | None
+        ) = None,
     ) -> ProcessingResult:
         """Process a document using available processors.
 
@@ -152,12 +156,102 @@ class ProcessorRegistry:
                     f"Registered processors: {', '.join(self.list_processors())}"
                 )
 
-        logger.info("Processing with '%s' processor", processor.name)
-
-        # Process
-        return await processor.process(
-            content, content_type, filename, options, progress_callback
+        tier = processor.tier
+        logger.info(
+            "Processing with '%s' processor",
+            processor.name,
+            extra={
+                "processor": processor.name,
+                "tier": tier,
+                "mime_type": content_type,
+            },
         )
+
+        # Process (instrumented: per-processor span + parse metrics).
+        # NOTE: when the tiered pipeline (docling/OCR/LLM) lands, escalation
+        # decisions are recorded here via record_document_escalation() and an
+        # add_span_event("document.escalation", ...) -- the escalated=False
+        # attribute and the metric are wired ahead of that.
+        byte_size = len(content)
+        start_time = time.time()
+        with trace_operation(
+            "document_processor.parse",
+            attributes={
+                "processor.name": processor.name,
+                "processor.tier": tier,
+                "mime_type": content_type,
+                "byte_size": byte_size,
+                "escalated": False,
+            },
+            record_exception=True,
+        ) as span:
+            try:
+                result = await processor.process(
+                    content, content_type, filename, options, progress_callback
+                )
+            except Exception:
+                duration = time.time() - start_time
+                record_document_parse(
+                    processor.name,
+                    tier,
+                    duration,
+                    byte_size=byte_size,
+                    status="error",
+                )
+                # Structured error signal for Loki (the processor logs the
+                # traceback; this adds the aggregatable fields). The span
+                # records the exception itself via record_exception=True.
+                logger.warning(
+                    "Parse failed for %s with '%s' after %.2fs",
+                    filename or "<bytes>",
+                    processor.name,
+                    duration,
+                    extra={
+                        "processor": processor.name,
+                        "tier": tier,
+                        "byte_size": byte_size,
+                        "duration_ms": round(duration * 1000, 1),
+                        "status": "error",
+                    },
+                )
+                raise
+
+            duration = time.time() - start_time
+            pages = int(result.metadata.get("page_count", 0) or 0)
+            chars = len(result.text)
+            status = "success" if result.success else "error"
+            record_document_parse(
+                processor.name,
+                tier,
+                duration,
+                pages=pages,
+                chars=chars,
+                byte_size=byte_size,
+                status=status,
+            )
+            if span is not None:
+                span.set_attribute("page_count", pages)
+                span.set_attribute("char_count", chars)
+                span.set_attribute("processor.success", result.success)
+
+            logger.info(
+                "Parsed %s with '%s': %s pages, %s chars in %.2fs",
+                filename or "<bytes>",
+                processor.name,
+                pages,
+                chars,
+                duration,
+                extra={
+                    "processor": processor.name,
+                    "tier": tier,
+                    "pages": pages,
+                    "chars": chars,
+                    "byte_size": byte_size,
+                    "duration_ms": round(duration * 1000, 1),
+                    "status": status,
+                },
+            )
+            return result
 
 
 # Global registry instance

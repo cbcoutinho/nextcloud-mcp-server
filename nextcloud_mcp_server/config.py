@@ -927,37 +927,79 @@ class Settings:
         self.enable_multi_user_basic_auth = resolved_mode == "multi_user_basic"
         self.enable_login_flow = resolved_mode == "login_flow"
 
-    def get_embedding_model_name(self) -> str:
+    def _detect_base_provider(self) -> tuple[str, str]:
         """
-        Get the active embedding model name based on provider priority.
+        Resolve the ``(family, model)`` for the underlying embedding provider.
 
-        Priority order (same as ProviderRegistry):
+        Single source of truth for the provider-detection priority chain shared
+        by ``get_embedding_model_name`` and ``get_embedding_provider_family``:
         1. Bedrock - if AWS_REGION or BEDROCK_EMBEDDING_MODEL is set
         2. OpenAI - if OPENAI_API_KEY is set
         3. Mistral - if MISTRAL_API_KEY is set
         4. Ollama - if OLLAMA_BASE_URL is set
-        5. Simple - fallback (returns "simple-{dimension}")
+        5. Simple - fallback
 
-        Returns:
-            Active embedding model name
+        Does NOT handle the gateway short-circuit — callers layer that on top
+        as needed (see the asymmetry note on ``get_embedding_model_name``).
         """
         if (
             self.aws_region
             or self.bedrock_embedding_model
             or self.bedrock_generation_model
         ):
-            return self.bedrock_embedding_model or "bedrock-default"
+            return "bedrock", self.bedrock_embedding_model or "bedrock-default"
 
         if self.openai_api_key:
-            return self.openai_embedding_model
+            return "openai", self.openai_embedding_model
 
         if self.mistral_api_key:
-            return self.mistral_embedding_model
+            return "mistral", self.mistral_embedding_model
 
         if self.ollama_base_url:
-            return self.ollama_embedding_model
+            return "ollama", self.ollama_embedding_model
 
-        return f"simple-{self.simple_embedding_dimension}"
+        return "simple", f"simple-{self.simple_embedding_dimension}"
+
+    def get_embedding_model_name(self) -> str:
+        """
+        Get the active embedding model name based on provider priority.
+
+        Priority order (same as ProviderRegistry): bedrock → openai → mistral →
+        ollama → simple (returns "simple-{dimension}").
+
+        Returns:
+            Active embedding model name
+        """
+        # NOTE: there is intentionally no "gateway" branch here. When
+        # EMBEDDING_PROVIDER=gateway this falls through to the underlying
+        # provider's model (used for the Qdrant collection name), whereas
+        # get_embedding_provider_family() short-circuits to the gateway-routed
+        # family. Keep that asymmetry in mind before joining metrics/labels
+        # derived from these two methods.
+        return self._detect_base_provider()[1]
+
+    def get_embedding_provider_family(self) -> str:
+        """
+        Get the active dense-embedding provider family (a low-cardinality label).
+
+        This is the single source of truth for the ``provider`` metric label and
+        the ``embedding.provider`` span attribute. It returns the provider
+        *family* (e.g. "bedrock"), never the model name, to keep metric
+        cardinality bounded.
+
+        Gateway short-circuits to the gateway-routed family (from the model
+        prefix, e.g. "mistral/mistral-embed" -> "mistral"); otherwise the family
+        comes from the shared ``_detect_base_provider`` priority chain.
+
+        Returns:
+            Provider family: gateway-routed family | bedrock | openai | mistral
+            | ollama | simple
+        """
+        if self.embedding_provider == "gateway":
+            model = self.embedding_gateway_model or ""
+            return model.split("/", 1)[0] if "/" in model else "gateway"
+
+        return self._detect_base_provider()[0]
 
     def get_collection_name(self) -> str:
         """
