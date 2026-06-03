@@ -54,7 +54,6 @@ INGEST_QUEUE_NAME = "ingest"
 # Blueprint namespace → registered task names are prefixed ``ingest:``.
 _NAMESPACE = "ingest"
 INGEST_TASK_NAME = f"{_NAMESPACE}:process_document"
-_RECLAIM_TASK_NAME = f"{_NAMESPACE}:reclaim_stalled_jobs"
 
 # A crashed worker leaves its job in ``doing``; reclaim it once its (per-worker)
 # heartbeat is this many seconds stale. Sized well above the longest expected
@@ -217,8 +216,8 @@ async def _ingest_schema_present(app: App) -> bool:
     return bool(row["present"])
 
 
-async def apply_ingest_queue_schema(app: App | None = None) -> None:
-    """Create procrastinate's tables on a fresh database (apply-if-absent).
+async def _apply_ingest_queue_schema_open(app: App) -> None:
+    """Apply the ingest-queue schema on an already-open connector (apply-if-absent).
 
     procrastinate's ``schema.sql`` uses bare ``CREATE TYPE``/``CREATE TABLE``
     (not ``IF NOT EXISTS``), so it errors if re-applied — it is meant to run
@@ -230,25 +229,41 @@ async def apply_ingest_queue_schema(app: App | None = None) -> None:
     lock: Postgres DDL is transactional and procrastinate applies the whole
     schema in one transaction, so a pod that loses the race rolls back cleanly
     and we treat the resulting error as benign once the schema is present.
+    """
+    if await _ingest_schema_present(app):
+        logger.debug("ingest queue schema already present; skipping apply")
+        return
+    try:
+        await app.schema_manager.apply_schema_async()
+        logger.info("Applied procrastinate ingest queue schema")
+    except Exception:
+        # The apply runs in a single transaction, so any failure rolls back
+        # atomically (no partial schema). The only benign case is losing the
+        # create race to another pod — confirmed by re-checking presence. Any
+        # other failure (network, auth, …) leaves the schema absent, so this
+        # branch re-raises it rather than masking it.
+        if await _ingest_schema_present(app):
+            logger.info("Ingest queue schema applied concurrently by another pod")
+            return
+        raise
 
-    Opens a short-lived connection, so it is safe to call from the CLI
-    (``db upgrade`` / worker startup).
+
+async def apply_ingest_queue_schema(
+    app: App | None = None, *, manage_connection: bool = True
+) -> None:
+    """Create procrastinate's tables on a fresh database (apply-if-absent).
+
+    By default opens a short-lived connection, so it is safe to call standalone
+    from the CLI ``db upgrade`` path. Pass ``manage_connection=False`` when the
+    caller already holds an open connector (the ``worker`` command opens the App
+    once and reuses it) to avoid a redundant open/close cycle.
     """
     app = app or get_procrastinate_app()
+    if not manage_connection:
+        await _apply_ingest_queue_schema_open(app)
+        return
     async with app.open_async():
-        if await _ingest_schema_present(app):
-            logger.debug("ingest queue schema already present; skipping apply")
-            return
-        try:
-            await app.schema_manager.apply_schema_async()
-            logger.info("Applied procrastinate ingest queue schema")
-        except Exception:
-            # A racing pod likely committed the schema while our transaction
-            # rolled back atomically. Benign iff the schema is now present.
-            if await _ingest_schema_present(app):
-                logger.info("Ingest queue schema applied concurrently by another pod")
-                return
-            raise
+        await _apply_ingest_queue_schema_open(app)
 
 
 # Job-status keys procrastinate flattens into each list_queues row (alongside

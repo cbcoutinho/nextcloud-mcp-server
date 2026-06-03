@@ -355,9 +355,17 @@ class AppContext:
     storage: "RefreshTokenStorage | None" = None
     document_send_stream: MemoryObjectSendStream | None = None
     document_receive_stream: MemoryObjectReceiveStream | None = None
-    task_producer: "TaskProducer | None" = None
     shutdown_event: anyio.Event | None = None
     scanner_wake_event: anyio.Event | None = None
+
+    @property
+    def task_producer(self) -> "TaskProducer | None":
+        # Read dynamically from the module-level singleton (like
+        # eviction_task_group) rather than snapshotting at yield time — that way
+        # a session can't observe a stale ``None`` and the per-session yields
+        # can't forget to forward it (the bug this property replaces). The
+        # vector-sync status tool reads this for postgres-backend job counts.
+        return _vector_sync_state.task_producer
 
     @property
     def eviction_task_group(self) -> TaskGroup | None:
@@ -381,9 +389,13 @@ class OAuthAppContext:
     server_client_id: str | None = None  # MCP server's OAuth client ID (static or DCR)
     document_send_stream: MemoryObjectSendStream | None = None
     document_receive_stream: MemoryObjectReceiveStream | None = None
-    task_producer: "TaskProducer | None" = None
     shutdown_event: anyio.Event | None = None
     scanner_wake_event: anyio.Event | None = None
+
+    @property
+    def task_producer(self) -> "TaskProducer | None":
+        # See AppContext.task_producer for rationale.
+        return _vector_sync_state.task_producer
 
     @property
     def eviction_task_group(self) -> TaskGroup | None:
@@ -606,8 +618,8 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
             document_receive_stream=_vector_sync_state.document_receive_stream,
             shutdown_event=_vector_sync_state.shutdown_event,
             scanner_wake_event=_vector_sync_state.scanner_wake_event,
-            # eviction_task_group is exposed via @property (reads
-            # _vector_sync_state at access time, not snapshot).
+            # task_producer and eviction_task_group are exposed via @property
+            # (read _vector_sync_state at access time, not snapshot).
         )
     finally:
         logger.info("Shutting down BasicAuth session")
@@ -1239,8 +1251,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     document_receive_stream=_vector_sync_state.document_receive_stream,
                     shutdown_event=_vector_sync_state.shutdown_event,
                     scanner_wake_event=_vector_sync_state.scanner_wake_event,
-                    # eviction_task_group is exposed via @property (reads
-                    # _vector_sync_state at access time, not snapshot).
+                    # task_producer and eviction_task_group are exposed via
+                    # @property (read _vector_sync_state at access time).
                 )
             finally:
                 logger.info("Shutting down MCP server")

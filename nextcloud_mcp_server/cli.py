@@ -326,9 +326,12 @@ def worker(concurrency: int | None):
     app = get_procrastinate_app()
 
     async def _run() -> None:
-        # Defensive apply (the always-on API pod is the authoritative applier).
-        await apply_ingest_queue_schema(app)
+        # Open the connector pool once and reuse it for both the defensive
+        # schema apply (the always-on API pod is the authoritative applier) and
+        # the worker loop — manage_connection=False avoids a redundant
+        # open/close cycle on startup.
         async with app.open_async():
+            await apply_ingest_queue_schema(app, manage_connection=False)
             click.echo(
                 f"Ingest worker started: queue={INGEST_QUEUE_NAME} concurrency={workers}"
             )

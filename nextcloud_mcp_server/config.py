@@ -1437,6 +1437,13 @@ def get_procrastinate_conninfo(database_url: str | None = None) -> str:
     (set ``DATABASE_URL`` to a ``+psycopg`` URL) rather than rewriting the driver
     in code — see charts repo, not this repo.
 
+    Only the host/port/dbname/user/password components are forwarded; any
+    ``?key=value`` query parameters on the URL (e.g. ``application_name``,
+    ``connect_timeout``) are **dropped** — TLS is set separately via
+    :func:`_pg_ssl_params`, and SQLAlchemy-specific query options don't map
+    cleanly to libpq keywords. A warning is logged when params are dropped so
+    operators aren't surprised.
+
     Raises ``ValueError`` for a non-Postgres URL — procrastinate is Postgres-only.
     """
     from psycopg.conninfo import make_conninfo  # noqa: PLC0415
@@ -1447,6 +1454,13 @@ def get_procrastinate_conninfo(database_url: str | None = None) -> str:
         raise ValueError(
             "get_procrastinate_conninfo requires a PostgreSQL DATABASE_URL; "
             f"got driver {url.drivername!r}"
+        )
+
+    if url.query:
+        logging.getLogger(__name__).warning(
+            "Dropping DATABASE_URL query parameters not forwarded to the "
+            "procrastinate connector: %s",
+            ", ".join(sorted(url.query)),
         )
 
     params: dict[str, str] = {}

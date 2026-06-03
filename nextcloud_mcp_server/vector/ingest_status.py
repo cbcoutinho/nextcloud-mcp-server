@@ -36,6 +36,12 @@ async def get_ingest_pending(
 ) -> IngestPending:
     """Compute outstanding ingest work for the configured queue backend.
 
+    ``task_producer`` and ``document_receive_stream`` are intentionally typed
+    ``Any``: they're duck-typed across backends. Only ``ProcrastinateTaskProducer``
+    exposes ``job_counts`` (the ``TaskProducer`` protocol doesn't), and the memory
+    backend reads the anyio stream's ``statistics()`` — so no single concrete type
+    or Protocol fits both branches, and we probe with ``hasattr`` instead.
+
     Never raises — a status surface must stay available even if the queue is
     unreachable; failures degrade to ``pending=0``.
     """
