@@ -217,6 +217,9 @@ def normalize_path_prefixes(
     if path_prefixes:
         raw.extend(path_prefixes)
 
+    # Two-pass on purpose: the ``if path_prefix:`` guard above is truthy for a
+    # whitespace-only string like ``"   "``, so the strip-and-drop pass below is
+    # what actually removes it — collecting first keeps the dedup order stable.
     seen: set[str] = set()
     cleaned: list[str] = []
     for value in raw:

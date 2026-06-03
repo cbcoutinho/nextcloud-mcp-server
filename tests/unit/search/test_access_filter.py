@@ -265,11 +265,23 @@ class TestBuildBaseFilterConditions:
         assert match.text == prefix
 
     @pytest.mark.unit
-    def test_no_path_condition_when_prefix_absent(self) -> None:
-        conditions = build_base_filter_conditions("alice", None, path_prefix=None)
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"path_prefix": None},
+            {"path_prefixes": None},
+            {"path_prefixes": []},
+            {"path_prefix": "  ", "path_prefixes": ["", "   "]},
+        ],
+    )
+    def test_no_path_condition_when_prefix_absent(self, kwargs) -> None:
+        # No folder filter (None, empty list, or blank-only) must add neither a
+        # flat file_path condition nor a nested path OR.
+        conditions = build_base_filter_conditions("alice", None, **kwargs)
         assert not any(
             isinstance(c, FieldCondition) and c.key == "file_path" for c in conditions
         )
+        assert self._path_should_texts(conditions) is None
 
     @staticmethod
     def _path_should_texts(conditions) -> set[str] | None:
@@ -292,12 +304,18 @@ class TestBuildBaseFilterConditions:
 
     @pytest.mark.unit
     def test_multiple_path_prefixes_or_in_nested_should(self) -> None:
-        # Two+ folders must OR together: a single nested Filter(should=[...]) is
-        # appended (not two must conditions, which would AND and match nothing).
+        # 3+ folders must OR together: a single nested Filter(should=[...]) is
+        # appended (not separate must conditions, which would AND and match
+        # nothing). 3 folders also guards the list comprehension against an
+        # off-by-one.
         conditions = build_base_filter_conditions(
-            "alice", None, path_prefixes=["/Projects", "/Archive"]
+            "alice", None, path_prefixes=["/Projects", "/Archive", "/Shared"]
         )
-        assert self._path_should_texts(conditions) == {"/Projects", "/Archive"}
+        assert self._path_should_texts(conditions) == {
+            "/Projects",
+            "/Archive",
+            "/Shared",
+        }
         # No bare file_path FieldCondition in must for the multi-folder case.
         assert not any(
             isinstance(c, FieldCondition) and c.key == "file_path" for c in conditions
