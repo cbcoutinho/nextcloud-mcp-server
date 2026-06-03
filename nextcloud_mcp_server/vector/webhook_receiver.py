@@ -42,9 +42,10 @@ async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
     """Receive a Nextcloud webhook and queue a DocumentTask for vector sync.
 
     Returns quickly so NC's webhook worker is not blocked. The task producer is
-    read from ``request.app.state.task_producer`` (the in-memory send stream in
-    local mode, or the NATS bus producer in external mode); when vector sync
-    isn't running we return 503 so NC retries delivery.
+    read from ``request.app.state.task_producer`` (the in-memory send stream when
+    ``INGEST_QUEUE=memory``, or the procrastinate producer when
+    ``INGEST_QUEUE=postgres``); when vector sync isn't running we return 503 so
+    NC retries delivery.
 
     When ``WEBHOOK_SECRET`` is set, the request must carry
     ``Authorization: Bearer <secret>`` (registered via ``authData`` so NC

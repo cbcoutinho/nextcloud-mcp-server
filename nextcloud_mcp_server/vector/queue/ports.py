@@ -1,18 +1,18 @@
-"""Ingest-path ports (design §10, hexagonal).
+"""Ingest-path ports (design §10, hexagonal; Deck #183).
 
 A ``TaskProducer`` is where the scanner + webhook receiver send a
 ``DocumentTask``. The transport behind it is swappable:
 
-- the in-process anyio ``MemoryObjectSendStream`` (local ingest — the default),
-- ``NatsTaskProducer`` (external ingest → the document-processor), and
-- a future Postgres-queue producer (seam only; the *external* processor owns the
-  consume side — see ``postgres.py``).
+- ``MemoryTaskProducer`` over the in-process anyio ``MemoryObjectSendStream``
+  (``INGEST_QUEUE=memory`` — the SQLite/dev default), and
+- ``ProcrastinateTaskProducer`` (``INGEST_QUEUE=postgres``), which defers jobs
+  into the per-tenant Postgres for the out-of-process ``worker`` role to drain.
 
 The protocol is exactly the surface the scanner/oauth_sync already use on the
 memory stream (``send`` + ``clone`` + ``async with``), so both adapters drop in
-with only a type-annotation change at the call sites. There is intentionally NO
-consumer port: the MCP server's only in-process consumer is the memory stream;
-when ingest is external the document-processor is the consumer, not this server.
+with only a type-annotation change at the call sites. There is no consumer port:
+in memory mode the in-process processor pool is the consumer; in postgres mode
+the procrastinate worker is.
 """
 
 from __future__ import annotations
@@ -52,8 +52,14 @@ class TaskProducer(Protocol):
     async def aclose(self) -> None:
         """Close *this* handle (e.g. a per-user clone when its scanner exits).
 
-        For the memory stream this closes the clone; for the shared bus
-        connection it is a no-op (the connection is owned by the lifespan,
-        which drains it once on shutdown).
+        For the memory stream this closes the clone; for a shared connection it
+        is a no-op (the connection is owned by the lifespan, which tears it down
+        once on shutdown).
         """
         ...
+
+    # Note: this protocol deliberately omits ``drain()``. An implementation that
+    # owns a long-lived shared connection (e.g. ProcrastinateTaskProducer's
+    # connector pool) may additionally provide ``async def drain()`` for the
+    # lifespan to close that pool once on shutdown; the lifespan probes for it
+    # with ``getattr(task_producer, "drain", None)``, so it stays optional.

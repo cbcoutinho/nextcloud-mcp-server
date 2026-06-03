@@ -154,7 +154,9 @@ async def processor_task(
     logger.info("Processor %s stopped", worker_id)
 
 
-async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
+async def process_document(
+    doc_task: DocumentTask, nc_client: NextcloudClient, *, max_retries: int = 3
+):
     """
     Process a single document: fetch, tokenize, embed, store in Qdrant.
 
@@ -163,6 +165,10 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
     Args:
         doc_task: Document task to process
         nc_client: Authenticated Nextcloud client
+        max_retries: In-process indexing attempts before re-raising. The default
+            (3) suits the in-process SQLite pool, which has no durable retry. The
+            procrastinate worker passes ``1`` so durable retry is owned by the
+            queue (and survives worker crashes), avoiding compounding 3×N retries.
     """
     start_time = time.time()
 
@@ -230,7 +236,6 @@ async def process_document(doc_task: DocumentTask, nc_client: NextcloudClient):
                 return
 
             # Handle indexing with retry
-            max_retries = 3
             retry_delay = 1.0
 
             for attempt in range(max_retries):

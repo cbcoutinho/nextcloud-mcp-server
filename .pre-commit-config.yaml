@@ -22,5 +22,4 @@ repos:
       name: ty-check
       language: system
       types: [python]
-      exclude: tests/.*
       entry: uv run ty check

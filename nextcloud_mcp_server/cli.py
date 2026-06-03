@@ -1,3 +1,4 @@
+import logging
 import os
 from importlib.metadata import version
 
@@ -20,6 +21,8 @@ from nextcloud_mcp_server.observability import get_uvicorn_logging_config
 from nextcloud_mcp_server.server import AVAILABLE_APPS
 
 from .app import get_app
+
+logger = logging.getLogger(__name__)
 
 
 @click.command()
@@ -281,6 +284,88 @@ def run(
     )
 
 
+@click.command()
+@click.option(
+    "--concurrency",
+    "-c",
+    type=int,
+    default=None,
+    help="Max concurrent jobs. Defaults to VECTOR_SYNC_PROCESSOR_WORKERS.",
+)
+def worker(concurrency: int | None):
+    """Run the ingest worker (Deck #183).
+
+    \b
+    Drains the per-tenant Postgres ingest queue (procrastinate): for each
+    deferred document it fetches the content as the owning user, parses, chunks,
+    embeds, and upserts into Qdrant. This is the scale-to-zero ``worker`` role of
+    the api/worker split; run it as a separate Deployment from the API pod.
+
+    \b
+    Requires INGEST_QUEUE=postgres (a PostgreSQL DATABASE_URL); procrastinate is
+    Postgres-only.
+
+    \b
+    Example:
+      $ export DATABASE_URL=postgresql+asyncpg://mcp:mcp@db/mcp
+      $ nextcloud-mcp-server worker -c 4
+    """
+    import anyio  # noqa: PLC0415
+
+    settings = get_settings()
+    if settings.ingest_queue != "postgres":
+        raise click.ClickException(
+            "worker requires INGEST_QUEUE=postgres (a PostgreSQL DATABASE_URL); "
+            f"resolved INGEST_QUEUE={settings.ingest_queue!r}"
+        )
+
+    from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
+        INGEST_QUEUE_NAME,
+        apply_ingest_queue_schema,
+        get_procrastinate_app,
+    )
+
+    workers = concurrency or settings.vector_sync_processor_workers
+    app = get_procrastinate_app()
+
+    # Register the configured document processors (Unstructured / Tesseract /
+    # custom HTTP) in the worker process. The always-on API pod does this in its
+    # lifespan; the worker has its own startup path, so without this the worker
+    # would silently fall back to the import-time-registered PyMuPDF only.
+    from nextcloud_mcp_server.app import initialize_document_processors  # noqa: PLC0415
+
+    initialize_document_processors()
+
+    async def _run() -> None:
+        # Open the connector pool once and reuse it for both the defensive
+        # schema apply (the always-on API pod is the authoritative applier) and
+        # the worker loop — manage_connection=False avoids a redundant
+        # open/close cycle on startup.
+        async with app.open_async():
+            await apply_ingest_queue_schema(app, manage_connection=False)
+            # Structured log (not click.echo) so it lands in the JSON / OTel
+            # pipeline like every other startup message.
+            logger.info(
+                "Ingest worker started: queue=%s concurrency=%s delete_succeeded=%s",
+                INGEST_QUEUE_NAME,
+                workers,
+                settings.ingest_delete_succeeded_jobs,
+            )
+            await app.run_worker_async(
+                queues=[INGEST_QUEUE_NAME],
+                concurrency=workers,
+                install_signal_handlers=True,
+                # Drop succeeded jobs (default) so the queue table stays lean and
+                # the KEDA queue-depth metric reflects only outstanding work; set
+                # INGEST_DELETE_SUCCEEDED_JOBS=false to retain them for audit.
+                delete_jobs="successful"
+                if settings.ingest_delete_succeeded_jobs
+                else "never",
+            )
+
+    anyio.run(_run)
+
+
 @click.group()
 def db():
     """Database migration management commands."""
@@ -374,6 +459,21 @@ def upgrade(database_url: str | None, database_path: str | None, revision: str):
     try:
         click.echo(f"Upgrading database to revision: {revision}")
         upgrade_database(url, revision)
+        # Apply procrastinate's ingest-queue schema on Postgres so a one-shot
+        # migration/init job provisions everything the api + worker roles need
+        # (Deck #183). Idempotent + lazy import (Postgres-only extra).
+        from nextcloud_mcp_server.config import is_sqlite_url  # noqa: PLC0415
+
+        if not is_sqlite_url(url):
+            import anyio  # noqa: PLC0415
+
+            from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
+                apply_ingest_queue_schema,
+                build_app_for_url,
+            )
+
+            anyio.run(apply_ingest_queue_schema, build_app_for_url(url))
+            click.echo(click.style("✓ Ingest queue schema applied", fg="green"))
         click.echo(click.style("✓ Database upgraded successfully", fg="green"))
     except Exception as e:
         click.echo(click.style(f"✗ Upgrade failed: {e}", fg="red"), err=True)
@@ -483,6 +583,7 @@ def cli():
 
 
 cli.add_command(run)
+cli.add_command(worker)
 cli.add_command(db)
 
 

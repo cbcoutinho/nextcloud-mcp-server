@@ -1,4 +1,4 @@
-"""Tests for the MCP decomposition hook-point settings (design §10).
+"""Tests for the MCP decomposition hook-point settings (design §10, Deck #183).
 
 Every default must reproduce the monolith; the opt-in settings are validated
 in ``Settings.__post_init__``.
@@ -6,6 +6,7 @@ in ``Settings.__post_init__``.
 
 import pytest
 
+import nextcloud_mcp_server.config as config_module
 from nextcloud_mcp_server.canonical import canonical_json
 from nextcloud_mcp_server.config import Settings
 
@@ -16,23 +17,21 @@ class TestDecompositionDefaults:
     def test_defaults_are_monolith(self):
         s = Settings()
         assert s.embedding_provider == "autodetect"
-        assert s.ingest_mode == "local"
-        assert s.status_backend == "local"
+        # SQLite/dev default → the in-process memory queue.
+        assert s.ingest_queue == "memory"
+        assert s.mcp_role == "all"
         assert s.collection_metadata_source == "qdrant"
-        assert s.fact_event_emitter == "none"
-        assert s.ingest_bus_url is None
         assert s.embedding_gateway_url is None
         assert s.tenant_id is None
-        assert s.ingest_bus_num_replicas == 1
 
     def test_enum_values_normalized(self):
         # Mixed case / surrounding whitespace is normalized before validation.
         s = Settings(
             collection_metadata_source=" QDRANT ",
-            fact_event_emitter="NONE",
+            mcp_role=" API ",
         )
         assert s.collection_metadata_source == "qdrant"
-        assert s.fact_event_emitter == "none"
+        assert s.mcp_role == "api"
 
 
 class TestEnumValidation:
@@ -40,57 +39,47 @@ class TestEnumValidation:
         "field,value",
         [
             ("embedding_provider", "openai"),
-            ("ingest_mode", "remote"),
-            ("status_backend", "redis"),
-            ("collection_metadata_source", "postgres"),
-            ("fact_event_emitter", "kafka"),
+            ("mcp_role", "leader"),
+            ("collection_metadata_source", "redis"),
         ],
     )
     def test_invalid_enum_rejected(self, field, value):
         with pytest.raises(ValueError, match=field.upper()):
             Settings(**{field: value})
 
+    def test_invalid_ingest_queue_rejected(self):
+        with pytest.raises(ValueError, match="INGEST_QUEUE"):
+            Settings(ingest_queue="kafka")
 
-class TestFailFast:
-    def test_external_with_local_status_crashes(self):
-        with pytest.raises(
-            RuntimeError,
-            match="STATUS_BACKEND=local is incompatible with INGEST_MODE=external",
-        ):
-            Settings(
-                ingest_mode="external",
-                status_backend="local",
-                ingest_bus_url="nats://nats:4222",
-                tenant_id="tenant-uuid",
-            )
+
+class TestIngestQueueResolution:
+    def test_postgres_requires_postgres_url(self):
+        # Explicit postgres against the default SQLite DATABASE_URL is a
+        # misconfiguration (procrastinate is Postgres-only).
+        with pytest.raises(ValueError, match="INGEST_QUEUE=postgres requires"):
+            Settings(ingest_queue="postgres")
+
+    def test_auto_postgres_when_database_url_is_postgres(self, monkeypatch):
+        monkeypatch.setattr(
+            config_module,
+            "get_database_url",
+            lambda: "postgresql+asyncpg://mcp:mcp@db/mcp",
+        )
+        assert Settings().ingest_queue == "postgres"
+
+    def test_explicit_memory_on_postgres_url(self, monkeypatch):
+        monkeypatch.setattr(
+            config_module,
+            "get_database_url",
+            lambda: "postgresql+asyncpg://mcp:mcp@db/mcp",
+        )
+        assert Settings(ingest_queue="memory").ingest_queue == "memory"
 
 
 class TestConditionalRequired:
-    def test_external_requires_bus_url(self):
-        with pytest.raises(ValueError, match="INGEST_BUS_URL is required"):
-            Settings(ingest_mode="external", status_backend="bus", tenant_id="t1")
-
-    def test_external_requires_tenant_id(self):
-        with pytest.raises(ValueError, match="TENANT_ID is required"):
-            Settings(
-                ingest_mode="external",
-                status_backend="bus",
-                ingest_bus_url="nats://nats:4222",
-            )
-
     def test_gateway_requires_gateway_url(self):
         with pytest.raises(ValueError, match="EMBEDDING_GATEWAY_URL is required"):
             Settings(embedding_provider="gateway")
-
-    def test_external_happy_path(self):
-        s = Settings(
-            ingest_mode="external",
-            status_backend="bus",
-            ingest_bus_url="nats://nats:4222",
-            tenant_id="0a1b2c3d-0000-0000-0000-000000000000",
-        )
-        assert s.ingest_mode == "external"
-        assert s.status_backend == "bus"
 
     def test_gateway_happy_path(self):
         s = Settings(
@@ -100,24 +89,84 @@ class TestConditionalRequired:
         assert s.embedding_provider == "gateway"
 
 
-class TestTenantIdSubjectToken:
-    @pytest.mark.parametrize(
-        "tenant_id",
-        ["a.b", "a*b", "a>b", "a b", "a\tb"],
-    )
-    def test_illegal_subject_chars_rejected(self, tenant_id):
-        with pytest.raises(ValueError, match="TENANT_ID must not contain"):
-            Settings(tenant_id=tenant_id)
-
-    def test_uuid_form_accepted(self):
+class TestTenantId:
+    def test_arbitrary_tenant_id_accepted(self):
+        # The old NATS-subject charset restriction was dropped with NATS
+        # (Deck #183); tenant_id is now just an opaque per-tenant identity.
         s = Settings(tenant_id="0a1b2c3d-0000-0000-0000-000000000000")
         assert s.tenant_id == "0a1b2c3d-0000-0000-0000-000000000000"
 
 
-class TestReplicas:
-    def test_zero_replicas_rejected(self):
-        with pytest.raises(ValueError, match="INGEST_BUS_NUM_REPLICAS must be >= 1"):
-            Settings(ingest_bus_num_replicas=0)
+class TestProcrastinateConninfo:
+    @pytest.mark.parametrize(
+        "url,expected_sslmode",
+        [
+            ("postgresql+asyncpg://mcp:p%40ss@db:5432/mcp", None),
+        ],
+    )
+    def test_conninfo_round_trips_password(self, monkeypatch, url, expected_sslmode):
+        from psycopg.conninfo import conninfo_to_dict
+
+        monkeypatch.setattr(config_module, "get_database_url", lambda: url)
+        # No SSL settings → sslmode omitted (libpq default ``prefer``).
+        monkeypatch.setattr(config_module, "get_database_ssl", lambda: None)
+        parsed = conninfo_to_dict(config_module.get_procrastinate_conninfo())
+        assert parsed["password"] == "p@ss"
+        assert parsed["host"] == "db"
+        assert parsed["dbname"] == "mcp"
+        assert parsed.get("sslmode") == expected_sslmode
+
+    def test_conninfo_connect_timeout_defaults_to_10(self, monkeypatch):
+        from psycopg.conninfo import conninfo_to_dict
+
+        monkeypatch.setattr(
+            config_module,
+            "get_database_url",
+            lambda: "postgresql+asyncpg://mcp:s@db/mcp",
+        )
+        monkeypatch.setattr(config_module, "get_database_ssl", lambda: None)
+        parsed = conninfo_to_dict(config_module.get_procrastinate_conninfo())
+        assert parsed["connect_timeout"] == "10"
+
+    def test_conninfo_honors_url_connect_timeout(self, monkeypatch):
+        from psycopg.conninfo import conninfo_to_dict
+
+        monkeypatch.setattr(
+            config_module,
+            "get_database_url",
+            lambda: "postgresql+asyncpg://mcp:s@db/mcp?connect_timeout=3",
+        )
+        monkeypatch.setattr(config_module, "get_database_ssl", lambda: None)
+        parsed = conninfo_to_dict(config_module.get_procrastinate_conninfo())
+        assert parsed["connect_timeout"] == "3"
+
+    def test_conninfo_ssl_mapping(self, monkeypatch):
+        from psycopg.conninfo import conninfo_to_dict
+
+        monkeypatch.setattr(
+            config_module,
+            "get_database_url",
+            lambda: "postgresql+asyncpg://mcp:s@db/mcp",
+        )
+        # verify off → encrypt without verifying.
+        monkeypatch.setattr(config_module, "get_database_ssl", lambda: False)
+        assert (
+            conninfo_to_dict(config_module.get_procrastinate_conninfo())["sslmode"]
+            == "require"
+        )
+        # verify on → verify-full.
+        monkeypatch.setattr(config_module, "get_database_ssl", lambda: True)
+        assert (
+            conninfo_to_dict(config_module.get_procrastinate_conninfo())["sslmode"]
+            == "verify-full"
+        )
+
+    def test_conninfo_rejects_non_postgres(self, monkeypatch):
+        monkeypatch.setattr(
+            config_module, "get_database_url", lambda: "sqlite+aiosqlite:///x.db"
+        )
+        with pytest.raises(ValueError, match="requires a PostgreSQL DATABASE_URL"):
+            config_module.get_procrastinate_conninfo()
 
 
 class TestCanonicalJson:

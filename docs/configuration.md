@@ -785,9 +785,9 @@ docker-compose up
 
 ## Decomposition Hook Points (Optional, Advanced)
 
-The server can optionally offload document processing and embeddings to external
-services (the Astrolabe Cloud document-processor and embedding-gateway). These
-are **opt-in**; every default reproduces the in-process monolith behavior, so
+The server can optionally offload embeddings to an external gateway and split
+ingest into a separate scale-to-zero worker process (Deck #183). These are
+**opt-in**; every default reproduces the in-process monolith behavior, so
 self-hosters can ignore this section.
 
 ```bash
@@ -799,21 +799,48 @@ EMBEDDING_GATEWAY_TOKEN_URL=...
 EMBEDDING_GATEWAY_CLIENT_ID=...
 EMBEDDING_GATEWAY_CLIENT_SECRET=...
 
-# External ingest: publish to NATS instead of the in-process processor pool
-INGEST_MODE=external          # local (default) | external
-STATUS_BACKEND=bus            # local (default) | bus — REQUIRED with external
-INGEST_BUS_URL=nats://nats:4222
-TENANT_ID=<uuid>              # NATS per-tenant subject token
+# Ingest queue backend. Default (unset) auto-derives from DATABASE_URL:
+#   - PostgreSQL DATABASE_URL → "postgres" (the procrastinate queue)
+#   - SQLite / unset          → "memory"   (the in-process anyio queue)
+INGEST_QUEUE=postgres         # memory | postgres
+# Process role (informational; the worker is launched via the `worker` command):
+MCP_ROLE=all                  # api | worker | all (default)
+TENANT_ID=<uuid>              # per-tenant identity (used in collection naming)
+```
+
+### Postgres ingest queue + worker (api/worker split)
+
+When `INGEST_QUEUE=postgres` (a PostgreSQL `DATABASE_URL`), the scanner **defers**
+one job per changed document into the app's Postgres via
+[procrastinate](https://procrastinate.readthedocs.io); a separate **worker**
+process drains the queue (fetch → chunk → embed → upsert Qdrant). Run the two
+roles as separate Deployments from the same image:
+
+```bash
+# API pod (always-on): serves MCP/query + runs the scanner (defers jobs)
+nextcloud-mcp-server run
+
+# Ingest worker (scale-to-zero on queue depth via KEDA): drains the queue
+nextcloud-mcp-server worker -c 4
 ```
 
 Notes:
-- `STATUS_BACKEND=local` with `INGEST_MODE=external` is rejected at startup
-  (the in-process job state is empty for externally-dispatched work).
-- **`nats-py` ships as a core dependency** (small, pure-Python) and is imported
-  lazily — only when `INGEST_MODE=external`. Self-hosters who never enable
-  external ingest pay no runtime cost.
-- `INGEST_MODE=external` + `STATUS_BACKEND=bus` opens **two** NATS connections
-  per pod (the ingest producer and the status subscriber are separate roles).
+
+- **procrastinate manages its own tables** (`procrastinate_jobs`, …) in the same
+  database. They are created on a fresh DB by the API pod at startup and by
+  `nextcloud-mcp-server db upgrade` — a migration lineage independent of the
+  app's Alembic schema. procrastinate is Postgres-only (psycopg3); it ships in
+  the `[postgres]` extra and is imported lazily.
+- KEDA scales the worker on
+  `SELECT count(*) FROM procrastinate_jobs WHERE queue_name='ingest' AND status='todo'`.
+- `INGEST_QUEUE=postgres` with a SQLite `DATABASE_URL` is rejected at startup.
+- **Teardown:** because procrastinate's schema is a separate lineage,
+  `nextcloud-mcp-server db downgrade` (Alembic) does **not** drop the
+  `procrastinate_*` tables. To fully revert (e.g. back to NATS or SQLite-only),
+  drop them manually after downgrading:
+  `DROP TABLE IF EXISTS procrastinate_jobs, procrastinate_events,
+  procrastinate_periodic_defers, procrastinate_workers CASCADE;` (plus the
+  `procrastinate_*` types/functions if removing the extension entirely).
 
 ---
 

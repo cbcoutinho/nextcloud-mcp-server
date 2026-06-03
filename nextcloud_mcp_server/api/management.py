@@ -293,52 +293,21 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
         )
 
     try:
-        # Bus status backend (INGEST_MODE=external): there is no in-process
-        # queue; pending/terminal state comes from the NATS status subscriber's
-        # store. indexed_documents stays the mode-independent Qdrant count.
-        if settings.status_backend == "bus":
-            store = getattr(request.app.state, "status_store", None)
-            indexed_count = 0
-            try:
-                qdrant_client = await get_qdrant_client()
-                count_result = await qdrant_client.count(
-                    collection_name=settings.get_collection_name(),
-                    count_filter=Filter(must=[get_placeholder_filter()]),
-                )
-                indexed_count = count_result.count
-            except Exception as e:
-                logger.warning("Failed to query Qdrant for indexed count: %s", e)
-            return JSONResponse(
-                {
-                    "status": "idle",
-                    "indexed_documents": indexed_count,
-                    "pending_documents": 0,
-                    "status_backend": "bus",
-                    "recent_states": store.counts() if store is not None else {},
-                }
-            )
-
-        # Get document receive stream from app state (set by starlette_lifespan in app.py)
-        document_receive_stream = getattr(
-            request.app.state, "document_receive_stream", None
+        # Outstanding-work view depends on the queue backend (Deck #183):
+        # memory → stream buffer depth; postgres → procrastinate job counts.
+        from nextcloud_mcp_server.vector.ingest_status import (  # noqa: PLC0415
+            get_ingest_pending,
         )
 
-        if document_receive_stream is None:
-            logger.debug("document_receive_stream not available in app state")
-            return JSONResponse(
-                {
-                    "status": "unknown",
-                    "indexed_documents": 0,
-                    "pending_documents": 0,
-                    "message": "Vector sync stream not initialized",
-                }
-            )
+        pending = await get_ingest_pending(
+            task_producer=getattr(request.app.state, "task_producer", None),
+            document_receive_stream=getattr(
+                request.app.state, "document_receive_stream", None
+            ),
+            ingest_queue=settings.ingest_queue,
+        )
 
-        # Get pending count from stream statistics
-        stream_stats = document_receive_stream.statistics()
-        pending_count = stream_stats.current_buffer_used
-
-        # Get Qdrant client and query indexed count
+        # Get Qdrant client and query indexed count (backend-independent)
         indexed_count = 0
         try:
             qdrant_client = await get_qdrant_client()
@@ -355,15 +324,18 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
             # Continue with indexed_count = 0
 
         # Determine status
-        status = "syncing" if pending_count > 0 else "idle"
+        status = "syncing" if pending.pending > 0 else "idle"
 
-        return JSONResponse(
-            {
-                "status": status,
-                "indexed_documents": indexed_count,
-                "pending_documents": pending_count,
-            }
-        )
+        body: dict[str, object] = {
+            "status": status,
+            "indexed_documents": indexed_count,
+            "pending_documents": pending.pending,
+            "ingest_queue": settings.ingest_queue,
+        }
+        if pending.job_counts is not None:
+            # Per-status breakdown (todo/doing/failed/…) on the postgres backend.
+            body["job_counts"] = pending.job_counts
+        return JSONResponse(body)
 
     except Exception as e:
         error_msg = _sanitize_error_for_client(e, "get_vector_sync_status")

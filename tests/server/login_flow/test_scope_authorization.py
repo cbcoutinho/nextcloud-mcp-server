@@ -16,6 +16,8 @@ import logging
 import httpx
 import pytest
 
+logger = logging.getLogger(__name__)
+
 
 @pytest.mark.integration
 @pytest.mark.login_flow
@@ -65,8 +67,6 @@ async def test_basicauth_shows_all_tools(nc_mcp_client):
 async def test_read_only_token_filters_write_tools(nc_mcp_login_flow_client_read_only):
     """Test that a token with only read scopes filters out write tools."""
 
-    logger = logging.getLogger(__name__)
-
     # Connect with token that has only "notes.read" scope
     result = await nc_mcp_login_flow_client_read_only.list_tools()
     assert result is not None
@@ -114,8 +114,6 @@ async def test_read_only_token_filters_write_tools(nc_mcp_login_flow_client_read
 async def test_write_only_token_filters_read_tools(nc_mcp_login_flow_client_write_only):
     """Test that a token with only write scopes filters out read tools."""
 
-    logger = logging.getLogger(__name__)
-
     # Connect with token that has only "notes.write" scope
     result = await nc_mcp_login_flow_client_write_only.list_tools()
     assert result is not None
@@ -162,8 +160,6 @@ async def test_write_only_token_filters_read_tools(nc_mcp_login_flow_client_writ
 @pytest.mark.login_flow
 async def test_full_access_token_shows_all_tools(nc_mcp_login_flow_client_full_access):
     """Test that a token with both read and write scopes scopes can see all tools."""
-
-    logger = logging.getLogger(__name__)
 
     # Connect with token that has both "notes.read" and "notes.write" scopes
     result = await nc_mcp_login_flow_client_full_access.list_tools()
@@ -305,7 +301,11 @@ async def test_tools_have_scope_decorators(nc_mcp_client):
 @pytest.mark.integration
 async def test_scope_classification():
     """Test that our scope classification correctly identifies read vs write operations."""
-    from scripts.add_scope_decorators_simple import classify_function
+    # `scripts/` is a dev-only helper dir (not an installed package); resolved
+    # at runtime via the repo root on sys.path, so ty can't see it.
+    from scripts.add_scope_decorators_simple import (  # ty: ignore[unresolved-import]
+        classify_function,
+    )
 
     # Test read operations
     assert classify_function("nc_notes_get_note") == "notes.read"
@@ -336,7 +336,11 @@ async def test_scope_classification():
 @pytest.mark.integration
 async def test_all_tools_classified():
     """Verify that all tools can be properly classified as read or write."""
-    from scripts.add_scope_decorators_simple import classify_function
+    # `scripts/` is a dev-only helper dir (not an installed package); resolved
+    # at runtime via the repo root on sys.path, so ty can't see it.
+    from scripts.add_scope_decorators_simple import (  # ty: ignore[unresolved-import]
+        classify_function,
+    )
 
     # List of all tool names (extracted from our implementation)
     all_tools = [
@@ -407,8 +411,6 @@ async def test_jwt_with_no_custom_scopes_returns_zero_tools(
       so users can provision Nextcloud access after authentication
     """
 
-    logger = logging.getLogger(__name__)
-
     # Connect with JWT token that has NO custom scopes (only openid, profile, email)
     result = await nc_mcp_login_flow_client_no_custom_scopes.list_tools()
     assert result is not None
@@ -451,8 +453,6 @@ async def test_jwt_consent_scenarios_read_only(nc_mcp_login_flow_client_read_onl
     Expected: Should see read tools but not write tools.
     """
 
-    logger = logging.getLogger(__name__)
-
     result = await nc_mcp_login_flow_client_read_only.list_tools()
     assert result is not None
     assert len(result.tools) > 0
@@ -490,8 +490,6 @@ async def test_jwt_consent_scenarios_write_only(nc_mcp_login_flow_client_write_o
     Expected: Should see write tools but not read-only tools.
     """
 
-    logger = logging.getLogger(__name__)
-
     result = await nc_mcp_login_flow_client_write_only.list_tools()
     assert result is not None
     assert len(result.tools) > 0
@@ -528,8 +526,6 @@ async def test_jwt_consent_scenarios_full_access(nc_mcp_login_flow_client_full_a
     Simulates user granting both permissions during OAuth consent.
     Expected: Should see all 90+ tools (both read and write).
     """
-
-    logger = logging.getLogger(__name__)
 
     result = await nc_mcp_login_flow_client_full_access.list_tools()
     assert result is not None

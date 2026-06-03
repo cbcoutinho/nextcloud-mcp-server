@@ -187,8 +187,6 @@ def detect_auth_mode(settings: Settings) -> AuthMode:
         ValueError: If explicit deployment_mode is unrecognised.
     """
 
-    logger = logging.getLogger(__name__)
-
     # ADR-021: explicit deployment mode wins
     if settings.deployment_mode:
         mode_str = settings.deployment_mode.lower().strip()
