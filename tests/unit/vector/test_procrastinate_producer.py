@@ -67,6 +67,22 @@ class TestProcrastinateTaskProducer:
         producer = pq.ProcrastinateTaskProducer(app)
         assert producer.clone() is producer
 
+    async def test_connect_opens_pool_and_drain_closes(self, app, monkeypatch):
+        # connect() resolves the process-wide app; point it at our in-memory one.
+        monkeypatch.setattr(pq, "get_procrastinate_app", lambda: app)
+
+        producer = await pq.ProcrastinateTaskProducer.connect()
+        # `await app.open_async()` must actually open the connector (regression
+        # guard for the await-vs-`async with` form on the long-lived pool).
+        assert app.connector.states == ["open_async"]
+
+        # An open pool means send() works end-to-end.
+        await producer.send(_task())
+        assert len(app.connector.jobs) == 1
+
+        await producer.drain()
+        assert "closed_async" in app.connector.states
+
 
 class TestProcessDocumentTask:
     async def test_runs_pipeline_and_closes_client(self, monkeypatch):

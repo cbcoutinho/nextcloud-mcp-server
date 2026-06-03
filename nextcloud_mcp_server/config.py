@@ -178,6 +178,14 @@ _DEFAULTS: dict[str, Any] = {
     # `nextcloud-mcp-server worker` process that drains the queue. ``all`` keeps
     # the monolithic behaviour (API + in-process SQLite pool).
     "mcp_role": "all",  # api | worker | all
+    # Reclaim an ingest job orphaned in ``doing`` by a crashed worker once its
+    # worker heartbeat is this many seconds stale (Deck #183). Default is well
+    # above the longest expected document; raise it for slow embedding backends.
+    "ingest_stalled_job_seconds": 300,
+    # Delete succeeded ingest jobs (keeps the queue table lean + the KEDA
+    # queue-depth metric clean). Set false to retain succeeded rows for audit
+    # (note: indexing success is also recorded in logs/metrics regardless).
+    "ingest_delete_succeeded_jobs": True,
     "collection_metadata_source": "qdrant",  # qdrant | api
     # CP base URL for COLLECTION_METADATA_SOURCE=api (e.g. http://control-plane).
     # Required only when the source is api.
@@ -255,6 +263,7 @@ _dynaconf = Dynaconf(
         # Port ranges
         Validator("METRICS_PORT", gte=1, lte=65535),
         # Positive integers
+        Validator("INGEST_STALLED_JOB_SECONDS", gte=1),
         Validator("VECTOR_SYNC_SCAN_INTERVAL", gte=1),
         Validator("VECTOR_SYNC_PROCESSOR_WORKERS", gte=1),
         Validator("VECTOR_SYNC_QUEUE_MAX_SIZE", gte=1),
@@ -707,6 +716,8 @@ class Settings:
     # ``postgres`` when DATABASE_URL is Postgres, else ``memory``.
     ingest_queue: str | None = None  # memory | postgres
     mcp_role: str = "all"  # api | worker | all (Deck #183 two-pod model)
+    ingest_stalled_job_seconds: int = 300  # crashed-worker reclaim threshold
+    ingest_delete_succeeded_jobs: bool = True  # drop succeeded ingest jobs
     collection_metadata_source: str = "qdrant"  # qdrant | api
     collection_metadata_api_url: str | None = None  # CP URL when source=api
     embedding_gateway_url: str | None = None  # required when provider=gateway
@@ -1306,6 +1317,8 @@ def get_settings() -> Settings:
         "embedding_provider": "EMBEDDING_PROVIDER",
         "ingest_queue": "INGEST_QUEUE",
         "mcp_role": "MCP_ROLE",
+        "ingest_stalled_job_seconds": "INGEST_STALLED_JOB_SECONDS",
+        "ingest_delete_succeeded_jobs": "INGEST_DELETE_SUCCEEDED_JOBS",
         "collection_metadata_source": "COLLECTION_METADATA_SOURCE",
         "collection_metadata_api_url": "COLLECTION_METADATA_API_URL",
         "embedding_gateway_url": "EMBEDDING_GATEWAY_URL",
@@ -1437,12 +1450,12 @@ def get_procrastinate_conninfo(database_url: str | None = None) -> str:
     (set ``DATABASE_URL`` to a ``+psycopg`` URL) rather than rewriting the driver
     in code — see charts repo, not this repo.
 
-    Only the host/port/dbname/user/password components are forwarded; any
-    ``?key=value`` query parameters on the URL (e.g. ``application_name``,
-    ``connect_timeout``) are **dropped** — TLS is set separately via
-    :func:`_pg_ssl_params`, and SQLAlchemy-specific query options don't map
-    cleanly to libpq keywords. A warning is logged when params are dropped so
-    operators aren't surprised.
+    Only the host/port/dbname/user/password components are forwarded, plus
+    ``connect_timeout`` (a libpq keyword) honored from the URL query string or
+    defaulted to 10s so a slow/unreachable DB can't hang worker/API startup
+    indefinitely. Any *other* ``?key=value`` query parameters are **dropped**
+    (TLS is set separately via :func:`_pg_ssl_params`, and SQLAlchemy-specific
+    options don't map cleanly to libpq keywords); a warning lists them.
 
     Raises ``ValueError`` for a non-Postgres URL — procrastinate is Postgres-only.
     """
@@ -1456,11 +1469,14 @@ def get_procrastinate_conninfo(database_url: str | None = None) -> str:
             f"got driver {url.drivername!r}"
         )
 
-    if url.query:
+    # ``connect_timeout`` is forwarded (libpq keyword); everything else in the
+    # query string is dropped with a warning.
+    dropped = sorted(k for k in url.query if k != "connect_timeout")
+    if dropped:
         logging.getLogger(__name__).warning(
             "Dropping DATABASE_URL query parameters not forwarded to the "
             "procrastinate connector: %s",
-            ", ".join(sorted(url.query)),
+            ", ".join(dropped),
         )
 
     params: dict[str, str] = {}
@@ -1474,6 +1490,12 @@ def get_procrastinate_conninfo(database_url: str | None = None) -> str:
         params["user"] = url.username
     if url.password:
         params["password"] = url.password
+    # Honor an operator-supplied connect_timeout, else default to 10s. (make_url
+    # query values are str or a tuple of strs when repeated; take the last.)
+    _ct = url.query.get("connect_timeout")
+    if isinstance(_ct, (list, tuple)):
+        _ct = _ct[-1] if _ct else None
+    params["connect_timeout"] = str(_ct) if _ct else "10"
     params.update(_pg_ssl_params())
 
     return make_conninfo(**params)

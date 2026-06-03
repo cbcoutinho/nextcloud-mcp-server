@@ -116,6 +116,30 @@ class TestProcrastinateConninfo:
         assert parsed["dbname"] == "mcp"
         assert parsed.get("sslmode") == expected_sslmode
 
+    def test_conninfo_connect_timeout_defaults_to_10(self, monkeypatch):
+        from psycopg.conninfo import conninfo_to_dict
+
+        monkeypatch.setattr(
+            config_module,
+            "get_database_url",
+            lambda: "postgresql+asyncpg://mcp:s@db/mcp",
+        )
+        monkeypatch.setattr(config_module, "get_database_ssl", lambda: None)
+        parsed = conninfo_to_dict(config_module.get_procrastinate_conninfo())
+        assert parsed["connect_timeout"] == "10"
+
+    def test_conninfo_honors_url_connect_timeout(self, monkeypatch):
+        from psycopg.conninfo import conninfo_to_dict
+
+        monkeypatch.setattr(
+            config_module,
+            "get_database_url",
+            lambda: "postgresql+asyncpg://mcp:s@db/mcp?connect_timeout=3",
+        )
+        monkeypatch.setattr(config_module, "get_database_ssl", lambda: None)
+        parsed = conninfo_to_dict(config_module.get_procrastinate_conninfo())
+        assert parsed["connect_timeout"] == "3"
+
     def test_conninfo_ssl_mapping(self, monkeypatch):
         from psycopg.conninfo import conninfo_to_dict
 

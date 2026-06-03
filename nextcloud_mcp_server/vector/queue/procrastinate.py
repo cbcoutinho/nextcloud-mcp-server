@@ -56,11 +56,11 @@ _NAMESPACE = "ingest"
 INGEST_TASK_NAME = f"{_NAMESPACE}:process_document"
 
 # A crashed worker leaves its job in ``doing``; reclaim it once its (per-worker)
-# heartbeat is this many seconds stale. Sized well above the longest expected
-# ``process_document`` (PDF render + embedding) so a slow-but-live worker — whose
-# heartbeat stays current during a long job — is never reclaimed out from under
-# itself.
-_STALLED_AFTER_SECONDS = 300
+# heartbeat is this many seconds stale. The default is sized well above the
+# longest expected ``process_document`` (PDF render + embedding) so a slow-but-
+# live worker — whose heartbeat stays current during a long job — is never
+# reclaimed out from under itself. Operators on slow embedding backends can tune
+# it via INGEST_STALLED_JOB_SECONDS (read per-run in reclaim_stalled_ingest_jobs).
 
 
 # Tasks are defined as plain functions and registered onto a *fresh* Blueprint
@@ -125,9 +125,10 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
     """
     manager = context.app.job_manager
     retry_at = datetime.now(tz=timezone.utc)
+    stalled_after = get_settings().ingest_stalled_job_seconds
     reclaimed = 0
     for job in await manager.get_stalled_jobs(
-        queue=INGEST_QUEUE_NAME, seconds_since_heartbeat=_STALLED_AFTER_SECONDS
+        queue=INGEST_QUEUE_NAME, seconds_since_heartbeat=stalled_after
     ):
         if job.id is None:
             continue
@@ -307,6 +308,12 @@ class ProcrastinateTaskProducer:
     @classmethod
     async def connect(cls) -> ProcrastinateTaskProducer:
         app = get_procrastinate_app()
+        # ``App.open_async()`` returns procrastinate's dual-mode AwaitableContext:
+        # ``await``-ing it opens the connector pool and leaves it open (vs the
+        # ``async with`` form, which closes on block exit). The producer's pool is
+        # long-lived — owned by the server lifespan and torn down once in
+        # ``drain()`` (close_async) on shutdown — so the bare ``await`` is correct
+        # here, unlike the scoped ``async with`` used for one-shot schema apply.
         await app.open_async()
         return cls(app)
 

@@ -1,3 +1,4 @@
+import logging
 import os
 from importlib.metadata import version
 
@@ -20,6 +21,8 @@ from nextcloud_mcp_server.observability import get_uvicorn_logging_config
 from nextcloud_mcp_server.server import AVAILABLE_APPS
 
 from .app import get_app
+
+logger = logging.getLogger(__name__)
 
 
 @click.command()
@@ -332,16 +335,24 @@ def worker(concurrency: int | None):
         # open/close cycle on startup.
         async with app.open_async():
             await apply_ingest_queue_schema(app, manage_connection=False)
-            click.echo(
-                f"Ingest worker started: queue={INGEST_QUEUE_NAME} concurrency={workers}"
+            # Structured log (not click.echo) so it lands in the JSON / OTel
+            # pipeline like every other startup message.
+            logger.info(
+                "Ingest worker started: queue=%s concurrency=%s delete_succeeded=%s",
+                INGEST_QUEUE_NAME,
+                workers,
+                settings.ingest_delete_succeeded_jobs,
             )
             await app.run_worker_async(
                 queues=[INGEST_QUEUE_NAME],
                 concurrency=workers,
                 install_signal_handlers=True,
-                # Drop succeeded jobs so the queue table stays lean and the KEDA
-                # queue-depth metric reflects only outstanding work.
-                delete_jobs="successful",
+                # Drop succeeded jobs (default) so the queue table stays lean and
+                # the KEDA queue-depth metric reflects only outstanding work; set
+                # INGEST_DELETE_SUCCEEDED_JOBS=false to retain them for audit.
+                delete_jobs="successful"
+                if settings.ingest_delete_succeeded_jobs
+                else "never",
             )
 
     anyio.run(_run)
