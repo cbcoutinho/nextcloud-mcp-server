@@ -5,6 +5,13 @@ on:
     branches:
       - master
 
+# Ensure only one version bump runs at a time. Concurrent runs would race to
+# bump the version and push tags, which has caused release failures in the past.
+# Queue subsequent pushes instead of cancelling an in-flight bump/release.
+concurrency:
+  group: bump-version
+  cancel-in-progress: false
+
 jobs:
   bump-version:
     if: "!startsWith(github.event.head_commit.message, 'bump:') && !startsWith(github.event.head_commit.message, 'chore(release):')"
@@ -43,27 +50,28 @@ jobs:
 
           echo "Checking for version bump..."
 
-          # Get the most recent tag
-          last_tag=$(git tag --sort=-creatordate | grep -E "^v[0-9]" | head -n 1 || echo "")
+          # Record the current version tag before attempting a bump. commitizen
+          # is the single source of truth for whether a release is warranted: it
+          # only bumps for feat/fix/breaking changes and emits
+          # [NO_COMMITS_TO_BUMP] (exit 0) for release-irrelevant commits such as
+          # ci:, docs:, chore:, etc. We therefore let it decide and detect a
+          # release by whether the latest tag actually changed.
+          tag_before=$(git tag --sort=-creatordate | grep -E '^v[0-9]' | head -n 1 || echo "")
+          echo "Latest tag before bump: ${tag_before:-<none>}"
 
-          if [ -z "$last_tag" ]; then
-            commit_range="master"
-          else
-            commit_range="${last_tag}..HEAD"
-          fi
+          # Run the bump. The script exits 0 both when it bumps and when there
+          # is nothing to bump, so we compare tags rather than trusting exit code.
+          ./scripts/bump-mcp.sh
 
-          # Count conventional commits
-          commit_count=$(git log "$commit_range" --oneline --grep="^(feat|fix|docs|refactor|perf|test|build|ci|chore)" -E | wc -l)
+          tag_after=$(git tag --sort=-creatordate | grep -E '^v[0-9]' | head -n 1 || echo "")
+          echo "Latest tag after bump: ${tag_after:-<none>}"
 
-          if [ "$commit_count" -gt 0 ]; then
-            echo "Found $commit_count commits since $last_tag"
-            echo "Bumping version..."
-            ./scripts/bump-mcp.sh
+          if [ -n "$tag_after" ] && [ "$tag_after" != "$tag_before" ]; then
+            echo "Version bumped to $tag_after"
             echo "bumped=true" >> $GITHUB_OUTPUT
-            tag=$(git tag --sort=-creatordate | grep -E '^v[0-9]' | head -n 1)
-            echo "tag=$tag" >> $GITHUB_OUTPUT
+            echo "tag=$tag_after" >> $GITHUB_OUTPUT
           else
-            echo "No commits found since $last_tag"
+            echo "No version bump required (no release-relevant commits)"
             echo "bumped=false" >> $GITHUB_OUTPUT
           fi
 
