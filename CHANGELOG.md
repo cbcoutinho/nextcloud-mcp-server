@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.94.1 (2026-06-03)
+
+### Fix
+
+- **search**: address PR #834 re-review (403/404 coverage + docs)
+- **search**: address PR #834 review findings
+- **search**: gate verify-on-read file results on vector-index tag membership
+
+### Perf
+
+- **search**: skip exclusion lookup on empty tag set; fix semaphore comment
+
 ## v0.94.0 (2026-06-02)
 
 ### Feat
