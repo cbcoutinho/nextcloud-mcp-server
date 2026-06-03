@@ -201,14 +201,17 @@ express:
     drops blanks, and de-dupes). `build_base_filter_conditions` adds a single `MatchText` to the
     `must` clause for one folder, and OR-s multiple folders via a nested `Filter(should=[...])` so a
     file under **any** selected folder matches while still AND-ing against the ACL/doc_type/date
-    conditions. Every search surface parses the list: the MCP tool (`nc_semantic_search`), the
-    visualization API (JSON body), and the viz route (CSV query param).
+    conditions. Every search surface parses the list: the MCP tool (`nc_semantic_search`) takes a
+    real `list[str]`, the visualization API takes a JSON array body, and the viz route takes a
+    **newline-separated** query param. Newline (not comma) is the on-the-wire delimiter because it
+    can't appear in a POSIX path, so folder names are never split mid-value.
   - **Frontend uses the native folder picker.** Instead of a free-text path input, the Astrolabe
     app opens Nextcloud's server-side folder browser via `getFilePickerBuilder()` from
     `@nextcloud/dialogs` (already a dependency — no `@nextcloud/vue` component-version coupling),
     configured directory-only + multi-select. Picked folders are real, validated server paths
-    (no typos), rendered as removable chips, and sent as a comma-separated `path_prefixes` list. The
-    Astrolabe PHP `ApiController`/`McpServerClient` forward the list to the MCP server. The control
+    (no typos), rendered as removable chips, and sent as a newline-joined `path_prefixes` value. The
+    Astrolabe PHP `ApiController` splits on newline (capping the list to bound the OR-filter width)
+    and `McpServerClient` forwards a JSON array to the MCP server. The control
     is enabled only when the **Files** doc type is in scope; an empty selection means "no filter".
 - **Phase 3 — tags (and optionally category).** Add a `tags: list[str]` payload field in
   `processor.py`, propagate Nextcloud system tags during scanning, trigger a re-index, then wire

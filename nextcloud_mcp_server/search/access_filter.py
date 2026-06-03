@@ -234,7 +234,7 @@ def build_base_filter_conditions(
     modified_after: int | None = None,
     modified_before: int | None = None,
     path_prefix: str | None = None,
-    path_prefixes: list[str] | None = None,
+    path_prefixes: Iterable[str] | None = None,
 ) -> list[Condition]:
     """Build the common ``must`` conditions shared by every search algorithm.
 

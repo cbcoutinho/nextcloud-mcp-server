@@ -231,17 +231,13 @@ async def unified_search(request: Request) -> JSONResponse:
         # ADR-027 Phase 2 path filter (files only); blank ⇒ no filter. Accept a
         # path_prefixes list (multi-folder) alongside the legacy single
         # path_prefix; normalize drops blanks and de-dupes.
+        # path_prefixes arrives as a JSON array (the Astrolabe PHP client sends
+        # a list); any other shape is ignored rather than guessed at. The legacy
+        # single path_prefix is folded in by normalize_path_prefixes.
         _path_prefixes_raw = body.get("path_prefixes")
-        if isinstance(_path_prefixes_raw, list):
-            _path_prefixes_list = _path_prefixes_raw
-        elif isinstance(_path_prefixes_raw, str):
-            _path_prefixes_list = _path_prefixes_raw.split(",")
-        else:
-            # Ignore any other JSON shape (number, object, null) rather than
-            # blowing up on .split — the legacy path_prefix still applies.
-            _path_prefixes_list = []
         path_prefixes = normalize_path_prefixes(
-            body.get("path_prefix"), _path_prefixes_list
+            body.get("path_prefix"),
+            _path_prefixes_raw if isinstance(_path_prefixes_raw, list) else None,
         )
 
         if not query:
@@ -459,17 +455,13 @@ async def vector_search(request: Request) -> JSONResponse:
         # ADR-027 Phase 2 path filter (files only); blank ⇒ no filter. Accept a
         # path_prefixes list (multi-folder) alongside the legacy single
         # path_prefix; normalize drops blanks and de-dupes.
+        # path_prefixes arrives as a JSON array (the Astrolabe PHP client sends
+        # a list); any other shape is ignored rather than guessed at. The legacy
+        # single path_prefix is folded in by normalize_path_prefixes.
         _path_prefixes_raw = body.get("path_prefixes")
-        if isinstance(_path_prefixes_raw, list):
-            _path_prefixes_list = _path_prefixes_raw
-        elif isinstance(_path_prefixes_raw, str):
-            _path_prefixes_list = _path_prefixes_raw.split(",")
-        else:
-            # Ignore any other JSON shape (number, object, null) rather than
-            # blowing up on .split — the legacy path_prefix still applies.
-            _path_prefixes_list = []
         path_prefixes = normalize_path_prefixes(
-            body.get("path_prefix"), _path_prefixes_list
+            body.get("path_prefix"),
+            _path_prefixes_raw if isinstance(_path_prefixes_raw, list) else None,
         )
         # ADR-027 modified-date range filter. Accepts RFC 3339 / ISO 8601
         # datetimes or Unix seconds; normalized to int Unix seconds. None ⇒ open.
