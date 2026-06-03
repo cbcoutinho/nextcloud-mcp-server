@@ -3,10 +3,11 @@
 Uses procrastinate's in-memory connector so no live Postgres is required.
 """
 
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
-from procrastinate import testing
+from procrastinate import App, JobContext, testing
 
 import nextcloud_mcp_server.vector.queue.procrastinate as pq
 from nextcloud_mcp_server.vector.scanner import DocumentTask
@@ -158,7 +159,7 @@ class TestReclaimStalledJobs:
         class Ctx:
             app = FakeApp()
 
-        await pq.reclaim_stalled_ingest_jobs(Ctx(), timestamp=0)
+        await pq.reclaim_stalled_ingest_jobs(cast(JobContext, Ctx()), timestamp=0)
         assert retried == [1, 2]
 
 
@@ -184,7 +185,7 @@ class TestGetIngestJobCounts:
         class FakeApp:
             job_manager = FakeManager()
 
-        counts = await pq.get_ingest_job_counts(FakeApp())
+        counts = await pq.get_ingest_job_counts(cast(App, FakeApp()))
         assert counts["todo"] == 3
         assert counts["doing"] == 1
         assert counts["failed"] == 2

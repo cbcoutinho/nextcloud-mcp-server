@@ -57,6 +57,8 @@ def postgres_url() -> str:
             "`docker compose --profile postgres up -d postgres-test` and export "
             "TEST_DATABASE_URL=postgresql+asyncpg://mcp:mcp@localhost:5433/mcp"
         )
+    # pytest.skip raises, but ty doesn't model it as NoReturn — narrow explicitly.
+    assert url is not None
     if not _reachable(url):
         pytest.skip(f"Postgres at {url} is not reachable")
     return url
