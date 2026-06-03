@@ -917,16 +917,45 @@ class Settings:
         self.enable_multi_user_basic_auth = resolved_mode == "multi_user_basic"
         self.enable_login_flow = resolved_mode == "login_flow"
 
-    def get_embedding_model_name(self) -> str:
+    def _detect_base_provider(self) -> tuple[str, str]:
         """
-        Get the active embedding model name based on provider priority.
+        Resolve the ``(family, model)`` for the underlying embedding provider.
 
-        Priority order (same as ProviderRegistry):
+        Single source of truth for the provider-detection priority chain shared
+        by ``get_embedding_model_name`` and ``get_embedding_provider_family``:
         1. Bedrock - if AWS_REGION or BEDROCK_EMBEDDING_MODEL is set
         2. OpenAI - if OPENAI_API_KEY is set
         3. Mistral - if MISTRAL_API_KEY is set
         4. Ollama - if OLLAMA_BASE_URL is set
-        5. Simple - fallback (returns "simple-{dimension}")
+        5. Simple - fallback
+
+        Does NOT handle the gateway short-circuit — callers layer that on top
+        as needed (see the asymmetry note on ``get_embedding_model_name``).
+        """
+        if (
+            self.aws_region
+            or self.bedrock_embedding_model
+            or self.bedrock_generation_model
+        ):
+            return "bedrock", self.bedrock_embedding_model or "bedrock-default"
+
+        if self.openai_api_key:
+            return "openai", self.openai_embedding_model
+
+        if self.mistral_api_key:
+            return "mistral", self.mistral_embedding_model
+
+        if self.ollama_base_url:
+            return "ollama", self.ollama_embedding_model
+
+        return "simple", f"simple-{self.simple_embedding_dimension}"
+
+    def get_embedding_model_name(self) -> str:
+        """
+        Get the active embedding model name based on provider priority.
+
+        Priority order (same as ProviderRegistry): bedrock → openai → mistral →
+        ollama → simple (returns "simple-{dimension}").
 
         Returns:
             Active embedding model name
@@ -937,23 +966,7 @@ class Settings:
         # get_embedding_provider_family() short-circuits to the gateway-routed
         # family. Keep that asymmetry in mind before joining metrics/labels
         # derived from these two methods.
-        if (
-            self.aws_region
-            or self.bedrock_embedding_model
-            or self.bedrock_generation_model
-        ):
-            return self.bedrock_embedding_model or "bedrock-default"
-
-        if self.openai_api_key:
-            return self.openai_embedding_model
-
-        if self.mistral_api_key:
-            return self.mistral_embedding_model
-
-        if self.ollama_base_url:
-            return self.ollama_embedding_model
-
-        return f"simple-{self.simple_embedding_dimension}"
+        return self._detect_base_provider()[1]
 
     def get_embedding_provider_family(self) -> str:
         """
@@ -964,14 +977,9 @@ class Settings:
         *family* (e.g. "bedrock"), never the model name, to keep metric
         cardinality bounded.
 
-        Priority mirrors ``get_embedding_model_name`` / ProviderRegistry:
-        1. Gateway - if EMBEDDING_PROVIDER=gateway (family from the model prefix,
-           e.g. "mistral/mistral-embed" -> "mistral")
-        2. Bedrock - if AWS_REGION or BEDROCK_EMBEDDING_MODEL is set
-        3. OpenAI - if OPENAI_API_KEY is set
-        4. Mistral - if MISTRAL_API_KEY is set
-        5. Ollama - if OLLAMA_BASE_URL is set
-        6. Simple - fallback
+        Gateway short-circuits to the gateway-routed family (from the model
+        prefix, e.g. "mistral/mistral-embed" -> "mistral"); otherwise the family
+        comes from the shared ``_detect_base_provider`` priority chain.
 
         Returns:
             Provider family: gateway-routed family | bedrock | openai | mistral
@@ -981,23 +989,7 @@ class Settings:
             model = self.embedding_gateway_model or ""
             return model.split("/", 1)[0] if "/" in model else "gateway"
 
-        if (
-            self.aws_region
-            or self.bedrock_embedding_model
-            or self.bedrock_generation_model
-        ):
-            return "bedrock"
-
-        if self.openai_api_key:
-            return "openai"
-
-        if self.mistral_api_key:
-            return "mistral"
-
-        if self.ollama_base_url:
-            return "ollama"
-
-        return "simple"
+        return self._detect_base_provider()[0]
 
     def get_collection_name(self) -> str:
         """

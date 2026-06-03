@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -22,7 +22,7 @@ class ProcessingResult(BaseModel):
     success: bool = True
     """Whether processing succeeded"""
 
-    error: Optional[str] = None
+    error: str | None = None
     """Error message if processing failed"""
 
 
@@ -83,11 +83,10 @@ class DocumentProcessor(ABC):
         self,
         content: bytes,
         content_type: str,
-        filename: Optional[str] = None,
-        options: Optional[dict[str, Any]] = None,
-        progress_callback: Optional[
-            Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
-        ] = None,
+        filename: str | None = None,
+        options: dict[str, Any] | None = None,
+        progress_callback: Callable[[float, float | None, str | None], Awaitable[None]]
+        | None = None,
     ) -> ProcessingResult:
         """Process a document and extract text.
 

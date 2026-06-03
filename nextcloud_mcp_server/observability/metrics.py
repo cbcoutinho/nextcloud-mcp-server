@@ -533,6 +533,10 @@ def record_document_parse(
         processor=processor, tier=tier, status=status
     ).observe(duration)
     document_parse_total.labels(processor=processor, tier=tier, status=status).inc()
+    # Throughput counters (pages/chars/bytes) accrue only on a full success.
+    # A partial extraction flagged success=False is recorded above as a
+    # parse-error but is intentionally excluded here so low-confidence output
+    # never inflates pipeline throughput.
     if status == "success":
         if pages > 0:
             document_pages_processed_total.labels(processor=processor, tier=tier).inc(

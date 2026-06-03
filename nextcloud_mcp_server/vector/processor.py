@@ -631,7 +631,6 @@ async def _index_document(
                 "embedding.kind": "dense",
                 "embedding.provider": provider,
                 "embedding.model": settings.get_embedding_model_name(),
-                "embedding.batch_size": len(chunk_texts),
             },
         ):
             embedding_service = get_embedding_service()
@@ -659,9 +658,9 @@ async def _index_document(
             "vector_sync.embed_sparse",
             attributes={
                 _ATTR_CHUNK_COUNT: len(chunk_texts),
+                "vector_sync.total_chars": total_chars,
                 "embedding.kind": "sparse",
                 "embedding.provider": "bm25",
-                "embedding.batch_size": len(chunk_texts),
             },
         ):
             bm25_service = await get_bm25_service()
