@@ -1,6 +1,7 @@
 """BM25 hybrid search algorithm using Qdrant native RRF fusion."""
 
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 from qdrant_client import models
@@ -75,7 +76,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         modified_after: int | None = None,
         modified_before: int | None = None,
         path_prefix: str | None = None,
-        path_prefixes: list[str] | None = None,
+        path_prefixes: Iterable[str] | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """

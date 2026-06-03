@@ -44,6 +44,12 @@ from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on the number of folder filters a single search may apply. Caps
+# the width of the ``Filter(should=[...])`` OR-clause built from path_prefixes
+# so no caller can degrade query latency with a huge folder list. Mirrored by
+# the ``Field(max_length=...)`` on the MCP tool and the Astrolabe PHP cap.
+MAX_PATH_PREFIXES = 20
+
 # Short-lived per-user cache for the OCS shares lookup, which otherwise runs on
 # every search/viz request. Trades up to this many seconds of share-visibility
 # staleness (a freshly-granted share is searchable a little late) for avoiding
@@ -195,7 +201,7 @@ def normalize_path_prefixes(
     path_prefixes: Iterable[str] | None = None,
 ) -> list[str]:
     """Merge the legacy single ``path_prefix`` and list ``path_prefixes`` into
-    one clean, de-duplicated list of folder filters.
+    one clean, de-duplicated, bounded list of folder filters.
 
     Blank/whitespace entries are dropped (an empty UI field must mean "no
     filter", not "match everything"), surrounding whitespace is stripped, and
@@ -203,13 +209,21 @@ def normalize_path_prefixes(
     the pre-ADR-027-Phase-2 single-value contract working while callers migrate
     to the multi-folder list.
 
+    The result is capped at ``MAX_PATH_PREFIXES`` so no caller — the MCP tool,
+    the REST/viz endpoints, or a misbehaving client — can build an unbounded
+    ``Filter(should=[...])`` OR-clause that would widen every Qdrant query.
+    This is the single server-side enforcement point (the MCP tool also
+    declares ``Field(max_length=...)`` for an earlier, clearer validation
+    error, and the Astrolabe PHP controller caps before forwarding).
+
     Args:
         path_prefix: Legacy single folder filter (deprecated; folded into the
             returned list).
         path_prefixes: Zero or more folder filters.
 
     Returns:
-        Ordered, de-duplicated list of non-empty folder filters (possibly empty).
+        Ordered, de-duplicated list of non-empty folder filters, capped at
+        ``MAX_PATH_PREFIXES`` (possibly empty).
     """
     raw: list[str] = []
     if path_prefix:
@@ -227,7 +241,7 @@ def normalize_path_prefixes(
         if stripped and stripped not in seen:
             seen.add(stripped)
             cleaned.append(stripped)
-    return cleaned
+    return cleaned[:MAX_PATH_PREFIXES]
 
 
 def build_base_filter_conditions(

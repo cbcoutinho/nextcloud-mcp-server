@@ -33,6 +33,7 @@ from nextcloud_mcp_server.observability.metrics import (
     instrument_tool,
 )
 from nextcloud_mcp_server.search.access_filter import (
+    MAX_PATH_PREFIXES,
     list_accessible_owners,
     normalize_path_prefixes,
 )
@@ -102,14 +103,14 @@ def configure_semantic_tools(mcp: FastMCP):
         path_prefixes: Annotated[
             list[str] | None,
             Field(
-                max_length=20,
+                max_length=MAX_PATH_PREFIXES,
                 description=(
                     "Restrict to files under any of these folders/paths "
                     "(e.g. ['/Projects/Reports', '/Shared/Specs']). Folders are "
                     "OR-ed together. Matches the file_path of indexed files "
                     "only, so setting it implicitly limits results to files. "
-                    "Capped at 20 folders to bound the OR-filter width. "
-                    "None or empty = no path filter."
+                    f"Capped at {MAX_PATH_PREFIXES} folders to bound the "
+                    "OR-filter width. None or empty = no path filter."
                 ),
             ),
         ] = None,

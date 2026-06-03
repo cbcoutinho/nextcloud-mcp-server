@@ -9,6 +9,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchText, Range
 
 from nextcloud_mcp_server.search import access_filter
 from nextcloud_mcp_server.search.access_filter import (
+    MAX_PATH_PREFIXES,
     build_base_filter_conditions,
     build_ownership_filter,
     clear_accessible_owners_cache,
@@ -377,3 +378,12 @@ class TestNormalizePathPrefixes:
             " /Projects ", ["/Archive", "/Projects", "  ", "/Specs"]
         )
         assert result == ["/Projects", "/Archive", "/Specs"]
+
+    @pytest.mark.unit
+    def test_caps_at_max_path_prefixes(self) -> None:
+        # A huge list is truncated to MAX_PATH_PREFIXES so no caller can build
+        # an unbounded OR-clause; the first N (order-preserving) survive.
+        folders = [f"/dir{i}" for i in range(MAX_PATH_PREFIXES + 30)]
+        result = normalize_path_prefixes(None, folders)
+        assert len(result) == MAX_PATH_PREFIXES
+        assert result == folders[:MAX_PATH_PREFIXES]
