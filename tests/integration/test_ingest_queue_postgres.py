@@ -78,8 +78,8 @@ async def fresh_app(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     finally:
         await engine.dispose()
 
-    # get_procrastinate_conninfo derives ssl from settings; point it at the URL.
-    monkeypatch.setattr(config_module, "get_database_url", lambda: postgres_url)
+    # build_app_for_url passes the URL explicitly to get_procrastinate_conninfo,
+    # so only the ssl lookup (which reads settings) needs pinning here.
     monkeypatch.setattr(config_module, "get_database_ssl", lambda: None)
 
     app = build_app_for_url(postgres_url)

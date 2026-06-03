@@ -328,6 +328,14 @@ def worker(concurrency: int | None):
     workers = concurrency or settings.vector_sync_processor_workers
     app = get_procrastinate_app()
 
+    # Register the configured document processors (Unstructured / Tesseract /
+    # custom HTTP) in the worker process. The always-on API pod does this in its
+    # lifespan; the worker has its own startup path, so without this the worker
+    # would silently fall back to the import-time-registered PyMuPDF only.
+    from nextcloud_mcp_server.app import initialize_document_processors  # noqa: PLC0415
+
+    initialize_document_processors()
+
     async def _run() -> None:
         # Open the connector pool once and reuse it for both the defensive
         # schema apply (the always-on API pod is the authoritative applier) and
