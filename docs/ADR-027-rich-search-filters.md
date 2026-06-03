@@ -68,7 +68,7 @@ Filters can only be applied to fields that exist in the Qdrant payload (built in
 |---|---|---|---|
 | Modified-date range | `modified_at` | `int` (Unix ts) | ✅ **Ready** — value present on every point; needs a payload index (added in Phase 1, no content re-index) |
 | Document type | `doc_type` | keyword-indexed `str` | ✅ Implemented |
-| Directory / path | `file_path` (files only) | `str` | ✅ **Ready (Phase 2)** — value present on file points; TEXT payload index added (no content re-index), filtered with `MatchText` |
+| Directory / path | `file_path` (files only) | `list[str]` (multi-folder) | ✅ **Implemented (Phase 2)** — TEXT payload index (no content re-index); one or more folders filtered with `MatchText`, multiple OR-ed via nested `Filter(should=...)`; picked from the native folder browser |
 | Tags | — | — | ❌ **Not indexed** — no `tags` field is written during scanning |
 | Category (notes) | — | — | ❌ Not in payload — fetched from the Notes API at verify time only |
 
@@ -186,19 +186,30 @@ express:
     it on the answer path. When demand appears it can be threaded through using exactly the same
     parameter + `parse_modified_timestamp` pattern; doing it now would add an unused parameter and
     widen the change for no user-visible gain.
-- **Phase 2 — directory / path (implemented).** Add a `path_prefix` parameter threaded through the
-  same shared contract (`build_base_filter_conditions` → `FieldCondition(key="file_path",
-  match=MatchText(text=path_prefix))`), and a `file_path` **TEXT** payload index in
+- **Phase 2 — directory / path (implemented).** Threaded through the same shared contract
+  (`build_base_filter_conditions`) and backed by a `file_path` **TEXT** payload index in
   `_PAYLOAD_INDEX_FIELDS` (no content re-index — `file_path` is already on every file point).
   `MatchText` semantics differ by backend: **server Qdrant** tokenizes (AND-of-tokens, so
   `/Projects/Reports` matches files whose path contains both the `Projects` and `Reports` tokens),
   while **local/embedded qdrant-client** matches by substring containment — both serve folder
   scoping, neither is a strict left-anchored prefix (a future strict-prefix would need an indexed
   ancestor-path array, i.e. a re-index, so it stays out of Phase 2). Because `file_path` is only
-  written for `doc_type == "file"`, a non-empty `path_prefix` implicitly restricts results to
-  files; the frontend uses a native path text input enabled only when the **Files** doc type is in
-  scope (rather than `NcFilePicker`, to avoid a hard `@nextcloud/vue` component-version dependency —
-  same rationale as the date inputs). A blank value is treated as "no filter".
+  written for `doc_type == "file"`, a non-empty path filter implicitly restricts results to files.
+  - **Multi-folder (list-valued).** The filter accepts **one or more** folders via a
+    `path_prefixes: list[str]` parameter (the original single `path_prefix` is retained for
+    backward compatibility and folded into the list by `normalize_path_prefixes`, which trims,
+    drops blanks, and de-dupes). `build_base_filter_conditions` adds a single `MatchText` to the
+    `must` clause for one folder, and OR-s multiple folders via a nested `Filter(should=[...])` so a
+    file under **any** selected folder matches while still AND-ing against the ACL/doc_type/date
+    conditions. Every search surface parses the list: the MCP tool (`nc_semantic_search`), the
+    visualization API (JSON body), and the viz route (CSV query param).
+  - **Frontend uses the native folder picker.** Instead of a free-text path input, the Astrolabe
+    app opens Nextcloud's server-side folder browser via `getFilePickerBuilder()` from
+    `@nextcloud/dialogs` (already a dependency — no `@nextcloud/vue` component-version coupling),
+    configured directory-only + multi-select. Picked folders are real, validated server paths
+    (no typos), rendered as removable chips, and sent as a comma-separated `path_prefixes` list. The
+    Astrolabe PHP `ApiController`/`McpServerClient` forward the list to the MCP server. The control
+    is enabled only when the **Files** doc type is in scope; an empty selection means "no filter".
 - **Phase 3 — tags (and optionally category).** Add a `tags: list[str]` payload field in
   `processor.py`, propagate Nextcloud system tags during scanning, trigger a re-index, then wire
   `NcSelectTags` (`MatchAny` over tags). Re-index cost lives here, isolated from the cheap wins.
@@ -214,7 +225,9 @@ The Astrolabe app adds filter controls to the existing collapsible advanced pane
   specific `@nextcloud/vue` component version (`NcDateTimePicker` / `NcChip` remain a later option);
   this matches the component's existing native `<input type="range">` controls.
 - Doc types → existing checkbox grid, now also echoed as chips.
-- (Phase 2/3) path → `NcFilePicker`; tags → `NcSelectTags :fetch-tags`.
+- (Phase 2) path → native folder picker (`getFilePickerBuilder` from `@nextcloud/dialogs`),
+  multi-select, rendered as one removable chip per folder. (Phase 3) tags → `NcSelectTags
+  :fetch-tags`.
 
 Dates cross the wire as **RFC 3339 / ISO 8601 strings** (e.g. `"2026-01-01T00:00:00Z"`) — the format
 Nextcloud's date pickers and Unified Search use. The MCP/HTTP boundary parses RFC 3339 (and bare

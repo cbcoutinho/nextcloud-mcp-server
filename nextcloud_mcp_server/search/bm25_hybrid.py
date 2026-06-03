@@ -75,6 +75,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         modified_after: int | None = None,
         modified_before: int | None = None,
         path_prefix: str | None = None,
+        path_prefixes: list[str] | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """
@@ -100,8 +101,11 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                 seconds, UTC); ``None`` ⇒ open-ended (ADR-027).
             modified_before: Inclusive upper bound on ``modified_at`` (Unix
                 seconds, UTC); ``None`` ⇒ open-ended (ADR-027).
-            path_prefix: Folder/path filter on ``file_path`` (files only);
-                ``None`` ⇒ no path filter (ADR-027 Phase 2).
+            path_prefix: Deprecated single folder filter; folded into
+                ``path_prefixes`` (ADR-027 Phase 2).
+            path_prefixes: Folder/path filters on ``file_path`` (files only),
+                OR-ed together; ``None``/empty ⇒ no path filter (ADR-027
+                Phase 2).
             **kwargs: Additional parameters (score_threshold override)
 
         Returns:
@@ -152,6 +156,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             modified_after=modified_after,
             modified_before=modified_before,
             path_prefix=path_prefix,
+            path_prefixes=path_prefixes,
         )
 
         query_filter = Filter(must=filter_conditions)

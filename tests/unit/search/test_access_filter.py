@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
-from qdrant_client.models import FieldCondition, MatchText, Range
+from qdrant_client.models import FieldCondition, Filter, MatchText, Range
 
 from nextcloud_mcp_server.search import access_filter
 from nextcloud_mcp_server.search.access_filter import (
@@ -13,6 +13,7 @@ from nextcloud_mcp_server.search.access_filter import (
     build_ownership_filter,
     clear_accessible_owners_cache,
     list_accessible_owners,
+    normalize_path_prefixes,
 )
 
 
@@ -270,6 +271,67 @@ class TestBuildBaseFilterConditions:
             isinstance(c, FieldCondition) and c.key == "file_path" for c in conditions
         )
 
+    @staticmethod
+    def _path_should_texts(conditions) -> set[str] | None:
+        """Return the file_path texts from the nested OR Filter, or None if no
+        such filter is present. Ignores the ownership Filter (which ORs
+        user_id/owner_id, not file_path)."""
+        for cond in conditions:
+            if not isinstance(cond, Filter) or not cond.should:
+                continue
+            if all(
+                isinstance(c, FieldCondition) and c.key == "file_path"
+                for c in cond.should
+            ):
+                return {
+                    c.match.text
+                    for c in cond.should
+                    if isinstance(c, FieldCondition) and isinstance(c.match, MatchText)
+                }
+        return None
+
+    @pytest.mark.unit
+    def test_multiple_path_prefixes_or_in_nested_should(self) -> None:
+        # Two+ folders must OR together: a single nested Filter(should=[...]) is
+        # appended (not two must conditions, which would AND and match nothing).
+        conditions = build_base_filter_conditions(
+            "alice", None, path_prefixes=["/Projects", "/Archive"]
+        )
+        assert self._path_should_texts(conditions) == {"/Projects", "/Archive"}
+        # No bare file_path FieldCondition in must for the multi-folder case.
+        assert not any(
+            isinstance(c, FieldCondition) and c.key == "file_path" for c in conditions
+        )
+
+    @pytest.mark.unit
+    def test_path_prefix_and_path_prefixes_merge_and_dedupe(self) -> None:
+        # Legacy single + list inputs merge; duplicates collapse so a folder
+        # passed both ways yields two distinct conditions, not three.
+        conditions = build_base_filter_conditions(
+            "alice",
+            None,
+            path_prefix="/Projects",
+            path_prefixes=["/Projects", "/Archive"],
+        )
+        assert self._path_should_texts(conditions) == {"/Projects", "/Archive"}
+
+    @pytest.mark.unit
+    def test_single_effective_prefix_uses_flat_must_condition(self) -> None:
+        # When dedupe/blank-stripping leaves exactly one folder, keep the
+        # original flat MatchText in must rather than a one-element should.
+        conditions = build_base_filter_conditions(
+            "alice", None, path_prefixes=["/Projects", "  ", "/Projects"]
+        )
+        # The only nested Filter should be ownership, never a path OR.
+        assert self._path_should_texts(conditions) is None
+        path_conds = [
+            c
+            for c in conditions
+            if isinstance(c, FieldCondition) and c.key == "file_path"
+        ]
+        assert len(path_conds) == 1
+        assert path_conds[0].match.text == "/Projects"
+
     @pytest.mark.unit
     def test_all_filters_compose(self) -> None:
         # placeholder + ownership + doc_type + modified_at range + file_path = 5.
@@ -282,3 +344,18 @@ class TestBuildBaseFilterConditions:
             path_prefix="/Projects",
         )
         assert len(conditions) == 5
+
+
+class TestNormalizePathPrefixes:
+    @pytest.mark.unit
+    def test_empty_inputs_return_empty_list(self) -> None:
+        assert normalize_path_prefixes(None, None) == []
+        assert normalize_path_prefixes("", []) == []
+        assert normalize_path_prefixes("   ", ["", "  "]) == []
+
+    @pytest.mark.unit
+    def test_strips_dedupes_and_preserves_order(self) -> None:
+        result = normalize_path_prefixes(
+            " /Projects ", ["/Archive", "/Projects", "  ", "/Specs"]
+        )
+        assert result == ["/Projects", "/Archive", "/Specs"]
