@@ -33,7 +33,10 @@ from nextcloud_mcp_server.search import (
     BM25HybridSearchAlgorithm,
     SemanticSearchAlgorithm,
 )
-from nextcloud_mcp_server.search.access_filter import list_accessible_owners
+from nextcloud_mcp_server.search.access_filter import (
+    list_accessible_owners,
+    normalize_path_prefixes,
+)
 from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
@@ -144,8 +147,17 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
     doc_types_param = request.query_params.get("doc_types", "")
     doc_types = doc_types_param.split(",") if doc_types_param else None
 
-    # ADR-027 Phase 2 path filter (files only); blank ⇒ no filter.
-    path_prefix = (request.query_params.get("path_prefix") or "").strip() or None
+    # ADR-027 Phase 2 path filter (files only); blank ⇒ no filter. Accept a
+    # newline-separated path_prefixes list (multi-folder) plus the legacy single
+    # path_prefix; normalize_path_prefixes drops blanks and de-dupes. Newline is
+    # the delimiter because it can't appear in a POSIX path (unlike a comma), so
+    # folder names are never split mid-value.
+    path_prefix = request.query_params.get("path_prefix")
+    _raw_prefixes = request.query_params.get("path_prefixes")
+    path_prefixes = normalize_path_prefixes(
+        path_prefix,
+        _raw_prefixes.split("\n") if _raw_prefixes else None,
+    )
 
     # Parse ADR-027 modified-date range filter. Accepts RFC 3339 / ISO 8601
     # datetimes or Unix seconds; normalized to int Unix seconds. Absent ⇒
@@ -235,7 +247,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                         accessible_owners=accessible_owners,
                         modified_after=modified_after,
                         modified_before=modified_before,
-                        path_prefix=path_prefix,
+                        path_prefixes=path_prefixes,
                     )
                 all_results.extend(unverified_results)
             else:
@@ -258,7 +270,7 @@ async def vector_visualization_search(request: Request) -> JSONResponse:
                             accessible_owners=accessible_owners,
                             modified_after=modified_after,
                             modified_before=modified_before,
-                            path_prefix=path_prefix,
+                            path_prefixes=path_prefixes,
                         )
                     all_results.extend(unverified_results)
                 # Sort by score, then cap to the same limit*2 over-fetch budget

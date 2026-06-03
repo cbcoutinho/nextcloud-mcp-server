@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import OrderedDict
+from collections.abc import Iterable
 from typing import Any, Protocol
 
 from qdrant_client.models import (
@@ -42,6 +43,12 @@ from qdrant_client.models import (
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 
 logger = logging.getLogger(__name__)
+
+# Upper bound on the number of folder filters a single search may apply. Caps
+# the width of the ``Filter(should=[...])`` OR-clause built from path_prefixes
+# so no caller can degrade query latency with a huge folder list. Mirrored by
+# the ``Field(max_length=...)`` on the MCP tool and the Astrolabe PHP cap.
+MAX_PATH_PREFIXES = 20
 
 # Short-lived per-user cache for the OCS shares lookup, which otherwise runs on
 # every search/viz request. Trades up to this many seconds of share-visibility
@@ -189,6 +196,54 @@ def build_ownership_filter(
     return Filter(should=conditions)
 
 
+def normalize_path_prefixes(
+    path_prefix: str | None = None,
+    path_prefixes: Iterable[str] | None = None,
+) -> list[str]:
+    """Merge the legacy single ``path_prefix`` and list ``path_prefixes`` into
+    one clean, de-duplicated, bounded list of folder filters.
+
+    Blank/whitespace entries are dropped (an empty UI field must mean "no
+    filter", not "match everything"), surrounding whitespace is stripped, and
+    order is preserved while removing duplicates. Accepting both inputs keeps
+    the pre-ADR-027-Phase-2 single-value contract working while callers migrate
+    to the multi-folder list.
+
+    The result is capped at ``MAX_PATH_PREFIXES`` so no caller — the MCP tool,
+    the REST/viz endpoints, or a misbehaving client — can build an unbounded
+    ``Filter(should=[...])`` OR-clause that would widen every Qdrant query.
+    This is the single server-side enforcement point (the MCP tool also
+    declares ``Field(max_length=...)`` for an earlier, clearer validation
+    error, and the Astrolabe PHP controller caps before forwarding).
+
+    Args:
+        path_prefix: Legacy single folder filter (deprecated; folded into the
+            returned list).
+        path_prefixes: Zero or more folder filters.
+
+    Returns:
+        Ordered, de-duplicated list of non-empty folder filters, capped at
+        ``MAX_PATH_PREFIXES`` (possibly empty).
+    """
+    raw: list[str] = []
+    if path_prefix:
+        raw.append(path_prefix)
+    if path_prefixes:
+        raw.extend(path_prefixes)
+
+    # Two-pass on purpose: the ``if path_prefix:`` guard above is truthy for a
+    # whitespace-only string like ``"   "``, so the strip-and-drop pass below is
+    # what actually removes it — collecting first keeps the dedup order stable.
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for value in raw:
+        stripped = value.strip()
+        if stripped and stripped not in seen:
+            seen.add(stripped)
+            cleaned.append(stripped)
+    return cleaned[:MAX_PATH_PREFIXES]
+
+
 def build_base_filter_conditions(
     user_id: str,
     accessible_owners: list[str] | None = None,
@@ -196,6 +251,7 @@ def build_base_filter_conditions(
     modified_after: int | None = None,
     modified_before: int | None = None,
     path_prefix: str | None = None,
+    path_prefixes: Iterable[str] | None = None,
 ) -> list[Condition]:
     """Build the common ``must`` conditions shared by every search algorithm.
 
@@ -211,7 +267,10 @@ def build_base_filter_conditions(
     2. ``build_ownership_filter(...)`` — ACL-aware ``owner_id``/``user_id`` scope.
     3. ``doc_type`` exact match — only when ``doc_type`` is truthy.
     4. ``modified_at`` range — only when at least one bound is given.
-    5. ``file_path`` text match — only when ``path_prefix`` is given.
+    5. ``file_path`` text match — only when a path filter is given. One folder
+       adds a single ``MatchText`` to ``must``; multiple folders are OR-ed via a
+       nested ``Filter(should=[...])`` so a file under *any* selected folder
+       matches.
 
     Args:
         user_id: Querying user.
@@ -220,10 +279,13 @@ def build_base_filter_conditions(
         doc_type: Optional single document-type filter.
         modified_after: Inclusive lower bound on ``modified_at`` (Unix seconds).
         modified_before: Inclusive upper bound on ``modified_at`` (Unix seconds).
-        path_prefix: Optional folder/path filter on the ``file_path`` payload
-            field (ADR-027 Phase 2). Implemented with ``MatchText`` against the
-            text-indexed ``file_path``. ``file_path`` is only written for
-            ``doc_type == "file"`` points, so a non-empty ``path_prefix``
+        path_prefix: Deprecated single folder/path filter; folded into
+            ``path_prefixes``. Kept for backward compatibility.
+        path_prefixes: Optional folder/path filters on the ``file_path`` payload
+            field (ADR-027 Phase 2). Each is implemented with ``MatchText``
+            against the text-indexed ``file_path`` and multiple folders are
+            OR-ed together. ``file_path`` is only written for
+            ``doc_type == "file"`` points, so any non-empty path filter
             implicitly restricts results to files. NOTE the match semantics
             differ by backend: server Qdrant tokenizes (AND-of-tokens, so
             ``"/Projects/Reports"`` matches files whose path contains both the
@@ -255,9 +317,23 @@ def build_base_filter_conditions(
             )
         )
 
-    if path_prefix:
+    # One folder ⇒ a single ``must`` condition (the original Phase 2 shape).
+    # Multiple folders ⇒ OR them in a nested ``Filter(should=...)`` so a file
+    # under any selected folder matches, while still AND-ing against the other
+    # ``must`` conditions (ACL, doc_type, date).
+    folders = normalize_path_prefixes(path_prefix, path_prefixes)
+    if len(folders) == 1:
         conditions.append(
-            FieldCondition(key="file_path", match=MatchText(text=path_prefix))
+            FieldCondition(key="file_path", match=MatchText(text=folders[0]))
+        )
+    elif len(folders) > 1:
+        conditions.append(
+            Filter(
+                should=[
+                    FieldCondition(key="file_path", match=MatchText(text=folder))
+                    for folder in folders
+                ]
+            )
         )
 
     return conditions

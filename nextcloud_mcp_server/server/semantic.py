@@ -32,7 +32,11 @@ from nextcloud_mcp_server.models.semantic import (
 from nextcloud_mcp_server.observability.metrics import (
     instrument_tool,
 )
-from nextcloud_mcp_server.search.access_filter import list_accessible_owners
+from nextcloud_mcp_server.search.access_filter import (
+    MAX_PATH_PREFIXES,
+    list_accessible_owners,
+    normalize_path_prefixes,
+)
 from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
 from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.verification import verify_search_results
@@ -88,10 +92,25 @@ def configure_semantic_tools(mcp: FastMCP):
             str | None,
             Field(
                 description=(
+                    "Deprecated single-folder filter; prefer path_prefixes. "
                     "Restrict to files under this folder/path "
                     "(e.g. '/Projects/Reports'). Matches the file_path of "
                     "indexed files only, so setting it implicitly limits "
                     "results to files. None = no path filter."
+                ),
+            ),
+        ] = None,
+        path_prefixes: Annotated[
+            list[str] | None,
+            Field(
+                max_length=MAX_PATH_PREFIXES,
+                description=(
+                    "Restrict to files under any of these folders/paths "
+                    "(e.g. ['/Projects/Reports', '/Shared/Specs']). Folders are "
+                    "OR-ed together. Matches the file_path of indexed files "
+                    "only, so setting it implicitly limits results to files. "
+                    f"Capped at {MAX_PATH_PREFIXES} folders to bound the "
+                    "OR-filter width. None or empty = no path filter."
                 ),
             ),
         ] = None,
@@ -127,9 +146,12 @@ def configure_semantic_tools(mcp: FastMCP):
             modified_before: Only return documents whose last-modified time is at or before this
                 instant. Same formats as modified_after. None = no upper bound (default). Must be
                 >= modified_after when both are supplied.
-            path_prefix: Restrict to files under this folder/path (e.g. "/Projects/Reports").
-                Matches the file_path of indexed files only — setting it implicitly limits results
-                to files. None = no path filter (default).
+            path_prefix: Deprecated single-folder filter; prefer path_prefixes. Restrict to files
+                under this folder/path (e.g. "/Projects/Reports"). Folded into path_prefixes.
+            path_prefixes: Restrict to files under any of these folders/paths (OR-ed), e.g.
+                ["/Projects/Reports", "/Shared/Specs"]. Matches the file_path of indexed files
+                only — setting it implicitly limits results to files. None/empty = no path filter
+                (default).
 
         Returns:
             SemanticSearchResponse with matching documents ranked by fusion scores.
@@ -200,11 +222,10 @@ def configure_semantic_tools(mcp: FastMCP):
                 )
             )
 
-        # Treat a blank/whitespace path_prefix as "no filter" so an empty UI
-        # field doesn't filter out every result (ADR-027 Phase 2).
-        path_prefix = path_prefix.strip() if path_prefix else None
-        if not path_prefix:
-            path_prefix = None
+        # Merge the legacy single path_prefix and the path_prefixes list into one
+        # cleaned list, dropping blank/whitespace entries so an empty UI field
+        # doesn't filter out every result (ADR-027 Phase 2).
+        folder_prefixes = normalize_path_prefixes(path_prefix, path_prefixes)
 
         # Expand the caller's identity to every owner whose content they
         # have read access to via Nextcloud shares. Lets a user find files
@@ -252,7 +273,7 @@ def configure_semantic_tools(mcp: FastMCP):
                     accessible_owners=accessible_owners,
                     modified_after=modified_after_ts,
                     modified_before=modified_before_ts,
-                    path_prefix=path_prefix,
+                    path_prefixes=folder_prefixes,
                 )
                 all_results.extend(unverified_results)
             else:
@@ -280,7 +301,7 @@ def configure_semantic_tools(mcp: FastMCP):
                         accessible_owners=accessible_owners,
                         modified_after=modified_after_ts,
                         modified_before=modified_before_ts,
-                        path_prefix=path_prefix,
+                        path_prefixes=folder_prefixes,
                     )
                     all_results.extend(unverified_results)
 

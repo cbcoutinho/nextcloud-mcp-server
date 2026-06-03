@@ -31,7 +31,10 @@ from nextcloud_mcp_server.search import (
     BM25HybridSearchAlgorithm,
     SemanticSearchAlgorithm,
 )
-from nextcloud_mcp_server.search.access_filter import list_accessible_owners
+from nextcloud_mcp_server.search.access_filter import (
+    list_accessible_owners,
+    normalize_path_prefixes,
+)
 from nextcloud_mcp_server.search.context import (
     get_chunk_bbox_and_page_from_qdrant,
     get_chunk_with_context,
@@ -225,8 +228,17 @@ async def unified_search(request: Request) -> JSONResponse:
         include_pca = body.get("include_pca", False)
         include_chunks = body.get("include_chunks", True)
         doc_types = body.get("doc_types")  # Optional filter
-        # ADR-027 Phase 2 path filter (files only); blank ⇒ no filter.
-        path_prefix = (body.get("path_prefix") or "").strip() or None
+        # ADR-027 Phase 2 path filter (files only); blank ⇒ no filter. Accept a
+        # path_prefixes list (multi-folder) alongside the legacy single
+        # path_prefix; normalize drops blanks and de-dupes.
+        # path_prefixes arrives as a JSON array (the Astrolabe PHP client sends
+        # a list); any other shape is ignored rather than guessed at. The legacy
+        # single path_prefix is folded in by normalize_path_prefixes.
+        _path_prefixes_raw = body.get("path_prefixes")
+        path_prefixes = normalize_path_prefixes(
+            body.get("path_prefix"),
+            _path_prefixes_raw if isinstance(_path_prefixes_raw, list) else None,
+        )
 
         if not query:
             return JSONResponse({"results": [], "total_found": 0})
@@ -268,7 +280,7 @@ async def unified_search(request: Request) -> JSONResponse:
                                 accessible_owners=owners,
                                 modified_after=modified_after,
                                 modified_before=modified_before,
-                                path_prefix=path_prefix,
+                                path_prefixes=path_prefixes,
                             )
                         )
                 # Sort, then cap to a fixed over-fetch budget before the result
@@ -288,7 +300,7 @@ async def unified_search(request: Request) -> JSONResponse:
                     accessible_owners=owners,
                     modified_after=modified_after,
                     modified_before=modified_before,
-                    path_prefix=path_prefix,
+                    path_prefixes=path_prefixes,
                 )
             return results
 
@@ -440,8 +452,17 @@ async def vector_search(request: Request) -> JSONResponse:
         limit = min(body.get("limit", 10), 50)  # Enforce max limit
         include_pca = body.get("include_pca", True)
         doc_types = body.get("doc_types")  # Optional list of document types
-        # ADR-027 Phase 2 path filter (files only); blank ⇒ no filter.
-        path_prefix = (body.get("path_prefix") or "").strip() or None
+        # ADR-027 Phase 2 path filter (files only); blank ⇒ no filter. Accept a
+        # path_prefixes list (multi-folder) alongside the legacy single
+        # path_prefix; normalize drops blanks and de-dupes.
+        # path_prefixes arrives as a JSON array (the Astrolabe PHP client sends
+        # a list); any other shape is ignored rather than guessed at. The legacy
+        # single path_prefix is folded in by normalize_path_prefixes.
+        _path_prefixes_raw = body.get("path_prefixes")
+        path_prefixes = normalize_path_prefixes(
+            body.get("path_prefix"),
+            _path_prefixes_raw if isinstance(_path_prefixes_raw, list) else None,
+        )
         # ADR-027 modified-date range filter. Accepts RFC 3339 / ISO 8601
         # datetimes or Unix seconds; normalized to int Unix seconds. None ⇒ open.
         try:
@@ -507,7 +528,7 @@ async def vector_search(request: Request) -> JSONResponse:
                                 accessible_owners=owners,
                                 modified_after=modified_after,
                                 modified_before=modified_before,
-                                path_prefix=path_prefix,
+                                path_prefixes=path_prefixes,
                             )
                         )
                 # Sort merged results by score and limit
@@ -522,7 +543,7 @@ async def vector_search(request: Request) -> JSONResponse:
                     accessible_owners=owners,
                     modified_after=modified_after,
                     modified_before=modified_before,
-                    path_prefix=path_prefix,
+                    path_prefixes=path_prefixes,
                 )
             return results
 

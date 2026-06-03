@@ -2,6 +2,7 @@
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -300,6 +301,7 @@ class SearchAlgorithm(ABC):
         modified_after: int | None = None,
         modified_before: int | None = None,
         path_prefix: str | None = None,
+        path_prefixes: Iterable[str] | None = None,
         **kwargs: Any,
     ) -> list[SearchResult]:
         """Execute search with the given parameters.
@@ -321,10 +323,13 @@ class SearchAlgorithm(ABC):
                 ``accessible_owners`` (ADR-027). ``None`` ⇒ open-ended.
             modified_before: Optional inclusive upper bound on ``modified_at``
                 (Unix seconds, UTC). ``None`` ⇒ open-ended.
-            path_prefix: Optional folder/path filter on the ``file_path`` payload
-                field (ADR-027 Phase 2). Only ``doc_type == "file"`` points carry
-                ``file_path``, so a non-empty value implicitly restricts results
-                to files. ``None`` ⇒ no path filter.
+            path_prefix: Deprecated single folder/path filter; folded into
+                ``path_prefixes``. Kept for backward compatibility.
+            path_prefixes: Optional folder/path filters on the ``file_path``
+                payload field (ADR-027 Phase 2), OR-ed together. Only
+                ``doc_type == "file"`` points carry ``file_path``, so any
+                non-empty value implicitly restricts results to files. ``None``
+                or empty ⇒ no path filter.
             **kwargs: Algorithm-specific parameters
 
         Returns:

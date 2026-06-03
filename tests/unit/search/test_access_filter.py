@@ -5,14 +5,16 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
-from qdrant_client.models import FieldCondition, MatchText, Range
+from qdrant_client.models import FieldCondition, Filter, MatchText, Range
 
 from nextcloud_mcp_server.search import access_filter
 from nextcloud_mcp_server.search.access_filter import (
+    MAX_PATH_PREFIXES,
     build_base_filter_conditions,
     build_ownership_filter,
     clear_accessible_owners_cache,
     list_accessible_owners,
+    normalize_path_prefixes,
 )
 
 
@@ -264,11 +266,90 @@ class TestBuildBaseFilterConditions:
         assert match.text == prefix
 
     @pytest.mark.unit
-    def test_no_path_condition_when_prefix_absent(self) -> None:
-        conditions = build_base_filter_conditions("alice", None, path_prefix=None)
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"path_prefix": None},
+            {"path_prefixes": None},
+            {"path_prefixes": []},
+            {"path_prefix": "  ", "path_prefixes": ["", "   "]},
+        ],
+    )
+    def test_no_path_condition_when_prefix_absent(self, kwargs) -> None:
+        # No folder filter (None, empty list, or blank-only) must add neither a
+        # flat file_path condition nor a nested path OR.
+        conditions = build_base_filter_conditions("alice", None, **kwargs)
         assert not any(
             isinstance(c, FieldCondition) and c.key == "file_path" for c in conditions
         )
+        assert self._path_should_texts(conditions) is None
+
+    @staticmethod
+    def _path_should_texts(conditions) -> set[str] | None:
+        """Return the file_path texts from the nested OR Filter, or None if no
+        such filter is present. Ignores the ownership Filter (which ORs
+        user_id/owner_id, not file_path)."""
+        for cond in conditions:
+            if not isinstance(cond, Filter) or not cond.should:
+                continue
+            if all(
+                isinstance(c, FieldCondition) and c.key == "file_path"
+                for c in cond.should
+            ):
+                return {
+                    c.match.text
+                    for c in cond.should
+                    if isinstance(c, FieldCondition) and isinstance(c.match, MatchText)
+                }
+        return None
+
+    @pytest.mark.unit
+    def test_multiple_path_prefixes_or_in_nested_should(self) -> None:
+        # 3+ folders must OR together: a single nested Filter(should=[...]) is
+        # appended (not separate must conditions, which would AND and match
+        # nothing). 3 folders also guards the list comprehension against an
+        # off-by-one.
+        conditions = build_base_filter_conditions(
+            "alice", None, path_prefixes=["/Projects", "/Archive", "/Shared"]
+        )
+        assert self._path_should_texts(conditions) == {
+            "/Projects",
+            "/Archive",
+            "/Shared",
+        }
+        # No bare file_path FieldCondition in must for the multi-folder case.
+        assert not any(
+            isinstance(c, FieldCondition) and c.key == "file_path" for c in conditions
+        )
+
+    @pytest.mark.unit
+    def test_path_prefix_and_path_prefixes_merge_and_dedupe(self) -> None:
+        # Legacy single + list inputs merge; duplicates collapse so a folder
+        # passed both ways yields two distinct conditions, not three.
+        conditions = build_base_filter_conditions(
+            "alice",
+            None,
+            path_prefix="/Projects",
+            path_prefixes=["/Projects", "/Archive"],
+        )
+        assert self._path_should_texts(conditions) == {"/Projects", "/Archive"}
+
+    @pytest.mark.unit
+    def test_single_effective_prefix_uses_flat_must_condition(self) -> None:
+        # When dedupe/blank-stripping leaves exactly one folder, keep the
+        # original flat MatchText in must rather than a one-element should.
+        conditions = build_base_filter_conditions(
+            "alice", None, path_prefixes=["/Projects", "  ", "/Projects"]
+        )
+        # The only nested Filter should be ownership, never a path OR.
+        assert self._path_should_texts(conditions) is None
+        path_conds = [
+            c
+            for c in conditions
+            if isinstance(c, FieldCondition) and c.key == "file_path"
+        ]
+        assert len(path_conds) == 1
+        assert path_conds[0].match.text == "/Projects"
 
     @pytest.mark.unit
     def test_all_filters_compose(self) -> None:
@@ -282,3 +363,27 @@ class TestBuildBaseFilterConditions:
             path_prefix="/Projects",
         )
         assert len(conditions) == 5
+
+
+class TestNormalizePathPrefixes:
+    @pytest.mark.unit
+    def test_empty_inputs_return_empty_list(self) -> None:
+        assert normalize_path_prefixes(None, None) == []
+        assert normalize_path_prefixes("", []) == []
+        assert normalize_path_prefixes("   ", ["", "  "]) == []
+
+    @pytest.mark.unit
+    def test_strips_dedupes_and_preserves_order(self) -> None:
+        result = normalize_path_prefixes(
+            " /Projects ", ["/Archive", "/Projects", "  ", "/Specs"]
+        )
+        assert result == ["/Projects", "/Archive", "/Specs"]
+
+    @pytest.mark.unit
+    def test_caps_at_max_path_prefixes(self) -> None:
+        # A huge list is truncated to MAX_PATH_PREFIXES so no caller can build
+        # an unbounded OR-clause; the first N (order-preserving) survive.
+        folders = [f"/dir{i}" for i in range(MAX_PATH_PREFIXES + 30)]
+        result = normalize_path_prefixes(None, folders)
+        assert len(result) == MAX_PATH_PREFIXES
+        assert result == folders[:MAX_PATH_PREFIXES]
