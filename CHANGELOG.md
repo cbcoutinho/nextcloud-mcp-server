@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.95.0 (2026-06-03)
+
+### Feat
+
+- add Claude Desktop extension (.mcpb) for single-user stdio mode
+
+### Fix
+
+- **mcpb**: add Windows support via platform_overrides and run.cmd
+- **mcpb**: address review feedback on manifest and run.sh
+
 ## v0.94.1 (2026-06-03)
 
 ### Fix
