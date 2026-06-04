@@ -1790,8 +1790,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # falls back to the procrastinate job counts there.
                 await tg.start(
                     vector_sync_metrics_task,
-                    task_producer,
-                    receive_stream,
+                    ingest_transport.producer,
+                    ingest_transport.receive_stream,
                     shutdown_event,
                 )
 
@@ -2011,8 +2011,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     # falls back to the procrastinate job counts there.
                     await tg.start(
                         vector_sync_metrics_task,
-                        task_producer,
-                        receive_stream,
+                        ingest_transport.producer,
+                        ingest_transport.receive_stream,
                         shutdown_event,
                     )
 
