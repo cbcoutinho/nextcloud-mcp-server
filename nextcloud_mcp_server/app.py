@@ -9,7 +9,7 @@ import traceback
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
-from typing import cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 import anyio
@@ -133,13 +133,14 @@ from nextcloud_mcp_server.vector.oauth_sync import (
 from nextcloud_mcp_server.vector.placeholder import sweep_orphan_placeholders
 from nextcloud_mcp_server.vector.processor import processor_task
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
-from nextcloud_mcp_server.vector.queue import (
-    MemoryTaskProducer,
-    TaskProducer,
-    build_producer,
-)
-from nextcloud_mcp_server.vector.scanner import DocumentTask, scanner_task
+from nextcloud_mcp_server.vector.queue import build_transport
+from nextcloud_mcp_server.vector.scanner import scanner_task
 from nextcloud_mcp_server.vector.webhook_receiver import handle_nextcloud_webhook
+
+if TYPE_CHECKING:
+    # Annotation-only in this module (the file uses `from __future__ import
+    # annotations`, so these are never evaluated at runtime).
+    from nextcloud_mcp_server.vector.queue import IngestTransport, TaskProducer
 
 logger = logging.getLogger(__name__)
 HTTPXClientInstrumentor().instrument()
@@ -345,6 +346,70 @@ class VectorSyncState:
 
 # Module-level singleton for vector sync state
 _vector_sync_state = VectorSyncState()
+
+
+def _wire_vector_sync_state(
+    app: Starlette,
+    transport: IngestTransport,
+    shutdown_event: anyio.Event,
+    scanner_wake_event: anyio.Event,
+) -> None:
+    """Publish the ingest transport + sync events to every state surface.
+
+    Both lifespan paths (single-user and multi-user) previously duplicated these
+    writes three times each: ``app.state``, the module singleton
+    ``_vector_sync_state`` (read by FastMCP session lifespans), and the mounted
+    ``/app`` browser sub-app. ``document_send_stream``/``document_receive_stream``
+    come from the transport — ``None`` in postgres mode (no in-process stream) —
+    and ``task_producer`` is the transport's producer in both modes (Deck #183,
+    ADR-028).
+
+    ``eviction_task_group`` is deliberately not set here: it only exists once the
+    lifespan has entered its ``anyio.create_task_group()`` (after this call), so
+    the lifespan assigns it on the singleton directly at that point.
+    """
+    send_stream = transport.send_stream
+    receive_stream = transport.receive_stream
+    task_producer = transport.producer
+
+    def _apply(state: Any) -> None:
+        state.document_send_stream = send_stream
+        state.document_receive_stream = receive_stream
+        state.task_producer = task_producer
+        state.shutdown_event = shutdown_event
+        state.scanner_wake_event = scanner_wake_event
+
+    # app.state (Starlette) + the module singleton share the same attribute names.
+    _apply(app.state)
+    _apply(_vector_sync_state)
+    logger.info("Vector sync state published (app.state + module singleton)")
+
+    # Also share with the mounted /app browser sub-app, if present.
+    for route in app.routes:
+        if isinstance(route, Mount) and route.path == "/app":
+            browser_app = cast(Starlette, route.app)
+            _apply(browser_app.state)
+            logger.info("Vector sync state shared with browser_app for /app")
+            break
+
+
+def _clear_vector_sync_state() -> None:
+    """Drop the module-singleton ingest references on lifespan shutdown.
+
+    Mirrors the ``eviction_task_group = None`` cleanup so that any code reaching
+    the singleton in the narrow window between transport teardown and process
+    exit (e.g. a late webhook) sees ``None`` rather than a producer/stream backed
+    by an already-closed resource. The per-request ``shutdown_event`` gate is the
+    primary guard; this is defense-in-depth. Integration tests with module-level
+    singletons also benefit (no stale closed producer leaks between runs).
+    """
+    _vector_sync_state.task_producer = None
+    _vector_sync_state.document_send_stream = None
+    _vector_sync_state.document_receive_stream = None
+    # Symmetric with the fields above: the just-fired events belong to the
+    # closed lifespan; the next startup's _wire_vector_sync_state rebinds them.
+    _vector_sync_state.shutdown_event = None
+    _vector_sync_state.scanner_wake_event = None
 
 
 @dataclass
@@ -1663,86 +1728,59 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # Orphan-sweep before scanner starts — card #101.
             await _sweep_orphan_placeholders_if_enabled()
 
-            # Initialize shared state. INGEST_QUEUE selects the transport
-            # (Deck #183): ``memory`` uses the in-process anyio stream + the
-            # in-process processor pool (SQLite/dev); ``postgres`` defers jobs to
-            # the per-tenant Postgres via procrastinate and runs no in-process
-            # consumer (the separate ``worker`` role drains the queue).
-            use_postgres = settings.ingest_queue == "postgres"
+            # Initialize the ingest transport. INGEST_QUEUE selects the backend
+            # (Deck #183, ADR-028): ``memory`` builds an in-process anyio stream
+            # drained by an in-process pool (SQLite/dev); ``postgres`` defers jobs
+            # to the per-tenant Postgres via procrastinate and runs no in-process
+            # consumer (the separate ``worker`` role drains the queue). The
+            # transport hides that choice — this path is now backend-agnostic.
             shutdown_event = anyio.Event()
             scanner_wake_event = anyio.Event()
 
-            send_stream = None
-            receive_stream = None
-            task_producer: TaskProducer
-            if use_postgres:
-                # Open the connector once (build_producer) and reuse it to create
-                # procrastinate's tables before the scanner can defer — a single
-                # open/close cycle, matching the worker command.
-                producer = await build_producer(settings)
-                await producer.ensure_schema()
-                task_producer = producer
-                logger.info("Ingest queue: postgres (procrastinate); worker drains it")
-            else:
-                send_stream, receive_stream = anyio.create_memory_object_stream[
-                    DocumentTask
-                ](max_buffer_size=settings.vector_sync_queue_max_size)
-                task_producer = MemoryTaskProducer(send_stream)
+            # Named ingest_transport (not transport) to avoid shadowing the
+            # get_app(transport=...) HTTP-transport parameter.
+            ingest_transport = await build_transport(settings)
 
-            # Store in app state for access from routes (ADR-007). In postgres
-            # mode there is no in-memory stream, so document_send/receive_stream
-            # stay None; task_producer is the procrastinate producer.
-            app.state.document_send_stream = send_stream
-            app.state.document_receive_stream = receive_stream
-            app.state.task_producer = task_producer
-            app.state.shutdown_event = shutdown_event
-            app.state.scanner_wake_event = scanner_wake_event
-
-            # Also store in module singleton for FastMCP session lifespans
-            _vector_sync_state.document_send_stream = send_stream
-            _vector_sync_state.document_receive_stream = receive_stream
-            _vector_sync_state.task_producer = task_producer
-            _vector_sync_state.shutdown_event = shutdown_event
-            _vector_sync_state.scanner_wake_event = scanner_wake_event
-            logger.info("Vector sync state stored in module singleton")
-
-            # Also share with browser_app for /app route
-            for route in app.routes:
-                if isinstance(route, Mount) and route.path == "/app":
-                    browser_app = cast(Starlette, route.app)
-                    browser_app.state.document_send_stream = send_stream
-                    browser_app.state.document_receive_stream = receive_stream
-                    browser_app.state.task_producer = task_producer
-                    browser_app.state.shutdown_event = shutdown_event
-                    browser_app.state.scanner_wake_event = scanner_wake_event
-                    logger.info("Vector sync state shared with browser_app for /app")
-                    break
+            # Publish to app.state (ADR-007), the module singleton (FastMCP
+            # session lifespans), and the /app browser sub-app in one place.
+            _wire_vector_sync_state(
+                app, ingest_transport, shutdown_event, scanner_wake_event
+            )
 
             # Start background tasks using anyio TaskGroup
             async with anyio.create_task_group() as tg:
-                # Start scanner task (publishes to task_producer)
+                # Start scanner task (publishes to the transport's producer)
                 await tg.start(
                     scanner_task,
-                    task_producer,
+                    ingest_transport.producer,
                     shutdown_event,
                     scanner_wake_event,
                     client,
                     username,
                 )
 
-                # The in-process processor pool runs only in memory mode; in
-                # postgres mode the out-of-process worker is the consumer.
-                if not use_postgres:
-                    assert receive_stream is not None
-                    for i in range(settings.vector_sync_processor_workers):
-                        await tg.start(
-                            processor_task,
-                            i,
-                            receive_stream.clone(),
-                            shutdown_event,
-                            client,
-                            username,
-                        )
+                # Start the in-process consumer pool. ``run_consumers`` is a
+                # no-op for the distributed (postgres) backend — its consumer is
+                # the out-of-process ``worker`` role. The closure binds this
+                # mode's shared client+username and forwards anyio's injected
+                # ``task_status`` so ``tg.start`` observes each worker's
+                # readiness. One shared receive stream + N workers ⇒ a single
+                # multiplexed queue processed with N-way parallelism (ADR-028).
+                async def spawn_worker(
+                    worker_id, receive_stream, *, task_status=anyio.TASK_STATUS_IGNORED
+                ):
+                    await processor_task(
+                        worker_id,
+                        receive_stream,
+                        shutdown_event,
+                        client,
+                        username,
+                        task_status=task_status,
+                    )
+
+                await ingest_transport.run_consumers(
+                    tg, spawn_worker, settings.vector_sync_processor_workers
+                )
 
                 # Expose this long-lived task group to request-path code that
                 # wants to spawn background work (e.g. ADR-019 verify-on-read
@@ -1752,8 +1790,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
                 logger.info(
                     "Background sync tasks started: 1 scanner + %s processors (queue=%s)",
-                    0 if use_postgres else settings.vector_sync_processor_workers,
-                    settings.ingest_queue,
+                    ingest_transport.active_consumer_count,
+                    ingest_transport.backend_name,
                 )
 
                 # Run MCP session manager and yield
@@ -1766,10 +1804,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         shutdown_event.set()
                         # Request path must not spawn into a cancelling group.
                         _vector_sync_state.eviction_task_group = None
-                        # Close the procrastinate connector pool (postgres mode).
-                        _drain = getattr(task_producer, "drain", None)
-                        if use_postgres and _drain is not None:
-                            await _drain()
+                        # Tear down backend-owned resources (closes the
+                        # procrastinate connector pool in postgres mode; no-op
+                        # for the memory stream, which task-group cancellation
+                        # closes).
+                        await ingest_transport.aclose()
+                        # Drop stale singleton refs to the now-closed transport.
+                        _clear_vector_sync_state()
                         await client.close()
                         # TaskGroup automatically cancels all tasks on exit
 
@@ -1877,65 +1918,27 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     except Exception as e:
                         logger.warning("App password cleanup failed (non-fatal): %s", e)
 
-                # Initialize shared state. INGEST_QUEUE selects the transport
-                # (Deck #183): ``memory`` uses the in-process anyio stream + the
-                # in-process processor pool; ``postgres`` defers jobs via
-                # procrastinate and runs no in-process consumer (the separate
-                # ``worker`` role drains the queue).
-                use_postgres = settings.ingest_queue == "postgres"
+                # Initialize the ingest transport. INGEST_QUEUE selects the
+                # backend (Deck #183, ADR-028): ``memory`` builds an in-process
+                # anyio stream drained by an in-process pool; ``postgres`` defers
+                # jobs via procrastinate and runs no in-process consumer (the
+                # separate ``worker`` role drains the queue). The transport hides
+                # that choice — this path is now backend-agnostic.
                 shutdown_event = anyio.Event()
                 scanner_wake_event = anyio.Event()
 
                 # User state tracking for user manager
                 user_states: dict = {}
 
-                send_stream = None
-                receive_stream = None
-                task_producer: TaskProducer
-                if use_postgres:
-                    # Single open/close cycle: build_producer opens the connector
-                    # and ensure_schema reuses it to create procrastinate's tables
-                    # before any scanner defers (matches the worker command).
-                    producer = await build_producer(settings)
-                    await producer.ensure_schema()
-                    task_producer = producer
-                    logger.info(
-                        "Ingest queue: postgres (procrastinate); worker drains it"
-                    )
-                else:
-                    send_stream, receive_stream = anyio.create_memory_object_stream[
-                        DocumentTask
-                    ](max_buffer_size=settings.vector_sync_queue_max_size)
-                    task_producer = MemoryTaskProducer(send_stream)
+                # Named ingest_transport (not transport) to avoid shadowing the
+                # get_app(transport=...) HTTP-transport parameter.
+                ingest_transport = await build_transport(settings)
 
-                # Store in app state for access from routes (ADR-007)
-                app.state.document_send_stream = send_stream
-                app.state.document_receive_stream = receive_stream
-                app.state.task_producer = task_producer
-                app.state.shutdown_event = shutdown_event
-                app.state.scanner_wake_event = scanner_wake_event
-
-                # Also store in module singleton for FastMCP session lifespans
-                _vector_sync_state.document_send_stream = send_stream
-                _vector_sync_state.document_receive_stream = receive_stream
-                _vector_sync_state.task_producer = task_producer
-                _vector_sync_state.shutdown_event = shutdown_event
-                _vector_sync_state.scanner_wake_event = scanner_wake_event
-                logger.info("Vector sync state stored in module singleton")
-
-                # Also share with browser_app for /app route
-                for route in app.routes:
-                    if isinstance(route, Mount) and route.path == "/app":
-                        browser_app = cast(Starlette, route.app)
-                        browser_app.state.document_send_stream = send_stream
-                        browser_app.state.document_receive_stream = receive_stream
-                        browser_app.state.task_producer = task_producer
-                        browser_app.state.shutdown_event = shutdown_event
-                        browser_app.state.scanner_wake_event = scanner_wake_event
-                        logger.info(
-                            "Vector sync state shared with browser_app for /app"
-                        )
-                        break
+                # Publish to app.state (ADR-007), the module singleton (FastMCP
+                # session lifespans), and the /app browser sub-app in one place.
+                _wire_vector_sync_state(
+                    app, ingest_transport, shutdown_event, scanner_wake_event
+                )
 
                 # Background sync authenticates as each provisioned user via
                 # locally-stored Nextcloud app passwords (Login Flow v2 /
@@ -1947,11 +1950,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # management API revoke endpoint (via app.state.oauth_context).
                 async with anyio.create_task_group() as tg:
                     # Start user manager task (supervises per-user scanners).
-                    # Each per-user scanner clones task_producer; for the bus
+                    # Each per-user scanner clones the producer; for the bus
                     # producer clone() returns the shared connection.
                     await tg.start(
                         user_manager_task,
-                        task_producer,
+                        ingest_transport.producer,
                         shutdown_event,
                         scanner_wake_event,
                         token_storage,
@@ -1960,18 +1963,31 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         tg,
                     )
 
-                    # In-process processor pool runs only in memory mode; in
-                    # postgres mode the out-of-process worker consumes.
-                    if not use_postgres:
-                        assert receive_stream is not None
-                        for i in range(settings.vector_sync_processor_workers):
-                            await tg.start(
-                                oauth_processor_task,
-                                i,
-                                receive_stream.clone(),
-                                shutdown_event,
-                                nextcloud_host_for_sync,
-                            )
+                    # Start the in-process consumer pool. ``run_consumers`` is a
+                    # no-op for the distributed (postgres) backend — the
+                    # out-of-process ``worker`` role consumes there. The closure
+                    # binds this mode's nextcloud_host (per-document credential
+                    # resolution) and forwards anyio's injected ``task_status``.
+                    # One shared receive stream + N workers ⇒ a single
+                    # multiplexed queue draining every user's documents with
+                    # N-way parallelism, never one user at a time (ADR-028).
+                    async def spawn_worker(
+                        worker_id,
+                        receive_stream,
+                        *,
+                        task_status=anyio.TASK_STATUS_IGNORED,
+                    ):
+                        await oauth_processor_task(
+                            worker_id,
+                            receive_stream,
+                            shutdown_event,
+                            nextcloud_host_for_sync,
+                            task_status=task_status,
+                        )
+
+                    await ingest_transport.run_consumers(
+                        tg, spawn_worker, settings.vector_sync_processor_workers
+                    )
 
                     # Expose this long-lived task group to request-path code
                     # that wants to spawn background work (e.g. ADR-019
@@ -1981,8 +1997,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
                     logger.info(
                         "Background sync tasks started: 1 user manager + %s processors (queue=%s)",
-                        0 if use_postgres else settings.vector_sync_processor_workers,
-                        settings.ingest_queue,
+                        ingest_transport.active_consumer_count,
+                        ingest_transport.backend_name,
                     )
 
                     # Run MCP session manager and yield
@@ -1995,10 +2011,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                             shutdown_event.set()
                             # Request path must not spawn into a cancelling group.
                             _vector_sync_state.eviction_task_group = None
-                            # Close the procrastinate connector pool (postgres).
-                            _drain = getattr(task_producer, "drain", None)
-                            if use_postgres and _drain is not None:
-                                await _drain()
+                            # Tear down backend-owned resources (closes the
+                            # procrastinate connector pool in postgres mode;
+                            # no-op for the memory stream).
+                            await ingest_transport.aclose()
+                            # Drop stale singleton refs to the now-closed transport.
+                            _clear_vector_sync_state()
                             # Close token broker HTTP client
                             if token_broker._http_client:
                                 await token_broker._http_client.aclose()

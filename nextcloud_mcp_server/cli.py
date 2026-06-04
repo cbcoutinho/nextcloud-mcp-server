@@ -325,6 +325,11 @@ def worker(concurrency: int | None):
         get_procrastinate_app,
     )
 
+    # This is the consumer side of the distributed (postgres) ingest backend.
+    # Unlike the in-process anyio pool, the worker talks to procrastinate's App
+    # directly (run_worker_async), so it does NOT go through IngestTransport —
+    # DistributedTransport.run_consumers is a deliberate no-op precisely because
+    # this separate process is the consumer (see vector/queue/transport.py).
     workers = concurrency or settings.vector_sync_processor_workers
     app = get_procrastinate_app()
 
