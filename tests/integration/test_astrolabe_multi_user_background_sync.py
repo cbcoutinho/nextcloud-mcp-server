@@ -18,16 +18,58 @@ password minted + forwarded to MCP → background sync active → DB verificatio
 """
 
 import logging
+import re
 import subprocess
 import tempfile
 
 import anyio
 import pytest
-from playwright.async_api import Page
+from playwright.async_api import Locator, Page
 
 logger = logging.getLogger(__name__)
 
 pytestmark = [pytest.mark.integration, pytest.mark.multi_user_basic]
+
+# Accessible-name fallbacks for the background-sync buttons. The stable element
+# ids (#mcp-enable-background-button / #mcp-revoke-background-button) are the
+# primary, refactor-proof hook restored in the Astrolabe frontend; resolving by
+# button text as well means a future id rename degrades to a slower-but-working
+# lookup instead of a hard 5s Playwright timeout.
+_ENABLE_NAME = re.compile("Enable background indexing", re.IGNORECASE)
+_REVOKE_NAME = re.compile("Disable background indexing", re.IGNORECASE)
+
+
+async def _resolve_settings_button(
+    page: Page, button_id: str, name: re.Pattern, *, timeout: int = 5000
+) -> Locator:
+    """Resolve a background-sync settings button, preferring its stable id.
+
+    Waits up to ``timeout`` for ``button_id`` to become visible; if it never
+    appears, falls back to the button's accessible name. Returning the id
+    locator unchanged when present keeps the match unambiguous (the id button
+    also matches by text, so a combined ``.or_()`` would strict-mode-violate).
+    """
+    by_id = page.locator(button_id)
+    try:
+        await by_id.wait_for(timeout=timeout, state="visible")
+        return by_id
+    except Exception:
+        logger.warning(
+            "%s not found; falling back to accessible-name lookup", button_id
+        )
+        by_name = page.get_by_role("button", name=name)
+        await by_name.wait_for(timeout=timeout, state="visible")
+        return by_name
+
+
+async def _background_sync_enabled(page: Page) -> bool:
+    """True when the settings page is in the enabled state (revoke control shown).
+
+    Checks the stable id first, then the accessible name as a fallback.
+    """
+    if await page.locator("#mcp-revoke-background-button").count() > 0:
+        return True
+    return await page.get_by_role("button", name=_REVOKE_NAME).count() > 0
 
 
 async def login_to_nextcloud(page: Page, username: str, password: str):
@@ -113,19 +155,20 @@ async def enable_background_sync(page: Page, username: str) -> bool:
     )
     await anyio.sleep(1)
 
-    if await page.locator("#mcp-revoke-background-button").count() > 0:
+    if await _background_sync_enabled(page):
         logger.info("✓ Background indexing already enabled for %s", username)
         return True
 
-    enable_button = page.locator("#mcp-enable-background-button")
-    await enable_button.wait_for(timeout=5000, state="visible")
+    enable_button = await _resolve_settings_button(
+        page, "#mcp-enable-background-button", _ENABLE_NAME
+    )
     await enable_button.click()
     logger.info("Clicked 'Enable background indexing' for %s", username)
 
     # On success the page JS reloads to the enabled state (revoke form shown).
     try:
-        await page.locator("#mcp-revoke-background-button").wait_for(
-            timeout=15000, state="visible"
+        await _resolve_settings_button(
+            page, "#mcp-revoke-background-button", _REVOKE_NAME, timeout=15000
         )
         logger.info("✓ Background indexing enabled for %s", username)
         return True
@@ -507,21 +550,19 @@ async def revoke_background_sync_access(page: Page, username: str) -> bool:
     # Wait for page to load
     await anyio.sleep(1)
 
-    # The revoke form (#mcp-revoke-background-form) is only rendered while
-    # background indexing is enabled.
-    revoke_button = page.locator("#mcp-revoke-background-button")
-    try:
-        if await revoke_button.count() == 0:
-            logger.warning(
-                "Background indexing not enabled for %s, nothing to revoke", username
-            )
-            return False
-    except Exception:
-        logger.warning("Could not find revoke button for %s", username)
+    # The revoke control (#mcp-revoke-background-button, inside the
+    # #mcp-revoke-background-form container) is only rendered while background
+    # indexing is enabled.
+    if not await _background_sync_enabled(page):
+        logger.warning(
+            "Background indexing not enabled for %s, nothing to revoke", username
+        )
         return False
 
     try:
-        await revoke_button.wait_for(timeout=5000, state="visible")
+        revoke_button = await _resolve_settings_button(
+            page, "#mcp-revoke-background-button", _REVOKE_NAME
+        )
         logger.info("Found 'Disable background indexing' button")
     except Exception:
         screenshot_path = (
@@ -586,9 +627,10 @@ async def revoke_background_sync_access(page: Page, username: str) -> bool:
         pass
 
     # After revoke + reload the settings page returns to the un-provisioned
-    # state: the revoke button is gone and the app-password input is shown again.
+    # state: the revoke button is gone and the enable button is shown again.
     try:
-        if await page.locator("#mcp-revoke-background-button").is_visible(timeout=2000):
+        await anyio.sleep(2)
+        if await _background_sync_enabled(page):
             logger.error("Revoke button still visible for %s after revoke!", username)
             screenshot_path = (
                 f"{tempfile.gettempdir()}/astrolabe_revoke_still_enabled_{username}.png"
