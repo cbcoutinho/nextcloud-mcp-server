@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote
+from xml.sax.saxutils import escape as xml_escape
 
 from httpx import HTTPStatusError
 
@@ -759,7 +760,12 @@ class WebDAVClient(BaseNextcloudClient):
             # producer omits fileid. ``id(item)`` is a last resort so an item
             # missing both never collapses into another under a shared ``None``
             # key (which would silently drop rows from the result set).
-            return item.get("file_id") or item.get("path") or id(item)
+            # ``is not None`` rather than truthiness so a (hypothetical)
+            # file_id of 0 isn't treated as absent.
+            file_id = item.get("file_id")
+            if file_id is not None:
+                return file_id
+            return item.get("path") or id(item)
 
         results: List[Dict[str, Any]] = []
         seen: set[Any] = set()
@@ -894,7 +900,9 @@ class WebDAVClient(BaseNextcloudClient):
         limit_parts = []
         if limit:
             limit_parts.append(f"<d:nresults>{limit}</d:nresults>")
-        if offset:
+        # ``is not None`` (not truthiness) so a future explicit offset=0 is
+        # emitted rather than silently dropped.
+        if offset is not None:
             limit_parts.append(f"<d:firstresult>{offset}</d:firstresult>")
         limit_xml = f"<d:limit>{''.join(limit_parts)}</d:limit>" if limit_parts else ""
 
@@ -1160,12 +1168,15 @@ class WebDAVClient(BaseNextcloudClient):
     @staticmethod
     def _type_search_args(mime_type: str) -> Tuple[str, List[str]]:
         """Build the where-clause + property list for a MIME-type SEARCH."""
+        # Escape so a caller-supplied MIME type can't break the SEARCH XML or
+        # inject elements. All current callers pass literal strings, but this
+        # keeps the boundary safe for any future user-supplied value.
         where_conditions = f"""
             <d:like>
                 <d:prop>
                     <d:getcontenttype/>
                 </d:prop>
-                <d:literal>{mime_type}</d:literal>
+                <d:literal>{xml_escape(mime_type)}</d:literal>
             </d:like>
         """
 

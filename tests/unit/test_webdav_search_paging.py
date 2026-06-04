@@ -164,6 +164,17 @@ async def test_find_all_by_type_delegates_to_search_files_all(mocker):
     assert "application/pdf" in kwargs["where_conditions"]
 
 
+def test_type_search_args_escapes_mime_type(mocker):
+    """A MIME value with XML metacharacters must not break / inject into the SEARCH."""
+    client = _make_client(mocker)
+    where, properties = client._type_search_args("application/pdf<&>")
+    # The injected metacharacters are escaped inside the <d:literal>, so they
+    # can't break the SEARCH XML or introduce new elements.
+    assert "pdf&lt;&amp;&gt;" in where
+    assert "pdf<&>" not in where
+    assert "fileid" in properties
+
+
 def test_build_search_xml_emits_offset_only_when_set(mocker):
     client = _make_client(mocker)
 
