@@ -59,13 +59,24 @@ class TestIngestQueueResolution:
         with pytest.raises(ValueError, match="INGEST_QUEUE=postgres requires"):
             Settings(ingest_queue="postgres")
 
-    def test_auto_postgres_when_database_url_is_postgres(self, monkeypatch):
+    def test_memory_default_even_on_postgres_url(self, monkeypatch):
+        # Procrastinate is opt-in: a Postgres DATABASE_URL with INGEST_QUEUE
+        # unset must NOT silently enable procrastinate. Default → memory.
         monkeypatch.setattr(
             config_module,
             "get_database_url",
             lambda: "postgresql+asyncpg://mcp:mcp@db/mcp",
         )
-        assert Settings().ingest_queue == "postgres"
+        assert Settings().ingest_queue == "memory"
+
+    def test_explicit_postgres_on_postgres_url(self, monkeypatch):
+        # Opting in explicitly against a Postgres URL is the supported path.
+        monkeypatch.setattr(
+            config_module,
+            "get_database_url",
+            lambda: "postgresql+asyncpg://mcp:mcp@db/mcp",
+        )
+        assert Settings(ingest_queue="postgres").ingest_queue == "postgres"
 
     def test_explicit_memory_on_postgres_url(self, monkeypatch):
         monkeypatch.setattr(

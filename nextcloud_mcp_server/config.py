@@ -171,9 +171,10 @@ _DEFAULTS: dict[str, Any] = {
     # the current monolithic behavior; self-hosters who set none are
     # unaffected. See docs/architecture/mcp-decomposition.md (sibling repo).
     "embedding_provider": "autodetect",  # autodetect | gateway
-    # Ingest queue backend (Deck #183). None → auto: ``postgres`` (procrastinate)
-    # when DATABASE_URL is Postgres, else ``memory`` (the in-process anyio queue
-    # for SQLite/dev). procrastinate requires PostgreSQL.
+    # Ingest queue backend (Deck #183). None → ``memory`` (the in-process anyio
+    # queue): procrastinate is strictly opt-in, even on a Postgres DATABASE_URL.
+    # Set ``postgres`` explicitly to split ingest into a procrastinate worker;
+    # that requires a PostgreSQL DATABASE_URL.
     "ingest_queue": None,  # memory | postgres
     # Process role for the per-tenant two-pod model (Deck #183). ``api`` runs the
     # MCP/query server + scanner (defers jobs); the ``worker`` role is the
@@ -829,13 +830,15 @@ class Settings:
                     f"{_field.upper()} must be one of {sorted(_allowed)}; got {_val!r}"
                 )
 
-        # Ingest queue backend (Deck #183). Unset → auto-derive from the
-        # database backend: procrastinate needs PostgreSQL, so SQLite/dev falls
-        # back to the in-process anyio queue. An explicit ``postgres`` against a
-        # SQLite DATABASE_URL is a misconfiguration — fail loudly.
+        # Ingest queue backend (Deck #183). Procrastinate is opt-in: unset →
+        # ``memory`` (the in-process anyio queue) regardless of DB backend, so a
+        # Postgres DATABASE_URL alone never silently spins up a procrastinate
+        # worker. ``postgres`` must be set explicitly, and an explicit
+        # ``postgres`` against a SQLite DATABASE_URL is a misconfiguration —
+        # fail loudly below.
         _queue = (self.ingest_queue or "").strip().lower()
         if not _queue:
-            _queue = "memory" if is_sqlite_url(get_database_url()) else "postgres"
+            _queue = "memory"
         if _queue not in {"memory", "postgres"}:
             raise ValueError(
                 f"INGEST_QUEUE must be one of ['memory', 'postgres']; got {_queue!r}"

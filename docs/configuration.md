@@ -799,9 +799,10 @@ EMBEDDING_GATEWAY_TOKEN_URL=...
 EMBEDDING_GATEWAY_CLIENT_ID=...
 EMBEDDING_GATEWAY_CLIENT_SECRET=...
 
-# Ingest queue backend. Default (unset) auto-derives from DATABASE_URL:
-#   - PostgreSQL DATABASE_URL → "postgres" (the procrastinate queue)
-#   - SQLite / unset          → "memory"   (the in-process anyio queue)
+# Ingest queue backend. Default (unset) is "memory" — the in-process anyio
+# queue — *regardless of DATABASE_URL*. procrastinate is strictly opt-in: set
+# INGEST_QUEUE=postgres to split ingest into a separate worker (requires a
+# PostgreSQL DATABASE_URL). A Postgres DATABASE_URL alone never enables it.
 INGEST_QUEUE=postgres         # memory | postgres
 # Process role (informational; the worker is launched via the `worker` command):
 MCP_ROLE=all                  # api | worker | all (default)
@@ -810,8 +811,13 @@ TENANT_ID=<uuid>              # per-tenant identity (used in collection naming)
 
 ### Postgres ingest queue + worker (api/worker split)
 
-When `INGEST_QUEUE=postgres` (a PostgreSQL `DATABASE_URL`), the scanner **defers**
-one job per changed document into the app's Postgres via
+This is **opt-in**. By default (`INGEST_QUEUE=memory`) the scanner processes
+changed documents in-process via anyio task groups in the API pod — no
+procrastinate, no separate worker, even when `DATABASE_URL` is Postgres.
+
+When you explicitly set `INGEST_QUEUE=postgres` (against a PostgreSQL
+`DATABASE_URL`), the scanner instead **defers** one job per changed document
+into the app's Postgres via
 [procrastinate](https://procrastinate.readthedocs.io); a separate **worker**
 process drains the queue (fetch → chunk → embed → upsert Qdrant). Run the two
 roles as separate Deployments from the same image:
