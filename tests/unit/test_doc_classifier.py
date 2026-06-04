@@ -84,3 +84,45 @@ def test_large_doc_is_sampled():
     c = clf.classify_pdf(_digital_pdf(pages=120))
     assert c.page_count == 120
     assert c.sampled_pages <= clf.MAX_SAMPLED_PAGES
+
+
+def test_sample_indices_includes_first_and_last_page():
+    idx = clf._sample_indices(100)
+    assert idx[0] == 0
+    assert idx[-1] == 99  # last page must be sampled (scanned-tail case)
+    assert len(idx) <= clf.MAX_SAMPLED_PAGES
+
+
+# --- flag paths --------------------------------------------------------------
+
+
+def _image_with_mashed_text_pdf(pages: int = 2) -> bytes:
+    # Full-page image with a junk (mashed/space-less) text layer over it -- a
+    # scan whose OCR'd text layer is unusable.
+    doc = pymupdf.open()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 600, 850))
+    pix.clear_with(255)
+    img = pix.tobytes("png")
+    mashed = "01322234567mobileoutstandingresilienceacademicachievement " * 3
+    for _ in range(pages):
+        page = doc.new_page(width=595, height=842)
+        page.insert_image(page.rect, stream=img)
+        page.insert_text((50, 60), mashed)
+    data: bytes = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_scanned_flag_when_no_text_layer():
+    c = clf.classify_pdf(_full_page_image_pdf())
+    assert c.total_chars == 0
+    assert "scanned" in c.flags
+    assert c.recommended_tier == "ocr"
+
+
+def test_bad_text_layer_flag_on_image_with_junk_text():
+    c = clf.classify_pdf(_image_with_mashed_text_pdf())
+    assert c.total_chars > 0
+    assert c.mean_text_quality < clf.MIN_TEXT_QUALITY
+    assert "bad_text_layer" in c.flags
+    assert c.recommended_tier == "ocr"

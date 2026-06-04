@@ -82,7 +82,8 @@ def _text_quality(text: str) -> float:
     whitespace_ratio = sum(c.isspace() for c in text) / len(text)
     mean_token_len = sum(len(t) for t in tokens) / len(tokens)
     overlong_frac = sum(len(t) > 20 for t in tokens) / len(tokens)
-    # Clean prose: ~15-20% whitespace, mean token ~4-6 chars, ~no overlong tokens.
+    # Caps at 1.0 from 12% whitespace (conservative; clean prose runs 15-20%),
+    # mean token ~4-6 chars, ~no overlong tokens.
     ws_score = min(whitespace_ratio / 0.12, 1.0)
     len_score = (
         1.0 if mean_token_len <= 10 else max(0.0, 1.0 - (mean_token_len - 10) / 15)
@@ -94,9 +95,13 @@ def _text_quality(text: str) -> float:
 def _sample_indices(page_count: int) -> list[int]:
     if page_count <= MAX_SAMPLED_PAGES:
         return list(range(page_count))
-    # Evenly spaced sample across the document.
-    step = page_count / MAX_SAMPLED_PAGES
-    return sorted({int(i * step) for i in range(MAX_SAMPLED_PAGES)})
+    # Evenly spaced sample that always includes the first AND last page, so a
+    # scanned tail on an otherwise-digital doc isn't missed. Rounding collisions
+    # just yield a slightly smaller (still bounded) sample.
+    last = page_count - 1
+    return sorted(
+        {round(i * last / (MAX_SAMPLED_PAGES - 1)) for i in range(MAX_SAMPLED_PAGES)}
+    )
 
 
 def classify_pdf(content: bytes) -> DocClassification:
@@ -122,6 +127,9 @@ def classify_pdf(content: bytes) -> DocClassification:
             for img in page.get_images(full=True):
                 for rect in page.get_image_rects(img[0]):
                     img_area += abs(rect.width * rect.height)
+            # Approximate: an image placed multiple times (tiled backgrounds) is
+            # double-counted, so img_area can exceed page_area -- the min() caps
+            # coverage at 1.0, which is all the scanned/digital split needs.
             coverage = min(img_area / page_area, 1.0)
             # A page that is mostly a raster image is a scan/photo: its content
             # (handwriting, stamps, figure text) is not fully in any text layer,
@@ -143,6 +151,11 @@ def classify_pdf(content: bytes) -> DocClassification:
     )
     ocr_frac = (sum(p.needs_ocr for p in pages) / sampled) if sampled else 0.0
 
+    # Flags are diagnostic signals, intentionally independent of the routing
+    # verdict: image_heavy fires if ANY page is image-heavy, while the OCR route
+    # needs a FRACTION of pages (OCR_PAGE_FRACTION). So a mostly-digital doc with
+    # one full-page photo is flagged image_heavy yet still routes "fast" -- the
+    # flag_total{image_heavy} count is expected to exceed classified{ocr}.
     flags: set[str] = set()
     if any(p.image_coverage >= IMAGE_COVERAGE_SCANNED for p in pages):
         flags.add("image_heavy")

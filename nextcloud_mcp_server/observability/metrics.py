@@ -285,6 +285,9 @@ document_classified_total = Counter(
 )
 
 document_classifier_flag_total = Counter(
+    # Diagnostic flags, independent of the routing verdict: image_heavy fires if
+    # ANY page is image-heavy whereas the ocr route needs a fraction of pages,
+    # so flag{image_heavy} is expected to exceed classified{recommended_tier=ocr}.
     "astrolabe_document_classifier_flag_total",
     "Tier-0 classifier flags raised on documents",
     ["flag"],  # image_heavy | scanned | bad_text_layer
