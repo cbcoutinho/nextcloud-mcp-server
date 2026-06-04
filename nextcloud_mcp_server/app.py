@@ -126,6 +126,7 @@ from nextcloud_mcp_server.server import (
 )
 from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
+from nextcloud_mcp_server.vector.metrics_publisher import vector_sync_metrics_task
 from nextcloud_mcp_server.vector.oauth_sync import (
     oauth_processor_task,
     user_manager_task,
@@ -1744,6 +1745,16 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                             username,
                         )
 
+                # Publish outstanding-work + corpus gauges on a fixed cadence,
+                # independent of the consumer path and queue backend (fixes the
+                # gauge reading 0 on the multi-user path; see metrics_publisher).
+                await tg.start(
+                    vector_sync_metrics_task,
+                    task_producer,
+                    receive_stream,
+                    shutdown_event,
+                )
+
                 # Expose this long-lived task group to request-path code that
                 # wants to spawn background work (e.g. ADR-019 verify-on-read
                 # eviction). Eviction coroutines have their own try/except, so
@@ -1972,6 +1983,18 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                                 shutdown_event,
                                 nextcloud_host_for_sync,
                             )
+
+                    # Publish outstanding-work + corpus gauges on a fixed
+                    # cadence. Critical on this multi-user path: the consumer is
+                    # oauth_processor_task, which never updated the queue gauge,
+                    # so without this the gauge read 0 while the buffer held
+                    # thousands of pending docs (see metrics_publisher).
+                    await tg.start(
+                        vector_sync_metrics_task,
+                        task_producer,
+                        receive_stream,
+                        shutdown_event,
+                    )
 
                     # Expose this long-lived task group to request-path code
                     # that wants to spawn background work (e.g. ADR-019
