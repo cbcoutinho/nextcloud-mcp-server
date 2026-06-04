@@ -5,6 +5,24 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.101.0 (2026-06-04)
+
+### BREAKING CHANGE
+
+- /api/v1/vector-sync/status field `indexed_documents` now holds
+the distinct-document count (was the chunk count); the chunk count moved to the
+new `indexed_chunks` field. The Astrolabe UI + the nc_get_vector_sync_status MCP
+tool / userinfo page are harmonized in a follow-up (Deck #195).
+
+### Feat
+
+- harmonize MCP tool + userinfo page to documents/chunks model
+- backend-agnostic vector-sync gauges (pending/documents/chunks)
+
+### Fix
+
+- add metrics-interval validator + type/test gaps (review #850)
+
 ## v0.100.0 (2026-06-04)
 
 ### Feat
