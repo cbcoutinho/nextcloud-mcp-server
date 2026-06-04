@@ -136,6 +136,8 @@ _DEFAULTS: dict[str, Any] = {
     "document_pdf_graphics_limit": 1000,
     "document_parse_timeout_seconds": 120.0,
     "document_parse_mem_limit_mb": 1536,
+    # Tier-0 classifier (shadow mode: emits metrics, no routing change)
+    "document_classify_enabled": True,
     # Observability
     "metrics_enabled": True,
     "metrics_port": 9090,
@@ -727,6 +729,9 @@ class Settings:
     # RLIMIT_AS in the parse subprocess (below the pod limit). Applied once per
     # worker for its lifetime, so changing it needs a pod restart.
     document_parse_mem_limit_mb: int = 1536
+    # Tier-0 classifier. Shadow mode for now: runs a cheap pre-pass over each PDF
+    # and emits classification metrics, but does NOT change routing yet.
+    document_classify_enabled: bool = True
 
     # Observability settings
     metrics_enabled: bool = True
@@ -1339,6 +1344,7 @@ def get_settings() -> Settings:
         "document_pdf_graphics_limit": "DOCUMENT_PDF_GRAPHICS_LIMIT",
         "document_parse_timeout_seconds": "DOCUMENT_PARSE_TIMEOUT_SECONDS",
         "document_parse_mem_limit_mb": "DOCUMENT_PARSE_MEM_LIMIT_MB",
+        "document_classify_enabled": "DOCUMENT_CLASSIFY_ENABLED",
         # Observability settings
         "metrics_enabled": "METRICS_ENABLED",
         "metrics_port": "METRICS_PORT",

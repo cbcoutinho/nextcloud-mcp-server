@@ -17,10 +17,12 @@ from nextcloud_mcp_server.acl_hash import compute_acl_hash
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.document_processors import get_registry
+from nextcloud_mcp_server.document_processors.classifier import classify_pdf
 from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
 from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
     record_document_chunks,
+    record_document_classification,
     record_document_parse_failed,
     record_embedding,
     record_qdrant_operation,
@@ -162,6 +164,29 @@ async def processor_task(
             # Continue to next document (no task_done() needed with streams)
 
     logger.info("Processor %s stopped", worker_id)
+
+
+async def _shadow_classify(content: bytes, content_type: str, file_path: str) -> None:
+    """Tier-0 classification in SHADOW mode: emit metrics, change no routing.
+
+    Best-effort and out of the indexing critical path -- it must never block or
+    fail indexing. PDFs only (the classifier is PDF-specific). The cheap pre-pass
+    runs in a worker thread so it doesn't stall the event loop.
+    """
+    if content_type != "application/pdf":
+        return
+    try:
+        c = await anyio.to_thread.run_sync(classify_pdf, content)  # type: ignore[attr-defined]
+        record_document_classification(c.recommended_tier, c.flags, c.mean_text_quality)
+        logger.debug(
+            "Tier-0 classified %s: tier=%s flags=%s quality=%s",
+            file_path,
+            c.recommended_tier,
+            sorted(c.flags),
+            c.mean_text_quality,
+        )
+    except Exception:
+        logger.debug("Tier-0 classification failed for %s", file_path, exc_info=True)
 
 
 async def process_document(
@@ -534,6 +559,10 @@ async def _index_document(
                 "vector_sync.file_size": len(content_bytes),
             },
         ):
+            # Tier-0 shadow classification (observability only; no routing change).
+            if settings.document_classify_enabled:
+                await _shadow_classify(content_bytes, content_type, file_path)
+
             # Use document processor registry to extract text
             registry = get_registry()
 
