@@ -361,7 +361,16 @@ async def scan_user_documents(
             return
 
         # Scan tagged PDF files (after notes)
-        # Get indexed file IDs from Qdrant (for deletion tracking)
+        # Get indexed file IDs from Qdrant (for deletion tracking).
+        # NOTE: this is filtered by user_id, so a "pure claimer" — a user who
+        # gained access to a shared file via the tenant-wide dedup path
+        # (claim_existing_index) without ever indexing it themselves — is NOT in
+        # this set (the points carry the first indexer's user_id, only the
+        # claimer's user:<uid> in acl_principals). Such a user is therefore never
+        # enqueued for deletion by the grace-period sweep below; their stale
+        # acl_principals entry is reclaimed lazily by verify-on-read eviction
+        # (release_document_for_user) when a search surfaces a now-inaccessible
+        # result. A future scanner-side cleanup could scroll acl_principals too.
         indexed_file_ids = set()
         if not initial_sync:
             assert qdrant_client is not None  # narrow for the type checker
