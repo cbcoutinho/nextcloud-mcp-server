@@ -162,10 +162,14 @@ def build_ownership_filter(
     """Build the Qdrant ``Filter`` constraining a search to readable points.
 
     Matches points whose ``owner_id`` is in ``accessible_owners`` (excluding
-    self) OR whose ``user_id`` equals ``user_id``. The ``user_id`` branch covers
-    *all* of the caller's own content — both new points (where
-    ``owner_id == user_id``) and legacy points indexed before ``owner_id``
-    existed — so self is intentionally NOT repeated in the ``owner_id`` branch.
+    self) OR whose ``user_id`` equals ``user_id`` OR whose ``acl_principals``
+    contains ``user:<user_id>``. The ``user_id`` branch covers *all* of the
+    caller's own content — both new points (where ``owner_id == user_id``) and
+    legacy points indexed before ``owner_id`` existed — so self is intentionally
+    NOT repeated in the ``owner_id`` branch. The ``acl_principals`` branch covers
+    files that were indexed once and deduplicated across users (user-agnostic
+    point IDs): such a point's ``user_id``/``owner_id`` are the first indexer's,
+    so only the observed-access principal set surfaces it to other readers.
 
     Args:
         user_id: Querying user (matched by the ``user_id`` branch, which is the
@@ -188,6 +192,13 @@ def build_ownership_filter(
     other_owners = [owner for owner in owners if owner != user_id]
     conditions: list[Condition] = [
         FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+        # Observed-access branch: a file deduplicated across users carries one
+        # user-agnostic point set whose ``user_id``/``owner_id`` are the first
+        # indexer's. ``acl_principals`` lists every user whose scanner has seen
+        # (hence can read) the file, so this branch surfaces a shared/group-folder
+        # file to every reader even when they were not the indexer. Verify-on-read
+        # (_verify_files) is the precise ACL gate on the returned candidates.
+        FieldCondition(key="acl_principals", match=MatchAny(any=[f"user:{user_id}"])),
     ]
     if other_owners:
         conditions.insert(

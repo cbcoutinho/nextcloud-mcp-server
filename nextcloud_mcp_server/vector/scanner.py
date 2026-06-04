@@ -31,6 +31,7 @@ from nextcloud_mcp_server.vector.placeholder import (
 )
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 from nextcloud_mcp_server.vector.queue.ports import TaskProducer
+from nextcloud_mcp_server.vector.sharing_state import claim_existing_index
 
 logger = logging.getLogger(__name__)
 
@@ -448,6 +449,24 @@ async def scan_user_documents(
                     except (ValueError, KeyError):
                         pass
 
+                # Tenant-wide content dedup (Layer 1 / observed-access ACL): if
+                # this exact file content (fileid + etag) is already indexed under
+                # the current embedding model by ANY user in the tenant, skip
+                # re-parsing/re-embedding and just record that this user can read
+                # it. Eliminates the per-user reprocessing ping-pong that arises
+                # because chunk point IDs are user-agnostic (note 386945 #5).
+                etag = str(file_info.get("etag") or "")
+                if etag and await claim_existing_index(file_id, "file", etag, user_id):
+                    _potentially_deleted.pop((user_id, file_id), None)
+                    logger.debug(
+                        "Dedup: file %s (ID: %s) already indexed in tenant; "
+                        "granted access to %s without reprocessing",
+                        file_path,
+                        file_id,
+                        user_id,
+                    )
+                    continue
+
                 if initial_sync:
                     # Send everything on first sync - write placeholder first
                     await write_placeholder_point(
@@ -455,6 +474,7 @@ async def scan_user_documents(
                         doc_type="file",
                         user_id=user_id,
                         modified_at=modified_at,
+                        etag=etag,
                         file_path=file_path,
                     )
                     await send_stream.send(
@@ -465,6 +485,7 @@ async def scan_user_documents(
                             operation="index",
                             modified_at=modified_at,
                             file_path=file_path,
+                            etag=etag,
                         )
                     )
                     file_queued += 1
@@ -525,6 +546,7 @@ async def scan_user_documents(
                             doc_type="file",
                             user_id=user_id,
                             modified_at=modified_at,
+                            etag=etag,
                             file_path=file_path,
                         )
                         await send_stream.send(
@@ -535,6 +557,7 @@ async def scan_user_documents(
                                 operation="index",
                                 modified_at=modified_at,
                                 file_path=file_path,
+                                etag=etag,
                             )
                         )
                         file_queued += 1

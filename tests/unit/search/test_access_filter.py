@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -157,26 +158,32 @@ class TestOwnersCacheBehavior:
 
 
 class TestBuildOwnershipFilter:
+    @staticmethod
+    def _by_key(flt: Filter) -> dict[str, Any]:
+        assert flt.should is not None
+        return {cond.key: cond for cond in flt.should}
+
     def test_defaults_to_self_only_when_owners_omitted(self) -> None:
         flt = build_ownership_filter("alice")
 
-        # Self-only: just the user_id branch. Self is NOT duplicated into an
-        # owner_id branch (the user_id branch already covers self-owned content).
-        assert flt.should is not None
-        assert len(flt.should) == 1
-        (user_branch,) = flt.should
-        assert user_branch.key == "user_id"
-        assert user_branch.match.value == "alice"
+        # Self-only: the user_id branch plus the observed-access acl_principals
+        # branch (so a deduplicated shared file the user has claimed is still
+        # findable). No owner_id branch — self is covered by user_id.
+        branches = self._by_key(flt)
+        assert set(branches) == {"user_id", "acl_principals"}
+        assert branches["user_id"].match.value == "alice"
+        assert branches["acl_principals"].match.any == ["user:alice"]
 
     def test_expands_owner_branch_with_accessible_owners(self) -> None:
         flt = build_ownership_filter("alice", ["alice", "bob", "carol"])
 
-        owner_branch, user_branch = flt.should
+        branches = self._by_key(flt)
+        assert set(branches) == {"owner_id", "user_id", "acl_principals"}
         # Owner branch holds only the OTHER owners — self ("alice") is excluded
         # because the user_id branch already matches self-owned content.
-        assert set(owner_branch.match.any) == {"bob", "carol"}
-        assert user_branch.key == "user_id"
-        assert user_branch.match.value == "alice"
+        assert set(branches["owner_id"].match.any) == {"bob", "carol"}
+        assert branches["user_id"].match.value == "alice"
+        assert branches["acl_principals"].match.any == ["user:alice"]
 
     def test_explicit_empty_list_omits_owner_branch_keeps_legacy(self) -> None:
         # Edge case: caller passed an explicit empty list. The owner_id branch
@@ -185,11 +192,9 @@ class TestBuildOwnershipFilter:
         # user still finds their own content from before the migration.
         flt = build_ownership_filter("alice", [])
 
-        assert flt.should is not None
-        assert len(flt.should) == 1
-        (user_branch,) = flt.should
-        assert user_branch.key == "user_id"
-        assert user_branch.match.value == "alice"
+        branches = self._by_key(flt)
+        assert set(branches) == {"user_id", "acl_principals"}
+        assert branches["user_id"].match.value == "alice"
 
 
 class TestBuildBaseFilterConditions:

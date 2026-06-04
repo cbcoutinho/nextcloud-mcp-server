@@ -11,7 +11,7 @@ from typing import Any, cast
 import anyio
 from anyio.abc import TaskStatus
 from anyio.streams.memory import MemoryObjectReceiveStream
-from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
+from qdrant_client.models import PointStruct
 
 from nextcloud_mcp_server.acl_hash import compute_acl_hash
 from nextcloud_mcp_server.client import NextcloudClient
@@ -33,6 +33,11 @@ from nextcloud_mcp_server.vector.html_processor import html_to_markdown
 from nextcloud_mcp_server.vector.placeholder import delete_placeholder_point
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 from nextcloud_mcp_server.vector.scanner import DocumentTask
+from nextcloud_mcp_server.vector.sharing_state import (
+    claim_existing_index,
+    existing_principals,
+    release_document_for_user,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -192,28 +197,15 @@ async def process_document(
     ):
         try:
             qdrant_client = await get_qdrant_client()
-            settings = get_settings()
 
             # Handle deletion
             if doc_task.operation == "delete":
-                await qdrant_client.delete(
-                    collection_name=settings.get_collection_name(),
-                    points_selector=Filter(
-                        must=[
-                            FieldCondition(
-                                key="user_id",
-                                match=MatchValue(value=doc_task.user_id),
-                            ),
-                            FieldCondition(
-                                key="doc_id",
-                                match=MatchValue(value=doc_task.doc_id),
-                            ),
-                            FieldCondition(
-                                key="doc_type",
-                                match=MatchValue(value=doc_task.doc_type),
-                            ),
-                        ]
-                    ),
+                # Release this user rather than blind-delete: a file shared across
+                # users has one user-agnostic point set referenced by multiple
+                # principals, so the points are removed only once the last reader
+                # is gone (see vector/sharing_state.release_document_for_user).
+                await release_document_for_user(
+                    doc_task.doc_id, doc_task.doc_type, doc_task.user_id
                 )
                 logger.info(
                     "Deleted %s_%s for %s",
@@ -479,6 +471,28 @@ async def _index_document(
                 )
             file_path = doc_task.file_path
 
+            # Cross-worker dedup race-guard: two users' tasks for the same shared
+            # file can be enqueued before either finishes. If another worker has
+            # already indexed this exact content (fileid + etag + embedding model)
+            # in the tenant, claim it for this user (observed-access ACL) and skip
+            # the expensive fetch/parse/embed entirely.
+            if doc_task.etag and await claim_existing_index(
+                doc_task.doc_id, "file", doc_task.etag, doc_task.user_id
+            ):
+                await delete_placeholder_point(
+                    doc_id=doc_task.doc_id,
+                    doc_type="file",
+                    user_id=doc_task.user_id,
+                )
+                logger.info(
+                    "Dedup hit for file %s (etag=%s); claimed for user %s "
+                    "without reprocessing",
+                    doc_task.doc_id,
+                    doc_task.etag,
+                    doc_task.user_id,
+                )
+                return
+
             # Read file content via WebDAV
             content_bytes, content_type = await nc_client.webdav.read_file(file_path)
         else:
@@ -510,7 +524,10 @@ async def _index_document(
                 content = result.text
                 file_metadata = result.metadata
                 title = file_metadata.get("title") or file_path.split("/")[-1]
-                etag = ""  # WebDAV read_file doesn't return etag
+                # etag comes from the scanner's tag REPORT (threaded via the
+                # DocumentTask); read_file itself returns no etag. It is the
+                # tenant-wide content-dedup key, so it must be persisted.
+                etag = doc_task.etag or ""
 
                 # Diagnostic: Log page boundary information if available
                 if "page_boundaries" in file_metadata:
@@ -763,6 +780,19 @@ async def _index_document(
     _embedding_identity = settings.get_embedding_model_name()
     _acl_hash = compute_acl_hash([("user", doc_task.user_id)])
 
+    # Observed-access ACL principals (computed once per document, not per chunk).
+    # Seed with the indexer (and owner, if distinct) unioned with any principals
+    # already recorded — so re-indexing after a content change preserves
+    # visibility for readers who had previously claimed the file rather than
+    # resetting it to just the indexer.
+    _acl_principals = sorted(
+        set(await existing_principals(doc_task.doc_id, doc_task.doc_type))
+        | {
+            f"user:{doc_task.user_id}",
+            f"user:{doc_task.owner_id or doc_task.user_id}",
+        }
+    )
+
     # Surface deck card data quality issues at indexing time rather than
     # only at verification time (where _verify_deck_cards falls through to
     # legacy-data pass-through when board_id/stack_id are missing). This is
@@ -807,6 +837,13 @@ async def _index_document(
                     # crawl shared-with-them content can set owner_id to the
                     # true owner without losing the "who indexed this" trail.
                     "owner_id": doc_task.owner_id or doc_task.user_id,
+                    # Observed-access ACL set: every user whose scanner has seen
+                    # (hence can read) this document. Seeded with the indexer (and
+                    # owner, if distinct); grown lazily as other readers' scanners
+                    # hit the tenant-wide dedup path. Search ORs a
+                    # MatchAny(acl_principals, ["user:<me>"]) branch so a
+                    # deduplicated shared file stays findable by every reader.
+                    "acl_principals": _acl_principals,
                     "doc_id": doc_task.doc_id,
                     "doc_type": doc_task.doc_type,
                     "is_placeholder": False,  # Real indexed document (not placeholder)
