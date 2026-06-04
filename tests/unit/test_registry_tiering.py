@@ -117,6 +117,20 @@ async def test_ocr_escalation_on_empty_text(monkeypatch):
     esc.assert_called_once()
 
 
+async def test_ocr_failure_falls_back_to_fast(monkeypatch):
+    # OCR enabled but the backend can't run (no creds / API down) -> keep the
+    # tier-1 result instead of failing the document.
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=True))
+    monkeypatch.setattr(reg_mod, "record_document_escalation", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast", text=""), 20),
+        (_Fake("ocr", "ocr", text="", success=False), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "fast"
+    assert res.success is True
+
+
 async def test_no_ocr_escalation_when_disabled(monkeypatch):
     monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=False))
     r = _registry(

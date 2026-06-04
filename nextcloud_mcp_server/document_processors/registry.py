@@ -264,7 +264,7 @@ class ProcessorRegistry:
                     filename or "<bytes>",
                     reason,
                 )
-                return await self._run_processor(
+                ocr_result = await self._run_processor(
                     ocr,
                     content,
                     content_type,
@@ -272,6 +272,19 @@ class ProcessorRegistry:
                     options,
                     progress_callback,
                     escalated=True,
+                )
+                # OCR is an enhancement, not a gate: if it can't run (no backend
+                # configured / API down) or returns nothing, keep the tier-1
+                # result rather than failing the document. Otherwise an operator
+                # who sets DOCUMENT_OCR_ENABLED=true without credentials would
+                # make scanned docs fail entirely -- strictly worse than off.
+                if ocr_result.success:
+                    return ocr_result
+                logger.warning(
+                    "OCR escalation did not succeed for %s (%s); keeping the "
+                    "tier-1 result",
+                    filename or "<bytes>",
+                    ocr_result.metadata.get("parse_failed_reason", "error"),
                 )
 
         return result
