@@ -188,9 +188,11 @@ async def reconcile_document_path(
     rewrites ``file_path`` and the derived ``title`` on every real chunk via a
     single metadata-only ``set_payload`` (no re-fetch, no re-embed).
 
-    No-op (returns False) when the path is unchanged or no real points exist yet
-    (filter matches nothing). A legacy point with no stored ``file_path`` is
-    treated as changed, backfilling both fields.
+    Returns False (no write attempted) only when the path is unchanged or empty.
+    When the path differs it returns True after issuing the ``set_payload``; that
+    write is itself a Qdrant-side no-op if no real chunks exist yet (e.g. only a
+    placeholder), which the callers tolerate. A legacy point with no stored
+    ``file_path`` is treated as changed, backfilling both fields.
     """
     if not current_path or stored_path == current_path:
         return False

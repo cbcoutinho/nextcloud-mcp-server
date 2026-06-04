@@ -590,15 +590,16 @@ async def scan_user_documents(
                     elif existing_metadata is not None and not existing_metadata.get(
                         "is_placeholder", False
                     ):
-                        # Unchanged content (not re-queued) but the file may have
-                        # been renamed/moved: a rename keeps the fileid while
-                        # changing the path, and the dedup miss here means the
-                        # etag changed without a modified_at bump. Refresh the
-                        # stale path/title metadata without re-embedding. No-op
-                        # when the path is unchanged. Skip placeholders: reconcile
-                        # only touches real chunks, so a not-yet-indexed file would
-                        # just incur a 0-point set_payload (the real index writes
-                        # the current path anyway).
+                        # Reached only on the rename-with-stable-mtime path: a
+                        # fresh modified_at would have set needs_indexing, and an
+                        # etag dedup hit would have continued above -- so here the
+                        # content wasn't re-queued (modified_at stable) yet the
+                        # stored path may be stale from a rename/move (the fileid
+                        # is unchanged). Refresh path/title without re-embedding;
+                        # reconcile_document_path no-ops when the path matches.
+                        # Skip placeholders: reconcile only touches real chunks, so
+                        # a not-yet-indexed file would just incur a 0-point
+                        # set_payload (the real index writes the current path).
                         try:
                             await reconcile_document_path(
                                 file_id,
