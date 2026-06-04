@@ -9,7 +9,7 @@ import traceback
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 import anyio
@@ -133,13 +133,14 @@ from nextcloud_mcp_server.vector.oauth_sync import (
 from nextcloud_mcp_server.vector.placeholder import sweep_orphan_placeholders
 from nextcloud_mcp_server.vector.processor import processor_task
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
-from nextcloud_mcp_server.vector.queue import (
-    IngestTransport,
-    TaskProducer,
-    build_transport,
-)
+from nextcloud_mcp_server.vector.queue import build_transport
 from nextcloud_mcp_server.vector.scanner import scanner_task
 from nextcloud_mcp_server.vector.webhook_receiver import handle_nextcloud_webhook
+
+if TYPE_CHECKING:
+    # Annotation-only in this module (the file uses `from __future__ import
+    # annotations`, so these are never evaluated at runtime).
+    from nextcloud_mcp_server.vector.queue import IngestTransport, TaskProducer
 
 logger = logging.getLogger(__name__)
 HTTPXClientInstrumentor().instrument()
@@ -405,6 +406,10 @@ def _clear_vector_sync_state() -> None:
     _vector_sync_state.task_producer = None
     _vector_sync_state.document_send_stream = None
     _vector_sync_state.document_receive_stream = None
+    # Symmetric with the fields above: the just-fired events belong to the
+    # closed lifespan; the next startup's _wire_vector_sync_state rebinds them.
+    _vector_sync_state.shutdown_event = None
+    _vector_sync_state.scanner_wake_event = None
 
 
 @dataclass

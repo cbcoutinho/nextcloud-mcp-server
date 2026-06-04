@@ -153,6 +153,9 @@ class LocalTransport(IngestTransport):
     """
 
     def __init__(self, max_buffer_size: float):
+        # "DocumentTask" as a string (not the symbol): the class is
+        # TYPE_CHECKING-only here, and anyio ignores the runtime value of the
+        # type argument — so the string is intentional, not a typo.
         send_stream, receive_stream = anyio.create_memory_object_stream["DocumentTask"](
             max_buffer_size=max_buffer_size
         )
