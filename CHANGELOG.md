@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.99.0 (2026-06-04)
+
+### Feat
+
+- dedup shared-file parsing/embedding across users in vector sync
+
+### Fix
+
+- only merge prior acl_principals for files (review #848)
+- **webdav**: harden offset/key truthiness and escape SEARCH mime type
+- **webdav**: await fallback, guard dedup key, split paging for complexity
+- paginate tagged-folder SEARCH so the scanner discovers all files
+
 ## v0.98.1 (2026-06-04)
 
 ### Fix
