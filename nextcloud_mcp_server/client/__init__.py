@@ -244,7 +244,10 @@ class NextcloudClient:
             for dir_info in tagged_dirs:
                 dir_path = dir_info.get("path", "").strip("/")
                 try:
-                    descendants = await self.webdav.find_by_type(
+                    # find_all_by_type pages past Nextcloud's default ~100-result
+                    # SEARCH page so every tagged-folder descendant is discovered;
+                    # find_by_type would silently cap a large folder.
+                    descendants = await self.webdav.find_all_by_type(
                         mime_type_filter, scope=dir_path
                     )
                 except Exception as e:

@@ -2,10 +2,11 @@
 
 Currently covers ``find_files_by_tag``: the wrapper that combines
 ``WebDAVClient.get_tag_by_name``, ``WebDAVClient.get_files_by_tag``, and
-``WebDAVClient.find_by_type`` to resolve a system tag (and any tagged
+``WebDAVClient.find_all_by_type`` to resolve a system tag (and any tagged
 folders) into a flat list of files.
 """
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -13,13 +14,15 @@ import pytest
 from nextcloud_mcp_server.client import NextcloudClient, _normalise_search_result
 
 
-def _make_client() -> NextcloudClient:
+def _make_client() -> Any:
     """Build a NextcloudClient with mocked sub-clients.
 
     The client constructor opens an httpx session; we don't need it, just
-    a stub instance whose ``webdav`` attribute we can replace.
+    a stub instance whose ``webdav`` attribute we can replace. Returned as
+    ``Any`` so tests can freely reassign mocked methods on the sub-clients
+    without fighting the real ``WebDAVClient`` signatures.
     """
-    client = NextcloudClient.__new__(NextcloudClient)
+    client: Any = NextcloudClient.__new__(NextcloudClient)
     client.username = "alice"
     client.webdav = AsyncMock()
     return client
@@ -99,7 +102,7 @@ class TestFindFilesByTag:
         result = await client.find_files_by_tag("vector-index")
 
         assert result == []
-        client.webdav.find_by_type.assert_not_called()
+        client.webdav.find_all_by_type.assert_not_called()
 
     async def test_directly_tagged_files_pass_through_with_mime_filter(self):
         client = _make_client()
@@ -127,7 +130,7 @@ class TestFindFilesByTag:
 
         assert {f["id"] for f in result} == {1}
         # No tagged dirs → no SEARCH walk.
-        client.webdav.find_by_type.assert_not_called()
+        client.webdav.find_all_by_type.assert_not_called()
 
     async def test_expands_tagged_directory_into_pdf_descendants(self):
         client = _make_client()
@@ -144,7 +147,7 @@ class TestFindFilesByTag:
             ]
         )
         # Search inside the folder returns two PDFs.
-        client.webdav.find_by_type = AsyncMock(
+        client.webdav.find_all_by_type = AsyncMock(
             return_value=[
                 {
                     "file_id": 11,
@@ -174,8 +177,8 @@ class TestFindFilesByTag:
             assert f["last_modified_timestamp"] is not None
         # SEARCH was scoped to the tagged folder (no leading slash) and
         # forwarded the requested MIME type as the positional first arg.
-        client.webdav.find_by_type.assert_awaited_once()
-        call_args = client.webdav.find_by_type.await_args
+        client.webdav.find_all_by_type.assert_awaited_once()
+        call_args = client.webdav.find_all_by_type.await_args
         assert call_args.args[0] == "application/pdf"
         assert call_args.kwargs["scope"] == "corpus"
 
@@ -199,7 +202,7 @@ class TestFindFilesByTag:
                 },
             ]
         )
-        client.webdav.find_by_type = AsyncMock(
+        client.webdav.find_all_by_type = AsyncMock(
             return_value=[
                 {
                     "file_id": 11,
@@ -244,7 +247,9 @@ class TestFindFilesByTag:
                 },
             ]
         )
-        client.webdav.find_by_type = AsyncMock(side_effect=RuntimeError("REPORT 500"))
+        client.webdav.find_all_by_type = AsyncMock(
+            side_effect=RuntimeError("REPORT 500")
+        )
 
         import logging
 
@@ -282,10 +287,10 @@ class TestFindFilesByTag:
         # Without a MIME filter, directory expansion would fan out
         # uncontrollably — the helper deliberately skips it.
         assert {f["id"] for f in result} == {7}
-        client.webdav.find_by_type.assert_not_called()
+        client.webdav.find_all_by_type.assert_not_called()
 
     async def test_skips_descendant_directories_in_search_results(self):
-        """find_by_type can return collections too (e.g. when the SEARCH
+        """find_all_by_type can return collections too (e.g. when the SEARCH
         backend treats a folder's mime type as matching). Those must not
         slip through and clobber file IDs."""
         client = _make_client()
@@ -300,7 +305,7 @@ class TestFindFilesByTag:
                 }
             ]
         )
-        client.webdav.find_by_type = AsyncMock(
+        client.webdav.find_all_by_type = AsyncMock(
             return_value=[
                 {
                     "file_id": 50,
