@@ -1748,6 +1748,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # Publish outstanding-work + corpus gauges on a fixed cadence,
                 # independent of the consumer path and queue backend (fixes the
                 # gauge reading 0 on the multi-user path; see metrics_publisher).
+                # receive_stream is None in postgres mode — get_ingest_pending
+                # falls back to the procrastinate job counts there.
                 await tg.start(
                     vector_sync_metrics_task,
                     task_producer,
@@ -1989,6 +1991,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     # oauth_processor_task, which never updated the queue gauge,
                     # so without this the gauge read 0 while the buffer held
                     # thousands of pending docs (see metrics_publisher).
+                    # receive_stream is None in postgres mode — get_ingest_pending
+                    # falls back to the procrastinate job counts there.
                     await tg.start(
                         vector_sync_metrics_task,
                         task_producer,

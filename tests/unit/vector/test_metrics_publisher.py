@@ -78,6 +78,15 @@ class TestCountIndexed:
 
         assert all(call.kwargs["exact"] is False for call in qc.count.await_args_list)
 
+    async def test_default_is_exact_true(self) -> None:
+        # The on-demand status endpoint relies on the exact=True default.
+        qc = AsyncMock()
+        qc.count.side_effect = [_count_obj(10), _count_obj(3)]
+
+        await mp.count_indexed(qc, _COLLECTION)
+
+        assert all(call.kwargs["exact"] is True for call in qc.count.await_args_list)
+
 
 class TestPublishVectorSyncMetrics:
     @pytest.fixture(autouse=True)
