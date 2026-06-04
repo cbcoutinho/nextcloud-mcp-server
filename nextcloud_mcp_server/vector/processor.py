@@ -21,6 +21,7 @@ from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_servi
 from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
     record_document_chunks,
+    record_document_parse_failed,
     record_embedding,
     record_qdrant_operation,
     record_vector_sync_processing,
@@ -31,7 +32,10 @@ from nextcloud_mcp_server.search.pdf_highlighter import PDFHighlighter
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.document_chunker import DocumentChunker
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
-from nextcloud_mcp_server.vector.placeholder import delete_placeholder_point
+from nextcloud_mcp_server.vector.placeholder import (
+    delete_placeholder_point,
+    update_placeholder_status,
+)
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 from nextcloud_mcp_server.vector.scanner import DocumentTask
 from nextcloud_mcp_server.vector.sharing_state import (
@@ -233,7 +237,18 @@ async def process_document(
 
             for attempt in range(max_retries):
                 try:
-                    await _index_document(doc_task, nc_client, qdrant_client)
+                    indexed = await _index_document(doc_task, nc_client, qdrant_client)
+
+                    # A permanent parse failure returns False: it was already
+                    # recorded (document_parse_failed_total + the registry's
+                    # document_parse_total{error}) and the placeholder marked
+                    # "failed". It is not an indexing event and not retryable, so
+                    # don't count it as a successful upsert/indexed document.
+                    # Identity check, not `if not indexed`: a successful index
+                    # (including a dedup hit) returns None, which must NOT be
+                    # treated as a parse failure.
+                    if indexed is False:
+                        return
 
                     # Record successful processing metrics
                     duration = time.time() - start_time
@@ -299,9 +314,12 @@ async def process_document(
 
 async def _index_document(
     doc_task: DocumentTask, nc_client: NextcloudClient, qdrant_client
-):
+) -> bool | None:
     """
     Index a single document (called by process_document with retry).
+
+    Returns ``False`` when a permanent parse failure means nothing was indexed
+    (the caller must then skip the success metrics); ``None`` otherwise.
 
     Args:
         doc_task: Document task to index
@@ -525,6 +543,40 @@ async def _index_document(
                     content_type=content_type,
                     filename=file_path,
                 )
+
+                # A permanent parse failure (e.g. an isolated-worker OOM/timeout
+                # on a pathological PDF) returns success=False rather than
+                # raising -- there is nothing to index and retrying would just
+                # fail again. Mark the placeholder "failed" so the scanner stops
+                # re-queuing it (until the file changes) and return False so the
+                # caller skips the success metrics (it was not indexed).
+                if not result.success:
+                    reason = result.metadata.get("parse_failed_reason", "error")
+                    record_document_parse_failed(reason)
+                    logger.warning(
+                        "Permanent parse failure for %s (reason=%s); marking "
+                        "failed and skipping index",
+                        file_path,
+                        reason,
+                    )
+                    try:
+                        await update_placeholder_status(
+                            doc_id=doc_task.doc_id,
+                            doc_type=doc_task.doc_type,
+                            user_id=doc_task.user_id,
+                            status="failed",
+                        )
+                    except Exception:
+                        # Best-effort: a transient Qdrant error here only means
+                        # the placeholder isn't marked, so the scanner retries
+                        # the (still un-indexable) file later -- not fatal.
+                        logger.debug(
+                            "Could not mark placeholder failed for %s",
+                            doc_task.doc_id,
+                            exc_info=True,
+                        )
+                    return False
+
                 content = result.text
                 file_metadata = result.metadata
                 title = file_metadata.get("title") or file_path.split("/")[-1]

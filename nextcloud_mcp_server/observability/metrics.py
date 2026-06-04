@@ -261,6 +261,17 @@ document_escalation_total = Counter(
     ["from_tier", "to_tier", "reason"],
 )
 
+# Hard parse failures: the parse now runs in an isolated subprocess, so a
+# timeout/OOM that kills the worker is caught here. This is distinct from
+# ``document_parse_total{status="error"}`` (an in-process exception): a hard
+# OOM previously killed the pod before any except ran, so it incremented
+# nothing -- this counter makes those failures visible.
+document_parse_failed_total = Counter(
+    "astrolabe_document_parse_failed_total",
+    "Document parses that failed in the isolated worker (process killed)",
+    ["reason"],  # reason: timeout | oom | error
+)
+
 # --- Embedding stages ---------------------------------------------------------
 
 embedding_duration_seconds = Histogram(
@@ -615,6 +626,15 @@ def record_document_escalation(from_tier: str, to_tier: str, reason: str) -> Non
     document_escalation_total.labels(
         from_tier=from_tier, to_tier=to_tier, reason=reason
     ).inc()
+
+
+def record_document_parse_failed(reason: str) -> None:
+    """Record a hard parse failure from the isolated worker.
+
+    Args:
+        reason: ``timeout`` | ``oom`` | ``error``
+    """
+    document_parse_failed_total.labels(reason=reason).inc()
 
 
 def record_embedding(
