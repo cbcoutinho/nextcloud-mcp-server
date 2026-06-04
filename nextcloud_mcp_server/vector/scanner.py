@@ -19,6 +19,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue, Record
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.client.news import NewsItemType
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import record_vector_sync_scan
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.server.tag_exclusion import (
@@ -1097,8 +1098,10 @@ async def scan_deck_cards(
             if not stack.cards:
                 continue
 
-            # Iterate through cards in stack
-            for card in stack.cards:
+            # Iterate through cards in stack. get_stacks() always yields full
+            # DeckCard objects; the DeckCardSummary projection only happens in
+            # the tool layer (server/deck.py), never on freshly-fetched stacks.
+            for card in cast(list[DeckCard], stack.cards):
                 # Skip archived cards
                 if card.archived:
                     continue

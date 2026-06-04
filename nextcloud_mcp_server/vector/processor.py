@@ -18,6 +18,7 @@ from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.document_processors import get_registry
 from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
+from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
     record_document_chunks,
     record_embedding,
@@ -421,7 +422,10 @@ async def _index_document(
                         if card_found:
                             break
                         if s.cards:
-                            for c in s.cards:
+                            # get_stacks() always yields full DeckCard objects;
+                            # the DeckCardSummary projection only happens in the
+                            # tool layer, never on freshly-fetched stacks.
+                            for c in cast(list[DeckCard], s.cards):
                                 if c.id == int(doc_task.doc_id):
                                     card = c
                                     board = b

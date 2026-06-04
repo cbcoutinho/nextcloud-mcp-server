@@ -6,12 +6,14 @@ position markers for better visualization and understanding of search results.
 
 import logging
 from dataclasses import dataclass
+from typing import cast
 
 from httpx import HTTPStatusError
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.search.access_filter import build_ownership_filter
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
@@ -792,7 +794,10 @@ async def _fetch_document_text(
                         if card_found:
                             break
                         if stack.cards:
-                            for c in stack.cards:
+                            # get_stacks() always yields full DeckCard objects;
+                            # the DeckCardSummary projection only happens in the
+                            # tool layer, never on freshly-fetched stacks.
+                            for c in cast(list[DeckCard], stack.cards):
                                 if c.id == int(doc_id):
                                     card = c
                                     card_found = True
