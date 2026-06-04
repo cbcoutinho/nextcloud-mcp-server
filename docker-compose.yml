@@ -160,15 +160,21 @@ services:
       - TOKEN_STORAGE_DB=/app/data/tokens.db
 
       - ENABLE_SEMANTIC_SEARCH=true
-      # Fast discovery + scan cadence for integration tests: the multi-user
-      # background-sync suite provisions a user, creates a note, then waits
-      # ~90s for it to be indexed. With the production defaults (user-poll 60s
-      # + scan 60s) a freshly-provisioned user often isn't even discovered
-      # within that budget, so the wait times out (note never indexed). Match
-      # the single-user service's short cadence so discovery + scan + index
-      # complete promptly under CI load.
+      # Tuned cadence for the multi-user background-sync integration suite,
+      # which provisions a user, creates a note, then waits ~90s for it to be
+      # indexed. Two independent knobs matter here:
+      #   * USER_POLL_INTERVAL gates how fast the background-sync user manager
+      #     *discovers* a freshly-provisioned user (its scanner runs an initial
+      #     scan immediately on start). The 60s default left too little of the
+      #     90s budget, so drop it to 5s for prompt discovery.
+      #   * SCAN_INTERVAL gates *re-scan* churn. Each scan re-queues the user's
+      #     whole corpus, so a very short interval (e.g. 5s) floods the single
+      #     processor worker faster than it drains on slower CI runners
+      #     (pending climbs, indexed stays 0). Keep it moderate: the immediate
+      #     initial scan already indexes the corpus once; 30s re-scans avoid
+      #     the flood while still catching a note created just after that scan.
       - VECTOR_SYNC_USER_POLL_INTERVAL=5
-      - VECTOR_SYNC_SCAN_INTERVAL=5
+      - VECTOR_SYNC_SCAN_INTERVAL=30
       - VECTOR_SYNC_PROCESSOR_WORKERS=1
 
       # OAuth credentials for background sync (optional - uses DCR if not provided)
