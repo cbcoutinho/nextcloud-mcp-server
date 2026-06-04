@@ -52,7 +52,7 @@ async def test_offset_honored_pages_through_entire_corpus(mocker):
     client = _make_client(mocker)
     corpus = _corpus(250)
 
-    async def fake(*, limit, offset=0, **_):
+    def fake(*, limit, offset=0, **_):
         return corpus[offset : offset + limit]
 
     client.search_files = AsyncMock(side_effect=fake)
@@ -69,7 +69,7 @@ async def test_offset_ignored_falls_back_to_single_fetch(mocker):
     client = _make_client(mocker)
     corpus = _corpus(250)
 
-    async def fake(*, limit, offset=0, **_):
+    def fake(*, limit, offset=0, **_):
         # offset IGNORED: always return the first ``limit`` rows.
         return corpus[:limit]
 
@@ -87,7 +87,7 @@ async def test_truncation_warns_and_increments_metric(mocker):
     client = _make_client(mocker)
     corpus = _corpus(20)
 
-    async def fake(*, limit, offset=0, **_):
+    def fake(*, limit, offset=0, **_):
         return corpus[offset : offset + limit]
 
     client.search_files = AsyncMock(side_effect=fake)
@@ -106,7 +106,7 @@ async def test_offset_ignored_fallback_truncation_metric(mocker):
     client = _make_client(mocker)
     corpus = _corpus(40)
 
-    async def fake(*, limit, offset=0, **_):
+    def fake(*, limit, offset=0, **_):
         return corpus[:limit]  # offset ignored
 
     client.search_files = AsyncMock(side_effect=fake)
@@ -118,6 +118,37 @@ async def test_offset_ignored_fallback_truncation_metric(mocker):
 
     assert len(results) == 10
     metric.inc.assert_called_once()
+
+
+async def test_offset_page_exception_falls_back_to_single_fetch(mocker):
+    """If an offset page *raises* (e.g. server rejects firstresult), the
+    exception fallback must still return the full corpus -- and it must be
+    awaited (regression guard for a missing ``await``)."""
+    client = _make_client(mocker)
+    corpus = _corpus(80)
+
+    def fake(*, limit, offset=0, **_):
+        if offset > 0:
+            raise RuntimeError("server rejected <d:firstresult>")
+        return corpus[:limit]
+
+    client.search_files = AsyncMock(side_effect=fake)
+
+    results = await client.search_files_all(scope="dir", page_size=50)
+
+    # page0 (0..49) fills; page1(offset=50) raises -> fallback single fetch
+    # returns the whole corpus. A non-awaited coroutine would fail these.
+    assert isinstance(results, list)
+    assert [r["file_id"] for r in results] == list(range(80))
+
+
+async def test_offset_page_exception_at_offset_zero_propagates(mocker):
+    """A failure on the very first page is a real error, not a paging quirk."""
+    client = _make_client(mocker)
+    client.search_files = AsyncMock(side_effect=RuntimeError("boom"))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await client.search_files_all(scope="dir", page_size=50)
 
 
 async def test_find_all_by_type_delegates_to_search_files_all(mocker):

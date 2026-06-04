@@ -726,14 +726,43 @@ class WebDAVClient(BaseNextcloudClient):
         Returns:
             All matching file/directory dicts, de-duplicated by file id / path.
         """
+        paged = await self._search_offset_paged(
+            scope, where_conditions, properties, order_by, page_size, max_results
+        )
+        # ``None`` signals the server ignored the offset (or an offset page
+        # failed) -- fetch everything in one bounded request instead.
+        if paged is None:
+            return await self._single_fetch_fallback(
+                scope, where_conditions, properties, order_by, max_results
+            )
+        self._warn_if_truncated(len(paged), scope, max_results)
+        return paged[:max_results]
+
+    async def _search_offset_paged(
+        self,
+        scope: str,
+        where_conditions: Optional[str],
+        properties: Optional[List[str]],
+        order_by: Optional[List[Tuple[str, str]]],
+        page_size: int,
+        max_results: int,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Page the SEARCH with ``<d:firstresult>`` until exhausted.
+
+        Returns the accumulated rows, or ``None`` when the server ignores the
+        offset (a page repeats already-seen rows, or an offset page errors) and
+        the caller should fall back to a single bounded fetch.
+        """
 
         def _key(item: Dict[str, Any]) -> Any:
             # file_id is globally unique; path is the stable fallback when a
-            # producer omits fileid. Either uniquely identifies a result row.
-            return item.get("file_id") or item.get("path")
+            # producer omits fileid. ``id(item)`` is a last resort so an item
+            # missing both never collapses into another under a shared ``None``
+            # key (which would silently drop rows from the result set).
+            return item.get("file_id") or item.get("path") or id(item)
 
         results: List[Dict[str, Any]] = []
-        seen: set = set()
+        seen: set[Any] = set()
         offset = 0
 
         while len(results) < max_results:
@@ -747,26 +776,27 @@ class WebDAVClient(BaseNextcloudClient):
                     offset=offset,
                 )
             except Exception:
+                # A failure on the very first page is a real error, not a
+                # paging quirk -- surface it. A later page failing means offset
+                # paging is unusable; signal a fallback rather than lose the tail.
                 if offset == 0:
                     raise
-                # An offset page failed (e.g. server rejects <d:firstresult>);
-                # fall back to a single bounded fetch rather than lose the tail.
                 logger.warning(
                     "WebDAV SEARCH offset page failed for scope %r; "
                     "falling back to single fetch",
                     scope,
                 )
-                return self._single_fetch_fallback(
-                    scope, where_conditions, properties, order_by, max_results
-                )
+                return None
 
             if not page:
                 break
 
             fresh = [item for item in page if _key(item) not in seen]
 
-            # Server ignored the offset (returned an already-seen page). Stop
-            # paging and fetch everything in one bounded request instead.
+            # Server ignored the offset (returned an already-seen page); signal
+            # the caller to re-fetch in one bounded request. The accumulated
+            # ``results`` are intentionally discarded -- the single fetch is
+            # authoritative and re-returns them, so nothing is lost.
             if offset > 0 and not fresh:
                 logger.warning(
                     "WebDAV SEARCH ignored offset for scope %r; "
@@ -774,9 +804,7 @@ class WebDAVClient(BaseNextcloudClient):
                     scope,
                     max_results,
                 )
-                return await self._single_fetch_fallback(
-                    scope, where_conditions, properties, order_by, max_results
-                )
+                return None
 
             for item in fresh:
                 seen.add(_key(item))
@@ -788,16 +816,7 @@ class WebDAVClient(BaseNextcloudClient):
 
             offset += page_size
 
-        if len(results) >= max_results:
-            document_scan_truncated_total.inc()
-            logger.warning(
-                "WebDAV SEARCH reached max_results=%d for scope %r; "
-                "results may be truncated -- raise WEBDAV_SEARCH_MAX_RESULTS",
-                max_results,
-                scope,
-            )
-
-        return results[:max_results]
+        return results
 
     async def _single_fetch_fallback(
         self,
@@ -815,7 +834,13 @@ class WebDAVClient(BaseNextcloudClient):
             order_by=order_by,
             limit=max_results,
         )
-        if len(results) >= max_results:
+        self._warn_if_truncated(len(results), scope, max_results)
+        return results
+
+    @staticmethod
+    def _warn_if_truncated(count: int, scope: str, max_results: int) -> None:
+        """Warn + count when a SEARCH hit the ceiling, so a cap is never silent."""
+        if count >= max_results:
             document_scan_truncated_total.inc()
             logger.warning(
                 "WebDAV SEARCH reached max_results=%d for scope %r; "
@@ -823,7 +848,6 @@ class WebDAVClient(BaseNextcloudClient):
                 max_results,
                 scope,
             )
-        return results
 
     def _build_search_xml(
         self,
