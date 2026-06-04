@@ -182,7 +182,7 @@ async def test_processor_success_builds_page_boundaries(monkeypatch):
     assert "Hello world" in result.text
     assert result.metadata["page_boundaries"][0]["page"] == 1
     # settings forwarded to the isolated parse
-    assert seen["graphics_limit"] == 5000
+    assert seen["graphics_limit"] == 1000
     assert seen["timeout_seconds"] == 120
     assert seen["mem_limit_mb"] == 1536
 

@@ -133,7 +133,7 @@ _DEFAULTS: dict[str, Any] = {
     "document_chunk_size": 2048,
     "document_chunk_overlap": 200,
     # PDF parse isolation (OOM guard)
-    "document_pdf_graphics_limit": 5000,
+    "document_pdf_graphics_limit": 1000,
     "document_parse_timeout_seconds": 120.0,
     "document_parse_mem_limit_mb": 1536,
     # Observability
@@ -712,9 +712,14 @@ class Settings:
 
     # PDF parse isolation (OOM guard). The parse runs in a subprocess so one
     # pathological file fails that doc, not the pod.
-    # to_markdown graphics cap; pages above it skip graphics analysis. Must be
-    # >=1 -- pymupdf4llm treats 0 as "no cap", which re-exposes the OOM.
-    document_pdf_graphics_limit: int = 5000
+    # to_markdown graphics cap: pages with more vector drawings than this skip
+    # the O(n^2) find_tables analysis. Must be >=1 -- pymupdf4llm treats 0 as
+    # "no cap", which re-exposes the OOM. Default 1000: form/table PDFs have
+    # ~1.5k grid-line drawings per page, which at the old 5000 cap slipped
+    # through uncapped and timed out after ~17s/page (for zero recovered
+    # tables); at 1000 they parse in ~3s with identical text. Pages with genuine
+    # simple tables (<1000 drawings) still get table detection.
+    document_pdf_graphics_limit: int = 1000
     # wall-clock cap per parse; the worker subprocess is killed on timeout.
     # float so a fractional DOCUMENT_PARSE_TIMEOUT_SECONDS is honoured, matching
     # anyio.move_on_after's float seconds.
