@@ -46,6 +46,16 @@ def user_principal(user_id: str) -> str:
     return f"user:{user_id}"
 
 
+def file_title_from_path(file_path: str) -> str:
+    """Human-facing title for an indexed file: its Nextcloud filename.
+
+    We deliberately favour the filename over any embedded document title (e.g. a
+    PDF's ``/Title`` metadata), which frequently disagrees with how the user
+    named the file in Nextcloud and is confusing in the search/viz UI.
+    """
+    return file_path.rstrip("/").rsplit("/", 1)[-1] or file_path
+
+
 def _document_filter(doc_id: str, doc_type: str, *, real_only: bool) -> Filter:
     """Match every chunk of one document; optionally exclude placeholder points."""
     must: list = [
@@ -163,11 +173,54 @@ async def add_principal(
     return True
 
 
+async def reconcile_document_path(
+    doc_id: str,
+    doc_type: str,
+    stored_path: str | None,
+    current_path: str,
+) -> bool:
+    """Refresh ``file_path``/``title`` on a renamed/moved file's existing points.
+
+    A rename in Nextcloud keeps the ``fileid`` (our ``doc_id``) but changes the
+    path while leaving content — hence ``etag`` and ``mtime`` — untouched, so
+    both the dedup claim and the scanner's freshness gate skip re-embedding and
+    the stored payload keeps the OLD path and OLD filename-derived title. This
+    rewrites ``file_path`` and the derived ``title`` on every real chunk via a
+    single metadata-only ``set_payload`` (no re-fetch, no re-embed).
+
+    No-op (returns False) when the path is unchanged or no real points exist yet
+    (filter matches nothing). A legacy point with no stored ``file_path`` is
+    treated as changed, backfilling both fields.
+    """
+    if not current_path or stored_path == current_path:
+        return False
+    qdrant_client = await get_qdrant_client()
+    settings = get_settings()
+    await qdrant_client.set_payload(
+        collection_name=settings.get_collection_name(),
+        payload={
+            "file_path": current_path,
+            "title": file_title_from_path(current_path),
+        },
+        points=_document_filter(doc_id, doc_type, real_only=True),
+        wait=True,
+    )
+    logger.info(
+        "Reconciled path for %s_%s after rename/move: %r -> %r",
+        doc_type,
+        doc_id,
+        stored_path,
+        current_path,
+    )
+    return True
+
+
 async def claim_existing_index(
     doc_id: str,
     doc_type: str,
     etag: str,
     user_id: str,
+    current_path: str | None = None,
 ) -> bool:
     """Tenant-wide dedup claim: skip reprocessing if content is already indexed.
 
@@ -176,6 +229,12 @@ async def claim_existing_index(
     in which case ``user_id`` is added to ``acl_principals`` (so the file remains
     searchable for them) and the caller should skip fetch/parse/embed. Returns
     False when nothing reusable exists and the document must be processed.
+
+    When ``current_path`` is given (files), a dedup hit also reconciles a stale
+    ``file_path``/``title`` on the existing points: identical content (etag) at a
+    new path means the file was renamed/moved, which the dedup would otherwise
+    silently skip. Reuses the payload already fetched here, so it adds no extra
+    Qdrant round-trip in the steady (unchanged-path) state.
 
     Fail-safe: a Qdrant error during the lookup degrades to False (process the
     document normally) rather than aborting the scan — the dedup is an
@@ -198,6 +257,18 @@ async def claim_existing_index(
         return False
     if existing is None:
         return False
+    if current_path:
+        try:
+            await reconcile_document_path(
+                doc_id, doc_type, existing.get("file_path"), current_path
+            )
+        except Exception as exc:  # noqa: BLE001 — non-fatal; retried next scan
+            logger.warning(
+                "Path reconcile failed for %s_%s (%s); next scan retries",
+                doc_type,
+                doc_id,
+                exc,
+            )
     try:
         await add_principal(doc_id, doc_type, user_id, existing.get(ACL_PRINCIPALS_KEY))
     except Exception as exc:  # noqa: BLE001 — non-fatal; recovered on next scan

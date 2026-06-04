@@ -111,6 +111,54 @@ class TestAddPrincipal:
         assert kwargs["payload"][ss.ACL_PRINCIPALS_KEY] == ["user:alice"]
 
 
+class TestFileTitleFromPath:
+    def test_uses_basename(self) -> None:
+        assert ss.file_title_from_path("/Documents/report.pdf") == "report.pdf"
+
+    def test_no_directory(self) -> None:
+        assert ss.file_title_from_path("report.pdf") == "report.pdf"
+
+    def test_trailing_slash_ignored(self) -> None:
+        assert ss.file_title_from_path("/a/b/c/") == "c"
+
+    def test_root_only_falls_back_to_input(self) -> None:
+        # Degenerate path with no basename — return the input rather than "".
+        assert ss.file_title_from_path("/") == "/"
+
+
+class TestReconcileDocumentPath:
+    async def test_noop_when_path_unchanged(self, client) -> None:
+        changed = await ss.reconcile_document_path(
+            "42", "file", "/a/old.pdf", "/a/old.pdf"
+        )
+        assert changed is False
+        client.set_payload.assert_not_called()
+
+    async def test_noop_when_current_path_empty(self, client) -> None:
+        changed = await ss.reconcile_document_path("42", "file", "/a/old.pdf", "")
+        assert changed is False
+        client.set_payload.assert_not_called()
+
+    async def test_rewrites_path_and_title_on_rename(self, client) -> None:
+        changed = await ss.reconcile_document_path(
+            "42", "file", "/a/old.pdf", "/a/new-name.pdf"
+        )
+        assert changed is True
+        client.set_payload.assert_awaited_once()
+        kwargs = client.set_payload.await_args.kwargs
+        assert kwargs["payload"]["file_path"] == "/a/new-name.pdf"
+        assert kwargs["payload"]["title"] == "new-name.pdf"
+        # Only real (non-placeholder) chunks of this document are updated.
+        assert _must_keys(kwargs["points"]) == ["doc_id", "doc_type", "is_placeholder"]
+
+    async def test_backfills_when_no_stored_path(self, client) -> None:
+        # Legacy point with no stored file_path -> treated as changed (backfill).
+        changed = await ss.reconcile_document_path("42", "file", None, "/a/new.pdf")
+        assert changed is True
+        kwargs = client.set_payload.await_args.kwargs
+        assert kwargs["payload"]["title"] == "new.pdf"
+
+
 class TestClaimExistingIndex:
     async def test_true_and_grants_principal_on_hit(self, client) -> None:
         client.scroll.return_value = (
@@ -135,6 +183,48 @@ class TestClaimExistingIndex:
     async def test_false_when_not_indexed(self, client) -> None:
         client.scroll.return_value = ([], None)
         assert await ss.claim_existing_index("42", "file", "abc", "bob") is False
+        client.set_payload.assert_not_called()
+
+    async def test_dedup_hit_reconciles_stale_path(self, client) -> None:
+        # Same content (etag) at a new path = a rename the dedup would otherwise
+        # skip. The user is already a principal, so the only write is the path
+        # reconcile (one set_payload with the refreshed file_path + title).
+        client.scroll.return_value = (
+            [
+                _point(
+                    {
+                        payload_keys.EMBEDDING_IDENTITY: _MODEL,
+                        ss.ACL_PRINCIPALS_KEY: ["user:bob"],
+                        "file_path": "/a/old.pdf",
+                    }
+                )
+            ],
+            None,
+        )
+        claimed = await ss.claim_existing_index(
+            "42", "file", "abc", "bob", current_path="/a/new.pdf"
+        )
+        assert claimed is True
+        client.set_payload.assert_awaited_once()
+        payload = client.set_payload.await_args.kwargs["payload"]
+        assert payload["file_path"] == "/a/new.pdf"
+        assert payload["title"] == "new.pdf"
+
+    async def test_dedup_hit_without_current_path_skips_reconcile(self, client) -> None:
+        # No current_path (non-file callers) -> never touches file_path/title.
+        client.scroll.return_value = (
+            [
+                _point(
+                    {
+                        payload_keys.EMBEDDING_IDENTITY: _MODEL,
+                        ss.ACL_PRINCIPALS_KEY: ["user:bob"],
+                        "file_path": "/a/old.pdf",
+                    }
+                )
+            ],
+            None,
+        )
+        assert await ss.claim_existing_index("42", "file", "abc", "bob") is True
         client.set_payload.assert_not_called()
 
     async def test_hit_for_already_listed_user_writes_nothing(self, client) -> None:

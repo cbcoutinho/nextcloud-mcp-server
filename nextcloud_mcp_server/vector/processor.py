@@ -43,6 +43,7 @@ from nextcloud_mcp_server.vector.scanner import DocumentTask
 from nextcloud_mcp_server.vector.sharing_state import (
     claim_existing_index,
     existing_principals,
+    file_title_from_path,
     release_document_for_user,
 )
 
@@ -531,7 +532,11 @@ async def _index_document(
             # in the tenant, claim it for this user (observed-access ACL) and skip
             # the expensive fetch/parse/embed entirely.
             if doc_task.etag and await claim_existing_index(
-                doc_task.doc_id, "file", doc_task.etag, doc_task.user_id
+                doc_task.doc_id,
+                "file",
+                doc_task.etag,
+                doc_task.user_id,
+                current_path=doc_task.file_path,
             ):
                 await delete_placeholder_point(
                     doc_id=doc_task.doc_id,
@@ -615,7 +620,10 @@ async def _index_document(
 
                 content = result.text
                 file_metadata = result.metadata
-                title = file_metadata.get("title") or file_path.split("/")[-1]
+                # Favour the Nextcloud filename over any embedded document title
+                # (e.g. a PDF's /Title), which often disagrees with how the user
+                # named the file and is confusing in the UI.
+                title = file_title_from_path(file_path)
                 # etag comes from the scanner's tag REPORT (threaded via the
                 # DocumentTask); read_file itself returns no etag. It is the
                 # tenant-wide content-dedup key, so it must be persisted.
