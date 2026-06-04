@@ -5,6 +5,20 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.100.0 (2026-06-04)
+
+### Feat
+
+- add IngestTransport port for local/distributed ingest backends
+
+### Refactor
+
+- address PR #851 review round 5 (ingest transport)
+- address PR #851 review round 4 (ingest transport)
+- address PR #851 review round 3 (ingest transport)
+- address PR #851 review round 2 (ingest transport)
+- address PR #851 review round 1 (ingest transport)
+
 ## v0.99.0 (2026-06-04)
 
 ### Feat
