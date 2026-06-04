@@ -392,6 +392,21 @@ def _wire_vector_sync_state(
             break
 
 
+def _clear_vector_sync_state() -> None:
+    """Drop the module-singleton ingest references on lifespan shutdown.
+
+    Mirrors the ``eviction_task_group = None`` cleanup so that any code reaching
+    the singleton in the narrow window between transport teardown and process
+    exit (e.g. a late webhook) sees ``None`` rather than a producer/stream backed
+    by an already-closed resource. The per-request ``shutdown_event`` gate is the
+    primary guard; this is defense-in-depth. Integration tests with module-level
+    singletons also benefit (no stale closed producer leaks between runs).
+    """
+    _vector_sync_state.task_producer = None
+    _vector_sync_state.document_send_stream = None
+    _vector_sync_state.document_receive_stream = None
+
+
 @dataclass
 class AppContext:
     """Application context for BasicAuth mode."""
@@ -1771,7 +1786,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 logger.info(
                     "Background sync tasks started: 1 scanner + %s processors (queue=%s)",
                     ingest_transport.active_consumer_count,
-                    settings.ingest_queue,
+                    ingest_transport.backend_name,
                 )
 
                 # Run MCP session manager and yield
@@ -1789,6 +1804,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         # for the memory stream, which task-group cancellation
                         # closes).
                         await ingest_transport.aclose()
+                        # Drop stale singleton refs to the now-closed transport.
+                        _clear_vector_sync_state()
                         await client.close()
                         # TaskGroup automatically cancels all tasks on exit
 
@@ -1976,7 +1993,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     logger.info(
                         "Background sync tasks started: 1 user manager + %s processors (queue=%s)",
                         ingest_transport.active_consumer_count,
-                        settings.ingest_queue,
+                        ingest_transport.backend_name,
                     )
 
                     # Run MCP session manager and yield
@@ -1993,6 +2010,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                             # procrastinate connector pool in postgres mode;
                             # no-op for the memory stream).
                             await ingest_transport.aclose()
+                            # Drop stale singleton refs to the now-closed transport.
+                            _clear_vector_sync_state()
                             # Close token broker HTTP client
                             if token_broker._http_client:
                                 await token_broker._http_client.aclose()

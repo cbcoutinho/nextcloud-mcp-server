@@ -44,6 +44,7 @@ class TestBuildTransport:
 
         assert isinstance(transport, LocalTransport)
         assert isinstance(transport.producer, MemoryTaskProducer)
+        assert transport.backend_name == "memory"
         # Memory backend exposes both raw stream ends.
         assert transport.send_stream is not None
         assert transport.receive_stream is not None
@@ -61,6 +62,7 @@ class TestBuildTransport:
 
         assert isinstance(transport, DistributedTransport)
         assert transport.producer is producer
+        assert transport.backend_name == "postgres"
         # Schema applied once on the open pool before any defer.
         producer.ensure_schema.assert_awaited_once()
         # No in-process stream for the distributed backend.

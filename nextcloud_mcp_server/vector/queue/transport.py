@@ -87,6 +87,15 @@ class IngestTransport(abc.ABC):
         """The :class:`TaskProducer` to wire into ``app.state`` / the scanner."""
 
     @property
+    @abc.abstractmethod
+    def backend_name(self) -> str:
+        """Short backend identifier for logs/metrics (``memory``/``postgres``).
+
+        Lets the lifespan log which ingest backend is active without reading
+        ``settings.ingest_queue`` — the backend choice stays inside the transport.
+        """
+
+    @property
     def send_stream(self) -> MemoryObjectSendStream[DocumentTask] | None:
         """Memory backend's raw send end; ``None`` for distributed backends.
 
@@ -157,6 +166,10 @@ class LocalTransport(IngestTransport):
         return self._producer
 
     @property
+    def backend_name(self) -> str:
+        return "memory"
+
+    @property
     def send_stream(self) -> MemoryObjectSendStream[DocumentTask]:
         return self._send_stream
 
@@ -220,6 +233,10 @@ class DistributedTransport(IngestTransport):
     @property
     def producer(self) -> TaskProducer:
         return self._producer
+
+    @property
+    def backend_name(self) -> str:
+        return "postgres"
 
     async def aclose(self) -> None:
         await self._producer.drain()
