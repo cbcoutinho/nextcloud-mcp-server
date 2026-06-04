@@ -57,7 +57,7 @@ def test_text_quality_mashed_tokens_scores_low():
 
 
 def test_text_quality_empty_is_zero():
-    assert clf._text_quality("") == 0.0
+    assert clf._text_quality("") == pytest.approx(0.0)
 
 
 # --- routing -----------------------------------------------------------------
@@ -66,7 +66,7 @@ def test_text_quality_empty_is_zero():
 def test_digital_pdf_routes_fast():
     c = clf.classify_pdf(_digital_pdf())
     assert c.recommended_tier == "fast"
-    assert c.ocr_page_fraction == 0.0
+    assert c.ocr_page_fraction == pytest.approx(0.0)
     assert "image_heavy" not in c.flags
     assert c.mean_text_quality > 0.8
 
@@ -74,7 +74,7 @@ def test_digital_pdf_routes_fast():
 def test_full_page_image_routes_ocr():
     c = clf.classify_pdf(_full_page_image_pdf())
     assert c.recommended_tier == "ocr"
-    assert c.ocr_page_fraction == 1.0
+    assert c.ocr_page_fraction == pytest.approx(1.0)
     assert "image_heavy" in c.flags
     assert "scanned" in c.flags  # no text layer at all
 
