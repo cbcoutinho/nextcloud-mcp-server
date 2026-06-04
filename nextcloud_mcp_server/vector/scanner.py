@@ -32,7 +32,10 @@ from nextcloud_mcp_server.vector.placeholder import (
 )
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 from nextcloud_mcp_server.vector.queue.ports import TaskProducer
-from nextcloud_mcp_server.vector.sharing_state import claim_existing_index
+from nextcloud_mcp_server.vector.sharing_state import (
+    claim_existing_index,
+    reconcile_document_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -466,7 +469,9 @@ async def scan_user_documents(
                 # it. Eliminates the per-user reprocessing ping-pong that arises
                 # because chunk point IDs are user-agnostic (note 386945 #5).
                 etag = str(file_info.get("etag") or "")
-                if etag and await claim_existing_index(file_id, "file", etag, user_id):
+                if etag and await claim_existing_index(
+                    file_id, "file", etag, user_id, current_path=file_path
+                ):
                     _potentially_deleted.pop((user_id, file_id), None)
                     logger.debug(
                         "Dedup: file %s (ID: %s) already indexed in tenant; "
@@ -582,6 +587,34 @@ async def scan_user_documents(
                             )
                         )
                         file_queued += 1
+                    elif existing_metadata is not None and not existing_metadata.get(
+                        "is_placeholder", False
+                    ):
+                        # Reached only on the rename-with-stable-mtime path: a
+                        # fresh modified_at would have set needs_indexing, and an
+                        # etag dedup hit would have continued above -- so here the
+                        # content wasn't re-queued (modified_at stable) yet the
+                        # stored path may be stale from a rename/move (the fileid
+                        # is unchanged). Refresh path/title without re-embedding;
+                        # reconcile_document_path no-ops when the path matches.
+                        # Skip placeholders: reconcile only touches real chunks, so
+                        # a not-yet-indexed file would just incur a 0-point
+                        # set_payload (the real index writes the current path).
+                        try:
+                            await reconcile_document_path(
+                                file_id,
+                                "file",
+                                existing_metadata.get("file_path"),
+                                file_path,
+                            )
+                        except Exception as exc:  # noqa: BLE001 — non-fatal
+                            logger.warning(
+                                "Path reconcile failed for file %s (ID: %s) (%s); "
+                                "next scan retries",
+                                file_path,
+                                file_id,
+                                exc,
+                            )
 
             logger.info(
                 "[SCAN-%s] Found %s tagged PDFs for %s", scan_id, file_count, user_id
