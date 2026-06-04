@@ -88,6 +88,7 @@ _DEFAULTS: dict[str, Any] = {
     "vector_sync_scan_interval": 300,
     "vector_sync_processor_workers": 3,
     "vector_sync_queue_max_size": 10000,
+    "vector_sync_metrics_refresh_interval": 20,
     "vector_sync_user_poll_interval": 60,
     # Orphan-sweep at Pod startup (card #101). When True, delete any
     # placeholders carrying a different / absent ``instance_id`` before
@@ -270,6 +271,7 @@ _dynaconf = Dynaconf(
         Validator("VECTOR_SYNC_SCAN_INTERVAL", gte=1),
         Validator("VECTOR_SYNC_PROCESSOR_WORKERS", gte=1),
         Validator("VECTOR_SYNC_QUEUE_MAX_SIZE", gte=1),
+        Validator("VECTOR_SYNC_METRICS_REFRESH_INTERVAL", gte=1),
         Validator("VECTOR_SYNC_USER_POLL_INTERVAL", gte=1),
         Validator("VERIFICATION_CONCURRENCY", gte=1),
         Validator("DOCUMENT_CHUNK_SIZE", gte=1),
@@ -645,6 +647,10 @@ class Settings:
     vector_sync_scan_interval: int = 300  # seconds (5 minutes)
     vector_sync_processor_workers: int = 3
     vector_sync_queue_max_size: int = 10000
+    # Cadence for the periodic gauge publisher (vector/metrics_publisher.py):
+    # outstanding-work + indexed documents/chunks. Decoupled from the consumer
+    # so the gauges are correct on every deployment mode and queue backend.
+    vector_sync_metrics_refresh_interval: int = 20  # seconds
     vector_sync_user_poll_interval: int = 60  # seconds - OAuth mode user discovery
     vector_sync_orphan_sweep_enabled: bool = True  # card #101
     # System tag marking files for vector indexing. The scanner indexes files
@@ -1267,6 +1273,7 @@ def get_settings() -> Settings:
         "vector_sync_scan_interval": "VECTOR_SYNC_SCAN_INTERVAL",
         "vector_sync_processor_workers": "VECTOR_SYNC_PROCESSOR_WORKERS",
         "vector_sync_queue_max_size": "VECTOR_SYNC_QUEUE_MAX_SIZE",
+        "vector_sync_metrics_refresh_interval": "VECTOR_SYNC_METRICS_REFRESH_INTERVAL",
         "vector_sync_user_poll_interval": "VECTOR_SYNC_USER_POLL_INTERVAL",
         "vector_sync_orphan_sweep_enabled": "VECTOR_SYNC_ORPHAN_SWEEP_ENABLED",
         "vector_sync_pdf_tag": "VECTOR_SYNC_PDF_TAG",

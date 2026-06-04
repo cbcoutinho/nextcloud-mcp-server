@@ -20,13 +20,12 @@ import time
 from importlib.metadata import version
 from typing import Any
 
-from qdrant_client.models import Filter
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.config_validators import AuthMode, detect_auth_mode
-from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
+from nextcloud_mcp_server.vector.metrics_publisher import count_indexed
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -307,28 +306,32 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
             ingest_queue=settings.ingest_queue,
         )
 
-        # Get Qdrant client and query indexed count (backend-independent)
-        indexed_count = 0
+        # Corpus size (backend-independent): distinct documents AND total
+        # chunks. A single "indexed" figure is ambiguous because each document
+        # fans out to ~N chunks, so both are reported (the UI shows both).
+        indexed_documents = 0
+        indexed_chunks = 0
         try:
             qdrant_client = await get_qdrant_client()
-
-            # Count documents in collection, excluding placeholders
-            count_result = await qdrant_client.count(
-                collection_name=settings.get_collection_name(),
-                count_filter=Filter(must=[get_placeholder_filter()]),
+            indexed_documents, indexed_chunks = await count_indexed(
+                qdrant_client, settings.get_collection_name()
             )
-            indexed_count = count_result.count
-
         except Exception as e:
-            logger.warning("Failed to query Qdrant for indexed count: %s", e)
-            # Continue with indexed_count = 0
+            logger.warning("Failed to query Qdrant for indexed counts: %s", e)
+            # Continue with zeroed counts
 
         # Determine status
         status = "syncing" if pending.pending > 0 else "idle"
 
         body: dict[str, object] = {
             "status": status,
-            "indexed_documents": indexed_count,
+            # indexed_documents is now the distinct-document count (was the chunk
+            # count before — the two differ by the per-document chunk fan-out).
+            # indexed_chunks exposes the raw point count separately; indexed_count
+            # is kept as a deprecated alias of indexed_chunks for back-compat.
+            "indexed_documents": indexed_documents,
+            "indexed_chunks": indexed_chunks,
+            "indexed_count": indexed_chunks,
             "pending_documents": pending.pending,
             "ingest_queue": settings.ingest_queue,
         }

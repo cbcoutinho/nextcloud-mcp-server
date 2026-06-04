@@ -166,6 +166,30 @@ vector_sync_queue_size = Gauge(
     "Current number of documents in processing queue",
 )
 
+# Outstanding ingest work (queued + in-flight), backend-agnostic. Published by
+# the periodic vector_sync_metrics_task from ingest_status.get_ingest_pending(),
+# so it is correct on every consumer path (single-user processor_task AND
+# multi-user oauth_processor_task) and every queue backend (anyio buffer depth
+# or procrastinate todo+doing) — unlike the per-loop update of
+# ``vector_sync_queue_size``, which only ran on the single-user path.
+vector_sync_pending_documents = Gauge(
+    "mcp_vector_sync_pending_documents",
+    "Outstanding ingest documents (queued or in-flight, not yet processed)",
+)
+
+# Corpus size in the vector store. ``indexed_documents`` counts distinct
+# documents (one chunk_index=0 point per document); ``indexed_chunks`` counts
+# every non-placeholder point. The two differ by the chunk fan-out (~N chunks
+# per document), which is why a single "indexed" figure is ambiguous.
+vector_sync_indexed_documents = Gauge(
+    "mcp_vector_sync_indexed_documents",
+    "Distinct documents indexed in the vector store (non-placeholder)",
+)
+vector_sync_indexed_chunks = Gauge(
+    "mcp_vector_sync_indexed_chunks",
+    "Total indexed chunks (non-placeholder points) in the vector store",
+)
+
 qdrant_operations_total = Counter(
     "mcp_qdrant_operations_total",
     "Total Qdrant vector database operations",
@@ -518,6 +542,21 @@ def update_vector_sync_queue_size(size: int) -> None:
         size: Current queue size
     """
     vector_sync_queue_size.set(size)
+
+
+def update_vector_sync_pending_documents(count: int) -> None:
+    """Set the outstanding-ingest-work gauge (queued + in-flight documents)."""
+    vector_sync_pending_documents.set(count)
+
+
+def update_vector_sync_indexed_documents(count: int) -> None:
+    """Set the distinct-indexed-documents gauge."""
+    vector_sync_indexed_documents.set(count)
+
+
+def update_vector_sync_indexed_chunks(count: int) -> None:
+    """Set the total-indexed-chunks gauge."""
+    vector_sync_indexed_chunks.set(count)
 
 
 def record_document_parse(

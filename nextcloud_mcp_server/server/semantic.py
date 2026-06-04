@@ -18,7 +18,6 @@ from mcp.types import (
     ToolAnnotations,
 )
 from pydantic import Field
-from qdrant_client.models import Filter
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.config import get_settings
@@ -41,7 +40,7 @@ from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
 from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.utils.validation import parse_modified_timestamp
-from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
+from nextcloud_mcp_server.vector.metrics_publisher import count_indexed
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -982,28 +981,27 @@ def configure_semantic_tools(mcp: FastMCP):
                 ingest_queue=settings.ingest_queue,
             )
 
-            # Get Qdrant client and query indexed count
-            indexed_count = 0
+            # Corpus size: distinct documents AND total chunks (placeholders
+            # excluded). A single "indexed" figure is ambiguous because each
+            # document fans out to ~N chunks.
+            indexed_documents = 0
+            indexed_chunks = 0
             try:
                 qdrant_client = await get_qdrant_client()
-
-                # Count documents in collection, excluding placeholders
-                # Placeholders are zero-vector points used to track processing state
-                count_result = await qdrant_client.count(
-                    collection_name=settings.get_collection_name(),
-                    count_filter=Filter(must=[get_placeholder_filter()]),
+                indexed_documents, indexed_chunks = await count_indexed(
+                    qdrant_client, settings.get_collection_name()
                 )
-                indexed_count = count_result.count
-
             except Exception as e:
-                logger.warning("Failed to query Qdrant for indexed count: %s", e)
-                # Continue with indexed_count = 0
+                logger.warning("Failed to query Qdrant for indexed counts: %s", e)
+                # Continue with zeroed counts
 
             # Determine status
             status = "syncing" if pending.pending > 0 else "idle"
 
             return VectorSyncStatusResponse(
-                indexed_count=indexed_count,
+                indexed_documents=indexed_documents,
+                indexed_chunks=indexed_chunks,
+                indexed_count=indexed_chunks,  # deprecated alias
                 pending_count=pending.pending,
                 status=status,
                 enabled=True,
