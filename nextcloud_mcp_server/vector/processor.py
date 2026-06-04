@@ -237,7 +237,15 @@ async def process_document(
 
             for attempt in range(max_retries):
                 try:
-                    await _index_document(doc_task, nc_client, qdrant_client)
+                    indexed = await _index_document(doc_task, nc_client, qdrant_client)
+
+                    # A permanent parse failure returns False: it was already
+                    # recorded (document_parse_failed_total + the registry's
+                    # document_parse_total{error}) and the placeholder marked
+                    # "failed". It is not an indexing event and not retryable, so
+                    # don't count it as a successful upsert/indexed document.
+                    if indexed is False:
+                        return
 
                     # Record successful processing metrics
                     duration = time.time() - start_time
@@ -534,8 +542,8 @@ async def _index_document(
                 # on a pathological PDF) returns success=False rather than
                 # raising -- there is nothing to index and retrying would just
                 # fail again. Mark the placeholder "failed" so the scanner stops
-                # re-queuing it (until the file changes) and return without
-                # indexing empty content.
+                # re-queuing it (until the file changes) and return False so the
+                # caller skips the success metrics (it was not indexed).
                 if not result.success:
                     reason = result.metadata.get("parse_failed_reason", "error")
                     record_document_parse_failed(reason)
@@ -561,7 +569,7 @@ async def _index_document(
                             doc_task.doc_id,
                             exc_info=True,
                         )
-                    return
+                    return False
 
                 content = result.text
                 file_metadata = result.metadata

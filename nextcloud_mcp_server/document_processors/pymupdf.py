@@ -107,14 +107,19 @@ class PyMuPDFProcessor(DocumentProcessor):
             if progress_callback:
                 await progress_callback(0, 100, "Opening PDF document")
 
-            # Open document and extract metadata in thread
+            # Open document only to read metadata + page count, then close it
+            # immediately (try/finally so a failure in _extract_metadata can't
+            # leak it). The heavy extraction below works from ``content`` bytes
+            # in the isolated worker, so ``doc`` is not needed past this point.
             doc = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
                 lambda: pymupdf.open("pdf", content)
             )
-
-            metadata = self._extract_metadata(doc, filename)
-            metadata["file_size"] = len(content)
-            page_count = doc.page_count
+            try:
+                metadata = self._extract_metadata(doc, filename)
+                metadata["file_size"] = len(content)
+                page_count = doc.page_count
+            finally:
+                doc.close()
 
             if progress_callback:
                 await progress_callback(10, 100, f"Extracting {page_count} pages")
@@ -143,7 +148,6 @@ class PyMuPDFProcessor(DocumentProcessor):
                     mem_limit_mb=settings.document_parse_mem_limit_mb,
                 )
             except PdfParseFailed as exc:
-                doc.close()
                 logger.warning(
                     "Isolated PDF parse failed for %s (reason=%s): %s",
                     filename or "<bytes>",
@@ -197,9 +201,6 @@ class PyMuPDFProcessor(DocumentProcessor):
                 metadata["image_count"] = len(image_paths)
                 metadata["image_paths"] = image_paths
             metadata["page_boundaries"] = page_boundaries
-
-            # Close document
-            doc.close()
 
             if progress_callback:
                 await progress_callback(100, 100, "Processing complete")
