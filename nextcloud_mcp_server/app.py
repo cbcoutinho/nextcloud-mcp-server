@@ -362,6 +362,10 @@ def _wire_vector_sync_state(
     come from the transport — ``None`` in postgres mode (no in-process stream) —
     and ``task_producer`` is the transport's producer in both modes (Deck #183,
     ADR-028).
+
+    ``eviction_task_group`` is deliberately not set here: it only exists once the
+    lifespan has entered its ``anyio.create_task_group()`` (after this call), so
+    the lifespan assigns it on the singleton directly at that point.
     """
     send_stream = transport.send_stream
     receive_stream = transport.receive_stream
@@ -1713,12 +1717,16 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             shutdown_event = anyio.Event()
             scanner_wake_event = anyio.Event()
 
-            transport = await build_transport(settings)
-            task_producer = transport.producer
+            # Named ingest_transport (not transport) to avoid shadowing the
+            # get_app(transport=...) HTTP-transport parameter.
+            ingest_transport = await build_transport(settings)
+            task_producer = ingest_transport.producer
 
             # Publish to app.state (ADR-007), the module singleton (FastMCP
             # session lifespans), and the /app browser sub-app in one place.
-            _wire_vector_sync_state(app, transport, shutdown_event, scanner_wake_event)
+            _wire_vector_sync_state(
+                app, ingest_transport, shutdown_event, scanner_wake_event
+            )
 
             # Start background tasks using anyio TaskGroup
             async with anyio.create_task_group() as tg:
@@ -1751,7 +1759,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         task_status=task_status,
                     )
 
-                await transport.run_consumers(
+                await ingest_transport.run_consumers(
                     tg, spawn_worker, settings.vector_sync_processor_workers
                 )
 
@@ -1763,7 +1771,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
                 logger.info(
                     "Background sync tasks started: 1 scanner + %s processors (queue=%s)",
-                    transport.active_consumer_count,
+                    ingest_transport.active_consumer_count,
                     settings.ingest_queue,
                 )
 
@@ -1781,7 +1789,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         # procrastinate connector pool in postgres mode; no-op
                         # for the memory stream, which task-group cancellation
                         # closes).
-                        await transport.aclose()
+                        await ingest_transport.aclose()
                         await client.close()
                         # TaskGroup automatically cancels all tasks on exit
 
@@ -1901,13 +1909,15 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # User state tracking for user manager
                 user_states: dict = {}
 
-                transport = await build_transport(settings)
-                task_producer = transport.producer
+                # Named ingest_transport (not transport) to avoid shadowing the
+                # get_app(transport=...) HTTP-transport parameter.
+                ingest_transport = await build_transport(settings)
+                task_producer = ingest_transport.producer
 
                 # Publish to app.state (ADR-007), the module singleton (FastMCP
                 # session lifespans), and the /app browser sub-app in one place.
                 _wire_vector_sync_state(
-                    app, transport, shutdown_event, scanner_wake_event
+                    app, ingest_transport, shutdown_event, scanner_wake_event
                 )
 
                 # Background sync authenticates as each provisioned user via
@@ -1955,7 +1965,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                             task_status=task_status,
                         )
 
-                    await transport.run_consumers(
+                    await ingest_transport.run_consumers(
                         tg, spawn_worker, settings.vector_sync_processor_workers
                     )
 
@@ -1967,7 +1977,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
                     logger.info(
                         "Background sync tasks started: 1 user manager + %s processors (queue=%s)",
-                        transport.active_consumer_count,
+                        ingest_transport.active_consumer_count,
                         settings.ingest_queue,
                     )
 
@@ -1984,7 +1994,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                             # Tear down backend-owned resources (closes the
                             # procrastinate connector pool in postgres mode;
                             # no-op for the memory stream).
-                            await transport.aclose()
+                            await ingest_transport.aclose()
                             # Close token broker HTTP client
                             if token_broker._http_client:
                                 await token_broker._http_client.aclose()

@@ -222,4 +222,5 @@ async def build_transport(settings: Settings) -> IngestTransport:
         logger.info("Ingest queue: postgres (procrastinate); worker drains it")
         return DistributedTransport(producer)
 
+    logger.info("Ingest queue: memory (in-process anyio stream + processor pool)")
     return LocalTransport(max_buffer_size=settings.vector_sync_queue_max_size)
