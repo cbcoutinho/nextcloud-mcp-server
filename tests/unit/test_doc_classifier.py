@@ -76,6 +76,7 @@ def test_full_page_image_routes_ocr():
     assert c.recommended_tier == "ocr"
     assert c.ocr_page_fraction == 1.0
     assert "image_heavy" in c.flags
+    assert "scanned" in c.flags  # no text layer at all
 
 
 # --- sampling bounds large docs ----------------------------------------------
@@ -128,3 +129,30 @@ def test_bad_text_layer_flag_on_image_with_junk_text():
     assert c.mean_text_quality < clf.MIN_TEXT_QUALITY
     assert "bad_text_layer" in c.flags
     assert c.recommended_tier == "ocr"
+
+
+def _mostly_text_one_image_pdf() -> bytes:
+    # 3 digital text pages + 1 full-page-image page: one image-heavy page, but
+    # ocr_frac = 1/4 < OCR_PAGE_FRACTION, so the doc routes fast.
+    doc = pymupdf.open()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 600, 850))
+    pix.clear_with(255)
+    img = pix.tobytes("png")
+    del pix  # Pixmap holds native memory; release it before the loop
+    for _ in range(3):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((50, 60), "Hello world this is clean text. " * 8)
+    page = doc.new_page(width=595, height=842)
+    page.insert_image(page.rect, stream=img)
+    data: bytes = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_image_heavy_flag_without_ocr_routing():
+    # The documented asymmetry operators rely on: a mostly-digital doc with one
+    # full-page image carries the image_heavy flag yet still routes fast.
+    c = clf.classify_pdf(_mostly_text_one_image_pdf())
+    assert "image_heavy" in c.flags
+    assert c.recommended_tier == "fast"
+    assert c.ocr_page_fraction < clf.OCR_PAGE_FRACTION
