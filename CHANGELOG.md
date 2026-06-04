@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.102.0 (2026-06-04)
+
+### Feat
+
+- tier-0 document classifier in shadow mode
+
+### Fix
+
+- **review**: warn (not debug) on shadow-classify failure; tidy pymupdf usage
+- **review**: sample last page, document flags-vs-routing, add flag-path tests
+
 ## v0.101.4 (2026-06-04)
 
 ### Fix
