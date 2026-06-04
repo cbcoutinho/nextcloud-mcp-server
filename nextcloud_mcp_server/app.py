@@ -1720,7 +1720,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # Named ingest_transport (not transport) to avoid shadowing the
             # get_app(transport=...) HTTP-transport parameter.
             ingest_transport = await build_transport(settings)
-            task_producer = ingest_transport.producer
 
             # Publish to app.state (ADR-007), the module singleton (FastMCP
             # session lifespans), and the /app browser sub-app in one place.
@@ -1730,10 +1729,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
             # Start background tasks using anyio TaskGroup
             async with anyio.create_task_group() as tg:
-                # Start scanner task (publishes to task_producer)
+                # Start scanner task (publishes to the transport's producer)
                 await tg.start(
                     scanner_task,
-                    task_producer,
+                    ingest_transport.producer,
                     shutdown_event,
                     scanner_wake_event,
                     client,
@@ -1912,7 +1911,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # Named ingest_transport (not transport) to avoid shadowing the
                 # get_app(transport=...) HTTP-transport parameter.
                 ingest_transport = await build_transport(settings)
-                task_producer = ingest_transport.producer
 
                 # Publish to app.state (ADR-007), the module singleton (FastMCP
                 # session lifespans), and the /app browser sub-app in one place.
@@ -1930,11 +1928,11 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # management API revoke endpoint (via app.state.oauth_context).
                 async with anyio.create_task_group() as tg:
                     # Start user manager task (supervises per-user scanners).
-                    # Each per-user scanner clones task_producer; for the bus
+                    # Each per-user scanner clones the producer; for the bus
                     # producer clone() returns the shared connection.
                     await tg.start(
                         user_manager_task,
-                        task_producer,
+                        ingest_transport.producer,
                         shutdown_event,
                         scanner_wake_event,
                         token_storage,

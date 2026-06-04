@@ -128,9 +128,9 @@ class IngestTransport(abc.ABC):
     async def aclose(self) -> None:
         """Tear down backend-owned resources once on lifespan shutdown.
 
-        No-op by default (the memory stream is closed by task-group cancellation,
-        exactly as before); :class:`DistributedTransport` closes its connector
-        pool here.
+        No-op by default; subclasses that own resources (a connector pool, stream
+        handles) override this to release them — see
+        :meth:`DistributedTransport.aclose` and :meth:`LocalTransport.aclose`.
         """
         return None
 
@@ -178,7 +178,22 @@ class LocalTransport(IngestTransport):
         # the prior inline lifespan behaviour.
         for i in range(count):
             await task_group.start(spawn_worker, i, self._receive_stream.clone())
-        self._active_consumer_count = count
+            # Increment per-worker (not once after the loop) so the count is
+            # accurate even if a later start() raises — a crash log then reflects
+            # how many workers were actually live.
+            self._active_consumer_count += 1
+
+    async def aclose(self) -> None:
+        # Belt-and-suspenders cleanup of the two stream ends this transport owns,
+        # so they don't linger until GC (which can emit unclosed-resource
+        # warnings under the test runner / alternative runtimes). anyio's aclose
+        # is idempotent, so the scanner's own ``async with`` on the send side
+        # (single-user) closing it first is harmless; worker receive *clones* are
+        # independent handles, closed by task-group cancellation. By shutdown the
+        # ``shutdown_event`` is already set, so the scanner is winding down rather
+        # than issuing fresh sends.
+        await self._send_stream.aclose()
+        await self._receive_stream.aclose()
 
 
 class DistributedTransport(IngestTransport):
@@ -197,7 +212,10 @@ class DistributedTransport(IngestTransport):
     """
 
     def __init__(self, producer: ProcrastinateTaskProducer):
-        self._producer = producer
+        # Explicit (not inferred): aclose() calls drain(), which lives on the
+        # concrete ProcrastinateTaskProducer, not the TaskProducer protocol —
+        # the annotation keeps that coupling visible and lets ty catch drift.
+        self._producer: ProcrastinateTaskProducer = producer
 
     @property
     def producer(self) -> TaskProducer:

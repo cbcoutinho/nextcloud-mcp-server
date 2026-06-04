@@ -23,6 +23,7 @@ from nextcloud_mcp_server.vector.queue import (
     SpawnWorker,
     build_transport,
 )
+from nextcloud_mcp_server.vector.scanner import DocumentTask
 
 pytestmark = pytest.mark.unit
 
@@ -93,6 +94,25 @@ class TestLocalTransport:
         assert len(received_streams) == 3
         assert all(s is not None for s in received_streams)
         assert len({id(s) for s in received_streams}) == 3
+
+    async def test_aclose_closes_owned_streams_idempotently(self):
+        transport = LocalTransport(max_buffer_size=5)
+        await transport.aclose()
+
+        # The send end is closed → the producer raises rather than silently
+        # dropping (the producer wraps the same stream aclose() closed).
+        with pytest.raises(anyio.ClosedResourceError):
+            await transport.producer.send(
+                DocumentTask(
+                    user_id="u",
+                    doc_id="1",
+                    doc_type="note",
+                    operation="index",
+                    modified_at=0,
+                )
+            )
+        # Idempotent: closing again is a no-op, not an error.
+        await transport.aclose()
 
 
 class TestDistributedTransport:
