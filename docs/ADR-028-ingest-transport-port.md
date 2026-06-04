@@ -55,9 +55,11 @@ build_transport(settings) ->
   and the integration conftest's stream-singleton handling working unchanged).
 - `run_consumers(task_group, spawn_worker, count)` — start the in-process pool;
   a **no-op** for distributed backends, whose consumer is the external worker.
-- `aclose()` — tear down backend-owned resources once on shutdown (closes the
-  procrastinate connector pool; a no-op for the memory stream, which task-group
-  cancellation closes).
+- `aclose()` — tear down backend-owned resources once on shutdown.
+  `DistributedTransport` closes the procrastinate connector pool;
+  `LocalTransport` closes its owned send/receive stream ends (belt-and-suspenders
+  — task-group cancellation already closes the per-worker clones, and anyio
+  `aclose` is idempotent). The base default is a no-op.
 
 The lifespan supplies a `spawn_worker` closure so the transport never learns
 about auth modes — the single-user closure binds a shared `nc_client`+username,
