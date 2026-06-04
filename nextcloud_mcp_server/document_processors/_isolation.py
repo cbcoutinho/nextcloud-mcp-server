@@ -115,6 +115,11 @@ async def run_isolated_pdf_parse(
                 cancellable=True,
             )
         except MemoryError as e:
+            # A clean rlimit breach: the worker raised MemoryError and stays
+            # ALIVE in anyio's pool (unlike the BrokenWorkerProcess/SIGKILL path,
+            # which spawns a fresh worker). Its heap may be slightly fragmented
+            # for the next document. Acceptable: RLIMIT_AS caps virtual address
+            # space (not RSS), so practical fragmentation risk is low.
             raise PdfParseFailed("oom", str(e)) from e
         except BrokenWorkerProcess as e:
             # Worker died without a clean exception (e.g. SIGKILL from the OS OOM

@@ -244,6 +244,9 @@ async def process_document(
                     # document_parse_total{error}) and the placeholder marked
                     # "failed". It is not an indexing event and not retryable, so
                     # don't count it as a successful upsert/indexed document.
+                    # Identity check, not `if not indexed`: a successful index
+                    # (including a dedup hit) returns None, which must NOT be
+                    # treated as a parse failure.
                     if indexed is False:
                         return
 

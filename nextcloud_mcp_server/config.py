@@ -134,7 +134,7 @@ _DEFAULTS: dict[str, Any] = {
     "document_chunk_overlap": 200,
     # PDF parse isolation (OOM guard)
     "document_pdf_graphics_limit": 5000,
-    "document_parse_timeout_seconds": 120,
+    "document_parse_timeout_seconds": 120.0,
     "document_parse_mem_limit_mb": 1536,
     # Observability
     "metrics_enabled": True,
@@ -716,7 +716,9 @@ class Settings:
     # >=1 -- pymupdf4llm treats 0 as "no cap", which re-exposes the OOM.
     document_pdf_graphics_limit: int = 5000
     # wall-clock cap per parse; the worker subprocess is killed on timeout.
-    document_parse_timeout_seconds: int = 120
+    # float so a fractional DOCUMENT_PARSE_TIMEOUT_SECONDS is honoured, matching
+    # anyio.move_on_after's float seconds.
+    document_parse_timeout_seconds: float = 120.0
     # RLIMIT_AS in the parse subprocess (below the pod limit). Applied once per
     # worker for its lifetime, so changing it needs a pod restart.
     document_parse_mem_limit_mb: int = 1536
