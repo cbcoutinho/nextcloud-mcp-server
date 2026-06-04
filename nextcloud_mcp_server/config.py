@@ -143,6 +143,12 @@ _DEFAULTS: dict[str, Any] = {
     # escalation target and is off by default (no provider wired yet).
     "document_tier1_engine": "pypdfium2",
     "document_ocr_enabled": False,
+    # OCR backend: "auto" picks gateway (if EMBEDDING_GATEWAY_URL) else mistral
+    # (if MISTRAL_API_KEY); "gateway"/"mistral" force one; "none" disables.
+    "document_ocr_provider": "auto",
+    # Provider-namespaced OCR model id (gateway routes on the prefix; the direct
+    # mistral backend strips it).
+    "document_ocr_model": "mistral/mistral-ocr-latest",
     # Observability
     "metrics_enabled": True,
     "metrics_port": 9090,
@@ -298,6 +304,9 @@ _dynaconf = Dynaconf(
         # Enum constraints
         Validator("LOG_FORMAT", is_in=["text", "json"]),
         Validator("DOCUMENT_TIER1_ENGINE", is_in=["pypdfium2", "pymupdf"]),
+        Validator(
+            "DOCUMENT_OCR_PROVIDER", is_in=["auto", "gateway", "mistral", "none"]
+        ),
         Validator(
             "LOG_LEVEL",
             is_in=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -742,9 +751,15 @@ class Settings:
     # permissive license, no find_tables) is the hot path; "pymupdf" is a
     # deprecated rollback to pymupdf4llm (AGPL, graphics-limited) for one corpus.
     document_tier1_engine: str = "pypdfium2"
-    # Route scanned/no-text-layer PDFs to the tier-3 OCR provider. Off until an
-    # OCR backend is wired; when off, the fast tier is terminal.
+    # Route scanned/no-text-layer PDFs to the tier-3 OCR provider. Off by
+    # default; when off, the fast tier is terminal.
     document_ocr_enabled: bool = False
+    # OCR backend selection: "auto" | "gateway" | "mistral" | "none".
+    document_ocr_provider: str = "auto"
+    # Provider-namespaced OCR model id (e.g. "mistral/mistral-ocr-latest"). The
+    # gateway routes on the "<provider>/" prefix; the direct mistral backend
+    # strips it.
+    document_ocr_model: str = "mistral/mistral-ocr-latest"
 
     # Observability settings
     metrics_enabled: bool = True
@@ -1360,6 +1375,8 @@ def get_settings() -> Settings:
         "document_classify_enabled": "DOCUMENT_CLASSIFY_ENABLED",
         "document_tier1_engine": "DOCUMENT_TIER1_ENGINE",
         "document_ocr_enabled": "DOCUMENT_OCR_ENABLED",
+        "document_ocr_provider": "DOCUMENT_OCR_PROVIDER",
+        "document_ocr_model": "DOCUMENT_OCR_MODEL",
         # Observability settings
         "metrics_enabled": "METRICS_ENABLED",
         "metrics_port": "METRICS_PORT",
