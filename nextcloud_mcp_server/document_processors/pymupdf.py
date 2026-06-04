@@ -8,13 +8,17 @@ from typing import Any, Optional
 
 import anyio
 
-# NOTE: Do NOT call pymupdf.layout.activate() here!
-# It changes the behavior of pymupdf4llm.to_markdown() when page_chunks=True,
-# causing it to return a string instead of a list[dict].
+# pymupdf is used here only for the cheap metadata open. The heavy
+# pymupdf4llm.to_markdown extraction runs in an isolated worker subprocess
+# (see _isolation.py) so a pathological file can't OOM the pod.
+# NOTE: Do NOT call pymupdf.layout.activate()! It changes the behavior of
+# pymupdf4llm.to_markdown() when page_chunks=True (returns str, not list[dict]).
 # See: https://github.com/pymupdf/pymupdf4llm/issues/323
 import pymupdf
-import pymupdf4llm
 
+from nextcloud_mcp_server.config import get_settings
+
+from ._isolation import PdfParseFailed, run_isolated_pdf_parse
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 
 logger = logging.getLogger(__name__)
@@ -122,19 +126,44 @@ class PyMuPDFProcessor(DocumentProcessor):
                 pdf_image_dir = self.image_dir / pdf_id
                 pdf_image_dir.mkdir(exist_ok=True, parents=True)
 
-            # Extract all pages in a single call with page_chunks=True
-            def do_extract() -> list[dict[str, Any]]:
-                # When page_chunks=True, to_markdown returns list[dict] not str
-                return pymupdf4llm.to_markdown(  # type: ignore[return-value]
-                    doc,
+            # Extract all pages (page_chunks=True) in an isolated worker
+            # subprocess with a memory rlimit + wall-clock timeout, so a
+            # pathological file (e.g. a page with ~1M vector paths that drives
+            # table detection past the pod memory limit) fails THIS document
+            # instead of OOM-killing the pod. graphics_limit caps per-page
+            # vector-graphics analysis (the known trigger).
+            settings = get_settings()
+            try:
+                page_chunks: list[dict[str, Any]] = await run_isolated_pdf_parse(
+                    content,
                     write_images=self.extract_images,
                     image_path=pdf_image_dir if self.extract_images else None,
-                    page_chunks=True,
+                    graphics_limit=settings.document_pdf_graphics_limit,
+                    timeout_seconds=settings.document_parse_timeout_seconds,
+                    mem_limit_mb=settings.document_parse_mem_limit_mb,
                 )
-
-            page_chunks: list[dict[str, Any]] = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
-                do_extract
-            )
+            except PdfParseFailed as exc:
+                doc.close()
+                logger.warning(
+                    "Isolated PDF parse failed for %s (reason=%s): %s",
+                    filename or "<bytes>",
+                    exc.reason,
+                    exc,
+                    extra={
+                        "processor": self.name,
+                        "tier": self.tier,
+                        "status": "error",
+                        "reason": exc.reason,
+                    },
+                )
+                metadata["parse_failed_reason"] = exc.reason
+                return ProcessingResult(
+                    text="",
+                    metadata=metadata,
+                    processor=self.name,
+                    success=False,
+                    error=f"isolated parse failed ({exc.reason}): {exc}",
+                )
 
             if progress_callback:
                 await progress_callback(90, 100, "Building result")

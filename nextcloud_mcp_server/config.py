@@ -132,6 +132,10 @@ _DEFAULTS: dict[str, Any] = {
     # Document chunking
     "document_chunk_size": 2048,
     "document_chunk_overlap": 200,
+    # PDF parse isolation (OOM guard)
+    "document_pdf_graphics_limit": 5000,
+    "document_parse_timeout_seconds": 120,
+    "document_parse_mem_limit_mb": 1536,
     # Observability
     "metrics_enabled": True,
     "metrics_port": 9090,
@@ -275,8 +279,11 @@ _dynaconf = Dynaconf(
         Validator("VECTOR_SYNC_USER_POLL_INTERVAL", gte=1),
         Validator("VERIFICATION_CONCURRENCY", gte=1),
         Validator("DOCUMENT_CHUNK_SIZE", gte=1),
+        Validator("DOCUMENT_PARSE_TIMEOUT_SECONDS", gte=1),
+        Validator("DOCUMENT_PARSE_MEM_LIMIT_MB", gte=128),
         # Non-negative
         Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
+        Validator("DOCUMENT_PDF_GRAPHICS_LIMIT", gte=0),
         # Non-empty strings
         Validator("VECTOR_SYNC_PDF_TAG", len_min=1),
         # Enum constraints
@@ -700,6 +707,18 @@ class Settings:
     # Document chunking settings (for vector embeddings)
     document_chunk_size: int = 2048  # Characters per chunk
     document_chunk_overlap: int = 200  # Overlapping characters between chunks
+
+    # PDF parse isolation (OOM guard). The parse runs in a subprocess so one
+    # pathological file fails that doc, not the pod.
+    document_pdf_graphics_limit: int = (
+        5000  # to_markdown graphics cap; pages above skip graphics analysis
+    )
+    document_parse_timeout_seconds: int = (
+        120  # wall-clock cap per parse; the worker subprocess is killed on timeout
+    )
+    document_parse_mem_limit_mb: int = (
+        1536  # RLIMIT_AS in the parse subprocess (kept below the pod memory limit)
+    )
 
     # Observability settings
     metrics_enabled: bool = True
@@ -1309,6 +1328,9 @@ def get_settings() -> Settings:
         # Document chunking settings
         "document_chunk_size": "DOCUMENT_CHUNK_SIZE",
         "document_chunk_overlap": "DOCUMENT_CHUNK_OVERLAP",
+        "document_pdf_graphics_limit": "DOCUMENT_PDF_GRAPHICS_LIMIT",
+        "document_parse_timeout_seconds": "DOCUMENT_PARSE_TIMEOUT_SECONDS",
+        "document_parse_mem_limit_mb": "DOCUMENT_PARSE_MEM_LIMIT_MB",
         # Observability settings
         "metrics_enabled": "METRICS_ENABLED",
         "metrics_port": "METRICS_PORT",

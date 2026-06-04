@@ -526,13 +526,24 @@ async def scan_user_documents(
                         # File modified since last indexing
                         needs_indexing = True
                     elif existing_metadata.get("is_placeholder", False):
-                        # Placeholder exists - check if it's stale (processing may have failed)
-                        # Only requeue if placeholder is older than 5x scan interval
-                        # (Large PDFs can take 3-4 minutes to process)
+                        # Placeholder exists - check its status / staleness.
                         queued_at = existing_metadata.get("queued_at", 0)
                         placeholder_age = time.time() - queued_at
                         stale_threshold = get_settings().vector_sync_scan_interval * 5
-                        if placeholder_age > stale_threshold:
+                        if existing_metadata.get("status") == "failed":
+                            # A permanent parse failure (e.g. an isolated-worker
+                            # OOM/timeout on a pathological PDF). Don't keep
+                            # re-queuing an unchanged file that will just fail
+                            # again -- the modified_at branch above still retries
+                            # it once the file actually changes.
+                            logger.debug(
+                                "Skipping file %s (ID: %s): previous parse failed permanently",
+                                file_path,
+                                file_id,
+                            )
+                        elif placeholder_age > stale_threshold:
+                            # Only requeue if placeholder is older than 5x scan
+                            # interval (large PDFs can take minutes to process).
                             logger.debug(
                                 "Found stale placeholder for file %s (ID: %s) (age=%ss), requeuing",
                                 file_path,
