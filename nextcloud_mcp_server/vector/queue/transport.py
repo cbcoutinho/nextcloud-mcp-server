@@ -104,6 +104,17 @@ class IngestTransport(abc.ABC):
         reads procrastinate job counts via the producer instead)."""
         return None
 
+    @property
+    def active_consumer_count(self) -> int:
+        """In-process consumers started by :meth:`run_consumers` for this process.
+
+        ``0`` by default — distributed backends run their consumers as a separate
+        ``worker`` process. Lets the lifespan log the worker count without
+        re-inspecting ``INGEST_QUEUE`` (keeping the backend choice inside the
+        transport).
+        """
+        return 0
+
     async def run_consumers(
         self, task_group: TaskGroup, spawn_worker: SpawnWorker, count: int
     ) -> None:
@@ -139,6 +150,7 @@ class LocalTransport(IngestTransport):
         self._send_stream = send_stream
         self._receive_stream = receive_stream
         self._producer = MemoryTaskProducer(send_stream)
+        self._active_consumer_count = 0
 
     @property
     def producer(self) -> TaskProducer:
@@ -152,6 +164,10 @@ class LocalTransport(IngestTransport):
     def receive_stream(self) -> MemoryObjectReceiveStream[DocumentTask]:
         return self._receive_stream
 
+    @property
+    def active_consumer_count(self) -> int:
+        return self._active_consumer_count
+
     async def run_consumers(
         self, task_group: TaskGroup, spawn_worker: SpawnWorker, count: int
     ) -> None:
@@ -162,6 +178,7 @@ class LocalTransport(IngestTransport):
         # the prior inline lifespan behaviour.
         for i in range(count):
             await task_group.start(spawn_worker, i, self._receive_stream.clone())
+        self._active_consumer_count = count
 
 
 class DistributedTransport(IngestTransport):
@@ -171,6 +188,12 @@ class DistributedTransport(IngestTransport):
     by the lifespan; :meth:`run_consumers` is the inherited no-op (the
     ``nextcloud-mcp-server worker`` process drains the queue) and :meth:`aclose`
     closes the pool once on shutdown.
+
+    This adapter is postgres/procrastinate-specific by design: :meth:`aclose`
+    calls ``ProcrastinateTaskProducer.drain()`` (the narrow ``_producer`` type
+    confirms it). A different distributed backend (Redis/NATS/SQS) with its own
+    shutdown semantics would be a separate :class:`IngestTransport` subclass, not
+    a reconfiguration of this one.
     """
 
     def __init__(self, producer: ProcrastinateTaskProducer):

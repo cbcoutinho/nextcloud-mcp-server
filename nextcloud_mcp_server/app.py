@@ -377,7 +377,7 @@ def _wire_vector_sync_state(
     # app.state (Starlette) + the module singleton share the same attribute names.
     _apply(app.state)
     _apply(_vector_sync_state)
-    logger.info("Vector sync state stored in module singleton")
+    logger.info("Vector sync state published (app.state + module singleton)")
 
     # Also share with the mounted /app browser sub-app, if present.
     for route in app.routes:
@@ -1763,9 +1763,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
                 logger.info(
                     "Background sync tasks started: 1 scanner + %s processors (queue=%s)",
-                    0
-                    if settings.ingest_queue == "postgres"
-                    else settings.vector_sync_processor_workers,
+                    transport.active_consumer_count,
                     settings.ingest_queue,
                 )
 
@@ -1969,9 +1967,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
                     logger.info(
                         "Background sync tasks started: 1 user manager + %s processors (queue=%s)",
-                        0
-                        if settings.ingest_queue == "postgres"
-                        else settings.vector_sync_processor_workers,
+                        transport.active_consumer_count,
                         settings.ingest_queue,
                     )
 

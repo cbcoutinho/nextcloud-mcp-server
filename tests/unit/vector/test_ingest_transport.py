@@ -70,6 +70,8 @@ class TestBuildTransport:
 class TestLocalTransport:
     async def test_run_consumers_starts_count_workers_off_shared_stream(self):
         transport = LocalTransport(max_buffer_size=5)
+        # Not yet started → no active consumers.
+        assert transport.active_consumer_count == 0
         started: list[int] = []
         received_streams: list[object] = []
 
@@ -85,15 +87,21 @@ class TestLocalTransport:
             await transport.run_consumers(tg, fake_worker, 3)
 
         assert sorted(started) == [0, 1, 2]
-        # Each worker gets its own (cloned) receive handle, none None.
+        assert transport.active_consumer_count == 3
+        # Each worker gets its own distinct cloned receive handle (so each
+        # observes end-of-stream when the senders all close), none None.
         assert len(received_streams) == 3
         assert all(s is not None for s in received_streams)
+        assert len({id(s) for s in received_streams}) == 3
 
 
 class TestDistributedTransport:
     async def test_run_consumers_is_noop(self):
         producer = AsyncMock()
         transport = DistributedTransport(producer)
+
+        # No in-process consumers for the distributed backend.
+        assert transport.active_consumer_count == 0
 
         # Passing sentinel task group / spawn callback proves the no-op never
         # touches them (the external worker is the consumer). The casts satisfy
@@ -104,6 +112,7 @@ class TestDistributedTransport:
         await transport.run_consumers(sentinel_tg, sentinel_spawn, count=3)
 
         producer.assert_not_awaited()
+        assert transport.active_consumer_count == 0
 
     async def test_aclose_drains_producer(self):
         producer = AsyncMock()
