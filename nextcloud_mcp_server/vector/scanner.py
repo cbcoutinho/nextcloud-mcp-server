@@ -31,6 +31,7 @@ from nextcloud_mcp_server.vector.placeholder import (
 )
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 from nextcloud_mcp_server.vector.queue.ports import TaskProducer
+from nextcloud_mcp_server.vector.sharing_state import claim_existing_index
 
 logger = logging.getLogger(__name__)
 
@@ -360,7 +361,16 @@ async def scan_user_documents(
             return
 
         # Scan tagged PDF files (after notes)
-        # Get indexed file IDs from Qdrant (for deletion tracking)
+        # Get indexed file IDs from Qdrant (for deletion tracking).
+        # NOTE: this is filtered by user_id, so a "pure claimer" — a user who
+        # gained access to a shared file via the tenant-wide dedup path
+        # (claim_existing_index) without ever indexing it themselves — is NOT in
+        # this set (the points carry the first indexer's user_id, only the
+        # claimer's user:<uid> in acl_principals). Such a user is therefore never
+        # enqueued for deletion by the grace-period sweep below; their stale
+        # acl_principals entry is reclaimed lazily by verify-on-read eviction
+        # (release_document_for_user) when a search surfaces a now-inaccessible
+        # result. A future scanner-side cleanup could scroll acl_principals too.
         indexed_file_ids = set()
         if not initial_sync:
             assert qdrant_client is not None  # narrow for the type checker
@@ -448,6 +458,24 @@ async def scan_user_documents(
                     except (ValueError, KeyError):
                         pass
 
+                # Tenant-wide content dedup (Layer 1 / observed-access ACL): if
+                # this exact file content (fileid + etag) is already indexed under
+                # the current embedding model by ANY user in the tenant, skip
+                # re-parsing/re-embedding and just record that this user can read
+                # it. Eliminates the per-user reprocessing ping-pong that arises
+                # because chunk point IDs are user-agnostic (note 386945 #5).
+                etag = str(file_info.get("etag") or "")
+                if etag and await claim_existing_index(file_id, "file", etag, user_id):
+                    _potentially_deleted.pop((user_id, file_id), None)
+                    logger.debug(
+                        "Dedup: file %s (ID: %s) already indexed in tenant; "
+                        "granted access to %s without reprocessing",
+                        file_path,
+                        file_id,
+                        user_id,
+                    )
+                    continue
+
                 if initial_sync:
                     # Send everything on first sync - write placeholder first
                     await write_placeholder_point(
@@ -455,6 +483,7 @@ async def scan_user_documents(
                         doc_type="file",
                         user_id=user_id,
                         modified_at=modified_at,
+                        etag=etag,
                         file_path=file_path,
                     )
                     await send_stream.send(
@@ -465,6 +494,7 @@ async def scan_user_documents(
                             operation="index",
                             modified_at=modified_at,
                             file_path=file_path,
+                            etag=etag,
                         )
                     )
                     file_queued += 1
@@ -525,6 +555,7 @@ async def scan_user_documents(
                             doc_type="file",
                             user_id=user_id,
                             modified_at=modified_at,
+                            etag=etag,
                             file_path=file_path,
                         )
                         await send_stream.send(
@@ -535,6 +566,7 @@ async def scan_user_documents(
                                 operation="index",
                                 modified_at=modified_at,
                                 file_path=file_path,
+                                etag=etag,
                             )
                         )
                         file_queued += 1

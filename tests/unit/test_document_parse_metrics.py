@@ -312,8 +312,12 @@ class TestProcessDocumentMetricCounting:
         )
 
         qmock = MagicMock()
-        qmock.delete = AsyncMock()
-        with patch.object(proc, "get_qdrant_client", new=AsyncMock(return_value=qmock)):
+        # Deletion now delegates to release_document_for_user (release-one-user
+        # semantics); stub it so the test exercises only the metric accounting.
+        with (
+            patch.object(proc, "get_qdrant_client", new=AsyncMock(return_value=qmock)),
+            patch.object(proc, "release_document_for_user", new=AsyncMock()),
+        ):
             await proc.process_document(task, MagicMock())
 
         assert metric_sample(
@@ -339,8 +343,16 @@ class TestProcessDocumentMetricCounting:
         )
 
         qmock = MagicMock()
-        qmock.delete = AsyncMock(side_effect=RuntimeError("boom"))
-        with patch.object(proc, "get_qdrant_client", new=AsyncMock(return_value=qmock)):
+        # A failed release still counts as a processed (error) delete and must
+        # not touch the indexed counter.
+        with (
+            patch.object(proc, "get_qdrant_client", new=AsyncMock(return_value=qmock)),
+            patch.object(
+                proc,
+                "release_document_for_user",
+                new=AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+        ):
             with pytest.raises(RuntimeError):
                 await proc.process_document(task, MagicMock())
 

@@ -70,6 +70,19 @@ _PAYLOAD_INDEX_FIELDS: dict[str, PayloadSchemaType] = {
     # migration like modified_at. Local/embedded qdrant-client matches by
     # substring without an index, so dev stacks work without it too.
     "file_path": PayloadSchemaType.TEXT,
+    # etag is the tenant-wide content-dedup key: the scanner/processor scroll for
+    # a non-placeholder point matching (doc_id, doc_type, etag) to decide whether
+    # a file's content is already indexed and reprocessing can be skipped (see
+    # vector/sharing_state.find_indexed_content). KEYWORD for exact match; the
+    # value is the Nextcloud etag already written to every point. Idempotent
+    # startup migration like the fields above.
+    "etag": PayloadSchemaType.KEYWORD,
+    # acl_principals is the observed-access ACL set ("user:<uid>" entries). Search
+    # ORs MatchAny(key="acl_principals", any=["user:<me>"]) so a deduplicated
+    # shared point reaches every reader's candidate set (see
+    # search/access_filter.build_ownership_filter); KEYWORD indexes match array
+    # membership element-wise. Idempotent startup migration.
+    "acl_principals": PayloadSchemaType.KEYWORD,
 }
 
 # Sentinel point that records "this collection has been backfilled to str
