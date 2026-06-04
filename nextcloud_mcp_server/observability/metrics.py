@@ -272,6 +272,33 @@ document_parse_failed_total = Counter(
     ["reason"],  # reason: timeout | oom | error
 )
 
+# --- Tier-0 classifier (shadow mode) -----------------------------------------
+#
+# The classifier runs a cheap pre-pass per PDF and recommends a starting tier.
+# In shadow mode it changes no routing -- these metrics gather the per-tenant
+# doc-mix needed to tune the thresholds before routing is enabled.
+
+document_classified_total = Counter(
+    "astrolabe_document_classified_total",
+    "Documents classified by tier-0, by recommended starting tier",
+    ["recommended_tier"],  # fast | ocr
+)
+
+document_classifier_flag_total = Counter(
+    # Diagnostic flags, independent of the routing verdict: image_heavy fires if
+    # ANY page is image-heavy whereas the ocr route needs a fraction of pages,
+    # so flag{image_heavy} is expected to exceed classified{recommended_tier=ocr}.
+    "astrolabe_document_classifier_flag_total",
+    "Tier-0 classifier flags raised on documents",
+    ["flag"],  # image_heavy | scanned | bad_text_layer
+)
+
+document_text_quality = Histogram(
+    "astrolabe_document_text_quality",
+    "Tier-0 mean text-layer quality per document (0=junk, 1=clean prose)",
+    buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+)
+
 # --- Embedding stages ---------------------------------------------------------
 
 embedding_duration_seconds = Histogram(
@@ -635,6 +662,20 @@ def record_document_parse_failed(reason: str) -> None:
         reason: ``timeout`` | ``oom`` | ``error``
     """
     document_parse_failed_total.labels(reason=reason).inc()
+
+
+def record_document_classification(
+    recommended_tier: str, flags: set[str], mean_text_quality: float
+) -> None:
+    """Record a tier-0 classification result (shadow mode -- observability only).
+
+    Primitive args (not the DocClassification object) keep the observability
+    layer free of a dependency on document_processors.
+    """
+    document_classified_total.labels(recommended_tier=recommended_tier).inc()
+    for flag in flags:
+        document_classifier_flag_total.labels(flag=flag).inc()
+    document_text_quality.observe(mean_text_quality)
 
 
 def record_embedding(
