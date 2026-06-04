@@ -781,12 +781,21 @@ async def _index_document(
     _acl_hash = compute_acl_hash([("user", doc_task.user_id)])
 
     # Observed-access ACL principals (computed once per document, not per chunk).
-    # Seed with the indexer (and owner, if distinct) unioned with any principals
-    # already recorded — so re-indexing after a content change preserves
-    # visibility for readers who had previously claimed the file rather than
-    # resetting it to just the indexer.
+    # Seed with the indexer (and owner, if distinct). For files — the only type
+    # with cross-user dedup and globally-unique IDs (Nextcloud fileid) — union in
+    # any principals already recorded so re-indexing after a content change
+    # preserves visibility for readers who had previously claimed the file. For
+    # note/news_item/deck_card, IDs are per-user (not globally unique) and point
+    # IDs are user-agnostic, so merging another user's principals on an ID
+    # collision would wrongly cross-surface their content; those types are
+    # seeded with the indexer only.
+    _prior_principals = (
+        await existing_principals(doc_task.doc_id, doc_task.doc_type)
+        if doc_task.doc_type == "file"
+        else []
+    )
     _acl_principals = sorted(
-        set(await existing_principals(doc_task.doc_id, doc_task.doc_type))
+        set(_prior_principals)
         | {
             f"user:{doc_task.user_id}",
             f"user:{doc_task.owner_id or doc_task.user_id}",
