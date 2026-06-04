@@ -271,6 +271,7 @@ _dynaconf = Dynaconf(
         Validator("VECTOR_SYNC_SCAN_INTERVAL", gte=1),
         Validator("VECTOR_SYNC_PROCESSOR_WORKERS", gte=1),
         Validator("VECTOR_SYNC_QUEUE_MAX_SIZE", gte=1),
+        Validator("VECTOR_SYNC_METRICS_REFRESH_INTERVAL", gte=1),
         Validator("VECTOR_SYNC_USER_POLL_INTERVAL", gte=1),
         Validator("VERIFICATION_CONCURRENCY", gte=1),
         Validator("DOCUMENT_CHUNK_SIZE", gte=1),

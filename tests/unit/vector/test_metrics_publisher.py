@@ -53,6 +53,31 @@ class TestCountIndexed:
         assert _must_keys(chunks_filter) == ["is_placeholder"]
         assert _must_keys(docs_filter) == ["is_placeholder", "chunk_index"]
 
+    async def test_placeholder_filter_excludes_placeholders(self) -> None:
+        # is_placeholder must match False (exclude), not True (which would count
+        # the in-flight placeholders as if they were indexed content).
+        qc = AsyncMock()
+        qc.count.side_effect = [_count_obj(10), _count_obj(3)]
+
+        await mp.count_indexed(qc, _COLLECTION)
+
+        chunks_filter = qc.count.await_args_list[0].kwargs["count_filter"]
+        assert chunks_filter.must[0].match.value is False
+        docs_filter = qc.count.await_args_list[1].kwargs["count_filter"]
+        # And the distinct-document filter pins chunk_index to 0.
+        assert docs_filter.must[0].match.value is False
+        assert docs_filter.must[1].match.value == 0
+
+    async def test_exact_kwarg_forwarded(self) -> None:
+        # The gauge path passes exact=False; dropping it would silently make the
+        # every-N-seconds refresh do exact counts on large tenants.
+        qc = AsyncMock()
+        qc.count.side_effect = [_count_obj(10), _count_obj(3)]
+
+        await mp.count_indexed(qc, _COLLECTION, exact=False)
+
+        assert all(call.kwargs["exact"] is False for call in qc.count.await_args_list)
+
 
 class TestPublishVectorSyncMetrics:
     @pytest.fixture(autouse=True)

@@ -24,6 +24,7 @@ from typing import Any
 
 import anyio
 from anyio.abc import TaskStatus
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.config import get_settings
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 async def count_indexed(
-    qdrant_client, collection: str, *, exact: bool = True
+    qdrant_client: AsyncQdrantClient, collection: str, *, exact: bool = True
 ) -> tuple[int, int]:
     """Return ``(documents, chunks)`` indexed in the collection.
 
