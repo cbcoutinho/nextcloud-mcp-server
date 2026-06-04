@@ -104,7 +104,8 @@ async def _get_processing_status(request: Request) -> dict[str, Any] | None:
         Dictionary with processing status, or None if vector sync is disabled
         or components are unavailable:
         {
-            "indexed_count": int,  # Number of documents in Qdrant
+            "indexed_documents": int,  # Distinct documents in Qdrant
+            "indexed_chunks": int,  # Total chunks/points in Qdrant
             "pending_count": int,  # Number of documents in queue
             "status": str,  # "syncing" or "idle"
         }
@@ -130,30 +131,33 @@ async def _get_processing_status(request: Request) -> dict[str, Any] | None:
             ingest_queue=settings.ingest_queue,
         )
 
-        # Get Qdrant client and query indexed count
-        indexed_count = 0
+        # Corpus size: distinct documents AND total chunks (placeholders
+        # excluded — the prior count included them).
+        indexed_documents = 0
+        indexed_chunks = 0
         try:
+            from nextcloud_mcp_server.vector.metrics_publisher import (  # noqa: PLC0415
+                count_indexed,
+            )
             from nextcloud_mcp_server.vector.qdrant_client import (  # noqa: PLC0415
                 get_qdrant_client,
             )
 
             qdrant_client = await get_qdrant_client()
-
-            # Count documents in collection
-            count_result = await qdrant_client.count(
-                collection_name=settings.get_collection_name()
+            indexed_documents, indexed_chunks = await count_indexed(
+                qdrant_client, settings.get_collection_name()
             )
-            indexed_count = count_result.count
 
         except Exception as e:
-            logger.warning("Failed to query Qdrant for indexed count: %s", e)
-            # Continue with indexed_count = 0
+            logger.warning("Failed to query Qdrant for indexed counts: %s", e)
+            # Continue with zeroed counts
 
         # Determine status
         status = "syncing" if pending.pending > 0 else "idle"
 
         return {
-            "indexed_count": indexed_count,
+            "indexed_documents": indexed_documents,
+            "indexed_chunks": indexed_chunks,
             "pending_count": pending.pending,
             "status": status,
         }
@@ -190,12 +194,14 @@ async def vector_sync_status_fragment(request: Request) -> HTMLResponse:
             """
         )
 
-    indexed_count = processing_status["indexed_count"]
+    indexed_documents = processing_status["indexed_documents"]
+    indexed_chunks = processing_status["indexed_chunks"]
     pending_count = processing_status["pending_count"]
     status = processing_status["status"]
 
     # Format numbers with commas for readability
-    indexed_count_str = f"{indexed_count:,}"
+    indexed_documents_str = f"{indexed_documents:,}"
+    indexed_chunks_str = f"{indexed_chunks:,}"
     pending_count_str = f"{pending_count:,}"
 
     # Status badge color and text
@@ -212,7 +218,11 @@ async def vector_sync_status_fragment(request: Request) -> HTMLResponse:
     <table>
         <tr>
             <td><strong>Indexed Documents</strong></td>
-            <td>{indexed_count_str}</td>
+            <td>{indexed_documents_str}</td>
+        </tr>
+        <tr>
+            <td><strong>Indexed Chunks</strong></td>
+            <td>{indexed_chunks_str}</td>
         </tr>
         <tr>
             <td><strong>Pending Documents</strong></td>

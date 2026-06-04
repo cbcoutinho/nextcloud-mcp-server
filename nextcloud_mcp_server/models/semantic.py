@@ -153,14 +153,26 @@ class VectorSyncStatusResponse(BaseResponse):
     including how many documents are indexed and how many are pending.
 
     Attributes:
-        indexed_count: Number of documents in Qdrant vector database
+        indexed_documents: Distinct documents indexed in the vector database
+        indexed_chunks: Total indexed chunks (vector points); ~N per document
+        indexed_count: DEPRECATED alias of indexed_chunks
         pending_count: Number of documents in processing queue
         status: Current sync status ("idle" or "syncing")
         enabled: Whether vector sync is enabled
     """
 
+    indexed_documents: int = Field(
+        default=0, description="Distinct documents indexed in the vector database"
+    )
+    indexed_chunks: int = Field(
+        default=0, description="Total indexed chunks (vector points); ~N per document"
+    )
     indexed_count: int = Field(
-        default=0, description="Number of documents indexed in vector database"
+        default=0,
+        description=(
+            "DEPRECATED alias of indexed_chunks (the chunk/point count). Use "
+            "indexed_documents for the distinct-document count."
+        ),
     )
     pending_count: int = Field(
         default=0, description="Number of documents pending processing"

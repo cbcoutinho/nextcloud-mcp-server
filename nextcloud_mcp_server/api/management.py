@@ -327,9 +327,11 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
             "status": status,
             # indexed_documents is now the distinct-document count (was the chunk
             # count before — the two differ by the per-document chunk fan-out).
-            # indexed_chunks exposes the raw point count separately.
+            # indexed_chunks exposes the raw point count separately; indexed_count
+            # is kept as a deprecated alias of indexed_chunks for back-compat.
             "indexed_documents": indexed_documents,
             "indexed_chunks": indexed_chunks,
+            "indexed_count": indexed_chunks,
             "pending_documents": pending.pending,
             "ingest_queue": settings.ingest_queue,
         }
