@@ -34,6 +34,7 @@ def _full_page_image_pdf(pages: int = 2) -> bytes:
     pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 600, 850))
     pix.clear_with(255)
     img = pix.tobytes("png")
+    del pix  # Pixmap holds native memory; release it before the loop
     for _ in range(pages):
         page = doc.new_page(width=595, height=842)
         page.insert_image(page.rect, stream=img)
@@ -103,6 +104,7 @@ def _image_with_mashed_text_pdf(pages: int = 2) -> bytes:
     pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 600, 850))
     pix.clear_with(255)
     img = pix.tobytes("png")
+    del pix  # Pixmap holds native memory; release it before the loop
     mashed = "01322234567mobileoutstandingresilienceacademicachievement " * 3
     for _ in range(pages):
         page = doc.new_page(width=595, height=842)

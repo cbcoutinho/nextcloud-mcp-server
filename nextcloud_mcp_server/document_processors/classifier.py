@@ -113,8 +113,7 @@ def classify_pdf(content: bytes) -> DocClassification:
     """
     import pymupdf  # noqa: PLC0415 -- keep the heavy import lazy / off module load
 
-    doc = pymupdf.open("pdf", content)
-    try:
+    with pymupdf.open("pdf", content) as doc:
         page_count = doc.page_count
         indices = _sample_indices(page_count)
         pages: list[PageSignals] = []
@@ -141,8 +140,6 @@ def classify_pdf(content: bytes) -> DocClassification:
             pages.append(
                 PageSignals(n, len(text), round(coverage, 3), quality, needs_ocr)
             )
-    finally:
-        doc.close()
 
     sampled = len(pages)
     total_chars = sum(p.char_count for p in pages)

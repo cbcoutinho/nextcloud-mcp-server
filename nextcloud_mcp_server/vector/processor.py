@@ -186,7 +186,14 @@ async def _shadow_classify(content: bytes, content_type: str, file_path: str) ->
             c.mean_text_quality,
         )
     except Exception:
-        logger.debug("Tier-0 classification failed for %s", file_path, exc_info=True)
+        # Best-effort: shadow classification must never break indexing, but log
+        # at WARNING (not DEBUG) so a systematic failure -- a pymupdf bug, memory
+        # pressure on every PDF -- stays visible at the production LOG_LEVEL=INFO.
+        logger.warning(
+            "Tier-0 classification failed for %s (shadow mode, indexing unaffected)",
+            file_path,
+            exc_info=True,
+        )
 
 
 async def process_document(
