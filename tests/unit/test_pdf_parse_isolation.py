@@ -129,6 +129,24 @@ def test_apply_mem_limit_caps_soft_below_finite_hard(monkeypatch):
     assert hard == 4 * 1024**3
 
 
+def test_apply_mem_limit_uses_target_when_hard_unlimited(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(_isolation, "_MEM_LIMIT_APPLIED", False)
+    monkeypatch.setattr(
+        _isolation.resource,
+        "getrlimit",
+        lambda _w: (resource.RLIM_INFINITY, resource.RLIM_INFINITY),
+    )
+    monkeypatch.setattr(
+        _isolation.resource, "setrlimit", lambda _w, pair: captured.update(pair=pair)
+    )
+    # hard is unbounded -> soft is exactly the target, hard stays RLIM_INFINITY
+    _isolation._apply_mem_limit(1536)
+    soft, hard = captured["pair"]
+    assert soft == 1536 * 1024 * 1024
+    assert hard == resource.RLIM_INFINITY
+
+
 def test_apply_mem_limit_is_applied_once(monkeypatch):
     calls = []
     monkeypatch.setattr(_isolation, "_MEM_LIMIT_APPLIED", False)

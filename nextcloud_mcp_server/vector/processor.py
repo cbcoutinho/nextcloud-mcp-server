@@ -311,9 +311,12 @@ async def process_document(
 
 async def _index_document(
     doc_task: DocumentTask, nc_client: NextcloudClient, qdrant_client
-):
+) -> bool | None:
     """
     Index a single document (called by process_document with retry).
+
+    Returns ``False`` when a permanent parse failure means nothing was indexed
+    (the caller must then skip the success metrics); ``None`` otherwise.
 
     Args:
         doc_task: Document task to index

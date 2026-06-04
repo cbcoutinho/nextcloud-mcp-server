@@ -281,9 +281,11 @@ _dynaconf = Dynaconf(
         Validator("DOCUMENT_CHUNK_SIZE", gte=1),
         Validator("DOCUMENT_PARSE_TIMEOUT_SECONDS", gte=1),
         Validator("DOCUMENT_PARSE_MEM_LIMIT_MB", gte=128),
+        # >=1: pymupdf4llm treats graphics_limit=0 as "no cap", which would
+        # re-expose the OOM this guards against.
+        Validator("DOCUMENT_PDF_GRAPHICS_LIMIT", gte=1),
         # Non-negative
         Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
-        Validator("DOCUMENT_PDF_GRAPHICS_LIMIT", gte=0),
         # Non-empty strings
         Validator("VECTOR_SYNC_PDF_TAG", len_min=1),
         # Enum constraints
@@ -710,15 +712,14 @@ class Settings:
 
     # PDF parse isolation (OOM guard). The parse runs in a subprocess so one
     # pathological file fails that doc, not the pod.
-    document_pdf_graphics_limit: int = (
-        5000  # to_markdown graphics cap; pages above skip graphics analysis
-    )
-    document_parse_timeout_seconds: int = (
-        120  # wall-clock cap per parse; the worker subprocess is killed on timeout
-    )
-    document_parse_mem_limit_mb: int = (
-        1536  # RLIMIT_AS in the parse subprocess (kept below the pod memory limit)
-    )
+    # to_markdown graphics cap; pages above it skip graphics analysis. Must be
+    # >=1 -- pymupdf4llm treats 0 as "no cap", which re-exposes the OOM.
+    document_pdf_graphics_limit: int = 5000
+    # wall-clock cap per parse; the worker subprocess is killed on timeout.
+    document_parse_timeout_seconds: int = 120
+    # RLIMIT_AS in the parse subprocess (below the pod limit). Applied once per
+    # worker for its lifetime, so changing it needs a pod restart.
+    document_parse_mem_limit_mb: int = 1536
 
     # Observability settings
     metrics_enabled: bool = True
