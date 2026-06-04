@@ -587,13 +587,18 @@ async def scan_user_documents(
                             )
                         )
                         file_queued += 1
-                    elif existing_metadata is not None:
+                    elif existing_metadata is not None and not existing_metadata.get(
+                        "is_placeholder", False
+                    ):
                         # Unchanged content (not re-queued) but the file may have
                         # been renamed/moved: a rename keeps the fileid while
                         # changing the path, and the dedup miss here means the
                         # etag changed without a modified_at bump. Refresh the
                         # stale path/title metadata without re-embedding. No-op
-                        # when the path is unchanged.
+                        # when the path is unchanged. Skip placeholders: reconcile
+                        # only touches real chunks, so a not-yet-indexed file would
+                        # just incur a 0-point set_payload (the real index writes
+                        # the current path anyway).
                         try:
                             await reconcile_document_path(
                                 file_id,

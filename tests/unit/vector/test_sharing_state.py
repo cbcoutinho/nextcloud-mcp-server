@@ -210,6 +210,31 @@ class TestClaimExistingIndex:
         assert payload["file_path"] == "/a/new.pdf"
         assert payload["title"] == "new.pdf"
 
+    async def test_dedup_hit_reconciles_and_grants_new_principal(self, client) -> None:
+        # Renamed file (stale path) AND a user not yet in the ACL: both writes
+        # fire — one set_payload for file_path/title, one for acl_principals.
+        client.scroll.return_value = (
+            [
+                _point(
+                    {
+                        payload_keys.EMBEDDING_IDENTITY: _MODEL,
+                        ss.ACL_PRINCIPALS_KEY: ["user:alice"],
+                        "file_path": "/a/old.pdf",
+                    }
+                )
+            ],
+            None,
+        )
+        claimed = await ss.claim_existing_index(
+            "42", "file", "abc", "bob", current_path="/a/new.pdf"
+        )
+        assert claimed is True
+        assert client.set_payload.await_count == 2
+        payloads = [c.kwargs["payload"] for c in client.set_payload.await_args_list]
+        # One write refreshes the path/title, the other unions the new principal.
+        assert {"file_path": "/a/new.pdf", "title": "new.pdf"} in payloads
+        assert {ss.ACL_PRINCIPALS_KEY: ["user:alice", "user:bob"]} in payloads
+
     async def test_dedup_hit_without_current_path_skips_reconcile(self, client) -> None:
         # No current_path (non-file callers) -> never touches file_path/title.
         client.scroll.return_value = (
