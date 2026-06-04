@@ -9,9 +9,20 @@ from urllib.parse import unquote
 
 from httpx import HTTPStatusError
 
+from nextcloud_mcp_server.observability.metrics import document_scan_truncated_total
+
 from .base import BaseNextcloudClient
 
 logger = logging.getLogger(__name__)
+
+# Paging defaults for WebDAV SEARCH. Nextcloud's SEARCH returns a server-default
+# page (~100 results) when no ``<d:nresults>`` is sent, silently truncating large
+# folders. ``search_files_all`` pages explicitly to fetch the complete result set.
+WEBDAV_SEARCH_PAGE_SIZE = 500
+# Hard ceiling so a pathologically large folder can't drive an unbounded crawl.
+# Crossing it is logged as a truncation warning (and surfaced via a metric) so the
+# cap can never again silently hide files.
+WEBDAV_SEARCH_MAX_RESULTS = 50000
 
 
 class WebDAVClient(BaseNextcloudClient):
@@ -620,6 +631,7 @@ class WebDAVClient(BaseNextcloudClient):
         properties: Optional[List[str]] = None,
         order_by: Optional[List[Tuple[str, str]]] = None,
         limit: Optional[int] = None,
+        offset: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Search for files using WebDAV SEARCH method (RFC 5323).
 
@@ -629,6 +641,10 @@ class WebDAVClient(BaseNextcloudClient):
             properties: List of property names to retrieve (defaults to basic set)
             order_by: List of (property, direction) tuples for sorting, e.g. [("getlastmodified", "descending")]
             limit: Maximum number of results to return
+            offset: Number of leading results to skip (``<d:firstresult>``). Note
+                that not every Nextcloud release honours offset paging; callers
+                that need guaranteed completeness should use ``search_files_all``,
+                which detects an ignored offset and falls back.
 
         Returns:
             List of file/directory dictionaries with requested properties
@@ -651,6 +667,7 @@ class WebDAVClient(BaseNextcloudClient):
             properties=properties,
             order_by=order_by,
             limit=limit,
+            offset=offset,
         )
 
         # The SEARCH endpoint is at the dav root
@@ -679,6 +696,135 @@ class WebDAVClient(BaseNextcloudClient):
             logger.error("Unexpected error during search: %s", e)
             raise e
 
+    async def search_files_all(
+        self,
+        scope: str = "",
+        where_conditions: Optional[str] = None,
+        properties: Optional[List[str]] = None,
+        order_by: Optional[List[Tuple[str, str]]] = None,
+        page_size: int = WEBDAV_SEARCH_PAGE_SIZE,
+        max_results: int = WEBDAV_SEARCH_MAX_RESULTS,
+    ) -> List[Dict[str, Any]]:
+        """Fetch the *complete* SEARCH result set, paging past the server default.
+
+        A plain ``search_files`` with no ``limit`` returns only Nextcloud's default
+        page (~100), silently dropping the rest of a large folder. This method pages
+        with ``<d:firstresult>`` until a short page signals the end. If the server
+        ignores the offset (a page repeats results already seen), it falls back to a
+        single fetch with an explicit large ``nresults`` so completeness never depends
+        on offset support.
+
+        Args:
+            scope: Directory path to search in (empty string for user root)
+            where_conditions: XML where-clause conditions
+            properties: Properties to retrieve (must include ``fileid`` for dedup)
+            order_by: Optional sort order
+            page_size: Results requested per page
+            max_results: Hard ceiling; crossing it logs a truncation warning and
+                increments ``webdav_search_truncated_total``
+
+        Returns:
+            All matching file/directory dicts, de-duplicated by file id / path.
+        """
+
+        def _key(item: Dict[str, Any]) -> Any:
+            # file_id is globally unique; path is the stable fallback when a
+            # producer omits fileid. Either uniquely identifies a result row.
+            return item.get("file_id") or item.get("path")
+
+        results: List[Dict[str, Any]] = []
+        seen: set = set()
+        offset = 0
+
+        while len(results) < max_results:
+            try:
+                page = await self.search_files(
+                    scope=scope,
+                    where_conditions=where_conditions,
+                    properties=properties,
+                    order_by=order_by,
+                    limit=page_size,
+                    offset=offset,
+                )
+            except Exception:
+                if offset == 0:
+                    raise
+                # An offset page failed (e.g. server rejects <d:firstresult>);
+                # fall back to a single bounded fetch rather than lose the tail.
+                logger.warning(
+                    "WebDAV SEARCH offset page failed for scope %r; "
+                    "falling back to single fetch",
+                    scope,
+                )
+                return self._single_fetch_fallback(
+                    scope, where_conditions, properties, order_by, max_results
+                )
+
+            if not page:
+                break
+
+            fresh = [item for item in page if _key(item) not in seen]
+
+            # Server ignored the offset (returned an already-seen page). Stop
+            # paging and fetch everything in one bounded request instead.
+            if offset > 0 and not fresh:
+                logger.warning(
+                    "WebDAV SEARCH ignored offset for scope %r; "
+                    "falling back to single fetch (limit=%d)",
+                    scope,
+                    max_results,
+                )
+                return await self._single_fetch_fallback(
+                    scope, where_conditions, properties, order_by, max_results
+                )
+
+            for item in fresh:
+                seen.add(_key(item))
+                results.append(item)
+
+            # A short page means we've reached the end of the result set.
+            if len(page) < page_size:
+                break
+
+            offset += page_size
+
+        if len(results) >= max_results:
+            document_scan_truncated_total.inc()
+            logger.warning(
+                "WebDAV SEARCH reached max_results=%d for scope %r; "
+                "results may be truncated -- raise WEBDAV_SEARCH_MAX_RESULTS",
+                max_results,
+                scope,
+            )
+
+        return results[:max_results]
+
+    async def _single_fetch_fallback(
+        self,
+        scope: str,
+        where_conditions: Optional[str],
+        properties: Optional[List[str]],
+        order_by: Optional[List[Tuple[str, str]]],
+        max_results: int,
+    ) -> List[Dict[str, Any]]:
+        """Single SEARCH with a large explicit ``nresults`` (offset-free fallback)."""
+        results = await self.search_files(
+            scope=scope,
+            where_conditions=where_conditions,
+            properties=properties,
+            order_by=order_by,
+            limit=max_results,
+        )
+        if len(results) >= max_results:
+            document_scan_truncated_total.inc()
+            logger.warning(
+                "WebDAV SEARCH reached max_results=%d for scope %r; "
+                "results may be truncated -- raise WEBDAV_SEARCH_MAX_RESULTS",
+                max_results,
+                scope,
+            )
+        return results
+
     def _build_search_xml(
         self,
         scope: str,
@@ -686,6 +832,7 @@ class WebDAVClient(BaseNextcloudClient):
         properties: List[str],
         order_by: Optional[List[Tuple[str, str]]],
         limit: Optional[int],
+        offset: Optional[int] = None,
     ) -> str:
         """Build the XML body for a SEARCH request."""
         # Construct the scope path
@@ -716,10 +863,16 @@ class WebDAVClient(BaseNextcloudClient):
         else:
             orderby_xml = ""
 
-        # Build limit clause
-        limit_xml = (
-            f"<d:limit><d:nresults>{limit}</d:nresults></d:limit>" if limit else ""
-        )
+        # Build limit clause. ``<d:nresults>`` caps the page size; ``<d:firstresult>``
+        # is the paging offset. Nextcloud silently ignores an unsupported offset
+        # (returns the first page again) rather than erroring -- ``search_files_all``
+        # detects that non-progress and falls back to a single bounded fetch.
+        limit_parts = []
+        if limit:
+            limit_parts.append(f"<d:nresults>{limit}</d:nresults>")
+        if offset:
+            limit_parts.append(f"<d:firstresult>{offset}</d:firstresult>")
+        limit_xml = f"<d:limit>{''.join(limit_parts)}</d:limit>" if limit_parts else ""
 
         # Construct the full SEARCH XML
         search_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -942,7 +1095,47 @@ class WebDAVClient(BaseNextcloudClient):
 
             # Find all PDFs
             results = await find_by_type("application/pdf")
+
+        Note:
+            With ``limit=None`` this returns only Nextcloud's default SEARCH page
+            (~100 results), so it truncates large folders. Use ``find_all_by_type``
+            when complete coverage matters (e.g. building an indexing work-list).
         """
+        where_conditions, properties = self._type_search_args(mime_type)
+        return await self.search_files(
+            scope=scope,
+            where_conditions=where_conditions,
+            properties=properties,
+            limit=limit,
+        )
+
+    async def find_all_by_type(
+        self, mime_type: str, scope: str = ""
+    ) -> List[Dict[str, Any]]:
+        """Find *all* files of a MIME type, paging past the SEARCH default page.
+
+        Unlike ``find_by_type`` (single default-capped page), this pages the SEARCH
+        to completion so a large tagged folder is fully discovered. Used by the
+        vector-sync scanner's tagged-folder expansion, where a missed file means a
+        document that is never indexed.
+
+        Args:
+            mime_type: MIME type to search for (supports % wildcard)
+            scope: Directory path to search in (empty string for user root)
+
+        Returns:
+            All matching files (bounded by ``WEBDAV_SEARCH_MAX_RESULTS``).
+        """
+        where_conditions, properties = self._type_search_args(mime_type)
+        return await self.search_files_all(
+            scope=scope,
+            where_conditions=where_conditions,
+            properties=properties,
+        )
+
+    @staticmethod
+    def _type_search_args(mime_type: str) -> Tuple[str, List[str]]:
+        """Build the where-clause + property list for a MIME-type SEARCH."""
         where_conditions = f"""
             <d:like>
                 <d:prop>
@@ -964,13 +1157,7 @@ class WebDAVClient(BaseNextcloudClient):
             "getetag",
             "fileid",
         ]
-
-        return await self.search_files(
-            scope=scope,
-            where_conditions=where_conditions,
-            properties=properties,
-            limit=limit,
-        )
+        return where_conditions, properties
 
     async def list_favorites(
         self, scope: str = "", limit: Optional[int] = None

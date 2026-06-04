@@ -278,6 +278,18 @@ documents_indexed_total = Counter(
     ["source", "status"],  # source: note | file | deck_card | news_item
 )
 
+# --- Document discovery / coverage ------------------------------------------
+#
+# Fires when a paged WebDAV SEARCH (folder-expansion during a scan) hits the
+# WEBDAV_SEARCH_MAX_RESULTS ceiling, meaning the discovered file set was capped
+# and some tagged documents may never be queued for indexing. This is the
+# alertable signal that prevents the old *silent* 100-result truncation from
+# recurring. Tenant is the Kubernetes ``namespace`` label, as elsewhere.
+document_scan_truncated_total = Counter(
+    "astrolabe_document_scan_truncated_total",
+    "Times a folder-expansion SEARCH hit the result ceiling (coverage truncated)",
+)
+
 # =============================================================================
 # Database Metrics
 # =============================================================================
