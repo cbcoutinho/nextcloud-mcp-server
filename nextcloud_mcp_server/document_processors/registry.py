@@ -5,10 +5,16 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from nextcloud_mcp_server.observability.metrics import record_document_parse
+from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.observability.metrics import (
+    record_document_classification,
+    record_document_escalation,
+    record_document_parse,
+)
 from nextcloud_mcp_server.observability.tracing import trace_operation
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
+from .classifier import classify_from_text
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +146,7 @@ class ProcessorRegistry:
         Raises:
             ProcessorError: If no processor found or processing fails
         """
-        # Find processor
+        # Forced processor bypasses tiering.
         if processor_name:
             processor = self.get_processor(processor_name)
             if not processor:
@@ -148,14 +154,142 @@ class ProcessorRegistry:
                     f"Processor '{processor_name}' not found. "
                     f"Available: {', '.join(self.list_processors())}"
                 )
-        else:
+            return await self._run_processor(
+                processor, content, content_type, filename, options, progress_callback
+            )
+
+        # PDFs go through the tiered pipeline (tier-0 classify -> tier-1 fast ->
+        # tier-3 OCR escalation). Everything else uses priority selection.
+        if content_type.split(";")[0].strip().lower() == "application/pdf":
+            return await self._process_pdf(
+                content, content_type, filename, options, progress_callback
+            )
+
+        processor = self.find_processor(content_type)
+        if not processor:
+            raise ProcessorError(
+                f"No processor found for type: {content_type}. "
+                f"Registered processors: {', '.join(self.list_processors())}"
+            )
+        return await self._run_processor(
+            processor, content, content_type, filename, options, progress_callback
+        )
+
+    def _pdf_processor_for_tier(self, tier: str) -> DocumentProcessor | None:
+        """First registered processor of ``tier`` that handles PDFs."""
+        for name in self._priority_order:
+            processor = self._processors[name][0]
+            if processor.tier == tier and processor.supports("application/pdf"):
+                return processor
+        return None
+
+    async def _process_pdf(
+        self,
+        content: bytes,
+        content_type: str,
+        filename: str | None,
+        options: dict[str, Any] | None,
+        progress_callback: (
+            Callable[[float, float | None, str | None], Awaitable[None]] | None
+        ),
+    ) -> ProcessingResult:
+        """Tiered PDF pipeline.
+
+        pypdfium2 ``fast`` extracts first; classification is then derived from
+        that text (no PDF re-open), and a scanned/no-text-layer doc escalates to
+        the ``ocr`` tier when enabled. ``document_tier1_engine="pymupdf"`` is a
+        deprecated rollback that pins the structured engine instead.
+        """
+        settings = get_settings()
+
+        if settings.document_tier1_engine == "pymupdf":
+            processor = self._pdf_processor_for_tier(
+                "structured"
+            ) or self.find_processor(content_type)
+            if processor is None:
+                raise ProcessorError("No PDF processor registered")
+            return await self._run_processor(
+                processor, content, content_type, filename, options, progress_callback
+            )
+
+        fast = self._pdf_processor_for_tier("fast")
+        if fast is None:
             processor = self.find_processor(content_type)
-            if not processor:
-                raise ProcessorError(
-                    f"No processor found for type: {content_type}. "
-                    f"Registered processors: {', '.join(self.list_processors())}"
+            if processor is None:
+                raise ProcessorError("No PDF processor registered")
+            return await self._run_processor(
+                processor, content, content_type, filename, options, progress_callback
+            )
+
+        result = await self._run_processor(
+            fast, content, content_type, filename, options, progress_callback
+        )
+
+        # Tier-0 classification from the extraction (cheap: no PDF re-open).
+        classification = None
+        if settings.document_classify_enabled and result.success:
+            try:
+                classification = classify_from_text(
+                    result.text, result.metadata.get("page_boundaries") or []
+                )
+                record_document_classification(
+                    classification.recommended_tier,
+                    classification.flags,
+                    classification.mean_text_quality,
+                )
+            except Exception:
+                logger.warning(
+                    "Tier-0 classification failed for %s",
+                    filename or "<bytes>",
+                    exc_info=True,
                 )
 
+        # Escalate scanned / no-text-layer PDFs to OCR (tier-3) when enabled and
+        # a provider is registered. The fast tier is terminal otherwise.
+        if (
+            classification is not None
+            and classification.recommended_tier == "ocr"
+            and settings.document_ocr_enabled
+        ):
+            ocr = self._pdf_processor_for_tier("ocr")
+            if ocr is not None:
+                reason = (
+                    "empty_text"
+                    if classification.total_chars == 0
+                    else "low_confidence"
+                )
+                record_document_escalation("fast", "ocr", reason)
+                logger.info(
+                    "Escalating %s fast->ocr (reason=%s)",
+                    filename or "<bytes>",
+                    reason,
+                )
+                return await self._run_processor(
+                    ocr,
+                    content,
+                    content_type,
+                    filename,
+                    options,
+                    progress_callback,
+                    escalated=True,
+                )
+
+        return result
+
+    async def _run_processor(
+        self,
+        processor: DocumentProcessor,
+        content: bytes,
+        content_type: str,
+        filename: str | None = None,
+        options: dict[str, Any] | None = None,
+        progress_callback: (
+            Callable[[float, float | None, str | None], Awaitable[None]] | None
+        ) = None,
+        *,
+        escalated: bool = False,
+    ) -> ProcessingResult:
+        """Run one processor with the per-processor span + parse metrics."""
         tier = processor.tier
         logger.info(
             "Processing with '%s' processor",
@@ -167,11 +301,6 @@ class ProcessorRegistry:
             },
         )
 
-        # Process (instrumented: per-processor span + parse metrics).
-        # NOTE: when the tiered pipeline (docling/OCR/LLM) lands, escalation
-        # decisions are recorded here via record_document_escalation() and an
-        # add_span_event("document.escalation", ...) -- the escalated=False
-        # attribute and the metric are wired ahead of that.
         byte_size = len(content)
         start_time = time.time()
         with trace_operation(
@@ -181,7 +310,7 @@ class ProcessorRegistry:
                 "processor.tier": tier,
                 "mime_type": content_type,
                 "byte_size": byte_size,
-                "escalated": False,
+                "escalated": escalated,
             },
             record_exception=True,
         ) as span:

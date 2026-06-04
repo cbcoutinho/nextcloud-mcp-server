@@ -136,8 +136,13 @@ _DEFAULTS: dict[str, Any] = {
     "document_pdf_graphics_limit": 1000,
     "document_parse_timeout_seconds": 120.0,
     "document_parse_mem_limit_mb": 1536,
-    # Tier-0 classifier (shadow mode: emits metrics, no routing change)
+    # Tier-0 classifier (records classification metrics on the tiered path)
     "document_classify_enabled": True,
+    # Tiered PDF pipeline: pypdfium2 is the default/only hot-path extractor;
+    # "pymupdf" is a deprecated rollback escape hatch. OCR (tier-3) is the only
+    # escalation target and is off by default (no provider wired yet).
+    "document_tier1_engine": "pypdfium2",
+    "document_ocr_enabled": False,
     # Observability
     "metrics_enabled": True,
     "metrics_port": 9090,
@@ -292,6 +297,7 @@ _dynaconf = Dynaconf(
         Validator("VECTOR_SYNC_PDF_TAG", len_min=1),
         # Enum constraints
         Validator("LOG_FORMAT", is_in=["text", "json"]),
+        Validator("DOCUMENT_TIER1_ENGINE", is_in=["pypdfium2", "pymupdf"]),
         Validator(
             "LOG_LEVEL",
             is_in=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -729,9 +735,16 @@ class Settings:
     # RLIMIT_AS in the parse subprocess (below the pod limit). Applied once per
     # worker for its lifetime, so changing it needs a pod restart.
     document_parse_mem_limit_mb: int = 1536
-    # Tier-0 classifier. Shadow mode for now: runs a cheap pre-pass over each PDF
-    # and emits classification metrics, but does NOT change routing yet.
+    # Tier-0 classifier. Records classification metrics (recommended_tier,
+    # text-quality) on the tiered path, derived from the tier-1 extraction.
     document_classify_enabled: bool = True
+    # PDF extraction engine for the ``fast`` tier. "pypdfium2" (default,
+    # permissive license, no find_tables) is the hot path; "pymupdf" is a
+    # deprecated rollback to pymupdf4llm (AGPL, graphics-limited) for one corpus.
+    document_tier1_engine: str = "pypdfium2"
+    # Route scanned/no-text-layer PDFs to the tier-3 OCR provider. Off until an
+    # OCR backend is wired; when off, the fast tier is terminal.
+    document_ocr_enabled: bool = False
 
     # Observability settings
     metrics_enabled: bool = True
@@ -1345,6 +1358,8 @@ def get_settings() -> Settings:
         "document_parse_timeout_seconds": "DOCUMENT_PARSE_TIMEOUT_SECONDS",
         "document_parse_mem_limit_mb": "DOCUMENT_PARSE_MEM_LIMIT_MB",
         "document_classify_enabled": "DOCUMENT_CLASSIFY_ENABLED",
+        "document_tier1_engine": "DOCUMENT_TIER1_ENGINE",
+        "document_ocr_enabled": "DOCUMENT_OCR_ENABLED",
         # Observability settings
         "metrics_enabled": "METRICS_ENABLED",
         "metrics_port": "METRICS_PORT",
