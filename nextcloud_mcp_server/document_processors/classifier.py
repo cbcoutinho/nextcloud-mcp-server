@@ -9,11 +9,14 @@ Decides which extraction tier a PDF should escalate to, from cheap signals:
   * no text layer -- the strongest OCR signal available from text alone.
 
 Two entry points:
-  * ``classify_from_text(text, page_boundaries)`` -- the HOT PATH. Derives the
-    text-quality/no-text-layer signal from the text the registry's tier-1 step
-    already extracted, so it adds ~no cost. No image analysis.
+  * ``classify_from_text(text, page_boundaries, ...)`` -- the HOT PATH. Routes on
+    text-quality + near-empty pages derived from the tier-1 extraction (~no
+    cost). When OCR + scan-detection are enabled the registry also passes
+    per-page ``image_coverage`` (from ``image_coverage_per_page``) so scans are
+    caught too; that image pass is the only added cost and only OCR-opted-in
+    tenants pay it. Thresholds come from per-tenant settings.
   * ``classify_pdf(content)`` -- a standalone/diagnostic pass that re-opens the
-    PDF and adds image-coverage analysis. More expensive; used off the hot path.
+    PDF and does image-coverage analysis inline. Off the hot path.
 
 Recommended tier:
   * ``ocr``  -- scanned / no-usable-text-layer (route to tier 3, when enabled)
@@ -83,6 +86,13 @@ def _text_quality(text: str) -> float:
     whitespace_ratio = sum(c.isspace() for c in text) / len(text)
     mean_token_len = sum(len(t) for t in tokens) / len(tokens)
     overlong_frac = sum(len(t) > 20 for t in tokens) / len(tokens)
+    # Word-merging (dropped inter-word spaces) is the dominant junk-text-layer
+    # failure mode on scanned forms -- the older whitespace/overlong(>20) terms
+    # miss it, because the merges are 10-20 chars and a few dropped spaces still
+    # leave whitespace above the 0.12 cap. Clean prose keeps <~3% of tokens above
+    # 12 chars; merged/OCR-mangled layers push it past 10%. (Measured: the junk
+    # Student-147 scan scores ~0.20 here vs >=0.9 for clean digital docs.)
+    long_frac = sum(len(t) > 12 for t in tokens) / len(tokens)
     # Caps at 1.0 from 12% whitespace (conservative; clean prose runs 15-20%),
     # mean token ~4-6 chars, ~no overlong tokens.
     ws_score = min(whitespace_ratio / 0.12, 1.0)
@@ -90,7 +100,8 @@ def _text_quality(text: str) -> float:
         1.0 if mean_token_len <= 10 else max(0.0, 1.0 - (mean_token_len - 10) / 15)
     )
     overlong_score = max(0.0, 1.0 - overlong_frac * 5)
-    return round(ws_score * len_score * overlong_score, 3)
+    merge_score = max(0.0, 1.0 - max(0.0, long_frac - 0.03) / 0.12)
+    return round(ws_score * len_score * overlong_score * merge_score, 3)
 
 
 def _sample_indices(page_count: int) -> list[int]:
@@ -180,27 +191,68 @@ def classify_pdf(content: bytes) -> DocClassification:
     )
 
 
-def classify_from_text(
-    full_text: str, page_boundaries: list[dict[str, Any]]
-) -> DocClassification:
-    """Classify from text already extracted by tier-1 -- no PDF re-open.
+def image_coverage_per_page(content: bytes) -> list[float]:
+    """Raster-image coverage in ``[0, 1]`` for every page (document order).
 
-    The hot-path classifier: it derives the text-quality signal from the
-    extraction the registry already ran, so it adds ~no cost (vs ``classify_pdf``,
-    which re-opens the PDF and re-extracts). It does NOT do image analysis, so it
-    cannot distinguish a scanned-with-text-layer page (that needs the image pass,
-    which only matters once OCR routing is enabled). A page with effectively no
-    text layer is the one OCR-worthy signal available from text alone.
+    Lets the hot path flag scanned pages whose embedded text layer is junk but
+    statistically clean-looking. Re-opens the PDF, so the registry calls it only
+    when OCR + scan detection are enabled (the cost is borne by OCR-opted-in
+    tenants). Returned list is aligned by index with the page boundaries.
+    """
+    import pymupdf  # noqa: PLC0415 -- keep the heavy import lazy
+
+    cov: list[float] = []
+    with pymupdf.open("pdf", content) as doc:
+        for n in range(doc.page_count):
+            page = doc.load_page(n)
+            page_area = abs(page.rect.width * page.rect.height) or 1.0
+            img_area = 0.0
+            for img in page.get_images(full=True):
+                for rect in page.get_image_rects(img[0]):
+                    img_area += abs(rect.width * rect.height)
+            cov.append(min(img_area / page_area, 1.0))
+    return cov
+
+
+def classify_from_text(
+    full_text: str,
+    page_boundaries: list[dict[str, Any]],
+    *,
+    min_text_quality: float = MIN_TEXT_QUALITY,
+    min_page_chars: int = MIN_PAGE_CHARS,
+    page_fraction: float = OCR_PAGE_FRACTION,
+    image_coverage: list[float] | None = None,
+) -> DocClassification:
+    """Classify from text already extracted by tier-1 -- no PDF re-open by default.
+
+    The hot-path classifier. A page is OCR-worthy when its text is near-empty
+    (``< min_page_chars``), its text-quality is junk (``< min_text_quality`` --
+    the word-merging signal), OR (when ``image_coverage`` is supplied, i.e. OCR +
+    scan-detection are on) the page is mostly a raster image. The doc recommends
+    ``ocr`` once ``ocr_frac >= page_fraction``. Thresholds are passed in by the
+    registry from per-tenant settings.
 
     ``page_boundaries`` are ``{page, start_offset, end_offset}`` indexing into
-    ``full_text`` (the tier-1/pdf_highlighter contract).
+    ``full_text``; ``image_coverage[i]`` (if given) aligns with the i-th boundary.
     """
     pages: list[PageSignals] = []
-    for b in page_boundaries:
+    for idx, b in enumerate(page_boundaries):
         seg = full_text[b["start_offset"] : b["end_offset"]]
-        needs_ocr = len(seg.strip()) < MIN_PAGE_CHARS
+        quality = _text_quality(seg)
+        # image_coverage is one entry per PDF page, aligned 1:1 with the
+        # boundaries; the length guard is belt-and-suspenders against a mismatch.
+        cov = (
+            image_coverage[idx]
+            if image_coverage is not None and idx < len(image_coverage)
+            else 0.0
+        )
+        needs_ocr = (
+            len(seg.strip()) < min_page_chars
+            or quality < min_text_quality
+            or cov >= IMAGE_COVERAGE_SCANNED
+        )
         pages.append(
-            PageSignals(b["page"], len(seg), 0.0, _text_quality(seg), needs_ocr)
+            PageSignals(b["page"], len(seg), round(cov, 3), quality, needs_ocr)
         )
 
     sampled = len(pages)
@@ -213,18 +265,19 @@ def classify_from_text(
     # recorded classification metric accurate rather than a misleading "ocr").
     ocr_frac = (sum(p.needs_ocr for p in pages) / sampled) if sampled else 0.0
 
-    # Flags gated on ocr_frac >= OCR_PAGE_FRACTION (matching classify_pdf): a
-    # doc that routes "fast" must not carry a junk-layer flag just because a few
-    # isolated pages are bad -- otherwise the classification metric diverges
-    # between this hot path and the standalone classify_pdf.
+    # Flags gated on ocr_frac >= page_fraction (matching classify_pdf): a doc that
+    # routes "fast" must not carry a junk-layer flag just because a few isolated
+    # pages are bad -- otherwise the metric diverges from classify_pdf.
     flags: set[str] = set()
-    if sampled and ocr_frac >= OCR_PAGE_FRACTION:
+    if sampled and ocr_frac >= page_fraction:
         if total_chars == 0:
             flags.add("no_text_layer")
-        elif mean_quality < MIN_TEXT_QUALITY:
+        elif mean_quality < min_text_quality:
             flags.add("bad_text_layer")
+    if any(p.image_coverage >= IMAGE_COVERAGE_SCANNED for p in pages):
+        flags.add("image_heavy")
 
-    recommended = "ocr" if ocr_frac >= OCR_PAGE_FRACTION else "fast"
+    recommended = "ocr" if ocr_frac >= page_fraction else "fast"
 
     return DocClassification(
         page_count=len(page_boundaries),

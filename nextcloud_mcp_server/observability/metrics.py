@@ -299,6 +299,18 @@ document_text_quality = Histogram(
     buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
 )
 
+# Per-document fraction of OCR-worthy pages (near-empty / junk-quality / scanned).
+# This is the value the DOCUMENT_OCR_PAGE_FRACTION threshold acts on, so its
+# distribution per tenant is the lever for tuning OCR escalation (quality vs
+# cost): how many docs sit just below/above the cutoff. Pair with
+# document_text_quality (where to set the per-page quality floor) and
+# document_escalation_total (realized OCR volume).
+document_ocr_page_fraction = Histogram(
+    "astrolabe_document_ocr_page_fraction",
+    "Tier-0 fraction of OCR-worthy pages per document (0=all-clean, 1=all-bad)",
+    buckets=(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+)
+
 # --- Embedding stages ---------------------------------------------------------
 
 embedding_duration_seconds = Histogram(
@@ -665,17 +677,23 @@ def record_document_parse_failed(reason: str) -> None:
 
 
 def record_document_classification(
-    recommended_tier: str, flags: set[str], mean_text_quality: float
+    recommended_tier: str,
+    flags: set[str],
+    mean_text_quality: float,
+    ocr_page_fraction: float = 0.0,
 ) -> None:
-    """Record a tier-0 classification result (shadow mode -- observability only).
+    """Record a tier-0 classification result.
 
     Primitive args (not the DocClassification object) keep the observability
-    layer free of a dependency on document_processors.
+    layer free of a dependency on document_processors. ``mean_text_quality`` and
+    ``ocr_page_fraction`` feed the two histograms operators use to tune the OCR
+    escalation thresholds per tenant (quality vs cost).
     """
     document_classified_total.labels(recommended_tier=recommended_tier).inc()
     for flag in flags:
         document_classifier_flag_total.labels(flag=flag).inc()
     document_text_quality.observe(mean_text_quality)
+    document_ocr_page_fraction.observe(ocr_page_fraction)
 
 
 def record_embedding(

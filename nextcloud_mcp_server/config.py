@@ -149,6 +149,15 @@ _DEFAULTS: dict[str, Any] = {
     # Provider-namespaced OCR model id (gateway routes on the prefix; the direct
     # mistral backend strips it).
     "document_ocr_model": "mistral/mistral-ocr-latest",
+    # OCR escalation triggers (tier-0). A page is OCR-worthy when its text is
+    # near-empty (< min_page_chars) OR low-quality (< min_text_quality) OR (when
+    # detect_scanned) mostly a raster image; a doc escalates when the OCR-worthy
+    # page fraction reaches page_fraction. Calibrate min_text_quality from the
+    # astrolabe_document_text_quality histogram per tenant.
+    "document_ocr_min_text_quality": 0.5,
+    "document_ocr_page_fraction": 0.5,
+    "document_ocr_min_page_chars": 16,
+    "document_ocr_detect_scanned": True,
     # Observability
     "metrics_enabled": True,
     "metrics_port": 9090,
@@ -297,6 +306,10 @@ _dynaconf = Dynaconf(
         # >=1: pymupdf4llm treats graphics_limit=0 as "no cap", which would
         # re-expose the OOM this guards against.
         Validator("DOCUMENT_PDF_GRAPHICS_LIMIT", gte=1),
+        # OCR escalation thresholds: quality + page-fraction are [0, 1].
+        Validator("DOCUMENT_OCR_MIN_TEXT_QUALITY", gte=0, lte=1),
+        Validator("DOCUMENT_OCR_PAGE_FRACTION", gte=0, lte=1),
+        Validator("DOCUMENT_OCR_MIN_PAGE_CHARS", gte=0),
         # Non-negative
         Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
         # Non-empty strings
@@ -757,6 +770,14 @@ class Settings:
     # gateway routes on the "<provider>/" prefix; the direct mistral backend
     # strips it.
     document_ocr_model: str = "mistral/mistral-ocr-latest"
+    # OCR escalation triggers (tier-0), per-tenant tunable. A page is OCR-worthy
+    # if near-empty (< min_page_chars) OR low text-quality (< min_text_quality)
+    # OR (when detect_scanned, image-analysis only runs when OCR is enabled)
+    # mostly a raster image; the doc escalates at >= page_fraction such pages.
+    document_ocr_min_text_quality: float = 0.5
+    document_ocr_page_fraction: float = 0.5
+    document_ocr_min_page_chars: int = 16
+    document_ocr_detect_scanned: bool = True
 
     # Observability settings
     metrics_enabled: bool = True
@@ -1376,6 +1397,10 @@ def get_settings() -> Settings:
         "document_ocr_enabled": "DOCUMENT_OCR_ENABLED",
         "document_ocr_provider": "DOCUMENT_OCR_PROVIDER",
         "document_ocr_model": "DOCUMENT_OCR_MODEL",
+        "document_ocr_min_text_quality": "DOCUMENT_OCR_MIN_TEXT_QUALITY",
+        "document_ocr_page_fraction": "DOCUMENT_OCR_PAGE_FRACTION",
+        "document_ocr_min_page_chars": "DOCUMENT_OCR_MIN_PAGE_CHARS",
+        "document_ocr_detect_scanned": "DOCUMENT_OCR_DETECT_SCANNED",
         # Observability settings
         "metrics_enabled": "METRICS_ENABLED",
         "metrics_port": "METRICS_PORT",

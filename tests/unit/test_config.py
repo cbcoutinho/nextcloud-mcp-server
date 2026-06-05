@@ -381,6 +381,22 @@ class TestDynaconfValidators:
         with pytest.raises(ValidationError, match="LOG_FORMAT"):
             _reload_config()
 
+    @patch.dict(os.environ, {"DOCUMENT_OCR_MIN_TEXT_QUALITY": "1.5"}, clear=True)
+    def test_ocr_min_text_quality_out_of_range(self):
+        """DOCUMENT_OCR_MIN_TEXT_QUALITY must be in [0, 1]."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="DOCUMENT_OCR_MIN_TEXT_QUALITY"):
+            _reload_config()
+
+    @patch.dict(os.environ, {"DOCUMENT_OCR_PAGE_FRACTION": "2"}, clear=True)
+    def test_ocr_page_fraction_out_of_range(self):
+        """DOCUMENT_OCR_PAGE_FRACTION must be in [0, 1]."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="DOCUMENT_OCR_PAGE_FRACTION"):
+            _reload_config()
+
     @patch.dict(os.environ, {"LOG_LEVEL": "VERBOSE"}, clear=True)
     def test_invalid_log_level(self):
         """Test invalid LOG_LEVEL raises ValidationError."""
