@@ -185,3 +185,20 @@ def test_classify_from_text_no_pages_routes_fast():
     assert c.recommended_tier == "fast"
     assert c.ocr_page_fraction == pytest.approx(0.0)
     assert c.flags == set()
+
+
+def test_classify_from_text_junk_layer_flags_bad_text_layer():
+    # Non-zero chars but low quality on every page (high ocr_frac) -> ocr +
+    # bad_text_layer (gated on ocr_frac, matching classify_pdf).
+    text = "x1y2zx1y2z"
+    c = clf.classify_from_text(
+        text,
+        [
+            {"page": 1, "start_offset": 0, "end_offset": 5},
+            {"page": 2, "start_offset": 5, "end_offset": 10},
+        ],
+    )
+    assert c.recommended_tier == "ocr"
+    assert c.total_chars > 0
+    assert "bad_text_layer" in c.flags
+    assert "no_text_layer" not in c.flags
