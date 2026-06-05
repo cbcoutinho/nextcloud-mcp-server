@@ -246,6 +246,10 @@ def classify_from_text(
 
     ``page_boundaries`` are ``{page, start_offset, end_offset}`` indexing into
     ``full_text``; ``image_coverage[i]`` (if given) aligns with the i-th boundary.
+
+    Note: the ``image_heavy`` flag (and the image-coverage trigger) are only set
+    when ``image_coverage`` is supplied, so for tenants with scan detection off
+    that flag is always zero -- the text-quality/empty signals still route.
     """
     # image_coverage is expected to be one entry per page, capped at
     # MAX_SAMPLED_PAGES (see image_coverage_per_page). Any other length means the
