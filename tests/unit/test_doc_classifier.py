@@ -188,8 +188,9 @@ def test_classify_from_text_no_pages_routes_fast():
 
 
 def test_classify_from_text_junk_layer_flags_bad_text_layer():
-    # Non-zero chars but low quality on every page (high ocr_frac) -> ocr +
-    # bad_text_layer (gated on ocr_frac, matching classify_pdf).
+    # Each short segment (<MIN_PAGE_CHARS) sets needs_ocr -> high ocr_frac, and
+    # total_chars>0 with mean_quality<MIN_TEXT_QUALITY (no-whitespace junk scores
+    # 0.0) -> bad_text_layer (gated on ocr_frac, matching classify_pdf).
     text = "x1y2zx1y2z"
     c = clf.classify_from_text(
         text,
