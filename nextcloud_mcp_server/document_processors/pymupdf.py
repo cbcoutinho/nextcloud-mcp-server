@@ -74,6 +74,13 @@ class PyMuPDFProcessor(DocumentProcessor):
         return "pymupdf"
 
     @property
+    def tier(self) -> str:
+        # pymupdf4llm recovers markdown structure (headings, lists, tables) via
+        # the expensive graphics-limited table detection -- it is the
+        # ``structured`` escalation target above the pypdfium2 ``fast`` tier.
+        return "structured"
+
+    @property
     def supported_mime_types(self) -> set[str]:
         return self.SUPPORTED_TYPES
 

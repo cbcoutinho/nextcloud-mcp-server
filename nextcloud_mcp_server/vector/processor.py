@@ -17,12 +17,10 @@ from nextcloud_mcp_server.acl_hash import compute_acl_hash
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.document_processors import get_registry
-from nextcloud_mcp_server.document_processors.classifier import classify_pdf
 from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
 from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
     record_document_chunks,
-    record_document_classification,
     record_document_parse_failed,
     record_embedding,
     record_qdrant_operation,
@@ -165,36 +163,6 @@ async def processor_task(
             # Continue to next document (no task_done() needed with streams)
 
     logger.info("Processor %s stopped", worker_id)
-
-
-async def _shadow_classify(content: bytes, content_type: str, file_path: str) -> None:
-    """Tier-0 classification in SHADOW mode: emit metrics, change no routing.
-
-    Best-effort and out of the indexing critical path -- it must never block or
-    fail indexing. PDFs only (the classifier is PDF-specific). The cheap pre-pass
-    runs in a worker thread so it doesn't stall the event loop.
-    """
-    if content_type != "application/pdf":
-        return
-    try:
-        c = await anyio.to_thread.run_sync(classify_pdf, content)  # type: ignore[attr-defined]
-        record_document_classification(c.recommended_tier, c.flags, c.mean_text_quality)
-        logger.debug(
-            "Tier-0 classified %s: tier=%s flags=%s quality=%s",
-            file_path,
-            c.recommended_tier,
-            sorted(c.flags),
-            c.mean_text_quality,
-        )
-    except Exception:
-        # Best-effort: shadow classification must never break indexing, but log
-        # at WARNING (not DEBUG) so a systematic failure -- a pymupdf bug, memory
-        # pressure on every PDF -- stays visible at the production LOG_LEVEL=INFO.
-        logger.warning(
-            "Tier-0 classification failed for %s (shadow mode, indexing unaffected)",
-            file_path,
-            exc_info=True,
-        )
 
 
 async def process_document(
@@ -571,11 +539,8 @@ async def _index_document(
                 "vector_sync.file_size": len(content_bytes),
             },
         ):
-            # Tier-0 shadow classification (observability only; no routing change).
-            if settings.document_classify_enabled:
-                await _shadow_classify(content_bytes, content_type, file_path)
-
-            # Use document processor registry to extract text
+            # The registry runs the tiered PDF pipeline (tier-0 classify ->
+            # tier-1 fast -> OCR escalation) and records classification metrics.
             registry = get_registry()
 
             try:
@@ -632,20 +597,12 @@ async def _index_document(
                 # Diagnostic: Log page boundary information if available
                 if "page_boundaries" in file_metadata:
                     page_boundaries = file_metadata["page_boundaries"]
-                    logger.info(
+                    logger.debug(
                         "Page boundaries for %s: %s pages, text length: %s",
                         file_path,
                         len(page_boundaries),
                         len(content),
                     )
-                    # Log first 3 page boundaries for debugging
-                    for boundary in page_boundaries[:3]:
-                        logger.debug(
-                            "  Page %s: offsets [%s:%s]",
-                            boundary["page"],
-                            boundary["start_offset"],
-                            boundary["end_offset"],
-                        )
                     # Verify last boundary matches text length
                     if page_boundaries:
                         last_boundary = page_boundaries[-1]
@@ -695,22 +652,12 @@ async def _index_document(
 
             # Diagnostic: Verify page number assignment
             assigned_count = sum(1 for c in chunks if c.page_number is not None)
-            logger.info(
+            logger.debug(
                 "Assigned page numbers to %s/%s chunks for %s",
                 assigned_count,
                 len(chunks),
                 file_path,
             )
-
-            # Log first 3 chunks to see their page assignments
-            for i, chunk in enumerate(chunks[:3]):
-                logger.debug(
-                    "  Chunk %s: page=%s, offsets=[%s:%s]",
-                    i,
-                    chunk.page_number,
-                    chunk.start_offset,
-                    chunk.end_offset,
-                )
 
             # Warning if NO page numbers were assigned
             if assigned_count == 0:
@@ -969,7 +916,11 @@ async def _index_document(
                     # Decomposition payload keys (design §10.2), additive.
                     payload_keys.PROCESSOR_VERSION: "monolith-v1",
                     payload_keys.PARSED_AT: indexed_at,
-                    payload_keys.PIPELINE_TIER: "fast",
+                    # Actual tier that produced this doc (registry stamps it on
+                    # the result metadata); non-PDF doc types stay "fast".
+                    payload_keys.PIPELINE_TIER: file_metadata.get(
+                        "pipeline_tier", "fast"
+                    ),
                     payload_keys.EMBEDDING_IDENTITY: _embedding_identity,
                     payload_keys.ACL_HASH: _acl_hash,
                     # File-specific metadata (PDF, etc.)

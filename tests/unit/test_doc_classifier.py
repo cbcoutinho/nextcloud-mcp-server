@@ -156,3 +156,32 @@ def test_image_heavy_flag_without_ocr_routing():
     assert "image_heavy" in c.flags
     assert c.recommended_tier == "fast"
     assert c.ocr_page_fraction < clf.OCR_PAGE_FRACTION
+
+
+# --- classify_from_text (hot-path, derived from tier-1 extraction) -----------
+
+
+def test_classify_from_text_clean_routes_fast():
+    txt = "the quick brown fox jumps over the lazy dog " * 3
+    c = clf.classify_from_text(
+        txt, [{"page": 1, "start_offset": 0, "end_offset": len(txt)}]
+    )
+    assert c.recommended_tier == "fast"
+    assert c.mean_text_quality > 0.8
+    assert c.flags == set()
+
+
+def test_classify_from_text_empty_routes_ocr():
+    c = clf.classify_from_text("", [{"page": 1, "start_offset": 0, "end_offset": 0}])
+    assert c.recommended_tier == "ocr"
+    assert "no_text_layer" in c.flags
+    assert c.total_chars == 0
+
+
+def test_classify_from_text_no_pages_routes_fast():
+    # An empty/corrupt PDF (no page boundaries) is not OCR evidence -> "fast",
+    # so the recorded classification metric isn't a misleading "ocr".
+    c = clf.classify_from_text("", [])
+    assert c.recommended_tier == "fast"
+    assert c.ocr_page_fraction == pytest.approx(0.0)
+    assert c.flags == set()

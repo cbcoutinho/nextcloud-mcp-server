@@ -1,32 +1,31 @@
 """Tier-0 document classifier.
 
-A cheap (<~1s), local pre-pass over a PDF that decides which extraction tier a
-document should start in, BEFORE the expensive parse. It runs in *shadow mode*
-first: emit the signals as metrics, change no routing, and gather per-tenant
-data to tune the thresholds.
+Decides which extraction tier a PDF should escalate to, from cheap signals:
+  * text_quality -- is the text layer usable, or mashed/space-less junk? (the
+    "Student 147" lesson: a text layer can exist yet be unusable, e.g.
+    "01322234567mobile")
+  * image_coverage -- a page that is mostly a raster image is a scan/photo whose
+    content isn't fully in any text layer.
+  * no text layer -- the strongest OCR signal available from text alone.
 
-Signals (all cheap; no get_drawings, which is itself slow on the graphics-heavy
-pages we'd want to flag -- the parse-time ``graphics_limit`` already makes those
-safe, and the tier-1 quality gate catches unrecovered tables post-extraction):
+Two entry points:
+  * ``classify_from_text(text, page_boundaries)`` -- the HOT PATH. Derives the
+    text-quality/no-text-layer signal from the text the registry's tier-1 step
+    already extracted, so it adds ~no cost. No image analysis.
+  * ``classify_pdf(content)`` -- a standalone/diagnostic pass that re-opens the
+    PDF and adds image-coverage analysis. More expensive; used off the hot path.
 
-  * text_layer_chars   -- extractable text per page
-  * text_quality       -- is the text layer usable, or mashed/space-less junk?
-                          (the "Student 147" lesson: a text layer can exist yet
-                          be unusable, e.g. "01322234567mobile")
-  * image_coverage     -- fraction of the page covered by raster images
-                          (full-page image + poor text => scanned)
+Recommended tier:
+  * ``ocr``  -- scanned / no-usable-text-layer (route to tier 3, when enabled)
+  * ``fast`` -- a usable digital text layer (stay on tier 1)
 
-From these it picks a recommended starting tier:
-  * ``ocr``  -- scanned / image-only / bad-text-layer (route to tier 3)
-  * ``fast`` -- a usable digital text layer (route to tier 1)
-
-``structured`` (tier 2 / docling) is intentionally not produced here -- that tier
-is a separate service and is reached via the tier-1 quality gate, not tier-0.
+``structured`` (tier 2 / docling) is a separate service, not produced here.
 """
 
 import logging
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +39,8 @@ IMAGE_COVERAGE_SCANNED = 0.80
 MIN_TEXT_QUALITY = 0.45
 # Fraction of sampled pages that must look scanned/bad for a doc->ocr verdict.
 OCR_PAGE_FRACTION = 0.5
+# A page with fewer extracted chars than this has effectively no text layer.
+MIN_PAGE_CHARS = 16
 
 _WORD_RE = re.compile(r"\S+")
 
@@ -169,6 +170,64 @@ def classify_pdf(content: bytes) -> DocClassification:
 
     return DocClassification(
         page_count=page_count,
+        sampled_pages=sampled,
+        total_chars=total_chars,
+        mean_text_quality=mean_quality,
+        ocr_page_fraction=round(ocr_frac, 3),
+        recommended_tier=recommended,
+        flags=flags,
+        pages=pages,
+    )
+
+
+def classify_from_text(
+    full_text: str, page_boundaries: list[dict[str, Any]]
+) -> DocClassification:
+    """Classify from text already extracted by tier-1 -- no PDF re-open.
+
+    The hot-path classifier: it derives the text-quality signal from the
+    extraction the registry already ran, so it adds ~no cost (vs ``classify_pdf``,
+    which re-opens the PDF and re-extracts). It does NOT do image analysis, so it
+    cannot distinguish a scanned-with-text-layer page (that needs the image pass,
+    which only matters once OCR routing is enabled). A page with effectively no
+    text layer is the one OCR-worthy signal available from text alone.
+
+    ``page_boundaries`` are ``{page, start_offset, end_offset}`` indexing into
+    ``full_text`` (the tier-1/pdf_highlighter contract).
+    """
+    pages: list[PageSignals] = []
+    for b in page_boundaries:
+        seg = full_text[b["start_offset"] : b["end_offset"]]
+        needs_ocr = len(seg.strip()) < MIN_PAGE_CHARS
+        pages.append(
+            PageSignals(b["page"], len(seg), 0.0, _text_quality(seg), needs_ocr)
+        )
+
+    sampled = len(pages)
+    total_chars = sum(p.char_count for p in pages)
+    mean_quality = (
+        round(sum(p.text_quality for p in pages) / sampled, 3) if sampled else 0.0
+    )
+    # No pages (empty/corrupt PDF) => no OCR evidence => "fast" (the registry's
+    # page_count guard also skips escalation; defaulting to 0.0 keeps the
+    # recorded classification metric accurate rather than a misleading "ocr").
+    ocr_frac = (sum(p.needs_ocr for p in pages) / sampled) if sampled else 0.0
+
+    # Flags gated on ocr_frac >= OCR_PAGE_FRACTION (matching classify_pdf): a
+    # doc that routes "fast" must not carry a junk-layer flag just because a few
+    # isolated pages are bad -- otherwise the classification metric diverges
+    # between this hot path and the standalone classify_pdf.
+    flags: set[str] = set()
+    if sampled and ocr_frac >= OCR_PAGE_FRACTION:
+        if total_chars == 0:
+            flags.add("no_text_layer")
+        elif mean_quality < MIN_TEXT_QUALITY:
+            flags.add("bad_text_layer")
+
+    recommended = "ocr" if ocr_frac >= OCR_PAGE_FRACTION else "fast"
+
+    return DocClassification(
+        page_count=len(page_boundaries),
         sampled_pages=sampled,
         total_chars=total_chars,
         mean_text_quality=mean_quality,

@@ -29,9 +29,13 @@ class TestDecompositionDefaults:
         s = Settings(
             collection_metadata_source=" QDRANT ",
             mcp_role=" API ",
+            document_tier1_engine=" PyPDFium2 ",
+            document_ocr_provider=" Gateway ",
         )
         assert s.collection_metadata_source == "qdrant"
         assert s.mcp_role == "api"
+        assert s.document_tier1_engine == "pypdfium2"
+        assert s.document_ocr_provider == "gateway"
 
 
 class TestEnumValidation:
@@ -41,6 +45,8 @@ class TestEnumValidation:
             ("embedding_provider", "openai"),
             ("mcp_role", "leader"),
             ("collection_metadata_source", "redis"),
+            ("document_tier1_engine", "mupdf"),
+            ("document_ocr_provider", "gatway"),
         ],
     )
     def test_invalid_enum_rejected(self, field, value):
