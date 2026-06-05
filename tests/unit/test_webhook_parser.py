@@ -216,3 +216,94 @@ def test_missing_time_field_defaults_to_zero():
     task = extract_document_task(payload)
     assert task is not None
     assert task.modified_at == 0
+
+
+# --- SystemTag MapperEvent (assign/unassign) -------------------------------
+#
+# NC 32+ serializes the event as {eventType, objectType, objectId, tagIds}.
+# Both directions collapse to a path-less file "reconcile" task; the processor
+# resolves current vector-index membership to decide index-vs-delete.
+
+_TAG_MAPPER = "OCP\\SystemTag\\MapperEvent"
+
+
+@pytest.mark.unit
+def test_tag_assign_event_returns_reconcile_task():
+    payload = {
+        "user": {"uid": "alice"},
+        "time": 1762850245,
+        "event": {
+            "class": _TAG_MAPPER,
+            "eventType": "OCP\\SystemTag\\ISystemTagObjectMapper::assignTags",
+            "objectType": "files",
+            "objectId": "478087",
+            "tagIds": [7],
+        },
+    }
+
+    task = extract_document_task(payload)
+    assert task is not None
+    assert task.user_id == "alice"
+    assert task.doc_type == "file"
+    assert task.doc_id == "478087"
+    assert task.operation == "index"
+    # No path in the payload -> the processor reconciles membership.
+    assert task.file_path is None
+    assert task.modified_at == 1762850245
+
+
+@pytest.mark.unit
+def test_tag_unassign_event_also_returns_reconcile_task():
+    """Unassign collapses to the same reconcile (processor flips to delete)."""
+    payload = {
+        "user": {"uid": "alice"},
+        "time": 1762850245,
+        "event": {
+            "class": _TAG_MAPPER,
+            "eventType": "OCP\\SystemTag\\ISystemTagObjectMapper::unassignTags",
+            "objectType": "files",
+            "objectId": "478087",
+            "tagIds": [7],
+        },
+    }
+
+    task = extract_document_task(payload)
+    assert task is not None
+    assert task.doc_type == "file"
+    assert task.operation == "index"
+    assert task.file_path is None
+
+
+@pytest.mark.unit
+def test_tag_event_non_files_object_type_returns_none():
+    """Tags on non-file objects (e.g. comments) don't drive vector sync."""
+    payload = {
+        "user": {"uid": "alice"},
+        "time": 1762850245,
+        "event": {
+            "class": _TAG_MAPPER,
+            "eventType": "OCP\\SystemTag\\ISystemTagObjectMapper::assignTags",
+            "objectType": "comments",
+            "objectId": "12",
+            "tagIds": [7],
+        },
+    }
+
+    assert extract_document_task(payload) is None
+
+
+@pytest.mark.unit
+def test_tag_event_missing_object_id_returns_none():
+    payload = {
+        "user": {"uid": "alice"},
+        "time": 1762850245,
+        "event": {
+            "class": _TAG_MAPPER,
+            "eventType": "OCP\\SystemTag\\ISystemTagObjectMapper::assignTags",
+            "objectType": "files",
+            "objectId": "",
+            "tagIds": [7],
+        },
+    }
+
+    assert extract_document_task(payload) is None

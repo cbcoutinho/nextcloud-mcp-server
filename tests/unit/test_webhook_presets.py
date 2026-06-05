@@ -90,6 +90,18 @@ def test_get_deck_preset():
 
 
 @pytest.mark.unit
+def test_files_sync_includes_systemtag_event():
+    """files_sync registers the SystemTag MapperEvent so tag changes (NC 32+)
+    drive vector-index (re)indexing, alongside the node create/write/delete
+    events."""
+    preset = get_preset("files_sync")
+    assert preset is not None
+    event_classes = [e["event"] for e in preset["events"]]
+    assert "OCP\\SystemTag\\MapperEvent" in event_classes
+    assert "OCP\\Files\\Events\\Node\\NodeCreatedEvent" in event_classes
+
+
+@pytest.mark.unit
 def test_filter_presets_subset_installed():
     """Test filtering when only some apps are installed."""
     installed_apps = ["notes", "calendar"]
