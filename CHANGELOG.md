@@ -5,6 +5,20 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.104.0 (2026-06-05)
+
+### Feat
+
+- tier-3 OCR processor (gateway or direct Mistral)
+- tiered PDF processor with pypdfium2 fast path (deprecate pymupdf4llm)
+
+### Fix
+
+- **review**: _enum_fields validation, gate classify_from_text flags, OCR warnings
+- **review**: lock OCR backend init, warn on rollback fallthrough, zero-page metric
+- **review**: cache OCR backend, drop asserts, real pipeline_tier, guard zero-page
+- OCR escalation falls back to tier-1 result when OCR can't run
+
 ## v0.103.0 (2026-06-04)
 
 ### Feat
