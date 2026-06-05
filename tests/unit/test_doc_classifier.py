@@ -268,3 +268,19 @@ def test_image_coverage_per_page():
     assert len(scan) == 2 and all(c >= 0.8 for c in scan)
     digital = clf.image_coverage_per_page(_digital_pdf(pages=2))
     assert len(digital) == 2 and all(c < 0.1 for c in digital)
+
+
+def test_scan_coverage_shorter_than_pages_falls_back_to_text():
+    # image_coverage shorter than the boundaries (the MAX_SAMPLED_PAGES cap):
+    # page 0 is flagged scanned; later pages fall back to the text-quality signal.
+    n = len(_CLEAN)
+    full = _CLEAN * 3
+    bounds = [
+        {"page": 1, "start_offset": 0, "end_offset": n},
+        {"page": 2, "start_offset": n, "end_offset": 2 * n},
+        {"page": 3, "start_offset": 2 * n, "end_offset": 3 * n},
+    ]
+    c = clf.classify_from_text(full, bounds, image_coverage=[1.0])
+    assert c.pages[0].needs_ocr is True  # scanned (coverage)
+    assert c.pages[1].needs_ocr is False  # clean text, no coverage entry
+    assert c.recommended_tier == "fast"  # only 1/3 pages bad

@@ -152,13 +152,15 @@ def classify_pdf(content: bytes) -> DocClassification:
             text = page.get_text("text")
             quality = _text_quality(text)
             coverage = _page_image_coverage(page)
-            # A page that is mostly a raster image is a scan/photo: its content
-            # (handwriting, stamps, figure text) is not fully in any text layer,
-            # so OCR is needed to capture it -- regardless of whether a partial
-            # text layer is present. Text quality/char-count are kept as
-            # diagnostic signals (flags + tuning metrics), not the trigger,
-            # because OCR only helps when there is an image to read.
-            needs_ocr = coverage >= IMAGE_COVERAGE_SCANNED
+            # OCR-worthy on the same three signals as classify_from_text (kept in
+            # sync so an operator reproducing routing offline gets the pipeline's
+            # answer): a mostly-raster scan, a junk/low-quality text layer (the
+            # word-merging case), or an effectively empty text layer.
+            needs_ocr = (
+                coverage >= IMAGE_COVERAGE_SCANNED
+                or quality < MIN_TEXT_QUALITY
+                or len(text.strip()) < MIN_PAGE_CHARS
+            )
             pages.append(
                 PageSignals(n, len(text), round(coverage, 3), quality, needs_ocr)
             )
