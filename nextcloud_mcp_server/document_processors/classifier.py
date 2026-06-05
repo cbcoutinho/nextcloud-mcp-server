@@ -39,7 +39,10 @@ MAX_SAMPLED_PAGES = 24
 # A page counts as "scanned-like" when a raster image covers most of it.
 IMAGE_COVERAGE_SCANNED = 0.80
 # Text-quality score below which the layer is treated as junk (mashed tokens).
-MIN_TEXT_QUALITY = 0.45
+# Kept in sync with the DOCUMENT_OCR_MIN_TEXT_QUALITY setting default so the
+# module/diagnostic default matches production (the registry always passes the
+# setting).
+MIN_TEXT_QUALITY = 0.5
 # Fraction of sampled pages that must look scanned/bad for a doc->ocr verdict.
 OCR_PAGE_FRACTION = 0.5
 # A page with fewer extracted chars than this has effectively no text layer.
@@ -116,6 +119,21 @@ def _sample_indices(page_count: int) -> list[int]:
     )
 
 
+def _page_image_coverage(page: Any) -> float:
+    """Fraction of a pymupdf page covered by raster images, in ``[0, 1]``.
+
+    Approximate: an image placed multiple times (tiled backgrounds) is
+    double-counted, so the raw area can exceed the page -- the min() caps
+    coverage at 1.0, which is all the scanned/digital split needs.
+    """
+    page_area = abs(page.rect.width * page.rect.height) or 1.0
+    img_area = 0.0
+    for img in page.get_images(full=True):
+        for rect in page.get_image_rects(img[0]):
+            img_area += abs(rect.width * rect.height)
+    return min(img_area / page_area, 1.0)
+
+
 def classify_pdf(content: bytes) -> DocClassification:
     """Classify a PDF from its bytes.
 
@@ -133,15 +151,7 @@ def classify_pdf(content: bytes) -> DocClassification:
             page = doc.load_page(n)
             text = page.get_text("text")
             quality = _text_quality(text)
-            page_area = abs(page.rect.width * page.rect.height) or 1.0
-            img_area = 0.0
-            for img in page.get_images(full=True):
-                for rect in page.get_image_rects(img[0]):
-                    img_area += abs(rect.width * rect.height)
-            # Approximate: an image placed multiple times (tiled backgrounds) is
-            # double-counted, so img_area can exceed page_area -- the min() caps
-            # coverage at 1.0, which is all the scanned/digital split needs.
-            coverage = min(img_area / page_area, 1.0)
+            coverage = _page_image_coverage(page)
             # A page that is mostly a raster image is a scan/photo: its content
             # (handwriting, stamps, figure text) is not fully in any text layer,
             # so OCR is needed to capture it -- regardless of whether a partial
@@ -197,20 +207,20 @@ def image_coverage_per_page(content: bytes) -> list[float]:
     Lets the hot path flag scanned pages whose embedded text layer is junk but
     statistically clean-looking. Re-opens the PDF, so the registry calls it only
     when OCR + scan detection are enabled (the cost is borne by OCR-opted-in
-    tenants). Returned list is aligned by index with the page boundaries.
+    tenants). Returned list is aligned by index with the leading page boundaries.
+
+    Bounded to the first ``MAX_SAMPLED_PAGES`` pages -- the image pass is the
+    costly part, so a 200-page scan isn't fully rasterised on the hot path. Pages
+    beyond the cap fall back to the text-quality signal in ``classify_from_text``
+    (a scanned tail has junk text too), and ``page_fraction`` still gates over
+    every page.
     """
     import pymupdf  # noqa: PLC0415 -- keep the heavy import lazy
 
     cov: list[float] = []
     with pymupdf.open("pdf", content) as doc:
-        for n in range(doc.page_count):
-            page = doc.load_page(n)
-            page_area = abs(page.rect.width * page.rect.height) or 1.0
-            img_area = 0.0
-            for img in page.get_images(full=True):
-                for rect in page.get_image_rects(img[0]):
-                    img_area += abs(rect.width * rect.height)
-            cov.append(min(img_area / page_area, 1.0))
+        for n in range(min(doc.page_count, MAX_SAMPLED_PAGES)):
+            cov.append(_page_image_coverage(doc.load_page(n)))
     return cov
 
 

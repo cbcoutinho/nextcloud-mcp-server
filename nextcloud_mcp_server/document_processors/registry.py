@@ -248,7 +248,10 @@ class ProcessorRegistry:
                     try:
                         image_coverage = image_coverage_per_page(content)
                     except Exception:
-                        logger.debug(
+                        # Best-effort: fall back to text-only signals. WARNING
+                        # (not DEBUG) so a systematic scan-detection failure on an
+                        # OCR-enabled tenant is visible at LOG_LEVEL=INFO.
+                        logger.warning(
                             "Scan detection failed for %s; using text-only signals",
                             filename or "<bytes>",
                             exc_info=True,

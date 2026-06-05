@@ -397,6 +397,14 @@ class TestDynaconfValidators:
         with pytest.raises(ValidationError, match="DOCUMENT_OCR_PAGE_FRACTION"):
             _reload_config()
 
+    @patch.dict(os.environ, {"DOCUMENT_OCR_MIN_PAGE_CHARS": "-1"}, clear=True)
+    def test_ocr_min_page_chars_negative(self):
+        """DOCUMENT_OCR_MIN_PAGE_CHARS must be non-negative."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="DOCUMENT_OCR_MIN_PAGE_CHARS"):
+            _reload_config()
+
     @patch.dict(os.environ, {"LOG_LEVEL": "VERBOSE"}, clear=True)
     def test_invalid_log_level(self):
         """Test invalid LOG_LEVEL raises ValidationError."""
