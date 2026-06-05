@@ -120,4 +120,9 @@ class Pypdfium2FastProcessor(DocumentProcessor):
         return ProcessingResult(text=full_text, metadata=metadata, processor=self.name)
 
     async def health_check(self) -> bool:
-        return True
+        try:
+            import pypdfium2  # noqa: F401, PLC0415 -- availability probe
+
+            return True
+        except Exception:
+            return False

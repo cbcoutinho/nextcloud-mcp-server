@@ -171,6 +171,19 @@ def build_ocr_backend(settings: Settings) -> _OcrBackend | None:
             settings.mistral_base_url,
         )
 
+    # An EXPLICIT provider that's missing its config is an operator error -- warn
+    # loudly (once, since the backend is resolved+cached) rather than silently
+    # disabling OCR. "auto"/"none" fall through to None quietly by design.
+    if provider == "gateway":
+        logger.warning(
+            "DOCUMENT_OCR_PROVIDER=gateway but EMBEDDING_GATEWAY_URL is unset; "
+            "OCR is disabled"
+        )
+    elif provider == "mistral":
+        logger.warning(
+            "DOCUMENT_OCR_PROVIDER=mistral but MISTRAL_API_KEY is unset; "
+            "OCR is disabled"
+        )
     return None
 
 
@@ -258,4 +271,7 @@ class OcrProcessor(DocumentProcessor):
         )
 
     async def health_check(self) -> bool:
+        # Backends are resolved lazily (and configured per tenant), so there is
+        # nothing to probe here without making a billable upstream call -- the
+        # processor reports healthy and surfaces a real failure per-document.
         return True

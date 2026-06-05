@@ -213,8 +213,12 @@ def classify_from_text(
     # recorded classification metric accurate rather than a misleading "ocr").
     ocr_frac = (sum(p.needs_ocr for p in pages) / sampled) if sampled else 0.0
 
+    # Flags gated on ocr_frac >= OCR_PAGE_FRACTION (matching classify_pdf): a
+    # doc that routes "fast" must not carry a junk-layer flag just because a few
+    # isolated pages are bad -- otherwise the classification metric diverges
+    # between this hot path and the standalone classify_pdf.
     flags: set[str] = set()
-    if sampled:
+    if sampled and ocr_frac >= OCR_PAGE_FRACTION:
         if total_chars == 0:
             flags.add("no_text_layer")
         elif mean_quality < MIN_TEXT_QUALITY:

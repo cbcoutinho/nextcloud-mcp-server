@@ -301,12 +301,9 @@ _dynaconf = Dynaconf(
         Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
         # Non-empty strings
         Validator("VECTOR_SYNC_PDF_TAG", len_min=1),
-        # Enum constraints
+        # Enum constraints (document_* enums are validated + normalized in
+        # __post_init__ via _enum_fields instead, for case-insensitive input).
         Validator("LOG_FORMAT", is_in=["text", "json"]),
-        Validator("DOCUMENT_TIER1_ENGINE", is_in=["pypdfium2", "pymupdf"]),
-        Validator(
-            "DOCUMENT_OCR_PROVIDER", is_in=["auto", "gateway", "mistral", "none"]
-        ),
         Validator(
             "LOG_LEVEL",
             is_in=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -887,6 +884,8 @@ class Settings:
             "embedding_provider": {"autodetect", "gateway"},
             "mcp_role": {"api", "worker", "all"},
             "collection_metadata_source": {"qdrant", "api"},
+            "document_tier1_engine": {"pypdfium2", "pymupdf"},
+            "document_ocr_provider": {"auto", "gateway", "mistral", "none"},
         }
         for _field, _allowed in _enum_fields.items():
             _val = (getattr(self, _field) or "").strip().lower()

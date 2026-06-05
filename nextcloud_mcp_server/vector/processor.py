@@ -595,14 +595,6 @@ async def _index_document(
                         len(page_boundaries),
                         len(content),
                     )
-                    # Log first 3 page boundaries for debugging
-                    for boundary in page_boundaries[:3]:
-                        logger.debug(
-                            "  Page %s: offsets [%s:%s]",
-                            boundary["page"],
-                            boundary["start_offset"],
-                            boundary["end_offset"],
-                        )
                     # Verify last boundary matches text length
                     if page_boundaries:
                         last_boundary = page_boundaries[-1]
@@ -658,16 +650,6 @@ async def _index_document(
                 len(chunks),
                 file_path,
             )
-
-            # Log first 3 chunks to see their page assignments
-            for i, chunk in enumerate(chunks[:3]):
-                logger.debug(
-                    "  Chunk %s: page=%s, offsets=[%s:%s]",
-                    i,
-                    chunk.page_number,
-                    chunk.start_offset,
-                    chunk.end_offset,
-                )
 
             # Warning if NO page numbers were assigned
             if assigned_count == 0:
