@@ -40,11 +40,15 @@ def _extract(content: bytes) -> tuple[str, dict[str, Any]]:
         page_texts: list[str] = []
         for i in range(len(pdf)):
             page = pdf[i]
-            textpage = page.get_textpage()
             try:
-                page_texts.append(textpage.get_text_bounded() or "")
+                textpage = page.get_textpage()
+                try:
+                    page_texts.append(textpage.get_text_bounded() or "")
+                finally:
+                    textpage.close()
             finally:
-                textpage.close()
+                # Outer finally so the page handle is freed even if
+                # get_textpage() raises on a corrupt page.
                 page.close()
         doc_meta = pdf.get_metadata_dict() or {}
     finally:

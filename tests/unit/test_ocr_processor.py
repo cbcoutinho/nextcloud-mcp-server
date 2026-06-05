@@ -71,6 +71,19 @@ def test_build_backend_auto_none_configured():
     assert ocr.build_ocr_backend(_settings()) is None
 
 
+def test_build_backend_gateway_missing_m2m_raises():
+    # client_id set but token_url/secret missing -> explicit ValueError (not a
+    # stripped assert), surfaced on backend resolution.
+    with pytest.raises(ValueError, match="EMBEDDING_GATEWAY_TOKEN_URL"):
+        ocr.build_ocr_backend(
+            _settings(
+                document_ocr_provider="gateway",
+                embedding_gateway_url="http://gw",
+                embedding_gateway_client_id="cid",
+            )
+        )
+
+
 def test_gateway_backend_url_normalization():
     b = ocr._GatewayOcrBackend("http://gw", "mistral/mistral-ocr-latest")
     assert b._url == "http://gw/v1/ocr"
