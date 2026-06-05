@@ -20,12 +20,18 @@ pytestmark = pytest.mark.unit
 
 class _Fake(DocumentProcessor):
     def __init__(
-        self, name: str, tier: str, text: str = "clean text here", success=True
+        self,
+        name: str,
+        tier: str,
+        text: str = "clean text here",
+        success=True,
+        pages: int = 1,
     ):
         self._name = name
         self._tier = tier
         self._text = text
         self._success = success
+        self._pages = pages
 
     @property
     def name(self) -> str:
@@ -42,14 +48,14 @@ class _Fake(DocumentProcessor):
     async def process(
         self, content, content_type, filename=None, options=None, progress_callback=None
     ):
+        boundaries = (
+            [{"page": 1, "start_offset": 0, "end_offset": len(self._text)}]
+            if self._pages
+            else []
+        )
         return ProcessingResult(
             text=self._text,
-            metadata={
-                "page_count": 1,
-                "page_boundaries": [
-                    {"page": 1, "start_offset": 0, "end_offset": len(self._text)}
-                ],
-            },
+            metadata={"page_count": self._pages, "page_boundaries": boundaries},
             processor=self._name,
             success=self._success,
         )
@@ -115,6 +121,28 @@ async def test_ocr_escalation_on_empty_text(monkeypatch):
     res = await r.process(b"%PDF-1.7", "application/pdf")
     assert res.processor == "ocr"
     esc.assert_called_once()
+
+
+async def test_zero_page_pdf_does_not_escalate(monkeypatch):
+    # An empty/corrupt PDF (no pages) classifies "ocr" but must NOT escalate --
+    # OCR can't help and it would be wasteful.
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=True))
+    esc = MagicMock()
+    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
+    r = _registry(
+        (_Fake("fast", "fast", text="", pages=0), 20),
+        (_Fake("ocr", "ocr"), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "fast"
+    esc.assert_not_called()
+
+
+async def test_pipeline_tier_stamped_on_metadata(monkeypatch):
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings())
+    r = _registry((_Fake("fast", "fast"), 20))
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.metadata["pipeline_tier"] == "fast"
 
 
 async def test_ocr_failure_falls_back_to_fast(monkeypatch):

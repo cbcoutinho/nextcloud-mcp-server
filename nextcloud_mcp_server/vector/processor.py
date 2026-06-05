@@ -589,7 +589,7 @@ async def _index_document(
                 # Diagnostic: Log page boundary information if available
                 if "page_boundaries" in file_metadata:
                     page_boundaries = file_metadata["page_boundaries"]
-                    logger.info(
+                    logger.debug(
                         "Page boundaries for %s: %s pages, text length: %s",
                         file_path,
                         len(page_boundaries),
@@ -652,7 +652,7 @@ async def _index_document(
 
             # Diagnostic: Verify page number assignment
             assigned_count = sum(1 for c in chunks if c.page_number is not None)
-            logger.info(
+            logger.debug(
                 "Assigned page numbers to %s/%s chunks for %s",
                 assigned_count,
                 len(chunks),
@@ -926,7 +926,11 @@ async def _index_document(
                     # Decomposition payload keys (design §10.2), additive.
                     payload_keys.PROCESSOR_VERSION: "monolith-v1",
                     payload_keys.PARSED_AT: indexed_at,
-                    payload_keys.PIPELINE_TIER: "fast",
+                    # Actual tier that produced this doc (registry stamps it on
+                    # the result metadata); non-PDF doc types stay "fast".
+                    payload_keys.PIPELINE_TIER: file_metadata.get(
+                        "pipeline_tier", "fast"
+                    ),
                     payload_keys.EMBEDDING_IDENTITY: _embedding_identity,
                     payload_keys.ACL_HASH: _acl_hash,
                     # File-specific metadata (PDF, etc.)

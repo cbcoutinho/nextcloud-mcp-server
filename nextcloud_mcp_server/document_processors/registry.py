@@ -245,10 +245,16 @@ class ProcessorRegistry:
                 )
 
         # Escalate scanned / no-text-layer PDFs to OCR (tier-3) when enabled and
-        # a provider is registered. The fast tier is terminal otherwise.
+        # a provider is registered. The fast tier is terminal otherwise. Note: a
+        # fast FAILURE (encrypted/corrupt -- result.success False, no
+        # classification) is NOT escalated; a PDF pypdfium2 can't open is treated
+        # as a hard failure (OCR reads the same bytes and would usually fail
+        # too). The page_count guard skips a zero-page (empty/corrupt) PDF, which
+        # OCR can't help either.
         if (
             classification is not None
             and classification.recommended_tier == "ocr"
+            and classification.page_count > 0
             and settings.document_ocr_enabled
         ):
             ocr = self._pdf_processor_for_tier("ocr")
@@ -359,6 +365,10 @@ class ProcessorRegistry:
                 raise
 
             duration = time.time() - start_time
+            # Record the tier that actually produced this result so downstream
+            # (Qdrant payload pipeline_tier, analytics) reflects escalation
+            # instead of a hardcoded "fast".
+            result.metadata.setdefault("pipeline_tier", tier)
             pages = int(result.metadata.get("page_count", 0) or 0)
             chars = len(result.text)
             status = "success" if result.success else "error"

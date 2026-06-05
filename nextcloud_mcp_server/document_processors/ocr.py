@@ -38,9 +38,13 @@ def _pages_to_text(
 ) -> tuple[str, list[dict[str, Any]]]:
     """Join per-page markdown (ordered by index) into one string + boundaries.
 
-    Pages are joined with a blank line; each page owns its leading separator so
-    ``page_boundaries`` stay contiguous and index exactly into the returned text
-    (the ``search/pdf_highlighter`` contract).
+    Pages are joined with a blank line. Boundaries are kept CONTIGUOUS (each
+    page owns its leading ``\\n\\n`` separator) so they index exactly into the
+    returned text and ``boundaries[-1]["end_offset"] == len(text)`` -- the
+    ``search/pdf_highlighter`` contract. Consequence: a page's range starts at
+    its separator, not its first glyph (the fast pypdfium2 path joins with no
+    separator, so its ranges are glyph-tight). The 2-char offset is immaterial
+    to page-level chunk attribution.
     """
     sep = "\n\n"
     parts: list[str] = []
@@ -137,8 +141,18 @@ def build_ocr_backend(settings: Settings) -> _OcrBackend | None:
                 GatewayTokenProvider,
             )
 
-            assert settings.embedding_gateway_token_url is not None
-            assert settings.embedding_gateway_client_secret is not None
+            # Explicit (not assert -- assert is stripped under `python -O`): the
+            # M2M triple is all-or-nothing.
+            if not settings.embedding_gateway_token_url:
+                raise ValueError(
+                    "EMBEDDING_GATEWAY_TOKEN_URL is required when "
+                    "EMBEDDING_GATEWAY_CLIENT_ID is set"
+                )
+            if not settings.embedding_gateway_client_secret:
+                raise ValueError(
+                    "EMBEDDING_GATEWAY_CLIENT_SECRET is required when "
+                    "EMBEDDING_GATEWAY_CLIENT_ID is set"
+                )
             token_provider = GatewayTokenProvider(
                 token_url=settings.embedding_gateway_token_url,
                 client_id=settings.embedding_gateway_client_id,
@@ -161,6 +175,15 @@ def build_ocr_backend(settings: Settings) -> _OcrBackend | None:
 
 class OcrProcessor(DocumentProcessor):
     """Tier-3 OCR processor (gateway or direct Mistral backend)."""
+
+    def __init__(self) -> None:
+        # Resolve the backend once and reuse it: rebuilding per call would create
+        # a fresh GatewayTokenProvider each time (discarding its M2M-token cache
+        # -> a token fetch per document) and a new Mistral SDK client per call.
+        # A config change needs a pod restart anyway, so caching for the pod's
+        # lifetime is safe.
+        self._backend_resolved = False
+        self._backend: _OcrBackend | None = None
 
     @property
     def name(self) -> str:
@@ -185,7 +208,10 @@ class OcrProcessor(DocumentProcessor):
         ) = None,
     ) -> ProcessingResult:
         settings = get_settings()
-        backend = build_ocr_backend(settings)
+        if not self._backend_resolved:
+            self._backend = build_ocr_backend(settings)
+            self._backend_resolved = True
+        backend = self._backend
         if backend is None:
             logger.warning(
                 "OCR requested for %s but no backend is configured (provider=%s)",
