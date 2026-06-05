@@ -14,7 +14,7 @@ from nextcloud_mcp_server.observability.metrics import (
 from nextcloud_mcp_server.observability.tracing import trace_operation
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
-from .classifier import classify_from_text
+from .classifier import classify_from_text, image_coverage_per_page
 
 logger = logging.getLogger(__name__)
 
@@ -233,17 +233,42 @@ class ProcessorRegistry:
             fast, content, content_type, filename, options, progress_callback
         )
 
-        # Tier-0 classification from the extraction (cheap: no PDF re-open).
+        # Tier-0 classification from the extraction (cheap: text-only, no PDF
+        # re-open). Scan detection (image analysis, re-opens the PDF) runs only
+        # when OCR + detect_scanned are enabled, so its cost is paid by
+        # OCR-opted-in tenants only.
         classification = None
         if settings.document_classify_enabled and result.success:
             try:
+                image_coverage = None
+                if (
+                    settings.document_ocr_enabled
+                    and settings.document_ocr_detect_scanned
+                ):
+                    try:
+                        image_coverage = image_coverage_per_page(content)
+                    except Exception:
+                        # Best-effort: fall back to text-only signals. WARNING
+                        # (not DEBUG) so a systematic scan-detection failure on an
+                        # OCR-enabled tenant is visible at LOG_LEVEL=INFO.
+                        logger.warning(
+                            "Scan detection failed for %s; using text-only signals",
+                            filename or "<bytes>",
+                            exc_info=True,
+                        )
                 classification = classify_from_text(
-                    result.text, result.metadata.get("page_boundaries") or []
+                    result.text,
+                    result.metadata.get("page_boundaries") or [],
+                    min_text_quality=settings.document_ocr_min_text_quality,
+                    min_page_chars=settings.document_ocr_min_page_chars,
+                    page_fraction=settings.document_ocr_page_fraction,
+                    image_coverage=image_coverage,
                 )
                 record_document_classification(
                     classification.recommended_tier,
                     classification.flags,
                     classification.mean_text_quality,
+                    classification.ocr_page_fraction,
                 )
             except Exception:
                 logger.warning(

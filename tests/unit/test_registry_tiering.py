@@ -65,10 +65,23 @@ class _Fake(DocumentProcessor):
 
 
 class _Settings:
-    def __init__(self, engine="pypdfium2", classify=True, ocr=False):
+    def __init__(
+        self,
+        engine="pypdfium2",
+        classify=True,
+        ocr=False,
+        min_text_quality=0.5,
+        page_fraction=0.5,
+        min_page_chars=16,
+        detect_scanned=False,
+    ):
         self.document_tier1_engine = engine
         self.document_classify_enabled = classify
         self.document_ocr_enabled = ocr
+        self.document_ocr_min_text_quality = min_text_quality
+        self.document_ocr_page_fraction = page_fraction
+        self.document_ocr_min_page_chars = min_page_chars
+        self.document_ocr_detect_scanned = detect_scanned
 
 
 def _registry(*procs: tuple[DocumentProcessor, int]) -> ProcessorRegistry:
@@ -113,6 +126,11 @@ async def test_records_classification(monkeypatch):
     r = _registry((_Fake("fast", "fast"), 20))
     await r.process(b"%PDF-1.7", "application/pdf")
     rec.assert_called_once()
+    # recommended_tier, flags, mean_text_quality, ocr_page_fraction all threaded
+    # through (the last two feed the per-tenant tuning histograms).
+    args = rec.call_args.args
+    assert len(args) == 4
+    assert isinstance(args[0], str) and isinstance(args[3], float)
 
 
 async def test_classify_disabled_skips_recording(monkeypatch):

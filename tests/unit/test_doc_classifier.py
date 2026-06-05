@@ -174,7 +174,7 @@ def test_classify_from_text_clean_routes_fast():
 def test_classify_from_text_empty_routes_ocr():
     c = clf.classify_from_text("", [{"page": 1, "start_offset": 0, "end_offset": 0}])
     assert c.recommended_tier == "ocr"
-    assert "no_text_layer" in c.flags
+    assert "scanned" in c.flags  # unified with classify_pdf's flag name
     assert c.total_chars == 0
 
 
@@ -202,4 +202,85 @@ def test_classify_from_text_junk_layer_flags_bad_text_layer():
     assert c.recommended_tier == "ocr"
     assert c.total_chars > 0
     assert "bad_text_layer" in c.flags
-    assert "no_text_layer" not in c.flags
+    assert "scanned" not in c.flags  # has text, just junk -> not the empty case
+
+
+# --- quality + scan escalation triggers (Deck #207) --------------------------
+
+_JUNK = (
+    "ST. TRINIAN'SSCHOOLSTUDENT RECORDFILE struggledsignificantlywith "
+    "learningdifficulties demonstrateda positiveattitude academictasks"
+)
+_CLEAN = "the quick brown fox jumps over the lazy dog and then runs away home"
+
+
+def _two_page(text_a: str, text_b: str):
+    na = len(text_a)
+    return text_a + text_b, [
+        {"page": 1, "start_offset": 0, "end_offset": na},
+        {"page": 2, "start_offset": na, "end_offset": na + len(text_b)},
+    ]
+
+
+def test_classify_from_text_low_quality_routes_ocr():
+    full, bounds = _two_page(_JUNK, _JUNK)
+    c = clf.classify_from_text(full, bounds)
+    assert c.recommended_tier == "ocr"
+    assert "bad_text_layer" in c.flags
+
+
+def test_quality_floor_override_disables_trigger():
+    # min_text_quality=0.0 => quality never trips; text present + not scanned => fast
+    full, bounds = _two_page(_JUNK, _JUNK)
+    c = clf.classify_from_text(full, bounds, min_text_quality=0.0)
+    assert c.recommended_tier == "fast"
+
+
+def test_scan_signal_routes_ocr_even_with_clean_text():
+    # clean text but every page is a raster scan -> OCR (the Student-147 case)
+    full, bounds = _two_page(_CLEAN, _CLEAN)
+    c = clf.classify_from_text(full, bounds, image_coverage=[1.0, 1.0])
+    assert c.recommended_tier == "ocr"
+    assert "image_heavy" in c.flags
+
+
+def test_scan_signal_ignored_when_coverage_low():
+    full, bounds = _two_page(_CLEAN, _CLEAN)
+    c = clf.classify_from_text(full, bounds, image_coverage=[0.1, 0.0])
+    assert c.recommended_tier == "fast"
+
+
+def test_page_fraction_override():
+    # exactly one of two pages is junk -> ocr_frac 0.5
+    full, bounds = _two_page(_CLEAN, _JUNK)
+    assert (
+        clf.classify_from_text(full, bounds, page_fraction=0.5).recommended_tier
+        == "ocr"
+    )
+    assert (
+        clf.classify_from_text(full, bounds, page_fraction=0.6).recommended_tier
+        == "fast"
+    )
+
+
+def test_image_coverage_per_page():
+    scan = clf.image_coverage_per_page(_full_page_image_pdf(pages=2))
+    assert len(scan) == 2 and all(c >= 0.8 for c in scan)
+    digital = clf.image_coverage_per_page(_digital_pdf(pages=2))
+    assert len(digital) == 2 and all(c < 0.1 for c in digital)
+
+
+def test_scan_coverage_shorter_than_pages_falls_back_to_text():
+    # image_coverage shorter than the boundaries (the MAX_SAMPLED_PAGES cap):
+    # page 0 is flagged scanned; later pages fall back to the text-quality signal.
+    n = len(_CLEAN)
+    full = _CLEAN * 3
+    bounds = [
+        {"page": 1, "start_offset": 0, "end_offset": n},
+        {"page": 2, "start_offset": n, "end_offset": 2 * n},
+        {"page": 3, "start_offset": 2 * n, "end_offset": 3 * n},
+    ]
+    c = clf.classify_from_text(full, bounds, image_coverage=[1.0])
+    assert c.pages[0].needs_ocr is True  # scanned (coverage)
+    assert c.pages[1].needs_ocr is False  # clean text, no coverage entry
+    assert c.recommended_tier == "fast"  # only 1/3 pages bad
