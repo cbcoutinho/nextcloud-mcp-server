@@ -174,7 +174,7 @@ def test_classify_from_text_clean_routes_fast():
 def test_classify_from_text_empty_routes_ocr():
     c = clf.classify_from_text("", [{"page": 1, "start_offset": 0, "end_offset": 0}])
     assert c.recommended_tier == "ocr"
-    assert "no_text_layer" in c.flags
+    assert "scanned" in c.flags  # unified with classify_pdf's flag name
     assert c.total_chars == 0
 
 
@@ -202,7 +202,7 @@ def test_classify_from_text_junk_layer_flags_bad_text_layer():
     assert c.recommended_tier == "ocr"
     assert c.total_chars > 0
     assert "bad_text_layer" in c.flags
-    assert "no_text_layer" not in c.flags
+    assert "scanned" not in c.flags  # has text, just junk -> not the empty case
 
 
 # --- quality + scan escalation triggers (Deck #207) --------------------------

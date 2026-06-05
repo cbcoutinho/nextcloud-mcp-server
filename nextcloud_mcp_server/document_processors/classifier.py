@@ -247,6 +247,22 @@ def classify_from_text(
     ``page_boundaries`` are ``{page, start_offset, end_offset}`` indexing into
     ``full_text``; ``image_coverage[i]`` (if given) aligns with the i-th boundary.
     """
+    # image_coverage is expected to be one entry per page, capped at
+    # MAX_SAMPLED_PAGES (see image_coverage_per_page). Any other length means the
+    # 1:1 page alignment drifted (e.g. the extractor reordered/skipped pages) --
+    # log it so a contract break surfaces rather than silently misattributing
+    # coverage to the wrong pages.
+    if image_coverage is not None:
+        expected = min(len(page_boundaries), MAX_SAMPLED_PAGES)
+        if len(image_coverage) != expected:
+            logger.debug(
+                "image_coverage length %s != expected %s for %s boundaries; "
+                "scan signal may be misaligned",
+                len(image_coverage),
+                expected,
+                len(page_boundaries),
+            )
+
     pages: list[PageSignals] = []
     for idx, b in enumerate(page_boundaries):
         seg = full_text[b["start_offset"] : b["end_offset"]]
@@ -283,7 +299,10 @@ def classify_from_text(
     flags: set[str] = set()
     if sampled and ocr_frac >= page_fraction:
         if total_chars == 0:
-            flags.add("no_text_layer")
+            # "scanned" (not "no_text_layer"): same name + meaning as classify_pdf
+            # so astrolabe_document_classifier_flag_total isn't split across two
+            # labels for the empty-text-layer case.
+            flags.add("scanned")
         elif mean_quality < min_text_quality:
             flags.add("bad_text_layer")
     if any(p.image_coverage >= IMAGE_COVERAGE_SCANNED for p in pages):
