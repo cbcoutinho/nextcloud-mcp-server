@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.105.0 (2026-06-05)
+
+### Feat
+
+- quality + scan OCR escalation trigger (junk-text-layer scans)
+
+### Fix
+
+- **review**: unify "scanned" flag name + log image_coverage length drift
+- **review**: align classify_pdf routing with the hot path + scan-tail test
+- **review**: align quality threshold, cap + DRY scan coverage, warn on failure
+
 ## v0.104.1 (2026-06-05)
 
 ### Fix
