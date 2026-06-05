@@ -22,6 +22,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import anyio
 import httpx
 
 from nextcloud_mcp_server.config import Settings, get_settings
@@ -184,6 +185,10 @@ class OcrProcessor(DocumentProcessor):
         # lifetime is safe.
         self._backend_resolved = False
         self._backend: _OcrBackend | None = None
+        # Serialise first-call resolution so a burst of concurrent OCR requests
+        # doesn't each build a backend (and fetch its own M2M token). Lazy-init:
+        # anyio primitives must not be created at import time.
+        self._backend_lock: anyio.Lock | None = None
 
     @property
     def name(self) -> str:
@@ -209,8 +214,12 @@ class OcrProcessor(DocumentProcessor):
     ) -> ProcessingResult:
         settings = get_settings()
         if not self._backend_resolved:
-            self._backend = build_ocr_backend(settings)
-            self._backend_resolved = True
+            if self._backend_lock is None:
+                self._backend_lock = anyio.Lock()
+            async with self._backend_lock:
+                if not self._backend_resolved:  # double-checked
+                    self._backend = build_ocr_backend(settings)
+                    self._backend_resolved = True
         backend = self._backend
         if backend is None:
             logger.warning(

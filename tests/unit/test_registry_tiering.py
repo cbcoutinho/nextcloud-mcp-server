@@ -92,6 +92,20 @@ async def test_engine_rollback_uses_structured(monkeypatch):
     assert res.processor == "structured"
 
 
+async def test_engine_rollback_warns_when_no_structured(monkeypatch, caplog):
+    # pymupdf rollback with no structured processor registered: it falls back to
+    # the fast processor but must warn (it silently used what the user opted out
+    # of otherwise).
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(engine="pymupdf"))
+    r = _registry((_Fake("fast", "fast"), 20))
+    with caplog.at_level(
+        "WARNING", logger="nextcloud_mcp_server.document_processors.registry"
+    ):
+        res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "fast"
+    assert any("no 'structured' processor" in rec.message for rec in caplog.records)
+
+
 async def test_records_classification(monkeypatch):
     monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings())
     rec = MagicMock()

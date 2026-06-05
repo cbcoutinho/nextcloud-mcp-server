@@ -203,11 +203,19 @@ class ProcessorRegistry:
         settings = get_settings()
 
         if settings.document_tier1_engine == "pymupdf":
-            processor = self._pdf_processor_for_tier(
-                "structured"
-            ) or self.find_processor(content_type)
+            processor = self._pdf_processor_for_tier("structured")
             if processor is None:
-                raise ProcessorError("No PDF processor registered")
+                # The rollback was set to opt OUT of pypdfium2, so falling back
+                # to it (the highest-priority PDF processor) silently would
+                # defeat that intent -- warn loudly.
+                processor = self.find_processor(content_type)
+                if processor is None:
+                    raise ProcessorError("No PDF processor registered")
+                logger.warning(
+                    "document_tier1_engine=pymupdf but no 'structured' processor "
+                    "is registered; falling back to '%s'",
+                    processor.name,
+                )
             return await self._run_processor(
                 processor, content, content_type, filename, options, progress_callback
             )

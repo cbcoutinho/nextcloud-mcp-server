@@ -208,13 +208,17 @@ def classify_from_text(
     mean_quality = (
         round(sum(p.text_quality for p in pages) / sampled, 3) if sampled else 0.0
     )
-    ocr_frac = (sum(p.needs_ocr for p in pages) / sampled) if sampled else 1.0
+    # No pages (empty/corrupt PDF) => no OCR evidence => "fast" (the registry's
+    # page_count guard also skips escalation; defaulting to 0.0 keeps the
+    # recorded classification metric accurate rather than a misleading "ocr").
+    ocr_frac = (sum(p.needs_ocr for p in pages) / sampled) if sampled else 0.0
 
     flags: set[str] = set()
-    if total_chars == 0:
-        flags.add("no_text_layer")
-    elif mean_quality < MIN_TEXT_QUALITY:
-        flags.add("bad_text_layer")
+    if sampled:
+        if total_chars == 0:
+            flags.add("no_text_layer")
+        elif mean_quality < MIN_TEXT_QUALITY:
+            flags.add("bad_text_layer")
 
     recommended = "ocr" if ocr_frac >= OCR_PAGE_FRACTION else "fast"
 

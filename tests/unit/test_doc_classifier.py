@@ -176,3 +176,12 @@ def test_classify_from_text_empty_routes_ocr():
     assert c.recommended_tier == "ocr"
     assert "no_text_layer" in c.flags
     assert c.total_chars == 0
+
+
+def test_classify_from_text_no_pages_routes_fast():
+    # An empty/corrupt PDF (no page boundaries) is not OCR evidence -> "fast",
+    # so the recorded classification metric isn't a misleading "ocr".
+    c = clf.classify_from_text("", [])
+    assert c.recommended_tier == "fast"
+    assert c.ocr_page_fraction == pytest.approx(0.0)
+    assert c.flags == set()
