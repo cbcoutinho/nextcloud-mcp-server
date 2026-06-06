@@ -30,6 +30,13 @@ FILE_EVENT_WRITTEN = "OCP\\Files\\Events\\Node\\NodeWrittenEvent"
 # See: https://github.com/nextcloud/server/issues/56371
 FILE_EVENT_DELETED = "OCP\\Files\\Events\\Node\\BeforeNodeDeletedEvent"
 
+# System-tag assign/unassign (Nextcloud 32+). A single event class covers both
+# directions; the payload's ``eventType`` distinguishes them. Lets adding/removing
+# the ``vector-index`` tag trigger near-real-time (re)indexing instead of waiting
+# for the hourly scan. Requires NC >= 32 — MapperEvent gained
+# getWebhookSerializable() in 32.0.0; on older servers the event isn't delivered.
+SYSTEMTAG_EVENT_MAPPER = "OCP\\SystemTag\\MapperEvent"
+
 # Calendar webhook events
 CALENDAR_EVENT_CREATED = "OCP\\Calendar\\Events\\CalendarObjectCreatedEvent"
 CALENDAR_EVENT_UPDATED = "OCP\\Calendar\\Events\\CalendarObjectUpdatedEvent"
@@ -128,7 +135,7 @@ WEBHOOK_PRESETS: Dict[str, WebhookPreset] = {
     },
     "files_sync": {
         "name": "All Files Sync",
-        "description": "Real-time synchronization for all file operations (create, update, delete)",
+        "description": "Real-time synchronization for all file operations (create, update, delete) and tag changes (Nextcloud 32+)",
         "app": "files",
         "events": [
             {
@@ -141,6 +148,13 @@ WEBHOOK_PRESETS: Dict[str, WebhookPreset] = {
             },
             {
                 "event": FILE_EVENT_DELETED,
+                "filter": {},
+            },
+            # Tag assign/unassign. Drives vector-index (re)indexing when a file
+            # or folder is tagged/untagged. Delivered only on NC >= 32; harmless
+            # to register on older servers (the event simply never fires).
+            {
+                "event": SYSTEMTAG_EVENT_MAPPER,
                 "filter": {},
             },
         ],

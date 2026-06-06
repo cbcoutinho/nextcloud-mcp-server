@@ -4,9 +4,10 @@ Maps Nextcloud webhook events to vector-sync DocumentTasks. The handler at
 ``/webhooks/nextcloud`` calls :func:`extract_document_task` and forwards any
 non-None result to the same processor send-stream the scanner uses.
 
-Currently scoped to file (note) events and Deck card events. Calendar /
-Tables events fall through to ``None`` for now; those parsers can be added
-in follow-up changes.
+Currently scoped to file (note) events, Deck card events, and SystemTag
+assign/unassign events (which drive ``vector-index`` (re)indexing of files).
+Calendar / Tables events fall through to ``None`` for now; those parsers can
+be added in follow-up changes.
 
 See ADR-010 for the design and ``webhook-testing-findings.md`` for real
 captured payloads.
@@ -27,6 +28,11 @@ _DECK_EVENT_CARD_CREATED = "OCA\\Deck\\Event\\CardCreatedEvent"
 _DECK_EVENT_CARD_UPDATED = "OCA\\Deck\\Event\\CardUpdatedEvent"
 _DECK_EVENT_CARD_DELETED = "OCA\\Deck\\Event\\CardDeletedEvent"
 _DECK_EVENT_BOARD_UPDATED = "OCA\\Deck\\Event\\BoardUpdatedEvent"
+
+# System-tag assign/unassign. A single event class covers both directions; the
+# payload's ``eventType`` distinguishes them. Webhook-deliverable on NC 32+
+# (MapperEvent gained ``getWebhookSerializable()`` in 32.0.0).
+_SYSTEMTAG_EVENT_MAPPER = "OCP\\SystemTag\\MapperEvent"
 
 _DECK_CARD_EVENTS = frozenset(
     {
@@ -67,6 +73,9 @@ def extract_document_task(payload: dict) -> DocumentTask | None:
     if event_class in _DECK_CARD_EVENTS or event_class == _DECK_EVENT_BOARD_UPDATED:
         return _parse_deck_event(event_class, event, user_id, time)
 
+    if event_class == _SYSTEMTAG_EVENT_MAPPER:
+        return _parse_tag_event(event, user_id, time)
+
     logger.debug("Ignoring webhook for unsupported event: %s", event_class)
     return None
 
@@ -101,6 +110,38 @@ def _parse_file_event(
         doc_type="note",
         operation=operation,
         modified_at=time,
+    )
+
+
+def _parse_tag_event(event: dict, user_id: str, time: int) -> DocumentTask | None:
+    """Convert a SystemTag ``MapperEvent`` (assign/unassign) into a reconcile task.
+
+    The NC 32+ payload (``getWebhookSerializable``) carries only ``objectType``,
+    ``objectId`` (a fileid) and ``tagIds`` — not the tag *name*, the file path,
+    or whether our ``vector-index`` tag specifically changed. So we can't decide
+    index-vs-delete here. Emit a file task with ``file_path=None``; the processor
+    resolves the file's *current* ``vector-index`` membership and indexes or
+    deletes accordingly (see ``processor._reconcile_tag_event``). Both assign and
+    unassign collapse to the same reconcile, which also makes "an unrelated tag
+    changed" a cheap no-op.
+    """
+    object_type = event.get("objectType")
+    object_id = event.get("objectId")
+
+    # Only file tags drive vector sync; NC tags other object types too
+    # (comments, etc.). ``objectId`` of 0/"" is malformed — skip.
+    if object_type != "files" or not object_id:
+        return None
+
+    return DocumentTask(
+        user_id=user_id,
+        doc_id=str(object_id),
+        doc_type="file",
+        # Reconciled in the processor; may be flipped to "delete" if the file is
+        # no longer a tagged PDF. file_path=None is the "needs reconcile" signal.
+        operation="index",
+        modified_at=time,
+        file_path=None,
     )
 
 

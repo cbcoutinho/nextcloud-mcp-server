@@ -165,6 +165,58 @@ async def processor_task(
     logger.info("Processor %s stopped", worker_id)
 
 
+async def _reconcile_tag_event(
+    doc_task: DocumentTask, nc_client: NextcloudClient
+) -> None:
+    """Resolve a tag-webhook file task into a concrete index or delete.
+
+    A SystemTag ``MapperEvent`` only tells us a fileid's tags changed — not the
+    path, nor whether our ``vector-index`` tag is (still) on it. Look up the
+    user's current ``vector-index`` PDFs (the same call the scanner uses, which
+    also expands tagged folders into their PDF descendants) and reconcile the
+    task in place:
+
+    - fileid present -> index it; fill path/etag/mtime from the tag listing.
+    - fileid absent  -> it isn't a tagged PDF (anymore); flip ``operation`` to
+      ``delete`` so any existing points are released for this user.
+
+    A tagged *folder*'s own fileid won't appear in the file-level listing, so it
+    resolves to a harmless no-op delete here; the hourly scanner still expands
+    tagged folders into their descendants.
+    """
+    tag_name = get_settings().vector_sync_pdf_tag
+    tagged = await nc_client.find_files_by_tag(
+        tag_name, mime_type_filter="application/pdf"
+    )
+    match = next(
+        (f for f in tagged if str(f.get("id")) == str(doc_task.doc_id)),
+        None,
+    )
+
+    if match is None:
+        doc_task.operation = "delete"
+        logger.info(
+            "Tag reconcile: file %s is not a %r PDF; releasing for %s",
+            doc_task.doc_id,
+            tag_name,
+            doc_task.user_id,
+        )
+        return
+
+    doc_task.file_path = match["path"]
+    if not doc_task.etag:
+        doc_task.etag = match.get("etag")
+    last_modified = match.get("last_modified_timestamp")
+    if last_modified:
+        doc_task.modified_at = int(last_modified)
+    logger.info(
+        "Tag reconcile: indexing %s (file %s) for %s",
+        doc_task.file_path,
+        doc_task.doc_id,
+        doc_task.user_id,
+    )
+
+
 async def process_document(
     doc_task: DocumentTask, nc_client: NextcloudClient, *, max_retries: int = 3
 ):
@@ -203,6 +255,18 @@ async def process_document(
     ):
         try:
             qdrant_client = await get_qdrant_client()
+
+            # Tag-webhook reconcile: a SystemTag MapperEvent enqueues a file task
+            # carrying only a fileid (file_path is None — see
+            # webhook_parser._parse_tag_event). Resolve the file's current
+            # vector-index membership into a concrete index (path/etag filled) or
+            # a delete before dispatching below.
+            if (
+                doc_task.doc_type == "file"
+                and doc_task.operation == "index"
+                and doc_task.file_path is None
+            ):
+                await _reconcile_tag_event(doc_task, nc_client)
 
             # Handle deletion
             if doc_task.operation == "delete":
