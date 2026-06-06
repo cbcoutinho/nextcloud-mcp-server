@@ -167,8 +167,11 @@ class PageAwareChunker:
         if not content:
             return [ChunkWithPosition(text="", start_offset=0, end_offset=0)]
 
-        # No page info (e.g. a non-PDF that reached this path) — degrade to the
-        # char-based behaviour so the caller still gets sensible chunks.
+        # No page info — degrade to char-based behaviour so the class is safe to
+        # call directly. The vector-sync processor pre-filters this case
+        # (``should_use_page_aware`` requires a truthy boundary list), so in
+        # production this branch is only reached by direct callers/tests, not
+        # the indexing path.
         if not page_boundaries:
             docs = await anyio.to_thread.run_sync(  # type: ignore[attr-defined]
                 self.splitter.create_documents,

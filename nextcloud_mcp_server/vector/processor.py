@@ -92,6 +92,25 @@ def assign_page_numbers(chunks, page_boundaries):
             chunk.page_number = assigned_page
 
 
+def should_use_page_aware(
+    *, page_aware_enabled: bool, doc_type: str, page_boundaries: Any
+) -> bool:
+    """Decide whether the page-aware chunker applies to this document.
+
+    Page-aware chunking applies only to paginated files (PDFs) that actually
+    carry page boundaries. ``page_boundaries`` is tested for truthiness, not
+    just ``is not None``: an empty list carries no pages, so it routes through
+    the char-based path rather than the page-aware chunker's no-boundaries
+    fallback.
+
+    Args:
+        page_aware_enabled: ``settings.document_chunk_page_aware``.
+        doc_type: The document type (only ``"file"`` is paginated).
+        page_boundaries: The extractor's page-boundary list (or ``None``).
+    """
+    return page_aware_enabled and doc_type == "file" and bool(page_boundaries)
+
+
 async def processor_task(
     worker_id: int,
     receive_stream: MemoryObjectReceiveStream[DocumentTask],
@@ -690,13 +709,10 @@ async def _index_document(
     # which assigns page numbers inline; everything else uses the char-based
     # chunker followed by post-hoc page assignment.
     page_boundaries = file_metadata.get("page_boundaries")
-    use_page_aware = (
-        settings.document_chunk_page_aware
-        and doc_task.doc_type == "file"
-        # Truthy (not just "is not None"): an empty list carries no pages, so
-        # route it through the char-based path rather than the page-aware
-        # chunker's no-boundaries fallback.
-        and bool(page_boundaries)
+    use_page_aware = should_use_page_aware(
+        page_aware_enabled=settings.document_chunk_page_aware,
+        doc_type=doc_task.doc_type,
+        page_boundaries=page_boundaries,
     )
     with trace_operation(
         "vector_sync.chunk_text",
