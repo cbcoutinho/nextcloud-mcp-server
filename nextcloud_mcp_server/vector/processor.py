@@ -739,11 +739,9 @@ async def _index_document(
             chunk_span.set_attribute(_ATTR_CHUNK_COUNT, len(chunks))
 
     # Assign page numbers for the char-based path (page-aware already sets them).
-    if (
-        not use_page_aware
-        and doc_task.doc_type == "file"
-        and page_boundaries is not None
-    ):
+    # Truthy guard (not "is not None"): an empty boundary list has nothing to
+    # assign, so skip the span and the "NO page numbers assigned" warning.
+    if not use_page_aware and doc_task.doc_type == "file" and page_boundaries:
         # Type narrowing: page_boundaries is guaranteed to be list[dict] here
         page_boundaries_list = cast(list[dict[str, Any]], page_boundaries)
         with trace_operation(
