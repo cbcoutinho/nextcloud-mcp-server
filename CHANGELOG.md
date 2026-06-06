@@ -5,6 +5,24 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.107.0 (2026-06-06)
+
+### BREAKING CHANGE
+
+- PDFs are re-chunked page-aware by default. Existing
+deployments will re-index PDF content on the next vector sync (different
+chunk counts and page_number labels). Set DOCUMENT_CHUNK_PAGE_AWARE=false
+to retain the previous char-based behaviour.
+
+### Feat
+
+- **vector**: page-aware PDF chunking for predictable per-page retrieval
+
+### Fix
+
+- **vector**: skip page-assignment span/warning on empty boundaries
+- **vector**: route empty page_boundaries to char-based path; test ws offsets
+
 ## v0.106.0 (2026-06-06)
 
 ### Feat
