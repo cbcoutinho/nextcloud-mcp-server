@@ -439,6 +439,22 @@ class TestPageAwareChunker:
         ]
         assert all(c.page_number is None for c in pa_chunks)
 
+    async def test_all_blank_pages_returns_empty_list(self):
+        """Non-empty content whose every page is blank yields no chunks.
+
+        Matches DocumentChunker, which also returns [] for whitespace-only
+        non-empty content — the downstream pipeline handles an empty chunk
+        list identically for both chunkers.
+        """
+        pages = ["   ", "\n\n", "\t"]
+        content, boundaries = _make_doc(pages)
+
+        chunks = await PageAwareChunker().chunk_text(content, boundaries)
+
+        assert chunks == []
+        # Parity: the char-based chunker behaves the same for blank content.
+        assert await DocumentChunker().chunk_text(content) == []
+
     async def test_empty_content_returns_single_empty_chunk(self):
         """Empty content returns one empty chunk regardless of boundaries."""
         chunks = await PageAwareChunker().chunk_text(
