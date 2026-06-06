@@ -512,8 +512,8 @@ VECTOR_SYNC_PROCESSOR_WORKERS=3       # Concurrent indexing workers (default: 3)
 VECTOR_SYNC_QUEUE_MAX_SIZE=10000      # Max queued documents (default: 10000)
 
 # Document chunking settings (for vector embeddings)
-DOCUMENT_CHUNK_SIZE=512               # Words per chunk (default: 512)
-DOCUMENT_CHUNK_OVERLAP=50             # Overlapping words between chunks (default: 50)
+DOCUMENT_CHUNK_SIZE=2048              # Characters per chunk (default: 2048)
+DOCUMENT_CHUNK_OVERLAP=200            # Overlapping characters between chunks (default: 200)
 ```
 
 > **Note:** The `VECTOR_SYNC_*` tuning parameters keep their names as they're implementation details. Only the user-facing feature flag was renamed to `ENABLE_SEMANTIC_SEARCH`.
@@ -592,44 +592,46 @@ The server chunks documents before embedding to handle documents larger than the
 
 #### Choosing Chunk Size
 
-**Smaller chunks (256-384 words)**:
+**Smaller chunks (1024-1536 characters)**:
 - More precise matching
 - Less context per chunk
 - Better for finding specific information
 - Higher storage requirements (more vectors)
 
-**Larger chunks (768-1024 words)**:
+**Larger chunks (3072-4096 characters)**:
 - More context per chunk
 - Less precise matching
 - Better for understanding broader topics
 - Lower storage requirements (fewer vectors)
 
-**Default (512 words)**:
+**Default (2048 characters)**:
 - Balanced approach suitable for most use cases
 - Works well with typical note lengths
 - Good compromise between precision and context
+
+> For PDFs, `DOCUMENT_CHUNK_PAGE_AWARE` (default `true`) overrides this trade-off by chunking one page at a time — see the entry below.
 
 #### Choosing Overlap
 
 Overlap preserves context across chunk boundaries. Recommended settings:
 
-- **10-20% of chunk size** (e.g., 50-100 words for 512-word chunks)
+- **10-20% of chunk size** (e.g., 200-400 characters for 2048-character chunks)
 - **Too small** (<10%): May lose context at boundaries
 - **Too large** (>20%): Redundant storage, diminishing returns
 
 **Examples**:
 ```dotenv
 # Precise matching for short notes
-DOCUMENT_CHUNK_SIZE=256
-DOCUMENT_CHUNK_OVERLAP=25
-
-# Default balanced configuration
-DOCUMENT_CHUNK_SIZE=512
-DOCUMENT_CHUNK_OVERLAP=50
-
-# More context for long documents
 DOCUMENT_CHUNK_SIZE=1024
 DOCUMENT_CHUNK_OVERLAP=100
+
+# Default balanced configuration
+DOCUMENT_CHUNK_SIZE=2048
+DOCUMENT_CHUNK_OVERLAP=200
+
+# More context for long documents
+DOCUMENT_CHUNK_SIZE=4096
+DOCUMENT_CHUNK_OVERLAP=400
 ```
 
 **Important**: Changing chunk size requires re-embedding all documents. The collection naming strategy (see "Qdrant Collection Naming" above) helps manage this by creating separate collections for different configurations.
@@ -741,8 +743,8 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `BEDROCK_EMBEDDING_MODEL` | ⚠️ Optional | - | Bedrock embedding model ID |
 | `BEDROCK_GENERATION_MODEL` | ⚠️ Optional | - | Bedrock generation model ID |
 | `SIMPLE_EMBEDDING_DIMENSION` | ⚠️ Optional | `384` | Dimension for the fallback Simple provider |
-| `DOCUMENT_CHUNK_SIZE` | ⚠️ Optional | `512` | Words per chunk for document embedding |
-| `DOCUMENT_CHUNK_OVERLAP` | ⚠️ Optional | `50` | Overlapping words between chunks (must be < chunk size) |
+| `DOCUMENT_CHUNK_SIZE` | ⚠️ Optional | `2048` | Characters per chunk for document embedding |
+| `DOCUMENT_CHUNK_OVERLAP` | ⚠️ Optional | `200` | Overlapping characters between chunks (must be < chunk size) |
 | `DOCUMENT_CHUNK_PAGE_AWARE` | ⚠️ Optional | `true` | Split PDFs on page boundaries first (one chunk per page; oversized pages split within the page). Exact page numbers, clean snippets, and a predictable ~1 chunk/page when chunk size ≥ the largest page. Set `false` for the legacy char-based path. |
 
 **Deprecated variables (still functional):**
