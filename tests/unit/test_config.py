@@ -167,6 +167,20 @@ class TestChunkConfigValidation:
         assert settings.document_chunk_size == 2048
         assert settings.document_chunk_overlap == 200
 
+    def test_page_aware_enabled_by_default(self):
+        """Page-aware chunking is on by default."""
+        assert Settings().document_chunk_page_aware is True
+
+    @patch.dict(
+        os.environ,
+        {"DOCUMENT_CHUNK_PAGE_AWARE": "false"},
+        clear=True,
+    )
+    def test_page_aware_disabled_via_env(self):
+        """DOCUMENT_CHUNK_PAGE_AWARE=false disables page-aware chunking."""
+        _reload_config()
+        assert get_settings().document_chunk_page_aware is False
+
     def test_valid_chunk_settings(self):
         """Test valid chunk size and overlap configuration."""
         settings = Settings(

@@ -132,6 +132,10 @@ _DEFAULTS: dict[str, Any] = {
     # Document chunking
     "document_chunk_size": 2048,
     "document_chunk_overlap": 200,
+    # Page-aware chunking for paginated docs (PDFs): split on page boundaries
+    # first so no chunk spans a page (exact page_number, clean snippets, and
+    # predictable ~1 chunk/page when chunk_size >= the largest page).
+    "document_chunk_page_aware": True,
     # PDF parse isolation (OOM guard)
     "document_pdf_graphics_limit": 1000,
     "document_parse_timeout_seconds": 120.0,
@@ -736,6 +740,13 @@ class Settings:
     # Document chunking settings (for vector embeddings)
     document_chunk_size: int = 2048  # Characters per chunk
     document_chunk_overlap: int = 200  # Overlapping characters between chunks
+    # Page-aware chunking for paginated docs (PDFs). When True (default), PDF
+    # text is split on page boundaries first (one chunk per page; oversized
+    # pages are character-split within the page), giving exact page numbers,
+    # snippets that never lead with a neighbouring page, and a predictable
+    # ~1 chunk/page when document_chunk_size >= the largest page. When False,
+    # the legacy char-based path runs with post-hoc assign_page_numbers.
+    document_chunk_page_aware: bool = True
 
     # PDF parse isolation (OOM guard). The parse runs in a subprocess so one
     # pathological file fails that doc, not the pod.
@@ -1389,6 +1400,7 @@ def get_settings() -> Settings:
         # Document chunking settings
         "document_chunk_size": "DOCUMENT_CHUNK_SIZE",
         "document_chunk_overlap": "DOCUMENT_CHUNK_OVERLAP",
+        "document_chunk_page_aware": "DOCUMENT_CHUNK_PAGE_AWARE",
         "document_pdf_graphics_limit": "DOCUMENT_PDF_GRAPHICS_LIMIT",
         "document_parse_timeout_seconds": "DOCUMENT_PARSE_TIMEOUT_SECONDS",
         "document_parse_mem_limit_mb": "DOCUMENT_PARSE_MEM_LIMIT_MB",

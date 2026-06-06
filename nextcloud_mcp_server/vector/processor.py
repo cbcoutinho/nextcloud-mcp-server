@@ -30,7 +30,10 @@ from nextcloud_mcp_server.observability.metrics import (
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.search.pdf_highlighter import PDFHighlighter
 from nextcloud_mcp_server.vector import payload_keys
-from nextcloud_mcp_server.vector.document_chunker import DocumentChunker
+from nextcloud_mcp_server.vector.document_chunker import (
+    DocumentChunker,
+    PageAwareChunker,
+)
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
 from nextcloud_mcp_server.vector.placeholder import (
     delete_placeholder_point,
@@ -682,27 +685,46 @@ async def _index_document(
                 logger.error("Failed to process file %s: %s", file_path, e)
                 raise
 
-    # Tokenize and chunk (using configured chunk size and overlap)
+    # Tokenize and chunk (using configured chunk size and overlap). Paginated
+    # files (PDFs with page_boundaries) use the page-aware chunker when enabled,
+    # which assigns page numbers inline; everything else uses the char-based
+    # chunker followed by post-hoc page assignment.
+    page_boundaries = file_metadata.get("page_boundaries")
+    use_page_aware = (
+        settings.document_chunk_page_aware
+        and doc_task.doc_type == "file"
+        and page_boundaries is not None
+    )
     with trace_operation(
         "vector_sync.chunk_text",
         attributes={
             "vector_sync.input_chars": len(content),
             "vector_sync.chunk_size": settings.document_chunk_size,
             "vector_sync.overlap": settings.document_chunk_overlap,
+            "vector_sync.page_aware": use_page_aware,
         },
     ) as chunk_span:
-        chunker = DocumentChunker(
-            chunk_size=settings.document_chunk_size,
-            overlap=settings.document_chunk_overlap,
-        )
-        chunks = await chunker.chunk_text(content)
+        if use_page_aware:
+            page_boundaries_list = cast(list[dict[str, Any]], page_boundaries)
+            chunks = await PageAwareChunker(
+                chunk_size=settings.document_chunk_size,
+                overlap=settings.document_chunk_overlap,
+            ).chunk_text(content, page_boundaries_list)
+        else:
+            chunks = await DocumentChunker(
+                chunk_size=settings.document_chunk_size,
+                overlap=settings.document_chunk_overlap,
+            ).chunk_text(content)
         record_document_chunks(doc_task.doc_type, len(chunks))
         if chunk_span is not None:
             chunk_span.set_attribute(_ATTR_CHUNK_COUNT, len(chunks))
 
-    # Assign page numbers to chunks if page boundaries are available (PDFs)
-    page_boundaries = file_metadata.get("page_boundaries")
-    if doc_task.doc_type == "file" and page_boundaries is not None:
+    # Assign page numbers for the char-based path (page-aware already sets them).
+    if (
+        not use_page_aware
+        and doc_task.doc_type == "file"
+        and page_boundaries is not None
+    ):
         # Type narrowing: page_boundaries is guaranteed to be list[dict] here
         page_boundaries_list = cast(list[dict[str, Any]], page_boundaries)
         with trace_operation(
