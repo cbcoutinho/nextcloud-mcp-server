@@ -1,10 +1,14 @@
 """Unit tests for DocumentChunker with LangChain text splitters."""
 
+import pytest
+
 from nextcloud_mcp_server.vector.document_chunker import (
     ChunkWithPosition,
     DocumentChunker,
     PageAwareChunker,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _make_doc(pages: list[str]) -> tuple[str, list[dict]]:
