@@ -370,6 +370,28 @@ class TestPageAwareChunker:
         assert per_page[2] > 1
         assert per_page[3] == 1
 
+    async def test_oversized_page_with_leading_whitespace_offsets(self):
+        """Offset invariant holds for oversized-page sub-chunks with leading ws.
+
+        Guards the ``start + start_index`` path: LangChain's start_index points
+        at the first non-whitespace char, so offsets must still extract exactly.
+        """
+        pages = ["  \n  " + "word " * 200, "Tail page."]
+        content, boundaries = _make_doc(pages)
+
+        chunks = await PageAwareChunker(chunk_size=200, overlap=20).chunk_text(
+            content, boundaries
+        )
+
+        page_one = [c for c in chunks if c.page_number == 1]
+        assert len(page_one) > 1  # oversized page really did split
+        for chunk in chunks:
+            assert chunk.page_number is not None
+            assert content[chunk.start_offset : chunk.end_offset] == chunk.text
+            pb = boundaries[chunk.page_number - 1]
+            assert pb["start_offset"] <= chunk.start_offset
+            assert chunk.end_offset <= pb["end_offset"]
+
     async def test_blank_pages_skipped(self):
         """Whitespace-only pages produce no chunks (no wasted embeddings)."""
         pages = ["Real content here.", "   \n  ", "More real content."]

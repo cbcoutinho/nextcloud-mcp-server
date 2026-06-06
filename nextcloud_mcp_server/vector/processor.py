@@ -693,7 +693,10 @@ async def _index_document(
     use_page_aware = (
         settings.document_chunk_page_aware
         and doc_task.doc_type == "file"
-        and page_boundaries is not None
+        # Truthy (not just "is not None"): an empty list carries no pages, so
+        # route it through the char-based path rather than the page-aware
+        # chunker's no-boundaries fallback.
+        and bool(page_boundaries)
     )
     with trace_operation(
         "vector_sync.chunk_text",
