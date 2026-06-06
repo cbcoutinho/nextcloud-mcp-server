@@ -1,9 +1,32 @@
 """Unit tests for DocumentChunker with LangChain text splitters."""
 
+import pytest
+
 from nextcloud_mcp_server.vector.document_chunker import (
     ChunkWithPosition,
     DocumentChunker,
+    PageAwareChunker,
 )
+
+pytestmark = pytest.mark.unit
+
+
+def _make_doc(pages: list[str]) -> tuple[str, list[dict]]:
+    """Build (full_text, page_boundaries) the way the PDF extractors do.
+
+    Page texts are concatenated with no separator and boundaries index exactly
+    into the result (the pypdfium2_fast contract).
+    """
+    content = ""
+    boundaries: list[dict] = []
+    offset = 0
+    for i, text in enumerate(pages, start=1):
+        boundaries.append(
+            {"page": i, "start_offset": offset, "end_offset": offset + len(text)}
+        )
+        content += text
+        offset += len(text)
+    return content, boundaries
 
 
 class TestDocumentChunkerPositions:
@@ -286,3 +309,158 @@ Fourth paragraph here."""
                     overlap_text = content[overlap_start:overlap_end]
                     assert overlap_text in chunks[i].text
                     assert overlap_text in chunks[i + 1].text
+
+
+class TestPageAwareChunker:
+    """Test suite for the page-aware chunker."""
+
+    async def test_one_chunk_per_page_when_chunk_size_exceeds_pages(self):
+        """chunk_size >= largest page => exactly one chunk per page."""
+        pages = [
+            "Page one content.",
+            "Page two has rather more text than the first page does.",
+            "Third.",
+        ]
+        content, boundaries = _make_doc(pages)
+
+        chunks = await PageAwareChunker(chunk_size=2048, overlap=200).chunk_text(
+            content, boundaries
+        )
+
+        # Predictable vector count == page count.
+        assert len(chunks) == len(pages)
+        for i, chunk in enumerate(chunks):
+            assert chunk.page_number == i + 1
+            # No leading/trailing whitespace in these pages -> text == page text.
+            assert chunk.text == pages[i]
+            # Offsets remain exact against the original document.
+            assert content[chunk.start_offset : chunk.end_offset] == chunk.text
+
+    async def test_no_chunk_spans_a_page_boundary(self):
+        """Every chunk's character range stays within one page (the invariant)."""
+        pages = [
+            "Short.",
+            "word " * 200,  # oversized page -> will be split within the page
+            "Another short page of text.",
+            "   ",  # blank page
+            "Final page content here.",
+        ]
+        content, boundaries = _make_doc(pages)
+
+        chunks = await PageAwareChunker(chunk_size=200, overlap=20).chunk_text(
+            content, boundaries
+        )
+
+        for chunk in chunks:
+            assert chunk.page_number is not None
+            pb = boundaries[chunk.page_number - 1]
+            assert pb["start_offset"] <= chunk.start_offset
+            assert chunk.end_offset <= pb["end_offset"]
+            assert content[chunk.start_offset : chunk.end_offset] == chunk.text
+
+    async def test_oversized_page_splits_others_stay_single(self):
+        """Only the oversized page yields multiple chunks; page numbers fixed."""
+        pages = ["small page one", "word " * 200, "small page three"]
+        content, boundaries = _make_doc(pages)
+
+        chunks = await PageAwareChunker(chunk_size=200, overlap=20).chunk_text(
+            content, boundaries
+        )
+
+        per_page = {1: 0, 2: 0, 3: 0}
+        for chunk in chunks:
+            per_page[chunk.page_number] += 1
+        assert per_page[1] == 1
+        assert per_page[2] > 1
+        assert per_page[3] == 1
+
+    async def test_oversized_page_with_leading_whitespace_offsets(self):
+        """Offset invariant holds for oversized-page sub-chunks with leading ws.
+
+        Guards the ``start + start_index`` path: LangChain's start_index points
+        at the first non-whitespace char, so offsets must still extract exactly.
+        """
+        pages = ["  \n  " + "word " * 200, "Tail page."]
+        content, boundaries = _make_doc(pages)
+
+        chunks = await PageAwareChunker(chunk_size=200, overlap=20).chunk_text(
+            content, boundaries
+        )
+
+        page_one = [c for c in chunks if c.page_number == 1]
+        assert len(page_one) > 1  # oversized page really did split
+        for chunk in chunks:
+            assert chunk.page_number is not None
+            assert content[chunk.start_offset : chunk.end_offset] == chunk.text
+            pb = boundaries[chunk.page_number - 1]
+            assert pb["start_offset"] <= chunk.start_offset
+            assert chunk.end_offset <= pb["end_offset"]
+
+    async def test_blank_pages_skipped(self):
+        """Whitespace-only pages produce no chunks (no wasted embeddings)."""
+        pages = ["Real content here.", "   \n  ", "More real content."]
+        content, boundaries = _make_doc(pages)
+
+        chunks = await PageAwareChunker(chunk_size=2048, overlap=200).chunk_text(
+            content, boundaries
+        )
+
+        assert len(chunks) == 2
+        assert {c.page_number for c in chunks} == {1, 3}
+
+    async def test_offsets_tightened_around_page_whitespace(self):
+        """Leading/trailing page whitespace is stripped and offsets adjusted."""
+        pages = ["  Leading and trailing.  ", "Normal page."]
+        content, boundaries = _make_doc(pages)
+
+        chunks = await PageAwareChunker(chunk_size=2048, overlap=200).chunk_text(
+            content, boundaries
+        )
+
+        first = chunks[0]
+        assert first.text == "Leading and trailing."
+        assert content[first.start_offset : first.end_offset] == first.text
+
+    async def test_no_page_boundaries_falls_back_to_char_chunking(self):
+        """Without page boundaries, behaves like the char-based chunker."""
+        content = "This is sentence one. " * 40
+
+        pa_chunks = await PageAwareChunker(chunk_size=100, overlap=20).chunk_text(
+            content, []
+        )
+        char_chunks = await DocumentChunker(chunk_size=100, overlap=20).chunk_text(
+            content
+        )
+
+        assert len(pa_chunks) > 1
+        # Same chunk boundaries as the char-based path, and no page numbers.
+        assert [(c.text, c.start_offset) for c in pa_chunks] == [
+            (c.text, c.start_offset) for c in char_chunks
+        ]
+        assert all(c.page_number is None for c in pa_chunks)
+
+    async def test_all_blank_pages_returns_empty_list(self):
+        """Non-empty content whose every page is blank yields no chunks.
+
+        Matches DocumentChunker, which also returns [] for whitespace-only
+        non-empty content — the downstream pipeline handles an empty chunk
+        list identically for both chunkers.
+        """
+        pages = ["   ", "\n\n", "\t"]
+        content, boundaries = _make_doc(pages)
+
+        chunks = await PageAwareChunker().chunk_text(content, boundaries)
+
+        assert chunks == []
+        # Parity: the char-based chunker behaves the same for blank content.
+        assert await DocumentChunker().chunk_text(content) == []
+
+    async def test_empty_content_returns_single_empty_chunk(self):
+        """Empty content returns one empty chunk regardless of boundaries."""
+        chunks = await PageAwareChunker().chunk_text(
+            "", [{"page": 1, "start_offset": 0, "end_offset": 0}]
+        )
+        assert len(chunks) == 1
+        assert chunks[0].text == ""
+        assert chunks[0].start_offset == 0
+        assert chunks[0].end_offset == 0
