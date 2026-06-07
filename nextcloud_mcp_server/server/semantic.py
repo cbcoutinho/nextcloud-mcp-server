@@ -548,10 +548,13 @@ def configure_semantic_tools(mcp: FastMCP):
                             "user_id": username,
                             "fusion": fusion,
                             # Bounded copy — see _USAGE_METADATA_MAX_DOC_TYPES.
+                            # Both None and [] normalize to null so a future
+                            # metadata->'doc_types' IS NULL query counts the
+                            # all-types case consistently.
                             "doc_types": (
                                 doc_types[:_USAGE_METADATA_MAX_DOC_TYPES]
                                 if doc_types
-                                else doc_types
+                                else None
                             ),
                         },
                         # The outer guard already confirmed the flag, so pass

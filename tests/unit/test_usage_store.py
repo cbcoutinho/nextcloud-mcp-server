@@ -185,7 +185,7 @@ async def test_occurred_at_roundtrip(storage, monkeypatch):
     _set_metering(monkeypatch, True)
     store = UsageEventStore(storage)
     eid = str(uuid.uuid4())
-    when = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    when = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
     await store.record_usage_event(
         metric="pages_chunks", value=1, event_id=eid, occurred_at=when
     )
