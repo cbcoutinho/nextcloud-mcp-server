@@ -17,7 +17,7 @@ fallbacks (``TEXT``/``TIMESTAMP``); the control plane never queries SQLite.
 
 Revision ID: 007
 Revises: 006
-Create Date: 2026-06-10 12:00:00.000000
+Create Date: 2026-06-07 12:00:00.000000
 """
 
 import sqlalchemy as sa

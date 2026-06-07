@@ -26,6 +26,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+import anyio
+
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage, get_shared_storage
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.observability.metrics import record_db_operation
@@ -54,7 +56,11 @@ class UsageEventStore:
     # Process-wide cached instance returned by ``shared()`` so the hot search
     # path doesn't allocate a fresh wrapper per metered query. The store is
     # stateless beyond its storage handle, so one instance is reusable.
+    # ``anyio.Lock()`` doesn't bind to an event loop at construction, so a
+    # class-level instance is safe to define here (mirrors
+    # ``get_shared_storage``'s ``_shared_lock``).
     _shared_instance: "UsageEventStore | None" = None
+    _shared_lock: anyio.Lock = anyio.Lock()
 
     def __init__(self, storage: RefreshTokenStorage) -> None:
         self._storage = storage
@@ -67,10 +73,17 @@ class UsageEventStore:
         cached :class:`RefreshTokenStorage` (running ``initialize()`` / Alembic
         on first access, so ``usage_events`` exists), and the wrapper itself is
         stateless, so reusing one instance avoids a per-call allocation on the
-        ``nc_semantic_search`` hot path.
+        ``nc_semantic_search`` hot path. The lock mirrors ``get_shared_storage``
+        so two concurrent cold-start callers don't both build (and one silently
+        overwrite) the instance.
+
+        Tests should construct ``UsageEventStore(storage)`` directly rather than
+        via ``shared()``: the cache is a process global with no teardown hook,
+        so a test that called ``shared()`` would leak its storage into the next.
         """
-        if cls._shared_instance is None:
-            cls._shared_instance = cls(await get_shared_storage())
+        async with cls._shared_lock:
+            if cls._shared_instance is None:
+                cls._shared_instance = cls(await get_shared_storage())
         return cls._shared_instance
 
     async def record_usage_event(
