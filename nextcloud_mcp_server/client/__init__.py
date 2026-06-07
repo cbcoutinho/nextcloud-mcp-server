@@ -225,7 +225,7 @@ class NextcloudClient:
         # cycle on an empty ``data``. Tolerate a missing/empty meta (our own
         # mocks, and any envelope that omits it).
         status = (ocs.get("meta") or {}).get("status")
-        if status not in ("ok", None, ""):
+        if status and status != "ok":  # falsy (missing/None/"") tolerated
             raise ValueError(f"OCS navigation returned status={status!r}")
         entries = ocs.get("data") or []
         enabled: set[str] = set()

@@ -48,6 +48,19 @@ async def test_returns_none_when_detection_raises(caplog):
     assert "scanning all apps" in caplog.text
 
 
+async def test_value_error_from_ocs_failure_returns_none():
+    """A ValueError (e.g. OCS meta.status=='failure' from get_enabled_apps)
+    routes through the scan-all fallback like any other exception."""
+    nc_client = AsyncMock()
+    nc_client.get_enabled_apps = AsyncMock(
+        side_effect=ValueError("OCS navigation returned status='failure'")
+    )
+
+    result = await _get_enabled_apps_or_none(nc_client, "alice", scan_id=1234)
+
+    assert result is None
+
+
 def test_none_set_enables_every_app():
     """A None set means detection failed, so every app must be scanned."""
     assert _app_enabled("news", None) is True
