@@ -296,6 +296,55 @@ class TestObjectNameResolution:
             "/remote.php/dav/addressbooks/users/testuser/contacts/ghost.vcf",
         )
 
+    async def test_update_targets_real_no_extension_path(self, mocker):
+        """Regression for #874: update must PUT to ``.../default`` not
+        ``.../default.vcf`` (parallels the delete coverage).
+        """
+        client = ContactsClient.__new__(ContactsClient)
+        client.username = "testuser"
+        mocker.patch.object(
+            client, "_resolve_object_name", mocker.AsyncMock(return_value="default")
+        )
+        mocker.patch.object(
+            client,
+            "_fetch_raw_vcard",
+            mocker.AsyncMock(
+                return_value=(
+                    "BEGIN:VCARD\nVERSION:3.0\nUID:default\nFN:No Ext\nEND:VCARD\n",
+                    '"etag"',
+                )
+            ),
+        )
+        make_request = mocker.patch.object(client, "_make_request", mocker.AsyncMock())
+        await client.update_contact(
+            addressbook="contacts", uid="default", contact_data={"fn": "Updated"}
+        )
+        method, url = make_request.await_args.args[0], make_request.await_args.args[1]
+        assert method == "PUT"
+        assert url == "/remote.php/dav/addressbooks/users/testuser/contacts/default"
+
+    async def test_update_falls_back_to_vcf_when_unresolved(self, mocker):
+        """When resolution finds nothing, update falls back to ``<uid>.vcf`` so
+        the caller still gets a clean 404 from the PUT (mirrors delete).
+        """
+        client = ContactsClient.__new__(ContactsClient)
+        client.username = "testuser"
+        mocker.patch.object(
+            client, "_resolve_object_name", mocker.AsyncMock(return_value=None)
+        )
+        make_request = mocker.patch.object(client, "_make_request", mocker.AsyncMock())
+        # Supplying an etag skips the existing-vCard fetch; update builds a fresh
+        # vCard and PUTs it to the fallback path.
+        await client.update_contact(
+            addressbook="contacts",
+            uid="ghost",
+            contact_data={"fn": "Ghost"},
+            etag='"x"',
+        )
+        method, url = make_request.await_args.args[0], make_request.await_args.args[1]
+        assert method == "PUT"
+        assert url == "/remote.php/dav/addressbooks/users/testuser/contacts/ghost.vcf"
+
 
 class TestFirstCustom:
     """``_first_custom`` is the read-side companion to PR #719 — it pulls

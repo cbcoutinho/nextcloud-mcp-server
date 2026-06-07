@@ -258,7 +258,7 @@ class ContactsClient(BaseNextcloudClient):
     async def _resolve_object_name(self, addressbook: str, uid: str) -> str | None:
         """Map a surfaced contact id back to its real CardDAV object filename.
 
-        ``list_contacts`` surfaces ``vcard_id`` with any ``.vcf`` suffix
+        ``list_contacts`` surfaces ``vcard_id`` with a trailing ``.vcf`` suffix
         stripped, so reverse that transform here: return the object whose
         filename reduces to ``uid``. The conventional ``<uid>.vcf`` is
         preferred when present (deterministic for the common case), otherwise
@@ -267,7 +267,7 @@ class ContactsClient(BaseNextcloudClient):
         candidates = [
             name
             for name in await self._list_object_names(addressbook)
-            if name.replace(".vcf", "") == uid
+            if name.removesuffix(".vcf") == uid
         ]
         if not candidates:
             return None
@@ -512,7 +512,9 @@ class ContactsClient(BaseNextcloudClient):
                 continue
             # ``vcard_id`` keeps the historical ``.vcf``-stripped form for
             # backward compatibility with callers that use it as the contact id.
-            vcard_id = object_name.replace(".vcf", "")
+            # Must use the same trailing-suffix strip as ``_resolve_object_name``
+            # so the surface-then-resolve round-trip stays lossless (issue #874).
+            vcard_id = object_name.removesuffix(".vcf")
 
             # Get properties
             propstat = response_elem.find(".//d:propstat", ns)
