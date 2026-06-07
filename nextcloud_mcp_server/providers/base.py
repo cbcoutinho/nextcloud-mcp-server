@@ -75,6 +75,12 @@ class Provider(ABC):
         usage from their embedding response override this. Used by the
         usage-metering hooks (Deck #67) to bill ``embeddings_queries`` by
         tokens rather than by operation count.
+
+        IMPORTANT (recursion invariant): this default calls ``self.embed``. A
+        provider that overrides ``embed()`` to delegate to ``embed_with_usage()``
+        (to avoid duplicating request logic) MUST also override this method, or
+        the two will call each other forever. The shipped providers that use
+        that delegation (Bedrock) do override both — keep that pairing.
         """
         embedding = await self.embed(text)
         return embedding, self._estimate_tokens([text])
@@ -86,6 +92,11 @@ class Provider(ABC):
 
         Returns ``(embeddings, token_count)``; the default estimates. See
         :meth:`embed_with_usage`.
+
+        IMPORTANT (recursion invariant): this default calls ``self.embed_batch``.
+        A provider that overrides ``embed_batch()`` to delegate to
+        ``embed_batch_with_usage()`` (Mistral, OpenAI, Ollama do) MUST also
+        override this method, or the two recurse infinitely. Keep the pairing.
         """
         embeddings = await self.embed_batch(texts)
         return embeddings, self._estimate_tokens(texts)

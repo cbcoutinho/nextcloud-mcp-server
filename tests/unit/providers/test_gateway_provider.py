@@ -331,8 +331,9 @@ def test_trailing_slash_base_url_normalized():
 async def test_gateway_embed_with_usage_forwards_after_bearer(monkeypatch):
     """embed_with_usage refreshes the bearer, then returns the (embedding,
     token_count) from the inherited OpenAI implementation."""
+    # https mock host (never contacted — the OpenAI client is patched below).
     provider = GatewayProvider(
-        base_url="http://gw:8083/v1", embedding_model="mistral/mistral-embed"
+        base_url="https://gw:8083/v1", embedding_model="mistral/mistral-embed"
     )
 
     order: list[str] = []
@@ -364,8 +365,9 @@ async def test_gateway_embed_with_usage_forwards_after_bearer(monkeypatch):
 
 async def test_gateway_embed_batch_with_usage_forwards_after_bearer(monkeypatch):
     """embed_batch_with_usage also refreshes the bearer before delegating."""
+    # https mock host (never contacted — the OpenAI client is patched below).
     provider = GatewayProvider(
-        base_url="http://gw:8083/v1", embedding_model="mistral/mistral-embed"
+        base_url="https://gw:8083/v1", embedding_model="mistral/mistral-embed"
     )
     ensured = {"n": 0}
 

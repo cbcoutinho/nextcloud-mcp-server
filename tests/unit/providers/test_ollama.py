@@ -15,8 +15,9 @@ from nextcloud_mcp_server.providers.ollama import OllamaProvider
 @pytest.fixture
 def ollama_provider():
     # Construct with no models so __init__ skips _check_model_is_loaded (no
-    # network call), then enable embeddings post-construction.
-    provider = OllamaProvider(base_url="http://ollama:11434")
+    # network call), then enable embeddings post-construction. https mock host
+    # (never contacted — client.post is patched in each test).
+    provider = OllamaProvider(base_url="https://ollama:11434")
     provider.embedding_model = "nomic-embed-text"
     return provider
 
