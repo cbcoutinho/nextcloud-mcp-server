@@ -5,6 +5,21 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.108.0 (2026-06-07)
+
+### Feat
+
+- **usage**: record per-tenant usage events into the app DB
+
+### Refactor
+
+- **usage**: final round-6 nits on PR #871
+- **usage**: close out round-5 nits on PR #871
+- **usage**: address round-4 review on PR #871
+- **usage**: address round-3 review on PR #871
+- **usage**: address round-2 review on PR #871
+- **usage**: address round-1 review on PR #871
+
 ## v0.107.0 (2026-06-06)
 
 ### BREAKING CHANGE
