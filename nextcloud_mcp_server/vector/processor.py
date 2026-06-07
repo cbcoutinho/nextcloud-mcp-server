@@ -826,6 +826,12 @@ async def _index_document(
             # 'pages_chunks' event. Best-effort and gated on the flag so the
             # off-path (OSS default) touches no storage; placed after the
             # embedding succeeds so it can never affect the indexing path.
+            #
+            # Privacy note: user_id stays tenant-local — the CP rollup
+            # aggregates GROUP BY (day, metric) into usage_daily (no metadata
+            # column), so nothing here reaches Stripe; it is retained only to
+            # keep Deck #67's future per-user attribution derivable from the
+            # app DB without a re-migration.
             if settings.usage_metering_enabled:
                 try:
                     store = await UsageEventStore.shared()

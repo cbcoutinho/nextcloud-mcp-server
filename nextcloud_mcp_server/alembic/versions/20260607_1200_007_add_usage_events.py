@@ -44,7 +44,7 @@ def upgrade() -> None:
         # both backends (see usage/store.py).
         sa.Column(
             "event_id",
-            postgresql.UUID(as_uuid=False) if is_pg else sa.Text,
+            postgresql.UUID(as_uuid=False) if is_pg else sa.Text(),
             primary_key=True,
         ),
         # Operation completion time (UTC). Real TIMESTAMPTZ on Postgres so the
@@ -52,18 +52,18 @@ def upgrade() -> None:
         # TIMESTAMP on SQLite (stored as ISO text, queryable in tests).
         sa.Column(
             "occurred_at",
-            postgresql.TIMESTAMP(timezone=True) if is_pg else sa.TIMESTAMP,
+            postgresql.TIMESTAMP(timezone=True) if is_pg else sa.TIMESTAMP(),
             nullable=False,
         ),
         # Catalog metric: 'embeddings_queries' or 'pages_chunks'.
-        sa.Column("metric", sa.Text, nullable=False),
-        sa.Column("value", sa.BigInteger, nullable=False),
+        sa.Column("metric", sa.Text(), nullable=False),
+        sa.Column("value", sa.BigInteger(), nullable=False),
         # Rawest unit per request (provider, model, tokens, doc_type, ...).
         # JSONB on Postgres so the CP can slice on dimensions later; TEXT
         # (json.dumps) on SQLite.
         sa.Column(
             "metadata",
-            postgresql.JSONB() if is_pg else sa.Text,
+            postgresql.JSONB() if is_pg else sa.Text(),
             nullable=True,
         ),
     )

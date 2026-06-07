@@ -28,6 +28,19 @@ from nextcloud_mcp_server.usage.store import UsageEventStore
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _reset_shared_usage_store():
+    """Keep the process-wide ``shared()`` cache from leaking across tests.
+
+    These tests construct ``UsageEventStore(storage)`` directly, but a stray
+    ``shared()`` call (here or in a smoke test sharing the process) would
+    otherwise poison later tests with a stale storage handle.
+    """
+    UsageEventStore._shared_instance = None
+    yield
+    UsageEventStore._shared_instance = None
+
+
 @pytest.fixture
 async def storage(storage_backend):
     """Initialized RefreshTokenStorage backed by SQLite or Postgres."""
@@ -231,7 +244,9 @@ async def test_best_effort_swallows_db_errors(storage, monkeypatch, caplog):
     )
 
 
-async def test_best_effort_swallows_unserializable_metadata(storage, monkeypatch):
+async def test_best_effort_swallows_unserializable_metadata(
+    storage, monkeypatch, caplog
+):
     """Non-serializable metadata is swallowed, not raised into the caller.
 
     json.dumps runs inside the best-effort try, so a metadata value the JSON
@@ -245,9 +260,16 @@ async def test_best_effort_swallows_unserializable_metadata(storage, monkeypatch
     bad_metadata = {"obj": object()}
 
     # Must not raise.
-    await store.record_usage_event(
-        metric="pages_chunks", value=1, metadata=bad_metadata
-    )
+    with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.usage.store"):
+        await store.record_usage_event(
+            metric="pages_chunks", value=1, metadata=bad_metadata
+        )
 
     # Nothing was written — the encode failed before the insert.
     assert await _count(storage) == 0
+    # Silent data loss would be a footgun once metering is on: same WARNING
+    # contract as the DB-error path.
+    assert any(
+        r.levelno == logging.WARNING and "usage metering write dropped" in r.message
+        for r in caplog.records
+    )

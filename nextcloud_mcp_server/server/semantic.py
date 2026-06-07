@@ -523,6 +523,12 @@ def configure_semantic_tools(mcp: FastMCP):
             # cost). Best-effort and gated on the flag so the off-path touches
             # no storage. nc_semantic_search_answer reuses this tool, so it
             # records here too — do not add a second hook there.
+            #
+            # Privacy note: user_id stays tenant-local. The CP rollup
+            # aggregates GROUP BY (day, metric) into usage_daily, which has no
+            # metadata column, so nothing here propagates to Stripe; the value
+            # is retained only so Deck #67's "per-user attribution derivable
+            # from app-DB metadata later" stays possible without a re-migration.
             if settings.usage_metering_enabled:
                 try:
                     store = await UsageEventStore.shared()
