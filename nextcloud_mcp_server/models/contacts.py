@@ -34,6 +34,14 @@ class Contact(BaseModel):
     """Model for a Nextcloud contact."""
 
     uid: str = Field(description="Contact UID")
+    resource_path: Optional[str] = Field(
+        None,
+        description=(
+            "Full CardDAV path to the underlying object. The object filename is "
+            "independent of the UID and may lack a '.vcf' extension; this is the "
+            "authoritative path for the resource."
+        ),
+    )
     fn: str = Field(description="Full name (formatted name)")
     given_name: Optional[str] = Field(None, description="Given name")
     family_name: Optional[str] = Field(None, description="Family name")

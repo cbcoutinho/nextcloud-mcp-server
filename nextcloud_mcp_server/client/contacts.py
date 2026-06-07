@@ -217,6 +217,63 @@ class ContactsClient(BaseNextcloudClient):
         """Helper to get the base CardDAV path for contacts."""
         return f"/remote.php/dav/addressbooks/users/{self.username}"
 
+    async def _list_object_names(self, addressbook: str) -> list[str]:
+        """Return the CardDAV object filenames stored in ``addressbook``.
+
+        A lightweight ``PROPFIND`` (Depth: 1, ``getetag`` only) over the
+        collection. The DAV object filename is independent of the vCard's
+        internal ``UID`` and is *not* guaranteed to be ``<uid>.vcf`` — see
+        issue #874 — so callers that need to address a specific object must
+        discover its real name rather than constructing one.
+        """
+        carddav_path = self._get_carddav_base_path()
+        propfind_body = """<?xml version="1.0" encoding="utf-8"?>
+        <d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>"""
+        headers = {
+            "Depth": "1",
+            "Content-Type": "application/xml",
+            "Accept": "application/xml",
+        }
+        response = await self._make_request(
+            "PROPFIND",
+            f"{carddav_path}/{addressbook}",
+            content=propfind_body,
+            headers=headers,
+        )
+
+        ns = {"d": "DAV:"}
+        root = ET.fromstring(response.content)
+        names: list[str] = []
+        for response_elem in root.findall(".//d:response", ns):
+            href = response_elem.find(".//d:href", ns)
+            if href is None or not href.text:
+                continue
+            # The collection itself is reported with a trailing slash; skip it
+            # so only contact objects remain.
+            if href.text.endswith("/"):
+                continue
+            names.append(href.text.rstrip("/").split("/")[-1])
+        return names
+
+    async def _resolve_object_name(self, addressbook: str, uid: str) -> str | None:
+        """Map a surfaced contact id back to its real CardDAV object filename.
+
+        ``list_contacts`` surfaces ``vcard_id`` with any ``.vcf`` suffix
+        stripped, so reverse that transform here: return the object whose
+        filename reduces to ``uid``. The conventional ``<uid>.vcf`` is
+        preferred when present (deterministic for the common case), otherwise
+        the first matching name is returned. ``None`` when no object matches.
+        """
+        candidates = [
+            name
+            for name in await self._list_object_names(addressbook)
+            if name.replace(".vcf", "") == uid
+        ]
+        if not candidates:
+            return None
+        conventional = f"{uid}.vcf"
+        return conventional if conventional in candidates else candidates[0]
+
     async def list_addressbooks(self):
         """List all available addressbooks for the user."""
 
@@ -338,9 +395,17 @@ class ContactsClient(BaseNextcloudClient):
         await self._make_request("PUT", url, content=vcard, headers=headers)
 
     async def delete_contact(self, *, addressbook: str, uid: str):
-        """Delete a contact."""
+        """Delete a contact regardless of its CardDAV object filename.
+
+        The object filename is independent of the vCard ``UID`` and may lack a
+        ``.vcf`` extension (e.g. the stock ``default`` sample contact), so the
+        real object name is resolved before deleting rather than assuming
+        ``<uid>.vcf`` (issue #874). Falls back to the conventional name when no
+        object matches so a genuinely missing contact still surfaces a 404.
+        """
         carddav_path = self._get_carddav_base_path()
-        url = f"{carddav_path}/{addressbook}/{uid}.vcf"
+        object_name = await self._resolve_object_name(addressbook, uid) or f"{uid}.vcf"
+        url = f"{carddav_path}/{addressbook}/{object_name}"
         await self._make_request("DELETE", url)
 
     async def update_contact(
@@ -353,7 +418,10 @@ class ContactsClient(BaseNextcloudClient):
     ):
         """Update an existing contact while preserving all existing properties."""
         carddav_path = self._get_carddav_base_path()
-        url = f"{carddav_path}/{addressbook}/{uid}.vcf"
+        # Resolve the real object filename (may differ from ``<uid>.vcf``) so the
+        # GET and the PUT target the same resource — see issue #874.
+        object_name = await self._resolve_object_name(addressbook, uid) or f"{uid}.vcf"
+        url = f"{carddav_path}/{addressbook}/{object_name}"
 
         # Canonicalise aliases up front so both code paths (merge + fallback) agree.
         contact_data = _normalize_contact_data(contact_data)
@@ -362,8 +430,8 @@ class ContactsClient(BaseNextcloudClient):
         raw_vcard_content = ""
         if not etag:
             try:
-                raw_vcard_content, current_etag = await self._get_raw_vcard(
-                    addressbook, uid
+                raw_vcard_content, current_etag = await self._fetch_raw_vcard(
+                    addressbook, object_name
                 )
                 etag = current_etag
             except Exception:
@@ -433,12 +501,18 @@ class ContactsClient(BaseNextcloudClient):
             # logger.info("# Skip non-addressbook resources")
             # continue
 
-            # Extract vcard id from href
-            vcard_id = href_text.rstrip("/").split("/")[-1]
-            if not vcard_id:
+            # The real CardDAV object: its full DAV path and bare filename. The
+            # filename is independent of the vCard UID and may lack a ``.vcf``
+            # extension, so preserve it verbatim for callers that need to
+            # address the object reliably (issue #874).
+            object_path = href_text
+            object_name = href_text.rstrip("/").split("/")[-1]
+            if not object_name:
                 logger.info("Skip missing vcard_id")
                 continue
-            vcard_id = vcard_id.replace(".vcf", "")
+            # ``vcard_id`` keeps the historical ``.vcf``-stripped form for
+            # backward compatibility with callers that use it as the contact id.
+            vcard_id = object_name.replace(".vcf", "")
 
             # Get properties
             propstat = response_elem.find(".//d:propstat", ns)
@@ -477,6 +551,8 @@ class ContactsClient(BaseNextcloudClient):
             contacts.append(
                 {
                     "vcard_id": vcard_id,
+                    "object_path": object_path,
+                    "object_name": object_name,
                     "getetag": getetag,
                     "contact": {
                         "fullname": contact.fn,
@@ -501,16 +577,27 @@ class ContactsClient(BaseNextcloudClient):
         return contacts
 
     async def _get_raw_vcard(self, addressbook: str, uid: str) -> tuple[str, str]:
-        """Get raw vCard content for a contact without parsing."""
+        """Get raw vCard content for a contact without parsing.
+
+        Resolves the real object filename first (it may not be ``<uid>.vcf`` —
+        issue #874) before fetching.
+        """
+        object_name = await self._resolve_object_name(addressbook, uid) or f"{uid}.vcf"
+        return await self._fetch_raw_vcard(addressbook, object_name)
+
+    async def _fetch_raw_vcard(
+        self, addressbook: str, object_name: str
+    ) -> tuple[str, str]:
+        """Fetch raw vCard content + etag for an already-resolved object name."""
         carddav_path = self._get_carddav_base_path()
-        url = f"{carddav_path}/{addressbook}/{uid}.vcf"
+        url = f"{carddav_path}/{addressbook}/{object_name}"
 
         try:
             response = await self._make_request("GET", url)
             etag = response.headers.get("etag", "")
             return response.text, etag
         except Exception as e:
-            logger.error("Error getting raw vCard for %s: %s", uid, e)
+            logger.error("Error getting raw vCard for %s: %s", object_name, e)
             raise
 
     def _merge_vcard_properties(

@@ -102,6 +102,7 @@ def _raw_contact_to_model(raw: dict) -> Contact:
 
     return Contact(
         uid=raw["vcard_id"],
+        resource_path=raw.get("object_path"),
         fn=contact_info.get("fullname", ""),
         etag=raw.get("getetag"),
         organization=contact_info.get("org"),
