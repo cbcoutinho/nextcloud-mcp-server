@@ -537,9 +537,10 @@ def configure_semantic_tools(mcp: FastMCP):
             #
             # query_token_count is set by BM25HybridSearchAlgorithm during the
             # search() above. The doc_types loop reuses one search_algo instance
-            # for the same query string, so the final value is the single query
-            # embedding's cost (matches the prior one-query semantics). Falls
-            # back to 0 only if the embedding never ran (e.g. a pre-embed error).
+            # for the same query, and the algorithm caches the dense embedding
+            # per query, so the query is embedded — and metered — exactly once
+            # regardless of how many doc_types were searched. Falls back to 0
+            # only if the embedding never ran (e.g. a pre-embed error).
             #
             # Privacy note: user_id stays tenant-local. The CP rollup
             # aggregates GROUP BY (day, metric) into usage_daily, which has no

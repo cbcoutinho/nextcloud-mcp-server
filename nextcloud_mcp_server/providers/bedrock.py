@@ -194,7 +194,7 @@ class BedrockProvider(Provider):
 
             token_count = response_body.get("inputTextTokenCount")
             tokens = (
-                int(token_count)
+                round(token_count)
                 if isinstance(token_count, (int, float))
                 else self._estimate_tokens([text])
             )

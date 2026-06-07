@@ -209,7 +209,7 @@ class MistralProvider(Provider):
         # gives an int, but test doubles / partial responses can surface a
         # non-numeric attribute — fall back to the estimate there.
         tokens = (
-            int(total_tokens)
+            round(total_tokens)
             if isinstance(total_tokens, (int, float))
             else self._estimate_tokens(batch)
         )

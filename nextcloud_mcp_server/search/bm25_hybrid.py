@@ -56,6 +56,10 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         self.score_threshold = score_threshold
         self.fusion = models.Fusion.RRF if fusion == "rrf" else models.Fusion.DBSF
         self.fusion_name = fusion
+        # The query string whose dense embedding is cached in
+        # ``self.query_embedding`` — lets repeated search() calls on this
+        # per-request instance (the doc_types loop) reuse one embedding.
+        self._embedded_query: str | None = None
 
     @property
     def name(self) -> str:
@@ -128,17 +132,28 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             self.fusion_name,
         )
 
-        # Generate dense embedding for semantic search
+        # Generate dense embedding for semantic search. Cache it per query on
+        # this (per-request) instance: nc_semantic_search calls search() once
+        # per doc_type with the same query, so re-embedding each time would make
+        # N redundant API calls and bill the query's tokens N times (Deck #67).
+        # Reuse the first call's embedding + token count so the query is embedded
+        # — and metered — exactly once.
         with trace_operation("search.get_embedding_service"):
             embedding_service = get_embedding_service()
         with trace_operation("search.dense_embedding"):
-            dense_embedding, query_tokens = await embedding_service.embed_with_usage(
-                query
-            )
-        # Store for reuse by callers (e.g., viz_routes PCA visualization) and
-        # for the usage-metering hook in server/semantic.py (token count).
-        self.query_embedding = dense_embedding
-        self.query_token_count = query_tokens
+            if self.query_embedding is not None and self._embedded_query == query:
+                dense_embedding = self.query_embedding
+            else:
+                (
+                    dense_embedding,
+                    query_tokens,
+                ) = await embedding_service.embed_with_usage(query)
+                # Store for reuse by callers (e.g., viz_routes PCA
+                # visualization) and for the usage-metering hook in
+                # server/semantic.py (token count).
+                self.query_embedding = dense_embedding
+                self.query_token_count = query_tokens
+                self._embedded_query = query
         logger.debug("Generated dense embedding (dimension=%s)", len(dense_embedding))
 
         # Generate sparse embedding for BM25 keyword search

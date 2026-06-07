@@ -82,17 +82,12 @@ class OllamaProvider(Provider):
         Raises:
             NotImplementedError: If embeddings not enabled (no embedding_model)
         """
-        if not self.supports_embeddings:
-            raise NotImplementedError(
-                "Embedding not supported - no embedding_model configured"
-            )
-
-        response = await self.client.post(
-            f"{self.base_url}/api/embeddings",
-            json={"model": self.embedding_model, "prompt": text},
-        )
-        response.raise_for_status()
-        return response.json()["embedding"]
+        # Delegate to embed_with_usage so single and batch embeds use the same
+        # /api/embed endpoint (the legacy /api/embeddings differs in payload and
+        # omits prompt_eval_count). _detect_dimension() and other embed() callers
+        # therefore stay consistent with the search/indexing path.
+        embedding, _ = await self.embed_with_usage(text)
+        return embedding
 
     async def embed_batch(
         self, texts: list[str], batch_size: int = 32
@@ -166,7 +161,7 @@ class OllamaProvider(Provider):
 
             prompt_eval = data.get("prompt_eval_count")
             total_tokens += (
-                int(prompt_eval)
+                round(prompt_eval)
                 if isinstance(prompt_eval, (int, float))
                 else self._estimate_tokens(batch)
             )
