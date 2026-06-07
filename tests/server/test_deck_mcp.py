@@ -520,24 +520,32 @@ async def test_deck_get_stacks_and_overview_include_archived_mcp(
     stack_id = stack_data["id"]
     archived_id = await _create_and_archive_card(nc_mcp_client, board_id, stack_id)
 
-    # deck_get_stacks(status="all")
-    stacks_result = await nc_mcp_client.call_tool(
-        "deck_get_stacks", {"board_id": board_id, "status": "all"}
-    )
-    assert stacks_result.isError is False, "deck_get_stacks(all) failed"
-    stacks_payload = json.loads(stacks_result.content[0].text)
-    stack = next(s for s in stacks_payload["stacks"] if s["id"] == stack_id)
-    stack_card_ids = [c["id"] for c in (stack.get("cards") or [])]
-    assert card_data["id"] in stack_card_ids
-    assert archived_id in stack_card_ids, "archived card missing from deck_get_stacks"
+    async def stacks_card_ids(status: str) -> list[int]:
+        result = await nc_mcp_client.call_tool(
+            "deck_get_stacks", {"board_id": board_id, "status": status}
+        )
+        assert result.isError is False, f"deck_get_stacks({status}) failed"
+        payload = json.loads(result.content[0].text)
+        stack = next(s for s in payload["stacks"] if s["id"] == stack_id)
+        return [c["id"] for c in (stack.get("cards") or [])]
 
-    # deck_get_board_overview(status="all")
-    overview_result = await nc_mcp_client.call_tool(
-        "deck_get_board_overview", {"board_id": board_id, "status": "all"}
-    )
-    assert overview_result.isError is False, "board overview failed"
-    overview_payload = json.loads(overview_result.content[0].text)
-    ov_stack = next(s for s in overview_payload["stacks"] if s["id"] == stack_id)
-    ov_card_ids = [c["id"] for c in ov_stack["cards"]]
-    assert archived_id in ov_card_ids, "archived card missing from board overview"
-    assert ov_stack["card_count"] == len(ov_stack["cards"])
+    async def overview_card_ids(status: str) -> list[int]:
+        result = await nc_mcp_client.call_tool(
+            "deck_get_board_overview", {"board_id": board_id, "status": status}
+        )
+        assert result.isError is False, f"board overview({status}) failed"
+        payload = json.loads(result.content[0].text)
+        stack = next(s for s in payload["stacks"] if s["id"] == stack_id)
+        assert stack["card_count"] == len(stack["cards"])
+        return [c["id"] for c in stack["cards"]]
+
+    # status="all": both the open and archived card present.
+    stacks_all = await stacks_card_ids("all")
+    assert card_data["id"] in stacks_all
+    assert archived_id in stacks_all, "archived card missing from deck_get_stacks(all)"
+    overview_all = await overview_card_ids("all")
+    assert archived_id in overview_all, "archived card missing from board overview(all)"
+
+    # status="archived": only the archived card, open card excluded.
+    assert await stacks_card_ids("archived") == [archived_id]
+    assert await overview_card_ids("archived") == [archived_id]

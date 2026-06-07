@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.deck import (
     AttachFileResponse,
@@ -222,7 +223,9 @@ def _apply_stack_filters(
 _ARCHIVED_STATUSES: frozenset[str] = frozenset({"all", "archived"})
 
 
-async def _archived_cards_by_stack(client, board_id: int) -> dict[int, list[DeckCard]]:
+async def _archived_cards_by_stack(
+    client: NextcloudClient, board_id: int
+) -> dict[int, list[DeckCard]]:
     """Map stack_id -> archived DeckCards for a board.
 
     The active stack/card listing endpoints filter out archived cards in SQL;
@@ -608,10 +611,37 @@ def configure_deck_tools(mcp: FastMCP):
             description_preview_length, "description_preview_length"
         )
         client = await get_client(ctx)
-        stack = await client.deck.get_stack(board_id, stack_id)
-        # Merge archived cards (omitted by the active endpoint) when in scope.
-        if include_cards and status in _ARCHIVED_STATUSES:
-            archived_by_stack = await _archived_cards_by_stack(client, board_id)
+        if status == "archived" and include_cards:
+            # Archived-only: the /stacks/archived endpoint already returns the
+            # stack (metadata + archived cards) in one call, so skip the active
+            # fetch whose open cards would all be filtered out anyway.
+            archived = await client.deck.get_archived_stacks(board_id)
+            stack = next((s for s in archived if s.id == stack_id), None)
+            if stack is None:
+                # findAllArchived returns every stack, so this is defensive;
+                # fall back to the active endpoint for the stack metadata.
+                stack = await client.deck.get_stack(board_id, stack_id)
+        else:
+            # Active stack always needed (for metadata + open cards); fetch the
+            # archived cards concurrently when status="all" needs both sets.
+            stack_holder: list[DeckStack] = []
+            archived_by_stack: dict[int, list[DeckCard]] = {}
+            merge_archived = include_cards and status == "all"
+
+            async def _get_active() -> None:
+                stack_holder.append(await client.deck.get_stack(board_id, stack_id))
+
+            async def _get_archived() -> None:
+                archived_by_stack.update(
+                    await _archived_cards_by_stack(client, board_id)
+                )
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(_get_active)
+                if merge_archived:
+                    tg.start_soon(_get_archived)
+
+            stack = stack_holder[0]
             extra = archived_by_stack.get(stack_id)
             if extra:
                 _append_archived_cards(stack, extra)
