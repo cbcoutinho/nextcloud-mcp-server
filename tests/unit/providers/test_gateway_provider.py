@@ -393,6 +393,37 @@ async def test_gateway_embed_batch_with_usage_forwards_after_bearer(monkeypatch)
     assert ensured["n"] == 1
 
 
+async def test_gateway_embed_batch_ensures_bearer_once(monkeypatch):
+    """embed_batch() has no override: it routes through the inherited OpenAI
+    embed_batch() → embed_batch_with_usage() (overridden), so the bearer is
+    refreshed exactly once — not twice."""
+    # https mock host (never contacted — the OpenAI client is patched below).
+    provider = GatewayProvider(
+        base_url="https://gw:8083/v1", embedding_model="mistral/mistral-embed"
+    )
+    ensured = {"n": 0}
+
+    async def _ensure_bearer():
+        ensured["n"] += 1
+
+    monkeypatch.setattr(provider, "_ensure_bearer", _ensure_bearer)
+
+    item = MagicMock()
+    item.embedding = [0.1, 0.2]
+    item.index = 0
+    response = MagicMock()
+    response.data = [item]
+    response.usage = MagicMock(total_tokens=4)
+    monkeypatch.setattr(
+        provider.client.embeddings, "create", AsyncMock(return_value=response)
+    )
+
+    embeddings = await provider.embed_batch(["x"])
+
+    assert embeddings == [[0.1, 0.2]]
+    assert ensured["n"] == 1  # not 2 — embed_batch() must not double-refresh
+
+
 async def test_detect_dimension_with_bare_base_url_hits_v1_models(monkeypatch):
     """End-to-end of the fix: a bare-origin base_url still resolves the
     dimension because discovery lands on /v1/models."""
