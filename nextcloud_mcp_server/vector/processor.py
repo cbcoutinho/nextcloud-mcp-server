@@ -29,6 +29,7 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.search.pdf_highlighter import PDFHighlighter
+from nextcloud_mcp_server.usage import UsageEventStore
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.document_chunker import (
     DocumentChunker,
@@ -821,6 +822,42 @@ async def _index_document(
                 chunks=len(chunk_texts),
                 chars=total_chars,
             )
+            # Usage metering (Deck #67): record chunks embedded as a billable
+            # 'pages_chunks' event. Best-effort and gated on the flag so the
+            # off-path (OSS default) touches no storage; placed after the
+            # embedding succeeds so it can never affect the indexing path.
+            #
+            # Privacy note: user_id stays tenant-local — the CP rollup
+            # aggregates GROUP BY (day, metric) into usage_daily (no metadata
+            # column), so nothing here reaches Stripe; it is retained only to
+            # keep Deck #67's future per-user attribution derivable from the
+            # app DB without a re-migration.
+            if settings.usage_metering_enabled:
+                try:
+                    store = await UsageEventStore.shared()
+                    await store.record_usage_event(
+                        metric="pages_chunks",
+                        value=len(chunk_texts),
+                        metadata={
+                            "provider": provider,
+                            "model": settings.get_embedding_model_name(),
+                            "doc_type": doc_task.doc_type,
+                            "user_id": doc_task.user_id,
+                            "total_chars": total_chars,
+                        },
+                        # The outer guard already confirmed the flag, so pass
+                        # enabled=True directly — the store then skips a second
+                        # uncached Settings build here (ADR-024).
+                        enabled=True,
+                    )
+                except Exception:
+                    # Reached only when shared()/store construction itself
+                    # raises (record_usage_event swallows its own write
+                    # failures). Metering is on, so warn rather than hide the
+                    # "enabled but no billing data" case in DEBUG logs.
+                    logger.warning(
+                        "usage metering hook (pages_chunks) skipped", exc_info=True
+                    )
 
     async def generate_sparse_embeddings():
         """Generate sparse embeddings (BM25 for keyword matching)."""

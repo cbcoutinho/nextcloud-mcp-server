@@ -39,11 +39,21 @@ from nextcloud_mcp_server.search.access_filter import (
 from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
 from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.verification import verify_search_results
+from nextcloud_mcp_server.usage import UsageEventStore
 from nextcloud_mcp_server.utils.validation import parse_modified_timestamp
 from nextcloud_mcp_server.vector.metrics_publisher import count_indexed
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
+
+# Cap how many doc_types we copy into a usage-metering metadata row. doc_types
+# is caller-supplied and (unlike path_prefixes) has no max_length on the tool
+# signature, so an adversarial caller could pass a huge list. The CP rollup
+# ignores metadata for billing (GROUP BY day, metric) and the value is bound
+# parameterized, so this is not a billing/injection risk — the cap just keeps
+# a single JSONB row from ballooning. 16 is generous headroom over the handful
+# of real indexed doc types.
+_USAGE_METADATA_MAX_DOC_TYPES = 16
 
 
 def configure_semantic_tools(mcp: FastMCP):
@@ -516,6 +526,52 @@ def configure_semantic_tools(mcp: FastMCP):
                 )
 
             logger.info("Returning %d results from BM25 hybrid search", len(results))
+
+            # Usage metering (Deck #67): one billable 'embeddings_queries'
+            # event per successful search (the query embedding is the metered
+            # cost). Best-effort and gated on the flag so the off-path touches
+            # no storage. nc_semantic_search_answer reuses this tool, so it
+            # records here too — do not add a second hook there.
+            #
+            # Privacy note: user_id stays tenant-local. The CP rollup
+            # aggregates GROUP BY (day, metric) into usage_daily, which has no
+            # metadata column, so nothing here propagates to Stripe; the value
+            # is retained only so Deck #67's "per-user attribution derivable
+            # from app-DB metadata later" stays possible without a re-migration.
+            if settings.usage_metering_enabled:
+                try:
+                    store = await UsageEventStore.shared()
+                    await store.record_usage_event(
+                        metric="embeddings_queries",
+                        value=1,
+                        metadata={
+                            "user_id": username,
+                            "fusion": fusion,
+                            # Bounded copy — see _USAGE_METADATA_MAX_DOC_TYPES.
+                            # Both None and [] normalize to null so a future
+                            # metadata->'doc_types' IS NULL query counts the
+                            # all-types case consistently.
+                            "doc_types": (
+                                doc_types[:_USAGE_METADATA_MAX_DOC_TYPES]
+                                if doc_types
+                                else None
+                            ),
+                        },
+                        # The outer guard already confirmed the flag, so pass
+                        # enabled=True directly — the store then skips a second
+                        # uncached Settings build on this hot query path
+                        # (ADR-024).
+                        enabled=True,
+                    )
+                except Exception:
+                    # Reached only when shared()/store construction itself
+                    # raises (record_usage_event swallows its own write
+                    # failures). Metering is on, so warn — a silent DEBUG line
+                    # would hide "operator enabled metering but gets no data".
+                    logger.warning(
+                        "usage metering hook (embeddings_queries) skipped",
+                        exc_info=True,
+                    )
 
             return SemanticSearchResponse(
                 results=results,

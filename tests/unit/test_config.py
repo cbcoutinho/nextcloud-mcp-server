@@ -157,6 +157,18 @@ class TestGetSettings:
         assert settings.vector_sync_processor_workers == 5
         assert settings.vector_sync_queue_max_size == 5000
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_usage_metering_disabled_by_default(self):
+        """USAGE_METERING_ENABLED defaults to False (OSS doesn't self-monitor)."""
+        _reload_config()
+        assert get_settings().usage_metering_enabled is False
+
+    @patch.dict(os.environ, {"USAGE_METERING_ENABLED": "true"}, clear=True)
+    def test_usage_metering_enabled_via_env(self):
+        """USAGE_METERING_ENABLED=true maps to settings.usage_metering_enabled."""
+        _reload_config()
+        assert get_settings().usage_metering_enabled is True
+
 
 class TestChunkConfigValidation:
     """Test document chunking configuration validation."""
