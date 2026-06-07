@@ -242,7 +242,8 @@ def _append_archived_cards(stack: DeckStack, extra: list[DeckCard]) -> None:
     """Append archived cards onto a stack's existing card list, in place.
 
     Kept separate so the assignment stays correctly typed against
-    ``DeckStack.cards`` (``list[DeckCard | DeckCardSummary] | None``)."""
+    ``DeckStack.cards`` (``list[DeckCard | DeckCardSummary] | None``).
+    """
     merged: list[DeckCard | DeckCardSummary] = list(stack.cards or [])
     merged.extend(extra)
     stack.cards = merged

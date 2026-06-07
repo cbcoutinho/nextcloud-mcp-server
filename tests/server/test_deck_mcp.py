@@ -505,7 +505,9 @@ async def test_deck_get_stack_status_includes_archived_mcp(
         payload = json.loads(result.content[0].text)
         return [c["id"] for c in (payload.get("cards") or [])]
 
-    assert archived_id not in await stack_card_ids("open")
+    open_ids = await stack_card_ids("open")
+    assert card_data["id"] in open_ids, "open card must stay visible under 'open'"
+    assert archived_id not in open_ids
     assert archived_id in await stack_card_ids("all")
     assert await stack_card_ids("archived") == [archived_id]
 
