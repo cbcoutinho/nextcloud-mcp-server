@@ -223,6 +223,20 @@ docker compose up --build -d mcp-login-flow  # Login Flow v2 (port 8004)
 docker compose up --build -d mcp-keycloak  # Keycloak OAuth (port 8002)
 ```
 
+### Astrolabe submodule mount (do NOT mount by default)
+
+The `third_party/astrolabe` submodule mount in `docker-compose.yml`
+(`./third_party/astrolabe:/opt/apps/astrolabe:ro`) is **commented out by
+default and should stay that way**. With it unmounted, the stack installs the
+most recently **published** Astrolabe version from the Nextcloud app store —
+which is the correct baseline for almost all work, including CI.
+
+Only uncomment the mount when developing features that are **tightly coupled**
+to unreleased Astrolabe changes and need the local submodule build integration-
+tested in CI. Re-comment it before the change is considered done — a left-on
+mount silently pins CI to the local checkout instead of the published app, and
+breaks for anyone without the submodule built. (See PR #872.)
+
 ### Environment Setup
 ```bash
 uv sync                # Install dependencies

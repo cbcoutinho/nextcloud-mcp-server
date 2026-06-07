@@ -421,3 +421,133 @@ async def test_deck_get_board_overview_mcp(
     assert stack["card_count"] == len(stack["cards"])
     card_ids = [c["id"] for c in stack["cards"]]
     assert card_data["id"] in card_ids
+
+
+# Archived-card visibility in the active list tools (issue #842)
+
+
+async def _create_and_archive_card(
+    nc_mcp_client: ClientSession, board_id: int, stack_id: int
+) -> int:
+    """Create a card in the given stack, archive it, and return its id.
+
+    The card is cleaned up when the temporary stack is deleted by the
+    fixture teardown (deleting a stack removes its cards)."""
+    create_result = await nc_mcp_client.call_tool(
+        "deck_create_card",
+        {
+            "board_id": board_id,
+            "stack_id": stack_id,
+            "title": f"Archived Card {uuid.uuid4().hex[:8]}",
+        },
+    )
+    assert create_result.isError is False, f"create failed: {create_result.content}"
+    archived_id = json.loads(create_result.content[0].text)["id"]
+
+    archive_result = await nc_mcp_client.call_tool(
+        "deck_archive_card",
+        {"board_id": board_id, "stack_id": stack_id, "card_id": archived_id},
+    )
+    assert archive_result.isError is False, f"archive failed: {archive_result.content}"
+    return archived_id
+
+
+async def test_deck_get_cards_status_includes_archived_mcp(
+    nc_mcp_client: ClientSession, temporary_board_with_card: tuple
+):
+    """deck_get_cards: archived cards appear under status="all"/"archived" and
+    are excluded under the default "open" — the regression behind issue #842."""
+    board_data, stack_data, card_data = temporary_board_with_card
+    board_id = board_data["id"]
+    stack_id = stack_data["id"]
+    open_id = card_data["id"]
+    archived_id = await _create_and_archive_card(nc_mcp_client, board_id, stack_id)
+
+    async def card_ids(status: str) -> list[int]:
+        result = await nc_mcp_client.call_tool(
+            "deck_get_cards",
+            {"board_id": board_id, "stack_id": stack_id, "status": status},
+        )
+        assert result.isError is False, f"deck_get_cards({status}) failed"
+        return [c["id"] for c in json.loads(result.content[0].text)["cards"]]
+
+    open_ids = await card_ids("open")
+    assert open_id in open_ids
+    assert archived_id not in open_ids, "archived card must not show under 'open'"
+
+    all_ids = await card_ids("all")
+    assert open_id in all_ids and archived_id in all_ids, (
+        "status='all' must include both open and archived cards"
+    )
+
+    archived_only = await card_ids("archived")
+    assert archived_only == [archived_id], (
+        f"status='archived' should return only the archived card, got {archived_only}"
+    )
+
+
+async def test_deck_get_stack_status_includes_archived_mcp(
+    nc_mcp_client: ClientSession, temporary_board_with_card: tuple
+):
+    """deck_get_stack (single stack) honours archived cards for status
+    "all"/"archived" too, mirroring deck_get_cards (issue #842)."""
+    board_data, stack_data, card_data = temporary_board_with_card
+    board_id = board_data["id"]
+    stack_id = stack_data["id"]
+    archived_id = await _create_and_archive_card(nc_mcp_client, board_id, stack_id)
+
+    async def stack_card_ids(status: str) -> list[int]:
+        result = await nc_mcp_client.call_tool(
+            "deck_get_stack",
+            {"board_id": board_id, "stack_id": stack_id, "status": status},
+        )
+        assert result.isError is False, f"deck_get_stack({status}) failed"
+        payload = json.loads(result.content[0].text)
+        return [c["id"] for c in (payload.get("cards") or [])]
+
+    open_ids = await stack_card_ids("open")
+    assert card_data["id"] in open_ids, "open card must stay visible under 'open'"
+    assert archived_id not in open_ids
+    assert archived_id in await stack_card_ids("all")
+    assert await stack_card_ids("archived") == [archived_id]
+
+
+async def test_deck_get_stacks_and_overview_include_archived_mcp(
+    nc_mcp_client: ClientSession, temporary_board_with_card: tuple
+):
+    """deck_get_stacks and deck_get_board_overview surface archived cards when
+    status="all" (issue #842), keyed onto the correct stack."""
+    board_data, stack_data, card_data = temporary_board_with_card
+    board_id = board_data["id"]
+    stack_id = stack_data["id"]
+    archived_id = await _create_and_archive_card(nc_mcp_client, board_id, stack_id)
+
+    async def stacks_card_ids(status: str) -> list[int]:
+        result = await nc_mcp_client.call_tool(
+            "deck_get_stacks", {"board_id": board_id, "status": status}
+        )
+        assert result.isError is False, f"deck_get_stacks({status}) failed"
+        payload = json.loads(result.content[0].text)
+        stack = next(s for s in payload["stacks"] if s["id"] == stack_id)
+        return [c["id"] for c in (stack.get("cards") or [])]
+
+    async def overview_card_ids(status: str) -> list[int]:
+        result = await nc_mcp_client.call_tool(
+            "deck_get_board_overview", {"board_id": board_id, "status": status}
+        )
+        assert result.isError is False, f"board overview({status}) failed"
+        payload = json.loads(result.content[0].text)
+        stack = next(s for s in payload["stacks"] if s["id"] == stack_id)
+        assert stack["card_count"] == len(stack["cards"])
+        return [c["id"] for c in stack["cards"]]
+
+    # status="all": both the open and archived card present.
+    stacks_all = await stacks_card_ids("all")
+    assert card_data["id"] in stacks_all
+    assert archived_id in stacks_all, "archived card missing from deck_get_stacks(all)"
+    overview_all = await overview_card_ids("all")
+    assert archived_id in overview_all, "archived card missing from board overview(all)"
+
+    # status="archived": only the archived card, open card excluded.
+    assert await stacks_card_ids("archived") == [archived_id]
+    assert await overview_card_ids("archived") == [archived_id]

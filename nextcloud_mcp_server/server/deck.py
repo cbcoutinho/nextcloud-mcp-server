@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.deck import (
     AttachFileResponse,
@@ -213,6 +214,39 @@ def _apply_stack_filters(
             description_preview_length=description_preview_length,
         )
     return stack
+
+
+# Statuses whose result set can contain archived cards. The active Deck
+# listing endpoints (get_stacks/get_stack) exclude archived cards at the SQL
+# level — only the /stacks/archived endpoint returns them — so these statuses
+# need a second fetch and merge. See issue #842.
+_ARCHIVED_STATUSES: frozenset[str] = frozenset({"all", "archived"})
+
+
+async def _archived_cards_by_stack(
+    client: NextcloudClient, board_id: int
+) -> dict[int, list[DeckCard]]:
+    """Map stack_id -> archived DeckCards for a board.
+
+    The active stack/card listing endpoints filter out archived cards in SQL;
+    this hits ``/stacks/archived`` (the only endpoint that returns them) and
+    keys the cards by their stack so the list tools can merge them back in.
+    """
+    archived_stacks = await client.deck.get_archived_stacks(board_id)
+    return {
+        stack.id: cast(list[DeckCard], stack.cards or []) for stack in archived_stacks
+    }
+
+
+def _append_archived_cards(stack: DeckStack, extra: list[DeckCard]) -> None:
+    """Append archived cards onto a stack's existing card list, in place.
+
+    Kept separate so the assignment stays correctly typed against
+    ``DeckStack.cards`` (``list[DeckCard | DeckCardSummary] | None``).
+    """
+    merged: list[DeckCard | DeckCardSummary] = list(stack.cards or [])
+    merged.extend(extra)
+    stack.cards = merged
 
 
 def _truncate_comment_message(message: str, message_max_length: int | None) -> str:
@@ -480,6 +514,8 @@ def configure_deck_tools(mcp: FastMCP):
             status: Which cards to include — "open" (default), "done",
                 "archived", or "all". The first three partition the board
                 (a card that is both done and archived counts as "archived").
+                "archived"/"all" include archived cards, which the active
+                listing endpoint omits — this costs one extra API call.
             label: If set, only cards carrying a label with this exact title.
             assigned_to: If set, only cards assigned to this user UID.
             description_max_length: In detail="full", truncate each card's
@@ -492,7 +528,33 @@ def configure_deck_tools(mcp: FastMCP):
             description_preview_length, "description_preview_length"
         )
         client = await get_client(ctx)
-        stacks = await client.deck.get_stacks(board_id)
+
+        # Fetch active stacks and (when archived cards are in scope) the
+        # archived endpoint concurrently, then merge archived cards onto each
+        # stack by id before filtering. The active endpoint omits archived
+        # cards, so without this merge status="archived"/"all" would drop them.
+        stacks_holder: list[list[DeckStack]] = []
+        archived_by_stack: dict[int, list[DeckCard]] = {}
+        merge_archived = include_cards and status in _ARCHIVED_STATUSES
+
+        async def _get_active() -> None:
+            stacks_holder.append(await client.deck.get_stacks(board_id))
+
+        async def _get_archived() -> None:
+            archived_by_stack.update(await _archived_cards_by_stack(client, board_id))
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_get_active)
+            if merge_archived:
+                tg.start_soon(_get_archived)
+
+        stacks = stacks_holder[0]
+        if merge_archived:
+            for stack in stacks:
+                extra = archived_by_stack.get(stack.id)
+                if extra:
+                    _append_archived_cards(stack, extra)
+
         stacks = [
             _apply_stack_filters(
                 stack,
@@ -538,6 +600,8 @@ def configure_deck_tools(mcp: FastMCP):
             detail: "summary" (default) or "full".
             status: "open" (default), "done", "archived", or "all"
                 (non-overlapping; a done+archived card counts as "archived").
+                "archived"/"all" include archived cards, which the active
+                listing endpoint omits — this costs one extra API call.
             label: If set, only cards carrying a label with this exact title.
             assigned_to: If set, only cards assigned to this user UID.
             description_max_length: In detail="full", truncate descriptions.
@@ -548,7 +612,40 @@ def configure_deck_tools(mcp: FastMCP):
             description_preview_length, "description_preview_length"
         )
         client = await get_client(ctx)
-        stack = await client.deck.get_stack(board_id, stack_id)
+        if status == "archived" and include_cards:
+            # Archived-only: the /stacks/archived endpoint already returns the
+            # stack (metadata + archived cards) in one call, so skip the active
+            # fetch whose open cards would all be filtered out anyway.
+            archived = await client.deck.get_archived_stacks(board_id)
+            stack = next((s for s in archived if s.id == stack_id), None)
+            if stack is None:
+                # findAllArchived returns every stack, so this is defensive;
+                # fall back to the active endpoint for the stack metadata.
+                stack = await client.deck.get_stack(board_id, stack_id)
+        else:
+            # Active stack always needed (for metadata + open cards); fetch the
+            # archived cards concurrently when status="all" needs both sets.
+            stack_holder: list[DeckStack] = []
+            archived_by_stack: dict[int, list[DeckCard]] = {}
+            merge_archived = include_cards and status == "all"
+
+            async def _get_active() -> None:
+                stack_holder.append(await client.deck.get_stack(board_id, stack_id))
+
+            async def _get_archived() -> None:
+                archived_by_stack.update(
+                    await _archived_cards_by_stack(client, board_id)
+                )
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(_get_active)
+                if merge_archived:
+                    tg.start_soon(_get_archived)
+
+            stack = stack_holder[0]
+            extra = archived_by_stack.get(stack_id)
+            if extra:
+                _append_archived_cards(stack, extra)
         return _apply_stack_filters(
             stack,
             include_cards=include_cards,
@@ -578,9 +675,14 @@ def configure_deck_tools(mcp: FastMCP):
         """List archived stacks (with their archived cards) for a Nextcloud
         Deck board.
 
-        Use this to audit completed work that has been archived off the
-        active board (e.g. cards moved through a "Done" stack and then
-        archived via deck_archive_card). The shape mirrors deck_get_stacks.
+        This is the archived-only shortcut: it returns *only* archived cards
+        in a single call. The active list tools (deck_get_cards,
+        deck_get_stacks, deck_get_board_overview) also include archived cards
+        when called with status="archived"/"all"; use this tool when you want
+        archived cards exclusively and don't need the open ones. Typical use:
+        auditing completed work archived off the active board (e.g. cards moved
+        through a "Done" stack and then archived via deck_archive_card). The
+        shape mirrors deck_get_stacks.
 
         Cards are always included on the returned stacks (an archived stack
         without its cards would have no audit value) and returned as compact
@@ -652,7 +754,8 @@ def configure_deck_tools(mcp: FastMCP):
                 returns the complete card objects.
             status: "open" (default), "done", "archived", or "all". The first
                 three partition the board (a done+archived card counts as
-                "archived").
+                "archived"). "archived"/"all" include archived cards, which the
+                active listing endpoint omits — this costs one extra API call.
             label: If set, only cards carrying a label with this exact title.
             assigned_to: If set, only cards assigned to this user UID.
             description_max_length: In detail="full", truncate descriptions.
@@ -663,9 +766,31 @@ def configure_deck_tools(mcp: FastMCP):
             description_preview_length, "description_preview_length"
         )
         client = await get_client(ctx)
-        stack = await client.deck.get_stack(board_id, stack_id)
+
+        # Archived cards are excluded by the active stack endpoint, so for
+        # statuses that can include them we also fetch /stacks/archived and
+        # merge. "open"/"done" need only the active stack (no extra call).
+        active_cards: list[DeckCard] = []
+        archived_cards: list[DeckCard] = []
+        need_active = status != "archived"
+        need_archived = status in _ARCHIVED_STATUSES
+
+        async def _get_active() -> None:
+            stack = await client.deck.get_stack(board_id, stack_id)
+            active_cards.extend(cast(list[DeckCard], stack.cards or []))
+
+        async def _get_archived() -> None:
+            by_stack = await _archived_cards_by_stack(client, board_id)
+            archived_cards.extend(by_stack.get(stack_id, []))
+
+        async with anyio.create_task_group() as tg:
+            if need_active:
+                tg.start_soon(_get_active)
+            if need_archived:
+                tg.start_soon(_get_archived)
+
         cards = _shape_cards(
-            cast(list[DeckCard], stack.cards or []),
+            active_cards + archived_cards,
             detail=detail,
             status=status,
             label=label,
@@ -703,6 +828,8 @@ def configure_deck_tools(mcp: FastMCP):
             status: Which cards to include — "open" (default), "done",
                 "archived", or "all". The first three partition the board
                 (a card that is both done and archived counts as "archived").
+                "archived"/"all" include archived cards, which the active
+                listing endpoint omits — this costs one extra API call.
             label: If set, only cards carrying a label with this exact title.
             assigned_to: If set, only cards assigned to this user UID.
             description_preview_length: Length of the description preview
@@ -715,6 +842,8 @@ def configure_deck_tools(mcp: FastMCP):
 
         board_holder: list[DeckBoard] = []
         stacks_holder: list[list[DeckStack]] = []
+        archived_by_stack: dict[int, list[DeckCard]] = {}
+        merge_archived = status in _ARCHIVED_STATUSES
 
         async def _get_board() -> None:
             board_holder.append(await client.deck.get_board(board_id))
@@ -722,9 +851,14 @@ def configure_deck_tools(mcp: FastMCP):
         async def _get_stacks() -> None:
             stacks_holder.append(await client.deck.get_stacks(board_id))
 
+        async def _get_archived() -> None:
+            archived_by_stack.update(await _archived_cards_by_stack(client, board_id))
+
         async with anyio.create_task_group() as tg:
             tg.start_soon(_get_board)
             tg.start_soon(_get_stacks)
+            if merge_archived:
+                tg.start_soon(_get_archived)
 
         board = board_holder[0]
         stacks = stacks_holder[0]
@@ -732,10 +866,13 @@ def configure_deck_tools(mcp: FastMCP):
         stack_overviews: list[StackOverview] = []
         total_cards = 0
         for stack in stacks:
+            cards = cast(list[DeckCard], stack.cards or [])
+            if merge_archived:
+                cards = cards + archived_by_stack.get(stack.id, [])
             summaries = [
                 _summarize_card(c, description_preview_length)
                 for c in _filter_cards(
-                    cast(list[DeckCard], stack.cards or []),
+                    cards,
                     status=status,
                     label=label,
                     assigned_to=assigned_to,

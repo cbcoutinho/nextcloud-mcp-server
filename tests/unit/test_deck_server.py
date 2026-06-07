@@ -17,8 +17,10 @@ from nextcloud_mcp_server.models.deck import (
 )
 from nextcloud_mcp_server.server.deck import (
     _SHARE_TYPE_DECK,
+    _append_archived_cards,
     _apply_board_filters,
     _apply_stack_filters,
+    _archived_cards_by_stack,
     _extract_uid,
     _filter_cards,
     _resolve_note_attach_path,
@@ -667,3 +669,39 @@ async def test_resolve_note_attach_path_handles_null_category(mocker):
     path = await _resolve_note_attach_path(client, note_id=7)
 
     assert path == "/Notes/Bare.md"
+
+
+# Archived-card merge (issue #842) -----------------------------------------
+
+
+def test_append_archived_cards_merges_onto_existing():
+    """Archived cards are appended after the stack's existing (open) cards."""
+    stack = _make_stack(cards=[_make_card(1, archived=False)])
+    _append_archived_cards(stack, [_make_card(2, archived=True)])
+    assert stack.cards is not None
+    assert [c.id for c in stack.cards] == [1, 2]
+
+
+def test_append_archived_cards_onto_none_cards():
+    """A stack with cards=None gets a fresh list of the archived cards."""
+    stack = _make_stack(cards=None)
+    _append_archived_cards(stack, [_make_card(2, archived=True)])
+    assert stack.cards is not None
+    assert [c.id for c in stack.cards] == [2]
+
+
+async def test_archived_cards_by_stack_maps_stack_id_to_cards(mocker):
+    """The helper keys archived cards by stack id, coercing None to []."""
+    archived = [
+        _make_stack(stack_id=3, cards=[_make_card(10, archived=True)]),
+        _make_stack(stack_id=4, cards=None),
+    ]
+    client = mocker.MagicMock()
+    client.deck.get_archived_stacks = mocker.AsyncMock(return_value=archived)
+
+    result = await _archived_cards_by_stack(client, board_id=1)
+
+    assert set(result) == {3, 4}
+    assert [c.id for c in result[3]] == [10]
+    assert result[4] == []
+    client.deck.get_archived_stacks.assert_awaited_once_with(1)
