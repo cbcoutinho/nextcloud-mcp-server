@@ -153,6 +153,10 @@ async def record_indexing_usage(
         store = await UsageEventStore.shared()
         # enabled=True: the guard above already confirmed the flag, so the store
         # skips a second uncached Settings build per record (ADR-024).
+        # record_usage_event swallows its own write failures, so the two records
+        # are independent; if pages_chunks somehow raised mid-way, embeddings_-
+        # queries would be skipped, leaving an unmatched pages_chunks row —
+        # acceptable under the (day, metric) SUM-aggregation billing model.
         await store.record_usage_event(
             metric="pages_chunks", value=chunk_count, metadata=metadata, enabled=True
         )

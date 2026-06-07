@@ -159,6 +159,11 @@ class OllamaProvider(Provider):
             data = response.json()
             all_embeddings.extend(data["embeddings"])
 
+            # Cache the dimension inline (mirrors OpenAI/Mistral) so it is set
+            # via any embed path, not only an explicit _detect_dimension() call.
+            if self._dimension is None and data["embeddings"]:
+                self._dimension = len(data["embeddings"][0])
+
             prompt_eval = data.get("prompt_eval_count")
             total_tokens += (
                 round(prompt_eval)

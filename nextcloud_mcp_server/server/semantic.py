@@ -70,7 +70,9 @@ async def record_search_usage(
     estimated) — the unit upstream providers bill on, and the same metric the
     indexing path records for chunk embeddings (Deck #67). ``nc_semantic_search``
     and ``nc_semantic_search_answer`` (which reuses it) both flow through here —
-    do not add a second hook.
+    do not add a second hook. ``nc_semantic_search_answer`` exposes no
+    ``doc_types`` parameter, so its searches always meter with
+    ``doc_types=None``.
 
     Best-effort and flag-gated: a metering failure is logged and never breaks
     the search. Unlike the indexing path's chunk-count guard, a 0-token query is

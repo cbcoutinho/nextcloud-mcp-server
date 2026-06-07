@@ -76,6 +76,21 @@ async def test_none_token_count_records_zero(store_spy):
 
 
 @pytest.mark.unit
+async def test_empty_doc_types_normalizes_to_null(store_spy):
+    """An empty doc_types list normalizes to None, same as a None input, so a
+    metadata->'doc_types' IS NULL query counts the all-types case consistently."""
+    await semantic.record_search_usage(
+        enabled=True,
+        user_id="alice",
+        fusion="rrf",
+        doc_types=[],
+        token_count=5,
+    )
+    kwargs = store_spy.record_usage_event.await_args.kwargs
+    assert kwargs["metadata"]["doc_types"] is None
+
+
+@pytest.mark.unit
 async def test_doc_types_metadata_is_bounded(store_spy):
     """A large doc_types list is truncated to the metadata cap."""
     many = [f"type-{i}" for i in range(40)]
