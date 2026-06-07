@@ -839,9 +839,16 @@ async def _index_document(
                             "user_id": doc_task.user_id,
                             "total_chars": total_chars,
                         },
+                        # Pass the already-resolved flag so the store doesn't
+                        # rebuild Settings here (ADR-024).
+                        enabled=settings.usage_metering_enabled,
                     )
                 except Exception:
-                    logger.debug(
+                    # Reached only when shared()/store construction itself
+                    # raises (record_usage_event swallows its own write
+                    # failures). Metering is on, so warn rather than hide the
+                    # "enabled but no billing data" case in DEBUG logs.
+                    logger.warning(
                         "usage metering hook (pages_chunks) skipped", exc_info=True
                     )
 

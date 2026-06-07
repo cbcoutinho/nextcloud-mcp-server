@@ -72,6 +72,7 @@ class UsageEventStore:
         occurred_at: datetime | None = None,
         metadata: dict[str, Any] | None = None,
         event_id: str | None = None,
+        enabled: bool | None = None,
     ) -> None:
         """Record one billable usage event (best-effort, flag-gated).
 
@@ -86,8 +87,16 @@ class UsageEventStore:
             metadata: Optional rawest-unit context (provider, model, tokens,
                 doc_type, ...). Stored as JSONB (Postgres) / JSON text (SQLite).
             event_id: Optional idempotency key; defaults to a fresh UUID4.
+            enabled: The resolved ``USAGE_METERING_ENABLED`` value. ``None``
+                (default) re-reads it via ``get_settings()`` so the store stays
+                self-gating for standalone/test use. Hot-path callers that
+                already hold the flag should pass it to avoid a second uncached
+                ``Settings`` build (``get_settings()`` is non-cached per
+                ADR-024 and ``nc_semantic_search`` is on the query path).
         """
-        if not get_settings().usage_metering_enabled:
+        if enabled is None:
+            enabled = get_settings().usage_metering_enabled
+        if not enabled:
             return
 
         start = time.time()

@@ -14,6 +14,7 @@ that a DB failure is swallowed instead of surfacing to the caller.
 import json
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -84,6 +85,32 @@ async def test_flag_off_is_noop(storage, monkeypatch):
     assert await _count(storage) == 0
 
 
+async def test_enabled_param_short_circuits_without_reading_settings(
+    storage, monkeypatch
+):
+    """An explicit ``enabled`` flag is honored without touching get_settings().
+
+    Hot-path callers pass the already-resolved flag; the store must not rebuild
+    Settings when given one. ``enabled=False`` is a no-op; ``enabled=True``
+    writes even though the (boobytrapped) settings lookup would raise.
+    """
+
+    def _boom():
+        raise AssertionError("get_settings() must not be called when enabled is passed")
+
+    monkeypatch.setattr(store_module, "get_settings", _boom)
+    store = UsageEventStore(storage)
+
+    await store.record_usage_event(metric="pages_chunks", value=1, enabled=False)
+    assert await _count(storage) == 0
+
+    eid = str(uuid.uuid4())
+    await store.record_usage_event(
+        metric="pages_chunks", value=1, event_id=eid, enabled=True
+    )
+    assert await _count(storage) == 1
+
+
 async def test_insert_roundtrip(storage, monkeypatch):
     """A recorded event lands and reads back with the right fields."""
     _set_metering(monkeypatch, True)
@@ -127,9 +154,37 @@ async def test_metadata_json_roundtrip(storage, monkeypatch):
     )
     row = await _fetch(storage, eid)
     raw = row[4]
-    # asyncpg returns JSONB as a JSON string (no codec); SQLite stores TEXT.
+    # Depending on the asyncpg/SQLAlchemy JSONB codec in play, Postgres may
+    # return JSONB as a Python dict or as a JSON str; SQLite stores TEXT.
+    # Handle both so the test is robust across driver/codec versions.
     loaded = raw if isinstance(raw, dict) else json.loads(raw)
     assert loaded == meta
+
+
+async def test_occurred_at_roundtrip(storage, monkeypatch):
+    """occurred_at round-trips to the same instant on both backends.
+
+    The store binds a datetime on Postgres and an ISO string on SQLite (the
+    only dialect-specific branch in the store); this pins that both read back
+    to the same instant regardless of the stored representation.
+    """
+    _set_metering(monkeypatch, True)
+    store = UsageEventStore(storage)
+    eid = str(uuid.uuid4())
+    when = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    await store.record_usage_event(
+        metric="pages_chunks", value=1, event_id=eid, occurred_at=when
+    )
+    row = await _fetch(storage, eid)
+    stored = row[1]
+    # SQLite returns the ISO string we bound; Postgres returns a datetime.
+    parsed = stored if isinstance(stored, datetime) else datetime.fromisoformat(stored)
+    # Aware-datetime equality compares the instant, so a UTC value coming back
+    # in another session tz still matches; a naive value (none expected) is
+    # treated as UTC.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    assert parsed == when
 
 
 async def test_metadata_none_is_null(storage, monkeypatch):

@@ -60,7 +60,7 @@ def upgrade() -> None:
         # (json.dumps) on SQLite.
         sa.Column(
             "metadata",
-            postgresql.JSONB if is_pg else sa.Text,
+            postgresql.JSONB() if is_pg else sa.Text,
             nullable=True,
         ),
     )

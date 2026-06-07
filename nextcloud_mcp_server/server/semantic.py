@@ -534,9 +534,16 @@ def configure_semantic_tools(mcp: FastMCP):
                             "fusion": fusion,
                             "doc_types": doc_types,
                         },
+                        # Pass the already-resolved flag so the store doesn't
+                        # rebuild Settings on this hot query path (ADR-024).
+                        enabled=settings.usage_metering_enabled,
                     )
                 except Exception:
-                    logger.debug(
+                    # Reached only when shared()/store construction itself
+                    # raises (record_usage_event swallows its own write
+                    # failures). Metering is on, so warn — a silent DEBUG line
+                    # would hide "operator enabled metering but gets no data".
+                    logger.warning(
                         "usage metering hook (embeddings_queries) skipped",
                         exc_info=True,
                     )
