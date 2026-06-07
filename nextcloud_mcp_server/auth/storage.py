@@ -39,7 +39,7 @@ import os
 import socket
 import sqlite3
 import time
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -665,6 +665,21 @@ class RefreshTokenStorage:
         assert self.engine is not None, "RefreshTokenStorage.initialize() not called"
         async with self.engine.connect() as conn:
             yield _DBConn(conn)
+
+    def acquire(self) -> AbstractAsyncContextManager["_DBConn"]:
+        """Public alias for :meth:`_db`: a backend-agnostic connection cm.
+
+        Lets sibling stores (e.g. :class:`UsageEventStore`) reuse this
+        instance's engine, NullPool, and ``_DBConn`` shim without reaching
+        into the underscored internal. Use as ``async with storage.acquire()
+        as db:``.
+        """
+        return self._db()
+
+    @property
+    def dialect(self) -> str:
+        """Backend dialect name ("sqlite" / "postgresql"), or "unknown" pre-init."""
+        return self._dialect
 
     async def store_refresh_token(
         self,

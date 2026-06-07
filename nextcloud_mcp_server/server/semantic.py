@@ -39,6 +39,7 @@ from nextcloud_mcp_server.search.access_filter import (
 from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
 from nextcloud_mcp_server.search.context import get_chunk_with_context
 from nextcloud_mcp_server.search.verification import verify_search_results
+from nextcloud_mcp_server.usage import UsageEventStore
 from nextcloud_mcp_server.utils.validation import parse_modified_timestamp
 from nextcloud_mcp_server.vector.metrics_publisher import count_indexed
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
@@ -516,6 +517,29 @@ def configure_semantic_tools(mcp: FastMCP):
                 )
 
             logger.info("Returning %d results from BM25 hybrid search", len(results))
+
+            # Usage metering (Deck #67): one billable 'embeddings_queries'
+            # event per successful search (the query embedding is the metered
+            # cost). Best-effort and gated on the flag so the off-path touches
+            # no storage. nc_semantic_search_answer reuses this tool, so it
+            # records here too — do not add a second hook there.
+            if settings.usage_metering_enabled:
+                try:
+                    store = await UsageEventStore.shared()
+                    await store.record_usage_event(
+                        metric="embeddings_queries",
+                        value=1,
+                        metadata={
+                            "user_id": username,
+                            "fusion": fusion,
+                            "doc_types": doc_types,
+                        },
+                    )
+                except Exception:
+                    logger.debug(
+                        "usage metering hook (embeddings_queries) skipped",
+                        exc_info=True,
+                    )
 
             return SemanticSearchResponse(
                 results=results,

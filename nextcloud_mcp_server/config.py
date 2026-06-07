@@ -244,6 +244,11 @@ _DEFAULTS: dict[str, Any] = {
     # this before a real ACL backfill would silently drop legacy results.
     # verify-on-read remains the correctness backstop regardless.
     "acl_prefilter_enabled": False,
+    # Usage metering (Deck #67, control-plane usage-metering.md). OFF by
+    # default so OSS self-hosters don't accrue a metering table or write
+    # overhead; Astrolabe Cloud provisioning sets it true. When on, billable
+    # ops record rows into the app-DB usage_events table (best-effort).
+    "usage_metering_enabled": False,
 }
 
 
@@ -829,6 +834,10 @@ class Settings:
     embedding_gateway_scope: str | None = None
     tenant_id: str | None = None  # per-tenant identity (UUID form)
     acl_prefilter_enabled: bool = False  # query-side ACL pre-filter (§11); OFF
+    # Usage metering (Deck #67); OFF by default. When true, billable ops
+    # record best-effort rows into the app-DB usage_events table for the
+    # control plane to pull. See nextcloud_mcp_server/usage/store.py.
+    usage_metering_enabled: bool = False
 
     def __post_init__(self):
         """Validate configuration and set defaults."""
@@ -1441,6 +1450,7 @@ def get_settings() -> Settings:
         "embedding_gateway_scope": "EMBEDDING_GATEWAY_SCOPE",
         "tenant_id": "TENANT_ID",
         "acl_prefilter_enabled": "ACL_PREFILTER_ENABLED",
+        "usage_metering_enabled": "USAGE_METERING_ENABLED",
     }
 
     # Only pass values that dynaconf actually has; omit unset keys so
