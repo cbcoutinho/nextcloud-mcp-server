@@ -249,10 +249,11 @@ class ContactsClient(BaseNextcloudClient):
             if href is None or not href.text:
                 continue
             # The collection itself is reported with a trailing slash; skip it
-            # so only contact objects remain.
+            # so only contact objects remain. The guard means href.text never
+            # ends with "/" below, so the bare split is sufficient.
             if href.text.endswith("/"):
                 continue
-            names.append(href.text.rstrip("/").split("/")[-1])
+            names.append(href.text.split("/")[-1])
         return names
 
     async def _resolve_object_name(self, addressbook: str, uid: str) -> str | None:
@@ -578,19 +579,15 @@ class ContactsClient(BaseNextcloudClient):
         logger.debug("Found %s contacts", len(contacts))
         return contacts
 
-    async def _get_raw_vcard(self, addressbook: str, uid: str) -> tuple[str, str]:
-        """Get raw vCard content for a contact without parsing.
-
-        Resolves the real object filename first (it may not be ``<uid>.vcf`` —
-        issue #874) before fetching.
-        """
-        object_name = await self._resolve_object_name(addressbook, uid) or f"{uid}.vcf"
-        return await self._fetch_raw_vcard(addressbook, object_name)
-
     async def _fetch_raw_vcard(
         self, addressbook: str, object_name: str
     ) -> tuple[str, str]:
-        """Fetch raw vCard content + etag for an already-resolved object name."""
+        """Fetch raw vCard content + etag for an already-resolved object name.
+
+        Callers that only have a surfaced ``uid`` (not the real object name)
+        must resolve it first via ``_resolve_object_name`` — see issue #874.
+        ``update_contact`` does exactly that and passes the resolved name here.
+        """
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{object_name}"
 
