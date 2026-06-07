@@ -199,6 +199,46 @@ class NextcloudClient:
 
         return response.json()
 
+    async def get_enabled_apps(self) -> set[str]:
+        """Return the set of app ids enabled for the authenticated user.
+
+        Uses the per-user core navigation endpoint, which lists only apps the
+        current user can access (respecting group restrictions). The vector
+        scanner uses this to skip polling apps the user lacks, which would 404
+        and flood tenant logs. Preferred over ``/cloud/capabilities`` because
+        the News app advertises no capability and so never appears there.
+        """
+        response = await self._client.get(
+            "/ocs/v2.php/core/navigation/apps",
+            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+        )
+        response.raise_for_status()
+        data = response.json()
+        # ``X or {}``/``or []`` (not ``.get(k, default)``) so a present-but-null
+        # ``ocs``/``data`` (``{"ocs": null}``) coerces to empty instead of
+        # raising AttributeError on ``None.get``.
+        ocs = data.get("ocs") or {}
+        # A 200 carrying ``meta.status != "ok"`` is an OCS-level failure (auth /
+        # permission edge cases) that ``raise_for_status`` can't see. Raise so
+        # the scanner's ``_get_enabled_apps_or_none`` catches it and falls back
+        # to scanning every app, rather than silently gating all apps off for a
+        # cycle on an empty ``data``. Tolerate a missing/empty meta (our own
+        # mocks, and any envelope that omits it).
+        status = (ocs.get("meta") or {}).get("status")
+        if status and status != "ok":  # falsy (missing/None/"") tolerated
+            raise ValueError(f"OCS navigation returned status={status!r}")
+        entries = ocs.get("data") or []
+        enabled: set[str] = set()
+        for entry in entries:
+            # ``app`` is the canonical app id; ``id`` matches it for the apps we
+            # gate. Union both so an unexpected nav-entry shape never hides an
+            # enabled app — a false "disabled" would skip real indexing.
+            for key in ("app", "id"):
+                value = entry.get(key)
+                if value:
+                    enabled.add(value)
+        return enabled
+
     async def notes_search_notes(self, *, query: str):
         """Search notes using token-based matching with relevance ranking."""
         all_notes = self.notes.get_all_notes()

@@ -7,7 +7,7 @@ folders) into a flat list of files.
 """
 
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -29,6 +29,103 @@ def _make_client() -> Any:
 
 
 pytestmark = pytest.mark.unit
+
+
+def _navigation_response(entries: list[dict]) -> MagicMock:
+    """Build a mocked OCS v2 ``core/navigation/apps`` response."""
+    response = MagicMock()
+    response.status_code = 200
+    response.raise_for_status = MagicMock()
+    response.json.return_value = {"ocs": {"meta": {}, "data": entries}}
+    return response
+
+
+class TestGetEnabledApps:
+    async def test_returns_app_ids_from_navigation(self):
+        client = _make_client()
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(
+            return_value=_navigation_response(
+                [
+                    {"id": "files", "app": "files"},
+                    {"id": "notes", "app": "notes"},
+                    {"id": "deck", "app": "deck"},
+                    {"id": "news", "app": "news"},
+                ]
+            )
+        )
+
+        apps = await client.get_enabled_apps()
+
+        assert apps == {"files", "notes", "deck", "news"}
+        # Hits the per-user navigation endpoint, not capabilities.
+        assert (
+            client._client.get.await_args.args[0] == "/ocs/v2.php/core/navigation/apps"
+        )
+
+    async def test_unions_id_and_app_keys(self):
+        """When ``id`` and ``app`` differ, both are collected so an enabled
+        app is never hidden by an unexpected nav-entry id."""
+        client = _make_client()
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(
+            return_value=_navigation_response([{"id": "files_sharing", "app": "files"}])
+        )
+
+        apps = await client.get_enabled_apps()
+
+        assert apps == {"files", "files_sharing"}
+
+    async def test_empty_navigation_returns_empty_set(self):
+        client = _make_client()
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(return_value=_navigation_response([]))
+
+        assert await client.get_enabled_apps() == set()
+
+    async def test_skips_entries_missing_both_keys(self):
+        client = _make_client()
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(
+            return_value=_navigation_response(
+                [{"name": "Logout", "href": "/logout"}, {"app": "notes"}]
+            )
+        )
+
+        assert await client.get_enabled_apps() == {"notes"}
+
+    @pytest.mark.parametrize("body", [{}, {"ocs": None}, {"ocs": {"data": None}}])
+    async def test_malformed_envelope_returns_empty_set(self, body):
+        """A missing/null ``ocs``/``data`` envelope yields an empty set rather
+        than raising. NOTE: an empty set does NOT trigger the
+        ``_get_enabled_apps_or_none`` scan-all fallback (that fires only on
+        exceptions) — all optional apps are gated off for this scan cycle, with
+        Files unaffected (unconditional) and the next cycle retrying normally."""
+        client = _make_client()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = body
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(return_value=response)
+
+        assert await client.get_enabled_apps() == set()
+
+    async def test_ocs_failure_status_raises(self):
+        """A 200 with ``ocs.meta.status == "failure"`` raises so the scanner's
+        ``_get_enabled_apps_or_none`` falls back to scanning all apps, instead
+        of silently gating every app off on the empty ``data`` of a failure
+        envelope."""
+        client = _make_client()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {
+            "ocs": {"meta": {"status": "failure", "statuscode": 997}, "data": None}
+        }
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(return_value=response)
+
+        with pytest.raises(ValueError, match="failure"):
+            await client.get_enabled_apps()
 
 
 class TestNormaliseSearchResult:
