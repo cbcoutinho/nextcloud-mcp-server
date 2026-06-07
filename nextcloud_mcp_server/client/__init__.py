@@ -214,7 +214,11 @@ class NextcloudClient:
         )
         response.raise_for_status()
         data = response.json()
-        entries = data.get("ocs", {}).get("data", []) or []
+        # ``X or {}``/``or []`` (not ``.get(k, default)``) so a present-but-null
+        # ``ocs``/``data`` (``{"ocs": null}``) coerces to empty instead of
+        # raising AttributeError on ``None.get``.
+        ocs = data.get("ocs") or {}
+        entries = ocs.get("data") or []
         enabled: set[str] = set()
         for entry in entries:
             # ``app`` is the canonical app id; ``id`` matches it for the apps we

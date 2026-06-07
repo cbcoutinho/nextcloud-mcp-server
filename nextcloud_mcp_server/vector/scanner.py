@@ -269,6 +269,16 @@ async def _get_enabled_apps_or_none(
         return None
 
 
+def _app_enabled(app_id: str, enabled_apps: set[str] | None) -> bool:
+    """Whether ``app_id`` should be scanned for the current user.
+
+    ``enabled_apps is None`` means detection failed — every app is treated as
+    enabled (the scan-all fallback) so a transient navigation-endpoint failure
+    never silently halts indexing.
+    """
+    return enabled_apps is None or app_id in enabled_apps
+
+
 async def scan_user_documents(
     user_id: str,
     send_stream: TaskProducer,
@@ -355,9 +365,6 @@ async def scan_user_documents(
         # detection failed: fall back to scanning every app (prior behaviour).
         enabled_apps = await _get_enabled_apps_or_none(nc_client, user_id, scan_id)
 
-        def _app_enabled(app_id: str) -> bool:
-            return enabled_apps is None or app_id in enabled_apps
-
         # Notes (isolated so an uninstalled or disabled Notes app — whose API
         # returns 404 — cannot abort scanning of the other apps; this mirrors the
         # per-app try/except guards already wrapping files/news/deck below).
@@ -366,7 +373,7 @@ async def scan_user_documents(
         current_time = time.time()
         queued = 0
 
-        if _app_enabled("notes"):
+        if _app_enabled("notes", enabled_apps):
             try:
                 queued += await scan_notes(
                     user_id=user_id,
@@ -703,7 +710,7 @@ async def scan_user_documents(
 
         # Scan News items (starred + unread)
         news_queued = 0
-        if _app_enabled("news"):
+        if _app_enabled("news", enabled_apps):
             try:
                 news_queued = await scan_news_items(
                     user_id=user_id,
@@ -724,7 +731,7 @@ async def scan_user_documents(
 
         # Scan Deck cards
         deck_queued = 0
-        if _app_enabled("deck"):
+        if _app_enabled("deck", enabled_apps):
             try:
                 deck_queued = await scan_deck_cards(
                     user_id=user_id,

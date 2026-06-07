@@ -94,6 +94,20 @@ class TestGetEnabledApps:
 
         assert await client.get_enabled_apps() == {"notes"}
 
+    @pytest.mark.parametrize("body", [{}, {"ocs": None}, {"ocs": {"data": None}}])
+    async def test_malformed_envelope_returns_empty_set(self, body):
+        """A missing/null ``ocs``/``data`` envelope yields an empty set rather
+        than raising — the scanner then gates every app off, and its own
+        fallback (``_get_enabled_apps_or_none``) keeps indexing safe."""
+        client = _make_client()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = body
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(return_value=response)
+
+        assert await client.get_enabled_apps() == set()
+
 
 class TestNormaliseSearchResult:
     def test_adds_leading_slash_to_path(self):
