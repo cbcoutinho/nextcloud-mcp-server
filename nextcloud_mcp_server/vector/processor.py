@@ -657,9 +657,13 @@ async def _index_document(
                     doc_type="file",
                     user_id=doc_task.user_id,
                 )
+                # No embedding ran, so no usage is recorded here — stated
+                # explicitly so a "fewer embeddings_queries rows than expected"
+                # audit lands on the dedup path rather than reconstructing it
+                # from Qdrant claim logs.
                 logger.info(
                     "Dedup hit for file %s (etag=%s); claimed for user %s "
-                    "without reprocessing",
+                    "without reprocessing (no embedding/usage recorded)",
                     doc_task.doc_id,
                     doc_task.etag,
                     doc_task.user_id,
