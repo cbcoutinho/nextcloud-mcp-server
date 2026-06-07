@@ -97,8 +97,10 @@ class TestGetEnabledApps:
     @pytest.mark.parametrize("body", [{}, {"ocs": None}, {"ocs": {"data": None}}])
     async def test_malformed_envelope_returns_empty_set(self, body):
         """A missing/null ``ocs``/``data`` envelope yields an empty set rather
-        than raising — the scanner then gates every app off, and its own
-        fallback (``_get_enabled_apps_or_none``) keeps indexing safe."""
+        than raising. NOTE: an empty set does NOT trigger the
+        ``_get_enabled_apps_or_none`` scan-all fallback (that fires only on
+        exceptions) — all optional apps are gated off for this scan cycle, with
+        Files unaffected (unconditional) and the next cycle retrying normally."""
         client = _make_client()
         response = MagicMock()
         response.raise_for_status = MagicMock()
@@ -107,6 +109,23 @@ class TestGetEnabledApps:
         client._client.get = AsyncMock(return_value=response)
 
         assert await client.get_enabled_apps() == set()
+
+    async def test_ocs_failure_status_raises(self):
+        """A 200 with ``ocs.meta.status == "failure"`` raises so the scanner's
+        ``_get_enabled_apps_or_none`` falls back to scanning all apps, instead
+        of silently gating every app off on the empty ``data`` of a failure
+        envelope."""
+        client = _make_client()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {
+            "ocs": {"meta": {"status": "failure", "statuscode": 997}, "data": None}
+        }
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(return_value=response)
+
+        with pytest.raises(ValueError, match="failure"):
+            await client.get_enabled_apps()
 
 
 class TestNormaliseSearchResult:

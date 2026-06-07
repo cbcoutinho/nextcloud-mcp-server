@@ -218,6 +218,15 @@ class NextcloudClient:
         # ``ocs``/``data`` (``{"ocs": null}``) coerces to empty instead of
         # raising AttributeError on ``None.get``.
         ocs = data.get("ocs") or {}
+        # A 200 carrying ``meta.status != "ok"`` is an OCS-level failure (auth /
+        # permission edge cases) that ``raise_for_status`` can't see. Raise so
+        # the scanner's ``_get_enabled_apps_or_none`` catches it and falls back
+        # to scanning every app, rather than silently gating all apps off for a
+        # cycle on an empty ``data``. Tolerate a missing/empty meta (our own
+        # mocks, and any envelope that omits it).
+        status = (ocs.get("meta") or {}).get("status")
+        if status not in ("ok", None, ""):
+            raise ValueError(f"OCS navigation returned status={status!r}")
         entries = ocs.get("data") or []
         enabled: set[str] = set()
         for entry in entries:
