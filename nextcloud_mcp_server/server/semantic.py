@@ -46,6 +46,15 @@ from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
 
+# Cap how many doc_types we copy into a usage-metering metadata row. doc_types
+# is caller-supplied and (unlike path_prefixes) has no max_length on the tool
+# signature, so an adversarial caller could pass a huge list. The CP rollup
+# ignores metadata for billing (GROUP BY day, metric) and the value is bound
+# parameterized, so this is not a billing/injection risk — the cap just keeps
+# a single JSONB row from ballooning. 16 is generous headroom over the handful
+# of real indexed doc types.
+_USAGE_METADATA_MAX_DOC_TYPES = 16
+
 
 def configure_semantic_tools(mcp: FastMCP):
     """Configure semantic search tools for MCP server."""
@@ -538,7 +547,12 @@ def configure_semantic_tools(mcp: FastMCP):
                         metadata={
                             "user_id": username,
                             "fusion": fusion,
-                            "doc_types": doc_types,
+                            # Bounded copy — see _USAGE_METADATA_MAX_DOC_TYPES.
+                            "doc_types": (
+                                doc_types[:_USAGE_METADATA_MAX_DOC_TYPES]
+                                if doc_types
+                                else doc_types
+                            ),
                         },
                         # The outer guard already confirmed the flag, so pass
                         # enabled=True directly — the store then skips a second
