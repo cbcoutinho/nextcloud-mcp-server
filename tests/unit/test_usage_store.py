@@ -12,6 +12,7 @@ that a DB failure is swallowed instead of surfacing to the caller.
 """
 
 import json
+import logging
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -199,7 +200,7 @@ async def test_metadata_none_is_null(storage, monkeypatch):
     assert row[4] is None
 
 
-async def test_best_effort_swallows_db_errors(storage, monkeypatch):
+async def test_best_effort_swallows_db_errors(storage, monkeypatch, caplog):
     """A DB failure is logged + dropped, never raised into the caller."""
     _set_metering(monkeypatch, True)
     store = UsageEventStore(storage)
@@ -218,10 +219,16 @@ async def test_best_effort_swallows_db_errors(storage, monkeypatch):
     monkeypatch.setattr(storage, "acquire", _boom)
 
     # Must not raise.
-    await store.record_usage_event(metric="pages_chunks", value=1)
+    with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.usage.store"):
+        await store.record_usage_event(metric="pages_chunks", value=1)
 
     assert recorded, "record_db_operation should be called on the error path"
     assert recorded[-1][3] == "error"
+    # The observability contract: the dropped write surfaces at WARNING.
+    assert any(
+        r.levelno == logging.WARNING and "usage metering write dropped" in r.message
+        for r in caplog.records
+    )
 
 
 async def test_best_effort_swallows_unserializable_metadata(storage, monkeypatch):

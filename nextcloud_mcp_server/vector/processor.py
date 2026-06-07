@@ -839,9 +839,10 @@ async def _index_document(
                             "user_id": doc_task.user_id,
                             "total_chars": total_chars,
                         },
-                        # Pass the already-resolved flag so the store doesn't
-                        # rebuild Settings here (ADR-024).
-                        enabled=settings.usage_metering_enabled,
+                        # The outer guard already confirmed the flag, so pass
+                        # enabled=True directly — the store then skips a second
+                        # uncached Settings build here (ADR-024).
+                        enabled=True,
                     )
                 except Exception:
                     # Reached only when shared()/store construction itself

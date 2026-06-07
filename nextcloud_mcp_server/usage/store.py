@@ -51,18 +51,27 @@ _INSERT_SQL = (
 class UsageEventStore:
     """Append-only writer for the app-DB ``usage_events`` table."""
 
+    # Process-wide cached instance returned by ``shared()`` so the hot search
+    # path doesn't allocate a fresh wrapper per metered query. The store is
+    # stateless beyond its storage handle, so one instance is reusable.
+    _shared_instance: "UsageEventStore | None" = None
+
     def __init__(self, storage: RefreshTokenStorage) -> None:
         self._storage = storage
 
     @classmethod
     async def shared(cls) -> "UsageEventStore":
-        """Build a store backed by the process-wide storage singleton.
+        """Return the process-wide store backed by the storage singleton.
 
-        ``get_shared_storage()`` runs ``initialize()`` (and thus Alembic
-        migrations) on first access, so the ``usage_events`` table is present
-        by the time any event is recorded.
+        Cached after first build: ``get_shared_storage()`` already returns the
+        cached :class:`RefreshTokenStorage` (running ``initialize()`` / Alembic
+        on first access, so ``usage_events`` exists), and the wrapper itself is
+        stateless, so reusing one instance avoids a per-call allocation on the
+        ``nc_semantic_search`` hot path.
         """
-        return cls(await get_shared_storage())
+        if cls._shared_instance is None:
+            cls._shared_instance = cls(await get_shared_storage())
+        return cls._shared_instance
 
     async def record_usage_event(
         self,

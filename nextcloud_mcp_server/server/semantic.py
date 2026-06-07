@@ -534,9 +534,11 @@ def configure_semantic_tools(mcp: FastMCP):
                             "fusion": fusion,
                             "doc_types": doc_types,
                         },
-                        # Pass the already-resolved flag so the store doesn't
-                        # rebuild Settings on this hot query path (ADR-024).
-                        enabled=settings.usage_metering_enabled,
+                        # The outer guard already confirmed the flag, so pass
+                        # enabled=True directly — the store then skips a second
+                        # uncached Settings build on this hot query path
+                        # (ADR-024).
+                        enabled=True,
                     )
                 except Exception:
                     # Reached only when shared()/store construction itself

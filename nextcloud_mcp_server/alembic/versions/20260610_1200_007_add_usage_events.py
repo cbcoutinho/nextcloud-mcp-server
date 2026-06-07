@@ -34,6 +34,9 @@ depends_on = None
 def upgrade() -> None:
     is_pg = op.get_bind().dialect.name == "postgresql"
 
+    # Retention: this table has no TTL by design — the control-plane rollup
+    # owns the lifecycle (it pulls rows read-only into usage_daily, then
+    # prunes once a day is reconciled). The data plane only appends.
     op.create_table(
         "usage_events",
         # Pod-generated idempotency key. UUID on Postgres; TEXT on SQLite,
