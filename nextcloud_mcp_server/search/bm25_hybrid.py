@@ -132,9 +132,13 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         with trace_operation("search.get_embedding_service"):
             embedding_service = get_embedding_service()
         with trace_operation("search.dense_embedding"):
-            dense_embedding = await embedding_service.embed(query)
-        # Store for reuse by callers (e.g., viz_routes PCA visualization)
+            dense_embedding, query_tokens = await embedding_service.embed_with_usage(
+                query
+            )
+        # Store for reuse by callers (e.g., viz_routes PCA visualization) and
+        # for the usage-metering hook in server/semantic.py (token count).
         self.query_embedding = dense_embedding
+        self.query_token_count = query_tokens
         logger.debug("Generated dense embedding (dimension=%s)", len(dense_embedding))
 
         # Generate sparse embedding for BM25 keyword search

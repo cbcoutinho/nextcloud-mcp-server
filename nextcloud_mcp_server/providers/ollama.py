@@ -116,12 +116,44 @@ class OllamaProvider(Provider):
         Raises:
             NotImplementedError: If embeddings not enabled (no embedding_model)
         """
+        embeddings, _ = await self.embed_batch_with_usage(texts, batch_size=batch_size)
+        return embeddings
+
+    async def embed_with_usage(self, text: str) -> tuple[list[float], int]:
+        """Embed one text, reporting the request's token count.
+
+        Routes through ``/api/embed`` (which carries ``prompt_eval_count``)
+        rather than the legacy ``/api/embeddings`` so a token count is
+        available; falls back to a char-based estimate when the field is
+        absent. Used by the usage-metering hooks (Deck #67).
+        """
+        embeddings, tokens = await self.embed_batch_with_usage([text])
+        if not embeddings:
+            raise RuntimeError(
+                "Ollama embeddings API returned no embedding for model "
+                f"{self.embedding_model}"
+            )
+        return embeddings[0], tokens
+
+    async def embed_batch_with_usage(
+        self, texts: list[str], batch_size: int = 32
+    ) -> tuple[list[list[float]], int]:
+        """Embed multiple texts, summing ``prompt_eval_count`` token usage.
+
+        Returns ``(embeddings, total_tokens)``. Ollama's ``/api/embed`` may
+        omit ``prompt_eval_count`` (older versions); a char-based estimate is
+        used per batch when it does.
+        """
         if not self.supports_embeddings:
             raise NotImplementedError(
                 "Embedding not supported - no embedding_model configured"
             )
 
-        all_embeddings = []
+        if not texts:
+            return [], 0
+
+        all_embeddings: list[list[float]] = []
+        total_tokens = 0
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
             response = await self.client.post(
@@ -129,9 +161,17 @@ class OllamaProvider(Provider):
                 json={"model": self.embedding_model, "input": batch},
             )
             response.raise_for_status()
-            all_embeddings.extend(response.json()["embeddings"])
+            data = response.json()
+            all_embeddings.extend(data["embeddings"])
 
-        return all_embeddings
+            prompt_eval = data.get("prompt_eval_count")
+            total_tokens += (
+                int(prompt_eval)
+                if isinstance(prompt_eval, (int, float))
+                else self._estimate_tokens(batch)
+            )
+
+        return all_embeddings, total_tokens
 
     async def _detect_dimension(self):
         """

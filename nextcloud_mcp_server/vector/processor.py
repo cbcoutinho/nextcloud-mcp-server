@@ -809,7 +809,10 @@ async def _index_document(
             embedding_service = get_embedding_service()
             embed_start = time.time()
             try:
-                dense_embeddings = await embedding_service.embed_batch(chunk_texts)
+                (
+                    dense_embeddings,
+                    embed_tokens,
+                ) = await embedding_service.embed_batch_with_usage(chunk_texts)
             except Exception:
                 record_embedding(
                     "dense", provider, time.time() - embed_start, status="error"
@@ -833,21 +836,33 @@ async def _index_document(
             # keep Deck #67's future per-user attribution derivable from the
             # app DB without a re-migration.
             if settings.usage_metering_enabled:
+                # Two billable events per indexed document: 'pages_chunks' is
+                # the volume (chunks embedded); 'embeddings_queries' is the
+                # token count of the embedding request — the same metric search
+                # records, so the meter bills embedding tokens whether they were
+                # incurred indexing a document or embedding a query (Deck #67).
+                metering_metadata = {
+                    "provider": provider,
+                    "model": settings.get_embedding_model_name(),
+                    "doc_type": doc_task.doc_type,
+                    "user_id": doc_task.user_id,
+                    "total_chars": total_chars,
+                }
                 try:
                     store = await UsageEventStore.shared()
                     await store.record_usage_event(
                         metric="pages_chunks",
                         value=len(chunk_texts),
-                        metadata={
-                            "provider": provider,
-                            "model": settings.get_embedding_model_name(),
-                            "doc_type": doc_task.doc_type,
-                            "user_id": doc_task.user_id,
-                            "total_chars": total_chars,
-                        },
+                        metadata=metering_metadata,
                         # The outer guard already confirmed the flag, so pass
                         # enabled=True directly — the store then skips a second
                         # uncached Settings build here (ADR-024).
+                        enabled=True,
+                    )
+                    await store.record_usage_event(
+                        metric="embeddings_queries",
+                        value=embed_tokens,
+                        metadata=metering_metadata,
                         enabled=True,
                     )
                 except Exception:
@@ -856,7 +871,8 @@ async def _index_document(
                     # failures). Metering is on, so warn rather than hide the
                     # "enabled but no billing data" case in DEBUG logs.
                     logger.warning(
-                        "usage metering hook (pages_chunks) skipped", exc_info=True
+                        "usage metering hook (indexing embeddings) skipped",
+                        exc_info=True,
                     )
 
     async def generate_sparse_embeddings():

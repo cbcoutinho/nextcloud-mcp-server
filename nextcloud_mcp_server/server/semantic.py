@@ -528,10 +528,18 @@ def configure_semantic_tools(mcp: FastMCP):
             logger.info("Returning %d results from BM25 hybrid search", len(results))
 
             # Usage metering (Deck #67): one billable 'embeddings_queries'
-            # event per successful search (the query embedding is the metered
-            # cost). Best-effort and gated on the flag so the off-path touches
-            # no storage. nc_semantic_search_answer reuses this tool, so it
-            # records here too — do not add a second hook there.
+            # event per successful search. The value is the query embedding's
+            # token count (provider-reported, or estimated) — the unit upstream
+            # providers bill on, and the same metric the indexing path records
+            # for chunk embeddings. Best-effort and gated on the flag so the
+            # off-path touches no storage. nc_semantic_search_answer reuses this
+            # tool, so it records here too — do not add a second hook there.
+            #
+            # query_token_count is set by BM25HybridSearchAlgorithm during the
+            # search() above. The doc_types loop reuses one search_algo instance
+            # for the same query string, so the final value is the single query
+            # embedding's cost (matches the prior one-query semantics). Falls
+            # back to 0 only if the embedding never ran (e.g. a pre-embed error).
             #
             # Privacy note: user_id stays tenant-local. The CP rollup
             # aggregates GROUP BY (day, metric) into usage_daily, which has no
@@ -543,7 +551,7 @@ def configure_semantic_tools(mcp: FastMCP):
                     store = await UsageEventStore.shared()
                     await store.record_usage_event(
                         metric="embeddings_queries",
-                        value=1,
+                        value=search_algo.query_token_count or 0,
                         metadata={
                             "user_id": username,
                             "fusion": fusion,

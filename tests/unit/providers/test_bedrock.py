@@ -255,6 +255,73 @@ async def test_bedrock_dimension_detection(mock_bedrock_client):
     assert provider.get_dimension() == 1536
 
 
+def _titan_body(embedding, token_count=None):
+    payload = {"embedding": embedding}
+    if token_count is not None:
+        payload["inputTextTokenCount"] = token_count
+    return {
+        "body": MagicMock(read=MagicMock(return_value=json.dumps(payload).encode()))
+    }
+
+
+@pytest.mark.unit
+async def test_bedrock_embed_with_usage_reports_titan_tokens(mock_bedrock_client):
+    """Titan's inputTextTokenCount is surfaced as the token count."""
+    mock_bedrock_client.invoke_model.return_value = _titan_body(
+        [0.1, 0.2], token_count=6
+    )
+
+    provider = BedrockProvider(
+        region_name="us-east-1",
+        embedding_model="amazon.titan-embed-text-v2:0",
+        generation_model=None,
+    )
+    embedding, tokens = await provider.embed_with_usage("test text")
+
+    assert embedding == [0.1, 0.2]
+    assert tokens == 6
+
+
+@pytest.mark.unit
+async def test_bedrock_embed_batch_with_usage_sums_token_counts(mock_bedrock_client):
+    """Sequential per-text calls sum their inputTextTokenCount values."""
+    mock_bedrock_client.invoke_model.return_value = _titan_body(
+        [0.1, 0.2], token_count=4
+    )
+
+    provider = BedrockProvider(
+        region_name="us-east-1",
+        embedding_model="amazon.titan-embed-text-v2:0",
+        generation_model=None,
+    )
+    embeddings, tokens = await provider.embed_batch_with_usage(["t1", "t2", "t3"])
+
+    assert len(embeddings) == 3
+    assert tokens == 12  # 4 tokens per call × 3 calls
+
+
+@pytest.mark.unit
+async def test_bedrock_with_usage_estimates_when_token_count_absent(
+    mock_bedrock_client,
+):
+    """Cohere returns no inputTextTokenCount → char-based estimate."""
+    mock_bedrock_client.invoke_model.return_value = {
+        "body": MagicMock(
+            read=MagicMock(
+                return_value=json.dumps({"embeddings": [[0.1, 0.2]]}).encode()
+            )
+        )
+    }
+
+    provider = BedrockProvider(
+        region_name="us-east-1",
+        embedding_model="cohere.embed-english-v3",
+    )
+    _, tokens = await provider.embed_with_usage("abcdefgh")  # 8 chars → 2 tokens
+
+    assert tokens == 2
+
+
 @pytest.mark.unit
 async def test_bedrock_cohere_embedding(mock_bedrock_client):
     """Test Bedrock with Cohere embedding model."""

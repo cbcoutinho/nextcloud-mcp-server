@@ -280,6 +280,46 @@ async def test_openai_empty_batch():
     assert embeddings == []
 
 
+def _embed_item(embedding, index):
+    item = MagicMock()
+    item.embedding = embedding
+    item.index = index
+    return item
+
+
+@pytest.mark.unit
+async def test_openai_embed_batch_with_usage_reports_tokens(mock_openai_client):
+    """embed_batch_with_usage returns the response's total_tokens."""
+    response = MagicMock()
+    response.data = [_embed_item([0.1, 0.2], 0), _embed_item([0.3, 0.4], 1)]
+    response.usage = MagicMock(total_tokens=9)
+    mock_openai_client.embeddings.create = AsyncMock(return_value=response)
+
+    provider = OpenAIProvider(
+        api_key="test-key", embedding_model="text-embedding-3-small"
+    )
+    embeddings, tokens = await provider.embed_batch_with_usage(["a", "b"])
+
+    assert embeddings == [[0.1, 0.2], [0.3, 0.4]]
+    assert tokens == 9
+
+
+@pytest.mark.unit
+async def test_openai_with_usage_estimates_when_usage_absent(mock_openai_client):
+    """Missing usage falls back to the char-based estimate."""
+    response = MagicMock()
+    response.data = [_embed_item([0.1], 0)]
+    response.usage = None
+    mock_openai_client.embeddings.create = AsyncMock(return_value=response)
+
+    provider = OpenAIProvider(
+        api_key="test-key", embedding_model="text-embedding-3-small"
+    )
+    _, tokens = await provider.embed_with_usage("abcdefgh")  # 8 chars → 2 tokens
+
+    assert tokens == 2
+
+
 @pytest.mark.unit
 async def test_openai_close(mock_openai_client):
     """Test OpenAI client close."""

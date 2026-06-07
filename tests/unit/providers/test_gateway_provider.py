@@ -6,6 +6,7 @@ tenant realm); creds are all-or-nothing.
 """
 
 import time
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -325,6 +326,69 @@ def test_trailing_slash_base_url_normalized():
     base = _client_base(provider)
     assert base.endswith("/v1")
     assert not base.endswith("/v1/v1")
+
+
+async def test_gateway_embed_with_usage_forwards_after_bearer(monkeypatch):
+    """embed_with_usage refreshes the bearer, then returns the (embedding,
+    token_count) from the inherited OpenAI implementation."""
+    provider = GatewayProvider(
+        base_url="http://gw:8083/v1", embedding_model="mistral/mistral-embed"
+    )
+
+    order: list[str] = []
+
+    async def _ensure_bearer():
+        order.append("bearer")
+
+    monkeypatch.setattr(provider, "_ensure_bearer", _ensure_bearer)
+
+    item = MagicMock()
+    item.embedding = [0.1, 0.2]
+    item.index = 0
+    response = MagicMock()
+    response.data = [item]
+    response.usage = MagicMock(total_tokens=8)
+
+    async def _create(**_kwargs):
+        order.append("embed")
+        return response
+
+    monkeypatch.setattr(provider.client.embeddings, "create", _create)
+
+    embedding, tokens = await provider.embed_with_usage("hello")
+
+    assert embedding == [0.1, 0.2]
+    assert tokens == 8
+    assert order == ["bearer", "embed"]  # bearer refreshed before the embed call
+
+
+async def test_gateway_embed_batch_with_usage_forwards_after_bearer(monkeypatch):
+    """embed_batch_with_usage also refreshes the bearer before delegating."""
+    provider = GatewayProvider(
+        base_url="http://gw:8083/v1", embedding_model="mistral/mistral-embed"
+    )
+    ensured = {"n": 0}
+
+    async def _ensure_bearer():
+        ensured["n"] += 1
+
+    monkeypatch.setattr(provider, "_ensure_bearer", _ensure_bearer)
+
+    item = MagicMock()
+    item.embedding = [0.3, 0.4]
+    item.index = 0
+    response = MagicMock()
+    response.data = [item]
+    response.usage = MagicMock(total_tokens=5)
+    monkeypatch.setattr(
+        provider.client.embeddings, "create", AsyncMock(return_value=response)
+    )
+
+    embeddings, tokens = await provider.embed_batch_with_usage(["x"])
+
+    assert embeddings == [[0.3, 0.4]]
+    assert tokens == 5
+    assert ensured["n"] == 1
 
 
 async def test_detect_dimension_with_bare_base_url_hits_v1_models(monkeypatch):

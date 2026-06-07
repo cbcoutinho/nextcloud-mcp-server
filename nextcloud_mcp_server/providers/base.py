@@ -1,5 +1,6 @@
 """Unified provider interface for embeddings and text generation."""
 
+import math
 from abc import ABC, abstractmethod
 
 
@@ -54,6 +55,40 @@ class Provider(ABC):
             NotImplementedError: If provider doesn't support embeddings
         """
         pass
+
+    @staticmethod
+    def _estimate_tokens(texts: list[str]) -> int:
+        """Best-effort token estimate when a provider returns no usage data.
+
+        Uses a coarse ~4-chars-per-token heuristic so the billable token
+        value stays non-zero and monotone with input size for local/dev
+        providers (Simple, Ollama without ``prompt_eval_count``). Real
+        providers override ``*_with_usage`` to report exact counts.
+        """
+        return math.ceil(sum(len(t) for t in texts) / 4)
+
+    async def embed_with_usage(self, text: str) -> tuple[list[float], int]:
+        """Embed one text and report the request's token count.
+
+        Returns ``(embedding, token_count)``. The default delegates to
+        :meth:`embed` and estimates the tokens; providers that surface real
+        usage from their embedding response override this. Used by the
+        usage-metering hooks (Deck #67) to bill ``embeddings_queries`` by
+        tokens rather than by operation count.
+        """
+        embedding = await self.embed(text)
+        return embedding, self._estimate_tokens([text])
+
+    async def embed_batch_with_usage(
+        self, texts: list[str]
+    ) -> tuple[list[list[float]], int]:
+        """Embed multiple texts and report the total token count.
+
+        Returns ``(embeddings, token_count)``; the default estimates. See
+        :meth:`embed_with_usage`.
+        """
+        embeddings = await self.embed_batch(texts)
+        return embeddings, self._estimate_tokens(texts)
 
     @abstractmethod
     def get_dimension(self) -> int:

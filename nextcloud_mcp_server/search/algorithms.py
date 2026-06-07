@@ -285,9 +285,15 @@ class SearchAlgorithm(ABC):
         query_embedding: The query embedding generated during the last search.
             Available after search() completes for algorithms that use embeddings.
             Can be reused by callers to avoid redundant embedding generation.
+        query_token_count: Token count of the query embedding request from the
+            last search (provider-reported, or estimated). Set by algorithms
+            that embed the query so the usage-metering hook can bill
+            ``embeddings_queries`` by tokens (Deck #67). The instance is
+            per-request, so this side-channel is concurrency-safe.
     """
 
     query_embedding: list[float] | None = None
+    query_token_count: int | None = None
 
     @abstractmethod
     async def search(

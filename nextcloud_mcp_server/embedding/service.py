@@ -52,6 +52,22 @@ class EmbeddingService:
         """
         return await self.provider.embed_batch(texts)
 
+    async def embed_with_usage(self, text: str) -> tuple[list[float], int]:
+        """Embed one text and report the request's token count.
+
+        Returns ``(embedding, token_count)`` for usage metering (Deck #67).
+        """
+        return await self.provider.embed_with_usage(text)
+
+    async def embed_batch_with_usage(
+        self, texts: list[str]
+    ) -> tuple[list[list[float]], int]:
+        """Embed multiple texts and report the total token count.
+
+        Returns ``(embeddings, token_count)`` for usage metering (Deck #67).
+        """
+        return await self.provider.embed_batch_with_usage(texts)
+
     def get_dimension(self) -> int:
         """
         Get embedding dimension.
