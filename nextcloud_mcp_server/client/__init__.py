@@ -199,6 +199,33 @@ class NextcloudClient:
 
         return response.json()
 
+    async def get_enabled_apps(self) -> set[str]:
+        """Return the set of app ids enabled for the authenticated user.
+
+        Uses the per-user core navigation endpoint, which lists only apps the
+        current user can access (respecting group restrictions). The vector
+        scanner uses this to skip polling apps the user lacks, which would 404
+        and flood tenant logs. Preferred over ``/cloud/capabilities`` because
+        the News app advertises no capability and so never appears there.
+        """
+        response = await self._client.get(
+            "/ocs/v2.php/core/navigation/apps",
+            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+        )
+        response.raise_for_status()
+        data = response.json()
+        entries = data.get("ocs", {}).get("data", []) or []
+        enabled: set[str] = set()
+        for entry in entries:
+            # ``app`` is the canonical app id; ``id`` matches it for the apps we
+            # gate. Union both so an unexpected nav-entry shape never hides an
+            # enabled app — a false "disabled" would skip real indexing.
+            for key in ("app", "id"):
+                value = entry.get(key)
+                if value:
+                    enabled.add(value)
+        return enabled
+
     async def notes_search_notes(self, *, query: str):
         """Search notes using token-based matching with relevance ranking."""
         all_notes = self.notes.get_all_notes()

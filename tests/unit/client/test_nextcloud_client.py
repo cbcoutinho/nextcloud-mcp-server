@@ -7,7 +7,7 @@ folders) into a flat list of files.
 """
 
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -29,6 +29,70 @@ def _make_client() -> Any:
 
 
 pytestmark = pytest.mark.unit
+
+
+def _navigation_response(entries: list[dict]) -> MagicMock:
+    """Build a mocked OCS v2 ``core/navigation/apps`` response."""
+    response = MagicMock()
+    response.status_code = 200
+    response.raise_for_status = MagicMock()
+    response.json.return_value = {"ocs": {"meta": {}, "data": entries}}
+    return response
+
+
+class TestGetEnabledApps:
+    async def test_returns_app_ids_from_navigation(self):
+        client = _make_client()
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(
+            return_value=_navigation_response(
+                [
+                    {"id": "files", "app": "files"},
+                    {"id": "notes", "app": "notes"},
+                    {"id": "deck", "app": "deck"},
+                    {"id": "news", "app": "news"},
+                ]
+            )
+        )
+
+        apps = await client.get_enabled_apps()
+
+        assert apps == {"files", "notes", "deck", "news"}
+        # Hits the per-user navigation endpoint, not capabilities.
+        assert (
+            client._client.get.await_args.args[0] == "/ocs/v2.php/core/navigation/apps"
+        )
+
+    async def test_unions_id_and_app_keys(self):
+        """When ``id`` and ``app`` differ, both are collected so an enabled
+        app is never hidden by an unexpected nav-entry id."""
+        client = _make_client()
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(
+            return_value=_navigation_response([{"id": "files_sharing", "app": "files"}])
+        )
+
+        apps = await client.get_enabled_apps()
+
+        assert apps == {"files", "files_sharing"}
+
+    async def test_empty_navigation_returns_empty_set(self):
+        client = _make_client()
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(return_value=_navigation_response([]))
+
+        assert await client.get_enabled_apps() == set()
+
+    async def test_skips_entries_missing_both_keys(self):
+        client = _make_client()
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(
+            return_value=_navigation_response(
+                [{"name": "Logout", "href": "/logout"}, {"app": "notes"}]
+            )
+        )
+
+        assert await client.get_enabled_apps() == {"notes"}
 
 
 class TestNormaliseSearchResult:
