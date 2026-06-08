@@ -593,6 +593,14 @@ def configure_semantic_tools(mcp: FastMCP):
             # query is embedded — and metered — exactly once regardless of how
             # many doc_types were searched. See record_search_usage for the
             # metric/privacy details.
+            #
+            # NOTE (v1 billing gap): this fires only on a fully successful
+            # search. If the query embed succeeded (provider billed the tokens,
+            # and Prometheus recorded them via record_embedding_tokens) but a
+            # later step (Qdrant/verify) raised, no tokens_embedded row is
+            # written — the embed cost is real but absent from the billing
+            # ledger. Acceptable for v1 (search failures are rare and the meter
+            # is not billed today); revisit if billing accuracy needs it.
             await record_search_usage(
                 enabled=settings.usage_metering_enabled,
                 user_id=username,

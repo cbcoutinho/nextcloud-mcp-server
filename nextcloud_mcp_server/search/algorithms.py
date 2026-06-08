@@ -292,8 +292,18 @@ class SearchAlgorithm(ABC):
             per-request, so this side-channel is concurrency-safe.
     """
 
+    # Class-level defaults are a safety net; __init__ shadows them per instance.
     query_embedding: list[float] | None = None
     query_token_count: int | None = None
+
+    def __init__(self) -> None:
+        # Set the query-embedding side-channel as instance attributes so
+        # concurrent SearchAlgorithm instances never share it through the
+        # class-level defaults above — per-request isolation by construction,
+        # not just by the convention that each subclass redeclares them.
+        # Subclasses with their own __init__ should call super().__init__().
+        self.query_embedding: list[float] | None = None
+        self.query_token_count: int | None = None
 
     @abstractmethod
     async def search(

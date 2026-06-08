@@ -35,6 +35,7 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
         Args:
             score_threshold: Minimum similarity score (0-1, default: 0.7)
         """
+        super().__init__()
         self.score_threshold = score_threshold
 
     @property

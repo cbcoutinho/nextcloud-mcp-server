@@ -56,16 +56,15 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                 f"Invalid fusion algorithm '{fusion}'. Must be 'rrf' or 'dbsf'"
             )
 
+        # super() sets the per-instance query_embedding / query_token_count
+        # side-channel; this adds the cache key for it.
+        super().__init__()
         self.score_threshold = score_threshold
         self.fusion = models.Fusion.RRF if fusion == "rrf" else models.Fusion.DBSF
         self.fusion_name = fusion
-        # Per-request query-embedding cache. ``_embedded_query`` is the query
-        # string whose dense embedding is held in ``query_embedding`` — repeated
-        # search() calls on this instance (the doc_types loop) reuse it. These
-        # shadow the class-level defaults on SearchAlgorithm; set here so all
-        # three cache fields are instance attributes from construction.
-        self.query_embedding: list[float] | None = None
-        self.query_token_count: int | None = None
+        # ``_embedded_query`` is the query string whose dense embedding is held
+        # in ``query_embedding`` — repeated search() calls on this per-request
+        # instance (the doc_types loop) reuse it instead of re-embedding.
         self._embedded_query: str | None = None
 
     @property
