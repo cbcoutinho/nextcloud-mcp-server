@@ -342,6 +342,12 @@ embedding_chars_total = Counter(
 # measure, Deck #67). On a dedicated counter (not folded into the chunk/request
 # metrics above) so query embeds don't inflate indexing dashboards; labelled by
 # operation = index | query. Always emitted, independent of USAGE_METERING_ENABLED.
+#
+# Dashboard note: operation="query" is recorded at embed time (before Qdrant /
+# verify-on-read), whereas the billing-store tokens_embedded row is written only
+# after the search fully succeeds. So this counter can legitimately exceed the
+# billing aggregate when a search fails post-embed — don't alert on that gap as
+# a divergence bug.
 embedding_tokens_total = Counter(
     "astrolabe_embedding_tokens_total",
     "Total embedding tokens consumed (provider-reported or estimated)",

@@ -164,6 +164,13 @@ class OllamaProvider(Provider):
             if self._dimension is None and data["embeddings"]:
                 self._dimension = len(data["embeddings"][0])
 
+            # ``prompt_eval_count`` is assumed to be the batch-level total for a
+            # multi-input /api/embed call. Ollama's API docs aren't explicit
+            # about batch aggregation; if a version reports only the last
+            # input's tokens this understates the batch. Unverified against a
+            # live instance — Ollama isn't the Cloud billing provider (Mistral
+            # is). If it proves last-item-only, switch to per-item requests and
+            # sum. The char-based estimate covers versions that omit the field.
             prompt_eval = data.get("prompt_eval_count")
             total_tokens += (
                 round(prompt_eval)
