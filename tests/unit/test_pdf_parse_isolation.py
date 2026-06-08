@@ -13,7 +13,6 @@ check on the sample PDFs, not here (unit tests must not spawn the heavy worker
 or depend on the sample files).
 """
 
-import resource
 import sys
 
 import anyio
@@ -28,7 +27,19 @@ from nextcloud_mcp_server.document_processors._isolation import (
     run_isolated_pdf_parse,
 )
 
+# ``resource`` is a Unix-only stdlib module (absent on Windows, #877). Guard the
+# import so this test module stays importable on Windows; the rlimit-computation
+# tests below are skipped there via the ``requires_resource`` marker.
+try:
+    import resource
+except ImportError:  # pragma: no cover - only reached on Windows
+    resource = None  # type: ignore[assignment]
+
 pytestmark = pytest.mark.unit
+
+requires_resource = pytest.mark.skipif(
+    resource is None, reason="resource module is Unix-only (absent on Windows)"
+)
 
 
 def _tiny_pdf() -> bytes:
@@ -112,6 +123,7 @@ async def test_timeout_kills_and_classifies_as_timeout(monkeypatch):
 # --- _apply_mem_limit computation (mocked; never applied to the test proc) ---
 
 
+@requires_resource
 def test_apply_mem_limit_caps_soft_below_finite_hard(monkeypatch):
     captured = {}
     monkeypatch.setattr(_isolation, "_MEM_LIMIT_APPLIED", False)
@@ -130,6 +142,7 @@ def test_apply_mem_limit_caps_soft_below_finite_hard(monkeypatch):
     assert hard == 4 * 1024**3
 
 
+@requires_resource
 def test_apply_mem_limit_uses_target_when_hard_unlimited(monkeypatch):
     captured = {}
     monkeypatch.setattr(_isolation, "_MEM_LIMIT_APPLIED", False)
@@ -148,6 +161,7 @@ def test_apply_mem_limit_uses_target_when_hard_unlimited(monkeypatch):
     assert hard == resource.RLIM_INFINITY
 
 
+@requires_resource
 def test_apply_mem_limit_is_applied_once(monkeypatch):
     calls = []
     monkeypatch.setattr(_isolation, "_MEM_LIMIT_APPLIED", False)

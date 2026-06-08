@@ -25,7 +25,7 @@ from anyio import BrokenWorkerProcess
 # importing it unconditionally crashed Windows startup (#877). The RLIMIT_AS cap
 # it provides is a Linux-pod safety measure, not a correctness requirement, so on
 # platforms without it we fall back to a no-op (``resource is None``).
-if sys.platform == "win32":  # pragma: no cover - exercised only on Windows
+if sys.platform == "win32":  # pragma: no cover - win32-only path
     resource = None
 else:
     import resource
