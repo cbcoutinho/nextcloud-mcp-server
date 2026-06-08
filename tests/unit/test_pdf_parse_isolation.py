@@ -14,6 +14,7 @@ or depend on the sample files).
 """
 
 import resource
+import sys
 
 import anyio
 import anyio.to_process
@@ -159,6 +160,41 @@ def test_apply_mem_limit_is_applied_once(monkeypatch):
     _isolation._apply_mem_limit(1536)
     _isolation._apply_mem_limit(1536)
     assert len(calls) == 1  # second call is a no-op
+
+
+# --- Windows / no-``resource`` platform compatibility (#877) -----------------
+
+
+def test_apply_mem_limit_noop_when_resource_unavailable(monkeypatch):
+    """On a platform without ``resource`` (e.g. Windows) the cap is skipped.
+
+    Regression for #877: ``resource`` is Unix-only, so ``_apply_mem_limit`` must
+    degrade to a no-op (rather than crash) when the module is unavailable.
+    """
+    monkeypatch.setattr(_isolation, "_MEM_LIMIT_APPLIED", False)
+    monkeypatch.setattr(_isolation, "resource", None)
+    _isolation._apply_mem_limit(1536)  # must not raise
+    assert _isolation._MEM_LIMIT_APPLIED is True
+
+
+def test_isolation_imports_on_windows_without_resource(monkeypatch):
+    """Importing ``_isolation`` on Windows must not crash on ``import resource``.
+
+    Regression for #877: a module-scope ``import resource`` raised
+    ``ModuleNotFoundError`` on Windows and took down server startup. With
+    ``sys.platform == 'win32'`` the module must import cleanly and bind
+    ``resource`` to ``None``.
+    """
+    import importlib
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delitem(
+        sys.modules,
+        "nextcloud_mcp_server.document_processors._isolation",
+        raising=False,
+    )
+    mod = importlib.import_module("nextcloud_mcp_server.document_processors._isolation")
+    assert mod.resource is None
 
 
 # --- PyMuPDF processor wiring ------------------------------------------------
