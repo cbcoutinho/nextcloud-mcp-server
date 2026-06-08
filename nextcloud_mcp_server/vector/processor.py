@@ -122,23 +122,32 @@ async def record_indexing_usage(
     chunk_count: int,
     token_count: int,
     total_chars: int,
+    page_count: int | None,
 ) -> None:
-    """Record the two billable usage events for one embedded document.
+    """Record the billable usage events for one embedded document.
 
-    ``pages_embedded`` is the buyer-facing "pages indexed" dimension;
-    ``tokens_embedded`` is the embedding request's token count — the same metric
-    search records, so the meter bills embedding tokens whether they were
-    incurred indexing a document or embedding a query (Deck #67).
+    Two metered dimensions (Deck #67), recorded independently:
 
-    TODO(#282): ``pages_embedded`` currently carries the raw chunk count
-    (``len(chunk_texts)``) as an interim value. The real normalized "pages
-    indexed" count — real pages for paginated types (PDF/DOCX/PPT), a fixed
-    chars/tokens-per-page constant otherwise — is deferred to instrumentation
-    card #282; this code (card #284) only lands the metric name/contract.
+    - ``tokens_embedded`` — the embedding request's token count, recorded for
+      *every* embedded document. The same metric search records, so the meter
+      bills embedding tokens whether they were incurred indexing a document or
+      embedding a query.
+    - ``pages_embedded`` — a charge for **parsing** (PDF page extraction / OCR),
+      not a normalized content size. ``page_count`` is the real number of pages
+      the document processor parsed. Text content (notes, deck cards, news
+      items) is never parsed, carries no ``page_count``, and accrues **no**
+      ``pages_embedded`` row — only ``tokens_embedded``. There is deliberately
+      no chars/tokens-per-page constant: pages map 1:1 to parsed document pages
+      (card #282).
 
     Best-effort and flag-gated: a metering failure is logged and never breaks
-    indexing. No-op when metering is disabled or the document produced no chunks
-    (an empty batch embeds nothing and would only write zero-value rows).
+    indexing. ``chunk_count`` is the empty-batch no-op guard — a document that
+    produced no chunks embedded nothing, so both events are skipped rather than
+    writing zero-value rows. ``pages_embedded`` is additionally skipped when
+    ``page_count`` is absent or not strictly positive — gating on the page count
+    itself (not the ``doc_type``) keeps this correct if a future non-PDF parsed
+    type starts reporting pages, and a malformed non-positive count meters as
+    "no pages" rather than emitting a zero/negative billing row.
 
     Privacy note: ``user_id`` stays tenant-local — the CP rollup aggregates
     GROUP BY (day, metric) into ``usage_daily`` (no metadata column), so nothing
@@ -159,24 +168,30 @@ async def record_indexing_usage(
         store = await UsageEventStore.shared()
         # enabled=True: the guard above already confirmed the flag, so the store
         # skips a second uncached Settings build per record (ADR-024).
-        # record_usage_event swallows its own write failures, so the two records
-        # are independent; if pages_embedded somehow raised mid-way,
-        # tokens_embedded would be skipped, leaving an unmatched pages_embedded
-        # row — acceptable under the (day, metric) SUM-aggregation billing model.
-        await store.record_usage_event(
-            # TODO(#282): value is the interim chunk count; switch to normalized
-            # real-page count when the per-page constant lands.
-            metric="pages_embedded",
-            value=chunk_count,
-            metadata=metadata,
-            enabled=True,
-        )
+        # record_usage_event swallows its own write failures, so the records are
+        # independent; one raising never blocks the other — acceptable under the
+        # (day, metric) SUM-aggregation billing model.
+
+        # tokens_embedded first (intentional ordering): it is recorded for every
+        # embedded document, so the embedding cost is always captured before the
+        # conditional parsing cost — don't reverse this in a refactor.
         await store.record_usage_event(
             metric="tokens_embedded",
             value=token_count,
             metadata=metadata,
             enabled=True,
         )
+        # pages_embedded: parsed pages only, and only a strictly positive count.
+        # Text content has no page_count; a zero/negative count is skipped rather
+        # than writing a row that would misrepresent a no-parse document as
+        # billable parsing work.
+        if page_count and page_count > 0:
+            await store.record_usage_event(
+                metric="pages_embedded",
+                value=page_count,
+                metadata=metadata,
+                enabled=True,
+            )
     except Exception:
         # Reached only when shared()/store construction itself raises
         # (record_usage_event swallows its own write failures). Metering is on,
@@ -912,11 +927,20 @@ async def _index_document(
             # Export token consumption to Prometheus (always-on, independent of
             # the billing flag) so Grafana sees indexing token cost.
             record_embedding_tokens(provider, "index", embed_tokens)
-            # Usage metering (Deck #67): record the chunk volume +
-            # embedding-token count for this document. Best-effort and
-            # flag-gated; placed after the embedding succeeds so it can never
-            # affect the indexing path. See record_indexing_usage for the
+            # Usage metering (Deck #67): record the embedding-token count (all
+            # docs) and, for parsed files, the real parsed-page count. Best-
+            # effort and flag-gated; placed after the embedding succeeds so it
+            # can never affect the indexing path. ``page_count`` is set by the
+            # document processors for PDFs and absent for text types, so text
+            # content meters tokens only. See record_indexing_usage for the
             # metric/privacy details.
+            #
+            # Narrow defensively: file_metadata values are loosely typed, so a
+            # malformed page_count meters as "no pages" rather than erroring on
+            # the indexing path.
+            # bool is an int subclass, so exclude it explicitly — a stray
+            # page_count=True in metadata must not slip through as pages=1.
+            raw_page_count = file_metadata.get("page_count")
             await record_indexing_usage(
                 enabled=settings.usage_metering_enabled,
                 provider=provider,
@@ -926,6 +950,12 @@ async def _index_document(
                 chunk_count=len(chunk_texts),
                 token_count=embed_tokens,
                 total_chars=total_chars,
+                page_count=(
+                    raw_page_count
+                    if isinstance(raw_page_count, int)
+                    and not isinstance(raw_page_count, bool)
+                    else None
+                ),
             )
 
     async def generate_sparse_embeddings():
