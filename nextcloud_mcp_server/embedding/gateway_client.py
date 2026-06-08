@@ -217,10 +217,21 @@ class GatewayProvider(OpenAIProvider):
                 exc,
             )
 
+    # Bearer-refresh override topology. OpenAIProvider routes embed_batch(),
+    # embed_with_usage() and embed_batch_with_usage() all through
+    # embed_batch_with_usage(); only embed() (single) is self-contained. So we
+    # override exactly two methods to refresh the bearer exactly once on every
+    # path: embed() (its own entrypoint) and embed_batch_with_usage() (the
+    # shared funnel for the other three). Overriding embed_batch() as well would
+    # double-call _ensure_bearer() (override → super().embed_batch() →
+    # self.embed_batch_with_usage() → override again).
+
     async def embed(self, text: str) -> list[float]:
         await self._ensure_bearer()
         return await super().embed(text)
 
-    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def embed_batch_with_usage(
+        self, texts: list[str]
+    ) -> tuple[list[list[float]], int]:
         await self._ensure_bearer()
-        return await super().embed_batch(texts)
+        return await super().embed_batch_with_usage(texts)

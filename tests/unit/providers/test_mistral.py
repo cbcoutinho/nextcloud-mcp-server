@@ -256,6 +256,68 @@ async def test_mistral_batch_raises_on_count_mismatch(mock_mistral_client):
 
 
 @pytest.mark.unit
+async def test_mistral_embed_batch_with_usage_reports_tokens(mock_mistral_client):
+    """embed_batch_with_usage returns the provider-reported total_tokens."""
+    response = _make_response([[0.1, 0.2], [0.3, 0.4]])
+    response.usage = MagicMock(total_tokens=11)
+    mock_mistral_client.embeddings.create_async = AsyncMock(return_value=response)
+
+    provider = MistralProvider(api_key="test-key", embedding_model="mistral-embed")
+    embeddings, tokens = await provider.embed_batch_with_usage(["a", "b"])
+
+    assert embeddings == [[0.1, 0.2], [0.3, 0.4]]
+    assert tokens == 11
+
+
+@pytest.mark.unit
+async def test_mistral_embed_batch_with_usage_sums_across_chunks(mock_mistral_client):
+    """Token counts sum across the BATCH_SIZE sub-requests (1 token/input here)."""
+
+    def _side_effect(*, model, inputs, **_kwargs):
+        resp = _make_response([[float(i)] for i in range(len(inputs))])
+        resp.usage = MagicMock(total_tokens=len(inputs))
+        return resp
+
+    mock_mistral_client.embeddings.create_async = AsyncMock(side_effect=_side_effect)
+
+    provider = MistralProvider(api_key="test-key", embedding_model="mistral-embed")
+    total = BATCH_SIZE * 2 + 5  # three chunks
+    embeddings, tokens = await provider.embed_batch_with_usage(
+        [f"t-{i}" for i in range(total)]
+    )
+
+    assert len(embeddings) == total
+    assert tokens == total  # summed across all three chunks
+
+
+@pytest.mark.unit
+async def test_mistral_with_usage_estimates_when_usage_absent(mock_mistral_client):
+    """Missing usage falls back to the char-based estimate, not a crash."""
+    response = _make_response([[0.1, 0.2]])
+    response.usage = None
+    mock_mistral_client.embeddings.create_async = AsyncMock(return_value=response)
+
+    provider = MistralProvider(api_key="test-key", embedding_model="mistral-embed")
+    _, tokens = await provider.embed_batch_with_usage(["abcd"])  # 4 chars → 1 token
+
+    assert tokens == 1
+
+
+@pytest.mark.unit
+async def test_mistral_embed_with_usage_single(mock_mistral_client):
+    """embed_with_usage returns the single embedding plus its token count."""
+    response = _make_response([[0.5, 0.6]])
+    response.usage = MagicMock(total_tokens=3)
+    mock_mistral_client.embeddings.create_async = AsyncMock(return_value=response)
+
+    provider = MistralProvider(api_key="test-key", embedding_model="mistral-embed")
+    embedding, tokens = await provider.embed_with_usage("hello")
+
+    assert embedding == [0.5, 0.6]
+    assert tokens == 3
+
+
+@pytest.mark.unit
 def test_mistral_is_rate_limit_predicate():
     """_is_rate_limit returns True only for SDKErrors with status_code == 429."""
     err_429 = MagicMock(spec=SDKError)

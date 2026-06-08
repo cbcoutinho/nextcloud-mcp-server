@@ -56,6 +56,64 @@ logger = logging.getLogger(__name__)
 _USAGE_METADATA_MAX_DOC_TYPES = 16
 
 
+async def record_search_usage(
+    *,
+    enabled: bool,
+    user_id: str,
+    fusion: str,
+    doc_types: list[str] | None,
+    token_count: int | None,
+) -> None:
+    """Record the billable ``tokens_embedded`` event for one semantic search.
+
+    The value is the query embedding's token count (provider-reported or
+    estimated) — the unit upstream providers bill on, and the same metric the
+    indexing path records for chunk embeddings (Deck #67). ``nc_semantic_search``
+    and ``nc_semantic_search_answer`` (which reuses it) both flow through here —
+    do not add a second hook. ``nc_semantic_search_answer`` exposes no
+    ``doc_types`` parameter, so its searches always meter with
+    ``doc_types=None``.
+
+    Best-effort and flag-gated: a metering failure is logged and never breaks
+    the search. Unlike the indexing path's chunk-count guard, a 0-token query is
+    still recorded (the query embedding ran); a zero-value row is a no-op at the
+    Stripe ``sum`` aggregation.
+
+    Privacy note: ``user_id`` stays tenant-local — the CP rollup aggregates
+    GROUP BY (day, metric) into ``usage_daily`` (no metadata column), so nothing
+    here propagates to Stripe; it is retained only to keep Deck #67's future
+    per-user attribution derivable from app-DB metadata without a re-migration.
+    """
+    if not enabled:
+        return
+    try:
+        store = await UsageEventStore.shared()
+        await store.record_usage_event(
+            metric="tokens_embedded",
+            value=token_count or 0,
+            metadata={
+                "user_id": user_id,
+                "fusion": fusion,
+                # Bounded copy — see _USAGE_METADATA_MAX_DOC_TYPES. Both None and
+                # [] normalize to null so a future metadata->'doc_types' IS NULL
+                # query counts the all-types case consistently.
+                "doc_types": (
+                    doc_types[:_USAGE_METADATA_MAX_DOC_TYPES] if doc_types else None
+                ),
+            },
+            # The caller already confirmed the flag, so pass enabled=True
+            # directly — the store then skips a second uncached Settings build on
+            # this hot query path (ADR-024).
+            enabled=True,
+        )
+    except Exception:
+        # Reached only when shared()/store construction itself raises
+        # (record_usage_event swallows its own write failures). Metering is on,
+        # so warn — a silent DEBUG line would hide "operator enabled metering
+        # but gets no data".
+        logger.warning("usage metering hook (tokens_embedded) skipped", exc_info=True)
+
+
 def configure_semantic_tools(mcp: FastMCP):
     """Configure semantic search tools for MCP server."""
 
@@ -527,51 +585,29 @@ def configure_semantic_tools(mcp: FastMCP):
 
             logger.info("Returning %d results from BM25 hybrid search", len(results))
 
-            # Usage metering (Deck #67): one billable 'embeddings_queries'
-            # event per successful search (the query embedding is the metered
-            # cost). Best-effort and gated on the flag so the off-path touches
-            # no storage. nc_semantic_search_answer reuses this tool, so it
-            # records here too — do not add a second hook there.
+            # Usage metering (Deck #67): record the query embedding's token
+            # count as a billable 'tokens_embedded' event. query_token_count
+            # is set by BM25HybridSearchAlgorithm during the search() above; the
+            # doc_types loop reuses one search_algo instance for the same query
+            # and the algorithm caches the dense embedding per query, so the
+            # query is embedded — and metered — exactly once regardless of how
+            # many doc_types were searched. See record_search_usage for the
+            # metric/privacy details.
             #
-            # Privacy note: user_id stays tenant-local. The CP rollup
-            # aggregates GROUP BY (day, metric) into usage_daily, which has no
-            # metadata column, so nothing here propagates to Stripe; the value
-            # is retained only so Deck #67's "per-user attribution derivable
-            # from app-DB metadata later" stays possible without a re-migration.
-            if settings.usage_metering_enabled:
-                try:
-                    store = await UsageEventStore.shared()
-                    await store.record_usage_event(
-                        metric="embeddings_queries",
-                        value=1,
-                        metadata={
-                            "user_id": username,
-                            "fusion": fusion,
-                            # Bounded copy — see _USAGE_METADATA_MAX_DOC_TYPES.
-                            # Both None and [] normalize to null so a future
-                            # metadata->'doc_types' IS NULL query counts the
-                            # all-types case consistently.
-                            "doc_types": (
-                                doc_types[:_USAGE_METADATA_MAX_DOC_TYPES]
-                                if doc_types
-                                else None
-                            ),
-                        },
-                        # The outer guard already confirmed the flag, so pass
-                        # enabled=True directly — the store then skips a second
-                        # uncached Settings build on this hot query path
-                        # (ADR-024).
-                        enabled=True,
-                    )
-                except Exception:
-                    # Reached only when shared()/store construction itself
-                    # raises (record_usage_event swallows its own write
-                    # failures). Metering is on, so warn — a silent DEBUG line
-                    # would hide "operator enabled metering but gets no data".
-                    logger.warning(
-                        "usage metering hook (embeddings_queries) skipped",
-                        exc_info=True,
-                    )
+            # NOTE (v1 billing gap): this fires only on a fully successful
+            # search. If the query embed succeeded (provider billed the tokens,
+            # and Prometheus recorded them via record_embedding_tokens) but a
+            # later step (Qdrant/verify) raised, no tokens_embedded row is
+            # written — the embed cost is real but absent from the billing
+            # ledger. Acceptable for v1 (search failures are rare and the meter
+            # is not billed today); revisit if billing accuracy needs it.
+            await record_search_usage(
+                enabled=settings.usage_metering_enabled,
+                user_id=username,
+                fusion=fusion,
+                doc_types=doc_types,
+                token_count=search_algo.query_token_count,
+            )
 
             return SemanticSearchResponse(
                 results=results,

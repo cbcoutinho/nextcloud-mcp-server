@@ -55,7 +55,7 @@ def upgrade() -> None:
             postgresql.TIMESTAMP(timezone=True) if is_pg else sa.TIMESTAMP(),
             nullable=False,
         ),
-        # Catalog metric: 'embeddings_queries' or 'pages_chunks'. Deliberately
+        # Catalog metric: 'tokens_embedded' or 'pages_embedded'. Deliberately
         # an unconstrained Text (no CHECK/enum) — the metric catalog lives in
         # control-plane config, not the app-DB schema. If a third metric is
         # ever added, the CP-side catalog must learn it too, or its rollup will

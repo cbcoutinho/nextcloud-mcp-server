@@ -122,17 +122,42 @@ class MistralProvider(Provider):
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for multiple texts, chunking by ``BATCH_SIZE``."""
+        embeddings, _ = await self.embed_batch_with_usage(texts)
+        return embeddings
+
+    async def embed_with_usage(self, text: str) -> tuple[list[float], int]:
+        """Embed one text, reporting the Mistral request's token count."""
+        embeddings, tokens = await self.embed_batch_with_usage([text])
+        if not embeddings:
+            raise RuntimeError(
+                f"Mistral embeddings API returned no embedding for model "
+                f"{self.embedding_model}"
+            )
+        return embeddings[0], tokens
+
+    async def embed_batch_with_usage(
+        self, texts: list[str]
+    ) -> tuple[list[list[float]], int]:
+        """Embed multiple texts, summing the Mistral-reported token usage.
+
+        Returns ``(embeddings, total_tokens)`` where ``total_tokens`` is the
+        sum of ``response.usage.total_tokens`` across the ``BATCH_SIZE`` sub-
+        requests (the unit Mistral bills on). Used by the usage-metering hooks
+        to record ``tokens_embedded`` by tokens (Deck #67).
+        """
         if not self.supports_embeddings:
             raise NotImplementedError(_NO_EMBEDDING_MODEL_MSG)
 
         if not texts:
-            return []
+            return [], 0
 
         all_embeddings: list[list[float]] = []
+        total_tokens = 0
         for i in range(0, len(texts), BATCH_SIZE):
             batch = texts[i : i + BATCH_SIZE]
-            batch_embeddings = await self._embed_batch_request(batch)
+            batch_embeddings, batch_tokens = await self._embed_batch_request(batch)
             all_embeddings.extend(batch_embeddings)
+            total_tokens += batch_tokens
 
             if self._dimension is None and batch_embeddings:
                 self._dimension = len(batch_embeddings[0])
@@ -142,11 +167,18 @@ class MistralProvider(Provider):
                     self.embedding_model,
                 )
 
-        return all_embeddings
+        return all_embeddings, total_tokens
 
     @_retry_429
-    async def _embed_batch_request(self, batch: list[str]) -> list[list[float]]:
-        """Single batch request with rate-limit retry."""
+    async def _embed_batch_request(
+        self, batch: list[str]
+    ) -> tuple[list[list[float]], int]:
+        """Single batch request with rate-limit retry.
+
+        Returns ``(embeddings, token_count)``; ``token_count`` comes from the
+        response's ``usage.total_tokens`` and falls back to a char-based
+        estimate if the API omits usage.
+        """
         assert self.embedding_model is not None
         response = await self.client.embeddings.create_async(
             model=self.embedding_model,
@@ -170,7 +202,18 @@ class MistralProvider(Provider):
                 f"Mistral embeddings API returned {len(result)} embeddings "
                 f"for {len(batch)} inputs"
             )
-        return result
+
+        usage = getattr(response, "usage", None)
+        total_tokens = getattr(usage, "total_tokens", None) if usage else None
+        # Guard on numeric type (not just ``is not None``): a real response
+        # gives an int, but test doubles / partial responses can surface a
+        # non-numeric attribute — fall back to the estimate there.
+        tokens = (
+            round(total_tokens)
+            if isinstance(total_tokens, (int, float))
+            else self._estimate_tokens(batch)
+        )
+        return result, tokens
 
     def get_dimension(self) -> int:
         if not self.supports_embeddings:

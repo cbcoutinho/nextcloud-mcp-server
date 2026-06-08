@@ -153,19 +153,49 @@ class OpenAIProvider(Provider):
                 "Embedding not supported - no embedding_model configured"
             )
 
+        embeddings, _ = await self.embed_batch_with_usage(texts)
+        return embeddings
+
+    async def embed_with_usage(self, text: str) -> tuple[list[float], int]:
+        """Embed one text, reporting the request's token count."""
+        embeddings, tokens = await self.embed_batch_with_usage([text])
+        if not embeddings:
+            raise RuntimeError(
+                "OpenAI embeddings API returned no embedding for model "
+                f"{self.embedding_model}"
+            )
+        return embeddings[0], tokens
+
+    async def embed_batch_with_usage(
+        self, texts: list[str]
+    ) -> tuple[list[list[float]], int]:
+        """Embed multiple texts, summing the API-reported token usage.
+
+        Returns ``(embeddings, total_tokens)`` where ``total_tokens`` sums
+        ``response.usage.total_tokens`` across the sub-requests (the unit the
+        provider bills on). Used by the usage-metering hooks (Deck #67). Also
+        serves the gateway path via :class:`GatewayProvider`.
+        """
+        if not self.supports_embeddings:
+            raise NotImplementedError(
+                "Embedding not supported - no embedding_model configured"
+            )
+
         if not texts:
-            return []
+            return [], 0
 
         # OpenAI supports batches up to 2048, but use smaller batches for safety
         batch_size = 100
         all_embeddings: list[list[float]] = []
+        total_tokens = 0
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
 
             # Use helper method with retry logic for each batch
-            batch_embeddings = await self._embed_batch_request(batch)
+            batch_embeddings, batch_tokens = await self._embed_batch_request(batch)
             all_embeddings.extend(batch_embeddings)
+            total_tokens += batch_tokens
 
             # Update dimension if not set
             if self._dimension is None and batch_embeddings:
@@ -176,11 +206,18 @@ class OpenAIProvider(Provider):
                     self.embedding_model,
                 )
 
-        return all_embeddings
+        return all_embeddings, total_tokens
 
     @_retry_429
-    async def _embed_batch_request(self, batch: list[str]) -> list[list[float]]:
-        """Make a single batch embedding request with retry logic."""
+    async def _embed_batch_request(
+        self, batch: list[str]
+    ) -> tuple[list[list[float]], int]:
+        """Make a single batch embedding request with retry logic.
+
+        Returns ``(embeddings, token_count)``; ``token_count`` comes from the
+        response's ``usage.total_tokens`` and falls back to a char-based
+        estimate if the API omits usage.
+        """
         assert self.embedding_model is not None  # Type narrowing
         response = await self.client.embeddings.create(
             input=batch,
@@ -188,7 +225,19 @@ class OpenAIProvider(Provider):
         )
         # Sort by index to maintain order
         sorted_data = sorted(response.data, key=lambda x: x.index)
-        return [item.embedding for item in sorted_data]
+        embeddings = [item.embedding for item in sorted_data]
+
+        usage = getattr(response, "usage", None)
+        total_tokens = getattr(usage, "total_tokens", None) if usage else None
+        # Guard on numeric type (not just ``is not None``): a real response
+        # gives an int, but test doubles / partial responses can surface a
+        # non-numeric attribute — fall back to the estimate there.
+        tokens = (
+            round(total_tokens)
+            if isinstance(total_tokens, (int, float))
+            else self._estimate_tokens(batch)
+        )
+        return embeddings, tokens
 
     def get_dimension(self) -> int:
         """

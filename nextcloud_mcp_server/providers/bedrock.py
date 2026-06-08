@@ -164,6 +164,16 @@ class BedrockProvider(Provider):
             NotImplementedError: If embeddings not enabled (no embedding_model)
             ClientError: If Bedrock API call fails
         """
+        embedding, _ = await self.embed_with_usage(text)
+        return embedding
+
+    async def embed_with_usage(self, text: str) -> tuple[list[float], int]:
+        """Embed one text, reporting the request's token count.
+
+        Titan Embed responses carry ``inputTextTokenCount``; for Cohere /
+        unknown models (no token field) this falls back to a char-based
+        estimate. Used by the usage-metering hooks (Deck #67).
+        """
         if not self.supports_embeddings:
             raise NotImplementedError(
                 "Embedding not supported - no embedding_model configured"
@@ -182,7 +192,13 @@ class BedrockProvider(Provider):
             response_body = json.loads(response["body"].read())
             embedding = self._parse_embedding_response(response_body)
 
-            return embedding
+            token_count = response_body.get("inputTextTokenCount")
+            tokens = (
+                round(token_count)
+                if isinstance(token_count, (int, float))
+                else self._estimate_tokens([text])
+            )
+            return embedding, tokens
 
         except (BotoCoreError, ClientError) as e:
             logger.error("Bedrock embedding error: %s", e)
@@ -205,16 +221,30 @@ class BedrockProvider(Provider):
             NotImplementedError: If embeddings not enabled (no embedding_model)
             ClientError: If Bedrock API call fails
         """
+        embeddings, _ = await self.embed_batch_with_usage(texts)
+        return embeddings
+
+    async def embed_batch_with_usage(
+        self, texts: list[str]
+    ) -> tuple[list[list[float]], int]:
+        """Embed multiple texts, summing the per-call token counts.
+
+        Bedrock has no batch embedding API, so requests run sequentially and
+        the token total is the sum of each call's ``inputTextTokenCount``
+        (Titan) or estimate (Cohere/unknown).
+        """
         if not self.supports_embeddings:
             raise NotImplementedError(
                 "Embedding not supported - no embedding_model configured"
             )
 
-        embeddings = []
+        embeddings: list[list[float]] = []
+        total_tokens = 0
         for text in texts:
-            embedding = await self.embed(text)
+            embedding, tokens = await self.embed_with_usage(text)
             embeddings.append(embedding)
-        return embeddings
+            total_tokens += tokens
+        return embeddings, total_tokens
 
     async def _detect_dimension(self):
         """

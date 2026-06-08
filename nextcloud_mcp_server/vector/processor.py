@@ -23,6 +23,7 @@ from nextcloud_mcp_server.observability.metrics import (
     record_document_chunks,
     record_document_parse_failed,
     record_embedding,
+    record_embedding_tokens,
     record_qdrant_operation,
     record_vector_sync_processing,
     update_vector_sync_queue_size,
@@ -110,6 +111,80 @@ def should_use_page_aware(
         page_boundaries: The extractor's page-boundary list (or ``None``).
     """
     return page_aware_enabled and doc_type == "file" and bool(page_boundaries)
+
+
+async def record_indexing_usage(
+    *,
+    enabled: bool,
+    provider: str,
+    model: str,
+    doc_type: str,
+    user_id: str,
+    chunk_count: int,
+    token_count: int,
+    total_chars: int,
+) -> None:
+    """Record the two billable usage events for one embedded document.
+
+    ``pages_embedded`` is the buyer-facing "pages indexed" dimension;
+    ``tokens_embedded`` is the embedding request's token count — the same metric
+    search records, so the meter bills embedding tokens whether they were
+    incurred indexing a document or embedding a query (Deck #67).
+
+    TODO(#282): ``pages_embedded`` currently carries the raw chunk count
+    (``len(chunk_texts)``) as an interim value. The real normalized "pages
+    indexed" count — real pages for paginated types (PDF/DOCX/PPT), a fixed
+    chars/tokens-per-page constant otherwise — is deferred to instrumentation
+    card #282; this code (card #284) only lands the metric name/contract.
+
+    Best-effort and flag-gated: a metering failure is logged and never breaks
+    indexing. No-op when metering is disabled or the document produced no chunks
+    (an empty batch embeds nothing and would only write zero-value rows).
+
+    Privacy note: ``user_id`` stays tenant-local — the CP rollup aggregates
+    GROUP BY (day, metric) into ``usage_daily`` (no metadata column), so nothing
+    here reaches Stripe; it is retained only to keep Deck #67's future per-user
+    attribution derivable from the app DB without a re-migration.
+    """
+    if not enabled or chunk_count == 0:
+        return
+
+    metadata = {
+        "provider": provider,
+        "model": model,
+        "doc_type": doc_type,
+        "user_id": user_id,
+        "total_chars": total_chars,
+    }
+    try:
+        store = await UsageEventStore.shared()
+        # enabled=True: the guard above already confirmed the flag, so the store
+        # skips a second uncached Settings build per record (ADR-024).
+        # record_usage_event swallows its own write failures, so the two records
+        # are independent; if pages_embedded somehow raised mid-way,
+        # tokens_embedded would be skipped, leaving an unmatched pages_embedded
+        # row — acceptable under the (day, metric) SUM-aggregation billing model.
+        await store.record_usage_event(
+            # TODO(#282): value is the interim chunk count; switch to normalized
+            # real-page count when the per-page constant lands.
+            metric="pages_embedded",
+            value=chunk_count,
+            metadata=metadata,
+            enabled=True,
+        )
+        await store.record_usage_event(
+            metric="tokens_embedded",
+            value=token_count,
+            metadata=metadata,
+            enabled=True,
+        )
+    except Exception:
+        # Reached only when shared()/store construction itself raises
+        # (record_usage_event swallows its own write failures). Metering is on,
+        # so warn rather than hide the "enabled but no billing data" case.
+        logger.warning(
+            "usage metering hook (indexing embeddings) skipped", exc_info=True
+        )
 
 
 async def processor_task(
@@ -598,9 +673,13 @@ async def _index_document(
                     doc_type="file",
                     user_id=doc_task.user_id,
                 )
+                # No embedding ran, so no usage is recorded here — stated
+                # explicitly so a "fewer tokens_embedded rows than expected"
+                # audit lands on the dedup path rather than reconstructing it
+                # from Qdrant claim logs.
                 logger.info(
                     "Dedup hit for file %s (etag=%s); claimed for user %s "
-                    "without reprocessing",
+                    "without reprocessing (no embedding/usage recorded)",
                     doc_task.doc_id,
                     doc_task.etag,
                     doc_task.user_id,
@@ -809,7 +888,10 @@ async def _index_document(
             embedding_service = get_embedding_service()
             embed_start = time.time()
             try:
-                dense_embeddings = await embedding_service.embed_batch(chunk_texts)
+                (
+                    dense_embeddings,
+                    embed_tokens,
+                ) = await embedding_service.embed_batch_with_usage(chunk_texts)
             except Exception:
                 record_embedding(
                     "dense", provider, time.time() - embed_start, status="error"
@@ -822,42 +904,24 @@ async def _index_document(
                 chunks=len(chunk_texts),
                 chars=total_chars,
             )
-            # Usage metering (Deck #67): record chunks embedded as a billable
-            # 'pages_chunks' event. Best-effort and gated on the flag so the
-            # off-path (OSS default) touches no storage; placed after the
-            # embedding succeeds so it can never affect the indexing path.
-            #
-            # Privacy note: user_id stays tenant-local — the CP rollup
-            # aggregates GROUP BY (day, metric) into usage_daily (no metadata
-            # column), so nothing here reaches Stripe; it is retained only to
-            # keep Deck #67's future per-user attribution derivable from the
-            # app DB without a re-migration.
-            if settings.usage_metering_enabled:
-                try:
-                    store = await UsageEventStore.shared()
-                    await store.record_usage_event(
-                        metric="pages_chunks",
-                        value=len(chunk_texts),
-                        metadata={
-                            "provider": provider,
-                            "model": settings.get_embedding_model_name(),
-                            "doc_type": doc_task.doc_type,
-                            "user_id": doc_task.user_id,
-                            "total_chars": total_chars,
-                        },
-                        # The outer guard already confirmed the flag, so pass
-                        # enabled=True directly — the store then skips a second
-                        # uncached Settings build here (ADR-024).
-                        enabled=True,
-                    )
-                except Exception:
-                    # Reached only when shared()/store construction itself
-                    # raises (record_usage_event swallows its own write
-                    # failures). Metering is on, so warn rather than hide the
-                    # "enabled but no billing data" case in DEBUG logs.
-                    logger.warning(
-                        "usage metering hook (pages_chunks) skipped", exc_info=True
-                    )
+            # Export token consumption to Prometheus (always-on, independent of
+            # the billing flag) so Grafana sees indexing token cost.
+            record_embedding_tokens(provider, "index", embed_tokens)
+            # Usage metering (Deck #67): record the chunk volume +
+            # embedding-token count for this document. Best-effort and
+            # flag-gated; placed after the embedding succeeds so it can never
+            # affect the indexing path. See record_indexing_usage for the
+            # metric/privacy details.
+            await record_indexing_usage(
+                enabled=settings.usage_metering_enabled,
+                provider=provider,
+                model=settings.get_embedding_model_name(),
+                doc_type=doc_task.doc_type,
+                user_id=doc_task.user_id,
+                chunk_count=len(chunk_texts),
+                token_count=embed_tokens,
+                total_chars=total_chars,
+            )
 
     async def generate_sparse_embeddings():
         """Generate sparse embeddings (BM25 for keyword matching)."""

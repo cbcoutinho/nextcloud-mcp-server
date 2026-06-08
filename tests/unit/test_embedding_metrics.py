@@ -12,7 +12,10 @@ from __future__ import annotations
 import pytest
 
 from nextcloud_mcp_server.config import Settings
-from nextcloud_mcp_server.observability.metrics import record_embedding
+from nextcloud_mcp_server.observability.metrics import (
+    record_embedding,
+    record_embedding_tokens,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -120,3 +123,31 @@ class TestRecordEmbedding:
         assert metric_sample(
             "astrolabe_embedding_requests_total", {**labels, "status": "error"}
         ) == pytest.approx(1.0)
+
+
+class TestRecordEmbeddingTokens:
+    """astrolabe_embedding_tokens_total — token cost split by index/query."""
+
+    def test_index_increments_by_token_count(self, metric_sample):
+        labels = {"provider": "tok-prov", "operation": "index"}
+        before = metric_sample("astrolabe_embedding_tokens_total", labels)
+        record_embedding_tokens("tok-prov", "index", 4242)
+        assert metric_sample(
+            "astrolabe_embedding_tokens_total", labels
+        ) == pytest.approx(before + 4242)
+
+    def test_query_operation_is_separate_series(self, metric_sample):
+        labels = {"provider": "tok-prov", "operation": "query"}
+        before = metric_sample("astrolabe_embedding_tokens_total", labels)
+        record_embedding_tokens("tok-prov", "query", 7)
+        assert metric_sample(
+            "astrolabe_embedding_tokens_total", labels
+        ) == pytest.approx(before + 7)
+
+    def test_zero_or_negative_is_noop(self, metric_sample):
+        labels = {"provider": "tok-noop", "operation": "index"}
+        record_embedding_tokens("tok-noop", "index", 0)
+        record_embedding_tokens("tok-noop", "index", -3)
+        assert metric_sample(
+            "astrolabe_embedding_tokens_total", labels
+        ) == pytest.approx(0.0)

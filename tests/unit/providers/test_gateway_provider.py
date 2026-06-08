@@ -6,6 +6,7 @@ tenant realm); creds are all-or-nothing.
 """
 
 import time
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -325,6 +326,105 @@ def test_trailing_slash_base_url_normalized():
     base = _client_base(provider)
     assert base.endswith("/v1")
     assert not base.endswith("/v1/v1")
+
+
+@pytest.mark.unit
+async def test_gateway_embed_with_usage_forwards_after_bearer(monkeypatch):
+    """embed_with_usage refreshes the bearer, then returns the (embedding,
+    token_count) from the inherited OpenAI implementation."""
+    # https mock host (never contacted — the OpenAI client is patched below).
+    provider = GatewayProvider(
+        base_url="https://gw:8083/v1", embedding_model="mistral/mistral-embed"
+    )
+
+    order: list[str] = []
+
+    async def _ensure_bearer():
+        order.append("bearer")
+
+    monkeypatch.setattr(provider, "_ensure_bearer", _ensure_bearer)
+
+    item = MagicMock()
+    item.embedding = [0.1, 0.2]
+    item.index = 0
+    response = MagicMock()
+    response.data = [item]
+    response.usage = MagicMock(total_tokens=8)
+
+    async def _create(**_kwargs):
+        order.append("embed")
+        return response
+
+    monkeypatch.setattr(provider.client.embeddings, "create", _create)
+
+    embedding, tokens = await provider.embed_with_usage("hello")
+
+    assert embedding == [0.1, 0.2]
+    assert tokens == 8
+    assert order == ["bearer", "embed"]  # bearer refreshed before the embed call
+
+
+@pytest.mark.unit
+async def test_gateway_embed_batch_with_usage_forwards_after_bearer(monkeypatch):
+    """embed_batch_with_usage also refreshes the bearer before delegating."""
+    # https mock host (never contacted — the OpenAI client is patched below).
+    provider = GatewayProvider(
+        base_url="https://gw:8083/v1", embedding_model="mistral/mistral-embed"
+    )
+    ensured = {"n": 0}
+
+    async def _ensure_bearer():
+        ensured["n"] += 1
+
+    monkeypatch.setattr(provider, "_ensure_bearer", _ensure_bearer)
+
+    item = MagicMock()
+    item.embedding = [0.3, 0.4]
+    item.index = 0
+    response = MagicMock()
+    response.data = [item]
+    response.usage = MagicMock(total_tokens=5)
+    monkeypatch.setattr(
+        provider.client.embeddings, "create", AsyncMock(return_value=response)
+    )
+
+    embeddings, tokens = await provider.embed_batch_with_usage(["x"])
+
+    assert embeddings == [[0.3, 0.4]]
+    assert tokens == 5
+    assert ensured["n"] == 1
+
+
+@pytest.mark.unit
+async def test_gateway_embed_batch_ensures_bearer_once(monkeypatch):
+    """embed_batch() has no override: it routes through the inherited OpenAI
+    embed_batch() → embed_batch_with_usage() (overridden), so the bearer is
+    refreshed exactly once — not twice."""
+    # https mock host (never contacted — the OpenAI client is patched below).
+    provider = GatewayProvider(
+        base_url="https://gw:8083/v1", embedding_model="mistral/mistral-embed"
+    )
+    ensured = {"n": 0}
+
+    async def _ensure_bearer():
+        ensured["n"] += 1
+
+    monkeypatch.setattr(provider, "_ensure_bearer", _ensure_bearer)
+
+    item = MagicMock()
+    item.embedding = [0.1, 0.2]
+    item.index = 0
+    response = MagicMock()
+    response.data = [item]
+    response.usage = MagicMock(total_tokens=4)
+    monkeypatch.setattr(
+        provider.client.embeddings, "create", AsyncMock(return_value=response)
+    )
+
+    embeddings = await provider.embed_batch(["x"])
+
+    assert embeddings == [[0.1, 0.2]]
+    assert ensured["n"] == 1  # not 2 — embed_batch() must not double-refresh
 
 
 async def test_detect_dimension_with_bare_base_url_hits_v1_models(monkeypatch):

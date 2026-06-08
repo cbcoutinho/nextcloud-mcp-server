@@ -338,6 +338,22 @@ embedding_chars_total = Counter(
     ["kind", "provider"],
 )
 
+# Token consumption — the billed cost unit (mirrors the tokens_embedded billing
+# measure, Deck #67). On a dedicated counter (not folded into the chunk/request
+# metrics above) so query embeds don't inflate indexing dashboards; labelled by
+# operation = index | query. Always emitted, independent of USAGE_METERING_ENABLED.
+#
+# Dashboard note: operation="query" is recorded at embed time (before Qdrant /
+# verify-on-read), whereas the billing-store tokens_embedded row is written only
+# after the search fully succeeds. So this counter can legitimately exceed the
+# billing aggregate when a search fails post-embed — don't alert on that gap as
+# a divergence bug.
+embedding_tokens_total = Counter(
+    "astrolabe_embedding_tokens_total",
+    "Total embedding tokens consumed (provider-reported or estimated)",
+    ["provider", "operation"],  # operation: index | query
+)
+
 # --- Chunking & indexed-by-type -----------------------------------------------
 
 document_chunks_total = Counter(
@@ -725,6 +741,25 @@ def record_embedding(
             embedding_chunks_total.labels(kind=kind, provider=provider).inc(chunks)
         if chars > 0:
             embedding_chars_total.labels(kind=kind, provider=provider).inc(chars)
+
+
+def record_embedding_tokens(provider: str, operation: str, tokens: int) -> None:
+    """Export embedding token consumption to Prometheus.
+
+    Mirrors the ``tokens_embedded`` billing measure (Deck #67) as an always-on
+    observability signal — emitted regardless of ``USAGE_METERING_ENABLED`` so
+    OSS/self-host deployments still see token cost in Grafana.
+
+    Args:
+        provider: Provider family (mistral | openai | bedrock | ollama | simple).
+        operation: ``"index"`` (chunk-batch embedding) or ``"query"`` (search
+            query embedding).
+        tokens: Token count for this embedding request (no-op when ``<= 0``).
+    """
+    if tokens > 0:
+        embedding_tokens_total.labels(provider=provider, operation=operation).inc(
+            tokens
+        )
 
 
 def record_document_chunks(doc_type: str, count: int) -> None:

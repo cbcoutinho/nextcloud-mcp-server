@@ -1,5 +1,7 @@
 """Unit tests for BM25 hybrid search algorithm."""
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from qdrant_client import models
 
@@ -52,3 +54,73 @@ def test_bm25_hybrid_requires_vector_db():
     """Test BM25HybridSearchAlgorithm reports it requires vector database."""
     algo = BM25HybridSearchAlgorithm()
     assert algo.requires_vector_db is True
+
+
+@pytest.fixture
+def patched_search(monkeypatch):
+    """Stub the embedding / BM25 / Qdrant deps of search() and return the
+    embed_with_usage mock so tests can assert how often the query was embedded."""
+    embed = AsyncMock(return_value=([0.1, 0.2, 0.3], 7))
+    svc = MagicMock()
+    svc.embed_with_usage = embed
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.search.bm25_hybrid.get_embedding_service", lambda: svc
+    )
+
+    bm25 = MagicMock()
+    bm25.encode_async = AsyncMock(return_value={"indices": [1], "values": [0.5]})
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.search.bm25_hybrid.get_bm25_service",
+        AsyncMock(return_value=bm25),
+    )
+
+    qdrant = MagicMock()
+    empty = MagicMock()
+    empty.points = []
+    qdrant.query_points = AsyncMock(return_value=empty)
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.search.bm25_hybrid.get_qdrant_client",
+        AsyncMock(return_value=qdrant),
+    )
+
+    settings = MagicMock()
+    settings.get_collection_name.return_value = "test_collection"
+    settings.get_embedding_provider_family.return_value = "mistral"
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.search.bm25_hybrid.get_settings", lambda: settings
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.search.bm25_hybrid.build_base_filter_conditions",
+        lambda **kwargs: [],
+    )
+    return embed
+
+
+@pytest.mark.unit
+async def test_query_embedded_and_metered_once_across_doc_types(patched_search):
+    """nc_semantic_search calls search() once per doc_type on one instance with
+    the same query; the dense embedding (and its billed token count) must be
+    computed exactly once, not once per type."""
+    embed = patched_search
+    algo = BM25HybridSearchAlgorithm()
+
+    for dtype in ("note", "file", "deck_card"):
+        await algo.search(query="hello", user_id="alice", doc_type=dtype)
+
+    assert embed.await_count == 1  # embedded once, not 3×
+    assert (
+        algo.query_token_count == 7
+    )  # single query's token count, not summed/overwritten
+    assert algo.query_embedding == [0.1, 0.2, 0.3]
+
+
+@pytest.mark.unit
+async def test_different_query_invalidates_cache(patched_search):
+    """A different query string re-embeds (and re-meters)."""
+    embed = patched_search
+    algo = BM25HybridSearchAlgorithm()
+
+    await algo.search(query="hello", user_id="alice")
+    await algo.search(query="world", user_id="alice")
+
+    assert embed.await_count == 2

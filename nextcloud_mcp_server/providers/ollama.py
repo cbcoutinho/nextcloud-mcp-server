@@ -82,17 +82,12 @@ class OllamaProvider(Provider):
         Raises:
             NotImplementedError: If embeddings not enabled (no embedding_model)
         """
-        if not self.supports_embeddings:
-            raise NotImplementedError(
-                "Embedding not supported - no embedding_model configured"
-            )
-
-        response = await self.client.post(
-            f"{self.base_url}/api/embeddings",
-            json={"model": self.embedding_model, "prompt": text},
-        )
-        response.raise_for_status()
-        return response.json()["embedding"]
+        # Delegate to embed_with_usage so single and batch embeds use the same
+        # /api/embed endpoint (the legacy /api/embeddings differs in payload and
+        # omits prompt_eval_count). _detect_dimension() and other embed() callers
+        # therefore stay consistent with the search/indexing path.
+        embedding, _ = await self.embed_with_usage(text)
+        return embedding
 
     async def embed_batch(
         self, texts: list[str], batch_size: int = 32
@@ -116,12 +111,44 @@ class OllamaProvider(Provider):
         Raises:
             NotImplementedError: If embeddings not enabled (no embedding_model)
         """
+        embeddings, _ = await self.embed_batch_with_usage(texts, batch_size=batch_size)
+        return embeddings
+
+    async def embed_with_usage(self, text: str) -> tuple[list[float], int]:
+        """Embed one text, reporting the request's token count.
+
+        Routes through ``/api/embed`` (which carries ``prompt_eval_count``)
+        rather than the legacy ``/api/embeddings`` so a token count is
+        available; falls back to a char-based estimate when the field is
+        absent. Used by the usage-metering hooks (Deck #67).
+        """
+        embeddings, tokens = await self.embed_batch_with_usage([text])
+        if not embeddings:
+            raise RuntimeError(
+                "Ollama embeddings API returned no embedding for model "
+                f"{self.embedding_model}"
+            )
+        return embeddings[0], tokens
+
+    async def embed_batch_with_usage(
+        self, texts: list[str], batch_size: int = 32
+    ) -> tuple[list[list[float]], int]:
+        """Embed multiple texts, summing ``prompt_eval_count`` token usage.
+
+        Returns ``(embeddings, total_tokens)``. Ollama's ``/api/embed`` may
+        omit ``prompt_eval_count`` (older versions); a char-based estimate is
+        used per batch when it does.
+        """
         if not self.supports_embeddings:
             raise NotImplementedError(
                 "Embedding not supported - no embedding_model configured"
             )
 
-        all_embeddings = []
+        if not texts:
+            return [], 0
+
+        all_embeddings: list[list[float]] = []
+        total_tokens = 0
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
             response = await self.client.post(
@@ -129,9 +156,29 @@ class OllamaProvider(Provider):
                 json={"model": self.embedding_model, "input": batch},
             )
             response.raise_for_status()
-            all_embeddings.extend(response.json()["embeddings"])
+            data = response.json()
+            all_embeddings.extend(data["embeddings"])
 
-        return all_embeddings
+            # Cache the dimension inline (mirrors OpenAI/Mistral) so it is set
+            # via any embed path, not only an explicit _detect_dimension() call.
+            if self._dimension is None and data["embeddings"]:
+                self._dimension = len(data["embeddings"][0])
+
+            # ``prompt_eval_count`` is assumed to be the batch-level total for a
+            # multi-input /api/embed call. Ollama's API docs aren't explicit
+            # about batch aggregation; if a version reports only the last
+            # input's tokens this understates the batch. Unverified against a
+            # live instance — Ollama isn't the Cloud billing provider (Mistral
+            # is). If it proves last-item-only, switch to per-item requests and
+            # sum. The char-based estimate covers versions that omit the field.
+            prompt_eval = data.get("prompt_eval_count")
+            total_tokens += (
+                round(prompt_eval)
+                if isinstance(prompt_eval, (int, float))
+                else self._estimate_tokens(batch)
+            )
+
+        return all_embeddings, total_tokens
 
     async def _detect_dimension(self):
         """

@@ -95,7 +95,7 @@ async def test_flag_off_is_noop(storage, monkeypatch):
     """With metering disabled, nothing is written (zero DB work)."""
     _set_metering(monkeypatch, False)
     store = UsageEventStore(storage)
-    await store.record_usage_event(metric="pages_chunks", value=5)
+    await store.record_usage_event(metric="pages_embedded", value=5)
     assert await _count(storage) == 0
 
 
@@ -115,12 +115,12 @@ async def test_enabled_param_short_circuits_without_reading_settings(
     monkeypatch.setattr(store_module, "get_settings", _boom)
     store = UsageEventStore(storage)
 
-    await store.record_usage_event(metric="pages_chunks", value=1, enabled=False)
+    await store.record_usage_event(metric="pages_embedded", value=1, enabled=False)
     assert await _count(storage) == 0
 
     eid = str(uuid.uuid4())
     await store.record_usage_event(
-        metric="pages_chunks", value=1, event_id=eid, enabled=True
+        metric="pages_embedded", value=1, event_id=eid, enabled=True
     )
     assert await _count(storage) == 1
 
@@ -131,7 +131,7 @@ async def test_insert_roundtrip(storage, monkeypatch):
     store = UsageEventStore(storage)
     eid = str(uuid.uuid4())
     await store.record_usage_event(
-        metric="pages_chunks",
+        metric="pages_embedded",
         value=7,
         event_id=eid,
         metadata={"provider": "gateway"},
@@ -140,7 +140,7 @@ async def test_insert_roundtrip(storage, monkeypatch):
     assert row is not None
     # Postgres returns event_id as a uuid.UUID; normalize to str for compare.
     assert str(row[0]) == eid
-    assert row[2] == "pages_chunks"
+    assert row[2] == "pages_embedded"
     assert row[3] == 7
 
 
@@ -149,11 +149,11 @@ async def test_on_conflict_dedup(storage, monkeypatch):
     _set_metering(monkeypatch, True)
     store = UsageEventStore(storage)
     eid = str(uuid.uuid4())
-    await store.record_usage_event(metric="pages_chunks", value=1, event_id=eid)
-    await store.record_usage_event(metric="embeddings_queries", value=99, event_id=eid)
+    await store.record_usage_event(metric="pages_embedded", value=1, event_id=eid)
+    await store.record_usage_event(metric="tokens_embedded", value=99, event_id=eid)
     assert await _count(storage) == 1
     row = await _fetch(storage, eid)
-    assert row[2] == "pages_chunks"  # DO NOTHING, not DO UPDATE
+    assert row[2] == "pages_embedded"  # DO NOTHING, not DO UPDATE
     assert row[3] == 1
 
 
@@ -164,7 +164,7 @@ async def test_metadata_json_roundtrip(storage, monkeypatch):
     eid = str(uuid.uuid4())
     meta = {"provider": "gateway", "model": "titan", "nested": {"chunks": 3}}
     await store.record_usage_event(
-        metric="pages_chunks", value=3, event_id=eid, metadata=meta
+        metric="pages_embedded", value=3, event_id=eid, metadata=meta
     )
     row = await _fetch(storage, eid)
     raw = row[4]
@@ -187,7 +187,7 @@ async def test_occurred_at_roundtrip(storage, monkeypatch):
     eid = str(uuid.uuid4())
     when = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
     await store.record_usage_event(
-        metric="pages_chunks", value=1, event_id=eid, occurred_at=when
+        metric="pages_embedded", value=1, event_id=eid, occurred_at=when
     )
     row = await _fetch(storage, eid)
     stored = row[1]
@@ -207,7 +207,7 @@ async def test_metadata_none_is_null(storage, monkeypatch):
     store = UsageEventStore(storage)
     eid = str(uuid.uuid4())
     await store.record_usage_event(
-        metric="embeddings_queries", value=1, event_id=eid, metadata=None
+        metric="tokens_embedded", value=1, event_id=eid, metadata=None
     )
     row = await _fetch(storage, eid)
     assert row[4] is None
@@ -233,7 +233,7 @@ async def test_best_effort_swallows_db_errors(storage, monkeypatch, caplog):
 
     # Must not raise.
     with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.usage.store"):
-        await store.record_usage_event(metric="pages_chunks", value=1)
+        await store.record_usage_event(metric="pages_embedded", value=1)
 
     assert recorded, "record_db_operation should be called on the error path"
     assert recorded[-1][3] == "error"
@@ -262,7 +262,7 @@ async def test_best_effort_swallows_unserializable_metadata(
     # Must not raise.
     with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.usage.store"):
         await store.record_usage_event(
-            metric="pages_chunks", value=1, metadata=bad_metadata
+            metric="pages_embedded", value=1, metadata=bad_metadata
         )
 
     # Nothing was written — the encode failed before the insert.

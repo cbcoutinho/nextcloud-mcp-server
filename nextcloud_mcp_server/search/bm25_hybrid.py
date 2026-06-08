@@ -9,7 +9,10 @@ from qdrant_client.models import Filter
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
-from nextcloud_mcp_server.observability.metrics import record_qdrant_operation
+from nextcloud_mcp_server.observability.metrics import (
+    record_embedding_tokens,
+    record_qdrant_operation,
+)
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.search.access_filter import build_base_filter_conditions
 from nextcloud_mcp_server.search.algorithms import (
@@ -53,9 +56,16 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                 f"Invalid fusion algorithm '{fusion}'. Must be 'rrf' or 'dbsf'"
             )
 
+        # super() sets the per-instance query_embedding / query_token_count
+        # side-channel; this adds the cache key for it.
+        super().__init__()
         self.score_threshold = score_threshold
         self.fusion = models.Fusion.RRF if fusion == "rrf" else models.Fusion.DBSF
         self.fusion_name = fusion
+        # ``_embedded_query`` is the query string whose dense embedding is held
+        # in ``query_embedding`` — repeated search() calls on this per-request
+        # instance (the doc_types loop) reuse it instead of re-embedding.
+        self._embedded_query: str | None = None
 
     @property
     def name(self) -> str:
@@ -128,13 +138,35 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             self.fusion_name,
         )
 
-        # Generate dense embedding for semantic search
+        # Generate dense embedding for semantic search. Cache it per query on
+        # this (per-request) instance: nc_semantic_search calls search() once
+        # per doc_type with the same query, so re-embedding each time would make
+        # N redundant API calls and bill the query's tokens N times (Deck #67).
+        # Reuse the first call's embedding + token count so the query is embedded
+        # — and metered — exactly once.
         with trace_operation("search.get_embedding_service"):
             embedding_service = get_embedding_service()
         with trace_operation("search.dense_embedding"):
-            dense_embedding = await embedding_service.embed(query)
-        # Store for reuse by callers (e.g., viz_routes PCA visualization)
-        self.query_embedding = dense_embedding
+            if self.query_embedding is not None and self._embedded_query == query:
+                dense_embedding = self.query_embedding
+            else:
+                (
+                    dense_embedding,
+                    query_tokens,
+                ) = await embedding_service.embed_with_usage(query)
+                # Store for reuse by callers (e.g., viz_routes PCA
+                # visualization) and for the usage-metering hook in
+                # server/semantic.py (token count).
+                self.query_embedding = dense_embedding
+                self.query_token_count = query_tokens
+                self._embedded_query = query
+                # Export query-embedding token cost to Prometheus
+                # (operation=query), mirroring the per-search billing record in
+                # server/semantic.py. Inside the cache-miss branch so a reused
+                # embedding isn't double-counted.
+                record_embedding_tokens(
+                    settings.get_embedding_provider_family(), "query", query_tokens
+                )
         logger.debug("Generated dense embedding (dimension=%s)", len(dense_embedding))
 
         # Generate sparse embedding for BM25 keyword search
