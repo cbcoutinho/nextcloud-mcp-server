@@ -5,6 +5,23 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.109.0 (2026-06-08)
+
+### Feat
+
+- **usage**: rename metrics → tokens_embedded/pages_embedded + export token cost to Prometheus
+- **usage**: meter embedding tokens as embeddings_queries on both paths
+
+### Fix
+
+- **usage**: drop redundant GatewayProvider.embed_batch override (round 3)
+- **usage**: embed query once across doc_types; address review round 1
+
+### Refactor
+
+- **search**: structural per-instance query side-channel; doc search billing gap
+- **usage**: extract indexing metering helper; address review round 2
+
 ## v0.108.3 (2026-06-08)
 
 ### Fix
