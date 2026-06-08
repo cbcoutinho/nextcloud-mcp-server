@@ -314,6 +314,35 @@ def test_contact_mapping_preserves_email_birthday_nickname():
 
 
 @pytest.mark.unit
+def test_contact_mapping_exposes_resource_path():
+    """Issue #874: the real CardDAV object path must surface on the model so
+    callers can address objects whose filename isn't ``<uid>.vcf``.
+    """
+    raw_contact = {
+        "vcard_id": "default",
+        "object_path": "/remote.php/dav/addressbooks/users/admin/contacts/default",
+        "object_name": "default",
+        "getetag": '"etag-val"',
+        "contact": {"fullname": "No Ext"},
+    }
+
+    contact = _map_contact(raw_contact)
+
+    assert contact.uid == "default"
+    assert (
+        contact.resource_path
+        == "/remote.php/dav/addressbooks/users/admin/contacts/default"
+    )
+
+
+@pytest.mark.unit
+def test_contact_mapping_resource_path_optional():
+    """Mapping must not require ``object_path`` (older callers / partial dicts)."""
+    contact = _map_contact({"vcard_id": "x", "contact": {"fullname": "X"}})
+    assert contact.resource_path is None
+
+
+@pytest.mark.unit
 def test_contact_mapping_birthday_datetime_date_object():
     """Test that a datetime.date birthday is converted to ISO string.
 

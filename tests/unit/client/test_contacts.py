@@ -10,6 +10,7 @@ from datetime import date
 import pytest
 
 from nextcloud_mcp_server.client.contacts import (
+    ContactsClient,
     _build_contact_from_data,
     _first_custom,
     _normalize_contact_data,
@@ -200,6 +201,149 @@ def test_missing_fn_logs_warning(caplog):
             # pythonvCard4 may raise on missing fn; we only care about the warning log.
             pass
     assert any("fn" in r.message.lower() for r in caplog.records)
+
+
+def _multistatus(*object_names: str, addressbook: str = "contacts") -> bytes:
+    """Build a minimal PROPFIND multistatus body for ``_list_object_names``.
+
+    Includes the collection itself (trailing-slash href) plus one ``response``
+    per object name so the parser's collection-skipping is exercised.
+    """
+    base = f"/remote.php/dav/addressbooks/users/testuser/{addressbook}"
+    responses = [
+        f"<d:response><d:href>{base}/</d:href>"
+        "<d:propstat><d:prop><d:getetag>&quot;col&quot;</d:getetag></d:prop>"
+        "<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"
+    ]
+    for name in object_names:
+        responses.append(
+            f"<d:response><d:href>{base}/{name}</d:href>"
+            "<d:propstat><d:prop><d:getetag>&quot;e&quot;</d:getetag></d:prop>"
+            "<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"
+        )
+    body = (
+        '<?xml version="1.0"?>'
+        '<d:multistatus xmlns:d="DAV:">' + "".join(responses) + "</d:multistatus>"
+    )
+    return body.encode()
+
+
+class TestObjectNameResolution:
+    """Issue #874: the CardDAV object filename is independent of the vCard UID
+    and may lack a ``.vcf`` extension, so write paths must resolve the real
+    object name instead of assuming ``<uid>.vcf``.
+    """
+
+    @staticmethod
+    def _client(mocker, multistatus: bytes) -> ContactsClient:
+        client = ContactsClient.__new__(ContactsClient)  # no HTTP / no __init__
+        client.username = "testuser"
+        response = mocker.Mock()
+        response.content = multistatus
+        client._make_request = mocker.AsyncMock(return_value=response)
+        return client
+
+    async def test_list_object_names_skips_collection(self, mocker):
+        client = self._client(mocker, _multistatus("alice.vcf", "default"))
+        names = await client._list_object_names("contacts")
+        assert names == ["alice.vcf", "default"]  # collection href omitted
+
+    async def test_resolves_conventional_vcf_name(self, mocker):
+        client = self._client(mocker, _multistatus("alice.vcf"))
+        assert await client._resolve_object_name("contacts", "alice") == "alice.vcf"
+
+    async def test_resolves_name_without_vcf_extension(self, mocker):
+        """The #874 case: object stored at ``.../default`` (no extension)."""
+        client = self._client(mocker, _multistatus("default"))
+        assert await client._resolve_object_name("contacts", "default") == "default"
+
+    async def test_prefers_vcf_when_both_present(self, mocker):
+        """Deterministic tie-break: ``<uid>.vcf`` wins over a bare ``<uid>``."""
+        client = self._client(mocker, _multistatus("dup", "dup.vcf"))
+        assert await client._resolve_object_name("contacts", "dup") == "dup.vcf"
+
+    async def test_returns_none_when_no_match(self, mocker):
+        client = self._client(mocker, _multistatus("alice.vcf"))
+        assert await client._resolve_object_name("contacts", "missing") is None
+
+    async def test_delete_targets_real_no_extension_path(self, mocker):
+        """Regression for #874: delete must hit ``.../default`` not ``.../default.vcf``."""
+        client = ContactsClient.__new__(ContactsClient)
+        client.username = "testuser"
+        mocker.patch.object(
+            client, "_resolve_object_name", mocker.AsyncMock(return_value="default")
+        )
+        make_request = mocker.patch.object(client, "_make_request", mocker.AsyncMock())
+        await client.delete_contact(addressbook="contacts", uid="default")
+        make_request.assert_awaited_once_with(
+            "DELETE",
+            "/remote.php/dav/addressbooks/users/testuser/contacts/default",
+        )
+
+    async def test_delete_falls_back_to_vcf_when_unresolved(self, mocker):
+        """A genuinely missing contact resolves to None → fall back to the
+        conventional name so the caller still gets a clean 404 from the DELETE.
+        """
+        client = ContactsClient.__new__(ContactsClient)
+        client.username = "testuser"
+        mocker.patch.object(
+            client, "_resolve_object_name", mocker.AsyncMock(return_value=None)
+        )
+        make_request = mocker.patch.object(client, "_make_request", mocker.AsyncMock())
+        await client.delete_contact(addressbook="contacts", uid="ghost")
+        make_request.assert_awaited_once_with(
+            "DELETE",
+            "/remote.php/dav/addressbooks/users/testuser/contacts/ghost.vcf",
+        )
+
+    async def test_update_targets_real_no_extension_path(self, mocker):
+        """Regression for #874: update must PUT to ``.../default`` not
+        ``.../default.vcf`` (parallels the delete coverage).
+        """
+        client = ContactsClient.__new__(ContactsClient)
+        client.username = "testuser"
+        mocker.patch.object(
+            client, "_resolve_object_name", mocker.AsyncMock(return_value="default")
+        )
+        mocker.patch.object(
+            client,
+            "_fetch_raw_vcard",
+            mocker.AsyncMock(
+                return_value=(
+                    "BEGIN:VCARD\nVERSION:3.0\nUID:default\nFN:No Ext\nEND:VCARD\n",
+                    '"etag"',
+                )
+            ),
+        )
+        make_request = mocker.patch.object(client, "_make_request", mocker.AsyncMock())
+        await client.update_contact(
+            addressbook="contacts", uid="default", contact_data={"fn": "Updated"}
+        )
+        method, url = make_request.await_args.args[0], make_request.await_args.args[1]
+        assert method == "PUT"
+        assert url == "/remote.php/dav/addressbooks/users/testuser/contacts/default"
+
+    async def test_update_falls_back_to_vcf_when_unresolved(self, mocker):
+        """When resolution finds nothing, update falls back to ``<uid>.vcf`` so
+        the caller still gets a clean 404 from the PUT (mirrors delete).
+        """
+        client = ContactsClient.__new__(ContactsClient)
+        client.username = "testuser"
+        mocker.patch.object(
+            client, "_resolve_object_name", mocker.AsyncMock(return_value=None)
+        )
+        make_request = mocker.patch.object(client, "_make_request", mocker.AsyncMock())
+        # Supplying an etag skips the existing-vCard fetch; update builds a fresh
+        # vCard and PUTs it to the fallback path.
+        await client.update_contact(
+            addressbook="contacts",
+            uid="ghost",
+            contact_data={"fn": "Ghost"},
+            etag='"x"',
+        )
+        method, url = make_request.await_args.args[0], make_request.await_args.args[1]
+        assert method == "PUT"
+        assert url == "/remote.php/dav/addressbooks/users/testuser/contacts/ghost.vcf"
 
 
 class TestFirstCustom:

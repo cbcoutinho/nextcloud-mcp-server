@@ -88,6 +88,58 @@ async def test_full_contact_workflow(
     assert contact_uid not in contact_uids
 
 
+async def test_delete_contact_without_vcf_extension(
+    nc_client: NextcloudClient, temporary_addressbook: str
+):
+    """Regression for issue #874: a contact whose CardDAV object filename has no
+    ``.vcf`` extension (like the stock ``default`` sample contact) must still be
+    deletable via the public API.
+
+    ``create_contact`` can't reproduce the precondition — it always PUTs to
+    ``<uid>.vcf`` — so seed the object directly at a bare path, then exercise
+    ``list_contacts`` (real path exposure) and ``delete_contact`` (resolution).
+    """
+    addressbook = temporary_addressbook
+    contacts = nc_client.contacts
+    object_name = f"noext-{uuid.uuid4().hex[:8]}"  # filename WITHOUT .vcf
+    carddav_path = contacts._get_carddav_base_path()
+    vcard = (
+        "BEGIN:VCARD\r\nVERSION:3.0\r\n"
+        f"UID:{object_name}\r\nFN:No Ext\r\nEMAIL:noext@example.com\r\n"
+        "END:VCARD\r\n"
+    )
+
+    # Seed the pathological object at a path that lacks the .vcf extension.
+    await contacts._make_request(
+        "PUT",
+        f"{carddav_path}/{addressbook}/{object_name}",
+        content=vcard,
+        headers={"Content-Type": "text/vcard; charset=utf-8"},
+    )
+
+    try:
+        # list_contacts surfaces it and exposes the real object path/name.
+        listed = await contacts.list_contacts(addressbook=addressbook)
+        match = next((c for c in listed if c["vcard_id"] == object_name), None)
+        assert match is not None, "seeded no-.vcf contact not listed"
+        assert match["object_name"] == object_name  # no .vcf extension
+        assert match["object_path"].endswith(f"/{addressbook}/{object_name}")
+
+        # Delete via the public API — pre-#874 this hit <uid>.vcf and 404'd.
+        await contacts.delete_contact(addressbook=addressbook, uid=object_name)
+
+        remaining = await contacts.list_contacts(addressbook=addressbook)
+        assert object_name not in [c["vcard_id"] for c in remaining]
+    finally:
+        # Best-effort cleanup in case the assertions above failed before delete.
+        try:
+            await contacts._make_request(
+                "DELETE", f"{carddav_path}/{addressbook}/{object_name}"
+            )
+        except Exception:
+            pass
+
+
 async def test_create_contact_persists_all_documented_fields(
     nc_client: NextcloudClient, temporary_addressbook: str
 ):
@@ -115,8 +167,10 @@ async def test_create_contact_persists_all_documented_fields(
         contact_data=contact_data,
     )
     try:
-        raw_vcard, _etag = await nc_client.contacts._get_raw_vcard(
-            addressbook_name, contact_uid
+        # create_contact always writes <uid>.vcf, so fetch that object directly
+        # (no PROPFIND resolution needed for a contact we just created).
+        raw_vcard, _etag = await nc_client.contacts._fetch_raw_vcard(
+            addressbook_name, f"{contact_uid}.vcf"
         )
         assert "FN:Full Field User" in raw_vcard
         assert "EMAIL" in raw_vcard and "full@example.com" in raw_vcard
