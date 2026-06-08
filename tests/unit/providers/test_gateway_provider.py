@@ -328,6 +328,7 @@ def test_trailing_slash_base_url_normalized():
     assert not base.endswith("/v1/v1")
 
 
+@pytest.mark.unit
 async def test_gateway_embed_with_usage_forwards_after_bearer(monkeypatch):
     """embed_with_usage refreshes the bearer, then returns the (embedding,
     token_count) from the inherited OpenAI implementation."""
@@ -363,6 +364,7 @@ async def test_gateway_embed_with_usage_forwards_after_bearer(monkeypatch):
     assert order == ["bearer", "embed"]  # bearer refreshed before the embed call
 
 
+@pytest.mark.unit
 async def test_gateway_embed_batch_with_usage_forwards_after_bearer(monkeypatch):
     """embed_batch_with_usage also refreshes the bearer before delegating."""
     # https mock host (never contacted — the OpenAI client is patched below).
@@ -393,6 +395,7 @@ async def test_gateway_embed_batch_with_usage_forwards_after_bearer(monkeypatch)
     assert ensured["n"] == 1
 
 
+@pytest.mark.unit
 async def test_gateway_embed_batch_ensures_bearer_once(monkeypatch):
     """embed_batch() has no override: it routes through the inherited OpenAI
     embed_batch() → embed_batch_with_usage() (overridden), so the bearer is
