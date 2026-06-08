@@ -16,7 +16,6 @@ from qdrant_client.models import PointStruct
 from nextcloud_mcp_server.acl_hash import compute_acl_hash
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.document_processors import get_registry
 from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
 from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
@@ -707,6 +706,12 @@ async def _index_document(
         ):
             # The registry runs the tiered PDF pipeline (tier-0 classify ->
             # tier-1 fast -> OCR escalation) and records classification metrics.
+            # Imported lazily so module import doesn't pull in the document stack
+            # (document_processors -> _isolation, Unix-only ``resource``; see #877).
+            from nextcloud_mcp_server.document_processors import (  # noqa: PLC0415
+                get_registry,
+            )
+
             registry = get_registry()
 
             try:

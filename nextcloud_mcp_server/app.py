@@ -109,7 +109,6 @@ from nextcloud_mcp_server.config_validators import (
     validate_configuration,
 )
 from nextcloud_mcp_server.context import get_client as get_nextcloud_client
-from nextcloud_mcp_server.document_processors import get_registry
 from nextcloud_mcp_server.http import nextcloud_httpx_client
 from nextcloud_mcp_server.observability import (
     ObservabilityMiddleware,
@@ -158,6 +157,11 @@ def initialize_document_processors():
     if not config["enabled"]:
         logger.info("Document processing disabled")
         return
+
+    # Imported lazily so the API startup path never loads the ingest document
+    # stack (document_processors -> pymupdf -> _isolation) unless document
+    # processing is actually enabled -- see #877 / the API-vs-ingest split.
+    from nextcloud_mcp_server.document_processors import get_registry  # noqa: PLC0415
 
     registry = get_registry()
     registered_count = 0

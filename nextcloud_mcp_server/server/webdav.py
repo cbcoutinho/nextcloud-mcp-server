@@ -13,10 +13,6 @@ from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
     is_path_excluded,
 )
-from nextcloud_mcp_server.utils.document_parser import (
-    is_parseable_document,
-    parse_document,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +110,16 @@ def configure_webdav_tools(mcp: FastMCP):
             raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
 
         content, content_type = await client.webdav.read_file(path)
+
+        # Imported lazily so server startup never loads the document-parsing
+        # stack (document_processors -> pymupdf -> _isolation). That stack is an
+        # ingest-layer concern and, before this, broke Windows startup via a
+        # Unix-only ``import resource`` (#877). It is only needed when a file is
+        # actually read and parsed.
+        from nextcloud_mcp_server.utils.document_parser import (  # noqa: PLC0415
+            is_parseable_document,
+            parse_document,
+        )
 
         # Check if this is a parseable document (PDF, DOCX, etc.)
         # is_parseable_document() checks if document processing is enabled

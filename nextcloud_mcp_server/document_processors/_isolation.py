@@ -13,13 +13,22 @@ in its process pool.
 """
 
 import logging
-import resource
+import sys
 from pathlib import Path
 from typing import Any
 
 import anyio
 import anyio.to_process
 from anyio import BrokenWorkerProcess
+
+# ``resource`` is a Unix-only stdlib module -- it does not exist on Windows, and
+# importing it unconditionally crashed Windows startup (#877). The RLIMIT_AS cap
+# it provides is a Linux-pod safety measure, not a correctness requirement, so on
+# platforms without it we fall back to a no-op (``resource is None``).
+if sys.platform == "win32":  # pragma: no cover - win32-only path
+    resource = None
+else:
+    import resource
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +53,17 @@ def _apply_mem_limit(mem_limit_mb: int) -> None:
 
     Applied once per worker process. The hard limit is left untouched (we only
     lower the soft limit), and we never set a soft limit above the hard limit.
+
+    On a platform without the Unix-only ``resource`` module (e.g. Windows, see
+    #877) the cap is skipped -- the worker still runs, just without the
+    address-space limit.
     """
     global _MEM_LIMIT_APPLIED
     if _MEM_LIMIT_APPLIED or mem_limit_mb <= 0:
+        return
+    if resource is None:
+        logger.debug("resource module unavailable; skipping RLIMIT_AS cap")
+        _MEM_LIMIT_APPLIED = True
         return
     target = mem_limit_mb * 1024 * 1024
     soft, hard = resource.getrlimit(resource.RLIMIT_AS)
