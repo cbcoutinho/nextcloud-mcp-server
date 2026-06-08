@@ -288,7 +288,7 @@ class SearchAlgorithm(ABC):
         query_token_count: Token count of the query embedding request from the
             last search (provider-reported, or estimated). Set by algorithms
             that embed the query so the usage-metering hook can bill
-            ``embeddings_queries`` by tokens (Deck #67). The instance is
+            ``tokens_embedded`` by tokens (Deck #67). The instance is
             per-request, so this side-channel is concurrency-safe.
     """
 

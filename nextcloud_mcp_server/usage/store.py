@@ -102,8 +102,8 @@ class UsageEventStore:
         logged and swallowed — this must never break the caller's operation.
 
         Args:
-            metric: Catalog metric, e.g. ``"embeddings_queries"`` or
-                ``"pages_chunks"``.
+            metric: Catalog metric, e.g. ``"tokens_embedded"`` or
+                ``"pages_embedded"``.
             value: Count/quantity for this event.
             occurred_at: Operation completion time; defaults to now (UTC).
             metadata: Optional rawest-unit context (provider, model, tokens,

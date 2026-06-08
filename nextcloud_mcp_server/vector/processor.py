@@ -23,6 +23,7 @@ from nextcloud_mcp_server.observability.metrics import (
     record_document_chunks,
     record_document_parse_failed,
     record_embedding,
+    record_embedding_tokens,
     record_qdrant_operation,
     record_vector_sync_processing,
     update_vector_sync_queue_size,
@@ -125,10 +126,16 @@ async def record_indexing_usage(
 ) -> None:
     """Record the two billable usage events for one embedded document.
 
-    ``pages_chunks`` is the volume (chunks embedded); ``embeddings_queries`` is
-    the embedding request's token count — the same metric search records, so the
-    meter bills embedding tokens whether they were incurred indexing a document
-    or embedding a query (Deck #67).
+    ``pages_embedded`` is the buyer-facing "pages indexed" dimension;
+    ``tokens_embedded`` is the embedding request's token count — the same metric
+    search records, so the meter bills embedding tokens whether they were
+    incurred indexing a document or embedding a query (Deck #67).
+
+    TODO(#282): ``pages_embedded`` currently carries the raw chunk count
+    (``len(chunk_texts)``) as an interim value. The real normalized "pages
+    indexed" count — real pages for paginated types (PDF/DOCX/PPT), a fixed
+    chars/tokens-per-page constant otherwise — is deferred to instrumentation
+    card #282; this code (card #284) only lands the metric name/contract.
 
     Best-effort and flag-gated: a metering failure is logged and never breaks
     indexing. No-op when metering is disabled or the document produced no chunks
@@ -154,14 +161,19 @@ async def record_indexing_usage(
         # enabled=True: the guard above already confirmed the flag, so the store
         # skips a second uncached Settings build per record (ADR-024).
         # record_usage_event swallows its own write failures, so the two records
-        # are independent; if pages_chunks somehow raised mid-way, embeddings_-
-        # queries would be skipped, leaving an unmatched pages_chunks row —
-        # acceptable under the (day, metric) SUM-aggregation billing model.
+        # are independent; if pages_embedded somehow raised mid-way,
+        # tokens_embedded would be skipped, leaving an unmatched pages_embedded
+        # row — acceptable under the (day, metric) SUM-aggregation billing model.
         await store.record_usage_event(
-            metric="pages_chunks", value=chunk_count, metadata=metadata, enabled=True
+            # TODO(#282): value is the interim chunk count; switch to normalized
+            # real-page count when the per-page constant lands.
+            metric="pages_embedded",
+            value=chunk_count,
+            metadata=metadata,
+            enabled=True,
         )
         await store.record_usage_event(
-            metric="embeddings_queries",
+            metric="tokens_embedded",
             value=token_count,
             metadata=metadata,
             enabled=True,
@@ -662,7 +674,7 @@ async def _index_document(
                     user_id=doc_task.user_id,
                 )
                 # No embedding ran, so no usage is recorded here — stated
-                # explicitly so a "fewer embeddings_queries rows than expected"
+                # explicitly so a "fewer tokens_embedded rows than expected"
                 # audit lands on the dedup path rather than reconstructing it
                 # from Qdrant claim logs.
                 logger.info(
@@ -892,6 +904,9 @@ async def _index_document(
                 chunks=len(chunk_texts),
                 chars=total_chars,
             )
+            # Export token consumption to Prometheus (always-on, independent of
+            # the billing flag) so Grafana sees indexing token cost.
+            record_embedding_tokens(provider, "index", embed_tokens)
             # Usage metering (Deck #67): record the chunk volume +
             # embedding-token count for this document. Best-effort and
             # flag-gated; placed after the embedding succeeds so it can never

@@ -85,6 +85,7 @@ def patched_search(monkeypatch):
 
     settings = MagicMock()
     settings.get_collection_name.return_value = "test_collection"
+    settings.get_embedding_provider_family.return_value = "mistral"
     monkeypatch.setattr(
         "nextcloud_mcp_server.search.bm25_hybrid.get_settings", lambda: settings
     )

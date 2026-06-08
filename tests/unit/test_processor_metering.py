@@ -1,7 +1,7 @@
 """Unit tests for the indexing-path usage-metering helper (Deck #67).
 
-``record_indexing_usage`` records the two billable events (``pages_chunks`` +
-``embeddings_queries``) after a document's chunks are embedded. These cover the
+``record_indexing_usage`` records the two billable events (``pages_embedded`` +
+``tokens_embedded``) after a document's chunks are embedded. These cover the
 value mapping, the flag/zero-chunk no-ops, and the best-effort failure path
 without standing up the full document pipeline.
 """
@@ -25,8 +25,8 @@ def store_spy(monkeypatch):
 
 
 @pytest.mark.unit
-async def test_records_pages_chunks_and_token_count(store_spy):
-    """Both events fire: pages_chunks = chunk count, embeddings_queries = tokens."""
+async def test_records_pages_embedded_and_token_count(store_spy):
+    """Both events fire: pages_embedded = chunk count, tokens_embedded = tokens."""
     await processor.record_indexing_usage(
         enabled=True,
         provider="mistral",
@@ -40,7 +40,7 @@ async def test_records_pages_chunks_and_token_count(store_spy):
 
     calls = store_spy.record_usage_event.await_args_list
     by_metric = {c.kwargs["metric"]: c.kwargs["value"] for c in calls}
-    assert by_metric == {"pages_chunks": 110, "embeddings_queries": 4242}
+    assert by_metric == {"pages_embedded": 110, "tokens_embedded": 4242}
     for c in calls:
         # Hot-path fast-gate + tenant-local attribution metadata.
         assert c.kwargs["enabled"] is True

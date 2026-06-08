@@ -9,7 +9,10 @@ from qdrant_client.models import Filter
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
-from nextcloud_mcp_server.observability.metrics import record_qdrant_operation
+from nextcloud_mcp_server.observability.metrics import (
+    record_embedding_tokens,
+    record_qdrant_operation,
+)
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.search.access_filter import build_base_filter_conditions
 from nextcloud_mcp_server.search.algorithms import (
@@ -158,6 +161,13 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                 self.query_embedding = dense_embedding
                 self.query_token_count = query_tokens
                 self._embedded_query = query
+                # Export query-embedding token cost to Prometheus
+                # (operation=query), mirroring the per-search billing record in
+                # server/semantic.py. Inside the cache-miss branch so a reused
+                # embedding isn't double-counted.
+                record_embedding_tokens(
+                    settings.get_embedding_provider_family(), "query", query_tokens
+                )
         logger.debug("Generated dense embedding (dimension=%s)", len(dense_embedding))
 
         # Generate sparse embedding for BM25 keyword search

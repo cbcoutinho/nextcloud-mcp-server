@@ -1,6 +1,6 @@
 """Unit tests for the search-path usage-metering helper (Deck #67).
 
-``record_search_usage`` records the billable ``embeddings_queries`` event for a
+``record_search_usage`` records the billable ``tokens_embedded`` event for a
 semantic search. These pin the value mapping (query token count), the flag-off
 no-op, the doc_types metadata bounding, and the best-effort failure path —
 covering the server-tool metering wiring without standing up the full
@@ -38,7 +38,7 @@ async def test_records_query_token_count(store_spy):
 
     store_spy.record_usage_event.assert_awaited_once()
     kwargs = store_spy.record_usage_event.await_args.kwargs
-    assert kwargs["metric"] == "embeddings_queries"
+    assert kwargs["metric"] == "tokens_embedded"
     assert kwargs["value"] == 42
     assert kwargs["enabled"] is True
     assert kwargs["metadata"]["user_id"] == "alice"

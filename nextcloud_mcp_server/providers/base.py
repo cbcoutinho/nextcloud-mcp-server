@@ -73,7 +73,7 @@ class Provider(ABC):
         Returns ``(embedding, token_count)``. The default delegates to
         :meth:`embed` and estimates the tokens; providers that surface real
         usage from their embedding response override this. Used by the
-        usage-metering hooks (Deck #67) to bill ``embeddings_queries`` by
+        usage-metering hooks (Deck #67) to bill ``tokens_embedded`` by
         tokens rather than by operation count.
 
         IMPORTANT (recursion invariant): this default calls ``self.embed``. A

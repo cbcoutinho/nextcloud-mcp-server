@@ -64,7 +64,7 @@ async def record_search_usage(
     doc_types: list[str] | None,
     token_count: int | None,
 ) -> None:
-    """Record the billable ``embeddings_queries`` event for one semantic search.
+    """Record the billable ``tokens_embedded`` event for one semantic search.
 
     The value is the query embedding's token count (provider-reported or
     estimated) — the unit upstream providers bill on, and the same metric the
@@ -89,7 +89,7 @@ async def record_search_usage(
     try:
         store = await UsageEventStore.shared()
         await store.record_usage_event(
-            metric="embeddings_queries",
+            metric="tokens_embedded",
             value=token_count or 0,
             metadata={
                 "user_id": user_id,
@@ -111,9 +111,7 @@ async def record_search_usage(
         # (record_usage_event swallows its own write failures). Metering is on,
         # so warn — a silent DEBUG line would hide "operator enabled metering
         # but gets no data".
-        logger.warning(
-            "usage metering hook (embeddings_queries) skipped", exc_info=True
-        )
+        logger.warning("usage metering hook (tokens_embedded) skipped", exc_info=True)
 
 
 def configure_semantic_tools(mcp: FastMCP):
@@ -588,7 +586,7 @@ def configure_semantic_tools(mcp: FastMCP):
             logger.info("Returning %d results from BM25 hybrid search", len(results))
 
             # Usage metering (Deck #67): record the query embedding's token
-            # count as a billable 'embeddings_queries' event. query_token_count
+            # count as a billable 'tokens_embedded' event. query_token_count
             # is set by BM25HybridSearchAlgorithm during the search() above; the
             # doc_types loop reuses one search_algo instance for the same query
             # and the algorithm caches the dense embedding per query, so the

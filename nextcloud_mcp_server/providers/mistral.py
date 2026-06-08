@@ -143,7 +143,7 @@ class MistralProvider(Provider):
         Returns ``(embeddings, total_tokens)`` where ``total_tokens`` is the
         sum of ``response.usage.total_tokens`` across the ``BATCH_SIZE`` sub-
         requests (the unit Mistral bills on). Used by the usage-metering hooks
-        to record ``embeddings_queries`` by tokens (Deck #67).
+        to record ``tokens_embedded`` by tokens (Deck #67).
         """
         if not self.supports_embeddings:
             raise NotImplementedError(_NO_EMBEDDING_MODEL_MSG)

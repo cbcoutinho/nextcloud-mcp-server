@@ -1,6 +1,6 @@
 """Token-usage surfacing: the Provider ABC estimate default + SimpleProvider.
 
-The usage-metering hooks (Deck #67) bill ``embeddings_queries`` by tokens. Real
+The usage-metering hooks (Deck #67) bill ``tokens_embedded`` by tokens. Real
 providers report exact counts from their API response; providers without a token
 field (Simple, and the ABC default) fall back to a char-based estimate so the
 billable value stays non-zero and monotone with input size.
