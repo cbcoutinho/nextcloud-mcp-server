@@ -46,6 +46,11 @@ async def test_parsed_file_records_pages_and_tokens(store_spy):
     by_metric = {c.kwargs["metric"]: c.kwargs["value"] for c in calls}
     # pages_embedded is the real parsed-page count, NOT the chunk count.
     assert by_metric == {"pages_embedded": 12, "tokens_embedded": 4242}
+    # Intentional ordering: tokens (recorded for every doc) before pages (the
+    # conditional parsing cost). Asserted so a refactor can't silently reverse
+    # it — a comment alone is easier to delete than a failing test.
+    assert calls[0].kwargs["metric"] == "tokens_embedded"
+    assert calls[1].kwargs["metric"] == "pages_embedded"
     for c in calls:
         # Hot-path fast-gate + tenant-local attribution metadata.
         assert c.kwargs["enabled"] is True
