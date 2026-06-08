@@ -97,6 +97,26 @@ async def test_zero_pages_skips_pages(store_spy):
 
 
 @pytest.mark.unit
+async def test_negative_pages_skips_pages(store_spy):
+    """A malformed negative page_count meters as 'no pages' (tokens only)."""
+    await processor.record_indexing_usage(
+        enabled=True,
+        provider="mistral",
+        model="mistral-embed",
+        doc_type="file",
+        user_id="alice",
+        chunk_count=4,
+        token_count=99,
+        total_chars=1000,
+        page_count=-1,
+    )
+
+    calls = store_spy.record_usage_event.await_args_list
+    by_metric = {c.kwargs["metric"]: c.kwargs["value"] for c in calls}
+    assert by_metric == {"tokens_embedded": 99}
+
+
+@pytest.mark.unit
 async def test_disabled_is_noop(store_spy):
     """Flag off → no store access, no events."""
     await processor.record_indexing_usage(

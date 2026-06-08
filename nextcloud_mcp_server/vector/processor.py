@@ -141,11 +141,13 @@ async def record_indexing_usage(
       (card #282).
 
     Best-effort and flag-gated: a metering failure is logged and never breaks
-    indexing. No-op when metering is disabled or the document produced no chunks
-    (an empty batch embeds nothing and would only write zero-value rows).
-    ``pages_embedded`` is additionally skipped when ``page_count`` is absent or
-    zero — gating on the page count itself (not the ``doc_type``) keeps this
-    correct if a future non-PDF parsed type starts reporting pages.
+    indexing. ``chunk_count`` is the empty-batch no-op guard — a document that
+    produced no chunks embedded nothing, so both events are skipped rather than
+    writing zero-value rows. ``pages_embedded`` is additionally skipped when
+    ``page_count`` is absent or not strictly positive — gating on the page count
+    itself (not the ``doc_type``) keeps this correct if a future non-PDF parsed
+    type starts reporting pages, and a malformed non-positive count meters as
+    "no pages" rather than emitting a zero/negative billing row.
 
     Privacy note: ``user_id`` stays tenant-local — the CP rollup aggregates
     GROUP BY (day, metric) into ``usage_daily`` (no metadata column), so nothing
@@ -170,17 +172,20 @@ async def record_indexing_usage(
         # independent; one raising never blocks the other — acceptable under the
         # (day, metric) SUM-aggregation billing model.
 
-        # tokens_embedded: recorded for every embedded document.
+        # tokens_embedded first (intentional ordering): it is recorded for every
+        # embedded document, so the embedding cost is always captured before the
+        # conditional parsing cost — don't reverse this in a refactor.
         await store.record_usage_event(
             metric="tokens_embedded",
             value=token_count,
             metadata=metadata,
             enabled=True,
         )
-        # pages_embedded: parsed pages only. Text content has no page_count, so
-        # skip it rather than write a zero-value row that would misrepresent a
-        # no-parse document as billable parsing work.
-        if page_count:
+        # pages_embedded: parsed pages only, and only a strictly positive count.
+        # Text content has no page_count; a zero/negative count is skipped rather
+        # than writing a row that would misrepresent a no-parse document as
+        # billable parsing work.
+        if page_count and page_count > 0:
             await store.record_usage_event(
                 metric="pages_embedded",
                 value=page_count,
@@ -933,6 +938,8 @@ async def _index_document(
             # Narrow defensively: file_metadata values are loosely typed, so a
             # malformed page_count meters as "no pages" rather than erroring on
             # the indexing path.
+            # bool is an int subclass, so exclude it explicitly — a stray
+            # page_count=True in metadata must not slip through as pages=1.
             raw_page_count = file_metadata.get("page_count")
             await record_indexing_usage(
                 enabled=settings.usage_metering_enabled,
@@ -944,7 +951,10 @@ async def _index_document(
                 token_count=embed_tokens,
                 total_chars=total_chars,
                 page_count=(
-                    raw_page_count if isinstance(raw_page_count, int) else None
+                    raw_page_count
+                    if isinstance(raw_page_count, int)
+                    and not isinstance(raw_page_count, bool)
+                    else None
                 ),
             )
 
