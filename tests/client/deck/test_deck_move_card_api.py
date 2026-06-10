@@ -122,7 +122,7 @@ async def test_move_card_to_board_restores_done_state(mocker):
     )
 
     client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
-    await client.move_card_to_board(
+    result = await client.move_card_to_board(
         source_board_id=1,
         source_stack_id=10,
         card_id=8,
@@ -134,6 +134,8 @@ async def test_move_card_to_board_restores_done_state(mocker):
     done_call = mock_make_request.call_args_list[3]
     assert done_call.args[0] == "PUT"
     assert done_call.args[1] == "/apps/deck/cards/8/done"
+    # The returned card reflects the re-fetched (restored) done state
+    assert result.done is not None
 
 
 async def test_move_card_to_board_rejects_stack_not_on_target_board(mocker):

@@ -337,6 +337,14 @@ class CardOperationResponse(StatusResponse):
     card_id: int = Field(description="ID of the affected card")
     stack_id: int = Field(description="ID of the stack containing the card")
     board_id: int = Field(description="ID of the board containing the card")
+    labels: list[str] | None = Field(
+        default=None,
+        description=(
+            "Label titles on the card after the operation, when relevant — "
+            "e.g. after a cross-board move that remaps board-scoped labels to "
+            "the destination board"
+        ),
+    )
 
 
 # Label Response Models

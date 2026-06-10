@@ -1291,7 +1291,7 @@ def configure_deck_tools(mcp: FastMCP):
             order: Position within the destination stack (default 0 = top)
         """
         client = await get_client(ctx)
-        await client.deck.move_card_to_board(
+        moved = await client.deck.move_card_to_board(
             source_board_id,
             source_stack_id,
             card_id,
@@ -1299,12 +1299,15 @@ def configure_deck_tools(mcp: FastMCP):
             target_stack_id,
             order,
         )
+        # Surface the post-move labels so callers can confirm the remap without
+        # a follow-up get_card (label remapping is this tool's whole point).
         return CardOperationResponse(
             success=True,
             message="Card moved to board successfully",
             card_id=card_id,
             stack_id=target_stack_id,
             board_id=target_board_id,
+            labels=[label.title for label in (moved.labels or [])],
         )
 
     # Label Tools
