@@ -114,7 +114,7 @@ async def test_move_card_to_board_restores_done_state(mocker):
                 card_id=8, stack_id=10, done="2029-12-31T23:59:00+00:00"
             ),
             create_mock_deck_card_response(card_id=8, stack_id=99, done=None),
-            create_mock_deck_card_response(card_id=8, stack_id=99),  # done PUT
+            create_mock_response(status_code=200, json_data={}),  # done PUT (ignored)
             create_mock_deck_card_response(  # re-fetch after restore
                 card_id=8, stack_id=99, done="2031-01-01T00:00:00+00:00"
             ),
@@ -151,7 +151,7 @@ async def test_move_card_to_board_done_restore_failure_is_swallowed(mocker):
             create_mock_deck_card_response(card_id=8, stack_id=99, done=None),  # move
             httpx.HTTPStatusError(  # done PUT fails
                 "500 Server Error",
-                request=httpx.Request("PUT", "http://test.local"),
+                request=httpx.Request("PUT", "https://test.local"),
                 response=create_mock_response(status_code=500, json_data={}),
             ),
         ],
