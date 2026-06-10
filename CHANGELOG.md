@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.110.1 (2026-06-10)
+
+### Fix
+
+- **app**: port-aware MCP URL fallback + clear readiness cache per lifespan (round 4)
+- **app**: cancel readiness loop on lifespan shutdown (review round 2)
+- **config**: correct OIDC token-type/scopes env keys; address review round 1
+- **health**: non-gating readiness probe; shared-task-group lifespan; settings migration
+
+### Refactor
+
+- **app**: cancel only the readiness loop at shutdown (review round 3)
+
 ## v0.110.0 (2026-06-08)
 
 ### Feat
