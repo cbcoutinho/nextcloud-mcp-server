@@ -86,7 +86,13 @@ def _dispatch_state(state: str, **kwargs) -> None:
     """
     handler = _PROVIDER_STATES.get(state)
     if handler is None:
-        logger.warning("No provider-state handler registered for %r; no-op", state)
+        # Log any params astrolabe passed so they're visible once real handlers
+        # need them (e.g. given("user X exists", params={"user_id": ...})).
+        logger.warning(
+            "No provider-state handler registered for %r (params=%s); no-op",
+            state,
+            kwargs,
+        )
         return
     handler()
 
