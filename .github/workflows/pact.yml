@@ -1,0 +1,161 @@
+name: Pact contract tests
+
+# Consumer-driven contract testing against the homelab-hosted Pact Broker
+# (ADR-029). The broker is only reachable over Tailscale, so every job that
+# talks to it first joins the tailnet with the shared github-runner OAuth
+# client. Jobs no-op when the broker secrets are absent (e.g. on forks).
+#
+# Required repo/org secrets:
+#   TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET  - Tailscale github-runner OAuth client
+#   PACT_BROKER                           - broker base URL (https://pact-broker.internal.coutinho.io)
+#   PACT_USERNAME / PACT_PASSWORD         - broker basic-auth credentials
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
+
+concurrency:
+  group: pact-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PACT_BROKER: ${{ secrets.PACT_BROKER }}
+  PACT_USERNAME: ${{ secrets.PACT_USERNAME }}
+  PACT_PASSWORD: ${{ secrets.PACT_PASSWORD }}
+
+jobs:
+  consumer:
+    name: Consumer pacts (mcp -> astrolabe)
+    runs-on: ubuntu-latest
+    # Skip on forks / when broker is not configured.
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      - name: Generate consumer pacts
+        run: uv run pytest -v -m contract tests/contract/
+
+      # Only publish from non-fork builds that have the broker secrets.
+      - name: Join tailnet
+        if: ${{ env.PACT_BROKER != '' }}
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-runner
+
+      - name: Install Pact CLI
+        if: ${{ env.PACT_BROKER != '' }}
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/pact-foundation/pact-ruby-standalone/f03e620e7552239b6ca59438c9beed9d1038c949/install.sh | bash # v2.6.1
+          echo "$PWD/pact/bin" >> "$GITHUB_PATH"
+
+      - name: Publish pacts to broker
+        if: ${{ env.PACT_BROKER != '' }}
+        run: |
+          pact-broker publish tests/contract/pacts \
+            --broker-base-url "$PACT_BROKER" \
+            --broker-username "$PACT_USERNAME" \
+            --broker-password "$PACT_PASSWORD" \
+            --consumer-app-version "${{ github.sha }}" \
+            --branch "${{ github.head_ref || github.ref_name }}"
+
+  provider:
+    name: Provider verification (astrolabe -> mcp)
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      # Stand up the MCP server. NOTE: single-user only exposes the *public*
+      # management endpoints (/api/v1/status, /api/v1/vector-sync/status) — see
+      # app.py:2248. The authenticated surface astrolabe also consumes
+      # (/api/v1/search, /webhooks, /apps, /chunk-context, /pdf-preview) needs
+      # an OAuth-capable profile (login-flow) plus Bearer-token injection into
+      # the verifier (Verifier.add_custom_header). That is the phase-4 follow-up;
+      # this job currently verifies the public-endpoint pacts.
+      - name: Generate ephemeral TOKEN_ENCRYPTION_KEY
+        run: |
+          KEY=$(openssl rand -base64 32 | tr '+/' '-_')
+          echo "TOKEN_ENCRYPTION_KEY=${KEY}" >> "$GITHUB_ENV"
+
+      - name: Start MCP server
+        uses: hoverkraft-tech/compose-action@11beaa1c2dae4e8ed7b1665aa074723b6cecb0e4 # v3.0.0
+        with:
+          compose-file: "./docker-compose.yml"
+          compose-flags: "--profile single-user"
+          up-flags: "--build"
+        env:
+          TOKEN_ENCRYPTION_KEY: ${{ env.TOKEN_ENCRYPTION_KEY }}
+
+      - name: Wait for MCP server
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -o /dev/null -s -w "%{http_code}" http://localhost:8000/api/v1/status || true)
+            [ "$code" = "200" ] && echo "ready" && exit 0
+            sleep 5
+          done
+          docker compose --profile single-user logs mcp
+          exit 1
+
+      - name: Join tailnet
+        if: ${{ env.PACT_BROKER != '' }}
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-runner
+
+      - name: Verify provider against broker pacts
+        if: ${{ env.PACT_BROKER != '' }}
+        env:
+          PACT_PROVIDER_URL: http://localhost:8000
+          PACT_PROVIDER_VERSION: ${{ github.sha }}
+          PACT_PROVIDER_BRANCH: ${{ github.head_ref || github.ref_name }}
+          # Publish results only from master so PR runs don't pollute the matrix.
+          PACT_PUBLISH_RESULTS: ${{ github.ref == 'refs/heads/master' }}
+        run: uv run pytest -v -m contract tests/contract/test_mcp_provider_verification.py
+
+  can-i-deploy:
+    name: can-i-deploy
+    runs-on: ubuntu-latest
+    needs: [consumer, provider]
+    # Only the `github` context is available in a job-level `if`, so the broker
+    # guard lives on each step below (the pact-broker CLI errors on an empty
+    # --broker-base-url, e.g. after a secret rotation or on a fork).
+    if: ${{ github.ref == 'refs/heads/master' }}
+    steps:
+      - name: Join tailnet
+        if: ${{ env.PACT_BROKER != '' }}
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-runner
+
+      - name: Install Pact CLI
+        if: ${{ env.PACT_BROKER != '' }}
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/pact-foundation/pact-ruby-standalone/f03e620e7552239b6ca59438c9beed9d1038c949/install.sh | bash # v2.6.1
+          echo "$PWD/pact/bin" >> "$GITHUB_PATH"
+
+      - name: Can I deploy nextcloud-mcp-server?
+        if: ${{ env.PACT_BROKER != '' }}
+        run: |
+          pact-broker can-i-deploy \
+            --broker-base-url "$PACT_BROKER" \
+            --broker-username "$PACT_USERNAME" \
+            --broker-password "$PACT_PASSWORD" \
+            --pacticipant nextcloud-mcp-server \
+            --version "${{ github.sha }}" \
+            --to-environment production

@@ -118,7 +118,13 @@ async def _get_provisioning_status(ctx: Context, user_id: str) -> ProvisioningSt
                     "  get_provisioning_status: app password FOUND for user_id=%s",
                     user_id,
                 )
-                provisioned_at_str = status.get("provisioned_at")
+                # Astrolabe returns provisioned_at as Unix seconds (see the
+                # contract pact); convert to the ISO string the model expects.
+                provisioned_at_str = None
+                provisioned_at_raw = status.get("provisioned_at")
+                if provisioned_at_raw:
+                    dt = datetime.fromtimestamp(provisioned_at_raw, tz=timezone.utc)
+                    provisioned_at_str = dt.isoformat()
                 return ProvisioningStatus(
                     is_provisioned=True,
                     provisioned_at=provisioned_at_str,

@@ -8,6 +8,7 @@ read and clear that store too, otherwise they report "not provisioned" while
 tools still work, and "nothing to revoke" while the credential persists.
 """
 
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -56,6 +57,39 @@ async def test_status_reports_provisioned_for_app_password_store(
     assert status.flow_type == "login_flow_v2"
     assert status.scopes == ["notes.read"]
     storage.get_refresh_token.assert_not_awaited()  # app password short-circuits
+
+
+async def test_status_converts_astrolabe_int_timestamp_to_iso(mocker):
+    """Astrolabe returns provisioned_at as Unix seconds (per the contract pact),
+    but ProvisioningStatus.provisioned_at is an ISO string. The int must be
+    converted at the boundary, else constructing the model raises ValidationError
+    for every provisioned user."""
+    mocker.patch.object(
+        oauth_tools,
+        "get_settings",
+        return_value=SimpleNamespace(
+            oidc_client_id="mcp",
+            oidc_client_secret="secret",
+            nextcloud_host="https://cloud.example.com",
+        ),
+    )
+    astrolabe = MagicMock()
+    astrolabe.get_background_sync_status = AsyncMock(
+        return_value={
+            "has_access": True,
+            "credential_type": "app_password",
+            "provisioned_at": 1717000000,
+        }
+    )
+    mocker.patch.object(oauth_tools, "AstrolabeClient", return_value=astrolabe)
+
+    status = await _get_provisioning_status(MagicMock(), "alice")
+
+    assert status.is_provisioned is True
+    assert status.credential_type == "app_password"
+    # Converted from Unix seconds to an ISO-8601 string that round-trips back.
+    assert isinstance(status.provisioned_at, str)
+    assert datetime.fromisoformat(status.provisioned_at).timestamp() == 1717000000
 
 
 async def test_revoke_deletes_app_password(mocker, _no_astrolabe_settings):
