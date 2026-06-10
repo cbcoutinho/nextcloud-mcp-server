@@ -500,10 +500,12 @@ async def _refresh_dependency_health() -> None:
             set_dependency_health("qdrant", True)
 
 
-async def _readiness_refresh_loop() -> None:
+async def _readiness_refresh_loop(*, task_status=anyio.TASK_STATUS_IGNORED) -> None:
     """Background loop that keeps ``_readiness_cache`` warm off the probe path.
 
-    Started in the shared lifespan task group; cancelled on shutdown.
+    Reports its own ``CancelScope`` via ``task_status`` so the lifespan can stop
+    just this infinite loop at shutdown while the sync tasks drain naturally on
+    their ``shutdown_event``.
     """
     interval = get_settings().health_ready_refresh_interval
     # Keep the staleness window in step with the configured cadence so
@@ -512,14 +514,16 @@ async def _readiness_refresh_loop() -> None:
     logger.info(
         "Readiness dependency-health refresh loop started (every %ss)", interval
     )
-    while True:
-        try:
-            await _refresh_dependency_health()
-        except Exception:  # noqa: BLE001 - never let the loop die
-            logger.warning(
-                "Readiness dependency refresh iteration failed", exc_info=True
-            )
-        await anyio.sleep(interval)
+    with anyio.CancelScope() as scope:
+        task_status.started(scope)
+        while True:
+            try:
+                await _refresh_dependency_health()
+            except Exception:  # noqa: BLE001 - never let the loop die
+                logger.warning(
+                    "Readiness dependency refresh iteration failed", exc_info=True
+                )
+            await anyio.sleep(interval)
 
 
 @dataclass
@@ -1812,10 +1816,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         # through the MCP session manager — collapsing four near-identical
         # task-group + session + yield + teardown skeletons into one.
         async def _noop_start(tg: TaskGroup) -> None:
-            return
+            """No background sync tasks for this mode."""
 
         async def _noop_teardown() -> None:
-            return
+            """No mode-owned resources to release."""
 
         start, teardown = _noop_start, _noop_teardown
 
@@ -2178,7 +2182,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         # (ADR-019 verify-on-read eviction) and cancels every task on exit.
         async with anyio.create_task_group() as tg:
             await start(tg)
-            tg.start_soon(_readiness_refresh_loop)
+            # Capture the loop's own CancelScope so shutdown stops just the loop.
+            readiness_scope = await tg.start(_readiness_refresh_loop)
             _vector_sync_state.eviction_task_group = tg
             async with _mcp_session_with_login_flow(app):
                 try:
@@ -2188,12 +2193,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     # Request path must not spawn into a cancelling group.
                     _vector_sync_state.eviction_task_group = None
                     await teardown()
-            # teardown() signals the sync tasks to drain, but the readiness loop
-            # runs forever and has no shutdown_event to observe. anyio waits for
-            # start_soon tasks on normal exit rather than cancelling them, so
-            # without this the lifespan shutdown hangs until uvicorn's graceful
-            # timeout. Cancel the group to stop the loop (and any stragglers).
-            tg.cancel_scope.cancel()
+            # The readiness loop runs forever with no shutdown_event to observe,
+            # and anyio waits for (not cancels) child tasks on normal exit — so
+            # without this the lifespan shutdown would hang until uvicorn's
+            # graceful timeout. Cancel only the loop; the task group's exit then
+            # waits for the sync tasks to drain via shutdown_event (set in
+            # teardown) rather than force-cancelling them mid-work.
+            readiness_scope.cancel()
 
     # Health check endpoints for Kubernetes probes
     def health_live(request):
