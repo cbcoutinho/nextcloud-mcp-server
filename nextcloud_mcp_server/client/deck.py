@@ -392,13 +392,15 @@ class DeckClient(BaseNextcloudClient):
         # board silently orphans the card's labels (they keep the old boardId).
         # Cross-board moves must go through move_card_to_board(), which uses the
         # card-update route (CardService::update) and remaps labels by title.
-        board_stack_ids = {stack.id for stack in await self.get_stacks(board_id)}
-        if target_stack_id not in board_stack_ids:
-            raise ValueError(
-                f"target_stack_id {target_stack_id} is not a stack on board "
-                f"{board_id}; reorder_card only moves cards within a board. "
-                "Use move_card_to_board() to move a card to another board."
-            )
+        # A same-stack reorder can't cross a board boundary, so skip the lookup.
+        if target_stack_id != stack_id:
+            board_stack_ids = {stack.id for stack in await self.get_stacks(board_id)}
+            if target_stack_id not in board_stack_ids:
+                raise ValueError(
+                    f"target_stack_id {target_stack_id} is not a stack on board "
+                    f"{board_id}; reorder_card only moves cards within a board. "
+                    "Use move_card_to_board() to move a card to another board."
+                )
 
         # Use the non-API route /cards/{cardId}/reorder which correctly reads
         # stackId from the body. The API route /api/.../stacks/{stackId}/cards/...
@@ -418,31 +420,45 @@ class DeckClient(BaseNextcloudClient):
         source_board_id: int,
         source_stack_id: int,
         card_id: int,
+        target_board_id: int,
         target_stack_id: int,
         order: int = 0,
     ) -> DeckCard:
         """Move a card to a stack on a different (or the same) board.
 
         Unlike :meth:`reorder_card`, this goes through the card-update route
-        (``CardService::update``, which honours ``stackId`` in the body). When
-        the destination stack is on a different board, Deck remaps the card's
-        board-scoped labels by title — assigning the same-titled label on the
-        destination board, or cloning it there when the user has board-manage
-        permission — instead of leaving orphaned labels behind. This mirrors
-        Deck's native "Move/copy card" action. Card identity (id, comments,
-        attachments) is preserved.
+        (``CardService::update``). When the destination stack is on a different
+        board, Deck remaps the card's board-scoped labels by title — assigning
+        the same-titled label on the destination board, or cloning it there
+        when the user has board-manage permission — instead of leaving orphaned
+        labels behind. This mirrors Deck's native "Move/copy card" action. Card
+        identity (id, comments, attachments), ``archived`` state and the due
+        date are preserved.
 
-        The card-update route is a full replacement, so the current card is
-        fetched first to preserve fields that are not being changed. The
-        internal ``/apps/deck/cards/{cardId}`` route is used (rather than the
-        board/stack-scoped API route) because the latter reads ``stackId`` from
-        the URL, which would override the target stack in the body — the same
-        parameter conflict that affects reorder (issue #469). The internal
-        route derives ``owner`` from the session user server-side.
+        The internal ``/apps/deck/cards/{cardId}`` route is used: it reads the
+        target ``stackId`` from the body (the board/stack-scoped API route
+        instead binds ``stackId`` from the URL — issue #469 — and 404s for a
+        card that isn't already on that board). The controller derives ``owner``
+        from the session user and does not accept a ``done`` value, so a "done"
+        card is re-marked done after the move; Deck stamps the current time
+        there, so the original done timestamp is not preserved (a limitation of
+        what this route exposes).
         """
+        # Validate the destination so target_board_id is load-bearing: the move
+        # itself is driven by stackId, so without this a stack on another board
+        # would relocate the card while the reported board is wrong.
+        target_stack_ids = {
+            stack.id for stack in await self.get_stacks(target_board_id)
+        }
+        if target_stack_id not in target_stack_ids:
+            raise ValueError(
+                f"target_stack_id {target_stack_id} is not a stack on target "
+                f"board {target_board_id}."
+            )
+
         current = await self.get_card(source_board_id, source_stack_id, card_id)
 
-        json_data: Dict[str, Any] = {
+        json_data: dict[str, Any] = {
             # The route placeholder is {cardId} but the controller reads the
             # card id from the body, so it must be sent explicitly.
             "id": card_id,
@@ -463,7 +479,17 @@ class DeckClient(BaseNextcloudClient):
             json=json_data,
             headers=headers,
         )
-        return DeckCard(**response.json())
+        moved = DeckCard(**response.json())
+
+        # This route clears `done`; restore the done *state* if the card had it
+        # (the timestamp is refreshed to now — see the docstring note).
+        if current.done is not None:
+            await self._make_request(
+                "PUT", f"/apps/deck/cards/{card_id}/done", headers=headers
+            )
+            moved = await self.get_card(target_board_id, target_stack_id, card_id)
+
+        return moved
 
     # Labels
     async def get_label(self, board_id: int, label_id: int) -> DeckLabel:

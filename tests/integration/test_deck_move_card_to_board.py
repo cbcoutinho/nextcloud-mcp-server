@@ -75,6 +75,7 @@ async def test_move_card_to_board_preserves_identity(
         source_board_id=source_board_id,
         source_stack_id=source_stack_id,
         card_id=card.id,
+        target_board_id=target_board_id,
         target_stack_id=target_stack_id,
     )
 
@@ -105,7 +106,8 @@ async def test_move_card_to_board_remaps_labels(
         two_boards_with_stacks
     )
 
-    # Pick a default label that exists on both boards by title
+    # "Finished" is one of the four labels Deck auto-creates on every new
+    # board, so it is reliably present on both the source and target boards.
     source_board = await nc_client.deck.get_board(source_board_id)
     target_board = await nc_client.deck.get_board(target_board_id)
     source_label = next(
@@ -131,6 +133,7 @@ async def test_move_card_to_board_remaps_labels(
         source_board_id=source_board_id,
         source_stack_id=source_stack_id,
         card_id=card.id,
+        target_board_id=target_board_id,
         target_stack_id=target_stack_id,
     )
 
@@ -146,6 +149,69 @@ async def test_move_card_to_board_remaps_labels(
     )
     assert any(label.id == target_label.id for label in finished)
     assert all(label.id != source_label.id for label in finished)
+
+
+async def test_move_card_to_board_preserves_done_status(
+    nc_client: NextcloudClient, two_boards_with_stacks: tuple
+):
+    """A card marked done keeps its done timestamp across a cross-board move."""
+    source_board_id, source_stack_id, target_board_id, target_stack_id = (
+        two_boards_with_stacks
+    )
+
+    suffix = uuid.uuid4().hex[:8]
+    card = await nc_client.deck.create_card(
+        source_board_id, source_stack_id, f"Done card {suffix}"
+    )
+    done_ts = "2030-01-02T03:04:05+00:00"
+    await nc_client.deck.update_card(
+        board_id=source_board_id,
+        stack_id=source_stack_id,
+        card_id=card.id,
+        done=done_ts,
+    )
+    before = await nc_client.deck.get_card(source_board_id, source_stack_id, card.id)
+    assert before.done is not None, "Card should be done before the move"
+
+    await nc_client.deck.move_card_to_board(
+        source_board_id=source_board_id,
+        source_stack_id=source_stack_id,
+        card_id=card.id,
+        target_board_id=target_board_id,
+        target_stack_id=target_stack_id,
+    )
+
+    after = await nc_client.deck.get_card(target_board_id, target_stack_id, card.id)
+    assert after.done is not None, "done status was cleared during the move"
+
+
+async def test_move_card_to_board_rejects_stack_not_on_target_board(
+    nc_client: NextcloudClient, two_boards_with_stacks: tuple
+):
+    """The move is rejected when target_stack_id is not on target_board_id."""
+    source_board_id, source_stack_id, target_board_id, _target_stack_id = (
+        two_boards_with_stacks
+    )
+
+    suffix = uuid.uuid4().hex[:8]
+    card = await nc_client.deck.create_card(
+        source_board_id, source_stack_id, f"Mismatch {suffix}"
+    )
+
+    with pytest.raises(ValueError, match="not a stack on target board"):
+        await nc_client.deck.move_card_to_board(
+            source_board_id=source_board_id,
+            source_stack_id=source_stack_id,
+            card_id=card.id,
+            target_board_id=target_board_id,
+            target_stack_id=source_stack_id,  # on the source board, not target
+        )
+
+    # The card stayed put
+    still_there = await nc_client.deck.get_card(
+        source_board_id, source_stack_id, card.id
+    )
+    assert still_there.stackId == source_stack_id
 
 
 async def test_reorder_card_rejects_cross_board_target(

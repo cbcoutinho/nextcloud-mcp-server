@@ -1274,20 +1274,25 @@ def configure_deck_tools(mcp: FastMCP):
         board-manage permission. Use deck_reorder_card for moves within a
         single board.
 
-        The destination is determined by target_stack_id; target_board_id must
-        be the board that owns it (it is used to report the resulting location).
+        target_stack_id must be a stack on target_board_id; the move is
+        rejected otherwise.
 
         Args:
             source_board_id: The ID of the board the card currently lives on
             source_stack_id: The ID of the stack the card currently lives in
             card_id: The ID of the card to move
-            target_board_id: The ID of the destination board (must own target_stack_id)
-            target_stack_id: The ID of the destination stack
+            target_board_id: The ID of the destination board
+            target_stack_id: The ID of the destination stack (must be on target_board_id)
             order: Position within the destination stack (default 0 = top)
         """
         client = await get_client(ctx)
         await client.deck.move_card_to_board(
-            source_board_id, source_stack_id, card_id, target_stack_id, order
+            source_board_id,
+            source_stack_id,
+            card_id,
+            target_board_id,
+            target_stack_id,
+            order,
         )
         return CardOperationResponse(
             success=True,
