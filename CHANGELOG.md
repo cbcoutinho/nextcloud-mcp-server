@@ -5,6 +5,13 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.110.2 (2026-06-10)
+
+### Fix
+
+- convert astrolabe int provisioned_at to ISO before ProvisioningStatus
+- **ci**: gate can-i-deploy broker steps individually, not at job level
+
 ## v0.110.1 (2026-06-10)
 
 ### Fix
