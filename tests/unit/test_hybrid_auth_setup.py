@@ -123,14 +123,9 @@ class TestSetupOAuthConfigForMultiUserBasic:
 
         valid_fernet_key = Fernet.generate_key().decode()
 
-        # Mock TOKEN_ENCRYPTION_KEY environment variable
-        mocker.patch(
-            "os.getenv",
-            side_effect=lambda k, default=None: {
-                "TOKEN_ENCRYPTION_KEY": valid_fernet_key,
-                "NEXTCLOUD_MCP_SERVER_URL": "http://localhost:8000",
-            }.get(k, default),
-        )
+        # Provide the encryption key via settings: the function reads from the
+        # injected Settings, not os.getenv, after the env->settings migration.
+        hybrid_auth_settings.token_encryption_key = valid_fernet_key
 
         # Mock httpx.AsyncClient
         mock_response = MagicMock()
@@ -273,17 +268,12 @@ class TestSetupOAuthConfigForMultiUserBasic:
         self, hybrid_auth_settings, oidc_discovery_response, mocker
     ):
         """Test using custom OIDC discovery URL."""
-        # Mock OIDC_DISCOVERY_URL environment variable
+        # Provide the custom discovery URL via settings: the function reads from
+        # the injected Settings, not os.getenv, after the env->settings migration.
         custom_discovery_url = (
             "https://custom.idp.example.com/.well-known/openid-configuration"
         )
-        mocker.patch(
-            "os.getenv",
-            side_effect=lambda k, default=None: {
-                "OIDC_DISCOVERY_URL": custom_discovery_url,
-                "NEXTCLOUD_MCP_SERVER_URL": "http://localhost:8000",
-            }.get(k, default),
-        )
+        hybrid_auth_settings.oidc_discovery_url = custom_discovery_url
 
         # Mock httpx.AsyncClient
         mock_response = MagicMock()

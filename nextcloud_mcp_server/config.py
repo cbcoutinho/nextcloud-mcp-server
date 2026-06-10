@@ -37,6 +37,9 @@ _DEFAULTS: dict[str, Any] = {
     "cookie_secure": None,
     # OAuth/OIDC
     "oidc_discovery_url": None,
+    "oidc_token_type": "Bearer",
+    "oidc_scopes": "",
+    "port": 8000,
     "nextcloud_oidc_client_id": None,
     "nextcloud_oidc_client_secret": None,
     "oidc_issuer": None,
@@ -90,6 +93,7 @@ _DEFAULTS: dict[str, Any] = {
     "vector_sync_queue_max_size": 10000,
     "vector_sync_metrics_refresh_interval": 20,
     "vector_sync_user_poll_interval": 60,
+    "health_ready_refresh_interval": 15,
     # Orphan-sweep at Pod startup (card #101). When True, delete any
     # placeholders carrying a different / absent ``instance_id`` before
     # the scanner's first cycle, so a Pod restart mid-batch doesn't
@@ -600,6 +604,9 @@ class Settings:
     oidc_client_secret: str | None = None
     oidc_issuer: str | None = None
     oidc_resource_server_id: str | None = None
+    oidc_token_type: str = "Bearer"  # NEXTCLOUD_OIDC_TOKEN_TYPE
+    oidc_scopes: str = ""  # NEXTCLOUD_OIDC_SCOPES (space-separated)
+    port: int = 8000  # Server port (PORT); used to build fallback URLs
 
     # Nextcloud settings
     nextcloud_host: str | None = None
@@ -698,6 +705,10 @@ class Settings:
     vector_sync_metrics_refresh_interval: int = 20  # seconds
     vector_sync_user_poll_interval: int = 60  # seconds - OAuth mode user discovery
     vector_sync_orphan_sweep_enabled: bool = True  # card #101
+    # Cadence for the background readiness dependency-health refresh loop
+    # (app.py): keeps the Nextcloud/Qdrant snapshot warm off the probe path so
+    # /health/ready never does external I/O (Deck #302).
+    health_ready_refresh_interval: int = 15  # seconds
     # System tag marking files for vector indexing. The scanner indexes files
     # carrying this tag and verify-on-read gates results on current membership
     # (ADR-019), so an untagged file drops out of search immediately.
@@ -1336,6 +1347,9 @@ def get_settings() -> Settings:
         "oidc_client_secret": "NEXTCLOUD_OIDC_CLIENT_SECRET",
         "oidc_issuer": "OIDC_ISSUER",
         "oidc_resource_server_id": "OIDC_RESOURCE_SERVER_ID",
+        "oidc_token_type": "NEXTCLOUD_OIDC_TOKEN_TYPE",
+        "oidc_scopes": "NEXTCLOUD_OIDC_SCOPES",
+        "port": "PORT",
         # Nextcloud settings
         "nextcloud_host": "NEXTCLOUD_HOST",
         "nextcloud_username": "NEXTCLOUD_USERNAME",
@@ -1376,6 +1390,7 @@ def get_settings() -> Settings:
         "vector_sync_metrics_refresh_interval": "VECTOR_SYNC_METRICS_REFRESH_INTERVAL",
         "vector_sync_user_poll_interval": "VECTOR_SYNC_USER_POLL_INTERVAL",
         "vector_sync_orphan_sweep_enabled": "VECTOR_SYNC_ORPHAN_SWEEP_ENABLED",
+        "health_ready_refresh_interval": "HEALTH_READY_REFRESH_INTERVAL",
         "vector_sync_pdf_tag": "VECTOR_SYNC_PDF_TAG",
         # Verify-on-read (ADR-019)
         "verification_concurrency": "VERIFICATION_CONCURRENCY",

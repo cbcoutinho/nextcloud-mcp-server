@@ -237,6 +237,24 @@ They do **not** affect connections to internal services (Ollama, Qdrant, Unstruc
 
 ---
 
+## Health & Readiness Probes
+
+The server exposes two Kubernetes probe endpoints:
+
+- `GET /health/live` — liveness. Returns `200` whenever the process is running. It does **not** check external dependencies, so it never restarts the Pod on an upstream blip.
+- `GET /health/ready` — readiness. Gates **only** on local configuration (`NEXTCLOUD_HOST` set, auth mode configured). External-dependency reachability (Nextcloud `status.php`, Qdrant `/readyz`) is reported in the response body for observability but is **non-gating**.
+
+> **Why non-gating (Deck #302):** the server typically runs as a single replica per tenant. If readiness failed whenever Nextcloud or Qdrant had a transient blip, the only Pod would be pulled from its Service, leaving the gateway with no upstream — turning a *degraded* dependency into a *total* outage and dropping every MCP client's streamable-HTTP session. Dependency health is instead refreshed by a background loop and cached, so the probe path performs no external I/O.
+
+```dotenv
+# Cadence (seconds) for the background dependency-health refresh loop (default: 15)
+HEALTH_READY_REFRESH_INTERVAL=15
+```
+
+The probe reports each dependency under `checks` (`ok` / `embedded` / `pending` / `error: ...`); a non-`ok` dependency no longer flips the overall `status` to `not_ready`.
+
+---
+
 ## Semantic Search Configuration (Optional)
 
 **New in v0.58.0:** Simplified semantic search configuration with automatic dependency resolution.
