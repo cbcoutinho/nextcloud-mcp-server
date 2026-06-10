@@ -1212,7 +1212,7 @@ def configure_deck_tools(mcp: FastMCP):
         )
 
     @mcp.tool(
-        title="Reorder/Move Deck Card",
+        title="Reorder Deck Card",
         annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
     )
     @require_scopes("deck.write")
@@ -1225,14 +1225,19 @@ def configure_deck_tools(mcp: FastMCP):
         order: int,
         target_stack_id: int,
     ) -> CardOperationResponse:
-        """Reorder/move a Nextcloud Deck card
+        """Reorder a Nextcloud Deck card within a board.
+
+        Moves a card to a new position, optionally into a different stack on
+        the SAME board. To move a card to a stack on a DIFFERENT board, use
+        deck_move_card_to_board instead — reordering across boards is rejected
+        because it would orphan the card's board-scoped labels.
 
         Args:
             board_id: The ID of the board
             stack_id: The ID of the current stack
             card_id: The ID of the card
             order: New position in the target stack
-            target_stack_id: The ID of the target stack
+            target_stack_id: The ID of the target stack (must be on board_id)
         """
         client = await get_client(ctx)
         await client.deck.reorder_card(
@@ -1244,6 +1249,67 @@ def configure_deck_tools(mcp: FastMCP):
             card_id=card_id,
             stack_id=target_stack_id,
             board_id=board_id,
+        )
+
+    @mcp.tool(
+        title="Move Deck Card to Another Board",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
+    @require_scopes("deck.write")
+    @instrument_tool
+    async def deck_move_card_to_board(
+        ctx: Context,
+        source_board_id: int,
+        source_stack_id: int,
+        card_id: int,
+        target_board_id: int,
+        target_stack_id: int,
+        order: int = 0,
+    ) -> CardOperationResponse:
+        """Move a Nextcloud Deck card to a stack on a different board.
+
+        The card keeps its identity (same id, comments, attachments), along
+        with its archived state, due date and user assignments (an assignee
+        without access to the target board stays assigned but cannot act on the
+        card). Deck remaps the card's board-scoped labels to the destination
+        board by title — reusing a same-titled label there, or cloning it when
+        you have board-manage permission. Use deck_reorder_card for moves
+        within a single board.
+
+        Two caveats from Deck's move route: the card's owner is reassigned to
+        the user performing the move (the original owner is not preserved), and
+        a card marked done keeps its done state but its done timestamp is reset
+        to the time of the move.
+
+        target_stack_id must be a stack on target_board_id; the move is
+        rejected otherwise.
+
+        Args:
+            source_board_id: The ID of the board the card currently lives on
+            source_stack_id: The ID of the stack the card currently lives in
+            card_id: The ID of the card to move
+            target_board_id: The ID of the destination board
+            target_stack_id: The ID of the destination stack (must be on target_board_id)
+            order: Position within the destination stack (default 0 = top)
+        """
+        client = await get_client(ctx)
+        moved = await client.deck.move_card_to_board(
+            source_board_id,
+            source_stack_id,
+            card_id,
+            target_board_id,
+            target_stack_id,
+            order,
+        )
+        # Surface the post-move labels so callers can confirm the remap without
+        # a follow-up get_card (label remapping is this tool's whole point).
+        return CardOperationResponse(
+            success=True,
+            message="Card moved to board successfully",
+            card_id=card_id,
+            stack_id=target_stack_id,
+            board_id=target_board_id,
+            labels=[label.title for label in (moved.labels or [])],
         )
 
     # Label Tools

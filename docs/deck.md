@@ -23,7 +23,8 @@
 | `deck_delete_card` | Delete a card |
 | `deck_archive_card` | Archive a card |
 | `deck_unarchive_card` | Unarchive a card |
-| `deck_reorder_card` | Move/reorder cards within or between stacks |
+| `deck_reorder_card` | Reorder/move a card within a single board (between stacks on that board) |
+| `deck_move_card_to_board` | Move a card to a stack on a different board, remapping board-scoped labels |
 | `deck_create_label` | Create a new label in a board |
 | `deck_update_label` | Update label title and color |
 | `deck_delete_label` | Delete a label |

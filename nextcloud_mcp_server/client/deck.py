@@ -1,4 +1,7 @@
+import logging
 from typing import Any, Dict, List, Optional
+
+from httpx import HTTPStatusError, RequestError
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.models.deck import (
@@ -12,6 +15,8 @@ from nextcloud_mcp_server.models.deck import (
     DeckSession,
     DeckStack,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class DeckClient(BaseNextcloudClient):
@@ -386,6 +391,22 @@ class DeckClient(BaseNextcloudClient):
         order: int,
         target_stack_id: int,
     ) -> None:
+        # Reorder is intentionally restricted to moves *within* a single board.
+        # Deck's reorder route (CardService::reorder) only reassigns stackId and
+        # does NOT remap board-scoped labels, so handing it a stack on another
+        # board silently orphans the card's labels (they keep the old boardId).
+        # Cross-board moves must go through move_card_to_board(), which uses the
+        # card-update route (CardService::update) and remaps labels by title.
+        # A same-stack reorder can't cross a board boundary, so skip the lookup.
+        if target_stack_id != stack_id:
+            board_stack_ids = {stack.id for stack in await self.get_stacks(board_id)}
+            if target_stack_id not in board_stack_ids:
+                raise ValueError(
+                    f"target_stack_id {target_stack_id} is not a stack on board "
+                    f"{board_id}; reorder_card only moves cards within a board. "
+                    "Use move_card_to_board() to move a card to another board."
+                )
+
         # Use the non-API route /cards/{cardId}/reorder which correctly reads
         # stackId from the body. The API route /api/.../stacks/{stackId}/cards/...
         # has a parameter conflict where URL stackId overrides body stackId.
@@ -398,6 +419,104 @@ class DeckClient(BaseNextcloudClient):
             json=json_data,
             headers=headers,
         )
+
+    async def move_card_to_board(
+        self,
+        source_board_id: int,
+        source_stack_id: int,
+        card_id: int,
+        target_board_id: int,
+        target_stack_id: int,
+        order: int = 0,
+    ) -> DeckCard:
+        """Move a card to a stack on a different (or the same) board.
+
+        Unlike :meth:`reorder_card`, this goes through the card-update route
+        (``CardService::update``). When the destination stack is on a different
+        board, Deck remaps the card's board-scoped labels by title — assigning
+        the same-titled label on the destination board, or cloning it there
+        when the user has board-manage permission — instead of leaving orphaned
+        labels behind. This mirrors Deck's native "Move/copy card" action. Card
+        identity (id, comments, attachments), ``archived`` state, the due date
+        and ``assignedUsers`` are preserved — the move does not re-validate
+        assignees against the destination board, so an assigned user without
+        access to the target board stays assigned but may not be able to act on
+        the card.
+
+        The internal ``/apps/deck/cards/{cardId}`` route is used: it reads the
+        target ``stackId`` from the body (the board/stack-scoped API route
+        instead binds ``stackId`` from the URL — issue #469 — and 404s for a
+        card that isn't already on that board). The controller derives ``owner``
+        from the session user and does not accept a ``done`` value, so a "done"
+        card is re-marked done after the move; Deck stamps the current time
+        there, so the original done timestamp is not preserved (a limitation of
+        what this route exposes).
+
+        The done re-mark is best-effort: the move itself has already committed
+        by then, so if that follow-up fails the card is left on the target
+        board without its done state (logged as a warning) rather than raising
+        and implying the move failed.
+        """
+        # Validate the destination so target_board_id is load-bearing: the move
+        # itself is driven by stackId, so without this a stack on another board
+        # would relocate the card while the reported board is wrong.
+        target_stack_ids = {
+            stack.id for stack in await self.get_stacks(target_board_id)
+        }
+        if target_stack_id not in target_stack_ids:
+            raise ValueError(
+                f"target_stack_id {target_stack_id} is not a stack on target "
+                f"board {target_board_id}."
+            )
+
+        current = await self.get_card(source_board_id, source_stack_id, card_id)
+
+        json_data: dict[str, Any] = {
+            # The route placeholder is {cardId} but the controller reads the
+            # card id from the body, so it must be sent explicitly.
+            "id": card_id,
+            "title": current.title,
+            "type": current.type,
+            "stackId": target_stack_id,
+            "order": order,
+            "description": current.description or "",
+            # Sent explicitly as None when absent (update_card omits the key);
+            # both are equivalent here — the route reads duedate and there's
+            # nothing to clear on a card that never had one.
+            "duedate": current.duedate.isoformat() if current.duedate else None,
+            # 0 keeps the card live (a positive value would soft-delete it)
+            "deletedAt": current.deletedAt or 0,
+        }
+        headers = self._get_deck_headers()
+        response = await self._make_request(
+            "PUT",
+            f"/apps/deck/cards/{card_id}",
+            json=json_data,
+            headers=headers,
+        )
+        moved = DeckCard(**response.json())
+
+        # This route clears `done`; restore the done *state* if the card had it
+        # (the timestamp is refreshed to now — see the docstring note). The move
+        # has already committed, so this is best-effort: on failure, warn with
+        # the card's new location rather than raising as if the move failed.
+        if current.done is not None:
+            try:
+                await self._make_request(
+                    "PUT", f"/apps/deck/cards/{card_id}/done", headers=headers
+                )
+                moved = await self.get_card(target_board_id, target_stack_id, card_id)
+            except (HTTPStatusError, RequestError) as e:
+                logger.warning(
+                    "Card %s moved to board %s stack %s but restoring done "
+                    "state failed: %s",
+                    card_id,
+                    target_board_id,
+                    target_stack_id,
+                    e,
+                )
+
+        return moved
 
     # Labels
     async def get_label(self, board_id: int, label_id: int) -> DeckLabel:
