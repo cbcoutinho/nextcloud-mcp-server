@@ -1269,10 +1269,12 @@ def configure_deck_tools(mcp: FastMCP):
         """Move a Nextcloud Deck card to a stack on a different board.
 
         The card keeps its identity (same id, comments, attachments), along
-        with its archived state and due date. Deck remaps the card's
-        board-scoped labels to the destination board by title — reusing a
-        same-titled label there, or cloning it when you have board-manage
-        permission. Use deck_reorder_card for moves within a single board.
+        with its archived state, due date and user assignments (an assignee
+        without access to the target board stays assigned but cannot act on the
+        card). Deck remaps the card's board-scoped labels to the destination
+        board by title — reusing a same-titled label there, or cloning it when
+        you have board-manage permission. Use deck_reorder_card for moves
+        within a single board.
 
         Two caveats from Deck's move route: the card's owner is reassigned to
         the user performing the move (the original owner is not preserved), and

@@ -437,8 +437,11 @@ class DeckClient(BaseNextcloudClient):
         the same-titled label on the destination board, or cloning it there
         when the user has board-manage permission — instead of leaving orphaned
         labels behind. This mirrors Deck's native "Move/copy card" action. Card
-        identity (id, comments, attachments), ``archived`` state and the due
-        date are preserved.
+        identity (id, comments, attachments), ``archived`` state, the due date
+        and ``assignedUsers`` are preserved — the move does not re-validate
+        assignees against the destination board, so an assigned user without
+        access to the target board stays assigned but may not be able to act on
+        the card.
 
         The internal ``/apps/deck/cards/{cardId}`` route is used: it reads the
         target ``stackId`` from the body (the board/stack-scoped API route

@@ -252,6 +252,42 @@ async def test_move_card_to_board_preserves_done_and_archived(
     assert after.archived is True, "archived state was lost during the move"
 
 
+async def test_move_card_to_board_preserves_assigned_users(
+    nc_client: NextcloudClient, two_boards_with_stacks: tuple
+):
+    """Assigned users carry over a cross-board move (the route doesn't touch them).
+
+    Deck's update route remaps labels on a board change but leaves the card's
+    user assignments untouched, so an assignee that exists on both boards stays
+    assigned.
+    """
+    source_board_id, source_stack_id, target_board_id, target_stack_id = (
+        two_boards_with_stacks
+    )
+
+    suffix = uuid.uuid4().hex[:8]
+    card = await nc_client.deck.create_card(
+        source_board_id, source_stack_id, f"Assigned {suffix}"
+    )
+    # The test user owns both temporary boards, so it is a valid assignee on each
+    await nc_client.deck.assign_user_to_card(
+        source_board_id, source_stack_id, card.id, nc_client.username
+    )
+    before = await nc_client.deck.get_card(source_board_id, source_stack_id, card.id)
+    assert before.assignedUsers, "Card should have an assignee before the move"
+
+    await nc_client.deck.move_card_to_board(
+        source_board_id=source_board_id,
+        source_stack_id=source_stack_id,
+        card_id=card.id,
+        target_board_id=target_board_id,
+        target_stack_id=target_stack_id,
+    )
+
+    after = await nc_client.deck.get_card(target_board_id, target_stack_id, card.id)
+    assert after.assignedUsers, "Assigned users were dropped during the move"
+
+
 async def test_move_card_to_board_rejects_stack_not_on_target_board(
     nc_client: NextcloudClient, two_boards_with_stacks: tuple
 ):
