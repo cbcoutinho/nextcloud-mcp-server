@@ -130,12 +130,13 @@ jobs:
     name: can-i-deploy
     runs-on: ubuntu-latest
     needs: [consumer, provider]
-    # Gate on the broker secret too: the pact-broker CLI errors on an empty
-    # --broker-base-url, so without this guard a secret rotation/fork would
-    # break every master merge.
-    if: ${{ github.ref == 'refs/heads/master' && env.PACT_BROKER != '' }}
+    # Only the `github` context is available in a job-level `if`, so the broker
+    # guard lives on each step below (the pact-broker CLI errors on an empty
+    # --broker-base-url, e.g. after a secret rotation or on a fork).
+    if: ${{ github.ref == 'refs/heads/master' }}
     steps:
       - name: Join tailnet
+        if: ${{ env.PACT_BROKER != '' }}
         uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
@@ -143,11 +144,13 @@ jobs:
           tags: tag:github-runner
 
       - name: Install Pact CLI
+        if: ${{ env.PACT_BROKER != '' }}
         run: |
           curl -fsSL https://raw.githubusercontent.com/pact-foundation/pact-ruby-standalone/f03e620e7552239b6ca59438c9beed9d1038c949/install.sh | bash # v2.6.1
           echo "$PWD/pact/bin" >> "$GITHUB_PATH"
 
       - name: Can I deploy nextcloud-mcp-server?
+        if: ${{ env.PACT_BROKER != '' }}
         run: |
           pact-broker can-i-deploy \
             --broker-base-url "$PACT_BROKER" \
