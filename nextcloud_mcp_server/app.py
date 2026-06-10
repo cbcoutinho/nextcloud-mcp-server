@@ -119,6 +119,7 @@ from nextcloud_mcp_server.observability.metrics import (
     record_dependency_check,
     set_dependency_health,
 )
+from nextcloud_mcp_server.observability.readiness import ReadinessCache
 from nextcloud_mcp_server.server import (
     AVAILABLE_APPS,
     configure_semantic_tools,
@@ -417,6 +418,121 @@ def _clear_vector_sync_state() -> None:
     _vector_sync_state.scanner_wake_event = None
 
 
+# =============================================================================
+# Readiness dependency health (Deck #302)
+# =============================================================================
+#
+# Readiness must reflect "this process is up and configured to serve", NOT the
+# live reachability of shared external dependencies. The MCP server typically
+# runs as a single replica per tenant; failing readiness when Nextcloud or
+# Qdrant blips would pull the only Pod out of its Service, leaving the gateway
+# with no upstream and turning a degraded dependency into a total outage plus
+# an MCP reconnect storm. So external dependency health is refreshed by a
+# background loop, cached, and *reported but non-gating* — and the probe path
+# never performs external I/O.
+
+
+def _default_mcp_server_url() -> str:
+    """Fallback MCP server URL (OAuth audience) when NEXTCLOUD_MCP_SERVER_URL is
+    unset — derived from the configured PORT so a custom port is honoured."""
+    return f"http://localhost:{get_settings().port}"
+
+
+# Pre-loop default; _readiness_refresh_loop overrides ttl_seconds at startup to
+# 2x the configured refresh interval, so bumping this value alone has no effect.
+_readiness_cache = ReadinessCache(ttl_seconds=30.0)
+
+
+async def _check_nextcloud_health() -> None:
+    """Probe Nextcloud ``status.php`` and record the result in the cache.
+
+    Catches everything: the refresh loop must never crash on a dependency
+    error, and a failed check is just an unhealthy status, not an exception.
+    """
+    host = get_settings().nextcloud_host
+    if not host:
+        return
+    start = time.time()
+    try:
+        async with nextcloud_httpx_client(timeout=2.0) as client:
+            response = await client.get(f"{host}/status.php")
+        healthy = response.status_code == 200
+        detail = "ok" if healthy else f"error: status {response.status_code}"
+    except Exception as e:  # noqa: BLE001 - any failure is "unhealthy"
+        healthy = False
+        detail = f"error: {e}"
+    _readiness_cache.update("nextcloud_reachable", healthy, detail)
+    set_dependency_health("nextcloud", healthy)
+    record_dependency_check("nextcloud", time.time() - start)
+
+
+async def _check_qdrant_health() -> None:
+    """Probe Qdrant ``/readyz`` (network mode) and record the result.
+
+    Qdrant Cloud's auth gateway 403s unauthenticated requests, so forward the
+    same api-key the configured client uses (see vector/qdrant_client.py).
+    """
+    settings = get_settings()
+    qdrant_url = settings.qdrant_url
+    if not qdrant_url:
+        return
+    headers = {"api-key": settings.qdrant_api_key} if settings.qdrant_api_key else {}
+    start = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(f"{qdrant_url}/readyz", headers=headers)
+        healthy = response.status_code == 200
+        detail = "ok" if healthy else f"error: status {response.status_code}"
+    except Exception as e:  # noqa: BLE001 - any failure is "unhealthy"
+        healthy = False
+        detail = f"error: {e}"
+    _readiness_cache.update("qdrant", healthy, detail)
+    set_dependency_health("qdrant", healthy)
+    record_dependency_check("qdrant", time.time() - start)
+
+
+async def _refresh_dependency_health() -> None:
+    """Refresh all external dependency statuses concurrently (one pass)."""
+    settings = get_settings()
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(_check_nextcloud_health)
+        if settings.vector_sync_enabled and settings.qdrant_url:
+            tg.start_soon(_check_qdrant_health)
+        elif settings.vector_sync_enabled:
+            # Embedded Qdrant (memory/persistent mode) — no external service.
+            _readiness_cache.update("qdrant", True, "embedded")
+            set_dependency_health("qdrant", True)
+
+
+async def _readiness_refresh_loop(*, task_status=anyio.TASK_STATUS_IGNORED) -> None:
+    """Background loop that keeps ``_readiness_cache`` warm off the probe path.
+
+    Reports its own ``CancelScope`` via ``task_status`` so the lifespan can stop
+    just this infinite loop at shutdown while the sync tasks drain naturally on
+    their ``shutdown_event``.
+    """
+    interval = get_settings().health_ready_refresh_interval
+    # Keep the staleness window in step with the configured cadence so
+    # is_stale() stays meaningful when the interval is tuned off its default.
+    _readiness_cache.ttl_seconds = interval * 2
+    # Drop entries from a prior lifespan run in the same process (the integration
+    # matrix restarts the server) so the snapshot reflects only this run's deps.
+    _readiness_cache.statuses.clear()
+    logger.info(
+        "Readiness dependency-health refresh loop started (every %ss)", interval
+    )
+    with anyio.CancelScope() as scope:
+        task_status.started(scope)
+        while True:
+            try:
+                await _refresh_dependency_health()
+            except Exception:  # noqa: BLE001 - never let the loop die
+                logger.warning(
+                    "Readiness dependency refresh iteration failed", exc_info=True
+                )
+            await anyio.sleep(interval)
+
+
 @dataclass
 class AppContext:
     """Application context for BasicAuth mode."""
@@ -536,8 +652,8 @@ async def load_oauth_client_credentials(
         ValueError: If credentials cannot be obtained
     """
     # Try environment variables first
-    client_id = os.getenv("NEXTCLOUD_OIDC_CLIENT_ID")
-    client_secret = os.getenv("NEXTCLOUD_OIDC_CLIENT_SECRET")
+    client_id = get_settings().oidc_client_id
+    client_secret = get_settings().oidc_client_secret
 
     if client_id and client_secret:
         logger.info("Using pre-configured OAuth client credentials from environment")
@@ -561,7 +677,9 @@ async def load_oauth_client_credentials(
     # Try dynamic registration if available
     if registration_endpoint:
         logger.info("Dynamic client registration available")
-        mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+        mcp_server_url = (
+            get_settings().nextcloud_mcp_server_url or _default_mcp_server_url()
+        )
         redirect_uris = [
             f"{mcp_server_url}/oauth/callback",  # Unified callback (flow determined by query param)
         ]
@@ -600,7 +718,7 @@ async def load_oauth_client_credentials(
 
         # Get token type from environment (Bearer or jwt)
         # Note: Must be lowercase "jwt" to match OIDC app's check
-        token_type = os.getenv("NEXTCLOUD_OIDC_TOKEN_TYPE", "Bearer").lower()
+        token_type = get_settings().oidc_token_type.lower()
         # Special case: "bearer" should remain capitalized for compatibility
         if token_type != "jwt":
             token_type = "Bearer"
@@ -728,7 +846,7 @@ async def setup_oauth_config():
     # and ENABLE_OFFLINE_ACCESS environment variables)
     settings = get_settings()
 
-    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    nextcloud_host = settings.nextcloud_host
     if not nextcloud_host:
         raise ValueError(
             "NEXTCLOUD_HOST environment variable is required for OAuth mode"
@@ -737,8 +855,9 @@ async def setup_oauth_config():
     nextcloud_host = nextcloud_host.rstrip("/")
 
     # Get OIDC discovery URL (defaults to Nextcloud integrated mode)
-    discovery_url = os.getenv(
-        "OIDC_DISCOVERY_URL", f"{nextcloud_host}/.well-known/openid-configuration"
+    discovery_url = (
+        settings.oidc_discovery_url
+        or f"{nextcloud_host}/.well-known/openid-configuration"
     )
     logger.info("Performing OIDC discovery: %s", discovery_url)
 
@@ -811,7 +930,7 @@ async def setup_oauth_config():
     if enable_offline_access:
         try:
             # Validate encryption key before initializing
-            encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
+            encryption_key = settings.token_encryption_key
             if not encryption_key:
                 logger.warning(
                     "ENABLE_OFFLINE_ACCESS=true but TOKEN_ENCRYPTION_KEY not set. "
@@ -831,8 +950,8 @@ async def setup_oauth_config():
             )
 
     # Load client credentials (static or dynamic registration)
-    client_id = os.getenv("NEXTCLOUD_OIDC_CLIENT_ID")
-    client_secret = os.getenv("NEXTCLOUD_OIDC_CLIENT_SECRET")
+    client_id = settings.oidc_client_id
+    client_secret = settings.oidc_client_secret
 
     if client_id and client_secret:
         logger.info("Using static OIDC client credentials: %s", client_id)
@@ -856,16 +975,16 @@ async def setup_oauth_config():
     public_issuer_url = settings.nextcloud_public_issuer_url
     client_issuer = public_issuer_url if public_issuer_url else issuer
     # Get MCP server URL for audience validation
-    mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
-    nextcloud_resource_uri = os.getenv("NEXTCLOUD_RESOURCE_URI", nextcloud_host)
+    mcp_server_url = settings.nextcloud_mcp_server_url or _default_mcp_server_url()
+    nextcloud_resource_uri = settings.nextcloud_resource_uri or nextcloud_host
 
     # Warn if resource URIs are not configured (required for ADR-005 compliance)
-    if not os.getenv("NEXTCLOUD_MCP_SERVER_URL"):
+    if not settings.nextcloud_mcp_server_url:
         logger.warning(
             "NEXTCLOUD_MCP_SERVER_URL not set, defaulting to: %s. This should be set explicitly for proper audience validation.",
             mcp_server_url,
         )
-    if not os.getenv("NEXTCLOUD_RESOURCE_URI"):
+    if not settings.nextcloud_resource_uri:
         logger.warning(
             "NEXTCLOUD_RESOURCE_URI not set, defaulting to: %s. This should be set explicitly for proper audience validation.",
             nextcloud_resource_uri,
@@ -908,7 +1027,7 @@ async def setup_oauth_config():
         logger.info("✓ JWT signature verification enabled (JWKS)")
 
     # Progressive Consent mode (for offline access / background jobs)
-    encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
+    encryption_key = settings.token_encryption_key
     if enable_offline_access and encryption_key and refresh_token_storage:
         logger.info("✓ Progressive Consent mode enabled - offline access available")
 
@@ -920,7 +1039,7 @@ async def setup_oauth_config():
     oauth_client = None
 
     # Create auth settings
-    mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
+    mcp_server_url = settings.nextcloud_mcp_server_url or _default_mcp_server_url()
 
     # Note: We don't set required_scopes here anymore.
     # Scopes are now advertised via PRM endpoint and enforced per-tool.
@@ -985,9 +1104,9 @@ async def setup_oauth_config_for_multi_user_basic(
     nextcloud_host = nextcloud_host.rstrip("/")
 
     # Get OIDC discovery URL (always Nextcloud integrated mode for multi-user BasicAuth)
-    discovery_url = os.getenv(
-        "OIDC_DISCOVERY_URL",
-        f"{nextcloud_host}/.well-known/openid-configuration",
+    discovery_url = (
+        settings.oidc_discovery_url
+        or f"{nextcloud_host}/.well-known/openid-configuration"
     )
     logger.info(
         "Performing OIDC discovery for multi-user BasicAuth hybrid mode: %s",
@@ -1041,8 +1160,8 @@ async def setup_oauth_config_for_multi_user_basic(
     logger.info("  Introspection: %s", introspection_uri)
 
     # Get MCP server URL for audience validation
-    mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
-    nextcloud_resource_uri = os.getenv("NEXTCLOUD_RESOURCE_URI", nextcloud_host)
+    mcp_server_url = settings.nextcloud_mcp_server_url or _default_mcp_server_url()
+    nextcloud_resource_uri = settings.nextcloud_resource_uri or nextcloud_host
 
     # Use public issuer URL for JWT validation if set (handles Docker internal/external URL mismatch)
     # Tokens are issued with the public URL, but OIDC discovery returns internal URL
@@ -1080,7 +1199,7 @@ async def setup_oauth_config_for_multi_user_basic(
     refresh_token_storage = None
     if settings.enable_offline_access:
         try:
-            encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY")
+            encryption_key = settings.token_encryption_key
             if not encryption_key:
                 logger.warning(
                     "ENABLE_OFFLINE_ACCESS=true but TOKEN_ENCRYPTION_KEY not set. "
@@ -1182,8 +1301,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         )
 
         # Check for static credentials first
-        static_client_id = os.getenv("NEXTCLOUD_OIDC_CLIENT_ID")
-        static_client_secret = os.getenv("NEXTCLOUD_OIDC_CLIENT_SECRET")
+        static_client_id = settings.oidc_client_id
+        static_client_secret = settings.oidc_client_secret
 
         if static_client_id and static_client_secret:
             logger.info("Using static OAuth credentials for background operations")
@@ -1565,17 +1684,17 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             if not nextcloud_host_for_context:
                 raise ValueError("NEXTCLOUD_HOST is required for OAuth mode")
 
-            mcp_server_url = os.getenv(
-                "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
+            mcp_server_url = (
+                settings.nextcloud_mcp_server_url or _default_mcp_server_url()
             )
-            nextcloud_resource_uri = os.getenv(
-                "NEXTCLOUD_RESOURCE_URI", nextcloud_host_for_context
+            nextcloud_resource_uri = (
+                settings.nextcloud_resource_uri or nextcloud_host_for_context
             )
-            discovery_url = os.getenv(
-                "OIDC_DISCOVERY_URL",
-                f"{nextcloud_host_for_context}/.well-known/openid-configuration",
+            discovery_url = (
+                settings.oidc_discovery_url
+                or f"{nextcloud_host_for_context}/.well-known/openid-configuration"
             )
-            scopes = os.getenv("NEXTCLOUD_OIDC_SCOPES", "")
+            scopes = settings.oidc_scopes
 
             oauth_context_dict = {
                 "storage": refresh_token_storage,
@@ -1630,12 +1749,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
 
                     # Create oauth_context for management API authentication
                     nextcloud_host_for_context = settings.nextcloud_host
-                    mcp_server_url = os.getenv(
-                        "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
+                    mcp_server_url = (
+                        settings.nextcloud_mcp_server_url or _default_mcp_server_url()
                     )
-                    discovery_url = os.getenv(
-                        "OIDC_DISCOVERY_URL",
-                        f"{nextcloud_host_for_context}/.well-known/openid-configuration",
+                    discovery_url = (
+                        settings.oidc_discovery_url
+                        or f"{nextcloud_host_for_context}/.well-known/openid-configuration"
                     )
 
                     oauth_context_dict = {
@@ -1698,8 +1817,21 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         # Note: enable_offline_access_for_sync, encryption_key, and refresh_token_storage
         # are already defined in outer scope before mode split
 
-        # Multi-user BasicAuth uses OAuth-style background sync (with app passwords)
-        # So skip single-user BasicAuth vector sync if in multi-user mode
+        # Each deployment mode contributes its background-sync work as a
+        # (start, teardown) pair; the shared task group further below runs that
+        # work alongside the readiness health-refresh loop and yields once
+        # through the MCP session manager — collapsing four near-identical
+        # task-group + session + yield + teardown skeletons into one.
+        async def _noop_start(tg: TaskGroup) -> None:
+            """No background sync tasks for this mode."""
+
+        async def _noop_teardown() -> None:
+            """No mode-owned resources to release."""
+
+        start, teardown = _noop_start, _noop_teardown
+
+        # Multi-user BasicAuth uses OAuth-style background sync (with app
+        # passwords); single-user BasicAuth sync is skipped in multi-user mode.
         if (
             settings.vector_sync_enabled
             and not oauth_enabled
@@ -1708,8 +1840,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # BasicAuth mode - single user sync
             logger.info("Starting background vector sync tasks for BasicAuth mode")
 
-            # Get username from environment
-            username = os.getenv("NEXTCLOUD_USERNAME")
+            # Get username from settings
+            username = settings.nextcloud_username
             if not username:
                 raise ValueError(
                     "NEXTCLOUD_USERNAME required for vector sync in BasicAuth mode"
@@ -1752,9 +1884,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 app, ingest_transport, shutdown_event, scanner_wake_event
             )
 
-            # Start background tasks using anyio TaskGroup
-            async with anyio.create_task_group() as tg:
-                # Start scanner task (publishes to the transport's producer)
+            # Background-sync work for this mode; the shared runner starts it.
+            async def _single_user_start(tg: TaskGroup) -> None:
+                # Scanner publishes to the transport's producer.
                 await tg.start(
                     scanner_task,
                     ingest_transport.producer,
@@ -1764,13 +1896,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     username,
                 )
 
-                # Start the in-process consumer pool. ``run_consumers`` is a
-                # no-op for the distributed (postgres) backend — its consumer is
-                # the out-of-process ``worker`` role. The closure binds this
-                # mode's shared client+username and forwards anyio's injected
-                # ``task_status`` so ``tg.start`` observes each worker's
-                # readiness. One shared receive stream + N workers ⇒ a single
-                # multiplexed queue processed with N-way parallelism (ADR-028).
+                # In-process consumer pool. ``run_consumers`` is a no-op for the
+                # distributed (postgres) backend — the out-of-process ``worker``
+                # role consumes there. The closure binds this mode's shared
+                # client+username and forwards anyio's injected ``task_status``.
+                # One shared receive stream + N workers ⇒ a single multiplexed
+                # queue processed with N-way parallelism (ADR-028).
                 async def spawn_worker(
                     worker_id, receive_stream, *, task_status=anyio.TASK_STATUS_IGNORED
                 ):
@@ -1787,7 +1918,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     tg, spawn_worker, settings.vector_sync_processor_workers
                 )
 
-                # Publish outstanding-work + corpus gauges on a fixed cadence,
+                # Outstanding-work + corpus gauges on a fixed cadence,
                 # independent of the consumer path and queue backend (fixes the
                 # gauge reading 0 on the multi-user path; see metrics_publisher).
                 # receive_stream is None in postgres mode — get_ingest_pending
@@ -1799,37 +1930,23 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     shutdown_event,
                 )
 
-                # Expose this long-lived task group to request-path code that
-                # wants to spawn background work (e.g. ADR-019 verify-on-read
-                # eviction). Eviction coroutines have their own try/except, so
-                # they cannot panic the parent group.
-                _vector_sync_state.eviction_task_group = tg
-
                 logger.info(
                     "Background sync tasks started: 1 scanner + %s processors (queue=%s)",
                     ingest_transport.active_consumer_count,
                     ingest_transport.backend_name,
                 )
 
-                # Run MCP session manager and yield
-                async with _mcp_session_with_login_flow(app):
-                    try:
-                        yield
-                    finally:
-                        # Shutdown signal
-                        logger.info("Shutting down background sync tasks")
-                        shutdown_event.set()
-                        # Request path must not spawn into a cancelling group.
-                        _vector_sync_state.eviction_task_group = None
-                        # Tear down backend-owned resources (closes the
-                        # procrastinate connector pool in postgres mode; no-op
-                        # for the memory stream, which task-group cancellation
-                        # closes).
-                        await ingest_transport.aclose()
-                        # Drop stale singleton refs to the now-closed transport.
-                        _clear_vector_sync_state()
-                        await client.close()
-                        # TaskGroup automatically cancels all tasks on exit
+            async def _single_user_teardown() -> None:
+                shutdown_event.set()
+                # Tear down backend-owned resources (closes the procrastinate
+                # connector pool in postgres mode; no-op for the memory stream,
+                # which task-group cancellation closes).
+                await ingest_transport.aclose()
+                # Drop stale singleton refs to the now-closed transport.
+                _clear_vector_sync_state()
+                await client.close()
+
+            start, teardown = _single_user_start, _single_user_teardown
 
         elif (
             settings.vector_sync_enabled
@@ -1847,9 +1964,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 raise ValueError("NEXTCLOUD_HOST required for vector sync")
 
             # Get OIDC discovery URL (same as used for OAuth setup)
-            discovery_url = os.getenv(
-                "OIDC_DISCOVERY_URL",
-                f"{nextcloud_host_for_sync}/.well-known/openid-configuration",
+            discovery_url = (
+                settings.oidc_discovery_url
+                or f"{nextcloud_host_for_sync}/.well-known/openid-configuration"
             )
 
             # Get client credentials - these were obtained before uvicorn started
@@ -1965,10 +2082,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # never reachable from any supported deployment mode. The
                 # `token_broker` constructed above is still used by the
                 # management API revoke endpoint (via app.state.oauth_context).
-                async with anyio.create_task_group() as tg:
-                    # Start user manager task (supervises per-user scanners).
-                    # Each per-user scanner clones the producer; for the bus
-                    # producer clone() returns the shared connection.
+                async def _multi_user_start(tg: TaskGroup) -> None:
+                    # User manager supervises per-user scanners. Each per-user
+                    # scanner clones the producer; for the bus producer clone()
+                    # returns the shared connection.
                     await tg.start(
                         user_manager_task,
                         ingest_transport.producer,
@@ -1980,14 +2097,14 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         tg,
                     )
 
-                    # Start the in-process consumer pool. ``run_consumers`` is a
-                    # no-op for the distributed (postgres) backend — the
-                    # out-of-process ``worker`` role consumes there. The closure
-                    # binds this mode's nextcloud_host (per-document credential
-                    # resolution) and forwards anyio's injected ``task_status``.
-                    # One shared receive stream + N workers ⇒ a single
-                    # multiplexed queue draining every user's documents with
-                    # N-way parallelism, never one user at a time (ADR-028).
+                    # In-process consumer pool. ``run_consumers`` is a no-op for
+                    # the distributed (postgres) backend — the out-of-process
+                    # ``worker`` role consumes there. The closure binds this
+                    # mode's nextcloud_host (per-document credential resolution)
+                    # and forwards anyio's injected ``task_status``. One shared
+                    # receive stream + N workers ⇒ a single multiplexed queue
+                    # draining every user's documents with N-way parallelism,
+                    # never one user at a time (ADR-028).
                     async def spawn_worker(
                         worker_id,
                         receive_stream,
@@ -2006,8 +2123,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         tg, spawn_worker, settings.vector_sync_processor_workers
                     )
 
-                    # Publish outstanding-work + corpus gauges on a fixed
-                    # cadence. Critical on this multi-user path: the consumer is
+                    # Outstanding-work + corpus gauges on a fixed cadence.
+                    # Critical on this multi-user path: the consumer is
                     # oauth_processor_task, which never updated the queue gauge,
                     # so without this the gauge read 0 while the buffer held
                     # thousands of pending docs (see metrics_publisher).
@@ -2020,38 +2137,24 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         shutdown_event,
                     )
 
-                    # Expose this long-lived task group to request-path code
-                    # that wants to spawn background work (e.g. ADR-019
-                    # verify-on-read eviction). Eviction coroutines have their
-                    # own try/except, so they cannot panic the parent group.
-                    _vector_sync_state.eviction_task_group = tg
-
                     logger.info(
                         "Background sync tasks started: 1 user manager + %s processors (queue=%s)",
                         ingest_transport.active_consumer_count,
                         ingest_transport.backend_name,
                     )
 
-                    # Run MCP session manager and yield
-                    async with _mcp_session_with_login_flow(app):
-                        try:
-                            yield
-                        finally:
-                            # Shutdown signal
-                            logger.info("Shutting down background sync tasks")
-                            shutdown_event.set()
-                            # Request path must not spawn into a cancelling group.
-                            _vector_sync_state.eviction_task_group = None
-                            # Tear down backend-owned resources (closes the
-                            # procrastinate connector pool in postgres mode;
-                            # no-op for the memory stream).
-                            await ingest_transport.aclose()
-                            # Drop stale singleton refs to the now-closed transport.
-                            _clear_vector_sync_state()
-                            # Close token broker HTTP client
-                            if token_broker._http_client:
-                                await token_broker._http_client.aclose()
-                            # TaskGroup automatically cancels all tasks on exit
+                async def _multi_user_teardown() -> None:
+                    shutdown_event.set()
+                    # Tear down backend-owned resources (closes the procrastinate
+                    # connector pool in postgres mode; no-op for the memory stream).
+                    await ingest_transport.aclose()
+                    # Drop stale singleton refs to the now-closed transport.
+                    _clear_vector_sync_state()
+                    # Close token broker HTTP client
+                    if token_broker._http_client:
+                        await token_broker._http_client.aclose()
+
+                start, teardown = _multi_user_start, _multi_user_teardown
             else:
                 # No OAuth credentials available for background sync
                 logger.warning(
@@ -2059,9 +2162,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     "Multi-user BasicAuth mode will run without semantic search background operations. "
                     "To enable, set NEXTCLOUD_OIDC_CLIENT_ID and NEXTCLOUD_OIDC_CLIENT_SECRET."
                 )
-                # Just run MCP session manager without vector sync
-                async with _mcp_session_with_login_flow(app):
-                    yield
+                # start/teardown stay no-op; the shared runner yields below.
 
         else:
             # No vector sync - just run MCP session manager
@@ -2076,12 +2177,36 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     logger.warning(
                         "Vector sync enabled but refresh token storage not available"
                     )
-                elif oauth_enabled and not os.getenv("TOKEN_ENCRYPTION_KEY"):
+                elif oauth_enabled and not settings.token_encryption_key:
                     logger.warning(
                         "Vector sync enabled but TOKEN_ENCRYPTION_KEY not set"
                     )
+            # start/teardown stay no-op; the shared runner yields below.
+
+        # One shared task group runs this mode's background tasks plus the
+        # readiness health-refresh loop, then yields through the MCP session
+        # manager. The group is exposed for request-path background work
+        # (ADR-019 verify-on-read eviction) and cancels every task on exit.
+        async with anyio.create_task_group() as tg:
+            await start(tg)
+            # Capture the loop's own CancelScope so shutdown stops just the loop.
+            readiness_scope = await tg.start(_readiness_refresh_loop)
+            _vector_sync_state.eviction_task_group = tg
             async with _mcp_session_with_login_flow(app):
-                yield
+                try:
+                    yield
+                finally:
+                    logger.info("Shutting down background tasks")
+                    # Request path must not spawn into a cancelling group.
+                    _vector_sync_state.eviction_task_group = None
+                    await teardown()
+            # The readiness loop runs forever with no shutdown_event to observe,
+            # and anyio waits for (not cancels) child tasks on normal exit — so
+            # without this the lifespan shutdown would hang until uvicorn's
+            # graceful timeout. Cancel only the loop; the task group's exit then
+            # waits for the sync tasks to drain via shutdown_event (set in
+            # teardown) rather than force-cancelling them mid-work.
+            readiness_scope.cancel()
 
     # Health check endpoints for Kubernetes probes
     def health_live(request):
@@ -2097,49 +2222,28 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             }
         )
 
-    async def health_ready(request):
+    def health_ready(request):
         """Readiness probe endpoint.
 
-        Returns 200 OK if the application is ready to serve traffic.
-        Checks that required configuration is present and Qdrant if vector sync enabled.
+        Gates **only** on local, cheap configuration checks (that the process is
+        up and configured to serve). External dependency reachability (Nextcloud,
+        Qdrant) is reported for observability but is intentionally *non-gating*
+        and served from a background-refreshed cache, so the probe performs no
+        external I/O and a shared-dependency blip cannot pull a single-replica
+        Pod out of its Service (Deck #302).
         """
-        checks = {}
+        checks: dict[str, object] = {}
         is_ready = True
+        settings = get_settings()
 
-        # Check Nextcloud host configuration and connectivity
-        nextcloud_host = os.getenv("NEXTCLOUD_HOST")
-        if nextcloud_host:
+        # --- Local, hard gates ------------------------------------------------
+        if settings.nextcloud_host:
             checks["nextcloud_configured"] = "ok"
-            # Try to connect to Nextcloud
-            start_time = time.time()
-            try:
-                async with nextcloud_httpx_client(timeout=2.0) as client:
-                    response = await client.get(f"{nextcloud_host}/status.php")
-                    duration = time.time() - start_time
-                    if response.status_code == 200:
-                        checks["nextcloud_reachable"] = "ok"
-                        set_dependency_health("nextcloud", True)
-                    else:
-                        checks["nextcloud_reachable"] = (
-                            f"error: status {response.status_code}"
-                        )
-                        set_dependency_health("nextcloud", False)
-                        is_ready = False
-                    record_dependency_check("nextcloud", duration)
-            except Exception as e:
-                duration = time.time() - start_time
-                checks["nextcloud_reachable"] = f"error: {str(e)}"
-                set_dependency_health("nextcloud", False)
-                record_dependency_check("nextcloud", duration)
-                is_ready = False
         else:
             checks["nextcloud_configured"] = "error: NEXTCLOUD_HOST not set"
-            set_dependency_health("nextcloud", False)
             is_ready = False
 
-        # Check authentication configuration
-        # Report the deployment mode, not just whether OAuth is enabled
-        # This helps clients (like Astrolabe) determine which auth flow to use
+        # Report the deployment mode (helps clients pick the auth flow).
         if mode == AuthMode.LOGIN_FLOW:
             checks["auth_mode"] = "oauth"
             checks["auth_configured"] = "ok"
@@ -2147,61 +2251,19 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             checks["auth_mode"] = "multi_user_basic"
             checks["auth_configured"] = "ok"
             # Indicate if app passwords are supported (when offline_access enabled)
-            checks["supports_app_passwords"] = get_settings().enable_offline_access
+            checks["supports_app_passwords"] = settings.enable_offline_access
         elif mode == AuthMode.SINGLE_USER_BASIC:
-            username = os.getenv("NEXTCLOUD_USERNAME")
-            password = os.getenv("NEXTCLOUD_PASSWORD")
-            if username and password:
-                checks["auth_mode"] = "basic"
+            checks["auth_mode"] = "basic"
+            if settings.nextcloud_username and settings.nextcloud_password:
                 checks["auth_configured"] = "ok"
             else:
-                checks["auth_mode"] = "basic"
                 checks["auth_configured"] = "error: credentials not set"
                 is_ready = False
 
-        # Check Qdrant status if using network mode (external Qdrant service)
-        # In-memory and persistent modes use embedded Qdrant, no external service to check
-        # Note: get_settings() supports both ENABLE_SEMANTIC_SEARCH and VECTOR_SYNC_ENABLED
-        settings = get_settings()
-        vector_sync_enabled = settings.vector_sync_enabled
-        qdrant_url = os.getenv("QDRANT_URL")  # Only set in network mode
-
-        if vector_sync_enabled and qdrant_url:
-            start_time = time.time()
-            # Self-hosted Qdrant exposes /readyz unauthenticated, but
-            # Qdrant Cloud's auth gateway returns 403 for any
-            # unauthenticated request — so we have to forward the same
-            # api-key the configured AsyncQdrantClient uses (see
-            # vector/qdrant_client.py). Without this header, every
-            # readiness probe against a Cloud cluster returns 503,
-            # blocking the Pod from reaching Ready.
-            qdrant_headers = (
-                {"api-key": settings.qdrant_api_key} if settings.qdrant_api_key else {}
-            )
-            try:
-                async with httpx.AsyncClient(timeout=2.0) as client:
-                    response = await client.get(
-                        f"{qdrant_url}/readyz", headers=qdrant_headers
-                    )
-                    duration = time.time() - start_time
-                    if response.status_code == 200:
-                        checks["qdrant"] = "ok"
-                        set_dependency_health("qdrant", True)
-                    else:
-                        checks["qdrant"] = f"error: status {response.status_code}"
-                        set_dependency_health("qdrant", False)
-                        is_ready = False
-                    record_dependency_check("qdrant", duration)
-            except Exception as e:
-                duration = time.time() - start_time
-                checks["qdrant"] = f"error: {str(e)}"
-                set_dependency_health("qdrant", False)
-                record_dependency_check("qdrant", duration)
-                is_ready = False
-        elif vector_sync_enabled:
-            # Using embedded Qdrant (memory or persistent mode)
-            checks["qdrant"] = "embedded"
-            set_dependency_health("qdrant", True)
+        # --- External dependencies: reported, NON-gating ----------------------
+        # Read the background-refreshed snapshot; never do I/O on the probe path.
+        for name, status in _readiness_cache.snapshot().items():
+            checks[name] = status.detail
 
         status_code = 200 if is_ready else 503
         return JSONResponse(
@@ -2372,10 +2434,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             """
             # RFC 9728 requires resource to be a URL (not a client ID)
             # Use the MCP server's public URL
-            mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL")
+            mcp_server_url = settings.nextcloud_mcp_server_url
             if not mcp_server_url:
-                # Fallback to constructing from host and port
-                mcp_server_url = f"http://localhost:{os.getenv('PORT', '8000')}"
+                # Fallback derived from the configured port (see helper).
+                mcp_server_url = _default_mcp_server_url()
 
             # Dynamically discover all scopes from registered tools
             # This provides a single source of truth based on @require_scopes decorators
@@ -2699,8 +2761,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         @app.exception_handler(InsufficientScopeError)
         async def handle_insufficient_scope(request, exc: InsufficientScopeError):
             """Return 403 with WWW-Authenticate header for scope challenges."""
-            resource_url = os.getenv(
-                "NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000"
+            resource_url = (
+                settings.nextcloud_mcp_server_url or _default_mcp_server_url()
             )
             scope_str = " ".join(exc.missing_scopes)
 

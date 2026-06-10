@@ -97,6 +97,26 @@ class TestGetSettings:
 
     @patch.dict(
         os.environ,
+        {
+            "NEXTCLOUD_OIDC_TOKEN_TYPE": "jwt",
+            "NEXTCLOUD_OIDC_SCOPES": "openid profile",
+        },
+        clear=True,
+    )
+    def test_get_settings_oidc_token_type_and_scopes_from_env(self):
+        """NEXTCLOUD_OIDC_TOKEN_TYPE / _SCOPES must reach settings (regression).
+
+        The settings migration first registered these under _DEFAULTS keys that
+        uppercased to OIDC_* instead of NEXTCLOUD_OIDC_*, so dynaconf silently
+        ignored the env vars and always returned the defaults.
+        """
+        _reload_config()
+        settings = get_settings()
+        assert settings.oidc_token_type == "jwt"
+        assert settings.oidc_scopes == "openid profile"
+
+    @patch.dict(
+        os.environ,
         {"QDRANT_LOCATION": "/app/data/qdrant"},
         clear=True,
     )
