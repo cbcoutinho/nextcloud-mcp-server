@@ -35,24 +35,30 @@ from collections.abc import Callable
 import pytest
 from pact import Verifier
 
-pytestmark = pytest.mark.contract
-
 logger = logging.getLogger(__name__)
 
 PROVIDER_NAME = "nextcloud-mcp-server"
 
 _PROVIDER_URL = os.environ.get("PACT_PROVIDER_URL")
 _BROKER_URL = os.environ.get("PACT_BROKER")
+_BROKER_USERNAME = os.environ.get("PACT_USERNAME")
+_BROKER_PASSWORD = os.environ.get("PACT_PASSWORD")
 _LOCAL_PACT_DIR = os.environ.get("PACT_PROVIDER_PACT_DIR")
+
+# A usable broker source needs the URL *and* its basic-auth credentials; gating
+# on all three keeps a misconfigured CI (broker set, creds missing) a clean skip
+# rather than a confusing KeyError at verify time.
+_BROKER_READY = bool(_BROKER_URL and _BROKER_USERNAME and _BROKER_PASSWORD)
 
 # Skip the whole module unless we have a provider to hit AND a pact source.
 pytestmark = [
     pytest.mark.contract,
     pytest.mark.skipif(
-        not _PROVIDER_URL or not (_BROKER_URL or _LOCAL_PACT_DIR),
+        not _PROVIDER_URL or not (_BROKER_READY or _LOCAL_PACT_DIR),
         reason=(
-            "Provider verification needs PACT_PROVIDER_URL and a pact source "
-            "(PACT_BROKER or PACT_PROVIDER_PACT_DIR). Skipped outside CI."
+            "Provider verification needs PACT_PROVIDER_URL and a pact source: "
+            "PACT_BROKER (+ PACT_USERNAME/PACT_PASSWORD) or "
+            "PACT_PROVIDER_PACT_DIR. Skipped outside CI."
         ),
     ),
 ]
@@ -90,11 +96,10 @@ def test_verify_astrolabe_consumer_pacts() -> None:
     verifier = Verifier(PROVIDER_NAME).add_transport(url=_PROVIDER_URL)
     verifier.state_handler(_dispatch_state, teardown=True)
 
-    if _BROKER_URL:
-        # Basic-auth creds accompany the broker URL (see module skipif).
-        username = os.environ["PACT_USERNAME"]
-        password = os.environ["PACT_PASSWORD"]
-        verifier.broker_source(_BROKER_URL, username=username, password=password)
+    if _BROKER_URL and _BROKER_USERNAME and _BROKER_PASSWORD:
+        verifier.broker_source(
+            _BROKER_URL, username=_BROKER_USERNAME, password=_BROKER_PASSWORD
+        )
     else:
         assert _LOCAL_PACT_DIR is not None  # guaranteed by module skipif
         verifier.add_source(_LOCAL_PACT_DIR)

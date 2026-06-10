@@ -40,12 +40,12 @@ jobs:
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Generate consumer pacts
-        run: uv run pytest -v -m contract -o "addopts=-p no:asyncio" tests/contract/
+        run: uv run pytest -v -m contract tests/contract/
 
       # Only publish from non-fork builds that have the broker secrets.
       - name: Join tailnet
         if: ${{ env.PACT_BROKER != '' }}
-        uses: tailscale/github-action@v3
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
@@ -54,7 +54,7 @@ jobs:
       - name: Install Pact CLI
         if: ${{ env.PACT_BROKER != '' }}
         run: |
-          curl -fsSL https://raw.githubusercontent.com/pact-foundation/pact-ruby-standalone/master/install.sh | bash
+          curl -fsSL https://raw.githubusercontent.com/pact-foundation/pact-ruby-standalone/v2.6.1/install.sh | bash
           echo "$PWD/pact/bin" >> "$GITHUB_PATH"
 
       - name: Publish pacts to broker
@@ -110,7 +110,7 @@ jobs:
 
       - name: Join tailnet
         if: ${{ env.PACT_BROKER != '' }}
-        uses: tailscale/github-action@v3
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
@@ -124,7 +124,7 @@ jobs:
           PACT_PROVIDER_BRANCH: ${{ github.head_ref || github.ref_name }}
           # Publish results only from master so PR runs don't pollute the matrix.
           PACT_PUBLISH_RESULTS: ${{ github.ref == 'refs/heads/master' }}
-        run: uv run pytest -v -m contract -o "addopts=-p no:asyncio" tests/contract/test_mcp_provider_verification.py
+        run: uv run pytest -v -m contract tests/contract/test_mcp_provider_verification.py
 
   can-i-deploy:
     name: can-i-deploy
@@ -133,7 +133,7 @@ jobs:
     if: ${{ github.ref == 'refs/heads/master' }}
     steps:
       - name: Join tailnet
-        uses: tailscale/github-action@v3
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
@@ -141,7 +141,7 @@ jobs:
 
       - name: Install Pact CLI
         run: |
-          curl -fsSL https://raw.githubusercontent.com/pact-foundation/pact-ruby-standalone/master/install.sh | bash
+          curl -fsSL https://raw.githubusercontent.com/pact-foundation/pact-ruby-standalone/v2.6.1/install.sh | bash
           echo "$PWD/pact/bin" >> "$GITHUB_PATH"
 
       - name: Can I deploy nextcloud-mcp-server?

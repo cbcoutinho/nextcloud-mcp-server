@@ -31,12 +31,6 @@ def _clean_pact_dir():
 
 
 @pytest.fixture
-def pact_dir() -> Path:
-    """Directory the generated pact files are written to."""
-    return PACT_DIR
-
-
-@pytest.fixture
 def consumer_pact():
     """A fresh Pact (consumer=nextcloud-mcp-server, provider=astrolabe).
 
