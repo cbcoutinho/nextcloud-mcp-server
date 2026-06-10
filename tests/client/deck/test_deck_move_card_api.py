@@ -138,6 +138,43 @@ async def test_move_card_to_board_restores_done_state(mocker):
     assert result.done is not None
 
 
+async def test_move_card_to_board_done_restore_failure_is_swallowed(mocker):
+    """If the post-move done PUT fails, the move still succeeds (best-effort)."""
+    mock_make_request = mocker.patch.object(
+        DeckClient,
+        "_make_request",
+        side_effect=[
+            _stacks_list_response([99]),
+            create_mock_deck_card_response(  # source card is done
+                card_id=8, stack_id=10, done="2029-12-31T23:59:00+00:00"
+            ),
+            create_mock_deck_card_response(card_id=8, stack_id=99, done=None),  # move
+            httpx.HTTPStatusError(  # done PUT fails
+                "500 Server Error",
+                request=httpx.Request("PUT", "http://test.local"),
+                response=create_mock_response(status_code=500, json_data={}),
+            ),
+        ],
+    )
+
+    client = DeckClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    # Does not raise — the move already committed
+    result = await client.move_card_to_board(
+        source_board_id=1,
+        source_stack_id=10,
+        card_id=8,
+        target_board_id=2,
+        target_stack_id=99,
+    )
+
+    # Returns the moved card from the (successful) move PUT, done unrestored
+    assert result.stackId == 99
+    assert result.done is None
+    # The done restore was attempted (and failed), with no re-fetch after it
+    assert mock_make_request.call_count == 4
+    assert mock_make_request.call_args_list[3].args[1] == "/apps/deck/cards/8/done"
+
+
 async def test_move_card_to_board_rejects_stack_not_on_target_board(mocker):
     """A target stack absent from the target board is rejected before any move."""
     mock_make_request = mocker.patch.object(

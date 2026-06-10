@@ -212,6 +212,46 @@ async def test_move_card_to_board_preserves_archived_status(
     assert after.archived is True, "archived state was lost during the move"
 
 
+async def test_move_card_to_board_preserves_done_and_archived(
+    nc_client: NextcloudClient, two_boards_with_stacks: tuple
+):
+    """A done *and* archived card keeps both states across a cross-board move.
+
+    This exercises the done-restore path (post-move done PUT + re-fetch) on an
+    archived card, confirming get_card on the destination handles it.
+    """
+    source_board_id, source_stack_id, target_board_id, target_stack_id = (
+        two_boards_with_stacks
+    )
+
+    suffix = uuid.uuid4().hex[:8]
+    card = await nc_client.deck.create_card(
+        source_board_id, source_stack_id, f"Done+archived {suffix}"
+    )
+    await nc_client.deck.update_card(
+        board_id=source_board_id,
+        stack_id=source_stack_id,
+        card_id=card.id,
+        done="2030-01-02T03:04:05+00:00",
+    )
+    await nc_client.deck.archive_card(source_board_id, source_stack_id, card.id)
+
+    moved = await nc_client.deck.move_card_to_board(
+        source_board_id=source_board_id,
+        source_stack_id=source_stack_id,
+        card_id=card.id,
+        target_board_id=target_board_id,
+        target_stack_id=target_stack_id,
+    )
+    assert moved.done is not None
+    assert moved.archived is True
+
+    after = await nc_client.deck.get_card(target_board_id, target_stack_id, card.id)
+    assert after.stackId == target_stack_id
+    assert after.done is not None, "done state was lost during the move"
+    assert after.archived is True, "archived state was lost during the move"
+
+
 async def test_move_card_to_board_rejects_stack_not_on_target_board(
     nc_client: NextcloudClient, two_boards_with_stacks: tuple
 ):

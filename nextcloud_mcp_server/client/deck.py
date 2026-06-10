@@ -1,4 +1,7 @@
+import logging
 from typing import Any, Dict, List, Optional
+
+from httpx import HTTPStatusError, RequestError
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 from nextcloud_mcp_server.models.deck import (
@@ -12,6 +15,8 @@ from nextcloud_mcp_server.models.deck import (
     DeckSession,
     DeckStack,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class DeckClient(BaseNextcloudClient):
@@ -443,6 +448,11 @@ class DeckClient(BaseNextcloudClient):
         card is re-marked done after the move; Deck stamps the current time
         there, so the original done timestamp is not preserved (a limitation of
         what this route exposes).
+
+        The done re-mark is best-effort: the move itself has already committed
+        by then, so if that follow-up fails the card is left on the target
+        board without its done state (logged as a warning) rather than raising
+        and implying the move failed.
         """
         # Validate the destination so target_board_id is load-bearing: the move
         # itself is driven by stackId, so without this a stack on another board
@@ -467,7 +477,9 @@ class DeckClient(BaseNextcloudClient):
             "stackId": target_stack_id,
             "order": order,
             "description": current.description or "",
-            # ISO string preserves the due date; None leaves it cleared
+            # Sent explicitly as None when absent (update_card omits the key);
+            # both are equivalent here — the route reads duedate and there's
+            # nothing to clear on a card that never had one.
             "duedate": current.duedate.isoformat() if current.duedate else None,
             # 0 keeps the card live (a positive value would soft-delete it)
             "deletedAt": current.deletedAt or 0,
@@ -482,12 +494,24 @@ class DeckClient(BaseNextcloudClient):
         moved = DeckCard(**response.json())
 
         # This route clears `done`; restore the done *state* if the card had it
-        # (the timestamp is refreshed to now — see the docstring note).
+        # (the timestamp is refreshed to now — see the docstring note). The move
+        # has already committed, so this is best-effort: on failure, warn with
+        # the card's new location rather than raising as if the move failed.
         if current.done is not None:
-            await self._make_request(
-                "PUT", f"/apps/deck/cards/{card_id}/done", headers=headers
-            )
-            moved = await self.get_card(target_board_id, target_stack_id, card_id)
+            try:
+                await self._make_request(
+                    "PUT", f"/apps/deck/cards/{card_id}/done", headers=headers
+                )
+                moved = await self.get_card(target_board_id, target_stack_id, card_id)
+            except (HTTPStatusError, RequestError) as e:
+                logger.warning(
+                    "Card %s moved to board %s stack %s but restoring done "
+                    "state failed: %s",
+                    card_id,
+                    target_board_id,
+                    target_stack_id,
+                    e,
+                )
 
         return moved
 
