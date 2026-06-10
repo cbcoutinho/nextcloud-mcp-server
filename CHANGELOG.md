@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.111.0 (2026-06-10)
+
+### Feat
+
+- **deck**: surface remapped labels in move-card response
+- **deck**: add deck_move_card_to_board tool for cross-board moves
+
+### Fix
+
+- **deck**: make done-restore best-effort on move; cover combined states
+- **deck**: preserve done/archived and validate target board on move
+
 ## v0.110.2 (2026-06-10)
 
 ### Fix
