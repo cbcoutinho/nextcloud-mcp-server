@@ -434,6 +434,8 @@ def _clear_vector_sync_state() -> None:
 # Fallback public URL when NEXTCLOUD_MCP_SERVER_URL is unset (dev/local).
 _DEFAULT_MCP_SERVER_URL = "http://localhost:8000"
 
+# Pre-loop default; _readiness_refresh_loop overrides ttl_seconds at startup to
+# 2x the configured refresh interval, so bumping this value alone has no effect.
 _readiness_cache = ReadinessCache(ttl_seconds=30.0)
 
 
@@ -2186,6 +2188,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     # Request path must not spawn into a cancelling group.
                     _vector_sync_state.eviction_task_group = None
                     await teardown()
+            # teardown() signals the sync tasks to drain, but the readiness loop
+            # runs forever and has no shutdown_event to observe. anyio waits for
+            # start_soon tasks on normal exit rather than cancelling them, so
+            # without this the lifespan shutdown hangs until uvicorn's graceful
+            # timeout. Cancel the group to stop the loop (and any stragglers).
+            tg.cancel_scope.cancel()
 
     # Health check endpoints for Kubernetes probes
     def health_live(request):

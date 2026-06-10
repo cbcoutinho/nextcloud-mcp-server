@@ -70,6 +70,7 @@ class ReadinessCache(BaseModel):
         if not self.statuses:
             return True
         current = time.monotonic() if now is None else now
+        # Inclusive boundary: exactly ttl_seconds old counts as stale.
         return any(
             current - status.checked_at >= self.ttl_seconds
             for status in self.statuses.values()
