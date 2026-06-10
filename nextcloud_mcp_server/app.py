@@ -431,8 +431,12 @@ def _clear_vector_sync_state() -> None:
 # background loop, cached, and *reported but non-gating* — and the probe path
 # never performs external I/O.
 
-# Fallback public URL when NEXTCLOUD_MCP_SERVER_URL is unset (dev/local).
-_DEFAULT_MCP_SERVER_URL = "http://localhost:8000"
+
+def _default_mcp_server_url() -> str:
+    """Fallback MCP server URL (OAuth audience) when NEXTCLOUD_MCP_SERVER_URL is
+    unset — derived from the configured PORT so a custom port is honoured."""
+    return f"http://localhost:{get_settings().port}"
+
 
 # Pre-loop default; _readiness_refresh_loop overrides ttl_seconds at startup to
 # 2x the configured refresh interval, so bumping this value alone has no effect.
@@ -511,6 +515,9 @@ async def _readiness_refresh_loop(*, task_status=anyio.TASK_STATUS_IGNORED) -> N
     # Keep the staleness window in step with the configured cadence so
     # is_stale() stays meaningful when the interval is tuned off its default.
     _readiness_cache.ttl_seconds = interval * 2
+    # Drop entries from a prior lifespan run in the same process (the integration
+    # matrix restarts the server) so the snapshot reflects only this run's deps.
+    _readiness_cache.statuses.clear()
     logger.info(
         "Readiness dependency-health refresh loop started (every %ss)", interval
     )
@@ -671,7 +678,7 @@ async def load_oauth_client_credentials(
     if registration_endpoint:
         logger.info("Dynamic client registration available")
         mcp_server_url = (
-            get_settings().nextcloud_mcp_server_url or _DEFAULT_MCP_SERVER_URL
+            get_settings().nextcloud_mcp_server_url or _default_mcp_server_url()
         )
         redirect_uris = [
             f"{mcp_server_url}/oauth/callback",  # Unified callback (flow determined by query param)
@@ -968,7 +975,7 @@ async def setup_oauth_config():
     public_issuer_url = settings.nextcloud_public_issuer_url
     client_issuer = public_issuer_url if public_issuer_url else issuer
     # Get MCP server URL for audience validation
-    mcp_server_url = settings.nextcloud_mcp_server_url or _DEFAULT_MCP_SERVER_URL
+    mcp_server_url = settings.nextcloud_mcp_server_url or _default_mcp_server_url()
     nextcloud_resource_uri = settings.nextcloud_resource_uri or nextcloud_host
 
     # Warn if resource URIs are not configured (required for ADR-005 compliance)
@@ -1032,7 +1039,7 @@ async def setup_oauth_config():
     oauth_client = None
 
     # Create auth settings
-    mcp_server_url = settings.nextcloud_mcp_server_url or _DEFAULT_MCP_SERVER_URL
+    mcp_server_url = settings.nextcloud_mcp_server_url or _default_mcp_server_url()
 
     # Note: We don't set required_scopes here anymore.
     # Scopes are now advertised via PRM endpoint and enforced per-tool.
@@ -1153,7 +1160,7 @@ async def setup_oauth_config_for_multi_user_basic(
     logger.info("  Introspection: %s", introspection_uri)
 
     # Get MCP server URL for audience validation
-    mcp_server_url = settings.nextcloud_mcp_server_url or _DEFAULT_MCP_SERVER_URL
+    mcp_server_url = settings.nextcloud_mcp_server_url or _default_mcp_server_url()
     nextcloud_resource_uri = settings.nextcloud_resource_uri or nextcloud_host
 
     # Use public issuer URL for JWT validation if set (handles Docker internal/external URL mismatch)
@@ -1678,7 +1685,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 raise ValueError("NEXTCLOUD_HOST is required for OAuth mode")
 
             mcp_server_url = (
-                settings.nextcloud_mcp_server_url or _DEFAULT_MCP_SERVER_URL
+                settings.nextcloud_mcp_server_url or _default_mcp_server_url()
             )
             nextcloud_resource_uri = (
                 settings.nextcloud_resource_uri or nextcloud_host_for_context
@@ -1743,7 +1750,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     # Create oauth_context for management API authentication
                     nextcloud_host_for_context = settings.nextcloud_host
                     mcp_server_url = (
-                        settings.nextcloud_mcp_server_url or _DEFAULT_MCP_SERVER_URL
+                        settings.nextcloud_mcp_server_url or _default_mcp_server_url()
                     )
                     discovery_url = (
                         settings.oidc_discovery_url
@@ -2429,8 +2436,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             # Use the MCP server's public URL
             mcp_server_url = settings.nextcloud_mcp_server_url
             if not mcp_server_url:
-                # Fallback to constructing from host and port
-                mcp_server_url = f"http://localhost:{settings.port}"
+                # Fallback derived from the configured port (see helper).
+                mcp_server_url = _default_mcp_server_url()
 
             # Dynamically discover all scopes from registered tools
             # This provides a single source of truth based on @require_scopes decorators
@@ -2754,7 +2761,9 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         @app.exception_handler(InsufficientScopeError)
         async def handle_insufficient_scope(request, exc: InsufficientScopeError):
             """Return 403 with WWW-Authenticate header for scope challenges."""
-            resource_url = settings.nextcloud_mcp_server_url or _DEFAULT_MCP_SERVER_URL
+            resource_url = (
+                settings.nextcloud_mcp_server_url or _default_mcp_server_url()
+            )
             scope_str = " ".join(exc.missing_scopes)
 
             return JSONResponse(
