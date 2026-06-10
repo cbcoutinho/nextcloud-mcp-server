@@ -37,8 +37,10 @@ _DEFAULTS: dict[str, Any] = {
     "cookie_secure": None,
     # OAuth/OIDC
     "oidc_discovery_url": None,
-    "oidc_token_type": "Bearer",
-    "oidc_scopes": "",
+    # Keys must uppercase to the env var dynaconf reads (ignore_unknown_envvars):
+    # NEXTCLOUD_OIDC_TOKEN_TYPE / NEXTCLOUD_OIDC_SCOPES, matching _field_map.
+    "nextcloud_oidc_token_type": "Bearer",
+    "nextcloud_oidc_scopes": "",
     "port": 8000,
     "nextcloud_oidc_client_id": None,
     "nextcloud_oidc_client_secret": None,
@@ -312,6 +314,8 @@ _dynaconf = Dynaconf(
         Validator("VECTOR_SYNC_QUEUE_MAX_SIZE", gte=1),
         Validator("VECTOR_SYNC_METRICS_REFRESH_INTERVAL", gte=1),
         Validator("VECTOR_SYNC_USER_POLL_INTERVAL", gte=1),
+        Validator("HEALTH_READY_REFRESH_INTERVAL", gte=1),
+        Validator("PORT", gte=1, lte=65535),
         Validator("VERIFICATION_CONCURRENCY", gte=1),
         Validator("DOCUMENT_CHUNK_SIZE", gte=1),
         Validator("DOCUMENT_PARSE_TIMEOUT_SECONDS", gte=1),

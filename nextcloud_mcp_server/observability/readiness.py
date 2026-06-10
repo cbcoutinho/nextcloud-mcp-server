@@ -38,8 +38,9 @@ class ReadinessCache(BaseModel):
     """Time-bounded snapshot of external dependency health.
 
     Written only by the background refresh loop and read only by the readiness
-    handler. No locking: assignment into ``statuses`` is atomic under the GIL,
-    and a reader tolerates seeing the previous value for one entry.
+    handler. The single-writer invariant (one refresh loop) is what makes this
+    safe without a lock; a reader simply tolerates seeing the previous value for
+    one entry until the next refresh.
     """
 
     ttl_seconds: float = 30.0

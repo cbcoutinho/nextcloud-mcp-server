@@ -18,7 +18,7 @@ def test_dependency_status_defaults():
     status = DependencyStatus(name="nextcloud")
     assert status.healthy is None  # not yet checked
     assert status.detail == "pending"
-    assert status.checked_at == 0.0
+    assert status.checked_at == pytest.approx(0.0)
 
 
 def test_update_and_snapshot_round_trip():
