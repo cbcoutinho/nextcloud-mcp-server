@@ -7,7 +7,6 @@ and retrieve user app passwords for background sync operations.
 
 import logging
 import time
-from typing import Optional
 
 from ..http import nextcloud_httpx_client
 
@@ -38,7 +37,7 @@ class AstrolabeClient:
         self.nextcloud_host = nextcloud_host.rstrip("/")
         self.client_id = client_id
         self.client_secret = client_secret
-        self._token_cache: Optional[dict] = None  # {access_token, expires_at}
+        self._token_cache: dict | None = None  # {access_token, expires_at}
 
     async def get_access_token(self) -> str:
         """

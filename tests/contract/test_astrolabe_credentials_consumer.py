@@ -16,6 +16,10 @@ This pact pins the request shape and the two states the consumer branches on:
 The OAuth token fetch (:meth:`AstrolabeClient.get_access_token`) is stubbed so
 only the status call hits the Pact mock server.
 
+The client's 404 branch is internal defensive handling (astrolabe always returns
+200 for this endpoint), not a contract obligation, so it is covered by a unit
+test (``tests/unit/test_astrolabe_client.py``) rather than a pact interaction.
+
 See ADR-029 for the overall contract-testing architecture.
 """
 
