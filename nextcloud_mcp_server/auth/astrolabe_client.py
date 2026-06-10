@@ -91,24 +91,32 @@ class AstrolabeClient:
             logger.info("Obtained Astrolabe API token (expires in %ss)", expires_in)
             return data["access_token"]
 
-    async def get_user_app_password(self, user_id: str) -> Optional[str]:
+    async def get_background_sync_status(self, user_id: str) -> dict:
         """
-        Retrieve user's app password for background sync.
+        Get background sync provisioning status for a user.
+
+        Queries Astrolabe's admin credentials-metadata endpoint, which returns
+        presence/timestamps only — never the app password itself. The password
+        is delivered to the MCP server out-of-band (Astrolabe pushes it to
+        ``POST /api/v1/users/{user_id}/app-password``), so this endpoint exposes
+        only ``has_background_access`` / ``sync_type`` / ``provisioned_at``.
 
         Args:
             user_id: Nextcloud user ID
 
         Returns:
-            App password string, or None if user hasn't provisioned
+            Dict with keys: has_access (bool), credential_type (str | None),
+            provisioned_at (int | None) — Unix seconds, not an ISO string.
 
         Raises:
-            httpx.HTTPError: If API request fails (except 404)
+            httpx.HTTPError: If the API request fails (except 404, treated as
+            "not provisioned").
         """
         token = await self.get_access_token()
         url = f"{self.nextcloud_host}/apps/astrolabe/api/v1/background-sync/credentials/{user_id}"
 
         async with nextcloud_httpx_client() as client:
-            logger.debug("Retrieving app password for user: %s", user_id)
+            logger.debug("Fetching background-sync status for user: %s", user_id)
 
             response = await client.get(
                 url,
@@ -117,38 +125,24 @@ class AstrolabeClient:
             )
 
             if response.status_code == 404:
-                logger.debug("No app password configured for user: %s", user_id)
-                return None
+                logger.debug("No background-sync credentials for user: %s", user_id)
+                return {
+                    "has_access": False,
+                    "credential_type": None,
+                    "provisioned_at": None,
+                }
 
             response.raise_for_status()
             data = response.json()
 
+            has_access = bool(data.get("has_background_access"))
             logger.info(
-                "Retrieved app password for user: %s (type: %s)",
+                "Background-sync status for user %s: has_access=%s",
                 user_id,
-                data.get("credential_type"),
+                has_access,
             )
-            return data.get("app_password")
-
-    async def get_background_sync_status(self, user_id: str) -> dict:
-        """
-        Get background sync status for a user.
-
-        Args:
-            user_id: Nextcloud user ID
-
-        Returns:
-            Dict with keys: has_access, credential_type, provisioned_at
-
-        Raises:
-            httpx.HTTPError: If API request fails
-        """
-        # For now, check if app password exists
-        # In the future, this could query a dedicated status endpoint
-        app_password = await self.get_user_app_password(user_id)
-
-        return {
-            "has_access": app_password is not None,
-            "credential_type": "app_password" if app_password else None,
-            "provisioned_at": None,  # TODO: Get from API if available
-        }
+            return {
+                "has_access": has_access,
+                "credential_type": data.get("sync_type"),
+                "provisioned_at": data.get("provisioned_at"),
+            }

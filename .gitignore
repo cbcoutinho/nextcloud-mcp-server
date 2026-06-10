@@ -24,3 +24,6 @@ docker-compose.override.yml
 
 # RAG Evaluation
 tests/rag_evaluation/fixtures/
+
+# Pact contract tests — generated pacts are published to the broker, not committed
+tests/contract/pacts/
