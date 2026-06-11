@@ -326,6 +326,10 @@ def _init_worker_observability(settings: Settings) -> None:
             "OpenTelemetry tracing enabled (endpoint: %s)",
             settings.otel_exporter_otlp_endpoint,
         )
+    else:
+        logger.info(
+            "OpenTelemetry tracing disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)"
+        )
 
 
 @click.command()
@@ -363,13 +367,9 @@ def worker(concurrency: int | None):
             f"resolved INGEST_QUEUE={settings.ingest_queue!r}"
         )
 
-    # Initialize observability once the config is known to be runnable. The
-    # always-on API pod does this in its lifespan (app.py); the worker has its
-    # own entrypoint, so without this it emits plain-text logs and exposes no
-    # /metrics — leaving the ingest workload (which does the real
-    # parse/embed/upsert work, and where the astrolabe_* pipeline metrics +
-    # document_processor.parse spans are recorded) invisible in external
-    # split-worker mode (Deck #310, unblocks #175).
+    # Initialize observability here, not in a lifespan — the worker never runs
+    # uvicorn, so it skips app.py's bootstrap (the WHY lives in the helper's
+    # docstring). Done after the queue check so a misconfig fails fast.
     _init_worker_observability(settings)
 
     from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415

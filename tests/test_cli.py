@@ -406,14 +406,14 @@ def test_init_worker_observability_sets_up_tracing_when_endpoint(
     """An OTLP endpoint enables tracing so worker spans (parse/embed) export."""
     _init_worker_observability(
         _fake_settings(
-            otel_exporter_otlp_endpoint="http://otel:4317",
+            otel_exporter_otlp_endpoint="https://otel:4317",
             otel_traces_sampler_arg=0.5,
         )
     )
 
     assert patched_observability["tracing"] == {
         "service_name": "nextcloud-mcp-server",
-        "otlp_endpoint": "http://otel:4317",
+        "otlp_endpoint": "https://otel:4317",
         "otlp_verify_ssl": False,
         "sampling_rate": 0.5,
     }
