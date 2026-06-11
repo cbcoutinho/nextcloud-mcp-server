@@ -149,6 +149,25 @@ async def test_processor_timeout_returns_timeout_reason(monkeypatch):
     assert "timed out" in r.error
 
 
+async def test_gateway_httpx_timeout_maps_to_timeout_reason(monkeypatch):
+    """A gateway httpx.ReadTimeout (not a builtin TimeoutError) must still map to
+    parse_failed_reason='timeout', not 'error'."""
+    import httpx
+
+    class _HttpxTimeoutBackend:
+        async def ocr(self, content, mime_type):
+            raise httpx.ReadTimeout("read timed out")
+
+    monkeypatch.setattr(
+        ocr, "get_settings", lambda: _settings(document_ocr_timeout_seconds=5.0)
+    )
+    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s: _HttpxTimeoutBackend())
+    r = await ocr.OcrProcessor().process(b"%PDF-1.7", "application/pdf")
+    assert r.success is False
+    assert r.metadata["parse_failed_reason"] == "timeout"
+    assert "timed out" in r.error
+
+
 async def test_gateway_backend_uses_configured_timeout(mocker, monkeypatch):
     """The gateway OCR call must use DOCUMENT_OCR_TIMEOUT_SECONDS (resolved per
     call), not the old hardcoded 180s constant."""

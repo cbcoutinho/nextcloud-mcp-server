@@ -264,11 +264,13 @@ class OcrProcessor(DocumentProcessor):
             text, boundaries = await backend.ocr(
                 content, content_type.split(";")[0].strip().lower()
             )
-        except TimeoutError:
-            # anyio.fail_after / httpx read-timeout raise TimeoutError with an
-            # empty message; give it its own reason bucket and a useful log so a
-            # too-low DOCUMENT_OCR_TIMEOUT_SECONDS is distinguishable from a
-            # provider that's actually erroring.
+        except (TimeoutError, httpx.TimeoutException):
+            # Two timeout shapes reach here: the Mistral backend's
+            # anyio.fail_after raises the builtin TimeoutError, while the gateway
+            # backend's httpx.Timeout raises httpx.ReadTimeout (a
+            # httpx.TimeoutException, NOT a TimeoutError). Catch both so a
+            # too-low DOCUMENT_OCR_TIMEOUT_SECONDS lands in its own reason bucket
+            # rather than being conflated with provider errors.
             timeout = settings.document_ocr_timeout_seconds
             logger.warning(
                 "OCR timed out for %s after %.1fs", filename or "<bytes>", timeout
