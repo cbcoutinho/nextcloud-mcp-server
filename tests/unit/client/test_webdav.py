@@ -518,6 +518,29 @@ def _request_url(mock_http_client) -> str:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        ("", "/remote.php/dav/files/testuser/"),
+        ("/Documents/notes.txt", "/remote.php/dav/files/testuser/Documents/notes.txt"),
+        ("Documents/notes.txt", "/remote.php/dav/files/testuser/Documents/notes.txt"),
+        ("a/b #1.pdf", "/remote.php/dav/files/testuser/a/b%20%231.pdf"),
+        ("law/x, y  z.pdf", "/remote.php/dav/files/testuser/law/x%2C%20y%20%20z.pdf"),
+        (
+            "学生邮箱/r.pdf",
+            "/remote.php/dav/files/testuser/%E5%AD%A6%E7%94%9F%E9%82%AE%E7%AE%B1/r.pdf",
+        ),
+    ],
+)
+def test_webdav_path_encoding(path, expected):
+    """_webdav_path encodes the decoded caller path once, preserving '/', and
+    strips a leading slash. Every caller-path builder routes through this, so
+    it is the single source of truth for their encoding."""
+    client = WebDAVClient(AsyncMock(), "testuser")
+    assert client._webdav_path(path) == expected
+
+
+@pytest.mark.unit
 async def test_read_file_encodes_special_chars(mocker):
     """read_file must percent-encode '#', commas, and spaces in the path (card 309).
 

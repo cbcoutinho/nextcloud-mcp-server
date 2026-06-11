@@ -54,6 +54,11 @@ class WebDAVClient(BaseNextcloudClient):
         Percent-encodes the caller-supplied portion (see ``_encode_dav_path``)
         so names with ``#``, commas, or spaces don't truncate/404; the base
         ``/remote.php/dav/files/<user>`` segment is left as-is.
+
+        Precondition: ``path`` is a **decoded** path (the convention everywhere
+        in this client — PROPFIND/REPORT hrefs are ``unquote``d before storage,
+        and MCP-tool inputs are raw). It is encoded exactly once, so passing an
+        already-encoded path would double-encode it (``%20`` → ``%2520``).
         """
         return f"{self._get_webdav_base_path()}/{_encode_dav_path(path.lstrip('/'))}"
 
