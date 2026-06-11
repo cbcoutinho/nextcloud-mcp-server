@@ -9,7 +9,7 @@ from nextcloud_mcp_server.providers.mistral import (
     BATCH_SIZE,
     MISTRAL_EMBEDDING_DIMENSIONS,
     MistralProvider,
-    _is_rate_limit,
+    _is_transient,
 )
 
 
@@ -318,14 +318,17 @@ async def test_mistral_embed_with_usage_single(mock_mistral_client):
 
 
 @pytest.mark.unit
-def test_mistral_is_rate_limit_predicate():
-    """_is_rate_limit returns True only for SDKErrors with status_code == 429."""
+def test_mistral_is_transient_predicate():
+    """_is_transient retries 429 (rate limit) and 5xx (server/transient) SDKErrors."""
     err_429 = MagicMock(spec=SDKError)
     err_429.status_code = 429
     err_500 = MagicMock(spec=SDKError)
     err_500.status_code = 500
+    err_400 = MagicMock(spec=SDKError)
+    err_400.status_code = 400
 
-    assert _is_rate_limit(err_429) is True
-    assert _is_rate_limit(err_500) is False
+    assert _is_transient(err_429) is True
+    assert _is_transient(err_500) is True  # broadened to 5xx (card 309)
+    assert _is_transient(err_400) is False  # permanent client error
     # ValueError has no status_code attr → getattr returns None → False.
-    assert _is_rate_limit(ValueError()) is False
+    assert _is_transient(ValueError()) is False

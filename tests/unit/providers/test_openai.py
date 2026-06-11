@@ -330,3 +330,85 @@ async def test_openai_close(mock_openai_client):
 
     await provider.close()
     mock_openai_client.close.assert_called_once()
+
+
+# --- transient-error retry (card 309) ----------------------------------------
+
+
+def _req():
+    import httpx
+
+    return httpx.Request("POST", "http://gw/v1/embeddings")
+
+
+@pytest.mark.unit
+def test_is_transient_classifies_retryable_errors():
+    """Connection / timeout / 429 / 5xx are transient; 4xx and others are not."""
+    import httpx
+    from openai import (
+        APIConnectionError,
+        APITimeoutError,
+        BadRequestError,
+        InternalServerError,
+        RateLimitError,
+    )
+
+    from nextcloud_mcp_server.providers.openai import _is_transient
+
+    req = _req()
+    assert _is_transient(APIConnectionError(request=req)) is True
+    assert _is_transient(APITimeoutError(request=req)) is True
+    assert (
+        _is_transient(
+            RateLimitError("rl", response=httpx.Response(429, request=req), body=None)
+        )
+        is True
+    )
+    assert (
+        _is_transient(
+            InternalServerError(
+                "boom", response=httpx.Response(500, request=req), body=None
+            )
+        )
+        is True
+    )
+    # Permanent client errors must NOT be retried.
+    assert (
+        _is_transient(
+            BadRequestError("bad", response=httpx.Response(400, request=req), body=None)
+        )
+        is False
+    )
+    assert _is_transient(ValueError("unrelated")) is False
+
+
+@pytest.mark.unit
+async def test_embed_retries_on_connection_error(mock_openai_client, monkeypatch):
+    """A transient APIConnectionError (pod rollover) is retried, not dropped."""
+    from openai import APIConnectionError
+
+    from nextcloud_mcp_server.providers import _retry
+
+    monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
+
+    mock_embedding_data = MagicMock()
+    mock_embedding_data.embedding = [0.1, 0.2, 0.3]
+    mock_response = MagicMock()
+    mock_response.data = [mock_embedding_data]
+
+    calls = {"n": 0}
+
+    async def _flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise APIConnectionError(request=_req())
+        return mock_response
+
+    mock_openai_client.embeddings.create = _flaky
+    provider = OpenAIProvider(
+        api_key="test-key", embedding_model="text-embedding-3-small"
+    )
+
+    result = await provider.embed("hello")
+    assert result == [0.1, 0.2, 0.3]
+    assert calls["n"] == 2  # one failure, one success

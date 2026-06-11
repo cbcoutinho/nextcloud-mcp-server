@@ -9,6 +9,7 @@ import uuid
 from typing import Any, cast
 
 import anyio
+import httpx
 from anyio.abc import TaskStatus
 from anyio.streams.memory import MemoryObjectReceiveStream
 from qdrant_client.models import PointStruct
@@ -23,6 +24,7 @@ from nextcloud_mcp_server.observability.metrics import (
     record_document_parse_failed,
     record_embedding,
     record_embedding_tokens,
+    record_ingest_dropped,
     record_qdrant_operation,
     record_vector_sync_processing,
     update_vector_sync_queue_size,
@@ -54,6 +56,47 @@ logger = logging.getLogger(__name__)
 # Shared span-attribute key (avoids duplicating the string literal across the
 # many vector_sync spans that report a chunk count).
 _ATTR_CHUNK_COUNT = "vector_sync.chunk_count"
+
+
+def _drop_reason(exc: BaseException) -> str:
+    """Classify a terminal indexing failure into a metric label.
+
+    Distinguishes the transient backend-pod-rollover causes (connection /
+    timeout — the ones provider-level retry should now ride through, card 309)
+    from persistent faults, so ``astrolabe_vector_ingest_dropped_total`` is
+    alertable per cause. Unwraps a single ExceptionGroup leaf. Best-effort:
+    unknown causes fall back to ``other``.
+    """
+    # An anyio task group can wrap the real cause; classify the first leaf.
+    if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+
+    # httpx transport errors (raised by the OpenAI/gateway client underneath).
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.ConnectError):
+        return "connection"
+
+    # openai.* is always installed (provider dep) but import lazily to keep this
+    # helper cheap and decoupled from a specific SDK version's surface.
+    try:
+        import openai  # noqa: PLC0415
+
+        if isinstance(exc, openai.APITimeoutError):
+            return "timeout"
+        if isinstance(exc, openai.APIConnectionError):
+            return "connection"
+        if isinstance(exc, openai.RateLimitError):
+            return "rate_limit"
+        if isinstance(exc, openai.APIStatusError):
+            return "server" if exc.status_code >= 500 else "other"
+    except ImportError:  # pragma: no cover — openai is a hard dependency
+        pass
+
+    # Qdrant client errors surface from its own module namespace.
+    if type(exc).__module__.startswith("qdrant_client"):
+        return "qdrant"
+    return "other"
 
 
 def assign_page_numbers(chunks, page_boundaries):
@@ -455,11 +498,13 @@ async def process_document(
                         await anyio.sleep(retry_delay)
                         retry_delay *= 2  # Exponential backoff
                     else:
+                        reason = _drop_reason(e)
                         logger.error(
-                            "Failed to index %s_%s after %s retries: %s",
+                            "Failed to index %s_%s after %s retries (%s): %s",
                             doc_task.doc_type,
                             doc_task.doc_id,
                             max_retries,
+                            reason,
                             e,
                             extra={
                                 "doc_id": doc_task.doc_id,
@@ -467,12 +512,18 @@ async def process_document(
                                 "attempt": max_retries,
                                 "max_retries": max_retries,
                                 "status": "error",
+                                "drop_reason": reason,
                             },
                         )
                         # Record the failed Qdrant upsert. The processing-error
                         # metric is recorded once by the outer handler below, so
-                        # exhausted-retry failures aren't double-counted.
+                        # exhausted-retry failures aren't double-counted. The
+                        # drop counter is labelled by cause so a transient
+                        # rollover (connection/timeout) is alertable distinctly.
+                        # The document is NOT marked failed, so the next scan
+                        # re-picks it (re-queue via the scan loop, card 309).
                         record_qdrant_operation("upsert", "error")
+                        record_ingest_dropped(reason)
                         raise
 
         except Exception:
