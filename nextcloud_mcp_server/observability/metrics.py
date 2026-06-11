@@ -161,18 +161,6 @@ vector_sync_processing_duration_seconds = Histogram(
     buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
 )
 
-# Documents dropped after exhausting in-process indexing retries (the scanner
-# re-picks them on a later full scan, so this is "dropped for this cycle", not
-# "lost forever"). Labelled by classified cause so the embed-drop rate from a
-# transient backend-pod rollover (connection/timeout) is alertable distinctly
-# from a persistent fault (card 309). astrolabe_ prefix: pipeline metric.
-vector_ingest_dropped_total = Counter(
-    "astrolabe_vector_ingest_dropped_total",
-    "Documents dropped after exhausting indexing retries, by cause",
-    # reason: connection | timeout | rate_limit | server | qdrant | other
-    ["reason"],
-)
-
 vector_sync_queue_size = Gauge(
     "mcp_vector_sync_queue_size",
     "Current number of documents in processing queue",
@@ -282,6 +270,18 @@ document_parse_failed_total = Counter(
     "astrolabe_document_parse_failed_total",
     "Document parses that failed in the isolated worker (process killed)",
     ["reason"],  # reason: timeout | oom | error
+)
+
+# Documents dropped after exhausting in-process indexing retries (the scanner
+# re-picks them on a later full scan, so this is "dropped for this cycle", not
+# "lost forever"). Labelled by classified cause so the embed-drop rate from a
+# transient backend-pod rollover (connection/timeout) is alertable distinctly
+# from a persistent fault (card 309).
+vector_ingest_dropped_total = Counter(
+    "astrolabe_vector_ingest_dropped_total",
+    "Documents dropped after exhausting indexing retries, by cause",
+    # reason: connection | timeout | rate_limit | server | qdrant | other
+    ["reason"],
 )
 
 # --- Tier-0 classifier (shadow mode) -----------------------------------------

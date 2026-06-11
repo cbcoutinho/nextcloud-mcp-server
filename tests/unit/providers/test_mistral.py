@@ -332,3 +332,24 @@ def test_mistral_is_transient_predicate():
     assert _is_transient(err_400) is False  # permanent client error
     # ValueError has no status_code attr → getattr returns None → False.
     assert _is_transient(ValueError()) is False
+
+
+@pytest.mark.unit
+async def test_mistral_embed_retries_on_5xx(mock_mistral_client, monkeypatch):
+    """A 5xx SDKError is retried end-to-end (not just classified by the predicate)."""
+    from nextcloud_mcp_server.providers import _retry
+
+    monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
+
+    # Real SDKError instance (so `except SDKError` catches it) with a 5xx status.
+    err = SDKError.__new__(SDKError)
+    err.status_code = 500
+
+    mock_mistral_client.embeddings.create_async = AsyncMock(
+        side_effect=[err, _make_response([[0.1, 0.2, 0.3]])]
+    )
+    provider = MistralProvider(api_key="test-key", embedding_model="mistral-embed")
+
+    embedding = await provider.embed("hello")
+    assert embedding == [0.1, 0.2, 0.3]
+    assert mock_mistral_client.embeddings.create_async.await_count == 2

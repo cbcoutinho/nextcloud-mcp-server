@@ -528,14 +528,17 @@ async def process_document(
                                 "drop_reason": reason,
                             },
                         )
-                        # Record the failed Qdrant upsert. The processing-error
-                        # metric is recorded once by the outer handler below, so
-                        # exhausted-retry failures aren't double-counted. The
-                        # drop counter is labelled by cause so a transient
-                        # rollover (connection/timeout) is alertable distinctly.
-                        # The document is NOT marked failed, so the next scan
-                        # re-picks it (re-queue via the scan loop, card 309).
-                        record_qdrant_operation("upsert", "error")
+                        # Count a failed Qdrant upsert ONLY when Qdrant was the
+                        # failing component; an embed/connection failure exhausts
+                        # retries before Qdrant is ever called, so attributing it
+                        # to mcp_qdrant_operations_total{error} would inflate that
+                        # signal. The cause is captured by record_ingest_dropped
+                        # instead, and the processing-error metric is recorded
+                        # once by the outer handler below (no double-count). The
+                        # document is NOT marked failed, so the next scan re-picks
+                        # it (re-queue via the scan loop, card 309).
+                        if reason == "qdrant":
+                            record_qdrant_operation("upsert", "error")
                         record_ingest_dropped(reason)
                         raise
 

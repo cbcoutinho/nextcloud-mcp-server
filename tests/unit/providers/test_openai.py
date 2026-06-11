@@ -457,3 +457,25 @@ async def test_generate_retries_on_connection_error(mock_openai_client, monkeypa
     text = await provider.generate("prompt")
     assert text == "Generated response"
     assert create.await_count == 2
+
+
+@pytest.mark.unit
+async def test_generate_does_not_retry_on_bad_request(mock_openai_client, monkeypatch):
+    """generate() fast-fails (no retry) on a permanent 4xx."""
+    import httpx
+    from openai import BadRequestError
+
+    from nextcloud_mcp_server.providers import _retry
+
+    monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
+
+    err = BadRequestError(
+        "bad", response=httpx.Response(400, request=_req()), body=None
+    )
+    create = AsyncMock(side_effect=err)
+    mock_openai_client.chat.completions.create = create
+    provider = OpenAIProvider(api_key="test-key", generation_model="gpt-4o-mini")
+
+    with pytest.raises(BadRequestError):
+        await provider.generate("prompt")
+    assert create.await_count == 1  # no retry on a permanent 4xx
