@@ -1,11 +1,12 @@
 """Tests for CLI options using Click's testing utilities."""
 
 import os
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
 
-from nextcloud_mcp_server.cli import run
+from nextcloud_mcp_server.cli import _init_worker_observability, run, worker
 
 
 @pytest.fixture
@@ -324,3 +325,146 @@ def test_stdio_calls_get_stdio_mcp(runner, clean_env, monkeypatch):
     assert result.exit_code == 0, result.output
     assert called_with.get("transport") == "stdio"
     assert called_with.get("enabled_apps") is None
+
+
+# ---------------------------------------------------------------------------
+# Ingest worker observability bootstrap (Deck #310 / #175)
+# ---------------------------------------------------------------------------
+
+
+def _fake_settings(**overrides):
+    """A lightweight settings stand-in for the worker observability helper.
+
+    The helper only reads attributes, so a SimpleNamespace avoids running the
+    real Settings.__post_init__ validation/derivation.
+    """
+    base = dict(
+        ingest_queue="postgres",  # for realism / worker() gating; unused by the helper
+        log_format="json",
+        log_level="INFO",
+        log_include_trace_context=True,
+        metrics_enabled=True,
+        metrics_port=9090,
+        otel_exporter_otlp_endpoint=None,
+        otel_service_name="nextcloud-mcp-server",
+        otel_exporter_verify_ssl=False,
+        otel_traces_sampler_arg=1.0,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+@pytest.fixture
+def patched_observability(monkeypatch):
+    """Patch the worker's observability entrypoints and record their kwargs."""
+    calls: dict[str, dict] = {}
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.cli.setup_logging",
+        lambda **kw: calls.__setitem__("logging", kw),
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.cli.setup_metrics",
+        lambda **kw: calls.__setitem__("metrics", kw),
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.cli.setup_tracing",
+        lambda **kw: calls.__setitem__("tracing", kw),
+    )
+    return calls
+
+
+def test_init_worker_observability_configures_logging(patched_observability):
+    """Worker initializes structured logging from settings (AC: JSON logs)."""
+    _init_worker_observability(_fake_settings())
+
+    assert patched_observability["logging"] == {
+        "log_format": "json",
+        "log_level": "INFO",
+        "include_trace_context": True,
+    }
+
+
+def test_init_worker_observability_starts_metrics_when_enabled(patched_observability):
+    """Worker starts the Prometheus server on the configured port (AC: /metrics)."""
+    _init_worker_observability(_fake_settings(metrics_port=9123))
+
+    assert patched_observability["metrics"] == {"port": 9123}
+
+
+def test_init_worker_observability_skips_metrics_when_disabled(patched_observability):
+    """METRICS_ENABLED=false leaves the worker without a metrics server."""
+    _init_worker_observability(_fake_settings(metrics_enabled=False))
+
+    assert "metrics" not in patched_observability
+    # Logging is still configured regardless of the metrics toggle.
+    assert "logging" in patched_observability
+
+
+def test_init_worker_observability_sets_up_tracing_when_endpoint(
+    patched_observability,
+):
+    """An OTLP endpoint enables tracing so worker spans (parse/embed) export."""
+    _init_worker_observability(
+        _fake_settings(
+            otel_exporter_otlp_endpoint="https://otel:4317",
+            otel_traces_sampler_arg=0.5,
+        )
+    )
+
+    assert patched_observability["tracing"] == {
+        "service_name": "nextcloud-mcp-server",
+        "otlp_endpoint": "https://otel:4317",
+        "otlp_verify_ssl": False,
+        "sampling_rate": 0.5,
+    }
+
+
+def test_init_worker_observability_skips_tracing_without_endpoint(
+    patched_observability,
+):
+    """No OTLP endpoint → tracing stays disabled (matches API pod behavior)."""
+    _init_worker_observability(_fake_settings(otel_exporter_otlp_endpoint=None))
+
+    assert "tracing" not in patched_observability
+
+
+def test_worker_initializes_observability_on_postgres_queue(runner, monkeypatch):
+    """The worker command wires up observability once config is runnable."""
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.cli.get_settings",
+        lambda: _fake_settings(ingest_queue="postgres"),
+    )
+
+    called = {}
+
+    def fake_init(settings):
+        called["settings"] = settings
+        # Stop before the procrastinate/worker machinery.
+        raise SystemExit(0)
+
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.cli._init_worker_observability", fake_init
+    )
+
+    result = runner.invoke(worker, [])
+    assert result.exit_code == 0, result.output
+    assert called.get("settings") is not None
+
+
+def test_worker_rejects_non_postgres_queue_before_observability(runner, monkeypatch):
+    """A non-postgres queue fails fast, before any metrics server is started."""
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.cli.get_settings",
+        lambda: _fake_settings(ingest_queue="memory"),
+    )
+
+    called = {}
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.cli._init_worker_observability",
+        lambda settings: called.setdefault("init", True),
+    )
+
+    result = runner.invoke(worker, [])
+    assert result.exit_code != 0
+    assert "INGEST_QUEUE=postgres" in result.output
+    assert "init" not in called
