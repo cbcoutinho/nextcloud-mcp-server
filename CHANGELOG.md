@@ -5,6 +5,20 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.113.0 (2026-06-11)
+
+### Feat
+
+- **document**: configurable OCR timeout and fail-fast PDF size guard
+
+### Fix
+
+- **document**: catch httpx timeout from gateway OCR backend (#892 r3)
+- **document**: timeout reason bucket + Sonar https hotspot (#892 round 2)
+- **document**: apply OCR timeout to Mistral backend + review/Sonar fixes (#892)
+- **vector**: guard unbound doc_task + address review nits (#891)
+- **vector**: URL-encode DAV paths and unwrap TaskGroup exceptions
+
 ## v0.112.0 (2026-06-11)
 
 ### Feat
