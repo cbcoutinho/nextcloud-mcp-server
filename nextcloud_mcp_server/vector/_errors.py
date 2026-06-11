@@ -9,8 +9,6 @@ exceptions so log lines name the actual cause; pair it with ``exc_info=True`` to
 keep the full traceback.
 """
 
-from __future__ import annotations
-
 
 def format_exception_group(exc: BaseException) -> str:
     """Return a concise, leaf-naming string for ``exc``.
@@ -20,9 +18,9 @@ def format_exception_group(exc: BaseException) -> str:
     result is meant for the human-readable portion of a log message, not for
     parsing.
     """
-    leaves = _flatten(exc)
-    if len(leaves) == 1 and leaves[0] is exc:
+    if not isinstance(exc, BaseExceptionGroup):
         return repr(exc)
+    leaves = _flatten(exc)
     return f"{len(leaves)} sub-exception(s): " + "; ".join(repr(e) for e in leaves)
 
 

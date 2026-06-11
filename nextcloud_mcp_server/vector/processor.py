@@ -236,6 +236,11 @@ async def processor_task(
     # Signal that the task has started and is ready
     task_status.started()
 
+    # Initialised before the loop so the broad except handler below can't hit an
+    # unbound name if receive() itself raises a non-TimeoutError/EndOfStream
+    # exception on the very first iteration (mirrors multi_user_processor_task).
+    doc_task: DocumentTask | None = None
+
     while not shutdown_event.is_set():
         try:
             # Get document with timeout (allows checking shutdown)
@@ -265,14 +270,22 @@ async def processor_task(
             break
 
         except Exception as e:
-            logger.error(
-                "Processor %s error processing %s_%s: %s",
-                worker_id,
-                doc_task.doc_type,
-                doc_task.doc_id,
-                format_exception_group(e),
-                exc_info=True,
-            )
+            if doc_task is not None:
+                logger.error(
+                    "Processor %s error processing %s_%s: %s",
+                    worker_id,
+                    doc_task.doc_type,
+                    doc_task.doc_id,
+                    format_exception_group(e),
+                    exc_info=True,
+                )
+            else:
+                logger.error(
+                    "Processor %s error: %s",
+                    worker_id,
+                    format_exception_group(e),
+                    exc_info=True,
+                )
             # Continue to next document (no task_done() needed with streams)
 
     logger.info("Processor %s stopped", worker_id)

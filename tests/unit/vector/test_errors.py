@@ -22,6 +22,9 @@ def test_format_exception_group_names_leaf_cause():
     formatted = format_exception_group(group)
 
     assert "ConnectError" in formatted
+    # Assert the full leaf repr survives, not just the type name -- guards a
+    # future format change that kept the type but dropped the message.
+    assert repr(leaf) in formatted
     assert "unhandled errors in a TaskGroup" not in formatted
     assert "1 sub-exception" in formatted
 

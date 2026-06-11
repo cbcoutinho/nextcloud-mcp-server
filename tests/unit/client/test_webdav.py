@@ -588,3 +588,23 @@ async def test_move_resource_encodes_destination_header(mocker):
     destination = call.kwargs["headers"]["Destination"]
     assert "%23" in destination
     assert "#" not in destination
+
+
+@pytest.mark.unit
+async def test_copy_resource_encodes_destination_header(mocker):
+    """The COPY Destination header must be percent-encoded too (card 309)."""
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    mock_response = AsyncMock()
+    mock_response.status_code = 201
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    await client.copy_resource("a/old.pdf", "b/new #1.pdf")
+
+    call = mock_http_client.request.call_args
+    assert call[0][1] == "/remote.php/dav/files/testuser/a/old.pdf"
+    destination = call.kwargs["headers"]["Destination"]
+    assert "%23" in destination
+    assert "#" not in destination
