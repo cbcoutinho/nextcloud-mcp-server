@@ -339,7 +339,7 @@ def _fake_settings(**overrides):
     real Settings.__post_init__ validation/derivation.
     """
     base = dict(
-        ingest_queue="postgres",
+        ingest_queue="postgres",  # for realism / worker() gating; unused by the helper
         log_format="json",
         log_level="INFO",
         log_include_trace_context=True,

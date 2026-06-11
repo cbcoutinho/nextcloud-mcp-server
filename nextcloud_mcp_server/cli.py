@@ -291,16 +291,9 @@ def run(
 
 
 def _init_worker_observability(settings: Settings) -> None:
-    """Configure logging, metrics, and tracing for the ingest worker.
-
-    Mirrors the observability bootstrap the API pod performs in its lifespan
-    (``app.py``), but for the standalone ``worker`` entrypoint which never runs
-    uvicorn. Without this the worker emits plain-text logs and serves no
-    ``/metrics`` endpoint, so the astrolabe_* document-pipeline metrics and the
-    ``document_processor.parse`` spans (recorded in the shared registry/processor
-    code the worker executes) stay invisible in external split-worker mode
-    (Deck #310 / #175).
-    """
+    """Configure logging, metrics, and tracing for the standalone ingest worker."""
+    # Mirrors app.py's lifespan bootstrap; without it the worker's astrolabe_*
+    # metrics and document_processor.parse spans are invisible in external mode.
     # Structured logging first, so every subsequent startup line is JSON like
     # the API's — the worker entrypoint never went through uvicorn's log_config.
     setup_logging(
