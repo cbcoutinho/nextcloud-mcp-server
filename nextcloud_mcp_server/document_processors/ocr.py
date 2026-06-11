@@ -264,6 +264,22 @@ class OcrProcessor(DocumentProcessor):
             text, boundaries = await backend.ocr(
                 content, content_type.split(";")[0].strip().lower()
             )
+        except TimeoutError:
+            # anyio.fail_after / httpx read-timeout raise TimeoutError with an
+            # empty message; give it its own reason bucket and a useful log so a
+            # too-low DOCUMENT_OCR_TIMEOUT_SECONDS is distinguishable from a
+            # provider that's actually erroring.
+            timeout = settings.document_ocr_timeout_seconds
+            logger.warning(
+                "OCR timed out for %s after %.1fs", filename or "<bytes>", timeout
+            )
+            return ProcessingResult(
+                text="",
+                metadata={"parse_failed_reason": "timeout"},
+                processor=self.name,
+                success=False,
+                error=f"OCR timed out after {timeout:.1f}s",
+            )
         except Exception as e:
             logger.warning("OCR failed for %s: %s", filename or "<bytes>", e)
             return ProcessingResult(

@@ -509,6 +509,22 @@ class TestDynaconfValidators:
         with pytest.raises(ValidationError, match="DOCUMENT_CHUNK_SIZE"):
             _reload_config()
 
+    @patch.dict(os.environ, {"DOCUMENT_OCR_TIMEOUT_SECONDS": "0"}, clear=True)
+    def test_ocr_timeout_zero_rejected(self):
+        """DOCUMENT_OCR_TIMEOUT_SECONDS=0 fails the gte=1 validator."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="DOCUMENT_OCR_TIMEOUT_SECONDS"):
+            _reload_config()
+
+    @patch.dict(os.environ, {"DOCUMENT_MAX_PDF_SIZE_MB": "-1"}, clear=True)
+    def test_max_pdf_size_negative_rejected(self):
+        """DOCUMENT_MAX_PDF_SIZE_MB=-1 fails the gte=0 validator (0 = disabled)."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="DOCUMENT_MAX_PDF_SIZE_MB"):
+            _reload_config()
+
     @patch.dict(os.environ, {"METRICS_PORT": "8080"}, clear=True)
     def test_valid_metrics_port(self):
         """Test valid METRICS_PORT passes validation."""

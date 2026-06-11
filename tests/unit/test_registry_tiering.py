@@ -74,6 +74,8 @@ class _Settings:
         page_fraction=0.5,
         min_page_chars=16,
         detect_scanned=False,
+        # Guard off by default so existing tiering tests are unaffected; tests
+        # that exercise the size guard pass an explicit cap.
         max_pdf_size_mb=0.0,
     ):
         self.document_tier1_engine = engine

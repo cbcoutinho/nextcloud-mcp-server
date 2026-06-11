@@ -132,6 +132,23 @@ async def test_processor_backend_error_returns_success_false(monkeypatch):
     assert r.metadata["parse_failed_reason"] == "error"
 
 
+async def test_processor_timeout_returns_timeout_reason(monkeypatch):
+    """A backend TimeoutError gets its own reason bucket (not 'error')."""
+
+    class _TimeoutBackend:
+        async def ocr(self, content, mime_type):
+            raise TimeoutError
+
+    monkeypatch.setattr(
+        ocr, "get_settings", lambda: _settings(document_ocr_timeout_seconds=5.0)
+    )
+    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s: _TimeoutBackend())
+    r = await ocr.OcrProcessor().process(b"%PDF-1.7", "application/pdf")
+    assert r.success is False
+    assert r.metadata["parse_failed_reason"] == "timeout"
+    assert "timed out" in r.error
+
+
 async def test_gateway_backend_uses_configured_timeout(mocker, monkeypatch):
     """The gateway OCR call must use DOCUMENT_OCR_TIMEOUT_SECONDS (resolved per
     call), not the old hardcoded 180s constant."""
@@ -155,7 +172,7 @@ async def test_gateway_backend_uses_configured_timeout(mocker, monkeypatch):
         ocr, "get_settings", lambda: _settings(document_ocr_timeout_seconds=42.0)
     )
 
-    backend = ocr._GatewayOcrBackend("http://gw", "mistral/mistral-ocr-latest")
+    backend = ocr._GatewayOcrBackend("https://gw", "mistral/mistral-ocr-latest")
     await backend.ocr(b"%PDF-1.7", "application/pdf")
 
     # httpx.Timeout(42.0, connect=10.0): the read/overall budget is the setting.
