@@ -5,6 +5,14 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.113.1 (2026-06-11)
+
+### Fix
+
+- **vector**: don't inflate qdrant-error metric on embed drops (#893 r3)
+- **vector**: nested-group drop classification + review/Sonar fixes (#893)
+- **vector**: retry transient embed errors so a pod rollover drops 0 docs
+
 ## v0.113.0 (2026-06-11)
 
 ### Feat
