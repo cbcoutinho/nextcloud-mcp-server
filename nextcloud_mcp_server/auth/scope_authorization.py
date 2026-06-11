@@ -523,17 +523,30 @@ def discover_all_scopes(mcp) -> list[str]:
             pass
 
         scopes = discover_all_scopes(mcp)
-        # Returns: ["notes.read", "notes.write", "openid", "profile", "email"]
+        # Returns: ["notes.read", "notes.write", "offline_access", "openid", ...]
         ```
 
     Note:
         - Base OIDC scopes (openid, profile, email) are always included
+        - offline_access is always included so clients can request a refresh token
         - Scopes are deduplicated and sorted alphabetically
         - Only scopes from decorated tools are included
         - Must be called after tools are registered
     """
     # Start with base OIDC scopes that are always required
     all_scopes = {"openid", "profile", "email"}
+
+    # Advertise offline_access so discovery-driven MCP clients can request a
+    # refresh token. The AS proxy forwards it upstream to Nextcloud, which
+    # issues a refresh token when the MCP server's OIDC client is permitted the
+    # scope. Optional for clients (unlike the base OIDC scopes) and never tied
+    # to a tool, so it is added here rather than discovered from @require_scopes.
+    #
+    # Advertised unconditionally — independent of settings.enable_offline_access
+    # (which gates the server's own Flow 2 background access). Per RFC 8414,
+    # scopes_supported lists what the AS *can* support, not what it will always
+    # grant; the actual refresh token is still gated upstream by Nextcloud.
+    all_scopes.add("offline_access")
 
     # Get all registered tools
     try:
