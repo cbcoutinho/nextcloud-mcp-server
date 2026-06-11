@@ -5,6 +5,20 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.112.0 (2026-06-11)
+
+### Feat
+
+- **worker**: structured logs + metrics + traces for ingest worker
+
+### Fix
+
+- **worker**: clear Sonar S5332 hotspot + address review nits
+
+### Refactor
+
+- **worker**: trim observability helper docstring; clarify test fake
+
 ## v0.111.0 (2026-06-10)
 
 ### Feat
