@@ -1,4 +1,4 @@
-"""Unit tests for the shared rate-limit retry decorator."""
+"""Unit tests for the shared transient-error retry decorator."""
 
 from unittest.mock import AsyncMock
 
@@ -26,9 +26,7 @@ async def test_retry_succeeds_after_429():
     """A 429 followed by success returns the success value."""
     calls = {"n": 0}
 
-    @_retry.retry_on_rate_limit(
-        _FakeError, is_rate_limit=lambda e: e.status_code == 429
-    )
+    @_retry.retry_on_transient(_FakeError, should_retry=lambda e: e.status_code == 429)
     async def flaky():
         calls["n"] += 1
         if calls["n"] < 3:
@@ -41,13 +39,11 @@ async def test_retry_succeeds_after_429():
 
 
 @pytest.mark.unit
-async def test_retry_reraises_non_rate_limit_immediately():
-    """A non-rate-limit error of the same class is re-raised on first hit."""
+async def test_retry_reraises_when_predicate_returns_false():
+    """An error the predicate rejects is re-raised on first hit (no retry)."""
     calls = {"n": 0}
 
-    @_retry.retry_on_rate_limit(
-        _FakeError, is_rate_limit=lambda e: e.status_code == 429
-    )
+    @_retry.retry_on_transient(_FakeError, should_retry=lambda e: e.status_code == 429)
     async def boom():
         calls["n"] += 1
         raise _FakeError(500)
@@ -62,9 +58,7 @@ async def test_retry_gives_up_after_max_retries():
     """After MAX_RETRIES failed attempts the last error is re-raised."""
     calls = {"n": 0}
 
-    @_retry.retry_on_rate_limit(
-        _FakeError, is_rate_limit=lambda e: e.status_code == 429
-    )
+    @_retry.retry_on_transient(_FakeError, should_retry=lambda e: e.status_code == 429)
     async def always_429():
         calls["n"] += 1
         raise _FakeError(429)
@@ -79,7 +73,7 @@ async def test_retry_default_predicate_treats_all_as_rate_limit():
     """Default predicate (`lambda _: True`) retries every caught exception."""
     calls = {"n": 0}
 
-    @_retry.retry_on_rate_limit(_FakeError)
+    @_retry.retry_on_transient(_FakeError)
     async def fail_once():
         calls["n"] += 1
         if calls["n"] < 2:
@@ -95,9 +89,37 @@ async def test_retry_default_predicate_treats_all_as_rate_limit():
 async def test_retry_does_not_catch_unrelated_exceptions():
     """Exceptions of a different class bypass the decorator entirely."""
 
-    @_retry.retry_on_rate_limit(_FakeError)
+    @_retry.retry_on_transient(_FakeError)
     async def value_error():
         raise ValueError("nope")
 
     with pytest.raises(ValueError, match="nope"):
         await value_error()
+
+
+class _ConnError(Exception):
+    pass
+
+
+@pytest.mark.unit
+async def test_retry_accepts_tuple_of_exception_types():
+    """A tuple of exception classes is caught (the OpenAI transient set shape)."""
+    calls = {"n": 0}
+
+    @_retry.retry_on_transient((_FakeError, _ConnError))
+    async def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _ConnError("dropped")
+        if calls["n"] == 2:
+            raise _FakeError(503)
+        return "ok"
+
+    assert await flaky() == "ok"
+    assert calls["n"] == 3
+
+
+@pytest.mark.unit
+async def test_retry_on_rate_limit_is_backcompat_alias():
+    """The old name still resolves to the generalized helper."""
+    assert _retry.retry_on_rate_limit is _retry.retry_on_transient

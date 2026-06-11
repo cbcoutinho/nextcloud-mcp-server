@@ -8,16 +8,37 @@ Supports:
 
 import logging
 
-from openai import AsyncOpenAI, RateLimitError
+from openai import APIConnectionError, APIError, APIStatusError, AsyncOpenAI
 
-from ._retry import retry_on_rate_limit
+from ._retry import retry_on_transient
 from .base import Provider
 
 logger = logging.getLogger(__name__)
 
-# OpenAI's RateLimitError is itself a 429-specific class, so the default
-# is_rate_limit predicate ("always True") matches the previous behavior.
-_retry_429 = retry_on_rate_limit(RateLimitError, provider_name="OpenAI")
+
+def _is_transient(exc: BaseException) -> bool:
+    """Whether an OpenAI APIError is transient and worth retrying.
+
+    Covers the failures seen dropping documents during a backend-pod rollover
+    (card 309): ``APIConnectionError`` / ``APITimeoutError`` (brief gateway
+    unreachability) and 429 / 5xx status errors. Permanent 4xx (auth, bad
+    request) are NOT retried — they would fail identically every attempt.
+    """
+    if isinstance(exc, APIConnectionError):  # incl. APITimeoutError
+        return True
+    if isinstance(exc, APIStatusError):
+        return exc.status_code == 429 or exc.status_code >= 500
+    return False
+
+
+# Catch the APIError base (parent of both APIConnectionError and APIStatusError)
+# and let the predicate decide; non-transient errors re-raise immediately.
+_retry_transient = retry_on_transient(
+    APIError,
+    should_retry=_is_transient,
+    provider_name="OpenAI",
+    label="transient error",
+)
 
 
 # Well-known embedding dimensions for OpenAI models
@@ -95,7 +116,7 @@ class OpenAIProvider(Provider):
         """Whether this provider supports text generation."""
         return self.generation_model is not None
 
-    @_retry_429
+    @_retry_transient
     async def embed(self, text: str) -> list[float]:
         """
         Generate embedding vector for text.
@@ -208,7 +229,7 @@ class OpenAIProvider(Provider):
 
         return all_embeddings, total_tokens
 
-    @_retry_429
+    @_retry_transient
     async def _embed_batch_request(
         self, batch: list[str]
     ) -> tuple[list[list[float]], int]:
@@ -262,7 +283,11 @@ class OpenAIProvider(Provider):
             )
         return self._dimension
 
-    @_retry_429
+    # Transient retry intentionally covers generation too (RAG sampling path):
+    # a pod rollover breaks generation as readily as embedding. Worst case adds
+    # ~30s (5 attempts, 2s→60s backoff) to an interactive call hitting a
+    # sustained connection issue, which is preferable to a hard failure.
+    @_retry_transient
     async def generate(self, prompt: str, max_tokens: int = 500) -> str:
         """
         Generate text from a prompt.

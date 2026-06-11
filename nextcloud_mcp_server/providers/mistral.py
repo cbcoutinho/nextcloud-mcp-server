@@ -13,7 +13,7 @@ import logging
 from mistralai.client import Mistral
 from mistralai.client.errors import SDKError
 
-from ._retry import retry_on_rate_limit
+from ._retry import retry_on_transient
 from .base import Provider
 
 logger = logging.getLogger(__name__)
@@ -30,13 +30,25 @@ BATCH_SIZE = 64
 _NO_EMBEDDING_MODEL_MSG = "Embedding not supported - no embedding_model configured"
 
 
-def _is_rate_limit(exc: BaseException) -> bool:
-    """True only for HTTP 429 SDKErrors."""
-    return getattr(exc, "status_code", None) == 429
+def _is_transient(exc: BaseException) -> bool:
+    """Retry HTTP 429 (rate limit) and 5xx (server/transient) SDKErrors.
+
+    Scope is deliberately SDK-level: only ``SDKError`` (an HTTP-status error) is
+    caught by the decorator, so a pure connection drop that the Mistral SDK
+    surfaces as a bare ``httpx``/``ConnectionError`` is NOT retried here. The
+    primary pod-rollover resilience target (card 309) is the gateway path via
+    the OpenAI-compatible client, which does cover connection errors; direct
+    Mistral is a self-hoster fallback where 429/5xx is the common transient.
+    """
+    status = getattr(exc, "status_code", None)
+    return status == 429 or (isinstance(status, int) and status >= 500)
 
 
-_retry_429 = retry_on_rate_limit(
-    SDKError, is_rate_limit=_is_rate_limit, provider_name="Mistral"
+_retry_transient = retry_on_transient(
+    SDKError,
+    should_retry=_is_transient,
+    provider_name="Mistral",
+    label="transient error",
 )
 
 
@@ -90,7 +102,7 @@ class MistralProvider(Provider):
     def supports_generation(self) -> bool:
         return False
 
-    @_retry_429
+    @_retry_transient
     async def embed(self, text: str) -> list[float]:
         """Generate an embedding for a single text."""
         if not self.supports_embeddings:
@@ -169,7 +181,7 @@ class MistralProvider(Provider):
 
         return all_embeddings, total_tokens
 
-    @_retry_429
+    @_retry_transient
     async def _embed_batch_request(
         self, batch: list[str]
     ) -> tuple[list[list[float]], int]:

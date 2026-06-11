@@ -9,7 +9,7 @@ from nextcloud_mcp_server.providers.mistral import (
     BATCH_SIZE,
     MISTRAL_EMBEDDING_DIMENSIONS,
     MistralProvider,
-    _is_rate_limit,
+    _is_transient,
 )
 
 
@@ -318,14 +318,58 @@ async def test_mistral_embed_with_usage_single(mock_mistral_client):
 
 
 @pytest.mark.unit
-def test_mistral_is_rate_limit_predicate():
-    """_is_rate_limit returns True only for SDKErrors with status_code == 429."""
+def test_mistral_is_transient_predicate():
+    """_is_transient retries 429 (rate limit) and 5xx (server/transient) SDKErrors."""
     err_429 = MagicMock(spec=SDKError)
     err_429.status_code = 429
     err_500 = MagicMock(spec=SDKError)
     err_500.status_code = 500
+    err_400 = MagicMock(spec=SDKError)
+    err_400.status_code = 400
 
-    assert _is_rate_limit(err_429) is True
-    assert _is_rate_limit(err_500) is False
+    assert _is_transient(err_429) is True
+    assert _is_transient(err_500) is True  # broadened to 5xx (card 309)
+    assert _is_transient(err_400) is False  # permanent client error
     # ValueError has no status_code attr → getattr returns None → False.
-    assert _is_rate_limit(ValueError()) is False
+    assert _is_transient(ValueError()) is False
+
+
+@pytest.mark.unit
+async def test_mistral_embed_retries_on_5xx(mock_mistral_client, monkeypatch):
+    """A 5xx SDKError is retried end-to-end (not just classified by the predicate)."""
+    from nextcloud_mcp_server.providers import _retry
+
+    monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
+
+    # Real SDKError instance (so `except SDKError` catches it) with a 5xx status.
+    err = SDKError.__new__(SDKError)
+    err.status_code = 500
+
+    mock_mistral_client.embeddings.create_async = AsyncMock(
+        side_effect=[err, _make_response([[0.1, 0.2, 0.3]])]
+    )
+    provider = MistralProvider(api_key="test-key", embedding_model="mistral-embed")
+
+    embedding = await provider.embed("hello")
+    assert embedding == [0.1, 0.2, 0.3]
+    assert mock_mistral_client.embeddings.create_async.await_count == 2
+
+
+@pytest.mark.unit
+async def test_mistral_embed_batch_retries_on_5xx(mock_mistral_client, monkeypatch):
+    """The batch path (_embed_batch_request) shares the transient retry too."""
+    from nextcloud_mcp_server.providers import _retry
+
+    monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
+
+    err = SDKError.__new__(SDKError)
+    err.status_code = 503
+
+    mock_mistral_client.embeddings.create_async = AsyncMock(
+        side_effect=[err, _make_response([[0.1, 0.2], [0.3, 0.4]])]
+    )
+    provider = MistralProvider(api_key="test-key", embedding_model="mistral-embed")
+
+    embeddings = await provider.embed_batch(["a", "b"])
+    assert embeddings == [[0.1, 0.2], [0.3, 0.4]]
+    assert mock_mistral_client.embeddings.create_async.await_count == 2

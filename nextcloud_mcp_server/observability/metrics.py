@@ -272,6 +272,18 @@ document_parse_failed_total = Counter(
     ["reason"],  # reason: timeout | oom | error
 )
 
+# Documents dropped after exhausting in-process indexing retries (the scanner
+# re-picks them on a later full scan, so this is "dropped for this cycle", not
+# "lost forever"). Labelled by classified cause so the embed-drop rate from a
+# transient backend-pod rollover (connection/timeout) is alertable distinctly
+# from a persistent fault (card 309).
+vector_ingest_dropped_total = Counter(
+    "astrolabe_vector_ingest_dropped_total",
+    "Documents dropped after exhausting indexing retries, by cause",
+    # reason: connection | timeout | rate_limit | server | qdrant | other
+    ["reason"],
+)
+
 # --- Tier-0 classifier (shadow mode) -----------------------------------------
 #
 # The classifier runs a cheap pre-pass per PDF and recommends a starting tier.
@@ -690,6 +702,16 @@ def record_document_parse_failed(reason: str) -> None:
         reason: ``timeout`` | ``oom`` | ``error``
     """
     document_parse_failed_total.labels(reason=reason).inc()
+
+
+def record_ingest_dropped(reason: str) -> None:
+    """Record a document dropped after exhausting in-process indexing retries.
+
+    Args:
+        reason: ``connection`` | ``timeout`` | ``rate_limit`` | ``server`` |
+            ``qdrant`` | ``other`` (classified from the terminal exception).
+    """
+    vector_ingest_dropped_total.labels(reason=reason).inc()
 
 
 def record_document_classification(

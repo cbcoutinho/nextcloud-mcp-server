@@ -330,3 +330,152 @@ async def test_openai_close(mock_openai_client):
 
     await provider.close()
     mock_openai_client.close.assert_called_once()
+
+
+# --- transient-error retry (card 309) ----------------------------------------
+
+
+def _req():
+    import httpx
+
+    return httpx.Request("POST", "https://gw/v1/embeddings")
+
+
+@pytest.mark.unit
+def test_is_transient_classifies_retryable_errors():
+    """Connection / timeout / 429 / 5xx are transient; 4xx and others are not."""
+    import httpx
+    from openai import (
+        APIConnectionError,
+        APITimeoutError,
+        BadRequestError,
+        InternalServerError,
+        RateLimitError,
+    )
+
+    from nextcloud_mcp_server.providers.openai import _is_transient
+
+    req = _req()
+    assert _is_transient(APIConnectionError(request=req)) is True
+    assert _is_transient(APITimeoutError(request=req)) is True
+    assert (
+        _is_transient(
+            RateLimitError("rl", response=httpx.Response(429, request=req), body=None)
+        )
+        is True
+    )
+    assert (
+        _is_transient(
+            InternalServerError(
+                "boom", response=httpx.Response(500, request=req), body=None
+            )
+        )
+        is True
+    )
+    # Permanent client errors must NOT be retried.
+    assert (
+        _is_transient(
+            BadRequestError("bad", response=httpx.Response(400, request=req), body=None)
+        )
+        is False
+    )
+    assert _is_transient(ValueError("unrelated")) is False
+
+
+@pytest.mark.unit
+async def test_embed_retries_on_connection_error(mock_openai_client, monkeypatch):
+    """A transient APIConnectionError (pod rollover) is retried, not dropped."""
+    from openai import APIConnectionError
+
+    from nextcloud_mcp_server.providers import _retry
+
+    monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
+
+    mock_embedding_data = MagicMock()
+    mock_embedding_data.embedding = [0.1, 0.2, 0.3]
+    mock_response = MagicMock()
+    mock_response.data = [mock_embedding_data]
+
+    # First call raises a transient connection error, second succeeds.
+    create = AsyncMock(side_effect=[APIConnectionError(request=_req()), mock_response])
+    mock_openai_client.embeddings.create = create
+    provider = OpenAIProvider(
+        api_key="test-key", embedding_model="text-embedding-3-small"
+    )
+
+    result = await provider.embed("hello")
+    assert result == [0.1, 0.2, 0.3]
+    assert create.await_count == 2  # one failure, one success
+
+
+@pytest.mark.unit
+async def test_embed_batch_retries_on_connection_error(mock_openai_client, monkeypatch):
+    """The batch path (`_embed_batch_request`) shares the transient retry too."""
+    from openai import APIConnectionError
+
+    from nextcloud_mcp_server.providers import _retry
+
+    monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
+
+    data = MagicMock()
+    data.embedding = [0.4, 0.5, 0.6]
+    data.index = 0
+    mock_response = MagicMock()
+    mock_response.data = [data]
+    mock_response.usage.total_tokens = 7
+
+    create = AsyncMock(side_effect=[APIConnectionError(request=_req()), mock_response])
+    mock_openai_client.embeddings.create = create
+    provider = OpenAIProvider(
+        api_key="test-key", embedding_model="text-embedding-3-small"
+    )
+
+    embeddings, tokens = await provider.embed_batch_with_usage(["text"])
+    assert embeddings == [[0.4, 0.5, 0.6]]
+    assert tokens == 7
+    assert create.await_count == 2
+
+
+@pytest.mark.unit
+async def test_generate_retries_on_connection_error(mock_openai_client, monkeypatch):
+    """generate() shares the transient retry (RAG sampling survives a rollover)."""
+    from openai import APIConnectionError
+
+    from nextcloud_mcp_server.providers import _retry
+
+    monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
+
+    choice = MagicMock()
+    choice.message.content = "Generated response"
+    mock_response = MagicMock()
+    mock_response.choices = [choice]
+
+    create = AsyncMock(side_effect=[APIConnectionError(request=_req()), mock_response])
+    mock_openai_client.chat.completions.create = create
+    provider = OpenAIProvider(api_key="test-key", generation_model="gpt-4o-mini")
+
+    text = await provider.generate("prompt")
+    assert text == "Generated response"
+    assert create.await_count == 2
+
+
+@pytest.mark.unit
+async def test_generate_does_not_retry_on_bad_request(mock_openai_client, monkeypatch):
+    """generate() fast-fails (no retry) on a permanent 4xx."""
+    import httpx
+    from openai import BadRequestError
+
+    from nextcloud_mcp_server.providers import _retry
+
+    monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
+
+    err = BadRequestError(
+        "bad", response=httpx.Response(400, request=_req()), body=None
+    )
+    create = AsyncMock(side_effect=err)
+    mock_openai_client.chat.completions.create = create
+    provider = OpenAIProvider(api_key="test-key", generation_model="gpt-4o-mini")
+
+    with pytest.raises(BadRequestError):
+        await provider.generate("prompt")
+    assert create.await_count == 1  # no retry on a permanent 4xx
