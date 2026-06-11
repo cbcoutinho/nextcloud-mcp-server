@@ -41,4 +41,4 @@ def test_format_nested_exception_group_flattens_all_leaves():
     assert "ValueError" in formatted
     assert "ConnectError" in formatted
     assert "RuntimeError" in formatted
-    assert "3 sub-exception(s)" in formatted
+    assert "3 sub-exceptions" in formatted

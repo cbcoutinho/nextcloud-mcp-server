@@ -21,7 +21,8 @@ def format_exception_group(exc: BaseException) -> str:
     if not isinstance(exc, BaseExceptionGroup):
         return repr(exc)
     leaves = _flatten(exc)
-    return f"{len(leaves)} sub-exception(s): " + "; ".join(repr(e) for e in leaves)
+    noun = "sub-exception" if len(leaves) == 1 else "sub-exceptions"
+    return f"{len(leaves)} {noun}: " + "; ".join(repr(e) for e in leaves)
 
 
 def _flatten(exc: BaseException) -> list[BaseException]:

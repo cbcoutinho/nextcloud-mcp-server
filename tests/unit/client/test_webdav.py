@@ -541,6 +541,15 @@ def test_webdav_path_encoding(path, expected):
 
 
 @pytest.mark.unit
+def test_encode_dav_path_encodes_exactly_once():
+    """Pins the decoded-input precondition: a literal '%' becomes '%25', so an
+    already-encoded path passed in error would double-encode (caught here)."""
+    from nextcloud_mcp_server.client.webdav import _encode_dav_path
+
+    assert _encode_dav_path("already%20encoded.pdf") == "already%2520encoded.pdf"
+
+
+@pytest.mark.unit
 async def test_read_file_encodes_special_chars(mocker):
     """read_file must percent-encode '#', commas, and spaces in the path (card 309).
 

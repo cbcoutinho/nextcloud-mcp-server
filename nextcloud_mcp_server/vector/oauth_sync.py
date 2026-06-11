@@ -332,7 +332,7 @@ async def multi_user_processor_task(
             break
 
         except NotProvisionedError:
-            if doc_task:
+            if doc_task is not None:
                 logger.warning(
                     "[BasicAuth] User %s not provisioned, skipping %s_%s",
                     doc_task.user_id,
@@ -342,7 +342,7 @@ async def multi_user_processor_task(
             continue
 
         except Exception as e:
-            if doc_task:
+            if doc_task is not None:
                 logger.error(
                     "[BasicAuth] Processor %s error processing %s_%s: %s",
                     worker_id,
