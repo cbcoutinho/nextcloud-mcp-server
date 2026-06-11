@@ -31,7 +31,15 @@ _NO_EMBEDDING_MODEL_MSG = "Embedding not supported - no embedding_model configur
 
 
 def _is_transient(exc: BaseException) -> bool:
-    """Retry HTTP 429 (rate limit) and 5xx (server/transient) SDKErrors."""
+    """Retry HTTP 429 (rate limit) and 5xx (server/transient) SDKErrors.
+
+    Scope is deliberately SDK-level: only ``SDKError`` (an HTTP-status error) is
+    caught by the decorator, so a pure connection drop that the Mistral SDK
+    surfaces as a bare ``httpx``/``ConnectionError`` is NOT retried here. The
+    primary pod-rollover resilience target (card 309) is the gateway path via
+    the OpenAI-compatible client, which does cover connection errors; direct
+    Mistral is a self-hoster fallback where 429/5xx is the common transient.
+    """
     status = getattr(exc, "status_code", None)
     return status == 429 or (isinstance(status, int) and status >= 500)
 

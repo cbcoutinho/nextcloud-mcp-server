@@ -77,10 +77,11 @@ def retry_on_transient(
                         retry_delay = min(retry_delay * 2, MAX_RETRY_DELAY)
 
             logger.error(
-                "%s %s not resolved after %d attempts",
+                "%s %s not resolved after %d attempts: %r",
                 provider_name,
                 label,
                 MAX_RETRIES,
+                last_error,
             )
             if last_error is None:  # pragma: no cover — loop above always sets this
                 raise RuntimeError("retry loop exited without capturing an error")
