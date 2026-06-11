@@ -74,6 +74,7 @@ class _Settings:
         page_fraction=0.5,
         min_page_chars=16,
         detect_scanned=False,
+        max_pdf_size_mb=0.0,
     ):
         self.document_tier1_engine = engine
         self.document_classify_enabled = classify
@@ -82,6 +83,7 @@ class _Settings:
         self.document_ocr_page_fraction = page_fraction
         self.document_ocr_min_page_chars = min_page_chars
         self.document_ocr_detect_scanned = detect_scanned
+        self.document_max_pdf_size_mb = max_pdf_size_mb
 
 
 def _registry(*procs: tuple[DocumentProcessor, int]) -> ProcessorRegistry:
@@ -95,6 +97,43 @@ async def test_pdf_routes_to_fast_tier(monkeypatch):
     monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings())
     r = _registry((_Fake("fast", "fast"), 20), (_Fake("structured", "structured"), 10))
     res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "fast"
+
+
+async def test_oversize_pdf_fails_fast_without_parsing(monkeypatch):
+    """A PDF over the size cap must fail fast as 'oversize' before any tier runs."""
+    monkeypatch.setattr(
+        reg_mod, "get_settings", lambda: _Settings(max_pdf_size_mb=0.001)
+    )
+    fast = _Fake("fast", "fast")
+    ran = False
+    orig = fast.process
+
+    async def _tracking(*a, **k):
+        nonlocal ran
+        ran = True
+        return await orig(*a, **k)
+
+    fast.process = _tracking  # type: ignore[method-assign]
+    r = _registry((fast, 20))
+
+    # ~2 KB > 0.001 MB (~1 KB) cap.
+    res = await r.process(b"%PDF-1.7" + b"0" * 2048, "application/pdf", "big.pdf")
+
+    assert res.success is False
+    assert res.metadata["parse_failed_reason"] == "oversize"
+    assert res.processor == "size_guard"
+    assert ran is False, "size guard must short-circuit before the fast tier runs"
+
+
+async def test_under_cap_pdf_still_parses(monkeypatch):
+    """A PDF under the cap is unaffected by the guard."""
+    monkeypatch.setattr(
+        reg_mod, "get_settings", lambda: _Settings(max_pdf_size_mb=10.0)
+    )
+    r = _registry((_Fake("fast", "fast"), 20))
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.success is True
     assert res.processor == "fast"
 
 

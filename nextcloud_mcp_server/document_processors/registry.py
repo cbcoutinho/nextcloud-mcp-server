@@ -202,6 +202,27 @@ class ProcessorRegistry:
         """
         settings = get_settings()
 
+        # Pre-parse size guard: a pathologically large PDF (e.g. a 42 MB scanned
+        # DUDE) burns the OCR timeout for 0 chars. Fail fast with an explicit
+        # reason so the caller marks the placeholder "failed" instead of
+        # retrying. 0 disables the cap.
+        max_pdf_mb = settings.document_max_pdf_size_mb
+        if max_pdf_mb > 0 and len(content) > max_pdf_mb * 1024 * 1024:
+            size_mb = len(content) / (1024 * 1024)
+            logger.warning(
+                "PDF %s is %.1f MB (> %.1f MB cap); failing fast as oversize",
+                filename or "<bytes>",
+                size_mb,
+                max_pdf_mb,
+            )
+            return ProcessingResult(
+                text="",
+                metadata={"parse_failed_reason": "oversize"},
+                processor="size_guard",
+                success=False,
+                error=(f"PDF exceeds size cap: {size_mb:.1f} MB > {max_pdf_mb:.1f} MB"),
+            )
+
         if settings.document_tier1_engine == "pymupdf":
             processor = self._pdf_processor_for_tier("structured")
             if processor is None:

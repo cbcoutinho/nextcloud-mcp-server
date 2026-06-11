@@ -213,6 +213,24 @@ class TestChunkConfigValidation:
         _reload_config()
         assert get_settings().document_chunk_page_aware is False
 
+    def test_ocr_timeout_default_and_env_override(self):
+        """document_ocr_timeout_seconds defaults to 180 and reads its env var.
+
+        Guards the _DEFAULTS-key-must-match-env-var footgun: a mismatch would
+        leave the override silently ignored.
+        """
+        assert Settings().document_ocr_timeout_seconds == 180.0
+        with patch.dict(os.environ, {"DOCUMENT_OCR_TIMEOUT_SECONDS": "45"}, clear=True):
+            _reload_config()
+            assert get_settings().document_ocr_timeout_seconds == 45.0
+
+    def test_max_pdf_size_default_and_env_override(self):
+        """document_max_pdf_size_mb defaults to 50 and reads its env var."""
+        assert Settings().document_max_pdf_size_mb == 50.0
+        with patch.dict(os.environ, {"DOCUMENT_MAX_PDF_SIZE_MB": "12.5"}, clear=True):
+            _reload_config()
+            assert get_settings().document_max_pdf_size_mb == 12.5
+
     def test_valid_chunk_settings(self):
         """Test valid chunk size and overlap configuration."""
         settings = Settings(

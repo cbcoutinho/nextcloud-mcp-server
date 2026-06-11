@@ -31,7 +31,9 @@ from .base import DocumentProcessor, ProcessingResult
 
 logger = logging.getLogger(__name__)
 
-_OCR_TIMEOUT_SECONDS = 180.0
+# Connect timeout for the OCR backend request. The overall (read) timeout is
+# configurable via DOCUMENT_OCR_TIMEOUT_SECONDS and resolved per call.
+_OCR_CONNECT_TIMEOUT_SECONDS = 10.0
 
 
 def _pages_to_text(
@@ -93,8 +95,11 @@ class _GatewayOcrBackend(_OcrBackend):
             "document_b64": base64.b64encode(content).decode("ascii"),
             "mime_type": mime_type,
         }
+        # Resolve the timeout per call (get_settings builds fresh, so a test or
+        # tenant override is honoured without a restart).
+        ocr_timeout = get_settings().document_ocr_timeout_seconds
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(_OCR_TIMEOUT_SECONDS, connect=10.0)
+            timeout=httpx.Timeout(ocr_timeout, connect=_OCR_CONNECT_TIMEOUT_SECONDS)
         ) as client:
             resp = await client.post(self._url, json=payload, headers=headers)
             resp.raise_for_status()

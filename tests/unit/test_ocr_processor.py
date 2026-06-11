@@ -14,6 +14,7 @@ def _settings(**kw) -> Any:  # a Settings stand-in (only the read fields matter)
     base = dict(
         document_ocr_provider="auto",
         document_ocr_model="mistral/mistral-ocr-latest",
+        document_ocr_timeout_seconds=180.0,
         embedding_gateway_url=None,
         embedding_gateway_client_id=None,
         embedding_gateway_client_secret=None,
@@ -128,3 +129,41 @@ async def test_processor_backend_error_returns_success_false(monkeypatch):
     r = await ocr.OcrProcessor().process(b"%PDF-1.7", "application/pdf")
     assert r.success is False
     assert r.metadata["parse_failed_reason"] == "error"
+
+
+async def test_gateway_backend_uses_configured_timeout(monkeypatch):
+    """The gateway OCR call must use DOCUMENT_OCR_TIMEOUT_SECONDS (resolved per
+    call), not the old hardcoded 180s constant."""
+    captured: dict[str, Any] = {}
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"pages": [{"index": 0, "markdown": "ok"}]}
+
+    class _FakeClient:
+        def __init__(self, *, timeout=None, **kw):
+            captured["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            return _FakeResponse()
+
+    monkeypatch.setattr(ocr.httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(
+        ocr, "get_settings", lambda: _settings(document_ocr_timeout_seconds=42.0)
+    )
+
+    backend = ocr._GatewayOcrBackend("http://gw", "mistral/mistral-ocr-latest")
+    await backend.ocr(b"%PDF-1.7", "application/pdf")
+
+    # httpx.Timeout(42.0, connect=10.0): the read/overall budget is the setting.
+    assert captured["timeout"].read == 42.0
+    assert captured["timeout"].connect == 10.0
