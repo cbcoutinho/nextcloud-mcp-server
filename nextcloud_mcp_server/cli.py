@@ -6,6 +6,7 @@ import click
 import uvicorn
 
 from nextcloud_mcp_server.config import (
+    Settings,
     get_database_url,
     get_settings,
     is_ephemeral_token_db,
@@ -17,7 +18,12 @@ from nextcloud_mcp_server.migrations import (
     show_migration_history,
     upgrade_database,
 )
-from nextcloud_mcp_server.observability import get_uvicorn_logging_config
+from nextcloud_mcp_server.observability import (
+    get_uvicorn_logging_config,
+    setup_logging,
+    setup_metrics,
+    setup_tracing,
+)
 from nextcloud_mcp_server.server import AVAILABLE_APPS
 
 from .app import get_app
@@ -284,6 +290,41 @@ def run(
     )
 
 
+def _init_worker_observability(settings: Settings) -> None:
+    """Configure logging, metrics, and tracing for the standalone ingest worker."""
+    # Mirrors app.py's lifespan bootstrap; without it the worker's astrolabe_*
+    # metrics and document_processor.parse spans are invisible in external mode.
+    # Structured logging first, so every subsequent startup line is JSON like
+    # the API's — the worker entrypoint never went through uvicorn's log_config.
+    setup_logging(
+        log_format=settings.log_format,
+        log_level=settings.log_level,
+        include_trace_context=settings.log_include_trace_context,
+    )
+
+    if settings.metrics_enabled:
+        setup_metrics(port=settings.metrics_port)
+        logger.info(
+            "Prometheus metrics enabled on dedicated port %s", settings.metrics_port
+        )
+
+    if settings.otel_exporter_otlp_endpoint:
+        setup_tracing(
+            service_name=settings.otel_service_name,
+            otlp_endpoint=settings.otel_exporter_otlp_endpoint,
+            otlp_verify_ssl=settings.otel_exporter_verify_ssl,
+            sampling_rate=settings.otel_traces_sampler_arg,
+        )
+        logger.info(
+            "OpenTelemetry tracing enabled (endpoint: %s)",
+            settings.otel_exporter_otlp_endpoint,
+        )
+    else:
+        logger.info(
+            "OpenTelemetry tracing disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)"
+        )
+
+
 @click.command()
 @click.option(
     "--concurrency",
@@ -318,6 +359,11 @@ def worker(concurrency: int | None):
             "worker requires INGEST_QUEUE=postgres (a PostgreSQL DATABASE_URL); "
             f"resolved INGEST_QUEUE={settings.ingest_queue!r}"
         )
+
+    # Initialize observability here, not in a lifespan — the worker never runs
+    # uvicorn, so it skips app.py's bootstrap (the WHY lives in the helper's
+    # docstring). Done after the queue check so a misconfig fails fast.
+    _init_worker_observability(settings)
 
     from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
         INGEST_QUEUE_NAME,

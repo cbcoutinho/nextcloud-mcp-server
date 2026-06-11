@@ -31,7 +31,9 @@ from .base import DocumentProcessor, ProcessingResult
 
 logger = logging.getLogger(__name__)
 
-_OCR_TIMEOUT_SECONDS = 180.0
+# Connect timeout for the OCR backend request. The overall (read) timeout is
+# configurable via DOCUMENT_OCR_TIMEOUT_SECONDS and resolved per call.
+_OCR_CONNECT_TIMEOUT_SECONDS = 10.0
 
 
 def _pages_to_text(
@@ -93,8 +95,12 @@ class _GatewayOcrBackend(_OcrBackend):
             "document_b64": base64.b64encode(content).decode("ascii"),
             "mime_type": mime_type,
         }
+        # Resolved per call (get_settings builds fresh) so test monkeypatching is
+        # honoured; a live tenant change still needs a restart because the backend
+        # instance itself is cached for the pod's lifetime.
+        ocr_timeout = get_settings().document_ocr_timeout_seconds
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(_OCR_TIMEOUT_SECONDS, connect=10.0)
+            timeout=httpx.Timeout(ocr_timeout, connect=_OCR_CONNECT_TIMEOUT_SECONDS)
         ) as client:
             resp = await client.post(self._url, json=payload, headers=headers)
             resp.raise_for_status()
@@ -120,10 +126,17 @@ class _MistralOcrBackend(_OcrBackend):
         data_url = (
             f"data:{mime_type};base64,{base64.b64encode(content).decode('ascii')}"
         )
-        resp = await self._client.ocr.process_async(
-            model=self._model,
-            document={"type": "document_url", "document_url": data_url},
-        )
+        # Apply DOCUMENT_OCR_TIMEOUT_SECONDS uniformly with the gateway backend.
+        # The Mistral SDK manages its own httpx client, so wrap the call in an
+        # anyio cancel-scope timeout rather than threading a per-request timeout
+        # through the SDK; on expiry this raises TimeoutError, which the
+        # OcrProcessor turns into a clean parse failure.
+        ocr_timeout = get_settings().document_ocr_timeout_seconds
+        with anyio.fail_after(ocr_timeout):
+            resp = await self._client.ocr.process_async(
+                model=self._model,
+                document={"type": "document_url", "document_url": data_url},
+            )
         pages = [(p.index, p.markdown or "") for p in (resp.pages or [])]
         return _pages_to_text(pages)
 
@@ -250,6 +263,24 @@ class OcrProcessor(DocumentProcessor):
         try:
             text, boundaries = await backend.ocr(
                 content, content_type.split(";")[0].strip().lower()
+            )
+        except (TimeoutError, httpx.TimeoutException):
+            # Two timeout shapes reach here: the Mistral backend's
+            # anyio.fail_after raises the builtin TimeoutError, while the gateway
+            # backend's httpx.Timeout raises httpx.ReadTimeout (a
+            # httpx.TimeoutException, NOT a TimeoutError). Catch both so a
+            # too-low DOCUMENT_OCR_TIMEOUT_SECONDS lands in its own reason bucket
+            # rather than being conflated with provider errors.
+            timeout = settings.document_ocr_timeout_seconds
+            logger.warning(
+                "OCR timed out for %s after %.1fs", filename or "<bytes>", timeout
+            )
+            return ProcessingResult(
+                text="",
+                metadata={"parse_failed_reason": "timeout"},
+                processor=self.name,
+                success=False,
+                error=f"OCR timed out after {timeout:.1f}s",
             )
         except Exception as e:
             logger.warning("OCR failed for %s: %s", filename or "<bytes>", e)

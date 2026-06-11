@@ -146,6 +146,10 @@ _DEFAULTS: dict[str, Any] = {
     "document_pdf_graphics_limit": 1000,
     "document_parse_timeout_seconds": 120.0,
     "document_parse_mem_limit_mb": 1536,
+    # Pre-parse size cap (MB): PDFs larger than this fail fast with reason
+    # "oversize" instead of burning the OCR timeout to 0 chars on a pathological
+    # file. 0 disables the guard.
+    "document_max_pdf_size_mb": 50.0,
     # Tier-0 classifier (records classification metrics on the tiered path)
     "document_classify_enabled": True,
     # Tiered PDF pipeline: pypdfium2 is the default/only hot-path extractor;
@@ -168,6 +172,10 @@ _DEFAULTS: dict[str, Any] = {
     "document_ocr_page_fraction": 0.5,
     "document_ocr_min_page_chars": 16,
     "document_ocr_detect_scanned": True,
+    # OCR backend request timeout (seconds). Slow scanned newspapers can take
+    # 20-60s; raise/lower per tenant. Configurable so a tenant isn't stuck with
+    # the 180s default when its gateway has its own shorter ceiling.
+    "document_ocr_timeout_seconds": 180.0,
     # Observability
     "metrics_enabled": True,
     "metrics_port": 9090,
@@ -319,7 +327,10 @@ _dynaconf = Dynaconf(
         Validator("VERIFICATION_CONCURRENCY", gte=1),
         Validator("DOCUMENT_CHUNK_SIZE", gte=1),
         Validator("DOCUMENT_PARSE_TIMEOUT_SECONDS", gte=1),
+        Validator("DOCUMENT_OCR_TIMEOUT_SECONDS", gte=1),
         Validator("DOCUMENT_PARSE_MEM_LIMIT_MB", gte=128),
+        # 0 disables the pre-parse PDF size cap; otherwise it must be positive.
+        Validator("DOCUMENT_MAX_PDF_SIZE_MB", gte=0),
         # >=1: pymupdf4llm treats graphics_limit=0 as "no cap", which would
         # re-expose the OOM this guards against.
         Validator("DOCUMENT_PDF_GRAPHICS_LIMIT", gte=1),
@@ -782,6 +793,11 @@ class Settings:
     # float so a fractional DOCUMENT_PARSE_TIMEOUT_SECONDS is honoured, matching
     # anyio.move_on_after's float seconds.
     document_parse_timeout_seconds: float = 120.0
+    # Pre-parse PDF size cap (MB). A PDF larger than this fails fast with
+    # parse_failed_reason="oversize" (placeholder marked "failed") rather than
+    # being handed to the fast/OCR tiers, where a pathological large file burns
+    # the OCR timeout for 0 chars. 0 disables the guard.
+    document_max_pdf_size_mb: float = 50.0
     # RLIMIT_AS in the parse subprocess (below the pod limit). Applied once per
     # worker for its lifetime, so changing it needs a pod restart.
     document_parse_mem_limit_mb: int = 1536
@@ -801,6 +817,10 @@ class Settings:
     # gateway routes on the "<provider>/" prefix; the direct mistral backend
     # strips it.
     document_ocr_model: str = "mistral/mistral-ocr-latest"
+    # OCR backend HTTP request timeout (seconds). float for parity with the
+    # parse timeout / httpx.Timeout; per-tenant tunable so a gateway with a
+    # shorter ceiling isn't masked by the 180s default.
+    document_ocr_timeout_seconds: float = 180.0
     # OCR escalation triggers (tier-0), per-tenant tunable. A page is OCR-worthy
     # if near-empty (< min_page_chars) OR low text-quality (< min_text_quality)
     # OR (when detect_scanned, image-analysis only runs when OCR is enabled)
@@ -1431,12 +1451,14 @@ def get_settings() -> Settings:
         "document_chunk_page_aware": "DOCUMENT_CHUNK_PAGE_AWARE",
         "document_pdf_graphics_limit": "DOCUMENT_PDF_GRAPHICS_LIMIT",
         "document_parse_timeout_seconds": "DOCUMENT_PARSE_TIMEOUT_SECONDS",
+        "document_max_pdf_size_mb": "DOCUMENT_MAX_PDF_SIZE_MB",
         "document_parse_mem_limit_mb": "DOCUMENT_PARSE_MEM_LIMIT_MB",
         "document_classify_enabled": "DOCUMENT_CLASSIFY_ENABLED",
         "document_tier1_engine": "DOCUMENT_TIER1_ENGINE",
         "document_ocr_enabled": "DOCUMENT_OCR_ENABLED",
         "document_ocr_provider": "DOCUMENT_OCR_PROVIDER",
         "document_ocr_model": "DOCUMENT_OCR_MODEL",
+        "document_ocr_timeout_seconds": "DOCUMENT_OCR_TIMEOUT_SECONDS",
         "document_ocr_min_text_quality": "DOCUMENT_OCR_MIN_TEXT_QUALITY",
         "document_ocr_page_fraction": "DOCUMENT_OCR_PAGE_FRACTION",
         "document_ocr_min_page_chars": "DOCUMENT_OCR_MIN_PAGE_CHARS",
