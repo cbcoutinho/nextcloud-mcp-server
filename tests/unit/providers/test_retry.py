@@ -39,8 +39,8 @@ async def test_retry_succeeds_after_429():
 
 
 @pytest.mark.unit
-async def test_retry_reraises_non_rate_limit_immediately():
-    """A non-rate-limit error of the same class is re-raised on first hit."""
+async def test_retry_reraises_when_predicate_returns_false():
+    """An error the predicate rejects is re-raised on first hit (no retry)."""
     calls = {"n": 0}
 
     @_retry.retry_on_transient(_FakeError, should_retry=lambda e: e.status_code == 429)

@@ -283,6 +283,10 @@ class OpenAIProvider(Provider):
             )
         return self._dimension
 
+    # Transient retry intentionally covers generation too (RAG sampling path):
+    # a pod rollover breaks generation as readily as embedding. Worst case adds
+    # ~30s (5 attempts, 2s→60s backoff) to an interactive call hitting a
+    # sustained connection issue, which is preferable to a hard failure.
     @_retry_transient
     async def generate(self, prompt: str, max_tokens: int = 500) -> str:
         """

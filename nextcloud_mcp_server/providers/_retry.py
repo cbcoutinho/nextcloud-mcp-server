@@ -56,7 +56,10 @@ def retry_on_transient(
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     return await func(*args, **kwargs)
-                except exception_type as e:
+                # exception_type is constrained by the signature to a
+                # BaseException subclass or a tuple of them; the dynamic catch is
+                # the whole point of this reusable helper.
+                except exception_type as e:  # NOSONAR(S5708)
                     if not should_retry(e):
                         raise
                     last_error = e

@@ -396,19 +396,41 @@ async def test_embed_retries_on_connection_error(mock_openai_client, monkeypatch
     mock_response = MagicMock()
     mock_response.data = [mock_embedding_data]
 
-    calls = {"n": 0}
-
-    async def _flaky(*args, **kwargs):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise APIConnectionError(request=_req())
-        return mock_response
-
-    mock_openai_client.embeddings.create = _flaky
+    # First call raises a transient connection error, second succeeds.
+    create = AsyncMock(side_effect=[APIConnectionError(request=_req()), mock_response])
+    mock_openai_client.embeddings.create = create
     provider = OpenAIProvider(
         api_key="test-key", embedding_model="text-embedding-3-small"
     )
 
     result = await provider.embed("hello")
     assert result == [0.1, 0.2, 0.3]
-    assert calls["n"] == 2  # one failure, one success
+    assert create.await_count == 2  # one failure, one success
+
+
+@pytest.mark.unit
+async def test_embed_batch_retries_on_connection_error(mock_openai_client, monkeypatch):
+    """The batch path (`_embed_batch_request`) shares the transient retry too."""
+    from openai import APIConnectionError
+
+    from nextcloud_mcp_server.providers import _retry
+
+    monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
+
+    data = MagicMock()
+    data.embedding = [0.4, 0.5, 0.6]
+    data.index = 0
+    mock_response = MagicMock()
+    mock_response.data = [data]
+    mock_response.usage.total_tokens = 7
+
+    create = AsyncMock(side_effect=[APIConnectionError(request=_req()), mock_response])
+    mock_openai_client.embeddings.create = create
+    provider = OpenAIProvider(
+        api_key="test-key", embedding_model="text-embedding-3-small"
+    )
+
+    embeddings, tokens = await provider.embed_batch_with_usage(["text"])
+    assert embeddings == [[0.4, 0.5, 0.6]]
+    assert tokens == 7
+    assert create.await_count == 2

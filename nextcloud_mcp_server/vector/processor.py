@@ -64,14 +64,18 @@ def _drop_reason(exc: BaseException) -> str:
     Distinguishes the transient backend-pod-rollover causes (connection /
     timeout — the ones provider-level retry should now ride through, card 309)
     from persistent faults, so ``astrolabe_vector_ingest_dropped_total`` is
-    alertable per cause. Unwraps a single ExceptionGroup leaf. Best-effort:
+    alertable per cause. Descends through nested ExceptionGroups to the first
+    leaf so a doubly-wrapped cause isn't mislabelled ``other``. Best-effort:
     unknown causes fall back to ``other``.
     """
-    # An anyio task group can wrap the real cause; classify the first leaf.
-    if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+    # An anyio task group can wrap the real cause (and nest groups when sub-tasks
+    # use their own groups); descend to the first concrete leaf.
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
 
-    # httpx transport errors (raised by the OpenAI/gateway client underneath).
+    # Raw httpx transport errors from direct Nextcloud API calls (the nc_client
+    # uses httpx directly); the openai checks below catch the SDK-wrapped
+    # variants of the same failure modes.
     if isinstance(exc, httpx.TimeoutException):
         return "timeout"
     if isinstance(exc, httpx.ConnectError):
@@ -387,6 +391,13 @@ async def process_document(
             (3) suits the in-process SQLite pool, which has no durable retry. The
             procrastinate worker passes ``1`` so durable retry is owned by the
             queue (and survives worker crashes), avoiding compounding 3×N retries.
+
+    Retry layering: the embedding provider adds its own transient retry (5
+    attempts, 2s→60s backoff — card 309) *inside* each of these attempts. On the
+    in-process path (max_retries=3) a sustained outage therefore costs up to
+    5×3=15 provider calls (~90s wall-clock) before the document is dropped and
+    re-picked on the next scan; the procrastinate path (max_retries=1) caps it at
+    one outer attempt (~30s) and defers. Don't stack a third retry layer here.
     """
     start_time = time.time()
 

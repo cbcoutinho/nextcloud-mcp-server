@@ -60,6 +60,15 @@ def test_exception_group_unwraps_to_leaf():
 
 
 @pytest.mark.unit
+def test_nested_exception_group_descends_to_leaf():
+    """A doubly-wrapped group must still classify by its leaf, not 'other'."""
+    nested = BaseExceptionGroup(
+        "outer", [BaseExceptionGroup("inner", [httpx.ReadTimeout("slow")])]
+    )
+    assert processor._drop_reason(nested) == "timeout"
+
+
+@pytest.mark.unit
 def test_qdrant_namespace_classified():
     from qdrant_client.http.exceptions import UnexpectedResponse
 
