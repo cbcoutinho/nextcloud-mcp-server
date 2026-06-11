@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from typing import Any
 
+import anyio
 import pytest
 
 from nextcloud_mcp_server.document_processors import ocr
@@ -131,32 +132,25 @@ async def test_processor_backend_error_returns_success_false(monkeypatch):
     assert r.metadata["parse_failed_reason"] == "error"
 
 
-async def test_gateway_backend_uses_configured_timeout(monkeypatch):
+async def test_gateway_backend_uses_configured_timeout(mocker, monkeypatch):
     """The gateway OCR call must use DOCUMENT_OCR_TIMEOUT_SECONDS (resolved per
     call), not the old hardcoded 180s constant."""
+    resp = mocker.Mock()
+    resp.raise_for_status = mocker.Mock()
+    resp.json = mocker.Mock(return_value={"pages": [{"index": 0, "markdown": "ok"}]})
+
+    client = mocker.MagicMock()
+    client.__aenter__ = mocker.AsyncMock(return_value=client)
+    client.__aexit__ = mocker.AsyncMock(return_value=False)
+    client.post = mocker.AsyncMock(return_value=resp)
+
     captured: dict[str, Any] = {}
 
-    class _FakeResponse:
-        def raise_for_status(self):
-            pass
+    def _make_client(*args, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return client
 
-        def json(self):
-            return {"pages": [{"index": 0, "markdown": "ok"}]}
-
-    class _FakeClient:
-        def __init__(self, *, timeout=None, **kw):
-            captured["timeout"] = timeout
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        async def post(self, url, json=None, headers=None):
-            return _FakeResponse()
-
-    monkeypatch.setattr(ocr.httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(ocr.httpx, "AsyncClient", _make_client)
     monkeypatch.setattr(
         ocr, "get_settings", lambda: _settings(document_ocr_timeout_seconds=42.0)
     )
@@ -165,5 +159,26 @@ async def test_gateway_backend_uses_configured_timeout(monkeypatch):
     await backend.ocr(b"%PDF-1.7", "application/pdf")
 
     # httpx.Timeout(42.0, connect=10.0): the read/overall budget is the setting.
-    assert captured["timeout"].read == 42.0
-    assert captured["timeout"].connect == 10.0
+    assert captured["timeout"].read == pytest.approx(42.0)
+    assert captured["timeout"].connect == pytest.approx(10.0)
+
+
+async def test_mistral_backend_applies_timeout(mocker, monkeypatch):
+    """The Mistral backend wraps process_async in DOCUMENT_OCR_TIMEOUT_SECONDS,
+    so a slow OCR call fails fast instead of hanging on the SDK default."""
+    monkeypatch.setattr(
+        ocr, "get_settings", lambda: _settings(document_ocr_timeout_seconds=0.01)
+    )
+
+    # Bypass the SDK constructor; only the two attributes ocr() reads matter.
+    backend = ocr._MistralOcrBackend.__new__(ocr._MistralOcrBackend)
+    backend._model = "mistral-ocr-latest"
+
+    async def _slow(*args, **kwargs):
+        await anyio.sleep(1.0)
+
+    backend._client = mocker.MagicMock()
+    backend._client.ocr.process_async = _slow
+
+    with pytest.raises(TimeoutError):
+        await backend.ocr(b"%PDF-1.7", "application/pdf")

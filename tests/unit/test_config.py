@@ -219,17 +219,17 @@ class TestChunkConfigValidation:
         Guards the _DEFAULTS-key-must-match-env-var footgun: a mismatch would
         leave the override silently ignored.
         """
-        assert Settings().document_ocr_timeout_seconds == 180.0
+        assert Settings().document_ocr_timeout_seconds == pytest.approx(180.0)
         with patch.dict(os.environ, {"DOCUMENT_OCR_TIMEOUT_SECONDS": "45"}, clear=True):
             _reload_config()
-            assert get_settings().document_ocr_timeout_seconds == 45.0
+            assert get_settings().document_ocr_timeout_seconds == pytest.approx(45.0)
 
     def test_max_pdf_size_default_and_env_override(self):
         """document_max_pdf_size_mb defaults to 50 and reads its env var."""
-        assert Settings().document_max_pdf_size_mb == 50.0
+        assert Settings().document_max_pdf_size_mb == pytest.approx(50.0)
         with patch.dict(os.environ, {"DOCUMENT_MAX_PDF_SIZE_MB": "12.5"}, clear=True):
             _reload_config()
-            assert get_settings().document_max_pdf_size_mb == 12.5
+            assert get_settings().document_max_pdf_size_mb == pytest.approx(12.5)
 
     def test_valid_chunk_settings(self):
         """Test valid chunk size and overlap configuration."""

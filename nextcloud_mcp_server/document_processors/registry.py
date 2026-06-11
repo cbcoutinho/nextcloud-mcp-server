@@ -205,7 +205,13 @@ class ProcessorRegistry:
         # Pre-parse size guard: a pathologically large PDF (e.g. a 42 MB scanned
         # DUDE) burns the OCR timeout for 0 chars. Fail fast with an explicit
         # reason so the caller marks the placeholder "failed" instead of
-        # retrying. 0 disables the cap.
+        # retrying. 0 disables the cap. This lives on the auto-tiered path only:
+        # an explicit processor_name="ocr" override (registry.process) bypasses
+        # _process_pdf entirely and is intentionally not size-gated (power-user
+        # escape hatch). Returning here also skips _run_processor, so the
+        # rejection is counted on astrolabe_document_parse_failed_total{oversize}
+        # (via vector/processor.py) but deliberately not on the parse-duration
+        # histogram -- there is no parse to time.
         max_pdf_mb = settings.document_max_pdf_size_mb
         if max_pdf_mb > 0 and len(content) > max_pdf_mb * 1024 * 1024:
             size_mb = len(content) / (1024 * 1024)
