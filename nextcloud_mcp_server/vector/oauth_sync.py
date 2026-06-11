@@ -30,6 +30,7 @@ from httpx import BasicAuth, HTTPStatusError
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.vector._errors import format_exception_group
 from nextcloud_mcp_server.vector.processor import process_document
 from nextcloud_mcp_server.vector.queue.ports import TaskProducer
 from nextcloud_mcp_server.vector.scanner import DocumentTask, scan_user_documents
@@ -257,7 +258,7 @@ async def user_scanner_task(
             logger.error(
                 "[BasicAuth] Scanner error for %s: %s (%s/%s)",
                 user_id,
-                e,
+                format_exception_group(e),
                 consecutive_errors,
                 max_consecutive_errors,
                 exc_info=True,
@@ -347,12 +348,15 @@ async def multi_user_processor_task(
                     worker_id,
                     doc_task.doc_type,
                     doc_task.doc_id,
-                    e,
+                    format_exception_group(e),
                     exc_info=True,
                 )
             else:
                 logger.error(
-                    "[BasicAuth] Processor %s error: %s", worker_id, e, exc_info=True
+                    "[BasicAuth] Processor %s error: %s",
+                    worker_id,
+                    format_exception_group(e),
+                    exc_info=True,
                 )
 
         finally:
@@ -481,7 +485,11 @@ async def user_manager_task(
                 logger.info("[BasicAuth] Stopped %s scanner(s)", len(revoked_users))
 
         except Exception as e:
-            logger.error("[BasicAuth] User manager error: %s", e, exc_info=True)
+            logger.error(
+                "[BasicAuth] User manager error: %s",
+                format_exception_group(e),
+                exc_info=True,
+            )
 
         # Sleep until next poll
         try:

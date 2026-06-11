@@ -5,7 +5,7 @@ import mimetypes
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 from xml.sax.saxutils import escape as xml_escape
 
 from httpx import HTTPStatusError
@@ -26,10 +26,36 @@ WEBDAV_SEARCH_PAGE_SIZE = 500
 WEBDAV_SEARCH_MAX_RESULTS = 50000
 
 
+def _encode_dav_path(path: str) -> str:
+    """Percent-encode a *decoded* DAV path for use in a request URL/header.
+
+    Paths flow through this client already URL-decoded (e.g. ``unquote`` on the
+    ``<d:href>`` of a PROPFIND/REPORT response, or raw user-supplied paths from
+    MCP tools), so characters like ``#``, ``,`` and spaces reach httpx verbatim.
+    An unencoded ``#`` is parsed as a URL fragment and silently truncates the
+    request path → spurious 404 on otherwise-valid files (issue: OHR-Bench
+    ingest, card 309). ``quote`` with ``safe="/"`` encodes the unsafe characters
+    while preserving the path separators; ASCII-only paths are unchanged.
+
+    Encode exactly once: the input is decoded, so a literal ``%`` becomes
+    ``%25`` (correct) rather than being mistaken for an existing escape.
+    """
+    return quote(path, safe="/")
+
+
 class WebDAVClient(BaseNextcloudClient):
     """Client for Nextcloud WebDAV operations."""
 
     app_name = "webdav"
+
+    def _webdav_path(self, path: str) -> str:
+        """Build the request path for ``path`` under the user's DAV root.
+
+        Percent-encodes the caller-supplied portion (see ``_encode_dav_path``)
+        so names with ``#``, commas, or spaces don't truncate/404; the base
+        ``/remote.php/dav/files/<user>`` segment is left as-is.
+        """
+        return f"{self._get_webdav_base_path()}/{_encode_dav_path(path.lstrip('/'))}"
 
     async def delete_resource(self, path: str) -> Dict[str, Any]:
         """Delete a resource (file or directory) via WebDAV DELETE."""
@@ -39,7 +65,7 @@ class WebDAVClient(BaseNextcloudClient):
         else:
             path_with_slash = path
 
-        webdav_path = f"{self._get_webdav_base_path()}/{path_with_slash.lstrip('/')}"
+        webdav_path = self._webdav_path(path_with_slash)
         logger.debug("Deleting WebDAV resource: %s", webdav_path)
 
         headers = {"OCS-APIRequest": "true"}
@@ -124,15 +150,15 @@ class WebDAVClient(BaseNextcloudClient):
         mime_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Add/Update an attachment to a note via WebDAV PUT."""
-        # Construct paths based on provided category
-        webdav_base = self._get_webdav_base_path()
+        # Construct paths based on provided category. Encode via _webdav_path so
+        # categories/filenames with '#', commas or spaces don't truncate/404.
         category_path_part = f"{category}/" if category else ""
         attachment_dir_segment = f".attachments.{note_id}"
         parent_dir_webdav_rel_path = (
             f"Notes/{category_path_part}{attachment_dir_segment}"
         )
-        parent_dir_path = f"{webdav_base}/{parent_dir_webdav_rel_path}"
-        attachment_path = f"{parent_dir_path}/{filename}"
+        parent_dir_path = self._webdav_path(parent_dir_webdav_rel_path)
+        attachment_path = self._webdav_path(f"{parent_dir_webdav_rel_path}/{filename}")
 
         logger.debug("Uploading attachment '%s' for note %s", filename, note_id)
 
@@ -144,7 +170,7 @@ class WebDAVClient(BaseNextcloudClient):
         headers = {"Content-Type": mime_type, "OCS-APIRequest": "true"}
         try:
             # First check if we can access WebDAV at all
-            notes_dir_path = f"{webdav_base}/Notes"
+            notes_dir_path = self._webdav_path("Notes")
             propfind_headers = {"Depth": "0", "OCS-APIRequest": "true"}
             notes_dir_response = await self._make_request(
                 "PROPFIND", notes_dir_path, headers=propfind_headers
@@ -209,10 +235,11 @@ class WebDAVClient(BaseNextcloudClient):
         self, note_id: int, filename: str, category: Optional[str] = None
     ) -> Tuple[bytes, str]:
         """Fetch a specific attachment from a note via WebDAV GET."""
-        webdav_base = self._get_webdav_base_path()
         category_path_part = f"{category}/" if category else ""
         attachment_dir_segment = f".attachments.{note_id}"
-        attachment_path = f"{webdav_base}/Notes/{category_path_part}{attachment_dir_segment}/{filename}"
+        attachment_path = self._webdav_path(
+            f"Notes/{category_path_part}{attachment_dir_segment}/{filename}"
+        )
 
         logger.debug("Fetching attachment '%s' for note %s", filename, note_id)
 
@@ -252,7 +279,7 @@ class WebDAVClient(BaseNextcloudClient):
 
     async def list_directory(self, path: str = "") -> List[Dict[str, Any]]:
         """List files and directories in the specified path via WebDAV PROPFIND."""
-        webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
+        webdav_path = self._webdav_path(path)
         if not webdav_path.endswith("/"):
             webdav_path += "/"
 
@@ -352,7 +379,7 @@ class WebDAVClient(BaseNextcloudClient):
 
     async def read_file(self, path: str) -> Tuple[bytes, str]:
         """Read a file's content via WebDAV GET."""
-        webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
+        webdav_path = self._webdav_path(path)
 
         logger.debug("Reading file: %s", path)
 
@@ -379,7 +406,7 @@ class WebDAVClient(BaseNextcloudClient):
         self, path: str, content: bytes, content_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """Write content to a file via WebDAV PUT."""
-        webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
+        webdav_path = self._webdav_path(path)
 
         logger.debug("Writing file: %s", path)
 
@@ -410,7 +437,7 @@ class WebDAVClient(BaseNextcloudClient):
         self, path: str, recursive: bool = False
     ) -> Dict[str, Any]:
         """Create a directory via WebDAV MKCOL."""
-        webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
+        webdav_path = self._webdav_path(path)
         if not webdav_path.endswith("/"):
             webdav_path += "/"
 
@@ -468,10 +495,8 @@ class WebDAVClient(BaseNextcloudClient):
         Returns:
             Dict with status_code and optional message
         """
-        source_webdav_path = f"{self._get_webdav_base_path()}/{source_path.lstrip('/')}"
-        destination_webdav_path = (
-            f"{self._get_webdav_base_path()}/{destination_path.lstrip('/')}"
-        )
+        source_webdav_path = self._webdav_path(source_path)
+        destination_webdav_path = self._webdav_path(destination_path)
 
         # Ensure paths have consistent trailing slashes for directories
         if source_path.endswith("/") and not destination_path.endswith("/"):
@@ -552,10 +577,8 @@ class WebDAVClient(BaseNextcloudClient):
         Returns:
             Dict with status_code and optional message
         """
-        source_webdav_path = f"{self._get_webdav_base_path()}/{source_path.lstrip('/')}"
-        destination_webdav_path = (
-            f"{self._get_webdav_base_path()}/{destination_path.lstrip('/')}"
-        )
+        source_webdav_path = self._webdav_path(source_path)
+        destination_webdav_path = self._webdav_path(destination_path)
 
         # Ensure paths have consistent trailing slashes for directories
         if source_path.endswith("/") and not destination_path.endswith("/"):
@@ -1678,7 +1701,7 @@ class WebDAVClient(BaseNextcloudClient):
                 distinguish a definitive absence (HTTP 404) from a
                 brittle response (None).
         """
-        webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
+        webdav_path = self._webdav_path(path)
 
         propfind_body = """<?xml version="1.0"?>
 <d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">

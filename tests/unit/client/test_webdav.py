@@ -510,3 +510,81 @@ def test_parse_search_response_decodes_non_ascii_paths(mocker):
     assert results[0]["href"] == "/remote.php/dav/files/testuser/学生邮箱/report.pdf"
     # name comes from <d:displayname>, which is not URL-encoded; sanity-check it.
     assert results[0]["name"] == "report.pdf"
+
+
+def _request_url(mock_http_client) -> str:
+    """Positional URL passed to the underlying httpx ``request`` call."""
+    return mock_http_client.request.call_args[0][1]
+
+
+@pytest.mark.unit
+async def test_read_file_encodes_special_chars(mocker):
+    """read_file must percent-encode '#', commas, and spaces in the path (card 309).
+
+    Paths arrive already URL-decoded from PROPFIND/REPORT, so an unencoded '#'
+    reaches httpx as a URL fragment and silently truncates the request → 404 on
+    valid files (e.g. OHR-Bench law filenames). The outgoing request path must be
+    percent-encoded.
+    """
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    mock_response = AsyncMock()
+    mock_response.content = b"%PDF-1.4 data"
+    mock_response.headers = {"content-type": "application/pdf"}
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    # Name with a '#', a comma, a double space and a trailing space before ".pdf".
+    await client.read_file("law/ADMA BioManufacturing, LLC -  Amendment #2 .pdf")
+
+    url = _request_url(mock_http_client)
+    assert url.startswith("/remote.php/dav/files/testuser/")
+    # The hazardous characters are encoded; path separators are preserved.
+    assert "%23" in url  # '#'
+    assert "%2C" in url  # ','
+    assert "%20" in url  # space
+    assert "#" not in url
+    assert ", " not in url
+    assert "/law/" in url
+
+
+@pytest.mark.unit
+async def test_read_file_ascii_path_unchanged(mocker):
+    """A plain ASCII path must pass through unchanged (no spurious encoding)."""
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    mock_response = AsyncMock()
+    mock_response.content = b"data"
+    mock_response.headers = {"content-type": "text/plain"}
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    await client.read_file("Documents/notes.txt")
+
+    assert (
+        _request_url(mock_http_client)
+        == "/remote.php/dav/files/testuser/Documents/notes.txt"
+    )
+
+
+@pytest.mark.unit
+async def test_move_resource_encodes_destination_header(mocker):
+    """The MOVE Destination header must be percent-encoded too (card 309)."""
+    mock_http_client = AsyncMock()
+    client = WebDAVClient(mock_http_client, "testuser")
+
+    mock_response = AsyncMock()
+    mock_response.status_code = 201
+    mock_response.raise_for_status = mocker.Mock()
+    mock_http_client.request = AsyncMock(return_value=mock_response)
+
+    await client.move_resource("a/old.pdf", "b/new #1.pdf")
+
+    call = mock_http_client.request.call_args
+    # Source is the request path; destination is the header.
+    assert call[0][1] == "/remote.php/dav/files/testuser/a/old.pdf"
+    destination = call.kwargs["headers"]["Destination"]
+    assert "%23" in destination
+    assert "#" not in destination

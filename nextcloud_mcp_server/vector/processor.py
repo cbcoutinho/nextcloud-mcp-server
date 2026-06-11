@@ -31,6 +31,7 @@ from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.search.pdf_highlighter import PDFHighlighter
 from nextcloud_mcp_server.usage import UsageEventStore
 from nextcloud_mcp_server.vector import payload_keys
+from nextcloud_mcp_server.vector._errors import format_exception_group
 from nextcloud_mcp_server.vector.document_chunker import (
     DocumentChunker,
     PageAwareChunker,
@@ -269,7 +270,7 @@ async def processor_task(
                 worker_id,
                 doc_task.doc_type,
                 doc_task.doc_id,
-                e,
+                format_exception_group(e),
                 exc_info=True,
             )
             # Continue to next document (no task_done() needed with streams)
@@ -443,7 +444,7 @@ async def process_document(
                             max_retries,
                             doc_task.doc_type,
                             doc_task.doc_id,
-                            e,
+                            format_exception_group(e),
                             extra={
                                 "doc_id": doc_task.doc_id,
                                 "doc_type": doc_task.doc_type,
@@ -460,7 +461,7 @@ async def process_document(
                             doc_task.doc_type,
                             doc_task.doc_id,
                             max_retries,
-                            e,
+                            format_exception_group(e),
                             extra={
                                 "doc_id": doc_task.doc_id,
                                 "doc_type": doc_task.doc_type,
