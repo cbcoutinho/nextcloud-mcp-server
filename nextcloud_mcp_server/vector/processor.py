@@ -69,7 +69,9 @@ def _drop_reason(exc: BaseException) -> str:
     unknown causes fall back to ``other``.
     """
     # An anyio task group can wrap the real cause (and nest groups when sub-tasks
-    # use their own groups); descend to the first concrete leaf.
+    # use their own groups); descend to the first concrete leaf. Best-effort: a
+    # group bundling several distinct failures is labelled by whichever leaf
+    # sorts first, not by a "mixed" bucket.
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
 

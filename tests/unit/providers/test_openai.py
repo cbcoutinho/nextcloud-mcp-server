@@ -338,7 +338,7 @@ async def test_openai_close(mock_openai_client):
 def _req():
     import httpx
 
-    return httpx.Request("POST", "http://gw/v1/embeddings")
+    return httpx.Request("POST", "https://gw/v1/embeddings")
 
 
 @pytest.mark.unit
@@ -433,4 +433,27 @@ async def test_embed_batch_retries_on_connection_error(mock_openai_client, monke
     embeddings, tokens = await provider.embed_batch_with_usage(["text"])
     assert embeddings == [[0.4, 0.5, 0.6]]
     assert tokens == 7
+    assert create.await_count == 2
+
+
+@pytest.mark.unit
+async def test_generate_retries_on_connection_error(mock_openai_client, monkeypatch):
+    """generate() shares the transient retry (RAG sampling survives a rollover)."""
+    from openai import APIConnectionError
+
+    from nextcloud_mcp_server.providers import _retry
+
+    monkeypatch.setattr(_retry.anyio, "sleep", AsyncMock(return_value=None))
+
+    choice = MagicMock()
+    choice.message.content = "Generated response"
+    mock_response = MagicMock()
+    mock_response.choices = [choice]
+
+    create = AsyncMock(side_effect=[APIConnectionError(request=_req()), mock_response])
+    mock_openai_client.chat.completions.create = create
+    provider = OpenAIProvider(api_key="test-key", generation_model="gpt-4o-mini")
+
+    text = await provider.generate("prompt")
+    assert text == "Generated response"
     assert create.await_count == 2
