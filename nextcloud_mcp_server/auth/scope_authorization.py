@@ -541,6 +541,11 @@ def discover_all_scopes(mcp) -> list[str]:
     # issues a refresh token when the MCP server's OIDC client is permitted the
     # scope. Optional for clients (unlike the base OIDC scopes) and never tied
     # to a tool, so it is added here rather than discovered from @require_scopes.
+    #
+    # Advertised unconditionally — independent of settings.enable_offline_access
+    # (which gates the server's own Flow 2 background access). Per RFC 8414,
+    # scopes_supported lists what the AS *can* support, not what it will always
+    # grant; the actual refresh token is still gated upstream by Nextcloud.
     all_scopes.add("offline_access")
 
     # Get all registered tools

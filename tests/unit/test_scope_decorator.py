@@ -87,3 +87,14 @@ def test_discover_all_scopes_always_includes_offline_access():
     assert "offline_access" in scopes
     # Base OIDC scopes and tool-derived scopes still come through.
     assert {"openid", "profile", "email", "notes.read"}.issubset(scopes)
+
+
+@pytest.mark.unit
+def test_discover_all_scopes_offline_access_without_any_tools():
+    """The offline_access invariant must not depend on any tool being registered."""
+    mcp = FastMCP(name="empty")
+
+    scopes = discover_all_scopes(mcp)
+
+    assert "offline_access" in scopes
+    assert {"openid", "profile", "email"}.issubset(scopes)
