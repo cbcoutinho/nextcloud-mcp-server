@@ -213,6 +213,24 @@ class TestChunkConfigValidation:
         _reload_config()
         assert get_settings().document_chunk_page_aware is False
 
+    def test_ocr_timeout_default_and_env_override(self):
+        """document_ocr_timeout_seconds defaults to 180 and reads its env var.
+
+        Guards the _DEFAULTS-key-must-match-env-var footgun: a mismatch would
+        leave the override silently ignored.
+        """
+        assert Settings().document_ocr_timeout_seconds == pytest.approx(180.0)
+        with patch.dict(os.environ, {"DOCUMENT_OCR_TIMEOUT_SECONDS": "45"}, clear=True):
+            _reload_config()
+            assert get_settings().document_ocr_timeout_seconds == pytest.approx(45.0)
+
+    def test_max_pdf_size_default_and_env_override(self):
+        """document_max_pdf_size_mb defaults to 50 and reads its env var."""
+        assert Settings().document_max_pdf_size_mb == pytest.approx(50.0)
+        with patch.dict(os.environ, {"DOCUMENT_MAX_PDF_SIZE_MB": "12.5"}, clear=True):
+            _reload_config()
+            assert get_settings().document_max_pdf_size_mb == pytest.approx(12.5)
+
     def test_valid_chunk_settings(self):
         """Test valid chunk size and overlap configuration."""
         settings = Settings(
@@ -489,6 +507,22 @@ class TestDynaconfValidators:
         from dynaconf import ValidationError
 
         with pytest.raises(ValidationError, match="DOCUMENT_CHUNK_SIZE"):
+            _reload_config()
+
+    @patch.dict(os.environ, {"DOCUMENT_OCR_TIMEOUT_SECONDS": "0"}, clear=True)
+    def test_ocr_timeout_zero_rejected(self):
+        """DOCUMENT_OCR_TIMEOUT_SECONDS=0 fails the gte=1 validator."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="DOCUMENT_OCR_TIMEOUT_SECONDS"):
+            _reload_config()
+
+    @patch.dict(os.environ, {"DOCUMENT_MAX_PDF_SIZE_MB": "-1"}, clear=True)
+    def test_max_pdf_size_negative_rejected(self):
+        """DOCUMENT_MAX_PDF_SIZE_MB=-1 fails the gte=0 validator (0 = disabled)."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="DOCUMENT_MAX_PDF_SIZE_MB"):
             _reload_config()
 
     @patch.dict(os.environ, {"METRICS_PORT": "8080"}, clear=True)

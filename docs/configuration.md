@@ -536,6 +536,23 @@ DOCUMENT_CHUNK_OVERLAP=200            # Overlapping characters between chunks (d
 
 > **Note:** The `VECTOR_SYNC_*` tuning parameters keep their names as they're implementation details. Only the user-facing feature flag was renamed to `ENABLE_SEMANTIC_SEARCH`.
 
+#### Document parsing robustness (PDF)
+
+These guard the parse/OCR tiers against pathological PDFs. Defaults are safe;
+tune per tenant when a corpus has very large scans or a gateway with its own
+shorter OCR ceiling:
+
+```dotenv
+DOCUMENT_PARSE_TIMEOUT_SECONDS=120    # Wall-clock cap per isolated parse (default: 120)
+DOCUMENT_OCR_TIMEOUT_SECONDS=180      # OCR backend request timeout (default: 180)
+DOCUMENT_MAX_PDF_SIZE_MB=50           # Pre-parse size cap; 0 disables (default: 50)
+```
+
+A PDF larger than `DOCUMENT_MAX_PDF_SIZE_MB` fails fast with reason `oversize`
+(exported on `astrolabe_document_parse_failed_total{reason="oversize"}`) instead
+of being handed to the tiers, where a 40+ MB scan would otherwise burn the full
+OCR timeout for zero recovered text.
+
 ### Embedding Service Configuration
 
 The server picks an embedding provider via auto-detection. Priority order
