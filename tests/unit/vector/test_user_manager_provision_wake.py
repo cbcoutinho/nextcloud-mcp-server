@@ -134,7 +134,7 @@ async def test_user_manager_wakes_on_provision_signal(mocker):
             shutdown_event,
             scanner_wake_event,
             storage,
-            "http://nextcloud",
+            "https://nextcloud",
             user_states,
             tg,
             provision_signal,
@@ -163,32 +163,36 @@ async def test_user_manager_shutdown_still_breaks_sleep(mocker):
     mocker.patch(
         "nextcloud_mcp_server.vector.oauth_sync.get_settings", return_value=settings
     )
+
+    async def _unused_scanner(*args, **kwargs):
+        # No users provisioned, so this is never called; keep a harmless stub.
+        return None
+
     mocker.patch(
         "nextcloud_mcp_server.vector.oauth_sync._run_user_scanner_with_scope",
-        # No users provisioned, so this is never called; keep a harmless stub.
-        lambda *a, **k: anyio.sleep(0),
+        _unused_scanner,
     )
 
     storage = _FakeStorage(set())
     shutdown_event = anyio.Event()
 
-    async with anyio.create_task_group() as tg:
-        await tg.start(
-            user_manager_task,
-            None,
-            shutdown_event,
-            anyio.Event(),
-            storage,
-            "http://nextcloud",
-            {},
-            tg,
-            ProvisionSignal(),
-        )
-        await anyio.sleep(0.05)  # let it enter the sleep
-        shutdown_event.set()
-        # If shutdown didn't break the 1000s sleep, fail_after would trip.
-        with anyio.fail_after(2):
-            await anyio.sleep(0)  # task group exit below is the real assertion
+    # fail_after wraps the whole task group: if shutdown_event doesn't break the
+    # 1000s sleep, the task group never exits and the 2s deadline trips.
+    with anyio.fail_after(2):
+        async with anyio.create_task_group() as tg:
+            await tg.start(
+                user_manager_task,
+                None,
+                shutdown_event,
+                anyio.Event(),
+                storage,
+                "https://nextcloud",
+                {},
+                tg,
+                ProvisionSignal(),
+            )
+            await anyio.sleep(0.05)  # let it enter the sleep
+            shutdown_event.set()
 
 
 # ── notify_user_provisioned no-op guard ──────────────────────────────────────

@@ -397,6 +397,10 @@ def _wire_vector_sync_state(
     ``eviction_task_group`` is deliberately not set here: it only exists once the
     lifespan has entered its ``anyio.create_task_group()`` (after this call), so
     the lifespan assigns it on the singleton directly at that point.
+    ``provision_signal`` is likewise excluded on purpose — only ``user_manager_task``
+    consumes it (request handlers reach it via ``notify_user_provisioned``), so the
+    multi-user lifespan sets it on the singleton directly rather than fanning it out
+    to ``app.state``/the browser sub-app.
     """
     send_stream = transport.send_stream
     receive_stream = transport.receive_stream

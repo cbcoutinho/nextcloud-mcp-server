@@ -20,6 +20,7 @@ background sync.
 
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 import anyio
@@ -482,7 +483,9 @@ async def user_manager_task(
 
     # Sleep helper: await one of the wakeup events, then end the sleep by
     # cancelling the shared scope. Defined once (not per loop iteration).
-    async def _wake_on(wait_fn, scope: anyio.CancelScope) -> None:
+    async def _wake_on(
+        wait_fn: Callable[[], Awaitable[object]], scope: anyio.CancelScope
+    ) -> None:
         await wait_fn()
         scope.cancel()
 
@@ -546,17 +549,17 @@ async def user_manager_task(
 
         # Sleep until the next poll tick, but wake early on shutdown or a
         # provisioning signal so a just-provisioned user is discovered at once.
-        # Race both waits in a child task group; whichever fires first cancels
-        # the scope, ending the sleep. move_on_after caps it at poll_interval.
+        # Watch shutdown concurrently and block here on a provisioning ring;
+        # whichever fires first cancels the shared scope and ends the sleep,
+        # while move_on_after caps the wait at poll_interval. Awaiting one waiter
+        # directly keeps an explicit checkpoint inside the cancellation scope.
         try:
             with anyio.move_on_after(poll_interval):
                 async with anyio.create_task_group() as wake_tg:
                     wake_tg.start_soon(
                         _wake_on, shutdown_event.wait, wake_tg.cancel_scope
                     )
-                    wake_tg.start_soon(
-                        _wake_on, provision_signal.wait, wake_tg.cancel_scope
-                    )
+                    await _wake_on(provision_signal.wait, wake_tg.cancel_scope)
         except anyio.get_cancelled_exc_class():
             break
 

@@ -18,6 +18,7 @@ This is the Login Flow v2 deployment-mode counterpart to the multi-user
 BasicAuth coverage in ``test_app_password_provisioning.py``.
 """
 
+import secrets
 import tempfile
 import time
 from pathlib import Path
@@ -99,11 +100,14 @@ async def test_login_flow_provision_wakes_user_manager(temp_storage, mocker):
     )
 
     # ── mock only the Nextcloud Login Flow v2 poll ───────────────────────────
+    # Generated, not a hardcoded literal — keeps this a fake token, not a
+    # credential pattern (SonarQube python:S2068).
+    fake_app_password = secrets.token_urlsafe(24)
     completed = LoginFlowPollResult(
         status="completed",
         server="https://cloud.example.com",
         login_name="alice",
-        app_password="aaaaa-bbbbb-ccccc-ddddd-eeeee",
+        app_password=fake_app_password,
     )
     flow_client = AsyncMock()
     flow_client.poll.return_value = completed
