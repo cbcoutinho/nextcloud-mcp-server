@@ -3,8 +3,10 @@
 Pins the routing decisions and the text-quality heuristic that drive which
 extraction tier a PDF starts in:
   * a clean born-digital PDF (text, no full-page images) -> ``fast`` (tier 1);
-  * a full-page-image scan -> ``ocr`` (tier 3), since handwriting/stamps aren't
-    in any text layer;
+  * a full-page-image scan with no usable text layer -> ``ocr`` (tier 3);
+  * routing is on TEXT signals only -- image coverage feeds the ``image_heavy``
+    diagnostic flag but does not route (a mostly-raster page with a clean text
+    layer stays ``fast``);
   * the text-quality score distinguishes clean prose from mashed/space-less junk.
 """
 
@@ -236,12 +238,16 @@ def test_quality_floor_override_disables_trigger():
     assert c.recommended_tier == "fast"
 
 
-def test_scan_signal_routes_ocr_even_with_clean_text():
-    # clean text but every page is a raster scan -> OCR (the Student-147 case)
+def test_image_heavy_clean_text_stays_fast():
+    # Image coverage is diagnostic, not routing: fully-raster pages whose text
+    # layer is already clean (a scan carrying a good OCR layer, or a figure-heavy
+    # digital page) carry the image_heavy flag but stay on the fast tier --
+    # re-OCR adds nothing. This was the ~45% over-escalation on OHR-Bench.
     full, bounds = _two_page(_CLEAN, _CLEAN)
     c = clf.classify_from_text(full, bounds, image_coverage=[1.0, 1.0])
-    assert c.recommended_tier == "ocr"
+    assert c.recommended_tier == "fast"
     assert "image_heavy" in c.flags
+    assert all(p.needs_ocr is False for p in c.pages)
 
 
 def test_scan_signal_ignored_when_coverage_low():
@@ -270,9 +276,10 @@ def test_image_coverage_per_page():
     assert len(digital) == 2 and all(c < 0.1 for c in digital)
 
 
-def test_scan_coverage_shorter_than_pages_falls_back_to_text():
+def test_scan_coverage_shorter_than_pages_aligns_without_crash():
     # image_coverage shorter than the boundaries (the MAX_SAMPLED_PAGES cap):
-    # page 0 is flagged scanned; later pages fall back to the text-quality signal.
+    # the single entry aligns to page 0; later pages get no coverage entry. With
+    # clean text everywhere, routing is on text only, so nothing escalates.
     n = len(_CLEAN)
     full = _CLEAN * 3
     bounds = [
@@ -281,6 +288,8 @@ def test_scan_coverage_shorter_than_pages_falls_back_to_text():
         {"page": 3, "start_offset": 2 * n, "end_offset": 3 * n},
     ]
     c = clf.classify_from_text(full, bounds, image_coverage=[1.0])
-    assert c.pages[0].needs_ocr is True  # scanned (coverage)
-    assert c.pages[1].needs_ocr is False  # clean text, no coverage entry
-    assert c.recommended_tier == "fast"  # only 1/3 pages bad
+    assert c.pages[0].image_coverage == pytest.approx(1.0)  # entry aligned
+    assert c.pages[1].image_coverage == pytest.approx(0.0)  # no entry -> 0
+    assert all(p.needs_ocr is False for p in c.pages)  # coverage no longer routes
+    assert "image_heavy" in c.flags  # but page 0 still flags image_heavy
+    assert c.recommended_tier == "fast"
