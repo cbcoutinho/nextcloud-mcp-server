@@ -43,8 +43,10 @@ logger = logging.getLogger(__name__)
 # so the pass stays bounded regardless of page count.
 MAX_SAMPLED_PAGES = 24
 
-# A page counts as "scanned-like" when a raster image covers most of it.
-IMAGE_COVERAGE_SCANNED = 0.80
+# Raster-image coverage above which a page raises the DIAGNOSTIC ``image_heavy``
+# flag. This is observability only -- it does NOT route to OCR (see module
+# docstring); routing is on the text signals alone.
+IMAGE_HEAVY_THRESHOLD = 0.80
 # Text-quality score below which the layer is treated as junk (mashed tokens).
 # Kept in sync with the DOCUMENT_OCR_MIN_TEXT_QUALITY setting default so the
 # module/diagnostic default matches production (the registry always passes the
@@ -185,7 +187,7 @@ def classify_pdf(content: bytes) -> DocClassification:
     # one full-page photo is flagged image_heavy yet still routes "fast" -- the
     # flag_total{image_heavy} count is expected to exceed classified{ocr}.
     flags: set[str] = set()
-    if any(p.image_coverage >= IMAGE_COVERAGE_SCANNED for p in pages):
+    if any(p.image_coverage >= IMAGE_HEAVY_THRESHOLD for p in pages):
         flags.add("image_heavy")
     if (
         ocr_frac >= OCR_PAGE_FRACTION
@@ -316,7 +318,7 @@ def classify_from_text(
             flags.add("scanned")
         elif mean_quality < min_text_quality:
             flags.add("bad_text_layer")
-    if any(p.image_coverage >= IMAGE_COVERAGE_SCANNED for p in pages):
+    if any(p.image_coverage >= IMAGE_HEAVY_THRESHOLD for p in pages):
         flags.add("image_heavy")
 
     recommended = "ocr" if ocr_frac >= page_fraction else "fast"
