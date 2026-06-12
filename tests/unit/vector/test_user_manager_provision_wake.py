@@ -203,11 +203,13 @@ def test_notify_user_provisioned_noop_without_manager(mocker):
     app_module.notify_user_provisioned()
 
 
-def test_notify_user_provisioned_rings_when_present(mocker):
+async def test_notify_user_provisioned_rings_when_present(mocker):
     """When a manager is running, the helper rings its signal."""
     import nextcloud_mcp_server.app as app_module
 
     signal = ProvisionSignal()
     mocker.patch.object(app_module._vector_sync_state, "provision_signal", signal)
     app_module.notify_user_provisioned()
-    assert signal._event.is_set()
+    # Public contract: after a ring, the next wait() returns without blocking.
+    with anyio.fail_after(1):
+        await signal.wait()

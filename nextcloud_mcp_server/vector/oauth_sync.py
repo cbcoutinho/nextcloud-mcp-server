@@ -58,9 +58,11 @@ class ProvisionSignal:
     event back to shared state — avoiding any ``app`` ↔ ``vector`` import cycle.
 
     Concurrency: ``anyio.Event`` is sticky, so a ``ring()`` that lands before
-    ``wait()`` is still observed. ``wait()`` re-arms with no ``await`` between
-    observing the set and swapping the event, so under cooperative scheduling a
-    concurrent ``ring()`` cannot slip into that window and be lost.
+    ``wait()`` is still observed. ``wait()`` re-arms in a ``finally`` with no
+    ``await`` before the swap, so under cooperative scheduling a concurrent
+    ``ring()`` cannot slip into that window and be lost — and the re-arm also
+    runs if ``wait()`` is cancelled (e.g. shutdown racing the doorbell), leaving
+    a fresh unset event rather than a stale set-but-consumed one.
     """
 
     def __init__(self) -> None:
@@ -72,10 +74,13 @@ class ProvisionSignal:
 
     async def wait(self) -> None:
         """Block until the next ring, then re-arm for the following cycle."""
-        await self._event.wait()
-        # No await before the swap: a concurrent ring() cannot interleave here,
-        # so it lands on the fresh event and the next wait() observes it.
-        self._event = anyio.Event()
+        try:
+            await self._event.wait()
+        finally:
+            # Re-arm even on cancellation. The assignment is not a checkpoint,
+            # so no concurrent ring() can interleave before the swap; a ring
+            # that already arrived lands on the fresh event for the next wait().
+            self._event = anyio.Event()
 
 
 # Process-wide app-password storage for the BasicAuth client path.
@@ -475,6 +480,12 @@ async def user_manager_task(
     logger.info("[BasicAuth] User manager started (poll interval: %ss)", poll_interval)
     task_status.started()
 
+    # Sleep helper: await one of the wakeup events, then end the sleep by
+    # cancelling the shared scope. Defined once (not per loop iteration).
+    async def _wake_on(wait_fn, scope: anyio.CancelScope) -> None:
+        await wait_fn()
+        scope.cancel()
+
     while not shutdown_event.is_set():
         try:
             # Query the app_passwords table — background sync always
@@ -537,10 +548,6 @@ async def user_manager_task(
         # provisioning signal so a just-provisioned user is discovered at once.
         # Race both waits in a child task group; whichever fires first cancels
         # the scope, ending the sleep. move_on_after caps it at poll_interval.
-        async def _wake_on(wait_fn, scope: anyio.CancelScope) -> None:
-            await wait_fn()
-            scope.cancel()
-
         try:
             with anyio.move_on_after(poll_interval):
                 async with anyio.create_task_group() as wake_tg:
