@@ -407,6 +407,12 @@ async def provision_app_password(request: Request) -> JSONResponse:
             username, app_password, scopes=scopes, username=nc_username
         )
         invalidate_scope_cache(username)
+        # Wake the background sync user manager so this user's scanner starts
+        # now instead of after the next poll. Local import avoids an app <->
+        # api-module import cycle.
+        from nextcloud_mcp_server.app import notify_user_provisioned  # noqa: PLC0415
+
+        notify_user_provisioned()
 
         _record_rate_limit_attempt(path_user_id, success=True)
         logger.info("Provisioned app password for user: %s", username)

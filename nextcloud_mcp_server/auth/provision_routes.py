@@ -118,6 +118,14 @@ async def _poll_and_store(provision_id: str) -> None:
                 username=result.login_name,
             )
             invalidate_scope_cache(effective_user_id)
+            # Wake the background sync user manager so this user's scanner
+            # starts now instead of after the next poll. Local import avoids an
+            # app <-> route-module import cycle.
+            from nextcloud_mcp_server.app import (  # noqa: PLC0415
+                notify_user_provisioned,
+            )
+
+            notify_user_provisioned()
             session = _provision_sessions.get(provision_id)
             if session:
                 session["status"] = "completed"

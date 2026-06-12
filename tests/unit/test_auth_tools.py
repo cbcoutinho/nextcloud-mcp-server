@@ -3,16 +3,43 @@
 Tests the auth tools logic with mocked storage and Login Flow client.
 """
 
+import secrets
 import tempfile
 from pathlib import Path
+from typing import cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from cryptography.fernet import Fernet
+from mcp.server.fastmcp import FastMCP
 
+from nextcloud_mcp_server.auth.login_flow import LoginFlowPollResult
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
+from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 
 pytestmark = pytest.mark.unit
+
+
+def _capture_registered_tools() -> dict:
+    """Register the auth tools against a stub MCP and return them by name.
+
+    ``register_auth_tools`` only uses ``@mcp.tool(...)`` decorators, so a stub
+    whose ``tool()`` returns an identity decorator captures the closures without
+    a real FastMCP instance.
+    """
+    captured: dict = {}
+
+    class _StubMCP:
+        def tool(self, *args, **kwargs):
+            def deco(fn):
+                captured[fn.__name__] = fn
+                return fn
+
+            return deco
+
+    register_auth_tools(cast(FastMCP, _StubMCP()))
+    return captured
 
 
 @pytest.fixture
@@ -196,3 +223,64 @@ def test_all_supported_scopes():
     read_scopes = [s for s in ALL_SUPPORTED_SCOPES if s.endswith(":read")]
     write_scopes = [s for s in ALL_SUPPORTED_SCOPES if s.endswith(":write")]
     assert len(read_scopes) == len(write_scopes)
+
+
+# ── Background-sync wake on provisioning ──
+
+
+async def test_check_status_completion_wakes_user_manager(mocker):
+    """When nc_auth_check_status polls a completed Login Flow, it stores the app
+    password and rings the background-sync doorbell (the server/auth_tools.py
+    wake path)."""
+    check_status = _capture_registered_tools()["nc_auth_check_status"]
+
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.extract_user_id_from_token",
+        AsyncMock(return_value="alice"),
+    )
+    storage = MagicMock()
+    storage.get_app_password_with_scopes = AsyncMock(return_value=None)  # not yet
+    storage.get_login_flow_session = AsyncMock(
+        return_value={
+            "poll_endpoint": "https://nc/login/v2/poll",
+            "poll_token": "tok",
+            "requested_scopes": None,
+        }
+    )
+    storage.store_app_password_with_scopes = AsyncMock()
+    storage.delete_login_flow_session = AsyncMock()
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_shared_storage",
+        AsyncMock(return_value=storage),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="https://nc", nextcloud_public_issuer_url=None
+        ),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_nextcloud_ssl_verify",
+        return_value=False,
+    )
+    mocker.patch("nextcloud_mcp_server.server.auth_tools.invalidate_scope_cache")
+
+    flow_client = AsyncMock()
+    flow_client.poll = AsyncMock(
+        return_value=LoginFlowPollResult(
+            status="completed",
+            login_name="alice",
+            app_password=secrets.token_urlsafe(24),  # generated, not a literal
+        )
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.LoginFlowV2Client",
+        return_value=flow_client,
+    )
+    notify = mocker.patch("nextcloud_mcp_server.app.notify_user_provisioned")
+
+    response = await check_status(MagicMock())
+
+    assert response.status == "provisioned"
+    storage.store_app_password_with_scopes.assert_awaited_once()
+    notify.assert_called_once()

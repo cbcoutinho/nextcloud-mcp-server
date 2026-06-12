@@ -128,6 +128,7 @@ from nextcloud_mcp_server.server.auth_tools import register_auth_tools
 from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
 from nextcloud_mcp_server.vector.metrics_publisher import vector_sync_metrics_task
 from nextcloud_mcp_server.vector.oauth_sync import (
+    ProvisionSignal,
     oauth_processor_task,
     user_manager_task,
 )
@@ -344,6 +345,12 @@ class VectorSyncState:
     task_producer: "TaskProducer | None" = None
     shutdown_event: anyio.Event | None = None
     scanner_wake_event: anyio.Event | None = None
+    # Rung by a provisioning request to wake ``user_manager_task`` immediately so
+    # a just-provisioned user's scanner is spawned without waiting out the
+    # ``VECTOR_SYNC_USER_POLL_INTERVAL`` poll. ``None`` when no user manager is
+    # running (single-user mode or vector sync disabled), in which case
+    # ``notify_user_provisioned`` is a no-op.
+    provision_signal: "ProvisionSignal | None" = None
     # Long-lived task group used for fire-and-forget background work spawned
     # from the request path (e.g. ADR-019 verify-on-read eviction). Set by the
     # starlette lifespan after entering its task group; cleared on shutdown.
@@ -352,6 +359,23 @@ class VectorSyncState:
 
 # Module-level singleton for vector sync state
 _vector_sync_state = VectorSyncState()
+
+
+def notify_user_provisioned() -> None:
+    """Wake the user manager to discover a just-provisioned user immediately.
+
+    Provisioning call sites invoke this after a successful app-password store so
+    ``user_manager_task`` re-polls at once instead of waiting out
+    ``VECTOR_SYNC_USER_POLL_INTERVAL``. The 60s poll remains the backstop, so a
+    missed signal (e.g. provisioning handled on a different replica than the
+    manager) only delays the scan, never skips it.
+
+    No-op when ``provision_signal`` is ``None`` — single-user mode or vector
+    sync disabled, where no user manager is running.
+    """
+    signal = _vector_sync_state.provision_signal
+    if signal is not None:
+        signal.ring()
 
 
 def _wire_vector_sync_state(
@@ -373,6 +397,10 @@ def _wire_vector_sync_state(
     ``eviction_task_group`` is deliberately not set here: it only exists once the
     lifespan has entered its ``anyio.create_task_group()`` (after this call), so
     the lifespan assigns it on the singleton directly at that point.
+    ``provision_signal`` is likewise excluded on purpose — only ``user_manager_task``
+    consumes it (request handlers reach it via ``notify_user_provisioned``), so the
+    multi-user lifespan sets it on the singleton directly rather than fanning it out
+    to ``app.state``/the browser sub-app.
     """
     send_stream = transport.send_stream
     receive_stream = transport.receive_stream
@@ -416,6 +444,7 @@ def _clear_vector_sync_state() -> None:
     # closed lifespan; the next startup's _wire_vector_sync_state rebinds them.
     _vector_sync_state.shutdown_event = None
     _vector_sync_state.scanner_wake_event = None
+    _vector_sync_state.provision_signal = None
 
 
 # =============================================================================
@@ -2060,6 +2089,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # that choice — this path is now backend-agnostic.
                 shutdown_event = anyio.Event()
                 scanner_wake_event = anyio.Event()
+                # Doorbell the provisioning request path rings (via
+                # notify_user_provisioned) to wake the user manager immediately
+                # for a newly provisioned user. Held on the singleton only — both
+                # the manager and the signal helper reach it there.
+                provision_signal = ProvisionSignal()
+                _vector_sync_state.provision_signal = provision_signal
 
                 # User state tracking for user manager
                 user_states: dict = {}
@@ -2095,6 +2130,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         nextcloud_host_for_sync,
                         user_states,
                         tg,
+                        provision_signal,
                     )
 
                     # In-process consumer pool. ``run_consumers`` is a no-op for

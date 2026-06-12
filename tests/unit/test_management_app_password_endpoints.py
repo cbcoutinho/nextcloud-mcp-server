@@ -254,6 +254,48 @@ async def test_provision_app_password_success(temp_storage, mocker):
     assert get_kwargs["auth"] == ("testuser", "aaaaa-bbbbb-ccccc-ddddd-eeeee")
 
 
+async def test_provision_app_password_wakes_user_manager(temp_storage, mocker):
+    """A successful provision rings the background-sync doorbell so the user
+    manager re-polls immediately (the api/passwords.py wake path)."""
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.get_settings",
+        return_value=MagicMock(
+            nextcloud_host="http://localhost:8080",
+            nextcloud_verify_ssl=True,
+            nextcloud_ca_bundle=None,
+        ),
+    )
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"ocs": {"data": {"id": "testuser"}}}
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock()
+    mocker.patch(
+        "nextcloud_mcp_server.api.passwords.nextcloud_httpx_client",
+        return_value=mock_client,
+    )
+
+    # Spy on the doorbell helper (imported locally from app at call time).
+    notify = mocker.patch("nextcloud_mcp_server.app.notify_user_provisioned")
+
+    client = TestClient(create_test_app(temp_storage))
+    response = client.post(
+        "/api/v1/users/testuser/app-password",
+        headers={
+            "Authorization": create_basic_auth_header(
+                "testuser", "aaaaa-bbbbb-ccccc-ddddd-eeeee"
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    notify.assert_called_once()
+
+
 async def test_provision_app_password_uses_loginname_not_uid(temp_storage, mocker):
     """Regression: when the Nextcloud UID differs from the loginName (e.g.
     OIDC-provisioned users whose UID is their display name — UID
