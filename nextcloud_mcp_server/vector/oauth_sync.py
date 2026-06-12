@@ -44,6 +44,40 @@ class NotProvisionedError(Exception):
     pass
 
 
+class ProvisionSignal:
+    """One-shot doorbell that wakes ``user_manager_task`` on demand.
+
+    A provisioning request rings this (``ring()``) right after storing a new
+    user's app password so the manager re-polls immediately instead of waiting
+    out ``VECTOR_SYNC_USER_POLL_INTERVAL``. The manager parks on ``wait()``;
+    each ring releases exactly one wait, after which the underlying event is
+    re-armed for the next cycle.
+
+    The reference is stable for the life of the lifespan (stored once on the
+    ``VectorSyncState`` singleton), so the manager never has to republish a new
+    event back to shared state — avoiding any ``app`` ↔ ``vector`` import cycle.
+
+    Concurrency: ``anyio.Event`` is sticky, so a ``ring()`` that lands before
+    ``wait()`` is still observed. ``wait()`` re-arms with no ``await`` between
+    observing the set and swapping the event, so under cooperative scheduling a
+    concurrent ``ring()`` cannot slip into that window and be lost.
+    """
+
+    def __init__(self) -> None:
+        self._event = anyio.Event()
+
+    def ring(self) -> None:
+        """Signal a pending wait (or the next one to arrive)."""
+        self._event.set()
+
+    async def wait(self) -> None:
+        """Block until the next ring, then re-arm for the following cycle."""
+        await self._event.wait()
+        # No await before the swap: a concurrent ring() cannot interleave here,
+        # so it lands on the fresh event and the next wait() observes it.
+        self._event = anyio.Event()
+
+
 # Process-wide app-password storage for the BasicAuth client path.
 #
 # get_user_client_basic_auth is on the search hot path (Unified Search and the
@@ -408,6 +442,7 @@ async def user_manager_task(
     nextcloud_host: str,
     user_states: dict[str, UserSyncState],
     tg: TaskGroup,
+    provision_signal: "ProvisionSignal",
     *,
     task_status: TaskStatus = anyio.TASK_STATUS_IGNORED,
 ) -> None:
@@ -417,6 +452,12 @@ async def user_manager_task(
     - New users who have provisioned access -> start scanner
     - Users who have revoked access -> cancel their scanner
 
+    Polls every ``VECTOR_SYNC_USER_POLL_INTERVAL`` seconds, but also wakes
+    early whenever ``provision_signal`` is rung (by a provisioning request via
+    ``notify_user_provisioned``) so a just-provisioned user's scanner starts at
+    once rather than after up to a full poll interval. The poll remains the
+    backstop for any missed ring.
+
     Args:
         send_stream: Stream to send documents to processors
         shutdown_event: Event signaling shutdown
@@ -425,6 +466,7 @@ async def user_manager_task(
         nextcloud_host: Nextcloud base URL
         user_states: Shared dict tracking active user scanners
         tg: Task group for spawning scanner tasks
+        provision_signal: Doorbell rung on provisioning to force an early re-poll
         task_status: Status object for signaling task readiness
     """
     settings = get_settings()
@@ -491,10 +533,23 @@ async def user_manager_task(
                 exc_info=True,
             )
 
-        # Sleep until next poll
+        # Sleep until the next poll tick, but wake early on shutdown or a
+        # provisioning signal so a just-provisioned user is discovered at once.
+        # Race both waits in a child task group; whichever fires first cancels
+        # the scope, ending the sleep. move_on_after caps it at poll_interval.
+        async def _wake_on(wait_fn, scope: anyio.CancelScope) -> None:
+            await wait_fn()
+            scope.cancel()
+
         try:
             with anyio.move_on_after(poll_interval):
-                await shutdown_event.wait()
+                async with anyio.create_task_group() as wake_tg:
+                    wake_tg.start_soon(
+                        _wake_on, shutdown_event.wait, wake_tg.cancel_scope
+                    )
+                    wake_tg.start_soon(
+                        _wake_on, provision_signal.wait, wake_tg.cancel_scope
+                    )
         except anyio.get_cancelled_exc_class():
             break
 

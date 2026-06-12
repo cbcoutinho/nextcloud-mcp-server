@@ -288,6 +288,14 @@ def register_auth_tools(mcp: FastMCP) -> None:
                 username=poll_result.login_name,
             )
             invalidate_scope_cache(user_id)
+            # Wake the background sync user manager so this user's scanner
+            # starts now instead of after the next poll. Local import avoids an
+            # app <-> server-module import cycle.
+            from nextcloud_mcp_server.app import (  # noqa: PLC0415
+                notify_user_provisioned,
+            )
+
+            notify_user_provisioned()
 
             # Clean up the flow session
             await storage.delete_login_flow_session(user_id)
