@@ -28,9 +28,6 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: read
-
 # A re-tag (e.g. after a botched release) could push the same/overlapping tag
 # twice; don't cancel an in-flight recording — let it complete.
 concurrency:
@@ -46,6 +43,9 @@ jobs:
   record-deployment:
     name: Record production deployment
     runs-on: ubuntu-latest
+    # Least-privilege: scope the token at job level (GitHub Actions S8264).
+    permissions:
+      contents: read
     timeout-minutes: 5
     steps:
       - name: Join tailnet
