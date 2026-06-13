@@ -1,0 +1,74 @@
+name: Pact record deployment
+
+# Records a production deployment of nextcloud-mcp-server in the Pact Broker
+# (ADR-029). This is the missing half of the can-i-deploy loop: can-i-deploy
+# checks the candidate against whatever is currently in `production`, and this
+# workflow tells the broker what `production` now contains.
+#
+# Trigger: tag push (v*). The release pipeline (bump-version -> tag -> docker /
+# app-store publish) cuts a tag for every shipped version, so a tag push is the
+# repo-controlled signal that this version is going to production.
+#
+# Version identity: on a tag-push event GITHUB_SHA is the commit the tag points
+# to (the "bump: version ..." commit). pact.yml publishes consumer pacts and
+# provider verification results keyed by that same SHA when the bump commit
+# lands on master, so recording the deployment with ${{ github.sha }} links the
+# deployed version to its already-verified pacts. Recording the tag string
+# instead would NOT match and can-i-deploy would stay red.
+#
+# The broker is only reachable over Tailscale; the step no-ops when the broker
+# secrets are absent (e.g. forks).
+#
+# Required repo/org secrets:
+#   TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET  - Tailscale github-runner OAuth client
+#   PACT_BROKER / PACT_USERNAME / PACT_PASSWORD  - broker URL + basic auth
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# A re-tag (e.g. after a botched release) could push the same/overlapping tag
+# twice; don't cancel an in-flight recording — let it complete.
+concurrency:
+  group: pact-record-deployment-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PACT_BROKER: ${{ secrets.PACT_BROKER }}
+  PACT_USERNAME: ${{ secrets.PACT_USERNAME }}
+  PACT_PASSWORD: ${{ secrets.PACT_PASSWORD }}
+
+jobs:
+  record-deployment:
+    name: Record production deployment
+    runs-on: ubuntu-latest
+    # Least-privilege: scope the token at job level (GitHub Actions S8264).
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: Join tailnet
+        if: ${{ env.PACT_BROKER != '' }}
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8 # v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-runner
+
+      - name: Install Pact CLI
+        if: ${{ env.PACT_BROKER != '' }}
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/pact-foundation/pact-ruby-standalone/f03e620e7552239b6ca59438c9beed9d1038c949/install.sh | bash # v2.6.1
+          echo "$PWD/pact/bin" >> "$GITHUB_PATH"
+
+      - name: Record deployment to production
+        if: ${{ env.PACT_BROKER != '' }}
+        run: |
+          pact-broker record-deployment \
+            --broker-base-url "$PACT_BROKER" \
+            --broker-username "$PACT_USERNAME" \
+            --broker-password "$PACT_PASSWORD" \
+            --pacticipant nextcloud-mcp-server \
+            --version "$GITHUB_SHA" \
+            --environment production
