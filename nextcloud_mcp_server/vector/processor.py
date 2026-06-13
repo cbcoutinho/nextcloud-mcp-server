@@ -507,10 +507,11 @@ async def process_document(
     one outer attempt (~30s) and defers. Don't stack a third retry layer here.
     """
     # EscalateError is a control-flow signal that arises ONLY on the per-tier
-    # external path (tier set). Bind the class lazily there so the in-process /
-    # memory path never pulls the document stack at call time (mirrors the lazy
-    # get_registry import; see #877). When tier is None it can't be raised, so
-    # the guards below stay inert.
+    # external path (tier set). Bind the class lazily here, and only when a tier
+    # is set, so the document stack is never imported at *module load* (the #877
+    # invariant) nor on the delete / text-doc call paths (file processing already
+    # imports it via get_registry regardless). When tier is None it can't be
+    # raised, so the guards below stay inert.
     escalate_error_cls: type[BaseException] | None = None
     if tier is not None:
         from nextcloud_mcp_server.document_processors.escalation import (  # noqa: PLC0415

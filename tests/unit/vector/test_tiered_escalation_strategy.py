@@ -91,16 +91,22 @@ class TestTieredEscalationStrategy:
 
     def test_transient_backoff_progression(self):
         # min(4 * 2**(attempts-1), 300): 4, 8, 16, ... capped at 300s.
+        # procrastinate sets retry_at = utcnow() + wait at call time. Bracketing
+        # the call with before/after makes the assertion exact and independent of
+        # runner load: with before <= call_now <= after, we have
+        #   (retry_at - after) <= wait <= (retry_at - before).
         strat = self._strategy(max_transient=100)
         for attempts, expected in [(1, 4), (2, 8), (3, 16), (4, 32), (20, 300)]:
+            before = datetime.now(timezone.utc)
             decision = strat.get_retry_decision(
                 exception=httpx.ConnectError("x"), job=_job(attempts=attempts)
             )
+            after = datetime.now(timezone.utc)
             assert decision is not None and decision.retry_at is not None
-            delta = (decision.retry_at - datetime.now(timezone.utc)).total_seconds()
-            # retry_at = now + wait; allow a small window for execution time.
-            assert expected - 2 <= delta <= expected + 1, (
-                f"attempts={attempts}: delta={delta:.2f}s, expected≈{expected}s"
+            lo = (decision.retry_at - after).total_seconds()
+            hi = (decision.retry_at - before).total_seconds()
+            assert lo <= expected <= hi, (
+                f"attempts={attempts}: expected={expected}s not in [{lo:.3f}, {hi:.3f}]"
             )
 
     def test_transient_gives_up_over_cap(self):
