@@ -1099,6 +1099,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 enabled=True,
                 ingest_queue=settings.ingest_queue,
                 job_counts=pending.job_counts,
+                job_counts_by_queue=pending.job_counts_by_queue,
             )
 
         except Exception as e:

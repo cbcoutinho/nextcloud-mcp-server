@@ -190,6 +190,21 @@ vector_sync_indexed_chunks = Gauge(
     "Total indexed chunks (non-placeholder points) in the vector store",
 )
 
+# Per-tier-queue ingest depth (Deck #323). One series per (queue, status) so an
+# operator can see where work sits -- a ``fast`` backlog, docs waiting on
+# ``ingest-structured``/``ingest-ocr``, or failures piling up per tier. KEDA
+# scales each tier Deployment off the queue's ``todo`` depth via direct SQL; this
+# gauge is the dashboard/alerting view of the same figures. Published by the
+# periodic vector_sync metrics task from the procrastinate per-queue job counts.
+ingest_queue_depth = Gauge(
+    "astrolabe_ingest_queue_depth",
+    "Ingest jobs per tier queue by status (todo/doing/failed)",
+    ["queue", "status"],
+)
+# The subset of statuses worth a gauge series; the rest (succeeded/cancelled/
+# aborted) are pruned from the queue table and uninteresting for operating.
+_INGEST_DEPTH_STATUSES = ("todo", "doing", "failed")
+
 qdrant_operations_total = Counter(
     "mcp_qdrant_operations_total",
     "Total Qdrant vector database operations",
@@ -635,6 +650,23 @@ def update_vector_sync_indexed_documents(count: int) -> None:
 def update_vector_sync_indexed_chunks(count: int) -> None:
     """Set the total-indexed-chunks gauge."""
     vector_sync_indexed_chunks.set(count)
+
+
+def update_ingest_queue_depth(by_queue: dict[str, dict[str, int]] | None) -> None:
+    """Set the per-tier-queue depth gauge from procrastinate job counts (#323).
+
+    ``by_queue`` is ``{queue_name: {status: count}}`` (see
+    ``queue.procrastinate.get_ingest_job_counts_by_queue``). A queue missing a
+    status is set to 0 so a drained queue reads zero rather than going stale at
+    its last non-zero value. No-op on the memory backend (``by_queue`` is None).
+    """
+    if not by_queue:
+        return
+    for queue, per_status in by_queue.items():
+        for status in _INGEST_DEPTH_STATUSES:
+            ingest_queue_depth.labels(queue=queue, status=status).set(
+                per_status.get(status, 0)
+            )
 
 
 def record_document_parse(

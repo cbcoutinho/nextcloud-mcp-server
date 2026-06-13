@@ -193,6 +193,15 @@ class VectorSyncStatusResponse(BaseResponse):
             "queue backend; None on the in-memory backend"
         ),
     )
+    job_counts_by_queue: dict[str, dict[str, int]] | None = Field(
+        default=None,
+        description=(
+            "Per-tier-queue ingest job counts {queue: {status: count}} on the "
+            "postgres backend (Deck #323), so an operator can see whether work is "
+            "backed up on ingest-fast vs waiting on ingest-structured/ingest-ocr; "
+            "None on the in-memory backend"
+        ),
+    )
 
 
 __all__ = [

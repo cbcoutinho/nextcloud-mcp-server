@@ -241,3 +241,150 @@ async def test_no_ocr_escalation_when_disabled(monkeypatch):
     res = await r.process(b"%PDF-1.7", "application/pdf")
     # Fast tier is terminal when OCR is disabled.
     assert res.processor == "fast"
+
+
+# --- Per-tier external path (Deck #323) -------------------------------------
+
+
+async def test_process_tier_runs_named_tier(monkeypatch):
+    """process_tier runs exactly the requested tier's processor, not priority."""
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings())
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("structured", "structured"), 10),
+        (_Fake("ocr", "ocr"), 5),
+    )
+    res = await r.process_tier(b"%PDF-1.7", "application/pdf", "f.pdf", "structured")
+    assert res.processor == "structured"
+
+
+async def test_process_tier_unknown_tier_raises(monkeypatch):
+    from nextcloud_mcp_server.document_processors.base import ProcessorError
+
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings())
+    r = _registry((_Fake("fast", "fast"), 20))
+    with pytest.raises(ProcessorError, match="structured"):
+        await r.process_tier(b"%PDF-1.7", "application/pdf", "f.pdf", "structured")
+
+
+async def test_process_tier_oversize_fails_fast(monkeypatch):
+    """The size guard applies on the per-tier path too (before any parse)."""
+    monkeypatch.setattr(
+        reg_mod, "get_settings", lambda: _Settings(max_pdf_size_mb=0.001)
+    )
+    r = _registry((_Fake("ocr", "ocr"), 5))
+    res = await r.process_tier(b"x" * 4096, "application/pdf", "big.pdf", "ocr")
+    assert res.success is False
+    assert res.metadata["parse_failed_reason"] == "oversize"
+
+
+def test_next_available_tier_walks_ladder():
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("structured", "structured"), 10),
+        (_Fake("ocr", "ocr"), 5),
+    )
+    # ocr disabled -> structured is the only target above fast.
+    s = _Settings(ocr=False)
+    assert r.next_available_tier("fast", s) == "structured"
+    assert r.next_available_tier("structured", s) is None  # ocr gated off
+    # ocr enabled -> reachable; minimum skips the structured rung.
+    s_ocr = _Settings(ocr=True)
+    assert r.next_available_tier("structured", s_ocr) == "ocr"
+    assert r.next_available_tier("fast", s_ocr, minimum="ocr") == "ocr"
+
+
+def test_next_available_tier_skips_unregistered():
+    # No structured processor -> fast escalates straight to ocr.
+    r = _registry((_Fake("fast", "fast"), 20), (_Fake("ocr", "ocr"), 5))
+    assert r.next_available_tier("fast", _Settings(ocr=True)) == "ocr"
+
+
+def test_evaluate_escalation_good_text_indexes(monkeypatch):
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast", text="This is clean readable prose text."), 20),
+        (_Fake("ocr", "ocr"), 5),
+    )
+    res = ProcessingResult(
+        text="This is clean readable prose text.",
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [{"page": 1, "start_offset": 0, "end_offset": 34}],
+        },
+        processor="fast",
+    )
+    assert r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True)) is None
+
+
+def test_evaluate_escalation_empty_jumps_to_ocr(monkeypatch):
+    """A scanned (no-text-layer) result targets ocr directly, skipping structured."""
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("structured", "structured"), 10),
+        (_Fake("ocr", "ocr"), 5),
+    )
+    res = ProcessingResult(
+        text="",
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [{"page": 1, "start_offset": 0, "end_offset": 0}],
+        },
+        processor="fast",
+    )
+    decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True))
+    assert decision == ("ocr", "empty_text")
+
+
+def test_evaluate_escalation_lowconf_goes_to_structured(monkeypatch):
+    """A junk-but-non-empty layer escalates to the next rung (structured)."""
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    junk = "x" * 40  # one long token, no whitespace -> quality ~0
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("structured", "structured"), 10),
+        (_Fake("ocr", "ocr"), 5),
+    )
+    res = ProcessingResult(
+        text=junk,
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [
+                {"page": 1, "start_offset": 0, "end_offset": len(junk)}
+            ],
+        },
+        processor="fast",
+    )
+    decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True))
+    assert decision == ("structured", "low_confidence")
+
+
+def test_evaluate_escalation_failure_not_escalated(monkeypatch):
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry((_Fake("fast", "fast"), 20), (_Fake("ocr", "ocr"), 5))
+    res = ProcessingResult(
+        text="",
+        metadata={"parse_failed_reason": "error"},
+        processor="fast",
+        success=False,
+    )
+    assert r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True)) is None
+
+
+def test_evaluate_escalation_terminal_when_no_higher_tier(monkeypatch):
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    # Only fast registered -> nowhere to escalate even on junk text.
+    r = _registry((_Fake("fast", "fast"), 20))
+    junk = "y" * 40
+    res = ProcessingResult(
+        text=junk,
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [
+                {"page": 1, "start_offset": 0, "end_offset": len(junk)}
+            ],
+        },
+        processor="fast",
+    )
+    assert r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True)) is None

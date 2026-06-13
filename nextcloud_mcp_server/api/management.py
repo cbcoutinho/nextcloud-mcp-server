@@ -338,6 +338,10 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
         if pending.job_counts is not None:
             # Per-status breakdown (todo/doing/failed/…) on the postgres backend.
             body["job_counts"] = pending.job_counts
+        if pending.job_counts_by_queue is not None:
+            # Per-tier-queue breakdown (Deck #323): where work sits across the
+            # ingest-fast / ingest-structured / ingest-ocr fleets.
+            body["job_counts_by_queue"] = pending.job_counts_by_queue
         return JSONResponse(body)
 
     except Exception as e:
