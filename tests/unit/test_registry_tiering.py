@@ -13,6 +13,7 @@ from nextcloud_mcp_server.document_processors.base import (
     DocumentProcessor,
     ProcessingResult,
 )
+from nextcloud_mcp_server.document_processors.escalation import EscalationDecision
 from nextcloud_mcp_server.document_processors.registry import ProcessorRegistry
 
 pytestmark = pytest.mark.unit
@@ -334,7 +335,7 @@ def test_evaluate_escalation_empty_jumps_to_ocr(monkeypatch):
         processor="fast",
     )
     decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True))
-    assert decision == ("ocr", "empty_text")
+    assert decision == EscalationDecision("hop", "ocr", "empty_text")
 
 
 def test_evaluate_escalation_lowconf_goes_to_structured(monkeypatch):
@@ -357,7 +358,7 @@ def test_evaluate_escalation_lowconf_goes_to_structured(monkeypatch):
         processor="fast",
     )
     decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True))
-    assert decision == ("structured", "low_confidence")
+    assert decision == EscalationDecision("hop", "structured", "low_confidence")
 
 
 def test_evaluate_escalation_failure_not_escalated(monkeypatch):
@@ -419,4 +420,65 @@ def test_evaluate_escalation_lowconf_to_ocr_when_no_structured(monkeypatch):
         processor="fast",
     )
     decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True))
-    assert decision == ("ocr", "low_confidence")
+    assert decision == EscalationDecision("hop", "ocr", "low_confidence")
+
+
+def test_evaluate_escalation_suppressed_when_ocr_disabled(monkeypatch):
+    """OCR off: a scanned doc does NOT hop to ocr; it returns a 'suppressed'
+    decision (the what-if-OCR signal) so the caller indexes at the current tier."""
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry((_Fake("fast", "fast"), 20), (_Fake("ocr", "ocr"), 5))
+    res = ProcessingResult(
+        text="",
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [{"page": 1, "start_offset": 0, "end_offset": 0}],
+        },
+        processor="fast",
+    )
+    decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=False))
+    assert decision == EscalationDecision("suppressed", "ocr", "empty_text")
+
+
+def test_evaluate_escalation_lowconf_suppressed_when_only_ocr_disabled(monkeypatch):
+    """fast+ocr only, OCR off, junk text: the next rung is the disabled ocr, so
+    the would-be hop is suppressed (not a structured hop, which isn't registered)."""
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    junk = "q" * 40
+    r = _registry((_Fake("fast", "fast"), 20), (_Fake("ocr", "ocr"), 5))
+    res = ProcessingResult(
+        text=junk,
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [
+                {"page": 1, "start_offset": 0, "end_offset": len(junk)}
+            ],
+        },
+        processor="fast",
+    )
+    decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=False))
+    assert decision == EscalationDecision("suppressed", "ocr", "low_confidence")
+
+
+def test_evaluate_escalation_structured_hop_not_suppressed_when_ocr_off(monkeypatch):
+    """OCR off but structured available + junk text → real hop to structured
+    (not suppressed): the in-cluster rung can still run."""
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    junk = "w" * 40
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("structured", "structured"), 10),
+        (_Fake("ocr", "ocr"), 5),
+    )
+    res = ProcessingResult(
+        text=junk,
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [
+                {"page": 1, "start_offset": 0, "end_offset": len(junk)}
+            ],
+        },
+        processor="fast",
+    )
+    decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=False))
+    assert decision == EscalationDecision("hop", "structured", "low_confidence")

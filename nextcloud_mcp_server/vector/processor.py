@@ -28,6 +28,7 @@ from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
     record_document_chunks,
     record_document_escalation,
+    record_document_escalation_suppressed,
     record_document_parse_failed,
     record_embedding,
     record_embedding_tokens,
@@ -156,17 +157,35 @@ async def _parse_pdf_tier(
         decision = registry.evaluate_escalation(
             result, content, tier, settings, filename=filename
         )
-        if decision is not None:
-            to_tier, reason = decision
-            record_document_escalation(tier, to_tier, reason)
+        if decision is not None and decision.kind == "suppressed":
+            # The ideal next tier (e.g. ocr) is disabled, so we do NOT hop: index
+            # this tier's output as terminal and record the would-be escalation
+            # so operators see the latent demand ("what-if OCR enabled"; #324).
+            record_document_escalation_suppressed(
+                tier, decision.to_tier, decision.reason
+            )
+            logger.info(
+                "Escalation suppressed for %s %s->%s (reason=%s; %s disabled), "
+                "indexing at %s",
+                filename or "<bytes>",
+                tier,
+                decision.to_tier,
+                decision.reason,
+                decision.to_tier,
+                tier,
+            )
+        elif decision is not None:
+            record_document_escalation(tier, decision.to_tier, decision.reason)
             logger.info(
                 "Escalating %s %s->%s (reason=%s)",
                 filename or "<bytes>",
                 tier,
-                to_tier,
-                reason,
+                decision.to_tier,
+                decision.reason,
             )
-            raise EscalateError(from_tier=tier, to_tier=to_tier, reason=reason)
+            raise EscalateError(
+                from_tier=tier, to_tier=decision.to_tier, reason=decision.reason
+            )
     return result
 
 

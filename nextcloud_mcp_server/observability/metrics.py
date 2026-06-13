@@ -276,6 +276,21 @@ document_escalation_total = Counter(
     ["from_tier", "to_tier", "reason"],
 )
 
+# Would-be escalations SUPPRESSED because the target tier is disabled (Deck
+# #324). The cost-sensitive ``ocr`` tier is opt-in (DOCUMENT_OCR_ENABLED): when
+# it's off, a doc the classifier would route to OCR is indexed at the pre-OCR
+# tier instead of hopping, and that intent is counted here rather than on
+# document_escalation_total. This is the "what-if OCR were enabled" signal —
+# escalation_suppressed_total{to_tier="ocr"} is the latent OCR demand an operator
+# weighs before enabling OCR; enabling it converts these into real
+# document_escalation_total{to_tier="ocr"} hops.
+document_escalation_suppressed_total = Counter(
+    "astrolabe_document_escalation_suppressed_total",
+    "Would-be tier escalations suppressed because the target tier is disabled",
+    # reason: low_confidence | empty_text
+    ["from_tier", "to_tier", "reason"],
+)
+
 # Hard parse failures: the parse now runs in an isolated subprocess, so a
 # timeout/OOM that kills the worker is caught here. This is distinct from
 # ``document_parse_total{status="error"}`` (an in-process exception): a hard
@@ -742,6 +757,20 @@ def record_document_escalation(from_tier: str, to_tier: str, reason: str) -> Non
         reason: low_confidence | empty_text | unsupported | error | forced
     """
     document_escalation_total.labels(
+        from_tier=from_tier, to_tier=to_tier, reason=reason
+    ).inc()
+
+
+def record_document_escalation_suppressed(
+    from_tier: str, to_tier: str, reason: str
+) -> None:
+    """Record a would-be escalation suppressed because ``to_tier`` is disabled.
+
+    The "what-if OCR were enabled" signal (Deck #324): the document is indexed at
+    ``from_tier`` (terminal) rather than hopped, because the ideal next tier
+    (typically ``ocr``) is turned off. See ``document_escalation_suppressed_total``.
+    """
+    document_escalation_suppressed_total.labels(
         from_tier=from_tier, to_tier=to_tier, reason=reason
     ).inc()
 
