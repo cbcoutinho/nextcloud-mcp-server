@@ -400,10 +400,11 @@ class ProcessorRegistry:
         (so OCR stays opt-in and a misconfigured tenant never escalates to a
         backend it hasn't turned on).
 
-        ``ignore_enabled`` drops only the *enabled* gate (not the registered-
-        processor requirement): it answers "would this tier run if it were turned
-        on?" — used to compute the *ideal* escalation target for the
-        what-if-OCR suppressed-escalation signal.
+        ``ignore_enabled`` drops only the OCR-enabled gate (not the registered-
+        processor requirement): it answers "would this tier run if OCR were turned
+        on?" — used to compute the *ideal* escalation target for the what-if-OCR
+        suppressed-escalation signal. (Today only ``ocr`` has an enabled gate; a
+        future per-tier gate would extend the condition below.)
         """
         if self._pdf_processor_for_tier(tier) is None:
             return False

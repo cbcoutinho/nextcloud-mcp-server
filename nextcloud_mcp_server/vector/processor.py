@@ -165,14 +165,12 @@ async def _parse_pdf_tier(
                 tier, decision.to_tier, decision.reason
             )
             logger.info(
-                "Escalation suppressed for %s %s->%s (reason=%s; %s disabled), "
-                "indexing at %s",
+                "Escalation suppressed for %s: %s->%s disabled (reason=%s), "
+                "indexing at current tier",
                 filename or "<bytes>",
                 tier,
                 decision.to_tier,
                 decision.reason,
-                decision.to_tier,
-                tier,
             )
         elif decision is not None:
             record_document_escalation(tier, decision.to_tier, decision.reason)

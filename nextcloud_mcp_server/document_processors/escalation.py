@@ -22,6 +22,7 @@ mapping lives in the queue layer, which imports :class:`EscalateError` from here
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 # Cheapest-first. ``llm`` is reserved (see base.DocumentProcessor.tier) and not
 # wired yet, so it is intentionally absent from the live ladder.
@@ -46,7 +47,7 @@ class EscalationDecision:
     exists at all (no processor registered for it).
     """
 
-    kind: str  # "hop" | "suppressed"
+    kind: Literal["hop", "suppressed"]
     to_tier: str
     reason: str  # empty_text | low_confidence
 
