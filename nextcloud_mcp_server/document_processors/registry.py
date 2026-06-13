@@ -14,7 +14,8 @@ from nextcloud_mcp_server.observability.metrics import (
 from nextcloud_mcp_server.observability.tracing import trace_operation
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
-from .classifier import classify_from_text, image_coverage_per_page
+from .classifier import DocClassification, classify_from_text, image_coverage_per_page
+from .escalation import TIER_LADDER
 
 logger = logging.getLogger(__name__)
 
@@ -202,32 +203,9 @@ class ProcessorRegistry:
         """
         settings = get_settings()
 
-        # Pre-parse size guard: a pathologically large PDF (e.g. a 42 MB scanned
-        # DUDE) burns the OCR timeout for 0 chars. Fail fast with an explicit
-        # reason so the caller marks the placeholder "failed" instead of
-        # retrying. 0 disables the cap. This lives on the auto-tiered path only:
-        # an explicit processor_name="ocr" override (registry.process) bypasses
-        # _process_pdf entirely and is intentionally not size-gated (power-user
-        # escape hatch). Returning here also skips _run_processor, so the
-        # rejection is counted on astrolabe_document_parse_failed_total{oversize}
-        # (via vector/processor.py) but deliberately not on the parse-duration
-        # histogram -- there is no parse to time.
-        max_pdf_mb = settings.document_max_pdf_size_mb
-        if max_pdf_mb > 0 and len(content) > max_pdf_mb * 1024 * 1024:
-            size_mb = len(content) / (1024 * 1024)
-            logger.warning(
-                "PDF %s is %.1f MB (> %.1f MB cap); failing fast as oversize",
-                filename or "<bytes>",
-                size_mb,
-                max_pdf_mb,
-            )
-            return ProcessingResult(
-                text="",
-                metadata={"parse_failed_reason": "oversize"},
-                processor="size_guard",
-                success=False,
-                error=(f"PDF exceeds size cap: {size_mb:.1f} MB > {max_pdf_mb:.1f} MB"),
-            )
+        oversize = self._oversize_result(content, filename, settings)
+        if oversize is not None:
+            return oversize
 
         if settings.document_tier1_engine == "pymupdf":
             processor = self._pdf_processor_for_tier("structured")
@@ -263,46 +241,11 @@ class ProcessorRegistry:
         # Tier-0 classification from the extraction (cheap: text-only, no PDF
         # re-open). Scan detection (image analysis, re-opens the PDF) runs only
         # when OCR + detect_scanned are enabled, so its cost is paid by
-        # OCR-opted-in tenants only.
-        classification = None
-        if settings.document_classify_enabled and result.success:
-            try:
-                image_coverage = None
-                if (
-                    settings.document_ocr_enabled
-                    and settings.document_ocr_detect_scanned
-                ):
-                    try:
-                        image_coverage = image_coverage_per_page(content)
-                    except Exception:
-                        # Best-effort: fall back to text-only signals. WARNING
-                        # (not DEBUG) so a systematic scan-detection failure on an
-                        # OCR-enabled tenant is visible at LOG_LEVEL=INFO.
-                        logger.warning(
-                            "Scan detection failed for %s; using text-only signals",
-                            filename or "<bytes>",
-                            exc_info=True,
-                        )
-                classification = classify_from_text(
-                    result.text,
-                    result.metadata.get("page_boundaries") or [],
-                    min_text_quality=settings.document_ocr_min_text_quality,
-                    min_page_chars=settings.document_ocr_min_page_chars,
-                    page_fraction=settings.document_ocr_page_fraction,
-                    image_coverage=image_coverage,
-                )
-                record_document_classification(
-                    classification.recommended_tier,
-                    classification.flags,
-                    classification.mean_text_quality,
-                    classification.ocr_page_fraction,
-                )
-            except Exception:
-                logger.warning(
-                    "Tier-0 classification failed for %s",
-                    filename or "<bytes>",
-                    exc_info=True,
-                )
+        # OCR-opted-in tenants only. Shared with the external per-tier path via
+        # _classify_result.
+        classification = self._classify_result(
+            result, content, settings, record=True, filename=filename
+        )
 
         # Escalate scanned / no-text-layer PDFs to OCR (tier-3) when enabled and
         # a provider is registered. The fast tier is terminal otherwise. Note: a
@@ -354,6 +297,225 @@ class ProcessorRegistry:
                 )
 
         return result
+
+    def _oversize_result(
+        self, content: bytes, filename: str | None, settings: Any
+    ) -> ProcessingResult | None:
+        """Pre-parse size guard, shared by the inline and per-tier paths.
+
+        A pathologically large PDF (e.g. a 42 MB scanned DUDE) burns the OCR
+        timeout for 0 chars. Return an explicit ``oversize`` failure so the
+        caller marks the placeholder "failed" instead of retrying; 0 disables the
+        cap. An explicit ``processor_name`` override (``registry.process``)
+        bypasses tiering entirely and is intentionally not size-gated (power-user
+        escape hatch). Skipping ``_run_processor`` means the rejection is counted
+        on ``astrolabe_document_parse_failed_total{oversize}`` (via
+        ``vector/processor.py``) but deliberately not on the parse-duration
+        histogram -- there is no parse to time.
+        """
+        max_pdf_mb = settings.document_max_pdf_size_mb
+        if max_pdf_mb > 0 and len(content) > max_pdf_mb * 1024 * 1024:
+            size_mb = len(content) / (1024 * 1024)
+            logger.warning(
+                "PDF %s is %.1f MB (> %.1f MB cap); failing fast as oversize",
+                filename or "<bytes>",
+                size_mb,
+                max_pdf_mb,
+            )
+            return ProcessingResult(
+                text="",
+                metadata={"parse_failed_reason": "oversize"},
+                processor="size_guard",
+                success=False,
+                error=(f"PDF exceeds size cap: {size_mb:.1f} MB > {max_pdf_mb:.1f} MB"),
+            )
+        return None
+
+    def _classify_result(
+        self,
+        result: ProcessingResult,
+        content: bytes,
+        settings: Any,
+        *,
+        record: bool,
+        filename: str | None = None,
+    ) -> DocClassification | None:
+        """Tier-0 classification of a parse result (text-only, cheap).
+
+        Shared by the inline memory-backend pipeline (:meth:`_process_pdf`) and
+        the external per-tier path (:meth:`evaluate_escalation`). Returns
+        ``None`` when classification is disabled, the parse failed, or the
+        classifier raised -- best-effort, a classify failure must never break
+        indexing. ``record`` emits the classification metrics; set it only at the
+        FIRST classification of a document (the ``fast`` tier) so the per-doc
+        counters aren't multiplied across tiers.
+        """
+        if not (settings.document_classify_enabled and result.success):
+            return None
+        try:
+            image_coverage = None
+            if settings.document_ocr_enabled and settings.document_ocr_detect_scanned:
+                try:
+                    image_coverage = image_coverage_per_page(content)
+                except Exception:
+                    # Best-effort: fall back to text-only signals. WARNING (not
+                    # DEBUG) so a systematic scan-detection failure on an
+                    # OCR-enabled tenant is visible at LOG_LEVEL=INFO.
+                    logger.warning(
+                        "Scan detection failed for %s; using text-only signals",
+                        filename or "<bytes>",
+                        exc_info=True,
+                    )
+            classification = classify_from_text(
+                result.text,
+                result.metadata.get("page_boundaries") or [],
+                min_text_quality=settings.document_ocr_min_text_quality,
+                min_page_chars=settings.document_ocr_min_page_chars,
+                page_fraction=settings.document_ocr_page_fraction,
+                image_coverage=image_coverage,
+            )
+        except Exception:
+            logger.warning(
+                "Tier-0 classification failed for %s",
+                filename or "<bytes>",
+                exc_info=True,
+            )
+            return None
+        if record:
+            record_document_classification(
+                classification.recommended_tier,
+                classification.flags,
+                classification.mean_text_quality,
+                classification.ocr_page_fraction,
+            )
+        return classification
+
+    def _tier_available(self, tier: str, settings: Any) -> bool:
+        """Whether ``tier`` can actually run a PDF parse right now.
+
+        A tier is available when it has a registered PDF processor and is
+        enabled; the ``ocr`` tier additionally requires ``DOCUMENT_OCR_ENABLED``
+        (so OCR stays opt-in and a misconfigured tenant never escalates to a
+        backend it hasn't turned on).
+        """
+        if self._pdf_processor_for_tier(tier) is None:
+            return False
+        if tier == "ocr" and not settings.document_ocr_enabled:
+            return False
+        return True
+
+    def next_available_tier(
+        self, current_tier: str, settings: Any, *, minimum: str | None = None
+    ) -> str | None:
+        """First escalation target above ``current_tier`` that can actually run.
+
+        Walks the ladder strictly above ``current_tier`` (and not below
+        ``minimum``'s rung, when given) and returns the first
+        :meth:`_tier_available` tier. ``None`` means no higher tier can run --
+        ``current_tier`` is then terminal and its result is indexed as-is.
+        """
+        try:
+            cur_idx = TIER_LADDER.index(current_tier)
+        except ValueError:
+            return None
+        start_idx = cur_idx + 1
+        if minimum is not None:
+            try:
+                start_idx = max(start_idx, TIER_LADDER.index(minimum))
+            except ValueError:
+                pass
+        for tier in TIER_LADDER[start_idx:]:
+            if self._tier_available(tier, settings):
+                return tier
+        return None
+
+    async def process_tier(
+        self,
+        content: bytes,
+        content_type: str,
+        filename: str | None,
+        tier: str,
+        options: dict[str, Any] | None = None,
+        progress_callback: (
+            Callable[[float, float | None, str | None], Awaitable[None]] | None
+        ) = None,
+    ) -> ProcessingResult:
+        """Run exactly ONE extraction tier's processor on a PDF (external path).
+
+        The per-tier procrastinate fleet calls this for the tier matching the
+        job's queue. Escalation to the next tier is decided separately by
+        :meth:`evaluate_escalation` and effected by the queue's retry strategy as
+        a queue-hop -- never inline here. ``escalated`` is set for any tier above
+        the cheapest so the parse span/metrics reflect an escalated attempt.
+        """
+        oversize = self._oversize_result(content, filename, get_settings())
+        if oversize is not None:
+            return oversize
+        processor = self._pdf_processor_for_tier(tier)
+        if processor is None:
+            raise ProcessorError(
+                f"No '{tier}'-tier PDF processor registered "
+                f"(available: {', '.join(self.list_processors())})"
+            )
+        return await self._run_processor(
+            processor,
+            content,
+            content_type,
+            filename,
+            options,
+            progress_callback,
+            escalated=(tier != TIER_LADDER[0]),
+        )
+
+    def evaluate_escalation(
+        self,
+        result: ProcessingResult,
+        content: bytes,
+        current_tier: str,
+        settings: Any,
+        *,
+        filename: str | None = None,
+    ) -> tuple[str, str] | None:
+        """Decide whether ``current_tier``'s result must escalate (external path).
+
+        Returns ``(to_tier, reason)`` when the parse is too poor to index and a
+        higher tier can run, else ``None`` (index the result as-is). Reuses the
+        tier-0 classifier as the post-parse quality gate, so the escalation
+        signal is identical to the inline pipeline's.
+
+        A hard parse FAILURE (``result.success`` False) is never escalated: a
+        corrupt/encrypted PDF one engine can't open usually defeats the others
+        too (OCR reads the same bytes), so the caller marks it failed instead.
+
+        Routing of the target tier:
+
+        - ``total_chars == 0`` (scanned / no text layer) -> target the ``ocr``
+          tier directly. Text-extractor tiers (``structured``) cannot conjure
+          text from a pure raster scan, so a structured hop would just be wasted.
+        - low-confidence but non-empty layer -> escalate to the next rung, so a
+          different in-cluster extractor can try before paying for OCR.
+        """
+        classification = self._classify_result(
+            result,
+            content,
+            settings,
+            record=(current_tier == TIER_LADDER[0]),
+            filename=filename,
+        )
+        if classification is None or classification.recommended_tier != "ocr":
+            return None
+        # A zero-page (empty/corrupt) PDF gains nothing from any tier.
+        if classification.page_count <= 0:
+            return None
+        if classification.total_chars == 0:
+            to_tier = self.next_available_tier(current_tier, settings, minimum="ocr")
+            reason = "empty_text"
+        else:
+            to_tier = self.next_available_tier(current_tier, settings)
+            reason = "low_confidence"
+        if to_tier is None:
+            return None
+        return (to_tier, reason)
 
     async def _run_processor(
         self,

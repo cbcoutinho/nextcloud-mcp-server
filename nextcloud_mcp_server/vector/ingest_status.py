@@ -29,6 +29,10 @@ class IngestPending:
     # Per-status counts (todo/doing/failed/…) on the postgres backend; None on
     # the memory backend, which has no durable per-status breakdown.
     job_counts: dict[str, int] | None = None
+    # Per-tier-queue breakdown ``{queue: {status: count}}`` on the postgres
+    # backend (Deck #323); None on the memory backend. Feeds the per-tier status
+    # surface + the astrolabe_ingest_queue_depth gauge.
+    job_counts_by_queue: dict[str, dict[str, int]] | None = None
 
 
 async def get_ingest_pending(
@@ -47,13 +51,27 @@ async def get_ingest_pending(
     """
     if ingest_queue == "postgres":
         counts: dict[str, int] = {}
-        if task_producer is not None and hasattr(task_producer, "job_counts"):
+        by_queue: dict[str, dict[str, int]] | None = None
+        # Prefer the per-queue breakdown (Deck #323) and aggregate from it, so the
+        # fleet-wide totals and the per-tier view always agree. Fall back to the
+        # aggregated call for any producer that predates job_counts_by_queue.
+        if task_producer is not None and hasattr(task_producer, "job_counts_by_queue"):
+            try:
+                by_queue = await task_producer.job_counts_by_queue()
+                for per_status in by_queue.values():
+                    for status, value in per_status.items():
+                        counts[status] = counts.get(status, 0) + value
+            except Exception as e:
+                logger.warning("Failed to read ingest job counts by queue: %s", e)
+        elif task_producer is not None and hasattr(task_producer, "job_counts"):
             try:
                 counts = await task_producer.job_counts()
             except Exception as e:
                 logger.warning("Failed to read ingest job counts: %s", e)
         pending = counts.get("todo", 0) + counts.get("doing", 0)
-        return IngestPending(pending=pending, job_counts=counts)
+        return IngestPending(
+            pending=pending, job_counts=counts, job_counts_by_queue=by_queue
+        )
 
     if document_receive_stream is None:
         return IngestPending(pending=0)

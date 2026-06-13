@@ -29,6 +29,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.observability.metrics import (
+    update_ingest_queue_depth,
     update_vector_sync_indexed_chunks,
     update_vector_sync_indexed_documents,
     update_vector_sync_pending_documents,
@@ -96,6 +97,8 @@ async def publish_vector_sync_metrics(
         # Keep the legacy gauge meaningful on every consumer path, not just the
         # single-user one — existing dashboards/alerts reference it.
         update_vector_sync_queue_size(pending.pending)
+        # Per-tier-queue depth (Deck #323): None on the memory backend (no-op).
+        update_ingest_queue_depth(pending.job_counts_by_queue)
     except Exception as exc:  # noqa: BLE001 — metrics must not break ingest
         logger.warning("Failed to publish pending-documents gauge: %s", exc)
 

@@ -190,6 +190,21 @@ vector_sync_indexed_chunks = Gauge(
     "Total indexed chunks (non-placeholder points) in the vector store",
 )
 
+# Per-tier-queue ingest depth (Deck #323). One series per (queue, status) so an
+# operator can see where work sits -- a ``fast`` backlog, docs waiting on
+# ``ingest-structured``/``ingest-ocr``, or failures piling up per tier. KEDA
+# scales each tier Deployment off the queue's ``todo`` depth via direct SQL; this
+# gauge is the dashboard/alerting view of the same figures. Published by the
+# periodic vector_sync metrics task from the procrastinate per-queue job counts.
+ingest_queue_depth = Gauge(
+    "astrolabe_ingest_queue_depth",
+    "Ingest jobs per tier queue by status (todo/doing/failed)",
+    ["queue", "status"],
+)
+# The subset of statuses worth a gauge series; the rest (succeeded/cancelled/
+# aborted) are pruned from the queue table and uninteresting for operating.
+_INGEST_DEPTH_STATUSES = ("todo", "doing", "failed")
+
 qdrant_operations_total = Counter(
     "mcp_qdrant_operations_total",
     "Total Qdrant vector database operations",
@@ -635,6 +650,42 @@ def update_vector_sync_indexed_documents(count: int) -> None:
 def update_vector_sync_indexed_chunks(count: int) -> None:
     """Set the total-indexed-chunks gauge."""
     vector_sync_indexed_chunks.set(count)
+
+
+def update_ingest_queue_depth(by_queue: dict[str, dict[str, int]] | None) -> None:
+    """Set the per-tier-queue depth gauge from procrastinate job counts (#323).
+
+    ``by_queue`` is ``{queue_name: {status: count}}`` (see
+    ``queue.procrastinate.get_ingest_job_counts_by_queue``). No-op only on the
+    memory backend (``by_queue is None``); an empty dict (postgres backend with
+    every queue drained) still runs the pre-zero so the gauge reads 0.
+
+    Every managed queue is zeroed first: ``list_queues_async`` stops returning a
+    queue once it has no jobs, so a queue that drained to empty drops out of
+    ``by_queue`` entirely (and when ALL drain, ``by_queue`` is ``{}``). Without
+    the pre-zero its gauge series would stick at its last non-zero value (ghost
+    backlog in Grafana/alerts) instead of reading 0. The live counts then
+    overwrite the zeros for queues that still have work.
+    """
+    # ``is None`` not ``not by_queue``: an empty dict means "postgres, all queues
+    # drained" and MUST still zero the gauge -- only None (memory) is the no-op.
+    if by_queue is None:
+        return
+    # Lazy import to keep observability decoupled from the queue layer at module
+    # load (and sidestep any import cycle); both names are public constants.
+    from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
+        ALL_INGEST_QUEUES,
+        LEGACY_INGEST_QUEUE,
+    )
+
+    for queue in (*ALL_INGEST_QUEUES, LEGACY_INGEST_QUEUE):
+        for status in _INGEST_DEPTH_STATUSES:
+            ingest_queue_depth.labels(queue=queue, status=status).set(0)
+    for queue, per_status in by_queue.items():
+        for status in _INGEST_DEPTH_STATUSES:
+            ingest_queue_depth.labels(queue=queue, status=status).set(
+                per_status.get(status, 0)
+            )
 
 
 def record_document_parse(

@@ -333,8 +333,18 @@ def _init_worker_observability(settings: Settings) -> None:
     default=None,
     help="Max concurrent jobs. Defaults to VECTOR_SYNC_PROCESSOR_WORKERS.",
 )
-def worker(concurrency: int | None):
-    """Run the ingest worker (Deck #183).
+@click.option(
+    "--tier",
+    type=click.Choice(["fast", "structured", "ocr"]),
+    default=None,
+    help=(
+        "Run only this extraction tier's queue (Deck #323). Omit to drain ALL "
+        "tier queues in one process (single-Deployment / dev); set it to run one "
+        "tier per Deployment so the fleets scale independently."
+    ),
+)
+def worker(concurrency: int | None, tier: str | None):
+    """Run the ingest worker (Deck #183, per-tier fleets #323).
 
     \b
     Drains the per-tenant Postgres ingest queue (procrastinate): for each
@@ -343,13 +353,20 @@ def worker(concurrency: int | None):
     the api/worker split; run it as a separate Deployment from the API pod.
 
     \b
+    With --tier the worker drains only that tier's queue (``ingest-<tier>``), so
+    a CPU-bound ``fast`` fleet, an in-cluster ``structured`` fleet, and a paid
+    ``ocr`` fleet scale independently. Without it, all tier queues are drained in
+    one process (handy for dev / a single Deployment). A low-quality parse hops
+    the job to the next tier's queue automatically (see TieredEscalationStrategy).
+
+    \b
     Requires INGEST_QUEUE=postgres (a PostgreSQL DATABASE_URL); procrastinate is
     Postgres-only.
 
     \b
     Example:
       $ export DATABASE_URL=postgresql+asyncpg://mcp:mcp@db/mcp
-      $ nextcloud-mcp-server worker -c 4
+      $ nextcloud-mcp-server worker -c 4 --tier fast
     """
     import anyio  # noqa: PLC0415
 
@@ -366,10 +383,24 @@ def worker(concurrency: int | None):
     _init_worker_observability(settings)
 
     from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
-        INGEST_QUEUE_NAME,
+        ALL_INGEST_QUEUES,
+        INGEST_QUEUE_MAINTENANCE,
+        LEGACY_INGEST_QUEUE,
+        TIER_QUEUES,
         apply_ingest_queue_schema,
         get_procrastinate_app,
     )
+
+    # Which queues this process drains. A single tier -> just its queue; no tier
+    # -> every tier queue PLUS the legacy single queue, so a rolling upgrade
+    # never strands jobs deferred under the pre-#323 name. Every worker also
+    # drains the maintenance queue so the periodic stalled-job reclaim fires
+    # regardless of which tier(s) are scaled up (procrastinate dedups the
+    # periodic, so multiple drainers don't multiply the reclaim).
+    if tier is not None:
+        queues = [TIER_QUEUES[tier], INGEST_QUEUE_MAINTENANCE]
+    else:
+        queues = [*ALL_INGEST_QUEUES, LEGACY_INGEST_QUEUE, INGEST_QUEUE_MAINTENANCE]
 
     # This is the consumer side of the distributed (postgres) ingest backend.
     # Unlike the in-process anyio pool, the worker talks to procrastinate's App
@@ -397,13 +428,15 @@ def worker(concurrency: int | None):
             # Structured log (not click.echo) so it lands in the JSON / OTel
             # pipeline like every other startup message.
             logger.info(
-                "Ingest worker started: queue=%s concurrency=%s delete_succeeded=%s",
-                INGEST_QUEUE_NAME,
+                "Ingest worker started: tier=%s queues=%s concurrency=%s "
+                "delete_succeeded=%s",
+                tier or "all",
+                queues,
                 workers,
                 settings.ingest_delete_succeeded_jobs,
             )
             await app.run_worker_async(
-                queues=[INGEST_QUEUE_NAME],
+                queues=queues,
                 concurrency=workers,
                 install_signal_handlers=True,
                 # Drop succeeded jobs (default) so the queue table stays lean and

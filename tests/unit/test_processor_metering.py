@@ -176,3 +176,53 @@ async def test_store_failure_is_swallowed(monkeypatch):
         total_chars=9,
         page_count=2,
     )
+
+
+@pytest.mark.unit
+async def test_ocr_tier_records_pages_ocr(store_spy):
+    """OCR-tier pages are metered as a separate pages_ocr line (Deck #323)."""
+    await processor.record_indexing_usage(
+        enabled=True,
+        provider="mistral",
+        model="mistral-embed",
+        doc_type="file",
+        user_id="alice",
+        chunk_count=20,
+        token_count=900,
+        total_chars=40000,
+        page_count=8,
+        pipeline_tier="ocr",
+    )
+    by_metric = {
+        c.kwargs["metric"]: c.kwargs["value"]
+        for c in store_spy.record_usage_event.await_args_list
+    }
+    # pages_ocr fires IN ADDITION to pages_embedded for OCR-tier pages.
+    assert by_metric == {
+        "tokens_embedded": 900,
+        "pages_embedded": 8,
+        "pages_ocr": 8,
+    }
+    # pipeline_tier is threaded into the billing metadata for CP attribution.
+    for c in store_spy.record_usage_event.await_args_list:
+        assert c.kwargs["metadata"]["pipeline_tier"] == "ocr"
+
+
+@pytest.mark.unit
+async def test_fast_tier_does_not_record_pages_ocr(store_spy):
+    """A CPU-cheap fast-tier parse must NOT incur the paid pages_ocr line."""
+    await processor.record_indexing_usage(
+        enabled=True,
+        provider="mistral",
+        model="mistral-embed",
+        doc_type="file",
+        user_id="alice",
+        chunk_count=10,
+        token_count=500,
+        total_chars=20000,
+        page_count=4,
+        pipeline_tier="fast",
+    )
+    metrics = {c.kwargs["metric"] for c in store_spy.record_usage_event.await_args_list}
+    assert "pages_ocr" not in metrics
+    assert metrics == {"tokens_embedded", "pages_embedded"}
