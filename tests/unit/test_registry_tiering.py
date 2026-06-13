@@ -482,3 +482,19 @@ def test_evaluate_escalation_structured_hop_not_suppressed_when_ocr_off(monkeypa
     )
     decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=False))
     assert decision == EscalationDecision("hop", "structured", "low_confidence")
+
+
+def test_evaluate_escalation_terminal_when_ocr_unregistered_and_off(monkeypatch):
+    """No OCR processor registered at all (not merely disabled) → genuinely
+    terminal: returns None, NOT a suppressed decision. 'Absent' != 'disabled'."""
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry((_Fake("fast", "fast"), 20))  # only fast; no ocr processor
+    res = ProcessingResult(
+        text="",
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [{"page": 1, "start_offset": 0, "end_offset": 0}],
+        },
+        processor="fast",
+    )
+    assert r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=False)) is None

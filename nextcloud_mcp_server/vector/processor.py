@@ -157,33 +157,35 @@ async def _parse_pdf_tier(
         decision = registry.evaluate_escalation(
             result, content, tier, settings, filename=filename
         )
-        if decision is not None and decision.kind == "suppressed":
-            # The ideal next tier (e.g. ocr) is disabled, so we do NOT hop: index
-            # this tier's output as terminal and record the would-be escalation
-            # so operators see the latent demand ("what-if OCR enabled"; #324).
-            record_document_escalation_suppressed(
-                tier, decision.to_tier, decision.reason
-            )
-            logger.info(
-                "Escalation suppressed for %s: %s->%s disabled (reason=%s), "
-                "indexing at current tier",
-                filename or "<bytes>",
-                tier,
-                decision.to_tier,
-                decision.reason,
-            )
-        elif decision is not None:
-            record_document_escalation(tier, decision.to_tier, decision.reason)
-            logger.info(
-                "Escalating %s %s->%s (reason=%s)",
-                filename or "<bytes>",
-                tier,
-                decision.to_tier,
-                decision.reason,
-            )
-            raise EscalateError(
-                from_tier=tier, to_tier=decision.to_tier, reason=decision.reason
-            )
+        if decision is not None:
+            if decision.kind == "suppressed":
+                # The ideal next tier (e.g. ocr) is disabled, so we do NOT hop:
+                # index this tier's output as terminal and record the would-be
+                # escalation so operators see the latent demand ("what-if OCR
+                # enabled"; #324).
+                record_document_escalation_suppressed(
+                    tier, decision.to_tier, decision.reason
+                )
+                logger.info(
+                    "Escalation suppressed for %s: %s->%s disabled (reason=%s), "
+                    "indexing at current tier",
+                    filename or "<bytes>",
+                    tier,
+                    decision.to_tier,
+                    decision.reason,
+                )
+            else:  # "hop" — the Literal kind makes this branch exhaustive.
+                record_document_escalation(tier, decision.to_tier, decision.reason)
+                logger.info(
+                    "Escalating %s %s->%s (reason=%s)",
+                    filename or "<bytes>",
+                    tier,
+                    decision.to_tier,
+                    decision.reason,
+                )
+                raise EscalateError(
+                    from_tier=tier, to_tier=decision.to_tier, reason=decision.reason
+                )
     return result
 
 

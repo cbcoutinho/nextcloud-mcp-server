@@ -49,7 +49,7 @@ class EscalationDecision:
 
     kind: Literal["hop", "suppressed"]
     to_tier: str
-    reason: str  # empty_text | low_confidence
+    reason: Literal["empty_text", "low_confidence"]
 
 
 def next_tier(current: str) -> str | None:
