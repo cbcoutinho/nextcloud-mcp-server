@@ -384,6 +384,7 @@ def worker(concurrency: int | None, tier: str | None):
 
     from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
         ALL_INGEST_QUEUES,
+        INGEST_QUEUE_MAINTENANCE,
         LEGACY_INGEST_QUEUE,
         TIER_QUEUES,
         apply_ingest_queue_schema,
@@ -392,11 +393,14 @@ def worker(concurrency: int | None, tier: str | None):
 
     # Which queues this process drains. A single tier -> just its queue; no tier
     # -> every tier queue PLUS the legacy single queue, so a rolling upgrade
-    # never strands jobs deferred under the pre-#323 name.
+    # never strands jobs deferred under the pre-#323 name. Every worker also
+    # drains the maintenance queue so the periodic stalled-job reclaim fires
+    # regardless of which tier(s) are scaled up (procrastinate dedups the
+    # periodic, so multiple drainers don't multiply the reclaim).
     if tier is not None:
-        queues = [TIER_QUEUES[tier]]
+        queues = [TIER_QUEUES[tier], INGEST_QUEUE_MAINTENANCE]
     else:
-        queues = [*ALL_INGEST_QUEUES, LEGACY_INGEST_QUEUE]
+        queues = [*ALL_INGEST_QUEUES, LEGACY_INGEST_QUEUE, INGEST_QUEUE_MAINTENANCE]
 
     # This is the consumer side of the distributed (postgres) ingest backend.
     # Unlike the in-process anyio pool, the worker talks to procrastinate's App

@@ -87,6 +87,14 @@ LEGACY_INGEST_QUEUE = "ingest"
 # Back-compat alias for callers that imported the old single-queue constant.
 INGEST_QUEUE_NAME = DEFAULT_INGEST_QUEUE
 
+# Maintenance queue carrying ONLY the periodic stalled-job reclaim (no document
+# jobs). Every worker drains it regardless of --tier, so the reclaim fires even
+# in an asymmetric deployment where the fast fleet is scaled to zero and only
+# ocr workers run. procrastinate's periodic-defer dedup ensures exactly one
+# worker runs each tick even when many drain this queue. Kept off document
+# queues so tier isolation (which fleet processes which docs) is preserved.
+INGEST_QUEUE_MAINTENANCE = "ingest-maintenance"
+
 # Queues the job-count + reclaim helpers sweep (tier queues + the legacy one).
 _MANAGED_QUEUES: tuple[str, ...] = (*ALL_INGEST_QUEUES, LEGACY_INGEST_QUEUE)
 
@@ -368,8 +376,12 @@ def _build_ingest_blueprint() -> Blueprint:
             max_transient_attempts=get_settings().ingest_transient_max_attempts
         ),
     )(process_document_task)
+    # Reclaim runs on the dedicated maintenance queue (every worker drains it),
+    # not a tier queue -- otherwise an ocr-only deployment (fast scaled to zero)
+    # would never fire the periodic and orphaned ``doing`` jobs would never be
+    # reclaimed. The task itself sweeps ALL queues (get_stalled_jobs(queue=None)).
     reclaim = bp.task(
-        name="reclaim_stalled_jobs", queue=DEFAULT_INGEST_QUEUE, pass_context=True
+        name="reclaim_stalled_jobs", queue=INGEST_QUEUE_MAINTENANCE, pass_context=True
     )(reclaim_stalled_ingest_jobs)
     bp.periodic(cron="*/5 * * * *", periodic_id="reclaim_stalled_ingest")(reclaim)
     return bp

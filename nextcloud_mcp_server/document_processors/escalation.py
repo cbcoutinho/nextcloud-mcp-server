@@ -53,8 +53,10 @@ class EscalateError(Exception):
     the junk text is never indexed, and it must never be swallowed by a broad
     ``except Exception`` on the indexing path.
 
-    ``reason`` uses the existing escalation label vocabulary:
-    ``empty_text`` | ``low_confidence`` | ``unsupported`` | ``forced``.
+    ``reason`` uses the existing escalation label vocabulary. This PR raises
+    ``empty_text`` (scanned / no text layer) and ``low_confidence`` (junk text
+    layer); ``unsupported`` and ``forced`` are reserved for future callers and
+    not raised yet.
     """
 
     def __init__(self, *, from_tier: str, to_tier: str, reason: str) -> None:

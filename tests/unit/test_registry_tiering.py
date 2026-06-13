@@ -388,3 +388,15 @@ def test_evaluate_escalation_terminal_when_no_higher_tier(monkeypatch):
         processor="fast",
     )
     assert r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True)) is None
+
+
+def test_evaluate_escalation_zero_page_does_not_escalate(monkeypatch):
+    """A zero-page (empty/corrupt) PDF never escalates on the external path."""
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry((_Fake("fast", "fast"), 20), (_Fake("ocr", "ocr"), 5))
+    res = ProcessingResult(
+        text="",
+        metadata={"page_count": 0, "page_boundaries": []},
+        processor="fast",
+    )
+    assert r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True)) is None

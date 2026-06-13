@@ -147,6 +147,10 @@ async def _parse_pdf_tier(
         EscalateError,
     )
 
+    # options / progress_callback are not threaded here -- the indexing caller
+    # passes neither today, and the inline path (registry.process) omits them
+    # too. Forward them if a tier processor ever needs per-call tuning (e.g. OCR
+    # DPI); keeping the two paths symmetric until then.
     result = await registry.process_tier(content, content_type, filename, tier)
     if result.success:
         decision = registry.evaluate_escalation(

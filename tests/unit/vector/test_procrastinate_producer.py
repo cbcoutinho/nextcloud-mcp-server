@@ -48,7 +48,8 @@ class TestProcrastinateTaskProducer:
         assert len(jobs) == 1
         job = jobs[0]
         assert job["task_name"] == pq.INGEST_TASK_NAME
-        assert job["queue_name"] == pq.INGEST_QUEUE_NAME
+        # New jobs are deferred onto the cheapest tier's queue.
+        assert job["queue_name"] == pq.INGEST_QUEUE_FAST
         assert job["queueing_lock"] == "alice:note:42"
         assert job["lock"] is None  # no execution lock (crash-deadlock guard)
         assert job["args"]["doc_id"] == "42"
