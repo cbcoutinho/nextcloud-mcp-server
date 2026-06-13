@@ -15,7 +15,7 @@ from nextcloud_mcp_server.observability.tracing import trace_operation
 
 from .base import DocumentProcessor, ProcessingResult, ProcessorError
 from .classifier import DocClassification, classify_from_text, image_coverage_per_page
-from .escalation import TIER_LADDER
+from .escalation import TIER_LADDER, EscalationDecision
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +247,13 @@ class ProcessorRegistry:
             result, content, settings, record=True, filename=filename
         )
 
+        # NOTE: the suppressed-escalation metric (document_escalation_suppressed_total,
+        # the "what-if OCR" signal; Deck #324) is intentionally NOT emitted on this
+        # inline/memory path -- it is instrumented only on the per-tier external
+        # path (vector/processor._parse_pdf_tier via evaluate_escalation). When OCR
+        # is off here the would-be escalation is simply not taken (the gate below);
+        # operators reading the suppressed counter are on the procrastinate fleet.
+        #
         # Escalate scanned / no-text-layer PDFs to OCR (tier-3) when enabled and
         # a provider is registered. The fast tier is terminal otherwise. Note: a
         # fast FAILURE (encrypted/corrupt -- result.success False, no
@@ -390,22 +397,39 @@ class ProcessorRegistry:
             )
         return classification
 
-    def _tier_available(self, tier: str, settings: Any) -> bool:
-        """Whether ``tier`` can actually run a PDF parse right now.
+    def _tier_available(
+        self, tier: str, settings: Any, *, ignore_ocr_enabled: bool = False
+    ) -> bool:
+        """Whether ``tier`` can run a PDF parse right now.
 
         A tier is available when it has a registered PDF processor and is
         enabled; the ``ocr`` tier additionally requires ``DOCUMENT_OCR_ENABLED``
         (so OCR stays opt-in and a misconfigured tenant never escalates to a
         backend it hasn't turned on).
+
+        ``ignore_ocr_enabled`` drops only the OCR-enabled gate (not the registered-
+        processor requirement): it answers "would this tier run if OCR were turned
+        on?" — used to compute the *ideal* escalation target for the what-if-OCR
+        suppressed-escalation signal. (Today only ``ocr`` has an enabled gate; a
+        future per-tier gate would extend the condition below.)
         """
         if self._pdf_processor_for_tier(tier) is None:
             return False
-        if tier == "ocr" and not settings.document_ocr_enabled:
+        if (
+            not ignore_ocr_enabled
+            and tier == "ocr"
+            and not settings.document_ocr_enabled
+        ):
             return False
         return True
 
     def next_available_tier(
-        self, current_tier: str, settings: Any, *, minimum: str | None = None
+        self,
+        current_tier: str,
+        settings: Any,
+        *,
+        minimum: str | None = None,
+        ignore_ocr_enabled: bool = False,
     ) -> str | None:
         """First escalation target above ``current_tier`` that can actually run.
 
@@ -413,6 +437,8 @@ class ProcessorRegistry:
         ``minimum``'s rung, when given) and returns the first
         :meth:`_tier_available` tier. ``None`` means no higher tier can run --
         ``current_tier`` is then terminal and its result is indexed as-is.
+        ``ignore_ocr_enabled`` is forwarded to :meth:`_tier_available` to find the
+        *ideal* target ignoring the OCR-enabled gate (see ``evaluate_escalation``).
         """
         try:
             cur_idx = TIER_LADDER.index(current_tier)
@@ -425,7 +451,9 @@ class ProcessorRegistry:
             except ValueError:
                 pass
         for tier in TIER_LADDER[start_idx:]:
-            if self._tier_available(tier, settings):
+            if self._tier_available(
+                tier, settings, ignore_ocr_enabled=ignore_ocr_enabled
+            ):
                 return tier
         return None
 
@@ -475,25 +503,33 @@ class ProcessorRegistry:
         settings: Any,
         *,
         filename: str | None = None,
-    ) -> tuple[str, str] | None:
+    ) -> EscalationDecision | None:
         """Decide whether ``current_tier``'s result must escalate (external path).
 
-        Returns ``(to_tier, reason)`` when the parse is too poor to index and a
-        higher tier can run, else ``None`` (index the result as-is). Reuses the
-        tier-0 classifier as the post-parse quality gate, so the escalation
-        signal is identical to the inline pipeline's.
+        Returns an :class:`EscalationDecision` (``"hop"`` or ``"suppressed"``)
+        when the classifier judges the parse too poor to index, else ``None``
+        (index as-is). Reuses the tier-0 classifier as the post-parse quality
+        gate, so the signal is identical to the inline pipeline's.
 
         A hard parse FAILURE (``result.success`` False) is never escalated: a
         corrupt/encrypted PDF one engine can't open usually defeats the others
         too (OCR reads the same bytes), so the caller marks it failed instead.
 
-        Routing of the target tier:
+        Target-tier routing:
 
         - ``total_chars == 0`` (scanned / no text layer) -> target the ``ocr``
           tier directly. Text-extractor tiers (``structured``) cannot conjure
           text from a pure raster scan, so a structured hop would just be wasted.
         - low-confidence but non-empty layer -> escalate to the next rung, so a
           different in-cluster extractor can try before paying for OCR.
+
+        Hop vs suppressed: if the ideal target tier can run, return a ``"hop"``.
+        If it can't run **only because it's disabled** (OCR off — the *ideal*
+        tier exists ignoring the enabled gate, but the *available* one does not),
+        return ``"suppressed"`` so the caller records the would-be hop and indexes
+        the current tier's output as terminal (OCR stays opt-in + cost-free, but
+        the latent demand is observable). If no higher tier exists *at all* (no
+        processor registered), it's genuinely terminal -> ``None``.
         """
         classification = self._classify_result(
             result,
@@ -508,14 +544,22 @@ class ProcessorRegistry:
         if classification.page_count <= 0:
             return None
         if classification.total_chars == 0:
-            to_tier = self.next_available_tier(current_tier, settings, minimum="ocr")
+            minimum: str | None = "ocr"
             reason = "empty_text"
         else:
-            to_tier = self.next_available_tier(current_tier, settings)
+            minimum = None
             reason = "low_confidence"
-        if to_tier is None:
-            return None
-        return (to_tier, reason)
+        to_tier = self.next_available_tier(current_tier, settings, minimum=minimum)
+        if to_tier is not None:
+            return EscalationDecision("hop", to_tier, reason)
+        # No tier can run as configured. Distinguish "disabled (e.g. OCR off)"
+        # from "no such tier at all" by re-resolving ignoring the enabled gate.
+        ideal = self.next_available_tier(
+            current_tier, settings, minimum=minimum, ignore_ocr_enabled=True
+        )
+        if ideal is not None:
+            return EscalationDecision("suppressed", ideal, reason)
+        return None
 
     async def _run_processor(
         self,

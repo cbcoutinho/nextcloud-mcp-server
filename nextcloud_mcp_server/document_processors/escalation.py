@@ -21,9 +21,35 @@ mapping lives in the queue layer, which imports :class:`EscalateError` from here
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 # Cheapest-first. ``llm`` is reserved (see base.DocumentProcessor.tier) and not
 # wired yet, so it is intentionally absent from the live ladder.
 TIER_LADDER: tuple[str, ...] = ("fast", "structured", "ocr")
+
+
+@dataclass(frozen=True)
+class EscalationDecision:
+    """Outcome of the post-parse quality gate (``ProcessorRegistry.evaluate_escalation``).
+
+    ``kind``:
+      * ``"hop"`` — the parse is too poor and a higher tier *can run*; the caller
+        raises :class:`EscalateError` to requeue the document onto ``to_tier``.
+      * ``"suppressed"`` — the parse would escalate to ``to_tier`` (the *ideal*
+        next tier), but that tier is **disabled** (e.g. OCR off). The caller does
+        NOT hop — it indexes the current tier's output as terminal — and records
+        the would-be escalation so operators see the latent demand ("what-if OCR
+        were enabled"). Enabling the tier turns these into real ``"hop"`` events.
+
+    A ``None`` return from ``evaluate_escalation`` (not an instance of this class)
+    means "index as-is, nothing to escalate" — good text, or no higher tier
+    exists at all (no processor registered for it).
+    """
+
+    kind: Literal["hop", "suppressed"]
+    to_tier: str
+    reason: Literal["empty_text", "low_confidence"]
 
 
 def next_tier(current: str) -> str | None:
