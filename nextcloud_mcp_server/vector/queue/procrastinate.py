@@ -379,6 +379,9 @@ def _build_ingest_blueprint() -> Blueprint:
         # BaseRetryStrategy subclass is the documented extension point (and is
         # accepted at runtime by get_retry_strategy). The annotation is just too
         # narrow, hence the ignore.
+        # Settings are snapshotted here at blueprint-build time (build_app, first
+        # use), so a restart is needed to pick up INGEST_TRANSIENT_MAX_ATTEMPTS
+        # changes -- intentional: the strategy lives for the App's lifetime.
         retry=TieredEscalationStrategy(
             max_transient_attempts=get_settings().ingest_transient_max_attempts
         ),

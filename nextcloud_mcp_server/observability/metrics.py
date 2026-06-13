@@ -656,16 +656,20 @@ def update_ingest_queue_depth(by_queue: dict[str, dict[str, int]] | None) -> Non
     """Set the per-tier-queue depth gauge from procrastinate job counts (#323).
 
     ``by_queue`` is ``{queue_name: {status: count}}`` (see
-    ``queue.procrastinate.get_ingest_job_counts_by_queue``). No-op on the memory
-    backend (``by_queue`` is None).
+    ``queue.procrastinate.get_ingest_job_counts_by_queue``). No-op only on the
+    memory backend (``by_queue is None``); an empty dict (postgres backend with
+    every queue drained) still runs the pre-zero so the gauge reads 0.
 
     Every managed queue is zeroed first: ``list_queues_async`` stops returning a
     queue once it has no jobs, so a queue that drained to empty drops out of
-    ``by_queue`` entirely. Without the pre-zero its gauge series would stick at
-    its last non-zero value (ghost backlog in Grafana/alerts) instead of reading
-    0. The live counts then overwrite the zeros for queues that still have work.
+    ``by_queue`` entirely (and when ALL drain, ``by_queue`` is ``{}``). Without
+    the pre-zero its gauge series would stick at its last non-zero value (ghost
+    backlog in Grafana/alerts) instead of reading 0. The live counts then
+    overwrite the zeros for queues that still have work.
     """
-    if not by_queue:
+    # ``is None`` not ``not by_queue``: an empty dict means "postgres, all queues
+    # drained" and MUST still zero the gauge -- only None (memory) is the no-op.
+    if by_queue is None:
         return
     # Lazy import to keep observability decoupled from the queue layer at module
     # load (and sidestep any import cycle); both names are public constants.

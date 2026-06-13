@@ -39,3 +39,17 @@ def test_none_is_noop(metric_sample):
     assert metric_sample(
         _METRIC, {"queue": "ingest-fast", "status": "doing"}
     ) == approx(2)
+
+
+def test_all_queues_drained_empty_dict_zeroes(metric_sample):
+    # postgres backend with every queue drained → get_ingest_job_counts_by_queue
+    # returns {} (list_queues_async drops empty queues). An empty dict is NOT the
+    # memory-backend no-op: it must still zero every managed queue's gauge.
+    update_ingest_queue_depth({"ingest-fast": {"todo": 9}})
+    assert metric_sample(_METRIC, {"queue": "ingest-fast", "status": "todo"}) == approx(
+        9
+    )
+    update_ingest_queue_depth({})
+    assert metric_sample(_METRIC, {"queue": "ingest-fast", "status": "todo"}) == approx(
+        0
+    )
