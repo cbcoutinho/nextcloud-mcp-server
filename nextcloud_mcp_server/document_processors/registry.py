@@ -247,6 +247,13 @@ class ProcessorRegistry:
             result, content, settings, record=True, filename=filename
         )
 
+        # NOTE: the suppressed-escalation metric (document_escalation_suppressed_total,
+        # the "what-if OCR" signal; Deck #324) is intentionally NOT emitted on this
+        # inline/memory path -- it is instrumented only on the per-tier external
+        # path (vector/processor._parse_pdf_tier via evaluate_escalation). When OCR
+        # is off here the would-be escalation is simply not taken (the gate below);
+        # operators reading the suppressed counter are on the procrastinate fleet.
+        #
         # Escalate scanned / no-text-layer PDFs to OCR (tier-3) when enabled and
         # a provider is registered. The fast tier is terminal otherwise. Note: a
         # fast FAILURE (encrypted/corrupt -- result.success False, no
