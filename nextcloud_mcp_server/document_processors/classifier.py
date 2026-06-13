@@ -4,17 +4,24 @@ Decides which extraction tier a PDF should escalate to, from cheap signals:
   * text_quality -- is the text layer usable, or mashed/space-less junk? (the
     "Student 147" lesson: a text layer can exist yet be unusable, e.g.
     "01322234567mobile")
-  * image_coverage -- a page that is mostly a raster image is a scan/photo whose
-    content isn't fully in any text layer.
   * no text layer -- the strongest OCR signal available from text alone.
+
+Routing is on the TEXT signals only: a page escalates to OCR when its text is
+near-empty or junk-quality. ``image_coverage`` is computed but is a DIAGNOSTIC
+signal (the ``image_heavy`` flag), NOT a routing trigger: a mostly-raster page
+whose embedded text is already usable (a scan carrying a clean OCR layer, or a
+digital page dominated by a figure) gains nothing from re-OCR, so escalating it
+to the paid OCR tier was wasteful -- on OHR-Bench the coverage trigger drove
+~45% of escalations. The trade-off: image-only content on an otherwise-clean
+page (handwriting, stamps, figure text) is no longer force-routed to OCR.
 
 Two entry points:
   * ``classify_from_text(text, page_boundaries, ...)`` -- the HOT PATH. Routes on
     text-quality + near-empty pages derived from the tier-1 extraction (~no
     cost). When OCR + scan-detection are enabled the registry also passes
-    per-page ``image_coverage`` (from ``image_coverage_per_page``) so scans are
-    caught too; that image pass is the only added cost and only OCR-opted-in
-    tenants pay it. Thresholds come from per-tenant settings.
+    per-page ``image_coverage`` (from ``image_coverage_per_page``) for the
+    ``image_heavy`` diagnostic flag; that image pass is the only added cost and
+    only OCR-opted-in tenants pay it. Thresholds come from per-tenant settings.
   * ``classify_pdf(content)`` -- a standalone/diagnostic pass that re-opens the
     PDF and does image-coverage analysis inline. Off the hot path.
 
@@ -36,8 +43,10 @@ logger = logging.getLogger(__name__)
 # so the pass stays bounded regardless of page count.
 MAX_SAMPLED_PAGES = 24
 
-# A page counts as "scanned-like" when a raster image covers most of it.
-IMAGE_COVERAGE_SCANNED = 0.80
+# Raster-image coverage above which a page raises the DIAGNOSTIC ``image_heavy``
+# flag. This is observability only -- it does NOT route to OCR (see module
+# docstring); routing is on the text signals alone.
+IMAGE_HEAVY_THRESHOLD = 0.80
 # Text-quality score below which the layer is treated as junk (mashed tokens).
 # Kept in sync with the DOCUMENT_OCR_MIN_TEXT_QUALITY setting default so the
 # module/diagnostic default matches production (the registry always passes the
@@ -152,15 +161,15 @@ def classify_pdf(content: bytes) -> DocClassification:
             text = page.get_text("text")
             quality = _text_quality(text)
             coverage = _page_image_coverage(page)
-            # OCR-worthy on the same three signals as classify_from_text (kept in
-            # sync so an operator reproducing routing offline gets the pipeline's
-            # answer): a mostly-raster scan, a junk/low-quality text layer (the
-            # word-merging case), or an effectively empty text layer.
-            needs_ocr = (
-                coverage >= IMAGE_COVERAGE_SCANNED
-                or quality < MIN_TEXT_QUALITY
-                or len(text.strip()) < MIN_PAGE_CHARS
-            )
+            # OCR-worthy on TEXT signals only (kept in sync with
+            # classify_from_text): a junk/low-quality text layer (the
+            # word-merging case) or an effectively empty one. Image coverage is
+            # deliberately NOT a routing trigger -- a mostly-raster page whose
+            # embedded text is already usable (a scan with a clean OCR layer, or
+            # a digital page dominated by a figure) gains nothing from re-OCR, so
+            # routing it to the paid OCR tier was wasteful. High coverage still
+            # raises the diagnostic image_heavy flag below.
+            needs_ocr = quality < MIN_TEXT_QUALITY or len(text.strip()) < MIN_PAGE_CHARS
             pages.append(
                 PageSignals(n, len(text), round(coverage, 3), quality, needs_ocr)
             )
@@ -178,7 +187,7 @@ def classify_pdf(content: bytes) -> DocClassification:
     # one full-page photo is flagged image_heavy yet still routes "fast" -- the
     # flag_total{image_heavy} count is expected to exceed classified{ocr}.
     flags: set[str] = set()
-    if any(p.image_coverage >= IMAGE_COVERAGE_SCANNED for p in pages):
+    if any(p.image_coverage >= IMAGE_HEAVY_THRESHOLD for p in pages):
         flags.add("image_heavy")
     if (
         ocr_frac >= OCR_PAGE_FRACTION
@@ -206,16 +215,13 @@ def classify_pdf(content: bytes) -> DocClassification:
 def image_coverage_per_page(content: bytes) -> list[float]:
     """Raster-image coverage in ``[0, 1]`` for every page (document order).
 
-    Lets the hot path flag scanned pages whose embedded text layer is junk but
-    statistically clean-looking. Re-opens the PDF, so the registry calls it only
-    when OCR + scan detection are enabled (the cost is borne by OCR-opted-in
-    tenants). Returned list is aligned by index with the leading page boundaries.
+    Feeds the ``image_heavy`` DIAGNOSTIC flag only (coverage no longer routes --
+    see module docstring). Re-opens the PDF, so the registry calls it only when
+    OCR + scan detection are enabled (the cost is borne by OCR-opted-in tenants).
+    Returned list is aligned by index with the leading page boundaries.
 
     Bounded to the first ``MAX_SAMPLED_PAGES`` pages -- the image pass is the
-    costly part, so a 200-page scan isn't fully rasterised on the hot path. Pages
-    beyond the cap fall back to the text-quality signal in ``classify_from_text``
-    (a scanned tail has junk text too), and ``page_fraction`` still gates over
-    every page.
+    costly part, so a 200-page scan isn't fully rasterised on the hot path.
     """
     import pymupdf  # noqa: PLC0415 -- keep the heavy import lazy
 
@@ -238,18 +244,18 @@ def classify_from_text(
     """Classify from text already extracted by tier-1 -- no PDF re-open by default.
 
     The hot-path classifier. A page is OCR-worthy when its text is near-empty
-    (``< min_page_chars``), its text-quality is junk (``< min_text_quality`` --
-    the word-merging signal), OR (when ``image_coverage`` is supplied, i.e. OCR +
-    scan-detection are on) the page is mostly a raster image. The doc recommends
-    ``ocr`` once ``ocr_frac >= page_fraction``. Thresholds are passed in by the
-    registry from per-tenant settings.
+    (``< min_page_chars``) or its text-quality is junk (``< min_text_quality`` --
+    the word-merging signal). The doc recommends ``ocr`` once
+    ``ocr_frac >= page_fraction``. Thresholds are passed in by the registry from
+    per-tenant settings. ``image_coverage`` (when supplied) only feeds the
+    ``image_heavy`` diagnostic flag -- it does NOT route (see module docstring).
 
     ``page_boundaries`` are ``{page, start_offset, end_offset}`` indexing into
     ``full_text``; ``image_coverage[i]`` (if given) aligns with the i-th boundary.
 
-    Note: the ``image_heavy`` flag (and the image-coverage trigger) are only set
-    when ``image_coverage`` is supplied, so for tenants with scan detection off
-    that flag is always zero -- the text-quality/empty signals still route.
+    Note: the ``image_heavy`` flag is only set when ``image_coverage`` is
+    supplied, so for tenants with scan detection off that flag is always zero.
+    Routing is unaffected either way -- it is on the text signals alone.
     """
     # image_coverage is expected to be one entry per page, capped at
     # MAX_SAMPLED_PAGES (see image_coverage_per_page). Any other length means the
@@ -278,11 +284,14 @@ def classify_from_text(
             if image_coverage is not None and idx < len(image_coverage)
             else 0.0
         )
-        needs_ocr = (
-            len(seg.strip()) < min_page_chars
-            or quality < min_text_quality
-            or cov >= IMAGE_COVERAGE_SCANNED
-        )
+        # Routing is on TEXT signals only: a near-empty layer or a junk/
+        # space-mangled one. Image coverage (``cov``) is intentionally not a
+        # routing trigger -- a mostly-raster page with an already-usable text
+        # layer does not benefit from re-OCR, so escalating it to the paid OCR
+        # tier was wasteful (on OHR-Bench this drove ~45% of escalations: clean
+        # digital figure-pages and scans that already carry a good OCR layer).
+        # ``cov`` still feeds the diagnostic ``image_heavy`` flag below.
+        needs_ocr = len(seg.strip()) < min_page_chars or quality < min_text_quality
         pages.append(
             PageSignals(b["page"], len(seg), round(cov, 3), quality, needs_ocr)
         )
@@ -309,7 +318,7 @@ def classify_from_text(
             flags.add("scanned")
         elif mean_quality < min_text_quality:
             flags.add("bad_text_layer")
-    if any(p.image_coverage >= IMAGE_COVERAGE_SCANNED for p in pages):
+    if any(p.image_coverage >= IMAGE_HEAVY_THRESHOLD for p in pages):
         flags.add("image_heavy")
 
     recommended = "ocr" if ocr_frac >= page_fraction else "fast"
