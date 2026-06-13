@@ -400,3 +400,23 @@ def test_evaluate_escalation_zero_page_does_not_escalate(monkeypatch):
         processor="fast",
     )
     assert r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True)) is None
+
+
+def test_evaluate_escalation_lowconf_to_ocr_when_no_structured(monkeypatch):
+    """fast+ocr only: a low-confidence parse routes straight to ocr (skips the
+    unregistered structured rung), not to None."""
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    junk = "z" * 40  # non-empty but junk -> recommended ocr, total_chars > 0
+    r = _registry((_Fake("fast", "fast"), 20), (_Fake("ocr", "ocr"), 5))
+    res = ProcessingResult(
+        text=junk,
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [
+                {"page": 1, "start_offset": 0, "end_offset": len(junk)}
+            ],
+        },
+        processor="fast",
+    )
+    decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True))
+    assert decision == ("ocr", "low_confidence")

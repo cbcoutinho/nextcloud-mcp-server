@@ -656,12 +656,27 @@ def update_ingest_queue_depth(by_queue: dict[str, dict[str, int]] | None) -> Non
     """Set the per-tier-queue depth gauge from procrastinate job counts (#323).
 
     ``by_queue`` is ``{queue_name: {status: count}}`` (see
-    ``queue.procrastinate.get_ingest_job_counts_by_queue``). A queue missing a
-    status is set to 0 so a drained queue reads zero rather than going stale at
-    its last non-zero value. No-op on the memory backend (``by_queue`` is None).
+    ``queue.procrastinate.get_ingest_job_counts_by_queue``). No-op on the memory
+    backend (``by_queue`` is None).
+
+    Every managed queue is zeroed first: ``list_queues_async`` stops returning a
+    queue once it has no jobs, so a queue that drained to empty drops out of
+    ``by_queue`` entirely. Without the pre-zero its gauge series would stick at
+    its last non-zero value (ghost backlog in Grafana/alerts) instead of reading
+    0. The live counts then overwrite the zeros for queues that still have work.
     """
     if not by_queue:
         return
+    # Lazy import to keep observability decoupled from the queue layer at module
+    # load (and sidestep any import cycle); both names are public constants.
+    from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
+        ALL_INGEST_QUEUES,
+        LEGACY_INGEST_QUEUE,
+    )
+
+    for queue in (*ALL_INGEST_QUEUES, LEGACY_INGEST_QUEUE):
+        for status in _INGEST_DEPTH_STATUSES:
+            ingest_queue_depth.labels(queue=queue, status=status).set(0)
     for queue, per_status in by_queue.items():
         for status in _INGEST_DEPTH_STATUSES:
             ingest_queue_depth.labels(queue=queue, status=status).set(

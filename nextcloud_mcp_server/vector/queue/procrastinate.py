@@ -279,6 +279,13 @@ def _is_transient_infra_error(exc: BaseException) -> bool:
             return exc.status_code >= 500
     except ImportError:  # pragma: no cover -- openai is a hard dependency
         pass
+    # Deliberately over-broad: this treats ALL qdrant_client exceptions as
+    # transient (not just timeouts/5xx). In a healthy cluster qdrant errors are
+    # transient, and a bounded same-tier retry is cheap; a genuinely permanent
+    # qdrant fault (e.g. schema mismatch) just exhausts the transient cap and
+    # then gives up. So unlike _drop_reason (which only *labels* the cause), this
+    # may add a few retries on a non-retriable qdrant error -- an acceptable
+    # trade for not having to enumerate qdrant's non-retriable status codes.
     if type(exc).__module__.startswith("qdrant_client"):
         return True
     return False

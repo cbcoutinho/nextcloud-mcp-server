@@ -30,10 +30,11 @@ def next_tier(current: str) -> str | None:
     """The next tier above ``current`` in the ladder, or ``None`` if terminal.
 
     Pure ordering only -- it does not consider whether the next tier is
-    *available* (a processor registered / OCR enabled). Callers that need
-    availability resolve it against the registry + settings (see
-    ``ProcessorRegistry.next_available_tier``); a tier with no escalation target
-    is terminal and its result is indexed as-is.
+    *available* (a processor registered / OCR enabled). **Production routing uses
+    ``ProcessorRegistry.next_available_tier``**, which layers availability on top
+    of this ordering; ``next_tier`` itself is the underlying building block
+    (referenced directly by tests). A tier with no escalation target is terminal
+    and its result is indexed as-is.
     """
     try:
         idx = TIER_LADDER.index(current)
