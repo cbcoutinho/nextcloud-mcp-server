@@ -498,3 +498,27 @@ def test_evaluate_escalation_terminal_when_ocr_unregistered_and_off(monkeypatch)
         processor="fast",
     )
     assert r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=False)) is None
+
+
+def test_evaluate_escalation_empty_suppressed_even_when_structured_registered(
+    monkeypatch,
+):
+    """empty_text uses minimum='ocr', so it skips structured even when structured
+    IS registered: with OCR off it suppresses to ocr, never hops to structured
+    (a text extractor can't conjure text from a raster scan)."""
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("structured", "structured"), 10),  # registered but skipped for empty
+        (_Fake("ocr", "ocr"), 5),
+    )
+    res = ProcessingResult(
+        text="",
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [{"page": 1, "start_offset": 0, "end_offset": 0}],
+        },
+        processor="fast",
+    )
+    decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=False))
+    assert decision == EscalationDecision("suppressed", "ocr", "empty_text")

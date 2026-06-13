@@ -398,7 +398,7 @@ class ProcessorRegistry:
         return classification
 
     def _tier_available(
-        self, tier: str, settings: Any, *, ignore_enabled: bool = False
+        self, tier: str, settings: Any, *, ignore_ocr_enabled: bool = False
     ) -> bool:
         """Whether ``tier`` can run a PDF parse right now.
 
@@ -407,7 +407,7 @@ class ProcessorRegistry:
         (so OCR stays opt-in and a misconfigured tenant never escalates to a
         backend it hasn't turned on).
 
-        ``ignore_enabled`` drops only the OCR-enabled gate (not the registered-
+        ``ignore_ocr_enabled`` drops only the OCR-enabled gate (not the registered-
         processor requirement): it answers "would this tier run if OCR were turned
         on?" — used to compute the *ideal* escalation target for the what-if-OCR
         suppressed-escalation signal. (Today only ``ocr`` has an enabled gate; a
@@ -415,7 +415,11 @@ class ProcessorRegistry:
         """
         if self._pdf_processor_for_tier(tier) is None:
             return False
-        if not ignore_enabled and tier == "ocr" and not settings.document_ocr_enabled:
+        if (
+            not ignore_ocr_enabled
+            and tier == "ocr"
+            and not settings.document_ocr_enabled
+        ):
             return False
         return True
 
@@ -425,7 +429,7 @@ class ProcessorRegistry:
         settings: Any,
         *,
         minimum: str | None = None,
-        ignore_enabled: bool = False,
+        ignore_ocr_enabled: bool = False,
     ) -> str | None:
         """First escalation target above ``current_tier`` that can actually run.
 
@@ -433,7 +437,7 @@ class ProcessorRegistry:
         ``minimum``'s rung, when given) and returns the first
         :meth:`_tier_available` tier. ``None`` means no higher tier can run --
         ``current_tier`` is then terminal and its result is indexed as-is.
-        ``ignore_enabled`` is forwarded to :meth:`_tier_available` to find the
+        ``ignore_ocr_enabled`` is forwarded to :meth:`_tier_available` to find the
         *ideal* target ignoring the OCR-enabled gate (see ``evaluate_escalation``).
         """
         try:
@@ -447,7 +451,9 @@ class ProcessorRegistry:
             except ValueError:
                 pass
         for tier in TIER_LADDER[start_idx:]:
-            if self._tier_available(tier, settings, ignore_enabled=ignore_enabled):
+            if self._tier_available(
+                tier, settings, ignore_ocr_enabled=ignore_ocr_enabled
+            ):
                 return tier
         return None
 
@@ -549,7 +555,7 @@ class ProcessorRegistry:
         # No tier can run as configured. Distinguish "disabled (e.g. OCR off)"
         # from "no such tier at all" by re-resolving ignoring the enabled gate.
         ideal = self.next_available_tier(
-            current_tier, settings, minimum=minimum, ignore_enabled=True
+            current_tier, settings, minimum=minimum, ignore_ocr_enabled=True
         )
         if ideal is not None:
             return EscalationDecision("suppressed", ideal, reason)
