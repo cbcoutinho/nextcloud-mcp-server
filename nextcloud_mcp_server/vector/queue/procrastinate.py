@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import TYPE_CHECKING
 
@@ -197,8 +197,16 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
     periodic-run marker (unused).
     """
     manager = context.app.job_manager
-    retry_at = datetime.now(tz=timezone.utc)
-    stalled_after = get_settings().ingest_stalled_job_seconds
+    settings = get_settings()
+    # Stagger the re-run rather than retry at now(): a stall is often systemic (a
+    # Qdrant / embedding outage stalls every in-flight job), so reclaiming the
+    # whole batch immediately every tick would thundering-herd a recovering
+    # dependency, bypassing TieredEscalationStrategy's per-job backoff. The fixed
+    # delay spreads them out; 0 restores the legacy immediate retry.
+    retry_at = datetime.now(tz=timezone.utc) + timedelta(
+        seconds=settings.ingest_reclaim_retry_delay_seconds
+    )
+    stalled_after = settings.ingest_stalled_job_seconds
     reclaimed = 0
     # queue=None sweeps every queue, so an orphaned job on any tier queue is
     # reclaimed regardless of which tier's worker happens to run this periodic.

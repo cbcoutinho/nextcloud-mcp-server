@@ -192,9 +192,10 @@ class TestProcessDocumentTask:
 
 class TestReclaimStalledJobs:
     async def test_reclaims_each_stalled_job(self):
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         retried: list[int] = []
+        retry_ats: list[datetime] = []
 
         class Job:
             def __init__(self, id):
@@ -209,6 +210,7 @@ class TestReclaimStalledJobs:
             async def retry_job_by_id_async(self, job_id, retry_at):
                 assert isinstance(retry_at, datetime)
                 retried.append(job_id)
+                retry_ats.append(retry_at)
 
         class FakeApp:
             job_manager = FakeManager()
@@ -216,8 +218,12 @@ class TestReclaimStalledJobs:
         class Ctx:
             app = FakeApp()
 
+        before = datetime.now(tz=timezone.utc)
         await pq.reclaim_stalled_ingest_jobs(cast(JobContext, Ctx()), timestamp=0)
         assert retried == [1, 2]
+        # Reclaimed jobs are staggered into the future (default 30s) rather than
+        # retried at now(), so a systemic outage doesn't thundering-herd.
+        assert all((ra - before).total_seconds() >= 25 for ra in retry_ats)
 
 
 class TestGetIngestJobCounts:

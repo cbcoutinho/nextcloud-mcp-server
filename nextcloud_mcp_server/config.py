@@ -240,13 +240,23 @@ _DEFAULTS: dict[str, Any] = {
     # queue-hop. When false the ``fast`` tier is terminal -- reproduces the
     # pre-#323 behaviour where the cheap tier's output is indexed as-is. No effect
     # on the in-process ``memory`` backend, which keeps the inline escalation.
+    # HOT: re-read per job (process_document_task), so it takes effect on the next
+    # job -- unlike INGEST_TRANSIENT_MAX_ATTEMPTS, which is snapshotted at worker
+    # startup and needs a restart.
     "ingest_escalation_enabled": True,
     # Global cap on SAME-tier retries for transient infra errors (doc fetch /
     # embed / Qdrant blips) on the procrastinate path. Parse-quality failures
     # escalate (one parse attempt per tier) and do NOT consume this budget; only
     # whitelisted transient exceptions retry in place. Shared across tiers because
     # a queue-hop cannot reset a per-tier counter (see TieredEscalationStrategy).
+    # Snapshotted at worker startup (blueprint build); restart to change it.
     "ingest_transient_max_attempts": 5,
+    # Delay (seconds) before a reclaimed stalled job is re-run. A stall is often
+    # systemic (Qdrant/embedding outage), so reclaiming every crashed job at
+    # now() would thundering-herd a recovering dependency every reclaim tick
+    # (*/5min), bypassing TieredEscalationStrategy's per-job backoff. A small
+    # fixed delay staggers the retry. 0 = immediate (legacy behaviour).
+    "ingest_reclaim_retry_delay_seconds": 30,
     "collection_metadata_source": "qdrant",  # qdrant | api
     # CP base URL for COLLECTION_METADATA_SOURCE=api (e.g. http://control-plane).
     # Required only when the source is api.
@@ -331,6 +341,7 @@ _dynaconf = Dynaconf(
         # Positive integers
         Validator("INGEST_STALLED_JOB_SECONDS", gte=1),
         Validator("INGEST_TRANSIENT_MAX_ATTEMPTS", gte=1),
+        Validator("INGEST_RECLAIM_RETRY_DELAY_SECONDS", gte=0),
         Validator("VECTOR_SYNC_SCAN_INTERVAL", gte=1),
         Validator("VECTOR_SYNC_PROCESSOR_WORKERS", gte=1),
         Validator("VECTOR_SYNC_QUEUE_MAX_SIZE", gte=1),
@@ -872,6 +883,7 @@ class Settings:
     ingest_delete_succeeded_jobs: bool = True  # drop succeeded ingest jobs
     ingest_escalation_enabled: bool = True  # per-tier queue-hop (Deck #323)
     ingest_transient_max_attempts: int = 5  # same-tier transient-retry cap
+    ingest_reclaim_retry_delay_seconds: int = 30  # stagger reclaimed-job retries
     collection_metadata_source: str = "qdrant"  # qdrant | api
     collection_metadata_api_url: str | None = None  # CP URL when source=api
     embedding_gateway_url: str | None = None  # required when provider=gateway
@@ -1499,6 +1511,7 @@ def get_settings() -> Settings:
         "ingest_delete_succeeded_jobs": "INGEST_DELETE_SUCCEEDED_JOBS",
         "ingest_escalation_enabled": "INGEST_ESCALATION_ENABLED",
         "ingest_transient_max_attempts": "INGEST_TRANSIENT_MAX_ATTEMPTS",
+        "ingest_reclaim_retry_delay_seconds": "INGEST_RECLAIM_RETRY_DELAY_SECONDS",
         "collection_metadata_source": "COLLECTION_METADATA_SOURCE",
         "collection_metadata_api_url": "COLLECTION_METADATA_API_URL",
         "embedding_gateway_url": "EMBEDDING_GATEWAY_URL",
