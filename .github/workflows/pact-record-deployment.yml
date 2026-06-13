@@ -31,6 +31,12 @@ on:
 permissions:
   contents: read
 
+# A re-tag (e.g. after a botched release) could push the same/overlapping tag
+# twice; don't cancel an in-flight recording — let it complete.
+concurrency:
+  group: pact-record-deployment-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   PACT_BROKER: ${{ secrets.PACT_BROKER }}
   PACT_USERNAME: ${{ secrets.PACT_USERNAME }}
@@ -40,6 +46,7 @@ jobs:
   record-deployment:
     name: Record production deployment
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Join tailnet
         if: ${{ env.PACT_BROKER != '' }}
@@ -63,5 +70,5 @@ jobs:
             --broker-username "$PACT_USERNAME" \
             --broker-password "$PACT_PASSWORD" \
             --pacticipant nextcloud-mcp-server \
-            --version "${{ github.sha }}" \
+            --version "$GITHUB_SHA" \
             --environment production

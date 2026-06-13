@@ -166,7 +166,7 @@ jobs:
             --broker-username "$PACT_USERNAME" \
             --broker-password "$PACT_PASSWORD" \
             --pacticipant nextcloud-mcp-server \
-            --version "${{ github.sha }}" \
+            --version "$GITHUB_SHA" \
             --to-environment production
           rc=$?
           if [ "$rc" -ne 0 ]; then
