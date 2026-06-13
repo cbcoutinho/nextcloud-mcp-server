@@ -149,9 +149,18 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/pact-foundation/pact-ruby-standalone/f03e620e7552239b6ca59438c9beed9d1038c949/install.sh | bash # v2.6.1
           echo "$PWD/pact/bin" >> "$GITHUB_PATH"
 
-      - name: Can I deploy nextcloud-mcp-server?
+      # SHADOW MODE: run can-i-deploy for signal but never fail the workflow.
+      # The broker's `production` environment is populated by the
+      # pact-record-deployment workflow on each repo's next release; until both
+      # nextcloud-mcp-server AND astrolabe have recorded a prod deployment this
+      # check cannot pass, so gating now would block every merge on a bootstrap
+      # gap rather than a real incompatibility. Once it reports ✅ in both repos,
+      # promote to a hard gate by removing the `set +e`/`exit 0` wrapper and
+      # relocating it ahead of the deploy step (see card #325 follow-up).
+      - name: Can I deploy nextcloud-mcp-server? (shadow — non-blocking)
         if: ${{ env.PACT_BROKER != '' }}
         run: |
+          set +e
           pact-broker can-i-deploy \
             --broker-base-url "$PACT_BROKER" \
             --broker-username "$PACT_USERNAME" \
@@ -159,3 +168,10 @@ jobs:
             --pacticipant nextcloud-mcp-server \
             --version "${{ github.sha }}" \
             --to-environment production
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning title=can-i-deploy (shadow)::can-i-deploy exited $rc — NOT gating (shadow mode). Expected until both repos record a production deployment; see Deck card #325."
+          else
+            echo "can-i-deploy passed ✅ (shadow mode — not yet gating)"
+          fi
+          exit 0
