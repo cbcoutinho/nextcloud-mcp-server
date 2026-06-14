@@ -66,7 +66,7 @@ MCP_DEPLOYMENT_MODE=login_flow
 
 # App-password storage (required for persistence across restarts)
 TOKEN_STORAGE_DB=/app/data/tokens.db
-TOKEN_ENCRYPTION_KEY=<fernet-key>          # see "Generating an encryption key" below
+TOKEN_ENCRYPTION_KEY=<your-encryption-key>   # see "Generating an encryption key" below
 
 # Public URLs (for browser redirects)
 NEXTCLOUD_MCP_SERVER_URL=https://mcp.example.com
@@ -200,7 +200,7 @@ mcp-login-flow:
     # - NEXTCLOUD_OIDC_CLIENT_SECRET=<your-client-secret>
     # Dev-only inline value. In production, mount via Docker secret and read
     # from a *_FILE env var or a secrets-management init step.
-    - TOKEN_ENCRYPTION_KEY=<your-fernet-key>
+    - TOKEN_ENCRYPTION_KEY=<your-encryption-key>
     - TOKEN_STORAGE_DB=/app/data/tokens.db
   volumes:
     - login-flow-data:/app/data
