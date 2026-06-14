@@ -246,14 +246,18 @@ php occ webhook_listeners:add --event "OCA\Tables\Event\RowDeletedEvent" --uri "
 
 ## Security Considerations
 
-### Webhook Authentication
-Configure `WEBHOOK_SECRET` to require authentication for incoming webhooks:
+### Webhook Authentication (required — GHSA-8vh3-g2qg-2h2c)
+`WEBHOOK_SECRET` is **required** to use webhooks. The receiver trusts the
+`user.uid` in the payload and feeds it to Qdrant, so an unauthenticated POST
+could delete or re-index any user's embeddings. When `WEBHOOK_SECRET` is unset,
+the `/webhooks/nextcloud` route is **not mounted** (404) and registration
+refuses to create webhooks; vector sync still runs via the polling scanner.
 
 ```bash
-# MCP Server
+# MCP Server (generate with: python -c "import secrets; print(secrets.token_urlsafe(32))")
 WEBHOOK_SECRET=<generate-random-secret>
 
-# Nextcloud webhook registration
+# Nextcloud webhook registration — the Authorization header is mandatory
 php occ webhook_listeners:add \
   --event "..." \
   --uri "$MCP_URL/webhooks/nextcloud" \

@@ -36,6 +36,7 @@ def create_mock_settings(
     oidc_discovery_url: str | None = None,
     oidc_issuer: str | None = None,
     vector_sync_enabled: bool = False,
+    webhook_secret: str | None = None,
     nextcloud_url: str = "http://localhost",
     mcp_client_id: str | None = None,
     mcp_client_secret: str | None = None,
@@ -47,6 +48,9 @@ def create_mock_settings(
     settings.oidc_discovery_url = oidc_discovery_url
     settings.oidc_issuer = oidc_issuer
     settings.vector_sync_enabled = vector_sync_enabled
+    # Explicit so bool(settings.webhook_secret) is deterministic (a bare
+    # MagicMock attribute is truthy, which would always report webhooks on).
+    settings.webhook_secret = webhook_secret
     settings.nextcloud_url = nextcloud_url
     settings.mcp_client_id = mcp_client_id
     settings.mcp_client_secret = mcp_client_secret
@@ -342,3 +346,48 @@ class TestStatusEndpointBasicResponse:
             data = response.json()
 
             assert data["vector_sync_enabled"] is True
+
+    def test_status_reports_webhooks_enabled_when_secret_set(self):
+        """webhooks_enabled is True when WEBHOOK_SECRET is configured."""
+        mock_settings = create_mock_settings(webhook_secret="supersecret")
+
+        with (
+            patch(
+                "nextcloud_mcp_server.api.management.get_settings",
+                return_value=mock_settings,
+            ),
+            patch(
+                "nextcloud_mcp_server.api.management.detect_auth_mode",
+                return_value=AuthMode.SINGLE_USER_BASIC,
+            ),
+        ):
+            app = create_test_app()
+            client = TestClient(app)
+            response = client.get("/api/v1/status")
+
+            assert response.status_code == 200
+            assert response.json()["webhooks_enabled"] is True
+
+    def test_status_reports_webhooks_disabled_when_secret_unset(self):
+        """webhooks_enabled is False when WEBHOOK_SECRET is unset (default).
+
+        Security (GHSA-8vh3-g2qg-2h2c): the receiver route is not mounted
+        without a secret, so the Astrolabe UI can surface webhooks as off."""
+        mock_settings = create_mock_settings(webhook_secret=None)
+
+        with (
+            patch(
+                "nextcloud_mcp_server.api.management.get_settings",
+                return_value=mock_settings,
+            ),
+            patch(
+                "nextcloud_mcp_server.api.management.detect_auth_mode",
+                return_value=AuthMode.SINGLE_USER_BASIC,
+            ),
+        ):
+            app = create_test_app()
+            client = TestClient(app)
+            response = client.get("/api/v1/status")
+
+            assert response.status_code == 200
+            assert response.json()["webhooks_enabled"] is False

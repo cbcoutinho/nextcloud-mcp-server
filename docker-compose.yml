@@ -101,6 +101,9 @@ services:
       - ENABLE_SEMANTIC_SEARCH=true
       - VECTOR_SYNC_SCAN_INTERVAL=5
       - VECTOR_SYNC_PROCESSOR_WORKERS=2
+      # Required to enable the /webhooks/nextcloud receiver (GHSA-8vh3-g2qg-2h2c).
+      # Without it the route is not mounted and vector sync relies on polling.
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-dev-webhook-secret-change-me}
 
       #- LOG_FORMAT=json
 
@@ -160,6 +163,9 @@ services:
       - TOKEN_STORAGE_DB=/app/data/tokens.db
 
       - ENABLE_SEMANTIC_SEARCH=true
+      # Required to enable the /webhooks/nextcloud receiver (GHSA-8vh3-g2qg-2h2c).
+      # Without it the route is not mounted and vector sync relies on polling.
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-dev-webhook-secret-change-me}
       # Tuned cadence for the multi-user background-sync integration suite,
       # which provisions a user, creates a note, then waits ~90s for it to be
       # indexed. Two independent knobs matter here:
@@ -307,6 +313,9 @@ services:
       - ENABLE_SEMANTIC_SEARCH=true
       - VECTOR_SYNC_SCAN_INTERVAL=60
       - VECTOR_SYNC_PROCESSOR_WORKERS=1
+      # Required to enable the /webhooks/nextcloud receiver (GHSA-8vh3-g2qg-2h2c).
+      # Without it the route is not mounted and vector sync relies on polling.
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-dev-webhook-secret-change-me}
 
       # Management API allowlist (ADR-018) — matches mcp-multi-user-basic so
       # the same configure_astrolabe_for_mcp_server fixture (which creates the

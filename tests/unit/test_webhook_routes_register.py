@@ -9,7 +9,10 @@ full Starlette app.
 import pytest
 
 from nextcloud_mcp_server.auth import webhook_routes
-from nextcloud_mcp_server.auth.webhook_routes import _register_preset_webhooks
+from nextcloud_mcp_server.auth.webhook_routes import (
+    WebhookSecretNotConfigured,
+    _register_preset_webhooks,
+)
 from nextcloud_mcp_server.client.webhooks import WebhooksClient
 from nextcloud_mcp_server.config import Settings
 from nextcloud_mcp_server.server.webhook_presets import get_preset
@@ -58,23 +61,25 @@ async def test_register_threads_bearer_auth_when_secret_set(monkeypatch, mocker)
         assert kwargs["event_filter"] == event_config["filter"]
 
 
-async def test_register_uses_none_auth_when_secret_unset(monkeypatch, mocker):
+async def test_register_refuses_when_secret_unset(monkeypatch, mocker):
+    """Security (GHSA-8vh3-g2qg-2h2c): webhooks require WEBHOOK_SECRET.
+    Without it, registration raises instead of creating a dead, unauthenticated
+    (``authMethod="none"``) delivery target pointing at a disabled receiver."""
     _patch_secret(monkeypatch, None)
     preset = get_preset("notes_sync")
     assert preset is not None
     client = _make_webhooks_client(mocker, ids=[1, 2, 3])
 
-    await _register_preset_webhooks(
-        client, preset, "https://mcp.example.com/webhooks/nextcloud"
-    )
+    with pytest.raises(WebhookSecretNotConfigured):
+        await _register_preset_webhooks(
+            client, preset, "https://mcp.example.com/webhooks/nextcloud"
+        )
 
-    for call in client.create_webhook.await_args_list:
-        assert call.kwargs["auth_method"] == "none"
-        assert call.kwargs["auth_data"] is None
+    client.create_webhook.assert_not_called()
 
 
 async def test_register_returns_ids_in_call_order(monkeypatch, mocker):
-    _patch_secret(monkeypatch, None)
+    _patch_secret(monkeypatch, "supersecret")
     preset = get_preset("notes_sync")
     assert preset is not None
     client = _make_webhooks_client(mocker, ids=[42, 43, 44])

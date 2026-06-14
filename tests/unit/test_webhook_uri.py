@@ -14,6 +14,7 @@ import pytest
 
 from nextcloud_mcp_server.auth import webhook_routes
 from nextcloud_mcp_server.auth.webhook_routes import (
+    WebhookSecretNotConfigured,
     _get_webhook_uri,
     webhook_auth_pair,
 )
@@ -126,9 +127,12 @@ def test_localhost_fallback_when_nothing_set(monkeypatch):
 
 
 @pytest.mark.unit
-def test_auth_pair_returns_none_when_secret_unset(monkeypatch):
+def test_auth_pair_raises_when_secret_unset(monkeypatch):
+    """Security (GHSA-8vh3-g2qg-2h2c): no secret => no webhook registration.
+    The helper raises instead of returning an ``authMethod="none"`` pair."""
     _patch_settings(monkeypatch, webhook_secret=None)
-    assert webhook_auth_pair() == ("none", None)
+    with pytest.raises(WebhookSecretNotConfigured):
+        webhook_auth_pair()
 
 
 @pytest.mark.unit

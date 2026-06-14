@@ -2321,10 +2321,23 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     # Add Nextcloud webhook receiver (queues DocumentTasks for vector sync).
     # Implementation lives in vector/webhook_receiver.py; the handler reads
     # the send-stream from request.app.state.document_send_stream.
-    routes.append(
-        Route("/webhooks/nextcloud", handle_nextcloud_webhook, methods=["POST"])
-    )
-    logger.info("Webhook endpoint enabled: /webhooks/nextcloud")
+    #
+    # Security (GHSA-8vh3-g2qg-2h2c): the receiver trusts the attacker-supplied
+    # user.uid in the payload and feeds it to Qdrant, so an unauthenticated
+    # POST could delete/re-index any user's embeddings. The route is therefore
+    # only mounted when WEBHOOK_SECRET is configured; without it the webhook
+    # feature is off and vector sync still reconciles via the polling scanner.
+    if settings.webhook_secret:
+        routes.append(
+            Route("/webhooks/nextcloud", handle_nextcloud_webhook, methods=["POST"])
+        )
+        logger.info("Webhook endpoint enabled: /webhooks/nextcloud")
+    else:
+        logger.warning(
+            "Webhook endpoint disabled: WEBHOOK_SECRET is not set. "
+            "/webhooks/nextcloud will return 404; vector sync relies on the "
+            "polling scanner. Set WEBHOOK_SECRET to enable webhook-driven sync."
+        )
 
     # Add management API endpoints for Nextcloud PHP app
     # Tier 1: Public endpoints (no auth required)

@@ -722,11 +722,15 @@ class Settings:
     token_encryption_key: str | None = None
     token_storage_db: str | None = None
 
-    # Webhook delivery authentication (ADR-010).
-    # When set, the registrar passes Authorization: Bearer <secret> as the
-    # webhook authData and the receiver validates the same header on each
-    # delivery. When unset, registration uses authMethod="none" and the
-    # receiver accepts unauthenticated POSTs (backward-compatible).
+    # Webhook delivery authentication (ADR-010). REQUIRED for webhooks
+    # (GHSA-8vh3-g2qg-2h2c). When set, the registrar passes
+    # Authorization: Bearer <secret> as the webhook authData and the receiver
+    # validates the same header on each delivery. When unset, the
+    # /webhooks/nextcloud route is not mounted, the receiver refuses any request
+    # that reaches it (503), and registration refuses to create webhooks — the
+    # receiver trusts user.uid from the payload, so unauthenticated access would
+    # let any caller delete/re-index other users' embeddings. Vector sync still
+    # works via the polling scanner when this is unset.
     webhook_secret: str | None = None
     # Internal URL override for webhook registration. Highest-priority
     # source for the URL we register with NC (above

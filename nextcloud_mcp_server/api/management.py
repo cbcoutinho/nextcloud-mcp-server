@@ -243,6 +243,11 @@ async def get_server_status(request: Request) -> JSONResponse:
         "version": __version__,
         "auth_mode": auth_mode,
         "vector_sync_enabled": settings.vector_sync_enabled,
+        # Whether the /webhooks/nextcloud receiver is active. Gated on
+        # WEBHOOK_SECRET (GHSA-8vh3-g2qg-2h2c): without a secret the route is
+        # not mounted, so the Astrolabe UI can show webhooks as unavailable and
+        # vector sync falls back to the polling scanner.
+        "webhooks_enabled": bool(settings.webhook_secret),
         "uptime_seconds": uptime_seconds,
         "management_api_version": "1.0",
     }
