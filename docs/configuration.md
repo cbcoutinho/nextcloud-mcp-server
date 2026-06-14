@@ -19,7 +19,7 @@ cp env.sample .env                     # Full reference with all options
 # Edit .env with your Nextcloud details
 ```
 
-> **Note:** The legacy templates `env.sample.oauth-multi-user` and `env.sample.oauth-advanced` configure the deprecated direct-OAuth-to-Nextcloud modes. New deployments should use [Login Flow v2](login-flow-v2.md) for multi-user setups.
+> **Note:** `env.sample.oauth-multi-user` is a Login Flow v2 quick-start template for multi-user setups. See [Login Flow v2](login-flow-v2.md).
 
 Then choose your deployment mode:
 
@@ -97,6 +97,13 @@ MCP_DEPLOYMENT_MODE=login_flow
 TOKEN_ENCRYPTION_KEY=<fernet-key>
 TOKEN_STORAGE_DB=/app/data/tokens.db
 
+# Static OIDC client for the MCP server's own IdP registration.
+# Strongly recommended — with Nextcloud's built-in oidc app the DCR
+# fallback expires after ~1h (see the warning below). Create the client
+# under Administration settings → OpenID Connect provider.
+NEXTCLOUD_OIDC_CLIENT_ID=<client-id-from-nextcloud>
+NEXTCLOUD_OIDC_CLIENT_SECRET=<client-secret-from-nextcloud>
+
 # Public URLs for browser redirects
 NEXTCLOUD_MCP_SERVER_URL=https://mcp.example.com
 NEXTCLOUD_PUBLIC_ISSUER_URL=https://your.nextcloud.instance.com
@@ -110,9 +117,21 @@ NEXTCLOUD_PUBLIC_ISSUER_URL=https://your.nextcloud.instance.com
 | `TOKEN_STORAGE_DB` | ✅ Yes | Path to SQLite DB for stored app passwords (use a persistent volume) |
 | `NEXTCLOUD_MCP_SERVER_URL` | ✅ Yes | Public URL of the MCP server (used as the audience claim and for browser redirects) |
 | `NEXTCLOUD_PUBLIC_ISSUER_URL` | ✅ Yes | Public URL of Nextcloud (for browser redirects during Login Flow v2) |
-| `NEXTCLOUD_OIDC_CLIENT_ID` | ⚠️ Optional (preferred) | OIDC client ID for the MCP server's relying-party registration with the IdP (Nextcloud OIDC by default; Keycloak / Cognito / etc. via `OIDC_DISCOVERY_URL`). If unset and the IdP advertises a `registration_endpoint`, RFC 7591 DCR is used as fallback. |
-| `NEXTCLOUD_OIDC_CLIENT_SECRET` | ⚠️ Optional (preferred) | OIDC client secret paired with `NEXTCLOUD_OIDC_CLIENT_ID`. |
+| `NEXTCLOUD_OIDC_CLIENT_ID` | ✅ Strongly recommended | OIDC client ID for the MCP server's relying-party registration with the IdP (Nextcloud's built-in OIDC by default; Keycloak / Cognito / etc. via `OIDC_DISCOVERY_URL`). If unset and the IdP advertises a `registration_endpoint`, the server falls back to RFC 7591 Dynamic Client Registration (DCR) — **but with Nextcloud's built-in `oidc` app this fallback breaks after ~1 hour** (see warning below). Create a static client and set this instead. |
+| `NEXTCLOUD_OIDC_CLIENT_SECRET` | ✅ Strongly recommended | OIDC client secret paired with `NEXTCLOUD_OIDC_CLIENT_ID`. |
 | `OIDC_DISCOVERY_URL` | Optional | Override the IdP discovery URL. Defaults to `${NEXTCLOUD_HOST}/.well-known/openid-configuration` (Nextcloud's built-in OIDC). Set to a Keycloak realm or AWS Cognito user-pool discovery URL to use an external IdP. |
+
+> **⚠️ Use a static OIDC client with Nextcloud's built-in `oidc` app.** If you
+> don't set `NEXTCLOUD_OIDC_CLIENT_ID` / `NEXTCLOUD_OIDC_CLIENT_SECRET`, the MCP
+> server registers its own relying-party client via DCR. Nextcloud's `oidc` app
+> treats DCR clients as **ephemeral** and deletes them after `client_expire_time`
+> (default **3600s = 1 hour**), pruning on every `/authorize`. Once it's gone,
+> authorization and token refresh fail and users hit an **"Access forbidden"**
+> page — permanently, because the server keeps reusing the deleted client.
+> Register a permanent client in **Administration settings → OpenID Connect
+> provider** and set the two env vars. See
+> [Login Flow v2 → Troubleshooting](login-flow-v2.md#troubleshooting) and
+> [issue #907](https://github.com/cbcoutinho/nextcloud-mcp-server/issues/907).
 
 See [Login Flow v2](login-flow-v2.md) for full setup, scope reference, and troubleshooting.
 

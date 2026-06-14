@@ -177,8 +177,10 @@ services:
       - VECTOR_SYNC_SCAN_INTERVAL=30
       - VECTOR_SYNC_PROCESSOR_WORKERS=1
 
-      # OAuth credentials for background sync (optional - uses DCR if not provided)
-      # Uncomment to avoid DCR:
+      # OAuth client for the MCP server's IdP registration. Falls back to DCR
+      # if unset — but with Nextcloud's built-in `oidc` app, DCR clients expire
+      # after ~1h (client_expire_time) and break auth permanently (see #907).
+      # For any non-CI deployment, register a static client and set these:
       # - NEXTCLOUD_OIDC_CLIENT_ID=your_client_id
       # - NEXTCLOUD_OIDC_CLIENT_SECRET=your_client_secret
 
@@ -292,6 +294,14 @@ services:
       # Login Flow v2 (ADR-022) — the deployment mode is the single switch;
       # the browser-based app-password layer is derived automatically.
       - MCP_DEPLOYMENT_MODE=login_flow
+
+      # NOTE: this dev/test service relies on Dynamic Client Registration for
+      # the MCP server's own OIDC client, which is fine for short-lived CI runs.
+      # For a real self-hosted login_flow deployment, register a STATIC client
+      # in Nextcloud (Administration → OpenID Connect provider) and set
+      # NEXTCLOUD_OIDC_CLIENT_ID / NEXTCLOUD_OIDC_CLIENT_SECRET — the built-in
+      # `oidc` app deletes DCR clients after ~1h, which breaks auth (see #907
+      # and docs/login-flow-v2.md → Troubleshooting).
 
       # Token storage (required for app password + session persistence).
       # Source the key from .env — see env.sample. To generate a fresh key:

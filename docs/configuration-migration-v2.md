@@ -500,8 +500,7 @@ We provide mode-specific templates for new deployments:
 | Template | Use Case |
 |----------|----------|
 | `env.sample.single-user` | Simplest setup |
-| `env.sample.oauth-multi-user` | Recommended multi-user |
-| `env.sample.oauth-advanced` | Token exchange mode |
+| `env.sample.oauth-multi-user` | Recommended multi-user (Login Flow v2) |
 
 **Usage:**
 ```bash
