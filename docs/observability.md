@@ -72,7 +72,6 @@ The Helm chart has moved to a [separate repository](https://github.com/cbcoutinh
 ### OAuth Flow Metrics
 
 - `mcp_oauth_token_validations_total` - Token validation count
-- `mcp_oauth_token_exchange_total` - Token exchange operations
 - `mcp_oauth_token_cache_hits_total` - Cache hit/miss rate
 - `mcp_oauth_refresh_token_operations_total` - Refresh token storage ops
 

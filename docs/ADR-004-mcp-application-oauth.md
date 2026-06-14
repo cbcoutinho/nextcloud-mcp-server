@@ -1,6 +1,16 @@
 # ADR-004: Federated Authentication Architecture for Offline Access
 
-**Status**: Draft
+> **⚠️ DEPRECATED / superseded.** The token-exchange and dual-flow "federated
+> authentication" design described here was **not adopted**. The MCP server's
+> auth was consolidated in [ADR-022](ADR-022-deployment-mode-consolidation.md)
+> (Login Flow v2) and [ADR-023](ADR-023-oauth-as-proxy.md) (OAuth AS proxy).
+> The only supported deployment modes are **`single_user_basic`**,
+> **`multi_user_basic`**, and **`login_flow`** — there is no token-exchange mode.
+> The durable ideas from this ADR (MCP server as its own OAuth client; token
+> **audience** validation) live on via [ADR-005](ADR-005-token-audience-validation.md)
+> and ADR-023.
+
+**Status**: Superseded by ADR-022 and ADR-023 (token-exchange design not adopted)
 **Date**: 2025-11-02
 **Supersedes**: ADR-002
 

@@ -251,12 +251,6 @@ services:
       - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY:?TOKEN_ENCRYPTION_KEY must be set in .env (see env.sample)}
       - TOKEN_STORAGE_DB=/app/data/tokens.db
 
-      # ADR-005: Token exchange mode (RFC 8693)
-      # Exchange MCP tokens (aud: nextcloud-mcp-server) for Nextcloud tokens (aud: http://localhost:8080)
-      # Provides strict audience separation between MCP session and Nextcloud API access
-      - ENABLE_TOKEN_EXCHANGE=true
-      - TOKEN_EXCHANGE_CACHE_TTL=300  # Cache exchanged tokens for 5 minutes (default)
-
       # Login Flow v2 (ADR-022) with external IdP — derived from the
       # auto-detected LOGIN_FLOW deployment mode; no separate flag needed.
       - ENABLE_DCR=true

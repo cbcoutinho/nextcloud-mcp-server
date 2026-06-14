@@ -207,24 +207,7 @@ php occ webhook_listeners:remove <webhook-id>
 
 ---
 
-### 4. OAuth Token Exchange (RFC 8693)
-
-**Configuration:**
-```bash
-NEXTCLOUD_HOST=http://nextcloud.example.com
-ENABLE_TOKEN_EXCHANGE=true
-ENABLE_BACKGROUND_OPERATIONS=true
-TOKEN_ENCRYPTION_KEY=<key>
-TOKEN_STORAGE_DB=/app/data/tokens.db
-VECTOR_SYNC_ENABLED=true
-```
-
-**Enable/Disable Webhooks:**
-Same process as OAuth Single-Audience. The token exchange happens transparently when the MCP server accesses Nextcloud APIs.
-
----
-
-### 5. Smithery Stateless
+### 4. Smithery Stateless
 
 **Configuration:**
 - Configuration from session URL params
