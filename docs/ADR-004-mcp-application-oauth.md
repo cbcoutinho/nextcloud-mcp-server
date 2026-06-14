@@ -1539,11 +1539,16 @@ The **Progressive Consent architecture** solves the critical challenges of token
 
 This architecture follows industry best practices for federated systems and positions the MCP server as a secure token broker in an enterprise identity ecosystem.
 
-## Implementation Status
+## Historical Implementation Notes
 
-**Current Status**: Partially Implemented (Refactoring Required)
+> These were the planned refactoring steps at the time this ADR was written.
+> They were **never completed** — the design was superseded by ADR-022 (Login
+> Flow v2) and ADR-023 (OAuth AS proxy) before this progressive-consent /
+> token-exchange architecture was adopted. The `ENABLE_TOKEN_EXCHANGE` /
+> `settings.enable_token_exchange` symbols referenced below no longer exist in
+> the codebase. Retained for historical context only.
 
-The current implementation (`nextcloud_mcp_server/auth/oauth_routes.py`) implements a **simplified hybrid flow** but needs refactoring to match the progressive consent architecture documented above:
+The implementation at the time (`nextcloud_mcp_server/auth/oauth_routes.py`) was a **simplified hybrid flow** that would have needed refactoring to match the progressive consent architecture documented above:
 
 ### What's Currently Implemented ✅
 

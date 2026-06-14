@@ -193,6 +193,11 @@ mcp-login-flow:
     - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8004
     - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
     - MCP_DEPLOYMENT_MODE=login_flow
+    # Production: register a static OIDC client and set these — the DCR
+    # fallback used by this dev/test service expires after ~1h against the
+    # built-in `oidc` app (see "Default IdP setup" above and #907).
+    # - NEXTCLOUD_OIDC_CLIENT_ID=<your-client-id>
+    # - NEXTCLOUD_OIDC_CLIENT_SECRET=<your-client-secret>
     # Dev-only inline value. In production, mount via Docker secret and read
     # from a *_FILE env var or a secrets-management init step.
     - TOKEN_ENCRYPTION_KEY=<your-fernet-key>
