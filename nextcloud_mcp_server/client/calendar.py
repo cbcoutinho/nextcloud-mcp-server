@@ -1037,7 +1037,7 @@ class CalendarClient:
                             start_date = dt.datetime.fromisoformat(
                                 start_str.split("T")[0]
                             ).date()
-                            component["DTSTART"] = start_date
+                            component["DTSTART"] = vDDDTypes(start_date)
                         else:
                             start_dt, zi = self._parse_event_datetime(
                                 start_str, tz_name
@@ -1053,7 +1053,7 @@ class CalendarClient:
                             end_date = dt.datetime.fromisoformat(
                                 end_str.split("T")[0]
                             ).date()
-                            component["DTEND"] = end_date
+                            component["DTEND"] = vDDDTypes(end_date)
                         else:
                             end_dt, zi = self._parse_event_datetime(end_str, tz_name)
                             if zi is not None:
