@@ -14,6 +14,13 @@ This ADR has been fully implemented with key simplifications based on RFC 7519 S
 - Clients discover resource via PRM endpoint (RFC 9728)
 - Nextcloud OIDC app uses client-specific resource URLs
 
+> **Note:** The **token-exchange mode** (Option 2 / `ENABLE_TOKEN_EXCHANGE`)
+> described in the sections below was **removed** in the ADR-022 (Login Flow v2)
+> / ADR-023 (OAuth AS proxy) consolidation. Only **multi-audience mode** ships;
+> `ENABLE_TOKEN_EXCHANGE` / `settings.enable_token_exchange` no longer exist.
+> The token-exchange references in this document are retained for historical
+> context only.
+
 ## Executive Summary
 
 This ADR addresses a critical security vulnerability where the MCP server was passing tokens intended for itself directly to Nextcloud APIs (token passthrough). We will:
