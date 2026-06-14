@@ -1,8 +1,8 @@
 """
 Unit tests for UnifiedTokenVerifier (ADR-005).
 
-Tests token audience validation for both multi-audience and token exchange modes
-without requiring real network calls or IdP connections.
+Tests multi-audience token validation without requiring real network calls or
+IdP connections.
 """
 
 import time
@@ -35,16 +35,9 @@ def base_settings():
 class TestUnifiedTokenVerifierInit:
     """Test UnifiedTokenVerifier initialization."""
 
-    def test_init_multi_audience_mode(self, base_settings):
-        """Test verifier initialization in multi-audience mode."""
+    def test_init(self, base_settings):
+        """Test verifier initialization (multi-audience only; no token exchange)."""
         verifier = UnifiedTokenVerifier(base_settings)
-        assert verifier.mode == "multi-audience"
-        assert verifier.settings == base_settings
-
-    def test_init_always_multi_audience(self, base_settings):
-        """Test verifier always initializes in multi-audience mode."""
-        verifier = UnifiedTokenVerifier(base_settings)
-        assert verifier.mode == "multi-audience"
         assert verifier.settings == base_settings
 
 

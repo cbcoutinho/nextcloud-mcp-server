@@ -39,18 +39,14 @@ logger = logging.getLogger(__name__)
 
 class UnifiedTokenVerifier(TokenVerifier):
     """
-    Unified token verifier supporting both multi-audience and token exchange modes.
+    Unified token verifier for multi-audience tokens (ADR-005).
     Compliant with MCP security specification - no token pass-through.
 
     This verifier:
     1. Validates tokens using JWT verification with JWKS or introspection fallback
-    2. Enforces proper audience validation based on configured mode
+    2. Enforces MCP audience validation (per RFC 7519); Nextcloud independently
+       validates its own audience when receiving API calls
     3. Caches successful validations to avoid repeated API calls
-
-    Mode Selection (via ENABLE_TOKEN_EXCHANGE setting):
-    - False/omit (default): Multi-audience mode - validates MCP audience only (per RFC 7519).
-      Nextcloud independently validates its own audience when receiving API calls.
-    - True: Exchange mode - requires MCP audience only, then exchanges for Nextcloud token
     """
 
     def __init__(self, settings: Settings):
@@ -61,7 +57,6 @@ class UnifiedTokenVerifier(TokenVerifier):
             settings: Application settings containing OAuth configuration
         """
         self.settings = settings
-        self.mode = "multi-audience"
 
         # Common components for all modes
         self.http_client = nextcloud_httpx_client(timeout=10.0)
@@ -118,8 +113,7 @@ class UnifiedTokenVerifier(TokenVerifier):
             )
 
         logger.info(
-            "UnifiedTokenVerifier initialized in %s mode. MCP audience: %s or %s, Nextcloud resource URI: %s, Valid issuers: %s",
-            self.mode,
+            "UnifiedTokenVerifier initialized (multi-audience). MCP audience: %s or %s, Nextcloud resource URI: %s, Valid issuers: %s",
             settings.oidc_client_id,
             settings.nextcloud_mcp_server_url,
             settings.nextcloud_resource_uri,
@@ -130,10 +124,9 @@ class UnifiedTokenVerifier(TokenVerifier):
         """
         Verify token according to MCP TokenVerifier protocol.
 
-        Per RFC 7519, we validate only MCP audience. The mode determines what
-        happens AFTER verification in context_helper.py:
-        - Multi-audience mode: Use token directly (Nextcloud validates its own audience)
-        - Exchange mode: Exchange for Nextcloud-audience token via RFC 8693
+        Per RFC 7519, we validate only MCP audience. The token is then used
+        directly against Nextcloud (which validates its own audience) — see
+        context_helper.py.
 
         Args:
             token: Bearer token to verify
@@ -292,16 +285,10 @@ class UnifiedTokenVerifier(TokenVerifier):
                 record_oauth_token_validation(validation_method, "invalid")
                 return None
 
-            # Log based on mode for clarity
-            if self.mode == "multi-audience":
-                logger.info(
-                    "MCP audience validated - token can be used directly "
-                    "(Nextcloud will validate its own audience)"
-                )
-            else:
-                logger.info(
-                    "MCP audience validated - token will be exchanged for Nextcloud access"
-                )
+            logger.info(
+                "MCP audience validated - token can be used directly "
+                "(Nextcloud will validate its own audience)"
+            )
 
             return self._create_access_token(token, payload)
 
