@@ -176,12 +176,14 @@ async def test_create_webhook_returns_503_when_secret_unset(mocker):
     )
 
     client = TestClient(_build_test_app())
+    # https example URL — registration is refused before the uri is used, and
+    # an https literal avoids a spurious S5332 "use https" hotspot in new code.
     resp = client.post(
         "/api/v1/webhooks",
         headers={"Authorization": "Bearer mcp-token"},
         json={
             "event": "OCP\\Events\\NodeCreated",
-            "uri": "http://mcp:8000/webhooks/nextcloud",
+            "uri": "https://mcp.example.com/webhooks/nextcloud",
         },
     )
 

@@ -70,7 +70,6 @@ def _make_app(send_stream=None) -> Starlette:
     )
     # The webhook reads app.state.task_producer; a raw MemoryObjectSendStream
     # satisfies the TaskProducer.send contract directly.
-    app.state.document_send_stream = send_stream
     app.state.task_producer = send_stream
     return app
 
@@ -374,6 +373,10 @@ def test_returns_503_when_queue_is_full(monkeypatch):
 
 
 def test_secret_set_valid_bearer_header_queues_task(monkeypatch):
+    # _patch_secret runs after the autouse _default_secret fixture and patches
+    # the same target, so "supersecret" wins (last monkeypatch.setattr wins).
+    # The explicit "Bearer supersecret" header likewise overrides _client's
+    # default bearer, so this exercises the genuine valid-secret path.
     _patch_secret(monkeypatch, "supersecret")
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)

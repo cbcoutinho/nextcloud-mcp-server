@@ -366,6 +366,16 @@ _dynaconf = Dynaconf(
         Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
         # Non-empty strings
         Validator("VECTOR_SYNC_PDF_TAG", len_min=1),
+        # WEBHOOK_SECRET is optional (None disables webhooks — GHSA-8vh3-g2qg-2h2c),
+        # but when set it must be long enough to resist guessing. Surfaces a
+        # weak/placeholder secret at startup rather than in a later audit.
+        Validator(
+            "WEBHOOK_SECRET",
+            condition=lambda v: v is None or len(v) >= 16,
+            messages={
+                "condition": "WEBHOOK_SECRET must be at least 16 characters when set"
+            },
+        ),
         # Enum constraints (document_* enums are validated + normalized in
         # __post_init__ via _enum_fields instead, for case-insensitive input).
         Validator("LOG_FORMAT", is_in=["text", "json"]),
