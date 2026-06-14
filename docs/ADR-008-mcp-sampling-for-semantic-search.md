@@ -1,6 +1,6 @@
 # ADR-008: MCP Sampling for Multi-App Semantic Search with RAG
 
-**Status**: Proposed
+**Status**: Accepted — implemented (`nc_notes_semantic_search_answer` uses MCP sampling via `ctx.session.create_message`)
 **Date**: 2025-01-11
 **Depends On**: ADR-007 (Background Vector Sync)
 

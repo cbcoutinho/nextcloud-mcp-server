@@ -1,6 +1,6 @@
 # ADR-007: Background Vector Database Synchronization
 
-**Status**: Proposed
+**Status**: Accepted — implemented (background vector sync ships; see `nc_get_vector_sync_status` and `VECTOR_SYNC_*` settings)
 **Date**: 2025-01-08
 **Supersedes**: ADR-003
 **Depends On**: ADR-004 (Federated Authentication), ADR-006 (Progressive Consent)

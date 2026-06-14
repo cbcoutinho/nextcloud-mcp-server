@@ -6,7 +6,7 @@
 
 ## Status
 ~~Accepted - Tier 2 (Token Exchange with Delegation) Implemented~~
-**Superseded by ADR-004** - The token exchange implementation exists but doesn't solve the offline access problem.
+**Superseded by ADR-004**, and ultimately by [ADR-022](ADR-022-deployment-mode-consolidation.md) (Login Flow v2) + [ADR-023](ADR-023-oauth-as-proxy.md) (OAuth AS proxy). The token-exchange approach was removed; background vector sync now uses Login Flow v2 app passwords. The only supported deployment modes are `single_user_basic`, `multi_user_basic`, and `login_flow`.
 
 **Important**: Service account tokens (old Tier 1) have been rejected as they violate OAuth "act on-behalf-of" principles by creating Nextcloud user accounts for the MCP server.
 

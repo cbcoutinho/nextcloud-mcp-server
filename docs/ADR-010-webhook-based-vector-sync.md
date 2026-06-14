@@ -1,6 +1,6 @@
 # ADR-010: Webhook-Based Vector Database Synchronization
 
-**Status**: Proposed
+**Status**: Accepted — implemented (webhook listener registration; see `auth/webhook_routes.py` and the `registered_webhooks` store)
 **Date**: 2025-01-10
 **Depends On**: ADR-007 (Background Vector Sync)
 

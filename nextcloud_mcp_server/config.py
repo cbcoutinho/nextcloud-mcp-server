@@ -57,7 +57,6 @@ _DEFAULTS: dict[str, Any] = {
     "enable_background_operations": False,
     "vector_sync_enabled": False,
     "enable_offline_access": False,
-    "enable_token_exchange": False,
     # Token storage
     "token_encryption_key": None,
     # None = ephemeral per-process tempfile (see get_token_db_path()).
@@ -1268,7 +1267,6 @@ def _is_multi_user_mode() -> bool:
     - Multi-user BasicAuth (MCP_DEPLOYMENT_MODE=multi_user_basic)
     - Login Flow v2 / default OAuth (MCP_DEPLOYMENT_MODE=login_flow, or no
       username/password and no explicit mode)
-    - OAuth Token Exchange (ENABLE_TOKEN_EXCHANGE=true)
 
     Single-user mode is:
     - Single-user BasicAuth (username and password both set)
@@ -1284,10 +1282,6 @@ def _is_multi_user_mode() -> bool:
         return True
     if explicit_mode == "single_user_basic":
         return False
-
-    # Token exchange implies OAuth multi-user
-    if _dynaconf.get("ENABLE_TOKEN_EXCHANGE", False):
-        return True
 
     # If both username and password are set, it's single-user BasicAuth
     has_username = bool(_dynaconf.get("NEXTCLOUD_USERNAME"))

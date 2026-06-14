@@ -52,9 +52,12 @@ NEXTCLOUD_HOST=https://your.nextcloud.example.com
 
 # OIDC client credentials for the MCP server's relying-party relationship with the IdP.
 # These are generic OIDC client credentials — they work with any OIDC provider, despite
-# the Nextcloud-flavored env-var names. Preferred path: register a client in your IdP
-# (Nextcloud admin → OIDC, Keycloak realm → Clients, etc.) and set these. If both are
-# unset and the IdP advertises a `registration_endpoint`, the server falls back to RFC 7591 DCR.
+# the Nextcloud-flavored env-var names. Register a static client in your IdP
+# (Nextcloud admin → OpenID Connect provider, Keycloak realm → Clients, etc.) and set these.
+#
+# Strongly recommended — do NOT rely on the DCR fallback with Nextcloud's built-in
+# `oidc` app: it deletes dynamically-registered clients after ~1h, which breaks the
+# connection permanently (see Troubleshooting → "Access forbidden" below).
 NEXTCLOUD_OIDC_CLIENT_ID=<your-client-id>
 NEXTCLOUD_OIDC_CLIENT_SECRET=<your-client-secret>
 
@@ -63,7 +66,7 @@ MCP_DEPLOYMENT_MODE=login_flow
 
 # App-password storage (required for persistence across restarts)
 TOKEN_STORAGE_DB=/app/data/tokens.db
-TOKEN_ENCRYPTION_KEY=<fernet-key>          # see "Generating an encryption key" below
+TOKEN_ENCRYPTION_KEY=<your-encryption-key>   # see "Generating an encryption key" below
 
 # Public URLs (for browser redirects)
 NEXTCLOUD_MCP_SERVER_URL=https://mcp.example.com
@@ -71,6 +74,23 @@ NEXTCLOUD_PUBLIC_ISSUER_URL=https://your.nextcloud.example.com  # Public URL of 
 ```
 
 When using an external IdP (Keycloak, Cognito, etc.), see [Keycloak Multi-Client Token Validation](keycloak-multi-client-validation.md) for how Nextcloud's `user_oidc` app handles realm-level token validation if you also federate Nextcloud's own login through the same IdP.
+
+### Default IdP setup (Nextcloud's built-in `oidc` app)
+
+When `OIDC_DISCOVERY_URL` is unset, Nextcloud's own **OpenID Connect provider**
+(`oidc`) app is the IdP. Register a **static** client for the MCP server there —
+don't rely on Dynamic Client Registration, because the `oidc` app auto-deletes
+DCR clients after ~1 hour (see [Troubleshooting](#access-forbidden-after-the-connection-worked-for-a-while)).
+
+1. Install/enable the **OpenID Connect provider** (`oidc`) app.
+2. Go to **Administration settings → OpenID Connect provider → Add client** and set:
+   - **Redirect URI:** `https://<your-mcp-server>/oauth/callback`
+   - **Flow / response type:** authorization **code**
+   - **Type:** **confidential** (so it issues a client secret)
+   - **Resource identifier:** `https://<your-mcp-server>/mcp` (so issued tokens carry the MCP server's audience; the verifier's `_has_mcp_audience` accepts both this `/mcp` form and the bare server URL)
+   - **Scopes:** leave empty to allow all, or list the per-app scopes you want plus `openid profile email offline_access`
+3. Copy the generated client ID and secret into `NEXTCLOUD_OIDC_CLIENT_ID` /
+   `NEXTCLOUD_OIDC_CLIENT_SECRET`.
 
 ### External IdP setup (Authentik / Keycloak / Cognito)
 
@@ -173,9 +193,14 @@ mcp-login-flow:
     - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8004
     - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
     - MCP_DEPLOYMENT_MODE=login_flow
+    # Production: register a static OIDC client and set these — the DCR
+    # fallback used by this dev/test service expires after ~1h against the
+    # built-in `oidc` app (see "Default IdP setup" above and #907).
+    # - NEXTCLOUD_OIDC_CLIENT_ID=<your-client-id>
+    # - NEXTCLOUD_OIDC_CLIENT_SECRET=<your-client-secret>
     # Dev-only inline value. In production, mount via Docker secret and read
     # from a *_FILE env var or a secrets-management init step.
-    - TOKEN_ENCRYPTION_KEY=<your-fernet-key>
+    - TOKEN_ENCRYPTION_KEY=<your-encryption-key>
     - TOKEN_STORAGE_DB=/app/data/tokens.db
   volumes:
     - login-flow-data:/app/data
@@ -328,6 +353,33 @@ The MCP server can issue or accept either JWT or opaque access tokens depending 
 JWTs are preferred for production because validation is local and stateless. Opaque tokens are useful when you need server-side revocation without JWT blocklist infrastructure.
 
 ## Troubleshooting
+
+### "Access forbidden" after the connection worked for a while
+
+**Symptom:** authentication succeeds and tools work for a while (often up to an
+hour), then the connection silently drops. Re-connecting redirects to Nextcloud
+and shows an **"Access forbidden"** page. Restarting the MCP server and
+re-creating the MCP client/connector don't help. ([#907](https://github.com/cbcoutinho/nextcloud-mcp-server/issues/907))
+
+**Cause:** you didn't set `NEXTCLOUD_OIDC_CLIENT_ID` / `NEXTCLOUD_OIDC_CLIENT_SECRET`,
+so the MCP server registered *its own* relying-party client with Nextcloud's
+built-in `oidc` app via Dynamic Client Registration (DCR). The `oidc` app treats
+DCR clients as ephemeral and **deletes them after `client_expire_time` (default
+3600s = 1 hour)** — it prunes expired DCR clients on every `/authorize` request.
+Once the server's client is gone, `/authorize` can't find it (→ the "Access
+forbidden" page) and token refresh fails too. It's permanent because the server
+cached that now-deleted client in `tokens.db` and keeps reusing it.
+
+**Fix:** register a **static** (admin-created, non-DCR) client and configure it —
+see [Default IdP setup](#default-idp-setup-nextclouds-built-in-oidc-app). Static
+clients are never auto-deleted. Set `NEXTCLOUD_OIDC_CLIENT_ID` /
+`NEXTCLOUD_OIDC_CLIENT_SECRET` (they take precedence over the cached DCR client)
+and recreate the container. Existing users will need to re-authorize once after
+this switch — their stored sessions were issued to the now-deleted DCR client,
+so old refresh tokens no longer validate against the new static client.
+
+As a non-recommended stopgap you can extend the DCR client lifetime globally:
+`occ config:app:set oidc client_expire_time --value 31536000`.
 
 ### "Provisioning loop" — user keeps being asked to authorize
 

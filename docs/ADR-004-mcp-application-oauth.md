@@ -1,6 +1,16 @@
 # ADR-004: Federated Authentication Architecture for Offline Access
 
-**Status**: Draft
+> **⚠️ DEPRECATED / superseded.** The token-exchange and dual-flow "federated
+> authentication" design described here was **not adopted**. The MCP server's
+> auth was consolidated in [ADR-022](ADR-022-deployment-mode-consolidation.md)
+> (Login Flow v2) and [ADR-023](ADR-023-oauth-as-proxy.md) (OAuth AS proxy).
+> The only supported deployment modes are **`single_user_basic`**,
+> **`multi_user_basic`**, and **`login_flow`** — there is no token-exchange mode.
+> The durable ideas from this ADR (MCP server as its own OAuth client; token
+> **audience** validation) live on via [ADR-005](ADR-005-token-audience-validation.md)
+> and ADR-023.
+
+**Status**: Superseded by ADR-022 and ADR-023 (token-exchange design not adopted)
 **Date**: 2025-11-02
 **Supersedes**: ADR-002
 
@@ -1529,11 +1539,16 @@ The **Progressive Consent architecture** solves the critical challenges of token
 
 This architecture follows industry best practices for federated systems and positions the MCP server as a secure token broker in an enterprise identity ecosystem.
 
-## Implementation Status
+## Historical Implementation Notes
 
-**Current Status**: Partially Implemented (Refactoring Required)
+> These were the planned refactoring steps at the time this ADR was written.
+> They were **never completed** — the design was superseded by ADR-022 (Login
+> Flow v2) and ADR-023 (OAuth AS proxy) before this progressive-consent /
+> token-exchange architecture was adopted. The `ENABLE_TOKEN_EXCHANGE` /
+> `settings.enable_token_exchange` symbols referenced below no longer exist in
+> the codebase. Retained for historical context only.
 
-The current implementation (`nextcloud_mcp_server/auth/oauth_routes.py`) implements a **simplified hybrid flow** but needs refactoring to match the progressive consent architecture documented above:
+The implementation at the time (`nextcloud_mcp_server/auth/oauth_routes.py`) was a **simplified hybrid flow** that would have needed refactoring to match the progressive consent architecture documented above:
 
 ### What's Currently Implemented ✅
 

@@ -1,6 +1,6 @@
-# ADR-024: Dynaconf Configuration Management
+# ADR-025: Dynaconf Configuration Management
 
-**Status:** Proposed
+**Status:** Accepted — implemented (`config.py` is built on dynaconf)
 **Date:** 2026-04-04
 **Deciders:** Development Team
 **Related:** ADR-020 (Deployment Modes), ADR-021 (Configuration Consolidation), ADR-022 (Login Flow v2)

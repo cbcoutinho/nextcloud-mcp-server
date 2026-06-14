@@ -27,7 +27,10 @@ This guide helps you migrate from the old configuration variables to the new con
 |----------|----------|--------|
 | `VECTOR_SYNC_ENABLED` | `ENABLE_SEMANTIC_SEARCH` | Deprecated |
 | `ENABLE_OFFLINE_ACCESS` | `ENABLE_BACKGROUND_OPERATIONS` | Deprecated |
+| `ENABLE_TOKEN_EXCHANGE` | `MCP_DEPLOYMENT_MODE=login_flow` | Removed (now ignored) |
 | N/A (auto-detected) | `MCP_DEPLOYMENT_MODE` | New (optional) |
+
+> **`ENABLE_TOKEN_EXCHANGE` was removed.** The OAuth token-exchange mode was never fully implemented and was retired in the ADR-022/ADR-023 consolidation. The variable is now silently ignored — use `MCP_DEPLOYMENT_MODE=login_flow` for multi-user OAuth.
 
 **Tuning parameters unchanged:**
 - `VECTOR_SYNC_SCAN_INTERVAL` - Keep as-is
@@ -229,54 +232,6 @@ NEXTCLOUD_OIDC_CLIENT_SECRET=secret
 1. Replace `VECTOR_SYNC_ENABLED=true` with `ENABLE_SEMANTIC_SEARCH=true`
 2. Remove `ENABLE_OFFLINE_ACCESS=true` (auto-enabled)
 3. Optionally add `MCP_DEPLOYMENT_MODE=multi_user_basic`
-4. Restart server
-
----
-
-### Scenario 5: Token Exchange Mode with Semantic Search
-
-**Before (v0.57.x):**
-```bash
-NEXTCLOUD_HOST=https://nextcloud.example.com
-ENABLE_TOKEN_EXCHANGE=true
-
-# Both required
-ENABLE_OFFLINE_ACCESS=true
-VECTOR_SYNC_ENABLED=true
-
-TOKEN_ENCRYPTION_KEY=your-key-here
-TOKEN_STORAGE_DB=/app/data/tokens.db
-TOKEN_EXCHANGE_CACHE_TTL=300
-QDRANT_URL=http://qdrant:6333
-OLLAMA_BASE_URL=http://ollama:11434
-```
-
-**After (v0.58.0+ - Simplified):**
-```bash
-NEXTCLOUD_HOST=https://nextcloud.example.com
-ENABLE_TOKEN_EXCHANGE=true
-
-# Optional: Explicit mode declaration
-MCP_DEPLOYMENT_MODE=oauth_token_exchange
-
-# One variable!
-ENABLE_SEMANTIC_SEARCH=true  # Auto-enables background operations
-
-TOKEN_ENCRYPTION_KEY=your-key-here
-TOKEN_STORAGE_DB=/app/data/tokens.db
-TOKEN_EXCHANGE_CACHE_TTL=300
-QDRANT_URL=http://qdrant:6333
-OLLAMA_BASE_URL=http://ollama:11434
-```
-
-**What Changed:**
-- ✅ Semantic search auto-enables background operations
-- ✅ Explicit mode declaration available
-
-**Migration Steps:**
-1. Replace `VECTOR_SYNC_ENABLED=true` with `ENABLE_SEMANTIC_SEARCH=true`
-2. Remove `ENABLE_OFFLINE_ACCESS=true` (auto-enabled)
-3. Optionally add `MCP_DEPLOYMENT_MODE=oauth_token_exchange`
 4. Restart server
 
 ---
@@ -500,8 +455,7 @@ We provide mode-specific templates for new deployments:
 | Template | Use Case |
 |----------|----------|
 | `env.sample.single-user` | Simplest setup |
-| `env.sample.oauth-multi-user` | Recommended multi-user |
-| `env.sample.oauth-advanced` | Token exchange mode |
+| `env.sample.oauth-multi-user` | Recommended multi-user (Login Flow v2) |
 
 **Usage:**
 ```bash
