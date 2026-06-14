@@ -5,6 +5,13 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.117.1 (2026-06-14)
+
+### Refactor
+
+- **auth**: drop remaining stale token-exchange references
+- **auth**: remove vestigial token-exchange code path
+
 ## v0.117.0 (2026-06-13)
 
 ### Feat
