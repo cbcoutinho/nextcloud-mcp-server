@@ -428,6 +428,10 @@ def test_secret_set_wrong_scheme_returns_401(monkeypatch):
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
 
+    # The explicit non-Bearer header overrides ``_client``'s default bearer, so
+    # the request reaches the receiver with scheme-less "supersecret". That
+    # fails the ``Bearer <secret>`` compare (no scheme) — the rejection is the
+    # point regardless of which secret value is configured.
     with _client(app) as client:
         response = client.post(
             "/webhooks/nextcloud",
