@@ -27,7 +27,10 @@ This guide helps you migrate from the old configuration variables to the new con
 |----------|----------|--------|
 | `VECTOR_SYNC_ENABLED` | `ENABLE_SEMANTIC_SEARCH` | Deprecated |
 | `ENABLE_OFFLINE_ACCESS` | `ENABLE_BACKGROUND_OPERATIONS` | Deprecated |
+| `ENABLE_TOKEN_EXCHANGE` | `MCP_DEPLOYMENT_MODE=login_flow` | Removed (now ignored) |
 | N/A (auto-detected) | `MCP_DEPLOYMENT_MODE` | New (optional) |
+
+> **`ENABLE_TOKEN_EXCHANGE` was removed.** The OAuth token-exchange mode was never fully implemented and was retired in the ADR-022/ADR-023 consolidation. The variable is now silently ignored — use `MCP_DEPLOYMENT_MODE=login_flow` for multi-user OAuth.
 
 **Tuning parameters unchanged:**
 - `VECTOR_SYNC_SCAN_INTERVAL` - Keep as-is

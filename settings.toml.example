@@ -48,7 +48,6 @@ enable_background_operations = false
 # Deprecated aliases (declared so env var overrides work)
 vector_sync_enabled = false
 enable_offline_access = false
-enable_token_exchange = false
 
 # --- Token storage ---
 token_encryption_key = "@none"
