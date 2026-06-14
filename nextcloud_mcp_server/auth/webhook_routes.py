@@ -125,21 +125,40 @@ def _get_webhook_uri() -> str:
     return "http://localhost:8000/webhooks/nextcloud"
 
 
-def webhook_auth_pair() -> tuple[str, dict[str, str] | None]:
+class WebhookSecretNotConfigured(RuntimeError):
+    """Raised when a webhook registration is attempted without WEBHOOK_SECRET.
+
+    Webhooks require ``WEBHOOK_SECRET`` (GHSA-8vh3-g2qg-2h2c): the receiver
+    route is not mounted without it, so registering a webhook would only create
+    an unauthenticated delivery target pointing at a non-existent endpoint.
+    """
+
+
+def webhook_auth_pair() -> tuple[str, dict[str, str]]:
     """Resolve ``(auth_method, auth_data)`` for new webhook registrations.
 
-    When ``WEBHOOK_SECRET`` is set, returns
-    ``("header", {"Authorization": f"Bearer {secret}"})`` so NC stores the
-    credential encrypted at-rest and forwards it on every delivery. When
-    unset, returns ``("none", None)`` — backward-compatible with deployments
-    that haven't rolled out webhook auth yet.
+    Returns ``("header", {"Authorization": f"Bearer {secret}"})`` so NC stores
+    the credential encrypted at-rest and forwards it on every delivery.
+
+    ``WEBHOOK_SECRET`` is required (GHSA-8vh3-g2qg-2h2c): the receiver refuses
+    unauthenticated deliveries and ``app.py`` does not mount the route without
+    a secret, so registering an ``authMethod="none"`` webhook would only create
+    a dead, unauthenticated delivery target. Callers must surface
+    :class:`WebhookSecretNotConfigured` as a clear operator-facing error.
 
     Shared by both registration call sites: the ``/app/webhooks`` preset
     flow and the Astrolabe-facing ``/api/v1/webhooks`` endpoint.
+
+    Raises:
+        WebhookSecretNotConfigured: when ``WEBHOOK_SECRET`` is unset.
     """
     secret = get_settings().webhook_secret
     if not secret:
-        return ("none", None)
+        raise WebhookSecretNotConfigured(
+            "WEBHOOK_SECRET must be set to register webhooks. Without it the "
+            "/webhooks/nextcloud receiver is disabled and any registration "
+            "would point at a non-existent, unauthenticated endpoint."
+        )
     return ("header", {"Authorization": f"Bearer {secret}"})
 
 
@@ -151,13 +170,16 @@ async def _register_preset_webhooks(
     """Register every event in a preset against a single MCP webhook URI.
 
     Threads the resolved ``(auth_method, auth_data)`` from
-    :func:`webhook_auth_pair` onto each registration call so deliveries
-    carry the configured ``Authorization`` header (when ``WEBHOOK_SECRET``
-    is set) or fall through to ``authMethod="none"`` (backward-compatible
-    when it's not).
+    :func:`webhook_auth_pair` onto each registration call so deliveries carry
+    the configured ``Authorization`` header. ``WEBHOOK_SECRET`` is required
+    (GHSA-8vh3-g2qg-2h2c): with no secret this raises
+    :class:`WebhookSecretNotConfigured` before any webhook is created.
 
     Extracted from :func:`enable_webhook_preset` so the auth-threading
     behaviour is testable without standing up a Starlette app.
+
+    Raises:
+        WebhookSecretNotConfigured: when ``WEBHOOK_SECRET`` is unset.
     """
     auth_method, auth_data = webhook_auth_pair()
     registered_ids: list[int] = []
@@ -498,6 +520,16 @@ async def enable_webhook_preset(request: Request) -> HTMLResponse:
             """
         )
 
+    except WebhookSecretNotConfigured as e:
+        logger.warning("Refusing to enable preset %s: %s", preset_id, e)
+        return HTMLResponse(
+            content=(
+                '<div class="warning">Webhooks are disabled: WEBHOOK_SECRET is '
+                "not set. Configure it and restart the server to enable webhook "
+                "presets.</div>"
+            ),
+            status_code=503,
+        )
     except Exception as e:
         logger.error("Failed to enable preset %s: %s", preset_id, e, exc_info=True)
         return HTMLResponse(

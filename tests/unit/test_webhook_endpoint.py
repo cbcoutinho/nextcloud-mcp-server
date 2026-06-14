@@ -16,6 +16,13 @@ from nextcloud_mcp_server.vector.webhook_receiver import handle_nextcloud_webhoo
 
 pytestmark = pytest.mark.unit
 
+# WEBHOOK_SECRET is required (GHSA-8vh3-g2qg-2h2c): the receiver rejects any
+# request without a matching bearer. The functional tests below exercise
+# parsing/queueing, so they run with a secret configured (via the autouse
+# fixture) and send the matching header (via ``_client``).
+_TEST_SECRET = "testsecret"
+_AUTH = {"Authorization": f"Bearer {_TEST_SECRET}"}
+
 
 @pytest.fixture(autouse=True)
 def _reset_warned_flag():
@@ -24,6 +31,18 @@ def _reset_warned_flag():
     webhook_receiver._warned_about_missing_secret = False
     yield
     webhook_receiver._warned_about_missing_secret = False
+
+
+@pytest.fixture(autouse=True)
+def _default_secret(monkeypatch):
+    """Default every test to a configured WEBHOOK_SECRET. Auth-specific tests
+    override this by calling ``_patch_secret`` in the test body (last patch
+    wins)."""
+    monkeypatch.setattr(
+        webhook_receiver,
+        "get_settings",
+        lambda: Settings(webhook_secret=_TEST_SECRET),
+    )
 
 
 def _patch_secret(monkeypatch, secret: str | None) -> None:
@@ -36,6 +55,13 @@ def _patch_secret(monkeypatch, secret: str | None) -> None:
     )
 
 
+def _client(app) -> TestClient:
+    """TestClient that sends the matching bearer by default. Per-request
+    ``headers=`` still override it (httpx request headers win over client
+    headers), so auth tests can send a wrong/absent token."""
+    return TestClient(app, headers=_AUTH)
+
+
 def _make_app(send_stream=None) -> Starlette:
     app = Starlette(
         routes=[
@@ -44,7 +70,6 @@ def _make_app(send_stream=None) -> Starlette:
     )
     # The webhook reads app.state.task_producer; a raw MemoryObjectSendStream
     # satisfies the TaskProducer.send contract directly.
-    app.state.document_send_stream = send_stream
     app.state.task_producer = send_stream
     return app
 
@@ -138,7 +163,7 @@ def test_index_event_queues_task_and_returns_200():
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post("/webhooks/nextcloud", json=_NOTE_CREATED)
 
     assert response.status_code == 200
@@ -157,7 +182,7 @@ def test_delete_event_queues_delete_task():
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post("/webhooks/nextcloud", json=_NOTE_DELETED)
 
     assert response.status_code == 200
@@ -182,7 +207,7 @@ def test_unsupported_event_is_ignored():
         },
     }
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post("/webhooks/nextcloud", json=payload)
 
     assert response.status_code == 200
@@ -196,7 +221,7 @@ def test_deck_card_created_queues_index_task():
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post("/webhooks/nextcloud", json=_DECK_CARD_CREATED)
 
     assert response.status_code == 200
@@ -216,7 +241,7 @@ def test_deck_card_deleted_queues_delete_task():
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post("/webhooks/nextcloud", json=_DECK_CARD_DELETED)
 
     assert response.status_code == 200
@@ -235,7 +260,7 @@ def test_deck_board_updated_is_ignored():
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post("/webhooks/nextcloud", json=_DECK_BOARD_UPDATED)
 
     assert response.status_code == 200
@@ -251,7 +276,7 @@ def test_deck_card_missing_id_is_ignored():
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post(
             "/webhooks/nextcloud", json=_DECK_CARD_CREATED_MISSING_ID
         )
@@ -269,7 +294,7 @@ def test_note_missing_node_id_is_ignored():
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post("/webhooks/nextcloud", json=_NOTE_CREATED_MISSING_ID)
 
     assert response.status_code == 200
@@ -282,7 +307,7 @@ def test_note_missing_node_id_is_ignored():
 def test_invalid_json_returns_400():
     app = _make_app(send_stream=None)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post(
             "/webhooks/nextcloud",
             content=b"not json",
@@ -298,7 +323,7 @@ def test_returns_503_when_send_stream_not_wired():
     event."""
     app = _make_app(send_stream=None)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post("/webhooks/nextcloud", json=_NOTE_CREATED)
 
     assert response.status_code == 503
@@ -310,7 +335,7 @@ def test_returns_500_when_stream_is_closed():
     receive_stream.close()  # close receiver → send raises BrokenResourceError
     app = _make_app(send_stream=send_stream)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post("/webhooks/nextcloud", json=_NOTE_CREATED)
 
     assert response.status_code == 500
@@ -335,7 +360,7 @@ def test_returns_503_when_queue_is_full(monkeypatch):
     send_stream.send_nowait("sentinel")  # type: ignore[arg-type]
     app = _make_app(send_stream=send_stream)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post("/webhooks/nextcloud", json=_NOTE_CREATED)
 
     assert response.status_code == 503
@@ -348,11 +373,15 @@ def test_returns_503_when_queue_is_full(monkeypatch):
 
 
 def test_secret_set_valid_bearer_header_queues_task(monkeypatch):
+    # _patch_secret runs after the autouse _default_secret fixture and patches
+    # the same target, so "supersecret" wins (last monkeypatch.setattr wins).
+    # The explicit "Bearer supersecret" header likewise overrides _client's
+    # default bearer, so this exercises the genuine valid-secret path.
     _patch_secret(monkeypatch, "supersecret")
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post(
             "/webhooks/nextcloud",
             json=_NOTE_CREATED,
@@ -369,6 +398,7 @@ def test_secret_set_missing_authorization_returns_401(monkeypatch):
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
 
+    # Bare client (no default auth header) so the request truly omits it.
     with TestClient(app) as client:
         response = client.post("/webhooks/nextcloud", json=_NOTE_CREATED)
 
@@ -383,7 +413,7 @@ def test_secret_set_wrong_secret_returns_401(monkeypatch):
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post(
             "/webhooks/nextcloud",
             json=_NOTE_CREATED,
@@ -401,7 +431,11 @@ def test_secret_set_wrong_scheme_returns_401(monkeypatch):
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
 
-    with TestClient(app) as client:
+    # The explicit non-Bearer header overrides ``_client``'s default bearer, so
+    # the request reaches the receiver with scheme-less "supersecret". That
+    # fails the ``Bearer <secret>`` compare (no scheme) — the rejection is the
+    # point regardless of which secret value is configured.
+    with _client(app) as client:
         response = client.post(
             "/webhooks/nextcloud",
             json=_NOTE_CREATED,
@@ -411,19 +445,22 @@ def test_secret_set_wrong_scheme_returns_401(monkeypatch):
     assert response.status_code == 401
 
 
-def test_secret_unset_accepts_unauthenticated(monkeypatch):
-    """Backward compat: deployments that haven't yet set WEBHOOK_SECRET keep
-    working — the receiver accepts unauthenticated POSTs and logs a one-time
-    warning."""
+def test_secret_unset_rejects_with_503(monkeypatch):
+    """Security (GHSA-8vh3-g2qg-2h2c): when WEBHOOK_SECRET is unset the receiver
+    refuses to process the (attacker-controllable) payload. ``app.py`` does not
+    even mount the route in this case; this exercises the handler's
+    defense-in-depth branch and proves no task is queued."""
     _patch_secret(monkeypatch, None)
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post("/webhooks/nextcloud", json=_NOTE_CREATED)
 
-    assert response.status_code == 200
-    assert receive_stream.receive_nowait().doc_id == "437"
+    assert response.status_code == 503
+    assert response.json()["status"] == "unavailable"
+    with pytest.raises(anyio.WouldBlock):
+        receive_stream.receive_nowait()
 
 
 def test_compare_digest_is_called_with_bytes(monkeypatch, mocker):
@@ -436,7 +473,7 @@ def test_compare_digest_is_called_with_bytes(monkeypatch, mocker):
     send_stream, _receive = anyio.create_memory_object_stream(max_buffer_size=4)
     app = _make_app(send_stream=send_stream)
 
-    with TestClient(app) as client:
+    with _client(app) as client:
         response = client.post(
             "/webhooks/nextcloud",
             json=_NOTE_CREATED,

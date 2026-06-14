@@ -28,7 +28,10 @@ from nextcloud_mcp_server.api.management import (
     validate_token_and_get_user,
 )
 from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
-from nextcloud_mcp_server.auth.webhook_routes import webhook_auth_pair
+from nextcloud_mcp_server.auth.webhook_routes import (
+    WebhookSecretNotConfigured,
+    webhook_auth_pair,
+)
 from nextcloud_mcp_server.client.webhooks import WebhooksClient
 
 from ..http import nextcloud_httpx_client
@@ -217,7 +220,19 @@ async def create_webhook(request: Request) -> JSONResponse:
             # Inject delivery auth headers when WEBHOOK_SECRET is configured so
             # that webhook deliveries from Nextcloud back to us are authenticated.
             webhooks_client = WebhooksClient(client, username)
-            auth_method, auth_data = webhook_auth_pair()
+            try:
+                auth_method, auth_data = webhook_auth_pair()
+            except WebhookSecretNotConfigured as e:
+                logger.warning(
+                    "Webhook registration refused for user %s: %s", user_id, e
+                )
+                return JSONResponse(
+                    {
+                        "error": "Webhooks disabled",
+                        "message": str(e),
+                    },
+                    status_code=503,
+                )
             webhook_data = await webhooks_client.create_webhook(
                 event=event,
                 uri=uri,

@@ -249,16 +249,24 @@ This design keeps concerns separated: webhooks and scanner are independent produ
 
 ### Configuration
 
-A new optional environment variable controls webhook authentication:
+A **required** environment variable controls webhook authentication:
 
 ```bash
-# Optional: Shared secret for webhook authentication
-# If set, webhooks must include "Authorization: Bearer <secret>" header
-# If unset, no authentication is required (useful for local development)
+# REQUIRED for webhooks: shared secret for webhook authentication.
+# Webhooks must include "Authorization: Bearer <secret>" header.
 WEBHOOK_SECRET=<generate-random-secret>
 ```
 
-The webhook endpoint is automatically available at `/webhooks/nextcloud` when the MCP server starts. No feature flags or additional configuration needed—if Nextcloud sends webhooks to this endpoint, they will be processed.
+> **Security (GHSA-8vh3-g2qg-2h2c).** The receiver trusts the `user.uid` in the
+> payload and feeds it to Qdrant, so an unauthenticated POST could delete or
+> re-index any user's embeddings. `WEBHOOK_SECRET` is therefore mandatory:
+> when it is **unset**, the `/webhooks/nextcloud` route is **not mounted** (it
+> returns 404) and the receiver refuses any request that reaches it (503).
+> Webhook registration likewise refuses to create unauthenticated deliveries.
+> Vector sync still works in this state via the polling scanner — webhooks are
+> simply disabled until a secret is configured.
+
+The webhook endpoint is available at `/webhooks/nextcloud` only when `WEBHOOK_SECRET` is set. When configured, Nextcloud must forward the `Authorization: Bearer <secret>` header (registration injects it automatically) on every delivery; requests without a valid header are rejected with 401.
 
 **Reducing Polling Frequency**: Administrators who configure webhooks may want to reduce polling frequency to minimize API load while maintaining safety reconciliation scans:
 
@@ -296,11 +304,13 @@ Administrators who want to enable webhooks:
    - Endpoint: `https://<mcp-server-host>:<port>/webhooks/nextcloud`
    - Events: File created/updated/deleted, Calendar object events, Table row events
    - Filters: Exclude non-content files (images, videos), system directories
-   - Optional: Configure `Authorization: Bearer <WEBHOOK_SECRET>` header
+   - Required: Configure `Authorization: Bearer <WEBHOOK_SECRET>` header (the
+     MCP server's registration endpoints inject this automatically once
+     `WEBHOOK_SECRET` is set)
 3. **Optionally reduce scanner frequency**: Set `VECTOR_SYNC_SCAN_INTERVAL=86400` (24 hours)
 4. **Set up webhook workers** (optional): Configure dedicated background job workers for low-latency delivery
 
-Existing deployments continue using polling without any changes. Webhooks are purely additive.
+Deployments without `WEBHOOK_SECRET` continue using polling without any changes — the webhook route is simply not mounted. Webhooks are additive but require a configured secret (GHSA-8vh3-g2qg-2h2c).
 
 ## Consequences
 
@@ -346,7 +356,7 @@ Logs include:
 
 ### Security Considerations
 
-**Optional Authentication**: When `WEBHOOK_SECRET` is configured, webhook requests must include `Authorization: Bearer <WEBHOOK_SECRET>` header. The server validates this before processing to prevent unauthorized document queueing. For local development, authentication can be disabled by leaving `WEBHOOK_SECRET` unset.
+**Required Authentication (GHSA-8vh3-g2qg-2h2c)**: The receiver trusts the `user.uid` in the payload and feeds it to Qdrant, so unauthenticated access would let any network caller delete or re-index other users' embeddings. `WEBHOOK_SECRET` is therefore mandatory for webhooks: when it is unset the `/webhooks/nextcloud` route is not mounted (404) and the handler refuses any request that reaches it (503). When set, every request must include `Authorization: Bearer <WEBHOOK_SECRET>`; the server validates it before any processing and rejects mismatches with 401. There is no unauthenticated mode — local development that needs webhooks must also set a secret.
 
 **Payload Validation**: Webhook payloads are parsed and validated against expected schemas. Malformed payloads are rejected with 400 Bad Request responses.
 
@@ -375,7 +385,7 @@ async def test_webhook_endpoint_parses_note_created_event():
 
 1. **Mock webhook delivery**: POST webhook payloads directly to the `/webhooks/nextcloud` endpoint
 2. **Verify processing**: Check that documents are queued and eventually appear in Qdrant
-3. **Test authentication**: Verify requests without valid auth header are rejected (when `WEBHOOK_SECRET` is set)
+3. **Test authentication**: Verify requests without a valid auth header are rejected (401), and that with no `WEBHOOK_SECRET` the route is absent / the handler returns 503
 
 ```python
 async def test_webhook_integration_mocked_delivery():

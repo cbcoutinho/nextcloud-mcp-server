@@ -23,18 +23,19 @@ _warned_about_missing_secret = False
 def _warn_missing_secret_once() -> None:
     """Log a one-time WARNING when WEBHOOK_SECRET is unset.
 
-    The receiver still accepts unauthenticated POSTs in this case so existing
-    deployments keep working, but the operator should know they're running
-    without webhook auth.
+    The receiver refuses unauthenticated POSTs in this case (returns 503), and
+    ``app.py`` does not even mount the route without a secret — this branch is
+    defense-in-depth for any caller that wires the handler directly. The
+    operator should set WEBHOOK_SECRET to enable webhook-driven vector sync.
     """
     global _warned_about_missing_secret
     if _warned_about_missing_secret:
         return
     _warned_about_missing_secret = True
     logger.warning(
-        "WEBHOOK_SECRET is not set; /webhooks/nextcloud accepts "
-        "unauthenticated requests. Set WEBHOOK_SECRET and re-register "
-        "webhooks to enable Authorization: Bearer validation."
+        "WEBHOOK_SECRET is not set; /webhooks/nextcloud rejects all requests "
+        "(503). Set WEBHOOK_SECRET and re-register webhooks to enable "
+        "Authorization: Bearer validation and webhook-driven vector sync."
     )
 
 
@@ -47,35 +48,50 @@ async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
     ``INGEST_QUEUE=postgres``); when vector sync isn't running we return 503 so
     NC retries delivery.
 
-    When ``WEBHOOK_SECRET`` is set, the request must carry
-    ``Authorization: Bearer <secret>`` (registered via ``authData`` so NC
-    forwards it on every delivery); requests without a valid header are
-    rejected with 401 before any further work.
+    ``WEBHOOK_SECRET`` is **required** (GHSA-8vh3-g2qg-2h2c). The endpoint is
+    only mounted by ``app.py`` when the secret is configured, and every request
+    must carry ``Authorization: Bearer <secret>`` (registered via ``authData``
+    so NC forwards it on every delivery). The ``user.uid`` in the payload is
+    attacker-controllable and is fed to Qdrant, so an unauthenticated request
+    could delete or re-index any user's embeddings — never process one. Missing
+    or invalid headers are rejected with 401 before any further work; if the
+    secret is somehow unset we refuse with 503 rather than fall back to
+    unauthenticated processing.
     """
     secret = get_settings().webhook_secret
-    if secret:
-        provided = request.headers.get("authorization", "").encode("utf-8")
-        expected = f"Bearer {secret}".encode("utf-8")
-        # Use compare_digest to avoid the character-by-character short-circuit
-        # of `==`. Comparing as bytes is the conventional form and avoids any
-        # surprise with non-ASCII input. compare_digest still returns False
-        # for differing lengths but isn't fully constant-time across them;
-        # that's fine here — a secret length leak is not a sensitive signal.
-        if not hmac.compare_digest(provided, expected):
-            # Intentionally omit WWW-Authenticate. RFC 7235 §4.1 says a 401
-            # SHOULD carry it, but Nextcloud's webhook delivery worker has no
-            # auth-flow state machine to negotiate against — the bearer is a
-            # static shared secret configured out-of-band via WEBHOOK_SECRET,
-            # and a challenge response wouldn't change client behaviour.
-            # Surfacing it would only mislead operators into expecting a
-            # renegotiation that doesn't exist.
-            logger.warning("Webhook rejected: missing or invalid Authorization header")
-            return JSONResponse(
-                {"status": "unauthorized"},
-                status_code=401,
-            )
-    else:
+    if not secret:
+        # Defense-in-depth: the route should not be mounted without a secret,
+        # but if this handler is reached anyway, refuse rather than process an
+        # unauthenticated, attacker-controlled payload.
         _warn_missing_secret_once()
+        return JSONResponse(
+            {
+                "status": "unavailable",
+                "reason": "webhook authentication not configured",
+            },
+            status_code=503,
+        )
+
+    provided = request.headers.get("authorization", "").encode("utf-8")
+    expected = f"Bearer {secret}".encode("utf-8")
+    # Use compare_digest to avoid the character-by-character short-circuit
+    # of `==`. Comparing as bytes is the conventional form and avoids any
+    # surprise with non-ASCII input. compare_digest still returns False
+    # for differing lengths but isn't fully constant-time across them;
+    # that's fine here — a secret length leak is not a sensitive signal.
+    if not hmac.compare_digest(provided, expected):
+        # Intentionally omit WWW-Authenticate. RFC 7235 §4.1 says a 401
+        # SHOULD carry it, but Nextcloud's webhook delivery worker has no
+        # auth-flow state machine to negotiate against — the bearer is a
+        # static shared secret configured out-of-band via WEBHOOK_SECRET,
+        # and a challenge response wouldn't change client behaviour.
+        # Surfacing it would only mislead operators into expecting a
+        # renegotiation that doesn't exist.
+        logger.warning("Webhook rejected: missing or invalid Authorization header")
+        return JSONResponse(
+            {"status": "unauthorized"},
+            status_code=401,
+        )
 
     try:
         payload = await request.json()

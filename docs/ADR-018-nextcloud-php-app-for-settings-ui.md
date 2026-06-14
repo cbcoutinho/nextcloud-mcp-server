@@ -552,6 +552,10 @@ async def get_server_status(request: Request) -> JSONResponse:
         "version": __version__,
         "auth_mode": "oauth" if settings.enable_oauth else "basic",
         "vector_sync_enabled": settings.vector_sync_enabled,
+        # Whether the /webhooks/nextcloud receiver is active (gated on
+        # WEBHOOK_SECRET — GHSA-8vh3-g2qg-2h2c). Lets the UI show webhook sync
+        # as available/unavailable.
+        "webhooks_enabled": bool(settings.webhook_secret),
         "uptime_seconds": get_uptime(),
         "management_api_version": "v1",
     })

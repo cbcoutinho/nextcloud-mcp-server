@@ -24,6 +24,7 @@ from nextcloud_mcp_server.api.webhooks import (
     list_webhooks,
 )
 from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
+from nextcloud_mcp_server.auth.webhook_routes import WebhookSecretNotConfigured
 
 pytestmark = pytest.mark.unit
 
@@ -145,7 +146,7 @@ async def test_create_webhook_uses_basic_auth(mocker):
     )
     mocker.patch(
         "nextcloud_mcp_server.api.webhooks.webhook_auth_pair",
-        return_value=("none", None),
+        return_value=("header", {"Authorization": "Bearer supersecret"}),
     )
 
     client = TestClient(_build_test_app())
@@ -161,6 +162,33 @@ async def test_create_webhook_uses_basic_auth(mocker):
     assert resp.status_code == 200
     assert resp.json() == {"webhook": {"id": 42, "event": "OCP\\Events\\NodeCreated"}}
     _assert_basic_auth_not_bearer(factory)
+
+
+async def test_create_webhook_returns_503_when_secret_unset(mocker):
+    """Security (GHSA-8vh3-g2qg-2h2c): registration is refused without a
+    WEBHOOK_SECRET so no unauthenticated delivery target is created."""
+    _patch_token_validation(mocker)
+    _patch_basic_auth(mocker, username="bob", app_password="bob-pwd")
+    _patch_outbound_client_factory(mocker)
+    mocker.patch(
+        "nextcloud_mcp_server.api.webhooks.webhook_auth_pair",
+        side_effect=WebhookSecretNotConfigured("WEBHOOK_SECRET must be set"),
+    )
+
+    client = TestClient(_build_test_app())
+    # https example URL — registration is refused before the uri is used, and
+    # an https literal avoids a spurious S5332 "use https" hotspot in new code.
+    resp = client.post(
+        "/api/v1/webhooks",
+        headers={"Authorization": "Bearer mcp-token"},
+        json={
+            "event": "OCP\\Events\\NodeCreated",
+            "uri": "https://mcp.example.com/webhooks/nextcloud",
+        },
+    )
+
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "Webhooks disabled"
 
 
 async def test_create_webhook_validates_required_fields(mocker):

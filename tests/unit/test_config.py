@@ -485,6 +485,24 @@ class TestDynaconfValidators:
         with pytest.raises(ValidationError, match="OTEL_TRACES_SAMPLER"):
             _reload_config()
 
+    @patch.dict(os.environ, {"WEBHOOK_SECRET": "short"}, clear=True)
+    def test_webhook_secret_too_short(self):
+        """A set WEBHOOK_SECRET shorter than 16 chars raises ValidationError
+        (GHSA-8vh3-g2qg-2h2c hardening — reject weak/placeholder secrets at
+        startup)."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="WEBHOOK_SECRET"):
+            _reload_config()
+
+    @patch.dict(
+        os.environ, {"WEBHOOK_SECRET": "a-sufficiently-long-secret"}, clear=True
+    )
+    def test_webhook_secret_long_enough_is_accepted(self):
+        """A WEBHOOK_SECRET of >=16 chars passes validation."""
+        _reload_config()
+        assert get_settings().webhook_secret == "a-sufficiently-long-secret"
+
     @patch.dict(os.environ, {"OTEL_TRACES_SAMPLER_ARG": "2.0"}, clear=True)
     def test_sampler_arg_too_high(self):
         """Test OTEL_TRACES_SAMPLER_ARG above 1.0 raises ValidationError."""

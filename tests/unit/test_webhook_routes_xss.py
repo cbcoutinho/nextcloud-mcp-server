@@ -23,6 +23,7 @@ from starlette.testclient import TestClient
 
 from nextcloud_mcp_server.auth import webhook_routes
 from nextcloud_mcp_server.auth.webhook_routes import (
+    WebhookSecretNotConfigured,
     disable_webhook_preset,
     enable_webhook_preset,
 )
@@ -131,3 +132,26 @@ def test_disable_exception_message_is_html_escaped(monkeypatch):
     assert response.status_code == 500
     assert "&lt;/p&gt;&lt;script&gt;y&lt;/script&gt;" in response.text
     assert "<script>y</script>" not in response.text
+
+
+def test_enable_preset_returns_503_when_secret_unset(monkeypatch):
+    """Security (GHSA-8vh3-g2qg-2h2c): when registration raises
+    WebhookSecretNotConfigured, the handler returns a distinct 503 (not the
+    generic 500 exception branch) so the UI can tell operators webhooks are
+    disabled rather than broken."""
+    _stub_admin_path(monkeypatch)
+
+    def _raise():
+        raise WebhookSecretNotConfigured("no secret")
+
+    # _register_preset_webhooks calls webhook_auth_pair() internally; patching
+    # the module global routes the call through this raising stub.
+    monkeypatch.setattr(webhook_routes, "webhook_auth_pair", _raise)
+
+    app = _make_app()
+
+    with TestClient(app) as client:
+        response = client.post("/app/webhooks/enable/notes_sync")
+
+    assert response.status_code == 503
+    assert "WEBHOOK_SECRET" in response.text
