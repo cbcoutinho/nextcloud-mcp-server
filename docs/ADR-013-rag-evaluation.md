@@ -1,6 +1,6 @@
 ## ADR-013: RAG Evaluation Testing Framework
 
-**Status:** Proposed
+**Status:** Partially implemented (RAG evaluation harness lives under `tests/rag_evaluation`)
 
 **Date:** 2025-11-15
 

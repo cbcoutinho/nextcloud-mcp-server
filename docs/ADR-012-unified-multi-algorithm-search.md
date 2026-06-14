@@ -1,7 +1,7 @@
 # ADR-012: Unified Multi-Algorithm Search with Client-Configurable Weighting
 
 ## Status
-Proposed
+Accepted — implemented (hybrid search with RRF/DBSF fusion; see `search/hybrid.py`)
 
 ## Context
 

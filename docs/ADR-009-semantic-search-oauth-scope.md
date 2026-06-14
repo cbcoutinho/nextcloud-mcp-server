@@ -1,6 +1,6 @@
 # ADR-009: Generic `semantic:read` OAuth Scope for Multi-App Vector Search
 
-**Status**: Proposed
+**Status**: Accepted — implemented (`semantic.read` scope gates the semantic-search tools)
 **Date**: 2025-01-11
 **Depends On**: ADR-007 (Background Vector Sync), ADR-008 (MCP Sampling for Semantic Search)
 
