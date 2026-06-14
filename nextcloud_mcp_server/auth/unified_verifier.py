@@ -2,15 +2,12 @@
 Unified Token Verifier for ADR-005 Token Audience Validation.
 
 This module replaces both NextcloudTokenVerifier and ProgressiveConsentTokenVerifier
-with a single implementation that supports two compliant OAuth modes:
-
-1. Multi-audience mode (default): Validates MCP audience per RFC 7519 (resource servers
-   validate only their own audience). Nextcloud independently validates its own audience.
-2. Token exchange mode (opt-in): Tokens have MCP audience only, exchanged for Nextcloud tokens
+with a single implementation using multi-audience validation: it validates the MCP
+audience per RFC 7519 (resource servers validate only their own audience), and
+Nextcloud independently validates its own audience when it receives the token.
 
 Key Design Principles:
 - Token verification happens HERE (validates MCP audience per OAuth spec)
-- Token exchange happens in context_helper.py (when creating NextcloudClient)
 - No token passthrough allowed (complies with MCP Security Specification)
 - Token reuse IS allowed for multi-audience tokens (RFC 8707)
 """
@@ -143,7 +140,6 @@ class UnifiedTokenVerifier(TokenVerifier):
 
         oauth_token_cache_hits_total.labels(hit="false").inc()
 
-        # Both modes do the same validation (MCP audience only)
         return await self._verify_mcp_audience(token)
 
     async def verify_token_for_management_api(self, token: str) -> AccessToken | None:
