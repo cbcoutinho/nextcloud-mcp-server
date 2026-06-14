@@ -87,7 +87,7 @@ DCR clients after ~1 hour (see [Troubleshooting](#access-forbidden-after-the-con
    - **Redirect URI:** `https://<your-mcp-server>/oauth/callback`
    - **Flow / response type:** authorization **code**
    - **Type:** **confidential** (so it issues a client secret)
-   - **Resource identifier:** `https://<your-mcp-server>/mcp` (so issued tokens carry the MCP server's audience)
+   - **Resource identifier:** `https://<your-mcp-server>/mcp` (so issued tokens carry the MCP server's audience; the verifier's `_has_mcp_audience` accepts both this `/mcp` form and the bare server URL)
    - **Scopes:** leave empty to allow all, or list the per-app scopes you want plus `openid profile email offline_access`
 3. Copy the generated client ID and secret into `NEXTCLOUD_OIDC_CLIENT_ID` /
    `NEXTCLOUD_OIDC_CLIENT_SECRET`.
@@ -369,7 +369,9 @@ cached that now-deleted client in `tokens.db` and keeps reusing it.
 see [Default IdP setup](#default-idp-setup-nextclouds-built-in-oidc-app). Static
 clients are never auto-deleted. Set `NEXTCLOUD_OIDC_CLIENT_ID` /
 `NEXTCLOUD_OIDC_CLIENT_SECRET` (they take precedence over the cached DCR client)
-and recreate the container.
+and recreate the container. Existing users will need to re-authorize once after
+this switch — their stored sessions were issued to the now-deleted DCR client,
+so old refresh tokens no longer validate against the new static client.
 
 As a non-recommended stopgap you can extend the DCR client lifetime globally:
 `occ config:app:set oidc client_expire_time --value 31536000`.
