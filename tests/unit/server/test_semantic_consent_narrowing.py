@@ -9,7 +9,11 @@ caller skipping this helper entirely.
 
 from __future__ import annotations
 
+import pytest
+
 from nextcloud_mcp_server.server.semantic import _consent_narrowed_doc_types
+
+pytestmark = pytest.mark.unit
 
 
 def test_none_request_restricts_to_allow_set():

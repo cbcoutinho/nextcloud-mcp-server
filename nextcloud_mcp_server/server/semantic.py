@@ -64,10 +64,12 @@ def _consent_narrowed_doc_types(
 
     Caller has already established ``allowed is not None`` (a concrete allow-set;
     ``None`` means "no restriction" and is handled by skipping this call). When
-    no explicit ``doc_types`` are requested, restrict to the full allow-set;
-    otherwise intersect (preserving the caller's order). An empty result means
-    nothing the caller asked for is admin-approved — the caller short-circuits
-    to an empty response rather than falling through to an all-types search.
+    no explicit ``doc_types`` are requested, restrict to the full allow-set
+    (returned ``sorted`` for determinism only — order is a filter, not a ranking
+    hint); otherwise intersect (preserving the caller's order). An empty result
+    means nothing the caller asked for is admin-approved — the caller
+    short-circuits to an empty response rather than falling through to an
+    all-types search.
     """
     if doc_types is None:
         return sorted(allowed)

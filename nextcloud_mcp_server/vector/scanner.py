@@ -377,7 +377,10 @@ async def _enqueue_deletes_for_disabled_types(
         if len(_consent_backstop_done) >= _CONSENT_BACKSTOP_MAX:
             # Evict oldest-first down to half capacity (insertion-ordered dict),
             # so overflow re-fires the backstop for only the oldest markers
-            # rather than the whole fleet at once.
+            # rather than the whole fleet at once. Placed inside the per-doc_type
+            # loop: markers added earlier in *this* call are the newest, so they
+            # survive eviction; only genuinely old entries are dropped (and a
+            # re-fire is idempotent regardless).
             overage = len(_consent_backstop_done) - _CONSENT_BACKSTOP_MAX // 2
             logger.info(
                 "consent backstop tracking hit %d entries; evicting %d oldest",

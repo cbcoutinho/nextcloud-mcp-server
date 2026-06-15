@@ -111,6 +111,7 @@ async def test_process_document_records_drop_on_exhausted_retries(mocker):
     rec.assert_called_once_with("connection")
 
 
+@pytest.mark.unit
 async def test_process_document_drops_admin_disabled_index_task(mocker):
     """A near-real-time index task for an admin-disabled doc_type is dropped
     before indexing, and recorded under the ``admin_disabled`` reason."""
@@ -143,6 +144,7 @@ async def test_process_document_drops_admin_disabled_index_task(mocker):
     rec.assert_called_once_with("admin_disabled")
 
 
+@pytest.mark.unit
 async def test_process_document_allows_when_doc_type_approved(mocker):
     """The consent gate does not drop an index task for an allowed doc_type."""
     from nextcloud_mcp_server.vector.scanner import DocumentTask

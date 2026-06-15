@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+import pytest
+
 import nextcloud_mcp_server.capabilities as cap
 from nextcloud_mcp_server.capabilities import (
     _parse_enabled_doc_types,
@@ -11,6 +13,8 @@ from nextcloud_mcp_server.capabilities import (
     clear_cache,
     is_doc_type_allowed,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _payload(enabled_doc_types) -> dict:

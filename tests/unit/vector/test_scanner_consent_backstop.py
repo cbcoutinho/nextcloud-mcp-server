@@ -18,6 +18,8 @@ from nextcloud_mcp_server.vector import scanner as scanner_module
 from nextcloud_mcp_server.vector.queue.ports import TaskProducer
 from nextcloud_mcp_server.vector.scanner import _enqueue_deletes_for_disabled_types
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture(autouse=True)
 def _clear_backstop_state():

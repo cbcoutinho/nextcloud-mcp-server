@@ -168,6 +168,26 @@ def test_admin_purge_happy_path(mocker):
     purge.assert_awaited_once_with(["file"])
 
 
+def test_partial_failure_reports_failed_types(mocker):
+    # purge_doc_types returns only the succeeded types; the route must tell the
+    # caller which requested types were NOT purged.
+    _patch_token(mocker, "admin")
+    _patch_basic_auth(mocker, "admin")
+    _patch_outbound_client(mocker)
+    _patch_groups(mocker, ["admin"])
+    _patch_purge(mocker, {"file": 3})  # "note" failed
+
+    client = TestClient(_build_app())
+    resp = client.post(
+        "/api/v1/vector-sync/purge", json={"doc_types": ["file", "note"]}
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["purged"] == {"file": 3}
+    assert body["failed"] == ["note"]
+
+
 def test_bad_request_when_body_not_object(mocker):
     # A valid JSON non-object (e.g. a list) must 400, not 500.
     _patch_token(mocker)

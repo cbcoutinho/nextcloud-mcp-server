@@ -117,8 +117,20 @@ async def purge_doc_types_route(request: Request) -> JSONResponse:
             return JSONResponse({"purged": {}})
 
         purged = await purge_doc_types(doc_types)
-        logger.info("Vector-sync purge by admin %s: %s", user_id, purged)
-        return JSONResponse({"purged": purged})
+        # Surface a partial-failure signal so Astrolabe knows which types were
+        # NOT purged (consent not yet enforced for them) — the scanner backstop
+        # still catches these, but the caller shouldn't assume full success.
+        failed = [dt for dt in dict.fromkeys(doc_types) if dt not in purged]
+        body: dict = {"purged": purged}
+        if failed:
+            body["failed"] = failed
+        logger.info(
+            "Vector-sync purge by admin %s: purged=%s failed=%s",
+            user_id,
+            purged,
+            failed,
+        )
+        return JSONResponse(body)
 
     except ProvisioningRequiredError as e:
         logger.info("Provisioning required for user %s: %s", user_id, e)

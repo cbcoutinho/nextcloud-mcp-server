@@ -10,6 +10,8 @@ import pytest
 import nextcloud_mcp_server.vector.purge as purge_module
 from nextcloud_mcp_server.vector.purge import purge_doc_types
 
+pytestmark = pytest.mark.unit
+
 
 def _patch_qdrant(monkeypatch, *, counts: dict[str, int], delete_raises=None):
     """Wire a fake Qdrant client whose ``count`` reflects ``counts`` per

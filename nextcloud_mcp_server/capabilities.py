@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 # changes rarely, but search/scan paths consult it frequently, so trade a little
 # staleness for keeping the OCS round-trip off the hot path. Mirrors the
 # list_accessible_owners cache in search/access_filter.py.
+#
+# Keyed by user_id even though enabled_doc_types is an admin-wide value: the OCS
+# call is authenticated per-user (and ``installed`` resolves per-user on the
+# Astrolabe side), so we cache per-user for correctness. The redundancy is
+# bounded by _CACHE_MAXSIZE; on an admin change all entries reconverge within
+# one TTL window.
 _CACHE_TTL_SECONDS = 30.0
 _CACHE_MAXSIZE = 1024
 # user_id -> (monotonic_ts, frozenset[doc_type] | None). None = no restriction.
