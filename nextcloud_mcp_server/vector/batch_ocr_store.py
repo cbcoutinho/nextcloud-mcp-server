@@ -28,10 +28,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class BatchOcrJob:
-    """A tracked in-flight batch OCR job."""
+    """A tracked in-flight batch OCR job. A row exists only while pending (terminal
+    jobs are deleted), so there's no stored status — the live status comes from a
+    fresh ``GatewayBatchOcrClient.poll``. ``submitted_at`` anchors the deadline."""
 
     job_id: str
-    status: str
     submitted_at: int
 
 
@@ -67,14 +68,14 @@ class BatchOcrJobStore:
         """The in-flight job for this document+version, or ``None``."""
         async with self._storage.acquire() as db:
             async with db.execute(
-                "SELECT job_id, status, submitted_at FROM batch_ocr_jobs "
+                "SELECT job_id, submitted_at FROM batch_ocr_jobs "
                 "WHERE user_id = ? AND doc_id = ? AND doc_type = ? AND etag = ?",
                 (user_id, doc_id, doc_type, etag),
             ) as cursor:
                 row = await cursor.fetchone()
         if row is None:
             return None
-        return BatchOcrJob(job_id=row[0], status=row[1], submitted_at=int(row[2]))
+        return BatchOcrJob(job_id=row[0], submitted_at=int(row[1]))
 
     async def insert_pending(
         self,
@@ -93,10 +94,10 @@ class BatchOcrJobStore:
         async with self._storage.acquire() as db:
             await db.execute(
                 "INSERT INTO batch_ocr_jobs "
-                "(user_id, doc_id, doc_type, etag, job_id, status, submitted_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "(user_id, doc_id, doc_type, etag, job_id, submitted_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (user_id, doc_id, doc_type, etag) DO NOTHING",
-                (user_id, doc_id, doc_type, etag, job_id, "pending", now, now),
+                (user_id, doc_id, doc_type, etag, job_id, now),
             )
             await db.commit()
 

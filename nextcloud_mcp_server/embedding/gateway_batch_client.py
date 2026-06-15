@@ -135,7 +135,14 @@ class GatewayBatchOcrClient:
 
     async def poll(self, job_id: str) -> BatchPollResult:
         """Poll a batch job. Raises on transport / non-2xx; maps a terminal job's
-        single-document result into :class:`BatchPollResult`."""
+        single-document result into :class:`BatchPollResult`.
+
+        ``job_id`` is the gateway's namespaced id (``<provider>/<batch_job_id>``),
+        so it embeds a ``/`` and the request path is multi-segment
+        (``/v1/ocr/batch/mistral/job-1``). The gateway declares this route with a
+        path-capture parameter (``GET /v1/ocr/batch/{job_id:path}``) so the slash
+        is captured whole — a plain single-segment ``{job_id}`` would 404 here.
+        """
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(
                 _BATCH_REQUEST_TIMEOUT_SECONDS, connect=_BATCH_CONNECT_TIMEOUT_SECONDS
@@ -146,7 +153,15 @@ class GatewayBatchOcrClient:
             )
             resp.raise_for_status()
             body = resp.json()
-        status = body.get("status", _PENDING)
+        status = body.get("status")
+        if status is None:
+            # A well-formed gateway response always carries status. A 2xx without
+            # it is a contract violation: fail fast rather than silently treating
+            # it as pending and re-polling until the deadline.
+            logger.warning("gateway batch poll returned no status: %r", body)
+            return BatchPollResult(
+                status=_FAILED, pages=[], error="gateway returned no status"
+            )
         if status != _SUCCEEDED:
             # pending: nothing to read yet. failed: surface the job-level error.
             return BatchPollResult(status=status, pages=[], error=body.get("error"))
@@ -171,5 +186,9 @@ def _result_from_success(body: dict[str, Any]) -> BatchPollResult:
     item = results[0]
     if item.get("error") is not None or item.get("pages") is None:
         return BatchPollResult(status=_FAILED, pages=[], error=item.get("error"))
-    pages = [(p["index"], p.get("markdown", "")) for p in item["pages"]]
+    # Defensive on both fields (the page index falls back to position) so a
+    # malformed page object degrades rather than raising KeyError mid-parse.
+    pages = [
+        (p.get("index", i), p.get("markdown", "")) for i, p in enumerate(item["pages"])
+    ]
     return BatchPollResult(status=_SUCCEEDED, pages=pages)

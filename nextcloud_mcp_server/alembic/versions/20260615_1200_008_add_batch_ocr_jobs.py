@@ -48,13 +48,12 @@ def upgrade() -> None:
         # The gateway's namespaced batch job id ("<provider>/<batch_job_id>") —
         # the only handle for polling (the gateway is stateless).
         sa.Column("job_id", sa.Text(), nullable=False),
-        # Gateway-normalised status mirror (pending|succeeded|failed). Kept for
-        # observability; the live decision always comes from a fresh poll.
-        sa.Column("status", sa.Text(), nullable=False),
         # Unix-epoch seconds. ``submitted_at`` anchors the poll deadline
-        # (DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS).
+        # (DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS). No status/updated_at column: a row
+        # only ever exists in the pending state (terminal jobs are deleted), and
+        # the live status always comes from a fresh poll — a stored mirror would
+        # be permanently "pending" and carry no information.
         sa.Column("submitted_at", sa.BigInteger(), nullable=False),
-        sa.Column("updated_at", sa.BigInteger(), nullable=False),
         sa.PrimaryKeyConstraint(
             "user_id", "doc_id", "doc_type", "etag", name="pk_batch_ocr_jobs"
         ),

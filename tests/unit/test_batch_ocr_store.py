@@ -35,7 +35,6 @@ async def test_insert_then_get(store):
     job = await store.get(**_DOC)
     assert job is not None
     assert job.job_id == "mistral/j1"
-    assert job.status == "pending"
     assert job.submitted_at > 0
 
 

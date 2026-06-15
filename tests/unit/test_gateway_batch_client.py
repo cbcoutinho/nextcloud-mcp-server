@@ -79,6 +79,22 @@ async def test_submit_sends_bearer_when_token_provider(monkeypatch):
     assert seen[0].headers["Authorization"] == "Bearer tok-abc"
 
 
+async def test_submit_raises_on_missing_job_id(monkeypatch):
+    # A 2xx with no job_id is a gateway contract violation -> actionable error.
+    _patch_transport(monkeypatch, lambda r: httpx.Response(202, json={}))
+    with pytest.raises(ValueError, match="no job_id"):
+        await gbc.GatewayBatchOcrClient("https://gw", "m").submit(
+            b"x", "application/pdf", custom_id="d"
+        )
+
+
+async def test_poll_missing_status_is_failed(monkeypatch):
+    # A 2xx body without a status field must fail fast, not poll forever.
+    _patch_transport(monkeypatch, lambda r: httpx.Response(200, json={"total": 1}))
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
+    assert result.is_failed
+
+
 async def test_poll_pending(monkeypatch):
     _patch_transport(
         monkeypatch,
