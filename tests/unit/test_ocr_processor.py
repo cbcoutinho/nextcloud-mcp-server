@@ -299,7 +299,7 @@ class _FakeStore:
         self, *, user_id, doc_id, doc_type, etag, job_id, submitted_at=None
     ):
         self.rows[(user_id, doc_id, doc_type, etag)] = SimpleNamespace(
-            job_id=job_id, status="pending", submitted_at=submitted_at or 1000
+            job_id=job_id, submitted_at=submitted_at or 1000
         )
 
     async def delete(self, *, user_id, doc_id, doc_type, etag):
@@ -360,7 +360,7 @@ async def test_batch_first_run_submits_and_returns_pending_sentinel(monkeypatch)
 
 
 async def test_batch_existing_pending_polls_and_defers(monkeypatch):
-    preset = SimpleNamespace(job_id="mistral/j", status="pending", submitted_at=1000)
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(poll=BatchPollResult(status="pending", pages=[]))
     store = _FakeStore(preset=preset)
     # submitted just now -> deadline not reached
@@ -377,7 +377,7 @@ async def test_batch_existing_pending_polls_and_defers(monkeypatch):
 
 
 async def test_batch_succeeded_returns_indexed_result(monkeypatch):
-    preset = SimpleNamespace(job_id="mistral/j", status="pending", submitted_at=1000)
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(
         poll=BatchPollResult(status="succeeded", pages=[(0, "# One"), (1, "## Two")])
     )
@@ -395,7 +395,7 @@ async def test_batch_succeeded_returns_indexed_result(monkeypatch):
 
 
 async def test_batch_failed_marks_parse_error(monkeypatch):
-    preset = SimpleNamespace(job_id="mistral/j", status="pending", submitted_at=1000)
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(
         poll=BatchPollResult(status="failed", pages=[], error="x")
     )
@@ -414,7 +414,7 @@ async def test_batch_failed_marks_parse_error(monkeypatch):
 async def test_batch_unexpected_status_marks_failed_not_empty_success(monkeypatch):
     # A terminal status that isn't succeeded/failed (gateway skew) must NOT
     # produce a 0-chunk "success" that silently indexes empty text + loops.
-    preset = SimpleNamespace(job_id="mistral/j", status="pending", submitted_at=1000)
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(poll=BatchPollResult(status="cancelled", pages=[]))
     store = _FakeStore(preset=preset)
     _wire_batch(monkeypatch, client=client, store=store)
@@ -430,7 +430,7 @@ async def test_batch_unexpected_status_marks_failed_not_empty_success(monkeypatc
 
 
 async def test_batch_deadline_exceeded_marks_timeout(monkeypatch):
-    preset = SimpleNamespace(job_id="mistral/j", status="pending", submitted_at=1000)
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(poll=BatchPollResult(status="pending", pages=[]))
     store = _FakeStore(preset=preset)
     # now far past submitted_at + max_wait (86400)

@@ -184,8 +184,13 @@ def _result_from_success(body: dict[str, Any]) -> BatchPollResult:
             error="batch job succeeded but returned no results",
         )
     item = results[0]
-    if item.get("error") is not None or item.get("pages") is None:
-        return BatchPollResult(status=_FAILED, pages=[], error=item.get("error"))
+    # ``not item.get("pages")`` catches both a missing key AND an empty list:
+    # a succeeded job that produced zero pages is a per-document failure (nothing
+    # to index), not a silent 0-chunk success.
+    if item.get("error") is not None or not item.get("pages"):
+        return BatchPollResult(
+            status=_FAILED, pages=[], error=item.get("error") or "no pages returned"
+        )
     # Defensive on both fields (the page index falls back to position) so a
     # malformed page object degrades rather than raising KeyError mid-parse.
     pages = [

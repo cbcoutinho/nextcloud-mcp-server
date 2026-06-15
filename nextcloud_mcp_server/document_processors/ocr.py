@@ -479,6 +479,9 @@ class OcrProcessor(DocumentProcessor):
                 await store.delete(
                     user_id=user_id, doc_id=doc_id, doc_type=doc_type, etag=etag
                 )
+                # We don't cancel the gateway-side job (there's no cancel endpoint
+                # at this layer) — it keeps running and is reaped by the gateway's
+                # own file purge. Dropping the row just stops us polling it.
                 logger.warning(
                     "batch OCR job %s exceeded max wait (%ss); marking failed",
                     job.job_id,

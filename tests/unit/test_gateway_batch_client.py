@@ -140,6 +140,15 @@ async def test_poll_succeeded_with_per_document_error_is_failed(monkeypatch):
     assert result.is_failed and result.error == "bad page"
 
 
+async def test_poll_succeeded_empty_pages_is_failed(monkeypatch):
+    # A succeeded job that produced zero pages is a per-document failure, not a
+    # silent 0-chunk success.
+    body = {"status": "succeeded", "results": [{"custom_id": "d", "pages": []}]}
+    _patch_transport(monkeypatch, lambda r: httpx.Response(200, json=body))
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
+    assert result.is_failed and result.error == "no pages returned"
+
+
 async def test_poll_succeeded_no_results_is_failed(monkeypatch):
     _patch_transport(
         monkeypatch,
