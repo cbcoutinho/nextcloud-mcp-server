@@ -53,6 +53,19 @@ async def test_purges_each_doc_type_and_reports_counts(monkeypatch):
     assert client.delete.await_count == 2
 
 
+async def test_purge_is_owner_agnostic_global(monkeypatch):
+    # The admin disable is global, so the delete filter must match by doc_type
+    # ONLY — no owner_id/user_id condition that would scope it to one user.
+    client = _patch_qdrant(monkeypatch, counts={"file": 1})
+
+    await purge_doc_types(["file"])
+
+    flt = client.delete.await_args.kwargs["points_selector"]
+    keys = [c.key for c in flt.must]
+    assert keys == ["doc_type"]
+    assert flt.must[0].match.value == "file"
+
+
 async def test_dedupes_doc_types(monkeypatch):
     client = _patch_qdrant(monkeypatch, counts={"file": 2})
 

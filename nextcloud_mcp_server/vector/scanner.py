@@ -291,13 +291,14 @@ _TEXT_BACKSTOP_DOC_TYPES: tuple[str, ...] = tuple(sorted(INDEXED_DOC_TYPES - {"f
 # already been enqueued, so a *standing* admin-disable doesn't re-flood the
 # processor with idempotent deletes on every scan tick. An entry is cleared once
 # the type is allowed again, so a later re-disable re-triggers the backstop.
-_consent_backstop_done: set[tuple[str, str]] = set()
+# A dict (not a set) so it stays insertion-ordered for oldest-first eviction.
+_consent_backstop_done: dict[tuple[str, str], None] = {}
 
-# Safety bound on the tracking set so a long-running multi-tenant process with
+# Safety bound on the tracking dict so a long-running multi-tenant process with
 # heavy user churn (deprovisioned users leave stale entries) can't grow it
 # without limit. At <= len(INDEXED_DOC_TYPES) entries per user this is generous;
-# on overflow we clear the whole set, which at worst re-fires the (idempotent)
-# backstop once for currently-disabled types.
+# on overflow we evict the *oldest* entries down to half capacity (not a full
+# clear) so the backstop re-fires for only those, avoiding a fleet-wide burst.
 _CONSENT_BACKSTOP_MAX = 50_000
 
 
@@ -321,7 +322,7 @@ async def _enqueue_deletes_for_disabled_types(
     # re-triggers the backstop.
     for doc_type in _TEXT_BACKSTOP_DOC_TYPES:
         if doc_type in allowed:
-            _consent_backstop_done.discard((user_id, doc_type))
+            _consent_backstop_done.pop((user_id, doc_type), None)
 
     # Disabled types not yet backstopped this episode.
     disabled = [
@@ -374,12 +375,18 @@ async def _enqueue_deletes_for_disabled_types(
         # Mark this (user, doc_type) backstopped for the current disable episode
         # so subsequent scans don't re-enqueue the same idempotent deletes.
         if len(_consent_backstop_done) >= _CONSENT_BACKSTOP_MAX:
+            # Evict oldest-first down to half capacity (insertion-ordered dict),
+            # so overflow re-fires the backstop for only the oldest markers
+            # rather than the whole fleet at once.
+            overage = len(_consent_backstop_done) - _CONSENT_BACKSTOP_MAX // 2
             logger.info(
-                "consent backstop tracking set hit %d entries; clearing",
+                "consent backstop tracking hit %d entries; evicting %d oldest",
                 _CONSENT_BACKSTOP_MAX,
+                overage,
             )
-            _consent_backstop_done.clear()
-        _consent_backstop_done.add((user_id, doc_type))
+            for stale_key in list(_consent_backstop_done)[:overage]:
+                del _consent_backstop_done[stale_key]
+        _consent_backstop_done[(user_id, doc_type)] = None
     return queued
 
 

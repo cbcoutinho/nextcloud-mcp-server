@@ -330,7 +330,7 @@ def configure_semantic_tools(mcp: FastMCP):
             if not doc_types:
                 logger.info(
                     "Semantic search short-circuited for user %s: no requested "
-                    "doc_type is both installed and admin-approved",
+                    "doc_type is admin-approved for semantic search",
                     username,
                 )
                 return SemanticSearchResponse(
