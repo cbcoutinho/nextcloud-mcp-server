@@ -14,6 +14,7 @@ from procrastinate.jobs import Job
 import nextcloud_mcp_server.vector.queue.procrastinate as pq
 from nextcloud_mcp_server.document_processors.escalation import (
     TIER_LADDER,
+    BatchPending,
     EscalateError,
     next_tier,
 )
@@ -120,3 +121,30 @@ class TestTieredEscalationStrategy:
             exception=ValueError("permanent"), job=_job(attempts=1)
         )
         assert decision is None
+
+    def test_batch_pending_defers_same_queue(self):
+        # Batch OCR re-poll (Deck #332): same-queue deferral after retry_in.
+        before = datetime.now(timezone.utc)
+        decision = self._strategy().get_retry_decision(
+            exception=BatchPending(retry_in=120), job=_job(queue=pq.INGEST_QUEUE_OCR)
+        )
+        after = datetime.now(timezone.utc)
+        assert decision is not None
+        assert decision.queue is None  # stays on its own tier queue
+        assert decision.retry_at is not None
+        lo = (decision.retry_at - after).total_seconds()
+        hi = (decision.retry_at - before).total_seconds()
+        assert lo <= 120 <= hi
+
+    def test_batch_pending_exempt_from_transient_cap(self):
+        # A batch can take hours -> many polls; the transient cap must NOT stop it
+        # (the OCR processor's own deadline terminates a stuck job instead).
+        decision = self._strategy(max_transient=5).get_retry_decision(
+            exception=BatchPending(retry_in=60), job=_job(attempts=999)
+        )
+        assert decision is not None and decision.retry_at is not None
+
+    def test_batch_pending_unwraps_exception_group(self):
+        group = ExceptionGroup("wrapped", [BatchPending(retry_in=60)])
+        decision = self._strategy().get_retry_decision(exception=group, job=_job())
+        assert decision is not None and decision.retry_at is not None

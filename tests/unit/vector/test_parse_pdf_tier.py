@@ -97,3 +97,40 @@ async def test_hard_failure_returns_result_without_escalating(monkeypatch):
     reg.evaluate_escalation.assert_not_called()
     rec.assert_not_called()
     sup.assert_not_called()
+
+
+async def test_ocr_batch_pending_sentinel_raises_batch_pending():
+    """Batch OCR (Deck #332): the OCR tier's pending sentinel result is turned
+    into a BatchPending raise (same decision point as EscalateError), carrying
+    the processor's retry_in, and the escalation gate is never consulted."""
+    from nextcloud_mcp_server.document_processors.escalation import BatchPending
+    from nextcloud_mcp_server.document_processors.ocr import (
+        OCR_BATCH_PENDING_KEY,
+        OCR_BATCH_RETRY_IN_KEY,
+    )
+
+    result = ProcessingResult(
+        text="",
+        metadata={OCR_BATCH_PENDING_KEY: True, OCR_BATCH_RETRY_IN_KEY: 90},
+        processor="ocr",
+        success=False,
+    )
+    reg = _registry(result, decision=None)
+    with pytest.raises(BatchPending) as ei:
+        await processor._parse_pdf_tier(
+            reg, b"%PDF", "application/pdf", "scan.pdf", "ocr", settings=object()
+        )
+    assert ei.value.retry_in == 90
+    reg.evaluate_escalation.assert_not_called()
+
+
+async def test_options_threaded_to_process_tier():
+    """The OCR identity options are forwarded to process_tier (batch needs them)."""
+    result = ProcessingResult(text="clean", metadata={}, processor="ocr")
+    reg = _registry(result, decision=None)
+    opts = {"user_id": "u", "doc_id": "d", "doc_type": "file", "etag": "v"}
+    await processor._parse_pdf_tier(
+        reg, b"%PDF", "application/pdf", "f.pdf", "ocr", settings=object(), options=opts
+    )
+    # process_tier(content, content_type, filename, tier, options=...)
+    assert reg.process_tier.await_args.kwargs["options"] == opts

@@ -572,6 +572,42 @@ A PDF larger than `DOCUMENT_MAX_PDF_SIZE_MB` fails fast with reason `oversize`
 of being handed to the tiers, where a 40+ MB scan would otherwise burn the full
 OCR timeout for zero recovered text.
 
+#### OCR execution mode: synchronous vs batch (Deck #332)
+
+The tier-3 OCR processor has two execution modes, selected by `DOCUMENT_OCR_MODE`:
+
+```dotenv
+DOCUMENT_OCR_MODE=sync                 # "sync" (default) | "batch"
+DOCUMENT_OCR_BATCH_POLL_SECONDS=120    # re-poll cadence for a batch job (default: 120)
+DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS=86400  # give up + mark timeout after this (default: 24h)
+```
+
+- **`sync`** (default) — transcribe the document inline via the backend's
+  synchronous path (`POST /v1/ocr` for the gateway, or the direct Mistral OCR
+  API). The document is parsed in a single call.
+- **`batch`** — submit the document to the **gateway's async Batch OCR** job
+  (`POST /v1/ocr/batch`) and re-poll `GET /v1/ocr/batch/{job_id}` until it
+  finishes. This trades latency (a batch job runs minutes–hours) for roughly
+  **half the OCR cost**, so it suits large-corpus backfill rather than
+  interactive ingest.
+
+Batch mode is **opt-in and gateway-only**: it routes Mistral's Batch API
+*through* the gateway's batch routes (no provider keys in the pod). With the
+direct `mistral` backend, no `EMBEDDING_GATEWAY_URL`, or on the in-process
+(`INGEST_QUEUE=memory`) pipeline — which can't defer a poll — batch transparently
+**falls back to synchronous OCR**. So enabling it requires the Postgres ingest
+queue (the per-tier procrastinate workers) and the gateway embedding backend.
+
+Mechanics: the OCR tier submits the job, records its id in the `batch_ocr_jobs`
+app-DB table (keyed on the document + its etag), and raises a re-poll deferral so
+procrastinate re-runs the tier after `DOCUMENT_OCR_BATCH_POLL_SECONDS` — releasing
+the worker slot between polls (a long batch never pins a worker or is reclaimed as
+stalled). On completion the per-page markdown is indexed exactly like the sync
+path; a failure or a job exceeding `DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS` marks the
+document parse-failed. Each poll re-fetches + re-classifies the PDF (a known v1
+inefficiency, bounded by the poll cadence); one batch job is submitted per
+document (coalescing many documents per job is a planned follow-up).
+
 ### Embedding Service Configuration
 
 The server picks an embedding provider via auto-detection. Priority order

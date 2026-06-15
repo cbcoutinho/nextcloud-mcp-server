@@ -16,6 +16,9 @@ def _settings(**kw) -> Any:  # a Settings stand-in (only the read fields matter)
         document_ocr_provider="auto",
         document_ocr_model="mistral/mistral-ocr-latest",
         document_ocr_timeout_seconds=180.0,
+        document_ocr_mode="sync",
+        document_ocr_batch_poll_seconds=120,
+        document_ocr_batch_max_wait_seconds=86400,
         embedding_gateway_url=None,
         embedding_gateway_client_id=None,
         embedding_gateway_client_secret=None,
@@ -146,7 +149,7 @@ async def test_processor_timeout_returns_timeout_reason(monkeypatch):
     r = await ocr.OcrProcessor().process(b"%PDF-1.7", "application/pdf")
     assert r.success is False
     assert r.metadata["parse_failed_reason"] == "timeout"
-    assert "timed out" in r.error
+    assert "timed out" in (r.error or "")
 
 
 async def test_gateway_httpx_timeout_maps_to_timeout_reason(monkeypatch):
@@ -165,7 +168,7 @@ async def test_gateway_httpx_timeout_maps_to_timeout_reason(monkeypatch):
     r = await ocr.OcrProcessor().process(b"%PDF-1.7", "application/pdf")
     assert r.success is False
     assert r.metadata["parse_failed_reason"] == "timeout"
-    assert "timed out" in r.error
+    assert "timed out" in (r.error or "")
 
 
 async def test_gateway_backend_uses_configured_timeout(mocker, monkeypatch):
@@ -218,3 +221,196 @@ async def test_mistral_backend_applies_timeout(mocker, monkeypatch):
 
     with pytest.raises(TimeoutError):
         await backend.ocr(b"%PDF-1.7", "application/pdf")
+
+
+# --- batch mode (Deck #332) --------------------------------------------------
+
+from nextcloud_mcp_server.embedding.gateway_batch_client import (  # noqa: E402
+    BatchPollResult,
+)
+from nextcloud_mcp_server.vector import batch_ocr_store as _bos  # noqa: E402
+
+_IDENTITY = {"user_id": "u1", "doc_id": "d1", "doc_type": "file", "etag": "v1"}
+
+
+class _FakeStore:
+    """In-memory stand-in for BatchOcrJobStore keyed like the real table."""
+
+    def __init__(self, preset=None):
+        self.rows: dict[tuple, Any] = {}
+        self.deleted: list[tuple] = []
+        self.stale_swept: list[tuple] = []
+        if preset is not None:
+            self.rows[("u1", "d1", "file", "v1")] = preset
+
+    async def get(self, *, user_id, doc_id, doc_type, etag):
+        return self.rows.get((user_id, doc_id, doc_type, etag))
+
+    async def insert_pending(
+        self, *, user_id, doc_id, doc_type, etag, job_id, submitted_at=None
+    ):
+        self.rows[(user_id, doc_id, doc_type, etag)] = SimpleNamespace(
+            job_id=job_id, status="pending", submitted_at=submitted_at or 1000
+        )
+
+    async def delete(self, *, user_id, doc_id, doc_type, etag):
+        self.deleted.append((user_id, doc_id, doc_type, etag))
+        self.rows.pop((user_id, doc_id, doc_type, etag), None)
+
+    async def delete_stale_for_doc(self, *, user_id, doc_id, doc_type, keep_etag):
+        self.stale_swept.append((user_id, doc_id, doc_type, keep_etag))
+
+
+class _FakeBatchClient:
+    def __init__(self, *, submit_job="mistral/job-1", poll=None):
+        self._submit_job = submit_job
+        self._poll = poll or BatchPollResult(status="pending", pages=[])
+        self.submitted: list[tuple] = []
+        self.polled: list[str] = []
+
+    async def submit(self, content, mime_type, custom_id):
+        self.submitted.append((content, mime_type, custom_id))
+        return self._submit_job
+
+    async def poll(self, job_id):
+        self.polled.append(job_id)
+        return self._poll
+
+
+def _wire_batch(monkeypatch, *, client, store, settings=None):
+    settings = settings or _settings(
+        document_ocr_mode="batch",
+        document_ocr_provider="gateway",
+        embedding_gateway_url="http://gw",
+    )
+    monkeypatch.setattr(ocr, "get_settings", lambda: settings)
+    monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s: client)
+
+    async def _shared(cls):
+        return store
+
+    monkeypatch.setattr(_bos.BatchOcrJobStore, "shared", classmethod(_shared))
+
+
+async def test_batch_first_run_submits_and_returns_pending_sentinel(monkeypatch):
+    client = _FakeBatchClient()
+    store = _FakeStore()
+    _wire_batch(monkeypatch, client=client, store=store)
+
+    r = await ocr.OcrProcessor().process(
+        b"%PDF-1.7", "application/pdf", options=dict(_IDENTITY)
+    )
+
+    assert r.success is False
+    assert r.metadata[ocr.OCR_BATCH_PENDING_KEY] is True
+    assert r.metadata[ocr.OCR_BATCH_RETRY_IN_KEY] == 120
+    # submitted with the doc id as custom_id, recorded a pending row, swept stale
+    assert client.submitted and client.submitted[0][2] == "d1"
+    assert store.rows[("u1", "d1", "file", "v1")].job_id == "mistral/job-1"
+    assert store.stale_swept == [("u1", "d1", "file", "v1")]
+
+
+async def test_batch_existing_pending_polls_and_defers(monkeypatch):
+    preset = SimpleNamespace(job_id="mistral/j", status="pending", submitted_at=1000)
+    client = _FakeBatchClient(poll=BatchPollResult(status="pending", pages=[]))
+    store = _FakeStore(preset=preset)
+    # submitted just now -> deadline not reached
+    monkeypatch.setattr(ocr.time, "time", lambda: 1000.0)
+    _wire_batch(monkeypatch, client=client, store=store)
+
+    r = await ocr.OcrProcessor().process(
+        b"%PDF", "application/pdf", options=dict(_IDENTITY)
+    )
+
+    assert client.polled == ["mistral/j"]
+    assert r.metadata[ocr.OCR_BATCH_PENDING_KEY] is True
+    assert client.submitted == []  # did NOT resubmit
+
+
+async def test_batch_succeeded_returns_indexed_result(monkeypatch):
+    preset = SimpleNamespace(job_id="mistral/j", status="pending", submitted_at=1000)
+    client = _FakeBatchClient(
+        poll=BatchPollResult(status="succeeded", pages=[(0, "# One"), (1, "## Two")])
+    )
+    store = _FakeStore(preset=preset)
+    _wire_batch(monkeypatch, client=client, store=store)
+
+    r = await ocr.OcrProcessor().process(
+        b"%PDF", "application/pdf", options=dict(_IDENTITY)
+    )
+
+    assert r.success is True
+    assert r.text == "# One\n\n## Two"
+    assert r.metadata["page_count"] == 2
+    assert ("u1", "d1", "file", "v1") in store.deleted  # row cleaned up
+
+
+async def test_batch_failed_marks_parse_error(monkeypatch):
+    preset = SimpleNamespace(job_id="mistral/j", status="pending", submitted_at=1000)
+    client = _FakeBatchClient(
+        poll=BatchPollResult(status="failed", pages=[], error="x")
+    )
+    store = _FakeStore(preset=preset)
+    _wire_batch(monkeypatch, client=client, store=store)
+
+    r = await ocr.OcrProcessor().process(
+        b"%PDF", "application/pdf", options=dict(_IDENTITY)
+    )
+
+    assert r.success is False
+    assert r.metadata["parse_failed_reason"] == "error"
+    assert ("u1", "d1", "file", "v1") in store.deleted
+
+
+async def test_batch_deadline_exceeded_marks_timeout(monkeypatch):
+    preset = SimpleNamespace(job_id="mistral/j", status="pending", submitted_at=1000)
+    client = _FakeBatchClient(poll=BatchPollResult(status="pending", pages=[]))
+    store = _FakeStore(preset=preset)
+    # now far past submitted_at + max_wait (86400)
+    monkeypatch.setattr(ocr.time, "time", lambda: 1000.0 + 90000)
+    _wire_batch(monkeypatch, client=client, store=store)
+
+    r = await ocr.OcrProcessor().process(
+        b"%PDF", "application/pdf", options=dict(_IDENTITY)
+    )
+
+    assert r.success is False
+    assert r.metadata["parse_failed_reason"] == "timeout"
+    assert ("u1", "d1", "file", "v1") in store.deleted
+
+
+async def test_batch_falls_back_to_sync_when_no_gateway(monkeypatch):
+    class _FakeBackend:
+        async def ocr(self, content, mime_type):
+            return "sync text", [{"page": 1, "start_offset": 0, "end_offset": 9}]
+
+    settings = _settings(document_ocr_mode="batch", document_ocr_provider="mistral")
+    monkeypatch.setattr(ocr, "get_settings", lambda: settings)
+    monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s: None)
+    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s: _FakeBackend())
+
+    r = await ocr.OcrProcessor().process(
+        b"%PDF", "application/pdf", options=dict(_IDENTITY)
+    )
+    assert r.success is True and r.text == "sync text"
+
+
+async def test_batch_falls_back_to_sync_when_no_identity(monkeypatch):
+    class _FakeBackend:
+        async def ocr(self, content, mime_type):
+            return "sync text", [{"page": 1, "start_offset": 0, "end_offset": 9}]
+
+    client = _FakeBatchClient()
+    settings = _settings(
+        document_ocr_mode="batch",
+        document_ocr_provider="gateway",
+        embedding_gateway_url="http://gw",
+    )
+    monkeypatch.setattr(ocr, "get_settings", lambda: settings)
+    monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s: client)
+    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s: _FakeBackend())
+
+    # No options -> inline path -> batch inapplicable -> sync fallback.
+    r = await ocr.OcrProcessor().process(b"%PDF", "application/pdf", options=None)
+    assert r.success is True and r.text == "sync text"
+    assert client.submitted == []  # never attempted batch

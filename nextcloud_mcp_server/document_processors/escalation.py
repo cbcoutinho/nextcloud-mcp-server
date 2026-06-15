@@ -93,3 +93,26 @@ class EscalateError(Exception):
         super().__init__(
             f"escalate {from_tier}->{to_tier} (reason={reason})",
         )
+
+
+class BatchPending(Exception):
+    """Raised when a tier's work is in flight on an async backend and the worker
+    should poll again later (Deck #332 — batch OCR).
+
+    Like :class:`EscalateError` it is a **control-flow signal, NOT a failure**:
+    the document's batch OCR job is still running on the gateway, so the OCR tier
+    submits it (or polls an existing job) and raises this to ask the procrastinate
+    retry strategy to re-run the SAME job on the SAME queue after ``retry_in``
+    seconds — releasing the worker slot meanwhile so a multi-minute/hour batch
+    doesn't pin a worker (and isn't reclaimed as a stalled ``doing`` job).
+
+    It must propagate untouched to the retry strategy: never swallowed by a broad
+    ``except Exception`` on the indexing path, never counted as a drop/parse
+    error, and never marks the placeholder failed (the doc isn't done yet).
+    Unlike ``EscalateError`` it does NOT change queue — the job stays on its own
+    (``ocr``) tier queue and is simply deferred.
+    """
+
+    def __init__(self, *, retry_in: int) -> None:
+        self.retry_in = retry_in
+        super().__init__(f"batch OCR pending (retry_in={retry_in}s)")

@@ -328,12 +328,25 @@ class TieredEscalationStrategy(BaseRetryStrategy):
     def get_retry_decision(
         self, *, exception: BaseException, job: Job
     ) -> RetryDecision | None:
-        # Lazy import: EscalateError lives in the document stack, which the API
-        # pod (it also builds this App to defer) must not load. get_retry_decision
-        # runs only in the worker, where the stack is already imported.
-        from ...document_processors.escalation import EscalateError  # noqa: PLC0415
+        # Lazy import: these live in the document stack, which the API pod (it
+        # also builds this App to defer) must not load. get_retry_decision runs
+        # only in the worker, where the stack is already imported.
+        from ...document_processors.escalation import (  # noqa: PLC0415
+            BatchPending,
+            EscalateError,
+        )
 
         exc = _first_leaf(exception)
+
+        if isinstance(exc, BatchPending):
+            # Batch OCR job still in flight (Deck #332): defer a re-poll on the
+            # SAME queue after retry_in seconds. Deliberately exempt from the
+            # transient cap below — a batch job can take minutes-hours, so the
+            # poll count is unbounded here; the OCR processor's own deadline
+            # (DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS) is what terminates a stuck job.
+            # Releasing the worker between polls keeps the job out of `doing`, so
+            # it's never stall-reclaimed.
+            return RetryDecision(retry_in={"seconds": exc.retry_in})
 
         if isinstance(exc, EscalateError):
             queue = TIER_QUEUES.get(exc.to_tier)

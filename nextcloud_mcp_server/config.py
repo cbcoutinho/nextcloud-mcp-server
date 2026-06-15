@@ -175,6 +175,20 @@ _DEFAULTS: dict[str, Any] = {
     # 20-60s; raise/lower per tenant. Configurable so a tenant isn't stuck with
     # the 180s default when its gateway has its own shorter ceiling.
     "document_ocr_timeout_seconds": 180.0,
+    # OCR execution mode (Deck #332). "sync" (default) transcribes inline via the
+    # backend's synchronous path. "batch" routes to the gateway's async Batch OCR
+    # job (~50% cheaper, minutes-hours latency) for large-corpus backfill — opt-in
+    # and gateway-only; with the direct mistral backend or no gateway it falls
+    # back to sync. The submit->defer-poll loop runs on the per-tier procrastinate
+    # path; the inline/memory pool can't defer, so batch falls back to sync there.
+    "document_ocr_mode": "sync",
+    # Seconds between batch-job polls (the procrastinate re-enqueue delay). Each
+    # poll re-runs the tier; keep it well above a few seconds.
+    "document_ocr_batch_poll_seconds": 120,
+    # Hard deadline (seconds from submit) after which a still-pending batch job is
+    # abandoned and the document marked parse-failed (timeout). Matches the
+    # gateway's 24h Batch timeout default.
+    "document_ocr_batch_max_wait_seconds": 86400,
     # Observability
     "metrics_enabled": True,
     "metrics_port": 9090,
@@ -352,6 +366,11 @@ _dynaconf = Dynaconf(
         Validator("DOCUMENT_CHUNK_SIZE", gte=1),
         Validator("DOCUMENT_PARSE_TIMEOUT_SECONDS", gte=1),
         Validator("DOCUMENT_OCR_TIMEOUT_SECONDS", gte=1),
+        Validator("DOCUMENT_OCR_MODE", is_in=("sync", "batch")),
+        # Poll cadence well above a few seconds (each poll re-runs the tier);
+        # deadline at least one poll interval.
+        Validator("DOCUMENT_OCR_BATCH_POLL_SECONDS", gte=5),
+        Validator("DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS", gte=60),
         Validator("DOCUMENT_PARSE_MEM_LIMIT_MB", gte=128),
         # 0 disables the pre-parse PDF size cap; otherwise it must be positive.
         Validator("DOCUMENT_MAX_PDF_SIZE_MB", gte=0),
@@ -859,6 +878,13 @@ class Settings:
     # parse timeout / httpx.Timeout; per-tenant tunable so a gateway with a
     # shorter ceiling isn't masked by the 180s default.
     document_ocr_timeout_seconds: float = 180.0
+    # OCR execution mode: "sync" | "batch" (Deck #332). batch is opt-in,
+    # gateway-only, and used for large-corpus backfill; it falls back to sync when
+    # no gateway backend resolves or the path can't defer (inline/memory pool).
+    document_ocr_mode: str = "sync"
+    # Batch-job poll cadence (procrastinate re-enqueue delay) and hard deadline.
+    document_ocr_batch_poll_seconds: int = 120
+    document_ocr_batch_max_wait_seconds: int = 86400
     # OCR escalation triggers (tier-0), per-tenant tunable. A page is OCR-worthy
     # if near-empty (< min_page_chars) OR low text-quality (< min_text_quality)
     # OR (when detect_scanned, image-analysis only runs when OCR is enabled)

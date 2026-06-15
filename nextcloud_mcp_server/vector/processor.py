@@ -126,6 +126,7 @@ async def _parse_pdf_tier(
     filename: str | None,
     tier: str,
     settings: Any,
+    options: dict[str, Any] | None = None,
 ) -> "ProcessingResult":
     """Run a single extraction tier and apply the post-parse escalation gate.
 
@@ -141,18 +142,31 @@ async def _parse_pdf_tier(
     the "OCR is an enhancement, never worse than off" invariant: a tenant who has
     not enabled a higher tier (or has no processor for it) simply indexes the
     cheap tier's output.
+
+    Batch OCR (Deck #332): when the OCR tier's batch job is still in flight the
+    processor returns a *pending sentinel* result; we translate it here into a
+    ``BatchPending`` raise (same decision point as ``EscalateError``) so the
+    retry strategy re-runs this tier after a delay instead of indexing empty text.
     """
     # Lazy import: keep the document stack (pymupdf/_isolation) off the module
     # load path; this runs only on the per-tier worker, which needs it anyway.
     from nextcloud_mcp_server.document_processors.escalation import (  # noqa: PLC0415
+        BatchPending,
         EscalateError,
     )
+    from nextcloud_mcp_server.document_processors.ocr import (  # noqa: PLC0415
+        OCR_BATCH_PENDING_KEY,
+        OCR_BATCH_RETRY_IN_KEY,
+    )
 
-    # options / progress_callback are not threaded here -- the indexing caller
-    # passes neither today, and the inline path (registry.process) omits them
-    # too. Forward them if a tier processor ever needs per-call tuning (e.g. OCR
-    # DPI); keeping the two paths symmetric until then.
-    result = await registry.process_tier(content, content_type, filename, tier)
+    # ``options`` threads per-document identity (user_id/doc_id/doc_type/etag) to
+    # the OCR tier so batch mode can key its job-tracking table (Deck #332). Other
+    # tiers ignore it. The inline path (registry.process) passes None.
+    result = await registry.process_tier(
+        content, content_type, filename, tier, options=options
+    )
+    if result.metadata.get(OCR_BATCH_PENDING_KEY):
+        raise BatchPending(retry_in=int(result.metadata[OCR_BATCH_RETRY_IN_KEY]))
     if result.success:
         decision = registry.evaluate_escalation(
             result, content, tier, settings, filename=filename
@@ -525,19 +539,21 @@ async def process_document(
     re-picked on the next scan; the procrastinate path (max_retries=1) caps it at
     one outer attempt (~30s) and defers. Don't stack a third retry layer here.
     """
-    # EscalateError is a control-flow signal that arises ONLY on the per-tier
-    # external path (tier set). Bind the class lazily here, and only when a tier
-    # is set, so the document stack is never imported at *module load* (the #877
-    # invariant) nor on the delete / text-doc call paths (file processing already
-    # imports it via get_registry regardless). When tier is None it can't be
-    # raised, so the guards below stay inert.
-    escalate_error_cls: type[BaseException] | None = None
+    # EscalateError and BatchPending are control-flow signals that arise ONLY on
+    # the per-tier external path (tier set). Bind them lazily here, and only when a
+    # tier is set, so the document stack is never imported at *module load* (the
+    # #877 invariant) nor on the delete / text-doc call paths (file processing
+    # already imports them via get_registry regardless). When tier is None neither
+    # can be raised, so the guards below stay inert. Bound as a tuple so the guards
+    # treat both identically: propagate untouched, never record an error/drop.
+    control_flow_excs: tuple[type[BaseException], ...] = ()
     if tier is not None:
         from nextcloud_mcp_server.document_processors.escalation import (  # noqa: PLC0415
+            BatchPending,
             EscalateError,
         )
 
-        escalate_error_cls = EscalateError
+        control_flow_excs = (EscalateError, BatchPending)
 
     start_time = time.time()
 
@@ -632,13 +648,11 @@ async def process_document(
                     return  # Success
 
                 except Exception as e:
-                    # An escalation signal is control flow, not a failure:
-                    # propagate it untouched so the procrastinate retry strategy
-                    # can hop the job to the next tier's queue. Never retry it
+                    # A control-flow signal (escalation hop, or batch-OCR re-poll
+                    # deferral) is not a failure: propagate it untouched so the
+                    # procrastinate retry strategy handles it. Never retry it
                     # in-process and never count it as a drop.
-                    if escalate_error_cls is not None and isinstance(
-                        e, escalate_error_cls
-                    ):
+                    if isinstance(e, control_flow_excs):
                         raise
                     if attempt < max_retries - 1:
                         logger.warning(
@@ -691,10 +705,11 @@ async def process_document(
                         raise
 
         except Exception as e:
-            # An escalation signal must reach the procrastinate retry strategy
-            # un-recorded -- it is neither a processing success nor an error
-            # (the hop is its own event, counted via record_document_escalation).
-            if escalate_error_cls is not None and isinstance(e, escalate_error_cls):
+            # A control-flow signal must reach the procrastinate retry strategy
+            # un-recorded -- it is neither a processing success nor an error (an
+            # escalation hop is counted via record_document_escalation; a batch
+            # re-poll deferral is not an event at all).
+            if isinstance(e, control_flow_excs):
                 raise
             # Single processing-error call site: catches exhausted-retry
             # re-raises, delete failures, and setup errors (get_qdrant_client /
@@ -956,6 +971,7 @@ async def _index_document(
                 get_registry,
             )
             from nextcloud_mcp_server.document_processors.escalation import (  # noqa: PLC0415
+                BatchPending,
                 EscalateError,
             )
 
@@ -968,6 +984,15 @@ async def _index_document(
                 # and the in-process/memory pool (tier is None) -- runs the inline
                 # tiered pipeline (fast -> OCR escalation in one call).
                 if tier is not None and _is_pdf(content_type):
+                    # Thread per-document identity to the OCR tier so batch mode
+                    # (Deck #332) can key its job-tracking table; other tiers
+                    # ignore it.
+                    ocr_options = {
+                        "user_id": doc_task.user_id,
+                        "doc_id": doc_task.doc_id,
+                        "doc_type": doc_task.doc_type,
+                        "etag": doc_task.etag or "",
+                    }
                     result = await _parse_pdf_tier(
                         registry,
                         content_bytes,
@@ -975,6 +1000,7 @@ async def _index_document(
                         file_path,
                         tier,
                         settings,
+                        options=ocr_options,
                     )
                 else:
                     result = await registry.process(
@@ -1047,10 +1073,12 @@ async def _index_document(
                             )
                 else:
                     logger.debug("No page_boundaries in metadata for %s", file_path)
-            except EscalateError:
-                # Control-flow signal (per-tier path): re-raise untouched so the
-                # queue hops the job to the next tier. NOT a "failed to process"
-                # error -- don't log it as one.
+            except (EscalateError, BatchPending):
+                # Control-flow signals (per-tier path): re-raise untouched.
+                # EscalateError hops the job to the next tier; BatchPending defers
+                # a re-poll on the same tier (batch OCR still in flight, Deck
+                # #332). Neither is a "failed to process" error -- don't log them
+                # as one.
                 raise
             except Exception as e:
                 logger.error("Failed to process file %s: %s", file_path, e)
