@@ -5,6 +5,20 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.119.0 (2026-06-15)
+
+### Feat
+
+- **ocr**: opt-in batch OCR mode via the gateway's async batch routes
+
+### Fix
+
+- **ocr**: round-5 review nits — empty-pages failure, comments, test cleanup
+- **ocr**: round-4 review — defensive poll + drop dead tracking columns
+- **ocr**: round-3 review — guard unexpected batch status + tests/comments
+- **ocr**: round-2 review — lazy store lock, mode enum normalization, type hints
+- **ocr**: wire batch settings into _field_map + review nits
+
 ## v0.118.0 (2026-06-15)
 
 ### Feat
