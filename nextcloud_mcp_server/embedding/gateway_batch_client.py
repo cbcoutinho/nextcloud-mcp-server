@@ -120,7 +120,11 @@ class GatewayBatchOcrClient:
             )
             resp.raise_for_status()
             body = resp.json()
-        job_id = body["job_id"]
+        job_id = body.get("job_id")
+        if not job_id:
+            # Contract violation (2xx without a job id) — fail with an actionable
+            # message rather than a bare KeyError deep in the caller.
+            raise ValueError(f"gateway batch submit returned no job_id: {body!r}")
         logger.info(
             "batch OCR submitted: job_id=%s custom_id=%s status=%s",
             job_id,

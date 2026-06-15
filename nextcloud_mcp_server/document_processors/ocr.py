@@ -277,7 +277,7 @@ class OcrProcessor(DocumentProcessor):
         # documents. ``_batch_fallback_warned`` rate-limits the "can't batch,
         # using sync" warning to once per pod.
         self._batch_client_resolved = False
-        self._batch_client: Any = None
+        self._batch_client: GatewayBatchOcrClient | None = None
         self._batch_client_lock: anyio.Lock | None = None
         self._batch_fallback_warned = False
 
@@ -310,6 +310,11 @@ class OcrProcessor(DocumentProcessor):
         # "pending" sentinel) when handled, or None to fall back to the
         # synchronous path below (no gateway backend, or no per-doc identity — the
         # inline/memory pool can't defer a poll).
+        #
+        # A transport error from _process_batch (e.g. the gateway briefly down)
+        # is intentionally NOT caught here: it propagates to procrastinate for a
+        # durable retry rather than silently falling back to sync. If you've opted
+        # into batch mode you want the retry, not an unexpected sync transcription.
         if settings.document_ocr_mode == "batch":
             batch_result = await self._process_batch(
                 content, content_type, filename, options, settings
@@ -446,7 +451,8 @@ class OcrProcessor(DocumentProcessor):
         )
         if job is None:
             # New submission. Drop any superseded-version rows for this doc first
-            # (a re-edited file changes etag), then submit + record.
+            # (a re-edited file changes etag) — a no-op on the very first submit,
+            # one cheap DELETE on a resubmit. Then submit + record.
             await store.delete_stale_for_doc(
                 user_id=user_id, doc_id=doc_id, doc_type=doc_type, keep_etag=etag
             )
@@ -499,6 +505,24 @@ class OcrProcessor(DocumentProcessor):
                 processor=self.name,
                 success=False,
                 error=f"batch OCR failed: {result.error or 'unknown'}",
+            )
+        if not result.is_succeeded:
+            # Defensive: poll() maps anything that isn't "succeeded" to its raw
+            # status, and only pending/succeeded/failed are handled above. An
+            # unexpected terminal status (gateway version skew, a new lifecycle
+            # state) must NOT fall through to _pages_to_text([]) -> a 0-chunk
+            # "success" that silently indexes empty text and re-submits forever.
+            logger.warning(
+                "batch OCR job %s returned unexpected status %r; marking failed",
+                job.job_id,
+                result.status,
+            )
+            return ProcessingResult(
+                text="",
+                metadata={"parse_failed_reason": "error"},
+                processor=self.name,
+                success=False,
+                error=f"unexpected batch status: {result.status}",
             )
         text, boundaries = _pages_to_text(result.pages)
         return ProcessingResult(

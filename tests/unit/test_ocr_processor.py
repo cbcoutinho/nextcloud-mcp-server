@@ -76,6 +76,26 @@ def test_build_backend_auto_none_configured():
     assert ocr.build_ocr_backend(_settings()) is None
 
 
+@pytest.mark.parametrize(
+    "kw, expect_client",
+    [
+        # batch is gateway-only: the direct mistral backend never gets a client.
+        (dict(document_ocr_provider="mistral", mistral_api_key="k"), False),
+        # gateway selected but no URL -> no client (falls back to sync).
+        (dict(document_ocr_provider="gateway"), False),
+        (
+            dict(document_ocr_provider="gateway", embedding_gateway_url="https://gw"),
+            True,
+        ),
+        (dict(document_ocr_provider="auto", embedding_gateway_url="https://gw"), True),
+        (dict(document_ocr_provider="none", embedding_gateway_url="https://gw"), False),
+    ],
+)
+def test_build_gateway_batch_client_gateway_only(kw, expect_client):
+    client = ocr.build_gateway_batch_client(_settings(**kw))
+    assert (client is not None) is expect_client
+
+
 def test_build_backend_gateway_missing_m2m_raises():
     # client_id set but token_url/secret missing -> explicit ValueError (not a
     # stripped assert), surfaced on backend resolution.
@@ -388,6 +408,24 @@ async def test_batch_failed_marks_parse_error(monkeypatch):
 
     assert r.success is False
     assert r.metadata["parse_failed_reason"] == "error"
+    assert ("u1", "d1", "file", "v1") in store.deleted
+
+
+async def test_batch_unexpected_status_marks_failed_not_empty_success(monkeypatch):
+    # A terminal status that isn't succeeded/failed (gateway skew) must NOT
+    # produce a 0-chunk "success" that silently indexes empty text + loops.
+    preset = SimpleNamespace(job_id="mistral/j", status="pending", submitted_at=1000)
+    client = _FakeBatchClient(poll=BatchPollResult(status="cancelled", pages=[]))
+    store = _FakeStore(preset=preset)
+    _wire_batch(monkeypatch, client=client, store=store)
+
+    r = await ocr.OcrProcessor().process(
+        b"%PDF", "application/pdf", options=dict(_IDENTITY)
+    )
+
+    assert r.success is False
+    assert r.metadata["parse_failed_reason"] == "error"
+    assert "cancelled" in (r.error or "")
     assert ("u1", "d1", "file", "v1") in store.deleted
 
 
