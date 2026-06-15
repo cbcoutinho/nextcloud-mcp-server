@@ -225,6 +225,35 @@ async def test_mistral_backend_applies_timeout(mocker, monkeypatch):
 
 # --- batch mode (Deck #332) --------------------------------------------------
 
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        None,
+        {},
+        {"doc_id": "d", "doc_type": "file"},  # missing user_id
+        {"user_id": "u", "doc_type": "file"},  # missing doc_id
+        {"user_id": "u", "doc_id": "d"},  # missing doc_type
+        {"user_id": "u", "doc_id": "d", "doc_type": ""},  # empty doc_type
+    ],
+)
+def test_batch_identity_returns_none_without_full_identity(options):
+    assert ocr._batch_identity(options) is None
+
+
+def test_batch_identity_extracts_tuple_and_defaults_etag():
+    assert ocr._batch_identity(
+        {"user_id": "u", "doc_id": "d", "doc_type": "file", "etag": "v1"}
+    ) == ("u", "d", "file", "v1")
+    # etag may be absent/empty -> normalised to "".
+    assert ocr._batch_identity({"user_id": "u", "doc_id": "d", "doc_type": "file"}) == (
+        "u",
+        "d",
+        "file",
+        "",
+    )
+
+
 from nextcloud_mcp_server.embedding.gateway_batch_client import (  # noqa: E402
     BatchPollResult,
 )

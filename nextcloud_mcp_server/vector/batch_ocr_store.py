@@ -38,18 +38,24 @@ class BatchOcrJob:
 class BatchOcrJobStore:
     """CRUD for the ``batch_ocr_jobs`` table (one row per in-flight job)."""
 
-    _shared_instance: "BatchOcrJobStore | None" = None
-    _shared_lock: anyio.Lock = anyio.Lock()
+    _shared_instance: BatchOcrJobStore | None = None
+    # Lazy-init: anyio primitives must not be created at import time (CLAUDE.md;
+    # mirrors OcrProcessor._backend_lock). Created on first shared() call.
+    _shared_lock: anyio.Lock | None = None
 
     def __init__(self, storage: RefreshTokenStorage) -> None:
         self._storage = storage
 
     @classmethod
-    async def shared(cls) -> "BatchOcrJobStore":
-        """Process-wide store backed by the storage singleton (mirrors
-        ``UsageEventStore.shared``). Tests should construct
-        ``BatchOcrJobStore(storage)`` directly — the cache is a process global
-        with no teardown hook."""
+    async def shared(cls) -> BatchOcrJobStore:
+        """Process-wide store backed by the storage singleton. Tests should
+        construct ``BatchOcrJobStore(storage)`` directly — the cache is a process
+        global with no teardown hook."""
+        # No await between the None-check and the assignment, so this is atomic
+        # within the single event loop (anyio is cooperative) — two cold-start
+        # callers can't both create a lock.
+        if cls._shared_lock is None:
+            cls._shared_lock = anyio.Lock()
         async with cls._shared_lock:
             if cls._shared_instance is None:
                 cls._shared_instance = cls(await get_shared_storage())

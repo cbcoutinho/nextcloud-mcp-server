@@ -21,7 +21,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 import httpx
@@ -29,6 +29,12 @@ import httpx
 from nextcloud_mcp_server.config import Settings, get_settings
 
 from .base import DocumentProcessor, ProcessingResult
+
+if TYPE_CHECKING:
+    # Annotation-only import (the runtime import is lazy, inside
+    # build_gateway_batch_client, to avoid a document_processors -> embedding
+    # cycle at load).
+    from ..embedding.gateway_batch_client import GatewayBatchOcrClient
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +203,7 @@ def _build_gateway_token_provider(settings: Settings) -> Any:
     )
 
 
-def build_gateway_batch_client(settings: Settings) -> Any:
+def build_gateway_batch_client(settings: Settings) -> "GatewayBatchOcrClient | None":
     """Build a ``GatewayBatchOcrClient`` when the gateway is the OCR backend, else
     ``None`` (so batch mode falls back to sync for provider=mistral / no gateway).
     Batch OCR is gateway-only — Mistral's Batch API is reached *through* the
@@ -373,7 +379,7 @@ class OcrProcessor(DocumentProcessor):
             processor=self.name,
         )
 
-    async def _get_batch_client(self) -> Any:
+    async def _get_batch_client(self) -> "GatewayBatchOcrClient | None":
         """Cached gateway batch client (or ``None`` when batch isn't applicable —
         provider=mistral / no gateway). Resolved once under the backend lock so the
         token provider's M2M cache survives across documents."""

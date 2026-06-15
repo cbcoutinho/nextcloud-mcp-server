@@ -984,10 +984,11 @@ async def _index_document(
                 # and the in-process/memory pool (tier is None) -- runs the inline
                 # tiered pipeline (fast -> OCR escalation in one call).
                 if tier is not None and _is_pdf(content_type):
-                    # Thread per-document identity to the OCR tier so batch mode
-                    # (Deck #332) can key its job-tracking table; other tiers
-                    # ignore it.
-                    ocr_options = {
+                    # Per-document identity, forwarded to every tier's processor.
+                    # Only the OCR tier reads it (batch mode keys its job-tracking
+                    # table on it, Deck #332); fast/structured ignore it, so it's
+                    # safe to pass on all tiers.
+                    doc_identity_options = {
                         "user_id": doc_task.user_id,
                         "doc_id": doc_task.doc_id,
                         "doc_type": doc_task.doc_type,
@@ -1000,7 +1001,7 @@ async def _index_document(
                         file_path,
                         tier,
                         settings,
-                        options=ocr_options,
+                        options=doc_identity_options,
                     )
                 else:
                     result = await registry.process(

@@ -137,6 +137,19 @@ class TestGetSettings:
         assert settings.document_ocr_batch_poll_seconds == 45
         assert settings.document_ocr_batch_max_wait_seconds == 3600
 
+    @patch.dict(os.environ, {"DOCUMENT_OCR_MODE": "Batch"}, clear=True)
+    def test_document_ocr_mode_case_normalised(self):
+        """DOCUMENT_OCR_MODE is case-insensitive (normalised in __post_init__ via
+        _enum_fields, like DOCUMENT_OCR_PROVIDER) — "Batch" -> "batch"."""
+        _reload_config()
+        assert get_settings().document_ocr_mode == "batch"
+
+    @patch.dict(os.environ, {"DOCUMENT_OCR_MODE": "bogus"}, clear=True)
+    def test_document_ocr_mode_invalid_rejected(self):
+        _reload_config()
+        with pytest.raises(ValueError, match="DOCUMENT_OCR_MODE"):
+            get_settings()
+
     @patch.dict(
         os.environ,
         {"QDRANT_LOCATION": "/app/data/qdrant"},

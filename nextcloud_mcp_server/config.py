@@ -366,7 +366,10 @@ _dynaconf = Dynaconf(
         Validator("DOCUMENT_CHUNK_SIZE", gte=1),
         Validator("DOCUMENT_PARSE_TIMEOUT_SECONDS", gte=1),
         Validator("DOCUMENT_OCR_TIMEOUT_SECONDS", gte=1),
-        Validator("DOCUMENT_OCR_MODE", is_in=("sync", "batch")),
+        # DOCUMENT_OCR_MODE is normalised + membership-checked in
+        # Settings.__post_init__ via _enum_fields (case-insensitive, like
+        # DOCUMENT_OCR_PROVIDER) — no strict dynaconf Validator here, so
+        # "Batch"/"SYNC" normalise instead of erroring.
         # Poll cadence well above a few seconds (each poll re-runs the tier);
         # deadline at least one poll interval.
         Validator("DOCUMENT_OCR_BATCH_POLL_SECONDS", gte=5),
@@ -1029,6 +1032,7 @@ class Settings:
             "collection_metadata_source": {"qdrant", "api"},
             "document_tier1_engine": {"pypdfium2", "pymupdf"},
             "document_ocr_provider": {"auto", "gateway", "mistral", "none"},
+            "document_ocr_mode": {"sync", "batch"},
         }
         for _field, _allowed in _enum_fields.items():
             _val = (getattr(self, _field) or "").strip().lower()
