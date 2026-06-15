@@ -594,6 +594,9 @@ async def scan_user_documents(
                 # indexed. The deletion-reconcile below then sees every indexed
                 # file as "missing" and purges it after the grace period — the
                 # backstop for the eager purge Astrolabe runs on disable.
+                # Asymmetry (intentional): files purge up to 1.5x scan_interval
+                # later than text types, which get immediate one-shot backstop
+                # deletes via _enqueue_deletes_for_disabled_types.
                 logger.debug(
                     "[SCAN-%s] Files disabled by admin for %s; skipping tagged-file discovery",
                     scan_id,

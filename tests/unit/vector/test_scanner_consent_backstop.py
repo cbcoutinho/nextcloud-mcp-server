@@ -73,6 +73,25 @@ async def test_enqueues_deletes_for_disabled_text_type(monkeypatch):
     assert all(t.operation == "delete" and t.doc_type == "note" for t in sent)
 
 
+async def test_all_text_types_disabled_enqueues_all(monkeypatch):
+    # Admin disabled everything at once (empty allow-set): every text type's
+    # indexed points are enqueued for deletion in a single call.
+    _patch_qdrant(
+        monkeypatch, {"note": ["n1"], "news_item": ["ni1"], "deck_card": ["d1"]}
+    )
+    sent: list = []
+    stream = _producer(AsyncMock(side_effect=lambda t: sent.append(t)))
+
+    queued = await _enqueue_deletes_for_disabled_types("alice", stream, frozenset(), 1)
+
+    assert queued == 3
+    assert {(t.doc_type, t.doc_id) for t in sent} == {
+        ("note", "n1"),
+        ("news_item", "ni1"),
+        ("deck_card", "d1"),
+    }
+
+
 async def test_noop_when_allowed_is_none(monkeypatch):
     # Fail-open: a transient capability read must never trigger deletion.
     send = AsyncMock()

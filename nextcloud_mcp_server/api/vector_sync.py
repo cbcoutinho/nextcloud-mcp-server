@@ -121,16 +121,16 @@ async def purge_doc_types_route(request: Request) -> JSONResponse:
         # NOT purged (consent not yet enforced for them) — the scanner backstop
         # still catches these, but the caller shouldn't assume full success.
         failed = [dt for dt in dict.fromkeys(doc_types) if dt not in purged]
-        body: dict = {"purged": purged}
+        resp: dict = {"purged": purged}
         if failed:
-            body["failed"] = failed
+            resp["failed"] = failed
         logger.info(
             "Vector-sync purge by admin %s: purged=%s failed=%s",
             user_id,
             purged,
             failed,
         )
-        return JSONResponse(body)
+        return JSONResponse(resp)
 
     except ProvisioningRequiredError as e:
         logger.info("Provisioning required for user %s: %s", user_id, e)
