@@ -20,10 +20,12 @@ def _patch_qdrant(monkeypatch, *, counts: dict[str, int], delete_raises=None):
     def _doc_type_of(flt):
         return flt.must[0].match.value
 
-    async def fake_count(*, collection_name, count_filter, exact):
+    # Sync side_effects: AsyncMock awaits the call and returns the value, so the
+    # helpers don't need to be coroutines themselves.
+    def fake_count(*, collection_name, count_filter, exact):
         return SimpleNamespace(count=counts.get(_doc_type_of(count_filter), 0))
 
-    async def fake_delete(*, collection_name, points_selector):
+    def fake_delete(*, collection_name, points_selector):
         dt = _doc_type_of(points_selector)
         if delete_raises and dt in delete_raises:
             raise RuntimeError(f"delete failed for {dt}")
@@ -31,10 +33,9 @@ def _patch_qdrant(monkeypatch, *, counts: dict[str, int], delete_raises=None):
     client.count.side_effect = fake_count
     client.delete.side_effect = fake_delete
 
-    async def fake_get_qdrant_client():
-        return client
-
-    monkeypatch.setattr(purge_module, "get_qdrant_client", fake_get_qdrant_client)
+    monkeypatch.setattr(
+        purge_module, "get_qdrant_client", AsyncMock(return_value=client)
+    )
     monkeypatch.setattr(
         purge_module,
         "get_settings",

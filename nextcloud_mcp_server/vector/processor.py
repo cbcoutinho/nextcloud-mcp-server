@@ -590,6 +590,9 @@ async def process_document(
                         doc_task.doc_id,
                         doc_task.user_id,
                     )
+                    # Alertable counter so a flood of webhook events for a
+                    # disabled source is observable (not silently swallowed).
+                    record_ingest_dropped("admin_disabled")
                     record_vector_sync_processing(time.time() - start_time, "skipped")
                     return
 

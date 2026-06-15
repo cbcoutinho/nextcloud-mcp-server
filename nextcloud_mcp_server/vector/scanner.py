@@ -280,6 +280,75 @@ def _app_enabled(app_id: str, enabled_apps: set[str] | None) -> bool:
     return enabled_apps is None or app_id in enabled_apps
 
 
+# Text doc types whose deletion-tracking lives *inside* their scan_* function,
+# so skipping that function (when admin-disabled) leaves indexed points with no
+# grace-period backstop. ``file`` is intentionally excluded: its scan path
+# empties discovery and lets the existing reconcile loop purge on disable.
+_TEXT_BACKSTOP_DOC_TYPES: tuple[str, ...] = ("note", "news_item", "deck_card")
+
+
+async def _enqueue_deletes_for_disabled_types(
+    user_id: str,
+    send_stream: TaskProducer,
+    allowed: frozenset[str] | None,
+    scan_id: int,
+) -> int:
+    """Enqueue delete tasks for indexed text-source points the admin disabled.
+
+    Backstop for a failed eager purge: scrolls this user's indexed points for
+    each admin-disallowed text doc_type and queues a delete. No-op when
+    ``allowed`` is ``None`` (fail-open — never delete on a transient capability
+    read failure). Returns the number of delete tasks enqueued.
+    """
+    if allowed is None:
+        return 0
+
+    disabled = [dt for dt in _TEXT_BACKSTOP_DOC_TYPES if dt not in allowed]
+    if not disabled:
+        return 0
+
+    qdrant_client = await get_qdrant_client()
+    collection = get_settings().get_collection_name()
+    queued = 0
+    for doc_type in disabled:
+        points = await _scroll_all_points(
+            qdrant_client,
+            collection_name=collection,
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
+                ]
+            ),
+            payload_fields=["doc_id"],
+        )
+        doc_ids = {
+            str(p.payload["doc_id"])
+            for p in points
+            if p.payload is not None and "doc_id" in p.payload
+        }
+        if doc_ids:
+            logger.info(
+                "[SCAN-%s] %s disabled by admin for %s; enqueueing %d delete(s) (backstop)",
+                scan_id,
+                doc_type,
+                user_id,
+                len(doc_ids),
+            )
+        for doc_id in doc_ids:
+            await send_stream.send(
+                DocumentTask(
+                    user_id=user_id,
+                    doc_id=doc_id,
+                    doc_type=doc_type,
+                    operation="delete",
+                    modified_at=0,
+                )
+            )
+            queued += 1
+    return queued
+
+
 async def scan_user_documents(
     user_id: str,
     send_stream: TaskProducer,
@@ -380,6 +449,16 @@ async def scan_user_documents(
         grace_period = settings.vector_sync_scan_interval * 1.5
         current_time = time.time()
         queued = 0
+
+        # Backstop purge for admin-disabled text sources. Their deletion-
+        # tracking lives inside the scan_* function we skip below, so (unlike
+        # files, whose discovery-empties-then-reconcile path purges on disable)
+        # they'd linger if Astrolabe's eager purge failed. Enqueue deletes for
+        # any indexed points of a now-disallowed type. Gated on a concrete
+        # allow-set, so a fail-open None never triggers deletion.
+        queued += await _enqueue_deletes_for_disabled_types(
+            user_id, send_stream, allowed, scan_id
+        )
 
         if _app_enabled("notes", enabled_apps) and is_doc_type_allowed("note", allowed):
             try:

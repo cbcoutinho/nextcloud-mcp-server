@@ -13,6 +13,7 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from nextcloud_mcp_server.api.vector_sync import purge_doc_types_route
+from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
 
 pytestmark = pytest.mark.unit
 
@@ -72,7 +73,7 @@ def _patch_purge(mocker, result=None):
     )
 
 
-async def test_unauthorized_when_token_invalid(mocker):
+def test_unauthorized_when_token_invalid(mocker):
     mocker.patch(
         "nextcloud_mcp_server.api.vector_sync.validate_token_and_get_user",
         new=AsyncMock(side_effect=ValueError("bad token")),
@@ -86,7 +87,7 @@ async def test_unauthorized_when_token_invalid(mocker):
     purge.assert_not_called()
 
 
-async def test_bad_request_when_doc_types_not_list(mocker):
+def test_bad_request_when_doc_types_not_list(mocker):
     _patch_token(mocker)
     purge = _patch_purge(mocker)
 
@@ -97,7 +98,7 @@ async def test_bad_request_when_doc_types_not_list(mocker):
     purge.assert_not_called()
 
 
-async def test_forbidden_when_not_admin(mocker):
+def test_forbidden_when_not_admin(mocker):
     _patch_token(mocker, "bob")
     _patch_basic_auth(mocker, "bob")
     _patch_outbound_client(mocker)
@@ -111,7 +112,7 @@ async def test_forbidden_when_not_admin(mocker):
     purge.assert_not_called()
 
 
-async def test_empty_doc_types_is_noop(mocker):
+def test_empty_doc_types_is_noop(mocker):
     _patch_token(mocker)
     purge = _patch_purge(mocker)
 
@@ -123,7 +124,7 @@ async def test_empty_doc_types_is_noop(mocker):
     purge.assert_not_called()
 
 
-async def test_admin_purge_happy_path(mocker):
+def test_admin_purge_happy_path(mocker):
     _patch_token(mocker, "admin")
     _patch_basic_auth(mocker, "admin")
     _patch_outbound_client(mocker)
@@ -136,3 +137,30 @@ async def test_admin_purge_happy_path(mocker):
     assert resp.status_code == 200
     assert resp.json() == {"purged": {"file": 12}}
     purge.assert_awaited_once_with(["file"])
+
+
+def test_bad_request_when_body_not_object(mocker):
+    # A valid JSON non-object (e.g. a list) must 400, not 500.
+    _patch_token(mocker)
+    purge = _patch_purge(mocker)
+
+    client = TestClient(_build_app())
+    resp = client.post("/api/v1/vector-sync/purge", json=[1, 2, 3])
+
+    assert resp.status_code == 400
+    purge.assert_not_called()
+
+
+def test_provisioning_required_returns_428(mocker):
+    _patch_token(mocker, "admin")
+    mocker.patch(
+        "nextcloud_mcp_server.api.vector_sync.get_basic_auth_for_user",
+        new=AsyncMock(side_effect=ProvisioningRequiredError("not provisioned")),
+    )
+    purge = _patch_purge(mocker)
+
+    client = TestClient(_build_app())
+    resp = client.post("/api/v1/vector-sync/purge", json={"doc_types": ["file"]})
+
+    assert resp.status_code == 428
+    purge.assert_not_called()

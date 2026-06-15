@@ -38,13 +38,13 @@ class _CapabilitiesClientProtocol(Protocol):
     async def capabilities(self) -> Any: ...
 
 
-def _parse_enabled_doc_types(payload: Any) -> set[str] | None:
+def _parse_enabled_doc_types(payload: Any) -> frozenset[str] | None:
     """Extract ``enabled_doc_types`` from an OCS capabilities payload.
 
     Returns ``None`` when the ``astrolabe.semantic_search`` block is absent or
-    malformed (treated as "no restriction"). Returns a set (possibly empty) when
-    the block is present and well-formed; an empty set means the admin disabled
-    every source.
+    malformed (treated as "no restriction"). Returns a frozenset (possibly
+    empty) when the block is present and well-formed; an empty set means the
+    admin disabled every source.
     """
     if not isinstance(payload, dict):
         return None
@@ -63,7 +63,7 @@ def _parse_enabled_doc_types(payload: Any) -> set[str] | None:
     raw = semantic.get("enabled_doc_types")
     if not isinstance(raw, list):
         return None
-    return {dt for dt in raw if isinstance(dt, str)}
+    return frozenset(dt for dt in raw if isinstance(dt, str) and dt)
 
 
 async def allowed_doc_types(
@@ -92,8 +92,7 @@ async def allowed_doc_types(
         )
         return None  # don't cache failures — retry next call
 
-    parsed = _parse_enabled_doc_types(payload)
-    result = frozenset(parsed) if parsed is not None else None
+    result = _parse_enabled_doc_types(payload)
     _cache[user_id] = (now, result)
     _cache.move_to_end(user_id)
     while len(_cache) > _CACHE_MAXSIZE:

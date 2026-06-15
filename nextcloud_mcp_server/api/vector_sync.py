@@ -65,6 +65,12 @@ async def purge_doc_types_route(request: Request) -> JSONResponse:
             status_code=400,
         )
 
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"error": "Bad request", "message": "body must be a JSON object"},
+            status_code=400,
+        )
+
     raw = body.get("doc_types")
     if not isinstance(raw, list) or not all(isinstance(d, str) for d in raw):
         return JSONResponse(
@@ -115,7 +121,7 @@ async def purge_doc_types_route(request: Request) -> JSONResponse:
             status_code=428,
         )
     except Exception as e:
-        logger.error("Error purging doc types for user %s: %s", user_id, e)
+        logger.exception("Error purging doc types for user %s", user_id)
         return JSONResponse(
             {
                 "error": "Internal error",

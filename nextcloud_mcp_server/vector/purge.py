@@ -35,6 +35,11 @@ async def purge_doc_types(doc_types: list[str]) -> dict[str, int]:
     deletion). Each doc type is purged independently so a failure on one does
     not abort the rest; failures re-raise after the loop only if every doc type
     failed, otherwise partial progress is returned.
+
+    The count is taken just before the delete (two separate Qdrant calls), so
+    it is approximate — a point indexed in the gap is deleted but not counted.
+    This is acceptable: indexing of a disabled source is already gated upstream,
+    so the window is effectively empty in practice.
     """
     qdrant_client = await get_qdrant_client()
     collection = get_settings().get_collection_name()
@@ -61,10 +66,9 @@ async def purge_doc_types(doc_types: list[str]) -> dict[str, int]:
             )
         except Exception as exc:  # noqa: BLE001 — record and continue
             last_error = exc
-            logger.error(
-                "Failed to purge indexed points for doc_type=%s: %s",
+            logger.exception(
+                "Failed to purge indexed points for doc_type=%s",
                 doc_type,
-                exc,
             )
 
     if not purged and last_error is not None:
