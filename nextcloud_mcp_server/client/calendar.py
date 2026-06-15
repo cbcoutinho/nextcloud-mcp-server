@@ -80,11 +80,20 @@ class CalendarClient:
         elif token is not None:
             auth_kwargs = {"password": token, "auth_type": "bearer"}
 
-        # AsyncDAVClient needs the full base URL for proper URL construction
+        # AsyncDAVClient needs the full base URL for proper URL construction.
+        #
+        # The X-NC-CalDAV-Webcal-Caching header makes Nextcloud expose external
+        # subscriptions (webcal/ICS feeds) as regular, queryable calendars
+        # (CachedSubscription) instead of opaque cs:subscribed collections, so
+        # their events become readable through the normal event/search tools —
+        # the same mechanism desktop clients (Evolution/KDE) rely on (issue #830).
+        # list_calendars() overrides this header to "Off" on its own PROPFIND so
+        # it can still detect subscriptions and flag them read-only.
         self._dav_client = AsyncDAVClient(
             url=f"{base_url}/remote.php/dav/",
             username=auth_username,
             ssl_verify_cert=get_nextcloud_ssl_verify(),  # type: ignore[arg-type]  # caldav types say bool|str but passes through to niquests which accepts SSLContext
+            headers={"X-NC-CalDAV-Webcal-Caching": "On"},
             **auth_kwargs,
         )
         self._calendar_home_url = f"{base_url}/remote.php/dav/calendars/{username}/"
@@ -182,25 +191,46 @@ class CalendarClient:
     # ============= Calendar Operations =============
 
     async def list_calendars(self) -> list[dict[str, Any]]:
-        """List all available calendars for the user."""
+        """List all available calendars for the user.
+
+        Returns both regular calendars and external read-only subscriptions
+        (webcal/ICS feeds). Subscriptions are reported with ``read_only=True``
+        and a ``source`` URL pointing at the upstream feed (issue #830).
+        """
         # Use custom PROPFIND with CalendarServer namespace (cs:) for calendar-color.
         # caldav library's nsmap lacks "CS" namespace, and its CalendarColor uses
         # Apple iCal namespace which Nextcloud doesn't recognize.
+        #
+        # cs:source / ical:calendar-color are requested to surface external
+        # subscriptions: Nextcloud exposes those as cs:subscribed collections
+        # carrying a cs:source href and an Apple-namespace color.
         propfind_body = """<?xml version="1.0" encoding="utf-8"?>
-<d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/" xmlns:c="urn:ietf:params:xml:ns:caldav">
+<d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:ical="http://apple.com/ns/ical/">
     <d:prop>
         <d:displayname/>
         <d:resourcetype/>
         <cs:getctag/>
         <c:calendar-description/>
         <cs:calendar-color/>
+        <ical:calendar-color/>
+        <cs:source/>
     </d:prop>
 </d:propfind>"""
 
+        # Override the client-wide webcal-caching header to "Off" for this
+        # PROPFIND so subscriptions are returned as cs:subscribed collections
+        # (with cs:source) and can be detected and flagged read-only. With the
+        # header "On" they would masquerade as regular calendars, hiding the
+        # source URL. Event reads keep the client-wide "On" so they stay
+        # queryable (see __init__).
+        # Pass the request XML via ``body``, not ``props``: caldav's ``props``
+        # expects a list of property *names* and would build its own body
+        # (discarding this custom CalendarServer/Apple-namespace markup).
         response = await self._dav_client.propfind(
             self._calendar_home_url,
-            props=propfind_body,  # type: ignore[arg-type]  # props accepts XML body string
+            body=propfind_body,
             depth=1,
+            headers={"X-NC-CalDAV-Webcal-Caching": "Off"},
         )
 
         result = []
@@ -211,57 +241,79 @@ class CalendarClient:
             "d": "DAV:",
             "cs": "http://calendarserver.org/ns/",
             "c": "urn:ietf:params:xml:ns:caldav",
+            "ical": "http://apple.com/ns/ical/",
         }
 
         for response_elem in tree.findall(".//d:response", ns):
-            # Check if this is a calendar (has resourcetype/calendar)
+            # A response is a calendar if it is a regular calendar collection
+            # (c:calendar) or an external subscription (cs:subscribed).
             resourcetype = response_elem.find(".//d:resourcetype", ns)
-            if (
-                resourcetype is not None
-                and resourcetype.find(".//c:calendar", ns) is not None
-            ):
-                href = response_elem.find("./d:href", ns)
-                if href is not None and href.text:
-                    calendar_url = href.text
-                    # Extract calendar name from URL
-                    calendar_name = calendar_url.rstrip("/").split("/")[-1]
+            if resourcetype is None:
+                continue
+            is_calendar = resourcetype.find(".//c:calendar", ns) is not None
+            is_subscribed = resourcetype.find(".//cs:subscribed", ns) is not None
+            if not (is_calendar or is_subscribed):
+                continue
 
-                    # Skip if this is the calendar home itself
-                    if calendar_url.rstrip("/") == self._calendar_home_url.rstrip("/"):
-                        continue
+            href = response_elem.find("./d:href", ns)
+            if href is None or not href.text:
+                continue
 
-                    display_name_elem = response_elem.find(".//d:displayname", ns)
-                    display_name = (
-                        display_name_elem.text
-                        if display_name_elem is not None and display_name_elem.text
-                        else calendar_name
-                    )
+            calendar_url = href.text
+            # Extract calendar name from URL
+            calendar_name = calendar_url.rstrip("/").split("/")[-1]
 
-                    description_elem = response_elem.find(
-                        ".//c:calendar-description", ns
-                    )
-                    description = (
-                        description_elem.text
-                        if description_elem is not None and description_elem.text
-                        else ""
-                    )
+            # Skip if this is the calendar home itself
+            if calendar_url.rstrip("/") == self._calendar_home_url.rstrip("/"):
+                continue
 
-                    color_elem = response_elem.find(".//cs:calendar-color", ns)
-                    color = (
-                        color_elem.text
-                        if color_elem is not None and color_elem.text
-                        else "#1976D2"
-                    )
+            display_name_elem = response_elem.find(".//d:displayname", ns)
+            display_name = (
+                display_name_elem.text
+                if display_name_elem is not None and display_name_elem.text
+                else calendar_name
+            )
 
-                    result.append(
-                        {
-                            "name": calendar_name,
-                            "display_name": display_name,
-                            "description": description,
-                            "color": color,
-                            "href": calendar_url,
-                        }
-                    )
+            description_elem = response_elem.find(".//c:calendar-description", ns)
+            description = (
+                description_elem.text
+                if description_elem is not None and description_elem.text
+                else ""
+            )
+
+            # Regular calendars expose cs:calendar-color; subscriptions store
+            # their color under the Apple iCal namespace.
+            color_elem = response_elem.find(".//cs:calendar-color", ns)
+            if color_elem is None or not color_elem.text:
+                color_elem = response_elem.find(".//ical:calendar-color", ns)
+            color = (
+                color_elem.text
+                if color_elem is not None and color_elem.text
+                else "#1976D2"
+            )
+
+            # External subscriptions carry a cs:source href pointing at the
+            # upstream feed and are read-only.
+            source = None
+            source_elem = response_elem.find(".//cs:source", ns)
+            if source_elem is not None:
+                source_href = source_elem.find("./d:href", ns)
+                if source_href is not None and source_href.text:
+                    source = source_href.text
+                elif source_elem.text and source_elem.text.strip():
+                    source = source_elem.text.strip()
+
+            result.append(
+                {
+                    "name": calendar_name,
+                    "display_name": display_name,
+                    "description": description,
+                    "color": color,
+                    "href": calendar_url,
+                    "read_only": is_subscribed,
+                    "source": source,
+                }
+            )
 
         logger.debug("Found %s calendars", len(result))
         return result

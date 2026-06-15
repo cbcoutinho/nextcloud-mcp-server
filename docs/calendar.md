@@ -20,7 +20,7 @@
 
 The server provides comprehensive calendar integration through CalDAV, enabling you to:
 
-- List all available calendars
+- List all available calendars, including external read-only subscriptions
 - Create, read, update, and delete calendar events  
 - Handle recurring events with RRULE support
 - Manage event reminders and notifications
@@ -31,7 +31,10 @@ The server provides comprehensive calendar integration through CalDAV, enabling 
 **Usage Examples:**
 
 ```python
-# List available calendars
+# List available calendars. External subscriptions (webcal/ICS feeds) are
+# included and reported with read_only=True and a `source` URL pointing at the
+# upstream feed. Their events are readable through the normal event tools, but
+# attempts to modify them will be rejected by Nextcloud.
 calendars = await nc_calendar_list_calendars()
 
 # Create a simple event
