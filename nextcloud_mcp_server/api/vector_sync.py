@@ -77,6 +77,11 @@ async def purge_doc_types_route(request: Request) -> JSONResponse:
         )
 
     raw = body.get("doc_types")
+    if raw is None:
+        return JSONResponse(
+            {"error": "Bad request", "message": "doc_types is required"},
+            status_code=400,
+        )
     if not isinstance(raw, list) or not all(isinstance(d, str) for d in raw):
         return JSONResponse(
             {
@@ -86,8 +91,6 @@ async def purge_doc_types_route(request: Request) -> JSONResponse:
             status_code=400,
         )
     doc_types = [d for d in raw if d]
-    if not doc_types:
-        return JSONResponse({"purged": {}})
     # Bound the batch: there are only a handful of real indexed types, so a huge
     # list is abuse — cap it rather than fan out unbounded count+delete calls.
     if len(doc_types) > _MAX_PURGE_DOC_TYPES:
@@ -107,7 +110,9 @@ async def purge_doc_types_route(request: Request) -> JSONResponse:
         if not nextcloud_host:
             raise ValueError("Nextcloud host not configured")
 
-        # Verify admin via the caller's own app password before any deletion.
+        # Verify admin via the caller's own app password before any deletion —
+        # enforced even for an empty (no-op) request, since this is a
+        # destructive admin route.
         async with nextcloud_httpx_client(
             base_url=nextcloud_host,
             auth=httpx.BasicAuth(username, app_password),
@@ -124,6 +129,9 @@ async def purge_doc_types_route(request: Request) -> JSONResponse:
                     },
                     status_code=403,
                 )
+
+        if not doc_types:
+            return JSONResponse({"purged": {}})
 
         purged = await purge_doc_types(doc_types)
         logger.info("Vector-sync purge by admin %s: %s", user_id, purged)

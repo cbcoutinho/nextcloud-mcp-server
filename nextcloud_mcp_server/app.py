@@ -2424,14 +2424,17 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             Route("/api/v1/webhooks/{webhook_id}", delete_webhook, methods=["DELETE"])
         )
         # Vector-sync admin: purge indexed vectors by doc type (admin consent —
-        # called by Astrolabe when a source is disabled for semantic search)
-        routes.append(
-            Route(
-                "/api/v1/vector-sync/purge",
-                purge_doc_types_route,
-                methods=["POST"],
+        # called by Astrolabe when a source is disabled for semantic search).
+        # Gated on vector_sync_enabled: without it there is no Qdrant client, so
+        # the purge would 500 rather than no-op.
+        if settings.vector_sync_enabled:
+            routes.append(
+                Route(
+                    "/api/v1/vector-sync/purge",
+                    purge_doc_types_route,
+                    methods=["POST"],
+                )
             )
-        )
         # Access and scope management endpoints (ADR-022)
         routes.append(
             Route(

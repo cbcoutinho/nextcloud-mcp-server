@@ -293,6 +293,13 @@ _TEXT_BACKSTOP_DOC_TYPES: tuple[str, ...] = tuple(sorted(INDEXED_DOC_TYPES - {"f
 # the type is allowed again, so a later re-disable re-triggers the backstop.
 _consent_backstop_done: set[tuple[str, str]] = set()
 
+# Safety bound on the tracking set so a long-running multi-tenant process with
+# heavy user churn (deprovisioned users leave stale entries) can't grow it
+# without limit. At <= len(INDEXED_DOC_TYPES) entries per user this is generous;
+# on overflow we clear the whole set, which at worst re-fires the (idempotent)
+# backstop once for currently-disabled types.
+_CONSENT_BACKSTOP_MAX = 50_000
+
 
 async def _enqueue_deletes_for_disabled_types(
     user_id: str,
@@ -366,6 +373,12 @@ async def _enqueue_deletes_for_disabled_types(
             queued += 1
         # Mark this (user, doc_type) backstopped for the current disable episode
         # so subsequent scans don't re-enqueue the same idempotent deletes.
+        if len(_consent_backstop_done) >= _CONSENT_BACKSTOP_MAX:
+            logger.info(
+                "consent backstop tracking set hit %d entries; clearing",
+                _CONSENT_BACKSTOP_MAX,
+            )
+            _consent_backstop_done.clear()
         _consent_backstop_done.add((user_id, doc_type))
     return queued
 

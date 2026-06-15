@@ -112,8 +112,23 @@ def test_forbidden_when_not_admin(mocker):
     purge.assert_not_called()
 
 
-def test_empty_doc_types_is_noop(mocker):
+def test_missing_doc_types_key_returns_400(mocker):
     _patch_token(mocker)
+    purge = _patch_purge(mocker)
+
+    client = TestClient(_build_app())
+    resp = client.post("/api/v1/vector-sync/purge", json={})
+
+    assert resp.status_code == 400
+    purge.assert_not_called()
+
+
+def test_empty_doc_types_is_admin_gated_noop(mocker):
+    # An empty (no-op) request still requires admin — this is a destructive route.
+    _patch_token(mocker, "admin")
+    _patch_basic_auth(mocker, "admin")
+    _patch_outbound_client(mocker)
+    _patch_groups(mocker, ["admin"])
     purge = _patch_purge(mocker)
 
     client = TestClient(_build_app())
@@ -121,6 +136,20 @@ def test_empty_doc_types_is_noop(mocker):
 
     assert resp.status_code == 200
     assert resp.json() == {"purged": {}}
+    purge.assert_not_called()
+
+
+def test_empty_doc_types_forbidden_for_non_admin(mocker):
+    _patch_token(mocker, "bob")
+    _patch_basic_auth(mocker, "bob")
+    _patch_outbound_client(mocker)
+    _patch_groups(mocker, ["users"])
+    purge = _patch_purge(mocker)
+
+    client = TestClient(_build_app())
+    resp = client.post("/api/v1/vector-sync/purge", json={"doc_types": []})
+
+    assert resp.status_code == 403
     purge.assert_not_called()
 
 
