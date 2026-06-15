@@ -20,6 +20,7 @@ from mcp.types import (
 from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.capabilities import allowed_doc_types
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.semantic import (
@@ -299,6 +300,33 @@ def configure_semantic_tools(mcp: FastMCP):
         # owners have shared with them without having to re-index those
         # files under their own user_id.
         accessible_owners = await list_accessible_owners(client.sharing, username)
+
+        # Admin consent gate: restrict to source types the Astrolabe admin has
+        # approved (and that are installed for this user). This mirrors
+        # Astrolabe's own server-side enforcement but is independent because
+        # this tool queries Qdrant directly. ``None`` = no restriction
+        # (fail-open / Astrolabe predating this feature). An empty allow-set
+        # means the admin disabled every source.
+        allowed = await allowed_doc_types(client, username)
+        if allowed is not None:
+            if doc_types is None:
+                doc_types = sorted(allowed)
+            else:
+                doc_types = [dt for dt in doc_types if dt in allowed]
+            if not doc_types:
+                logger.info(
+                    "Semantic search short-circuited for user %s: no requested "
+                    "doc_type is both installed and admin-approved",
+                    username,
+                )
+                return SemanticSearchResponse(
+                    results=[],
+                    query=query,
+                    total_found=0,
+                    search_method=f"bm25_hybrid_{fusion}",
+                    verified_chunk_count=0,
+                    dropped_document_count=0,
+                )
 
         try:
             # The nc_semantic_search tool deliberately uses BM25-hybrid (dense +

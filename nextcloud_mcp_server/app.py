@@ -47,6 +47,7 @@ from nextcloud_mcp_server.api import (
     list_supported_scopes,
     list_webhooks,
     provision_app_password,
+    purge_doc_types_route,
     revoke_user_access,
     unified_search,
     update_user_scopes,
@@ -2421,6 +2422,15 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         routes.append(Route("/api/v1/webhooks", create_webhook, methods=["POST"]))
         routes.append(
             Route("/api/v1/webhooks/{webhook_id}", delete_webhook, methods=["DELETE"])
+        )
+        # Vector-sync admin: purge indexed vectors by doc type (admin consent —
+        # called by Astrolabe when a source is disabled for semantic search)
+        routes.append(
+            Route(
+                "/api/v1/vector-sync/purge",
+                purge_doc_types_route,
+                methods=["POST"],
+            )
         )
         # Access and scope management endpoints (ADR-022)
         routes.append(

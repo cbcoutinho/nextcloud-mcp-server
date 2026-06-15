@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from nextcloud_mcp_server.document_processors.registry import ProcessorRegistry
 
 from nextcloud_mcp_server.acl_hash import compute_acl_hash
+from nextcloud_mcp_server.capabilities import allowed_doc_types, is_doc_type_allowed
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_service
@@ -573,6 +574,24 @@ async def process_document(
                 and doc_task.file_path is None
             ):
                 await _reconcile_tag_event(doc_task, nc_client)
+
+            # Admin consent gate (Astrolabe): never index a source the admin has
+            # disabled for semantic search — this catches near-real-time webhook
+            # events that bypass the scanner's discovery gate. Deletes always
+            # proceed (removing data honours consent). ``None`` from the reader
+            # means no restriction (fail-open / older Astrolabe), so a transient
+            # capabilities failure never silently drops indexing.
+            if doc_task.operation == "index":
+                allowed = await allowed_doc_types(nc_client, doc_task.user_id)
+                if not is_doc_type_allowed(doc_task.doc_type, allowed):
+                    logger.info(
+                        "Skipping index of %s_%s for %s: doc_type disabled by admin",
+                        doc_task.doc_type,
+                        doc_task.doc_id,
+                        doc_task.user_id,
+                    )
+                    record_vector_sync_processing(time.time() - start_time, "skipped")
+                    return
 
             # Handle deletion
             if doc_task.operation == "delete":

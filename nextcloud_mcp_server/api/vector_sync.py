@@ -1,0 +1,125 @@
+"""Vector-sync admin API endpoints.
+
+Provides the purge endpoint Astrolabe calls when an admin disables a content
+source for semantic search. Consent is binding on data-at-rest, so the
+already-indexed content for the disabled source's doc type(s) is deleted
+globally (every owner) — see :mod:`nextcloud_mcp_server.vector.purge`.
+
+Auth: the OAuth bearer identifies the caller (``validate_token_and_get_user``);
+because the purge deletes every owner's content for a doc type, it is further
+restricted to Nextcloud administrators (verified via the ``admin`` group using
+the caller's app password). This is stricter than the per-user webhook routes
+in :mod:`nextcloud_mcp_server.api.webhooks` precisely because the blast radius
+is global.
+"""
+
+import logging
+
+import httpx
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+from nextcloud_mcp_server.api._auth import get_basic_auth_for_user
+from nextcloud_mcp_server.api.management import (
+    _sanitize_error_for_client,
+    validate_token_and_get_user,
+)
+from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
+from nextcloud_mcp_server.client.users import UsersClient
+from nextcloud_mcp_server.vector.purge import purge_doc_types
+
+from ..http import nextcloud_httpx_client
+
+logger = logging.getLogger(__name__)
+
+
+async def purge_doc_types_route(request: Request) -> JSONResponse:
+    """POST /api/v1/vector-sync/purge — delete indexed vectors by doc type.
+
+    Request body::
+
+        {"doc_types": ["file", "note"]}
+
+    Returns ``{"purged": {doc_type: deleted_count}}``. Admin-only.
+
+    Requires OAuth bearer token for authentication.
+    """
+    try:
+        user_id, _ = await validate_token_and_get_user(request)
+    except Exception as e:
+        logger.warning("Unauthorized access to /api/v1/vector-sync/purge: %s", e)
+        return JSONResponse(
+            {
+                "error": "Unauthorized",
+                "message": _sanitize_error_for_client(e, "purge_doc_types"),
+            },
+            status_code=401,
+        )
+
+    try:
+        body = await request.json()
+    except Exception as e:
+        logger.warning("Purge payload was not valid JSON: %s", e)
+        return JSONResponse(
+            {"error": "Bad request", "message": "invalid JSON"},
+            status_code=400,
+        )
+
+    raw = body.get("doc_types")
+    if not isinstance(raw, list) or not all(isinstance(d, str) for d in raw):
+        return JSONResponse(
+            {
+                "error": "Bad request",
+                "message": "doc_types must be a list of strings",
+            },
+            status_code=400,
+        )
+    doc_types = [d for d in raw if d]
+    if not doc_types:
+        return JSONResponse({"purged": {}})
+
+    try:
+        username, app_password = await get_basic_auth_for_user(user_id)
+
+        oauth_ctx = request.app.state.oauth_context
+        nextcloud_host = oauth_ctx.get("config", {}).get("nextcloud_host", "")
+        if not nextcloud_host:
+            raise ValueError("Nextcloud host not configured")
+
+        # Verify admin via the caller's own app password before any deletion.
+        async with nextcloud_httpx_client(
+            base_url=nextcloud_host,
+            auth=httpx.BasicAuth(username, app_password),
+            timeout=30.0,
+        ) as client:
+            users_client = UsersClient(client, username)
+            user_groups = await users_client.get_user_groups(username)
+            if "admin" not in user_groups:
+                logger.warning("Non-admin user %s attempted vector-sync purge", user_id)
+                return JSONResponse(
+                    {
+                        "error": "Forbidden",
+                        "message": "Administrator privileges required",
+                    },
+                    status_code=403,
+                )
+
+        purged = await purge_doc_types(doc_types)
+        logger.info("Vector-sync purge by admin %s: %s", user_id, purged)
+        return JSONResponse({"purged": purged})
+
+    except ProvisioningRequiredError as e:
+        logger.info("Provisioning required for user %s: %s", user_id, e)
+        return JSONResponse(
+            {"error": "Provisioning required", "message": str(e)},
+            status_code=428,
+        )
+    except Exception as e:
+        logger.error("Error purging doc types for user %s: %s", user_id, e)
+        return JSONResponse(
+            {
+                "error": "Internal error",
+                "message": _sanitize_error_for_client(e, "purge_doc_types"),
+            },
+            status_code=500,
+        )

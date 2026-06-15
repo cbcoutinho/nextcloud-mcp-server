@@ -16,6 +16,7 @@ from httpx import HTTPStatusError
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue, Record
 
+from nextcloud_mcp_server.capabilities import allowed_doc_types, is_doc_type_allowed
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.client.news import NewsItemType
 from nextcloud_mcp_server.config import get_settings
@@ -365,6 +366,13 @@ async def scan_user_documents(
         # detection failed: fall back to scanning every app (prior behaviour).
         enabled_apps = await _get_enabled_apps_or_none(nc_client, user_id, scan_id)
 
+        # Admin consent gate (Astrolabe): only index sources the admin has
+        # approved for semantic search. ``None`` = no restriction (fail-open /
+        # older Astrolabe), so a transient capabilities failure never silently
+        # halts (or worse, mass-deletes) indexing. This is independent of
+        # ``enabled_apps``, which reflects only what the user has installed.
+        allowed = await allowed_doc_types(nc_client, user_id)
+
         # Notes (isolated so an uninstalled or disabled Notes app — whose API
         # returns 404 — cannot abort scanning of the other apps; this mirrors the
         # per-app try/except guards already wrapping files/news/deck below).
@@ -373,7 +381,7 @@ async def scan_user_documents(
         current_time = time.time()
         queued = 0
 
-        if _app_enabled("notes", enabled_apps):
+        if _app_enabled("notes", enabled_apps) and is_doc_type_allowed("note", allowed):
             try:
                 queued += await scan_notes(
                     user_id=user_id,
@@ -454,9 +462,21 @@ async def scan_user_documents(
             # folder applies to every PDF beneath it.
             settings = get_settings()
             tag_name = settings.vector_sync_pdf_tag
-            tagged_files = await nc_client.find_files_by_tag(
-                tag_name, mime_type_filter="application/pdf"
-            )
+            if is_doc_type_allowed("file", allowed):
+                tagged_files = await nc_client.find_files_by_tag(
+                    tag_name, mime_type_filter="application/pdf"
+                )
+            else:
+                # Files disabled by admin: discover nothing so no new file is
+                # indexed. The deletion-reconcile below then sees every indexed
+                # file as "missing" and purges it after the grace period — the
+                # backstop for the eager purge Astrolabe runs on disable.
+                logger.debug(
+                    "[SCAN-%s] Files disabled by admin for %s; skipping tagged-file discovery",
+                    scan_id,
+                    user_id,
+                )
+                tagged_files = []
 
             # Apply EXCLUDED_TAGS as defense-in-depth: a folder marked
             # off-limits via the exclusion tag must not be indexed even if
@@ -710,7 +730,9 @@ async def scan_user_documents(
 
         # Scan News items (starred + unread)
         news_queued = 0
-        if _app_enabled("news", enabled_apps):
+        if _app_enabled("news", enabled_apps) and is_doc_type_allowed(
+            "news_item", allowed
+        ):
             try:
                 news_queued = await scan_news_items(
                     user_id=user_id,
@@ -731,7 +753,9 @@ async def scan_user_documents(
 
         # Scan Deck cards
         deck_queued = 0
-        if _app_enabled("deck", enabled_apps):
+        if _app_enabled("deck", enabled_apps) and is_doc_type_allowed(
+            "deck_card", allowed
+        ):
             try:
                 deck_queued = await scan_deck_cards(
                     user_id=user_id,
