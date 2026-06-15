@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 _MAX_PURGE_DOC_TYPES = 64
 
 
+def _bad_request(message: str) -> JSONResponse:
+    return JSONResponse({"error": "Bad request", "message": message}, status_code=400)
+
+
 async def purge_doc_types_route(request: Request) -> JSONResponse:
     """POST /api/v1/vector-sync/purge — delete indexed vectors by doc type.
 
@@ -65,42 +69,21 @@ async def purge_doc_types_route(request: Request) -> JSONResponse:
         body = await request.json()
     except Exception as e:
         logger.warning("Purge payload was not valid JSON: %s", e)
-        return JSONResponse(
-            {"error": "Bad request", "message": "invalid JSON"},
-            status_code=400,
-        )
+        return _bad_request("invalid JSON")
 
     if not isinstance(body, dict):
-        return JSONResponse(
-            {"error": "Bad request", "message": "body must be a JSON object"},
-            status_code=400,
-        )
+        return _bad_request("body must be a JSON object")
 
     raw = body.get("doc_types")
     if raw is None:
-        return JSONResponse(
-            {"error": "Bad request", "message": "doc_types is required"},
-            status_code=400,
-        )
+        return _bad_request("doc_types is required")
     if not isinstance(raw, list) or not all(isinstance(d, str) for d in raw):
-        return JSONResponse(
-            {
-                "error": "Bad request",
-                "message": "doc_types must be a list of strings",
-            },
-            status_code=400,
-        )
+        return _bad_request("doc_types must be a list of strings")
     doc_types = [d for d in raw if d]
     # Bound the batch: there are only a handful of real indexed types, so a huge
     # list is abuse — cap it rather than fan out unbounded count+delete calls.
     if len(doc_types) > _MAX_PURGE_DOC_TYPES:
-        return JSONResponse(
-            {
-                "error": "Bad request",
-                "message": f"doc_types exceeds the maximum of {_MAX_PURGE_DOC_TYPES}",
-            },
-            status_code=400,
-        )
+        return _bad_request(f"doc_types exceeds the maximum of {_MAX_PURGE_DOC_TYPES}")
 
     try:
         username, app_password = await get_basic_auth_for_user(user_id)
