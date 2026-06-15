@@ -13,10 +13,15 @@ from pathlib import Path
 import pytest
 from pact import Pact
 
-# Pact participant names. These MUST match the names used on the astrolabe side
-# and in the broker, so keep them in sync with the astrolabe repo's pact tests.
+# Pact participant names. These MUST match the names used on the provider side
+# and in the broker, so keep them in sync with the provider repos' pact tests.
 CONSUMER = "nextcloud-mcp-server"
 PROVIDER = "astrolabe"
+# The embedding gateway is a *separate* provider (astrolabe-cloud-website,
+# services/embedding-gateway). Its provider-verification job
+# (test_gateway_provider_verification.py, PROVIDER_NAME="astrolabe-cloud-gateway")
+# picks up this consumer's pact from the broker.
+GATEWAY_PROVIDER = "astrolabe-cloud-gateway"
 
 PACT_DIR = Path(__file__).parent / "pacts"
 
@@ -38,5 +43,18 @@ def consumer_pact():
     teardown.
     """
     pact = Pact(CONSUMER, PROVIDER).with_specification("V4")
+    yield pact
+    pact.write_file(PACT_DIR, overwrite=False)
+
+
+@pytest.fixture
+def gateway_consumer_pact():
+    """A fresh Pact (consumer=nextcloud-mcp-server, provider=astrolabe-cloud-gateway).
+
+    Separate from ``consumer_pact`` because the embedding gateway is a distinct
+    provider — its interactions merge into their own pact file, verified by the
+    gateway's provider job (Deck #332).
+    """
+    pact = Pact(CONSUMER, GATEWAY_PROVIDER).with_specification("V4")
     yield pact
     pact.write_file(PACT_DIR, overwrite=False)
