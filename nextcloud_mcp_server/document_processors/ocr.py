@@ -272,6 +272,7 @@ class OcrProcessor(DocumentProcessor):
         # using sync" warning to once per pod.
         self._batch_client_resolved = False
         self._batch_client: Any = None
+        self._batch_client_lock: anyio.Lock | None = None
         self._batch_fallback_warned = False
 
     @property
@@ -377,9 +378,9 @@ class OcrProcessor(DocumentProcessor):
         provider=mistral / no gateway). Resolved once under the backend lock so the
         token provider's M2M cache survives across documents."""
         if not self._batch_client_resolved:
-            if self._backend_lock is None:
-                self._backend_lock = anyio.Lock()
-            async with self._backend_lock:
+            if self._batch_client_lock is None:
+                self._batch_client_lock = anyio.Lock()
+            async with self._batch_client_lock:
                 if not self._batch_client_resolved:  # double-checked
                     self._batch_client = build_gateway_batch_client(get_settings())
                     self._batch_client_resolved = True

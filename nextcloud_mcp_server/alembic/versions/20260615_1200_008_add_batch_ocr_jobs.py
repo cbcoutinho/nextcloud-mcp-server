@@ -36,7 +36,11 @@ def upgrade() -> None:
         # Document identity (the same keys the OCR tier receives via the
         # processor ``options``). ``etag`` is the content-version key: a changed
         # document (new etag) is a new job, so a stale row never serves results
-        # for the wrong content.
+        # for the wrong content. The four-column natural key IS the primary key:
+        # one in-flight job per (document, content version), and the PK doubles as
+        # the unique index ``insert_pending``'s ON CONFLICT target relies on. A
+        # resubmit for a new etag inserts a new row; the superseded row is swept on
+        # resubmit (delete_stale_for_doc).
         sa.Column("user_id", sa.Text(), nullable=False),
         sa.Column("doc_id", sa.Text(), nullable=False),
         sa.Column("doc_type", sa.Text(), nullable=False),
@@ -51,14 +55,8 @@ def upgrade() -> None:
         # (DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS).
         sa.Column("submitted_at", sa.BigInteger(), nullable=False),
         sa.Column("updated_at", sa.BigInteger(), nullable=False),
-        # One in-flight job per (document, content version). A resubmit for a new
-        # etag inserts a new row; the superseded row is swept on resubmit.
-        sa.UniqueConstraint(
-            "user_id",
-            "doc_id",
-            "doc_type",
-            "etag",
-            name="uq_batch_ocr_jobs_doc",
+        sa.PrimaryKeyConstraint(
+            "user_id", "doc_id", "doc_type", "etag", name="pk_batch_ocr_jobs"
         ),
     )
 

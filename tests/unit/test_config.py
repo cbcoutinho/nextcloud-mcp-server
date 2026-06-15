@@ -117,6 +117,28 @@ class TestGetSettings:
 
     @patch.dict(
         os.environ,
+        {
+            "DOCUMENT_OCR_MODE": "batch",
+            "DOCUMENT_OCR_BATCH_POLL_SECONDS": "45",
+            "DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS": "3600",
+        },
+        clear=True,
+    )
+    def test_get_settings_ocr_batch_mode_from_env(self):
+        """DOCUMENT_OCR_MODE / batch tuning must reach settings (regression).
+
+        These were added to _DEFAULTS + the Settings dataclass but initially
+        omitted from _field_map, so dynaconf silently ignored the env vars and
+        batch mode could never be enabled in production (Deck #332).
+        """
+        _reload_config()
+        settings = get_settings()
+        assert settings.document_ocr_mode == "batch"
+        assert settings.document_ocr_batch_poll_seconds == 45
+        assert settings.document_ocr_batch_max_wait_seconds == 3600
+
+    @patch.dict(
+        os.environ,
         {"QDRANT_LOCATION": "/app/data/qdrant"},
         clear=True,
     )

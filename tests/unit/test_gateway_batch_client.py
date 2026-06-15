@@ -33,8 +33,8 @@ def _patch_transport(monkeypatch, handler) -> list[httpx.Request]:
 
 
 def test_base_url_normalization():
-    assert gbc.GatewayBatchOcrClient("http://gw", "m")._base == "http://gw/v1"
-    assert gbc.GatewayBatchOcrClient("http://gw/v1/", "m")._base == "http://gw/v1"
+    assert gbc.GatewayBatchOcrClient("https://gw", "m")._base == "https://gw/v1"
+    assert gbc.GatewayBatchOcrClient("https://gw/v1/", "m")._base == "https://gw/v1"
 
 
 async def test_submit_posts_one_document_and_returns_job_id(monkeypatch):
@@ -44,7 +44,7 @@ async def test_submit_posts_one_document_and_returns_job_id(monkeypatch):
         )
 
     seen = _patch_transport(monkeypatch, handler)
-    client = gbc.GatewayBatchOcrClient("http://gw", "mistral/mistral-ocr-latest")
+    client = gbc.GatewayBatchOcrClient("https://gw", "mistral/mistral-ocr-latest")
 
     job_id = await client.submit(b"%PDF-1.7", "application/pdf", custom_id="doc-9")
 
@@ -73,7 +73,7 @@ async def test_submit_sends_bearer_when_token_provider(monkeypatch):
     # _Tok duck-types get_token; cast for the type checker (the client only awaits
     # get_token()).
     client = gbc.GatewayBatchOcrClient(
-        "http://gw", "m", token_provider=cast(Any, _Tok())
+        "https://gw", "m", token_provider=cast(Any, _Tok())
     )
     await client.submit(b"x", "application/pdf", custom_id="d")
     assert seen[0].headers["Authorization"] == "Bearer tok-abc"
@@ -84,7 +84,7 @@ async def test_poll_pending(monkeypatch):
         monkeypatch,
         lambda r: httpx.Response(200, json={"status": "pending", "total": 1}),
     )
-    result = await gbc.GatewayBatchOcrClient("http://gw", "m").poll("mistral/j")
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_pending and result.pages == []
 
 
@@ -102,7 +102,7 @@ async def test_poll_succeeded_maps_pages(monkeypatch):
         ],
     }
     _patch_transport(monkeypatch, lambda r: httpx.Response(200, json=body))
-    result = await gbc.GatewayBatchOcrClient("http://gw", "m").poll("mistral/j")
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_succeeded
     # Order is preserved as returned; _pages_to_text sorts downstream.
     assert result.pages == [(1, "two"), (0, "one")]
@@ -113,14 +113,14 @@ async def test_poll_failed_surfaces_error(monkeypatch):
         monkeypatch,
         lambda r: httpx.Response(200, json={"status": "failed", "error": "quota"}),
     )
-    result = await gbc.GatewayBatchOcrClient("http://gw", "m").poll("mistral/j")
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_failed and result.error == "quota"
 
 
 async def test_poll_succeeded_with_per_document_error_is_failed(monkeypatch):
     body = {"status": "succeeded", "results": [{"custom_id": "d", "error": "bad page"}]}
     _patch_transport(monkeypatch, lambda r: httpx.Response(200, json=body))
-    result = await gbc.GatewayBatchOcrClient("http://gw", "m").poll("mistral/j")
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_failed and result.error == "bad page"
 
 
@@ -129,7 +129,7 @@ async def test_poll_succeeded_no_results_is_failed(monkeypatch):
         monkeypatch,
         lambda r: httpx.Response(200, json={"status": "succeeded", "results": []}),
     )
-    result = await gbc.GatewayBatchOcrClient("http://gw", "m").poll("mistral/j")
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_failed
 
 
@@ -138,4 +138,4 @@ async def test_poll_raises_on_http_error(monkeypatch):
         monkeypatch, lambda r: httpx.Response(503, json={"detail": "down"})
     )
     with pytest.raises(httpx.HTTPStatusError):
-        await gbc.GatewayBatchOcrClient("http://gw", "m").poll("mistral/j")
+        await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")

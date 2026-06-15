@@ -281,7 +281,7 @@ def _wire_batch(monkeypatch, *, client, store, settings=None):
     settings = settings or _settings(
         document_ocr_mode="batch",
         document_ocr_provider="gateway",
-        embedding_gateway_url="http://gw",
+        embedding_gateway_url="https://gw",
     )
     monkeypatch.setattr(ocr, "get_settings", lambda: settings)
     monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s: client)
@@ -404,7 +404,7 @@ async def test_batch_falls_back_to_sync_when_no_identity(monkeypatch):
     settings = _settings(
         document_ocr_mode="batch",
         document_ocr_provider="gateway",
-        embedding_gateway_url="http://gw",
+        embedding_gateway_url="https://gw",
     )
     monkeypatch.setattr(ocr, "get_settings", lambda: settings)
     monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s: client)
