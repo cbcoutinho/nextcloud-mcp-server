@@ -32,6 +32,11 @@ from ..http import nextcloud_httpx_client
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on doc_types per purge request. There are only a handful of real
+# indexed types; this caps a hostile/buggy caller's fan-out of count+delete
+# calls without constraining legitimate use.
+_MAX_PURGE_DOC_TYPES = 64
+
 
 async def purge_doc_types_route(request: Request) -> JSONResponse:
     """POST /api/v1/vector-sync/purge — delete indexed vectors by doc type.
@@ -83,6 +88,16 @@ async def purge_doc_types_route(request: Request) -> JSONResponse:
     doc_types = [d for d in raw if d]
     if not doc_types:
         return JSONResponse({"purged": {}})
+    # Bound the batch: there are only a handful of real indexed types, so a huge
+    # list is abuse — cap it rather than fan out unbounded count+delete calls.
+    if len(doc_types) > _MAX_PURGE_DOC_TYPES:
+        return JSONResponse(
+            {
+                "error": "Bad request",
+                "message": f"doc_types exceeds the maximum of {_MAX_PURGE_DOC_TYPES}",
+            },
+            status_code=400,
+        )
 
     try:
         username, app_password = await get_basic_auth_for_user(user_id)

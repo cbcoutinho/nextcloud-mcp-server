@@ -151,6 +151,20 @@ def test_bad_request_when_body_not_object(mocker):
     purge.assert_not_called()
 
 
+def test_bad_request_when_too_many_doc_types(mocker):
+    _patch_token(mocker)
+    purge = _patch_purge(mocker)
+
+    client = TestClient(_build_app())
+    resp = client.post(
+        "/api/v1/vector-sync/purge",
+        json={"doc_types": [f"t{i}" for i in range(65)]},
+    )
+
+    assert resp.status_code == 400
+    purge.assert_not_called()
+
+
 def test_provisioning_required_returns_428(mocker):
     _patch_token(mocker, "admin")
     mocker.patch(

@@ -282,9 +282,16 @@ def _app_enabled(app_id: str, enabled_apps: set[str] | None) -> bool:
 
 # Text doc types whose deletion-tracking lives *inside* their scan_* function,
 # so skipping that function (when admin-disabled) leaves indexed points with no
-# grace-period backstop. ``file`` is intentionally excluded: its scan path
-# empties discovery and lets the existing reconcile loop purge on disable.
-_TEXT_BACKSTOP_DOC_TYPES: tuple[str, ...] = ("note", "news_item", "deck_card")
+# grace-period backstop. Derived from INDEXED_DOC_TYPES so a newly-indexed type
+# automatically gets the backstop. ``file`` is excluded: its scan path empties
+# discovery and lets the existing reconcile loop purge on disable.
+_TEXT_BACKSTOP_DOC_TYPES: tuple[str, ...] = tuple(sorted(INDEXED_DOC_TYPES - {"file"}))
+
+# Per-process record of (user_id, doc_type) whose consent backstop deletes have
+# already been enqueued, so a *standing* admin-disable doesn't re-flood the
+# processor with idempotent deletes on every scan tick. An entry is cleared once
+# the type is allowed again, so a later re-disable re-triggers the backstop.
+_consent_backstop_done: set[tuple[str, str]] = set()
 
 
 async def _enqueue_deletes_for_disabled_types(
@@ -303,7 +310,18 @@ async def _enqueue_deletes_for_disabled_types(
     if allowed is None:
         return 0
 
-    disabled = [dt for dt in _TEXT_BACKSTOP_DOC_TYPES if dt not in allowed]
+    # Re-enabled types: clear their one-shot marker so a later re-disable
+    # re-triggers the backstop.
+    for doc_type in _TEXT_BACKSTOP_DOC_TYPES:
+        if doc_type in allowed:
+            _consent_backstop_done.discard((user_id, doc_type))
+
+    # Disabled types not yet backstopped this episode.
+    disabled = [
+        dt
+        for dt in _TEXT_BACKSTOP_DOC_TYPES
+        if dt not in allowed and (user_id, dt) not in _consent_backstop_done
+    ]
     if not disabled:
         return 0
 
@@ -346,6 +364,9 @@ async def _enqueue_deletes_for_disabled_types(
                 )
             )
             queued += 1
+        # Mark this (user, doc_type) backstopped for the current disable episode
+        # so subsequent scans don't re-enqueue the same idempotent deletes.
+        _consent_backstop_done.add((user_id, doc_type))
     return queued
 
 

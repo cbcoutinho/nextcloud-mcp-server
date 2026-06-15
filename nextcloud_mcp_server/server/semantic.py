@@ -57,6 +57,23 @@ logger = logging.getLogger(__name__)
 _USAGE_METADATA_MAX_DOC_TYPES = 16
 
 
+def _consent_narrowed_doc_types(
+    doc_types: list[str] | None, allowed: frozenset[str]
+) -> list[str]:
+    """Apply the admin allow-set to a requested ``doc_types`` filter.
+
+    Caller has already established ``allowed is not None`` (a concrete allow-set;
+    ``None`` means "no restriction" and is handled by skipping this call). When
+    no explicit ``doc_types`` are requested, restrict to the full allow-set;
+    otherwise intersect (preserving the caller's order). An empty result means
+    nothing the caller asked for is admin-approved — the caller short-circuits
+    to an empty response rather than falling through to an all-types search.
+    """
+    if doc_types is None:
+        return sorted(allowed)
+    return [dt for dt in doc_types if dt in allowed]
+
+
 async def record_search_usage(
     *,
     enabled: bool,
@@ -309,10 +326,7 @@ def configure_semantic_tools(mcp: FastMCP):
         # means the admin disabled every source.
         allowed = await allowed_doc_types(client, username)
         if allowed is not None:
-            if doc_types is None:
-                doc_types = sorted(allowed)
-            else:
-                doc_types = [dt for dt in doc_types if dt in allowed]
+            doc_types = _consent_narrowed_doc_types(doc_types, allowed)
             if not doc_types:
                 logger.info(
                     "Semantic search short-circuited for user %s: no requested "

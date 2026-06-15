@@ -12,9 +12,19 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
 
+import pytest
+
 from nextcloud_mcp_server.vector import scanner as scanner_module
 from nextcloud_mcp_server.vector.queue.ports import TaskProducer
 from nextcloud_mcp_server.vector.scanner import _enqueue_deletes_for_disabled_types
+
+
+@pytest.fixture(autouse=True)
+def _clear_backstop_state():
+    """The one-shot guard is module-level; reset it between tests."""
+    scanner_module._consent_backstop_done.clear()
+    yield
+    scanner_module._consent_backstop_done.clear()
 
 
 def _producer(send: AsyncMock) -> TaskProducer:
@@ -79,3 +89,42 @@ async def test_noop_when_all_text_types_allowed(monkeypatch):
     )
     assert queued == 0
     send.assert_not_called()
+
+
+async def test_one_shot_does_not_reflood_on_subsequent_scans(monkeypatch):
+    _patch_qdrant(monkeypatch, {"note": ["n1", "n2"]})
+    send = AsyncMock()
+    allowed = frozenset({"file"})  # note disabled
+
+    first = await _enqueue_deletes_for_disabled_types(
+        "alice", _producer(send), allowed, 1
+    )
+    second = await _enqueue_deletes_for_disabled_types(
+        "alice", _producer(send), allowed, 2
+    )
+
+    assert first == 2
+    # Standing disable: the next scan must not re-enqueue the same deletes.
+    assert second == 0
+
+
+async def test_re_enable_then_disable_retriggers_backstop(monkeypatch):
+    _patch_qdrant(monkeypatch, {"note": ["n1"]})
+    send = AsyncMock()
+    disabled = frozenset({"file"})
+    enabled = frozenset({"file", "note"})
+
+    assert (
+        await _enqueue_deletes_for_disabled_types("alice", _producer(send), disabled, 1)
+        == 1
+    )
+    # Re-enabled: clears the one-shot marker.
+    assert (
+        await _enqueue_deletes_for_disabled_types("alice", _producer(send), enabled, 2)
+        == 0
+    )
+    # Disabled again: backstop fires once more.
+    assert (
+        await _enqueue_deletes_for_disabled_types("alice", _producer(send), disabled, 3)
+        == 1
+    )
