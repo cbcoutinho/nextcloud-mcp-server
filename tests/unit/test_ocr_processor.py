@@ -4,9 +4,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import anyio
+import httpx
 import pytest
 
 from nextcloud_mcp_server.document_processors import ocr
+from nextcloud_mcp_server.embedding.gateway_batch_client import BatchPollResult
+from nextcloud_mcp_server.vector import batch_ocr_store as _bos
 
 pytestmark = pytest.mark.unit
 
@@ -274,11 +277,6 @@ def test_batch_identity_extracts_tuple_and_defaults_etag():
     )
 
 
-from nextcloud_mcp_server.embedding.gateway_batch_client import (  # noqa: E402
-    BatchPollResult,
-)
-from nextcloud_mcp_server.vector import batch_ocr_store as _bos  # noqa: E402
-
 _IDENTITY = {"user_id": "u1", "doc_id": "d1", "doc_type": "file", "etag": "v1"}
 
 
@@ -481,3 +479,34 @@ async def test_batch_falls_back_to_sync_when_no_identity(monkeypatch):
     r = await ocr.OcrProcessor().process(b"%PDF", "application/pdf", options=None)
     assert r.success is True and r.text == "sync text"
     assert client.submitted == []  # never attempted batch
+
+
+async def test_batch_submit_transport_error_propagates_not_caught(monkeypatch):
+    # Opted into batch: a transport error from submit() must propagate (to
+    # procrastinate for a durable retry), NOT be caught by the sync OCR
+    # try/except or fall back to a surprise sync transcription. Guards the
+    # intentional asymmetry documented in process().
+    class _DownClient:
+        submitted: list = []
+
+        async def submit(self, content, mime_type, custom_id):
+            raise httpx.ConnectError("gateway down")
+
+        async def poll(self, job_id):  # pragma: no cover - not reached
+            raise AssertionError("poll should not be called")
+
+    sync_backend_used = False
+
+    def _build_backend(_s):
+        nonlocal sync_backend_used
+        sync_backend_used = True
+        return None
+
+    monkeypatch.setattr(ocr, "build_ocr_backend", _build_backend)
+    _wire_batch(monkeypatch, client=_DownClient(), store=_FakeStore())
+
+    with pytest.raises(httpx.ConnectError):
+        await ocr.OcrProcessor().process(
+            b"%PDF", "application/pdf", options=dict(_IDENTITY)
+        )
+    assert sync_backend_used is False  # never fell back to the sync path
