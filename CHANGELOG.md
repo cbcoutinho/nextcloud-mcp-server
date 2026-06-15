@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.118.0 (2026-06-15)
+
+### Feat
+
+- **calendar**: list external read-only (subscribed) calendars
+
 ## v0.117.2 (2026-06-14)
 
 ### Fix
