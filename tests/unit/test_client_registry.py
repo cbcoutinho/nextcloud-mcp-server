@@ -157,8 +157,11 @@ def test_validate_redirect_uri_localhost_wildcard(monkeypatch):
 
 
 def test_client_name_resolution(monkeypatch):
-    registry = _get_registry(monkeypatch, "claude-desktop, custom-tool")
+    # Names are derived generically from the client_id — there is no built-in
+    # "well-known" client map, so previously special-cased ids now title-case.
+    registry = _get_registry(monkeypatch, "claude-desktop, claude-ai, custom-tool")
     assert registry.get_client("claude-desktop").name == "Claude Desktop"
+    assert registry.get_client("claude-ai").name == "Claude Ai"
     assert registry.get_client("custom-tool").name == "Custom Tool"
 
 

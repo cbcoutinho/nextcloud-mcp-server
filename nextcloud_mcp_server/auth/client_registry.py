@@ -140,15 +140,14 @@ class ClientRegistry:
             )
 
     def _get_client_name(self, client_id: str) -> str:
-        """Get human-readable name for client_id."""
-        known_names = {
-            "claude-desktop": "Claude Desktop",
-            "claude-ai": "Claude AI",
-            "continue-dev": "Continue IDE Extension",
-            "zed-editor": "Zed Editor",
-            "vscode-mcp": "VS Code MCP Extension",
-        }
-        return known_names.get(client_id, client_id.replace("-", " ").title())
+        """Derive a human-readable display name from a client_id.
+
+        There is no built-in list of "well-known" clients: every client must be
+        opted in explicitly via ``ALLOWED_MCP_CLIENTS`` (mirroring the
+        management-API ``ALLOWED_MGMT_CLIENT`` allowlist). The display name is
+        derived generically from the client_id.
+        """
+        return client_id.replace("-", " ").title()
 
     def validate_client(
         self,
