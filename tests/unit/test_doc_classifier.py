@@ -387,6 +387,15 @@ def test_glyph_corruption_ratio_override_disables_trigger():
     assert "corrupt_glyphs" not in c.flags
 
 
+def test_glyph_corruption_ratio_zero_disables_trigger():
+    full = _GLYPH_CORRUPT
+    bounds = [{"page": 1, "start_offset": 0, "end_offset": len(full)}]
+    # 0 disables the signal (rather than firing on any single control byte).
+    c = clf.classify_from_text(full, bounds, glyph_corruption_ratio=0.0)
+    assert c.recommended_tier == "fast"
+    assert "corrupt_glyphs" not in c.flags
+
+
 def test_empty_doc_routes_ocr_not_structured():
     # Precedence: a scanned/empty doc (no text layer) has no control chars to leak,
     # so it must stay an OCR case, never structured.

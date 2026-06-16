@@ -287,9 +287,10 @@ document_escalation_total = Counter(
 document_escalation_suppressed_total = Counter(
     "astrolabe_document_escalation_suppressed_total",
     "Would-be tier escalations suppressed because the target tier is disabled",
-    # reason: low_confidence | empty_text. (corrupt_glyphs never appears here: it
-    # targets the structured tier, which has no enabled-gate -- if registered it
-    # runs, else there is nothing to suppress -- so it only ever hops or returns.)
+    # reason: low_confidence | empty_text | corrupt_glyphs. (corrupt_glyphs lands
+    # here only in the narrow case where the structured tier is unregistered AND
+    # OCR is registered-but-disabled: evaluate_escalation follows minimum="structured"
+    # past the missing rung to OCR, which is gated off -> suppressed{to_tier="ocr"}.)
     ["from_tier", "to_tier", "reason"],
 )
 

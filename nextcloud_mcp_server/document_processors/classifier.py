@@ -203,9 +203,15 @@ def _route_from_signals(
     Flags are diagnostic and independent of the verdict (e.g. ``image_heavy``
     fires on ANY image-heavy page; the OCR route needs a page FRACTION).
     """
-    # total_chars > 0 also guarantees this never overlaps the scanned branch
-    # (total_chars == 0), so a doc is never both glyph-corrupt and "scanned".
-    glyph_corrupt = total_chars > 0 and control_ratio > glyph_corruption_ratio
+    # glyph_corruption_ratio <= 0 disables the signal (a ratio of 0 would otherwise
+    # fire on any single C0 control byte). total_chars > 0 also guarantees this
+    # never overlaps the scanned branch (total_chars == 0), so a doc is never both
+    # glyph-corrupt and "scanned".
+    glyph_corrupt = (
+        glyph_corruption_ratio > 0
+        and total_chars > 0
+        and control_ratio > glyph_corruption_ratio
+    )
 
     flags: set[str] = set()
     if ocr_frac >= page_fraction and total_chars == 0:

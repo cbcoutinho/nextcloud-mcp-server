@@ -349,6 +349,26 @@ async def test_inline_fast_structured_ocr_cascade(monkeypatch):
     ]
 
 
+async def test_inline_structured_still_corrupt_escalates_to_ocr(monkeypatch):
+    # Edge: the structured re-extract is ALSO glyph-corrupt (pymupdf also failed to
+    # decode). Re-classification stays "structured", so the OCR gate fires --
+    # attributed from_tier="structured" with reason corrupt_glyphs.
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=True))
+    esc = MagicMock()
+    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
+    r = _registry(
+        (_Fake("fast", "fast", text=_GLYPH), 20),
+        (_Fake("structured", "structured", text=_GLYPH), 10),  # still corrupt
+        (_Fake("ocr", "ocr", text="ocr recovered text"), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "ocr"
+    assert esc.call_args_list == [
+        call("fast", "structured", "corrupt_glyphs"),
+        call("structured", "ocr", "corrupt_glyphs"),
+    ]
+
+
 def test_evaluate_escalation_glyph_corrupt_goes_structured(monkeypatch):
     # External path mirrors the inline path: glyph-corrupt -> structured, never OCR.
     monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
@@ -393,6 +413,31 @@ def test_evaluate_escalation_glyph_corrupt_no_structured_falls_through_to_ocr(
     )
     decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True))
     assert decision == EscalationDecision("hop", "ocr", "corrupt_glyphs")
+
+
+def test_evaluate_escalation_glyph_corrupt_no_structured_ocr_disabled_suppressed(
+    monkeypatch,
+):
+    # Structured unregistered AND OCR registered-but-disabled: the would-be OCR
+    # fallthrough is suppressed, and it carries the corrupt_glyphs reason (so the
+    # "what-if OCR" counter can show latent glyph-corruption demand).
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("ocr", "ocr"), 5),
+    )  # structured not registered; ocr registered but disabled below
+    res = ProcessingResult(
+        text=_GLYPH,
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [
+                {"page": 1, "start_offset": 0, "end_offset": len(_GLYPH)}
+            ],
+        },
+        processor="fast",
+    )
+    decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=False))
+    assert decision == EscalationDecision("suppressed", "ocr", "corrupt_glyphs")
 
 
 # --- Per-tier external path (Deck #323) -------------------------------------
