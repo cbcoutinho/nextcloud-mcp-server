@@ -273,11 +273,27 @@ async def test_glyph_corrupt_escalates_fast_to_structured(monkeypatch):
 
 
 async def test_glyph_corrupt_no_structured_stays_fast(monkeypatch):
-    # No structured processor registered -> nothing to escalate to; keep fast.
+    # No structured processor registered AND OCR off -> nothing to escalate to;
+    # keep fast (the inline counterpart of the external "suppressed" outcome).
     monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=False))
     r = _registry((_Fake("fast", "fast", text=_GLYPH), 20))
     res = await r.process(b"%PDF-1.7", "application/pdf")
     assert res.processor == "fast"
+
+
+async def test_glyph_corrupt_no_structured_falls_through_to_ocr(monkeypatch):
+    # Parity with the external path: structured unregistered but OCR enabled ->
+    # the glyph-corrupt doc falls through to OCR (not silently kept at fast).
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=True))
+    esc = MagicMock()
+    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
+    r = _registry(
+        (_Fake("fast", "fast", text=_GLYPH), 20),
+        (_Fake("ocr", "ocr", text="ocr recovered text"), 5),
+    )  # no structured registered
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "ocr"
+    esc.assert_called_once_with("fast", "ocr", "corrupt_glyphs")
 
 
 async def test_inline_lowconf_tries_structured_before_ocr(monkeypatch):
@@ -353,6 +369,30 @@ def test_evaluate_escalation_glyph_corrupt_goes_structured(monkeypatch):
     )
     decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True))
     assert decision == EscalationDecision("hop", "structured", "corrupt_glyphs")
+
+
+def test_evaluate_escalation_glyph_corrupt_no_structured_falls_through_to_ocr(
+    monkeypatch,
+):
+    # External path with structured unregistered: next_available_tier skips the
+    # missing rung and lands on OCR, keeping the corrupt_glyphs reason.
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("ocr", "ocr"), 5),
+    )  # no structured registered
+    res = ProcessingResult(
+        text=_GLYPH,
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [
+                {"page": 1, "start_offset": 0, "end_offset": len(_GLYPH)}
+            ],
+        },
+        processor="fast",
+    )
+    decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True))
+    assert decision == EscalationDecision("hop", "ocr", "corrupt_glyphs")
 
 
 # --- Per-tier external path (Deck #323) -------------------------------------

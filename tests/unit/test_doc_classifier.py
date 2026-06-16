@@ -395,6 +395,21 @@ def test_empty_doc_routes_ocr_not_structured():
     assert "corrupt_glyphs" not in c.flags
 
 
+def test_glyph_corrupt_takes_precedence_over_junk_text_layer():
+    # A layer that is BOTH glyph-corrupt (high control ratio) AND junk-quality
+    # (mashed, no whitespace -> low text_quality): both flags fire, but
+    # glyph-corrupt wins the route (structured, not ocr) -- the structured
+    # re-extract is the cheaper correct fix, and re-classification catches any
+    # residual junk afterwards.
+    text = "WKHTXLFNEURZQIRAMXPSV\x0f\x10\x11\x0f\x10" * 3
+    c = clf.classify_from_text(
+        text, [{"page": 1, "start_offset": 0, "end_offset": len(text)}]
+    )
+    assert c.recommended_tier == "structured"
+    assert "corrupt_glyphs" in c.flags
+    assert "bad_text_layer" in c.flags
+
+
 def test_classify_pdf_glyph_corrupt_routes_structured():
     # Symmetry with the classify_from_text routing on the standalone/diagnostic
     # classify_pdf path (which re-opens the PDF and samples pages).
