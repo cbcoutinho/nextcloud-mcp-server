@@ -100,8 +100,9 @@ async def allowed_doc_types(
 
     result = _parse_enabled_doc_types(payload)
     _cache[user_id] = (now, result)
-    # New key: __setitem__ already appends (no-op). Existing expired key: the
-    # update keeps its old position, so move it to the end to preserve LRU order.
+    # Needed only for an existing (expired) key: __setitem__ updates it in place,
+    # keeping its old position, so move it to the end to preserve LRU order. For
+    # a brand-new key __setitem__ already appends, so this is a harmless no-op.
     _cache.move_to_end(user_id)
     while len(_cache) > _CACHE_MAXSIZE:
         _cache.popitem(last=False)  # evict least-recently-used

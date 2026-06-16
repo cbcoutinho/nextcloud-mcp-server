@@ -98,6 +98,35 @@ def test_bad_request_when_doc_types_not_list(mocker):
     purge.assert_not_called()
 
 
+def test_bad_request_when_doc_types_has_non_string(mocker):
+    # Covers the all(isinstance(d, str)) branch (a list with non-string items).
+    _patch_token(mocker)
+    purge = _patch_purge(mocker)
+
+    client = TestClient(_build_app())
+    resp = client.post("/api/v1/vector-sync/purge", json={"doc_types": [1, 2]})
+
+    assert resp.status_code == 400
+    purge.assert_not_called()
+
+
+def test_total_failure_returns_500(mocker):
+    # purge_doc_types raising (total failure) hits the route's except -> 500.
+    _patch_token(mocker, "admin")
+    _patch_basic_auth(mocker, "admin")
+    _patch_outbound_client(mocker)
+    _patch_groups(mocker, ["admin"])
+    mocker.patch(
+        "nextcloud_mcp_server.api.vector_sync.purge_doc_types",
+        new=AsyncMock(side_effect=RuntimeError("qdrant down")),
+    )
+
+    client = TestClient(_build_app())
+    resp = client.post("/api/v1/vector-sync/purge", json={"doc_types": ["file"]})
+
+    assert resp.status_code == 500
+
+
 def test_forbidden_when_not_admin(mocker):
     _patch_token(mocker, "bob")
     _patch_basic_auth(mocker, "bob")
