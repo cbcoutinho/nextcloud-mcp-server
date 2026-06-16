@@ -334,7 +334,7 @@ document_classifier_flag_total = Counter(
     # so flag{image_heavy} is expected to exceed classified{recommended_tier=ocr}.
     "astrolabe_document_classifier_flag_total",
     "Tier-0 classifier flags raised on documents",
-    ["flag"],  # image_heavy | scanned | bad_text_layer
+    ["flag"],  # image_heavy | scanned | bad_text_layer | corrupt_glyphs
 )
 
 document_text_quality = Histogram(

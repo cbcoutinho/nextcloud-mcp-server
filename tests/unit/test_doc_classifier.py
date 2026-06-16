@@ -31,6 +31,18 @@ def _digital_pdf(
     return data
 
 
+def _glyph_corrupt_pdf(pages: int = 2) -> bytes:
+    # A born-digital PDF whose text layer carries the glyph-leak control chars,
+    # for the classify_pdf (diagnostic) path. pymupdf round-trips the C0 controls.
+    doc = pymupdf.open()
+    for _ in range(pages):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((50, 60), GLYPH_CORRUPT_TEXT)
+    data: bytes = doc.tobytes()
+    doc.close()
+    return data
+
+
 def _full_page_image_pdf(pages: int = 2) -> bytes:
     # A page whose entire area is a raster image -> looks scanned.
     doc = pymupdf.open()
@@ -381,3 +393,13 @@ def test_empty_doc_routes_ocr_not_structured():
     c = clf.classify_from_text("", [{"page": 1, "start_offset": 0, "end_offset": 0}])
     assert c.recommended_tier == "ocr"
     assert "corrupt_glyphs" not in c.flags
+
+
+def test_classify_pdf_glyph_corrupt_routes_structured():
+    # Symmetry with the classify_from_text routing on the standalone/diagnostic
+    # classify_pdf path (which re-opens the PDF and samples pages).
+    c = clf.classify_pdf(_glyph_corrupt_pdf())
+    assert c.recommended_tier == "structured"
+    assert "corrupt_glyphs" in c.flags
+    assert c.mean_control_ratio > clf.GLYPH_CORRUPTION_RATIO
+    assert c.mean_text_quality >= clf.MIN_TEXT_QUALITY  # control signal, not quality

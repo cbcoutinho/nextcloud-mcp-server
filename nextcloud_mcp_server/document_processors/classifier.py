@@ -272,6 +272,10 @@ def classify_pdf(content: bytes) -> DocClassification:
     ocr_frac = (sum(p.needs_ocr for p in pages) / sampled) if sampled else 0.0
     # Char-weighted doc-level control-char ratio (p.control_ratio * char_count is
     # the per-page bad-char count). The glyph-leak signal -- see _control_char_ratio.
+    # NOTE: this is over the <=MAX_SAMPLED_PAGES sample, so unlike classify_from_text
+    # (which scans the whole full_text) this diagnostic path can under-detect
+    # corruption concentrated outside the sampled pages. Acceptable here: the hot
+    # path is classify_from_text; this standalone pass is for diagnostics.
     control_ratio = (
         sum(p.control_ratio * p.char_count for p in pages) / total_chars
         if total_chars
