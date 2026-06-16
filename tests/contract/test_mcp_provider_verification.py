@@ -70,7 +70,22 @@ pytestmark = [
 # fixtures, etc.). Keep the keys identical to the astrolabe ``given(...)``
 # strings. Unhandled states fall through to ``_dispatch_state`` which logs and
 # no-ops, so state-less interactions still verify.
+def _state_admin_can_purge() -> None:
+    """Provider state for astrolabe's consent-purge pact
+    (``POST /api/v1/vector-sync/purge``).
+
+    Full verification of this authenticated endpoint (admin OAuth token +
+    Nextcloud admin-group check + Qdrant delete) needs the live-stack auth
+    test-hook that is the ADR-029 phase-4 follow-up. Until then the interaction
+    rides the broker's pending flow (see ``include_pending`` below); this handler
+    is registered so the dispatcher recognises the state by name rather than
+    logging an "unhandled state" warning.
+    """
+    # Intentionally empty: no live-stack state to set up yet (phase 4).
+
+
 _PROVIDER_STATES: dict[str, Callable[[], None]] = {
+    "an admin can purge indexed documents": _state_admin_can_purge,
     # "a webhook is registered for user alice": _state_webhook_registered,
     # "vector sync has indexed documents": _state_vector_sync_ran,
     # "the search index returns a hit for 'budget'": _state_search_has_hit,
@@ -102,10 +117,24 @@ def test_verify_astrolabe_consumer_pacts() -> None:
     verifier = Verifier(PROVIDER_NAME).add_transport(url=_PROVIDER_URL)
     verifier.state_handler(_dispatch_state, teardown=True)
 
-    if _BROKER_URL and _BROKER_USERNAME and _BROKER_PASSWORD:
-        verifier.broker_source(
-            _BROKER_URL, username=_BROKER_USERNAME, password=_BROKER_PASSWORD
+    if _BROKER_READY:
+        # selector=True to opt into pending pacts: a new/authenticated contract
+        # (e.g. the consent-purge endpoint) reports as *pending* instead of
+        # failing this build until provider verification of the authenticated
+        # surface is stood up (ADR-029 phase 4). Already-verified interactions
+        # (GET /api/v1/status) stay blocking. Empty consumer selectors keep the
+        # default "latest pacts for this provider" fetch.
+        broker = verifier.broker_source(
+            _BROKER_URL,
+            username=_BROKER_USERNAME,
+            password=_BROKER_PASSWORD,
+            selector=True,
         )
+        broker.include_pending()
+        provider_branch = os.environ.get("PACT_PROVIDER_BRANCH")
+        if provider_branch:
+            broker.provider_branch(provider_branch)
+        broker.build()
     else:
         assert _LOCAL_PACT_DIR is not None  # guaranteed by module skipif
         verifier.add_source(_LOCAL_PACT_DIR)
