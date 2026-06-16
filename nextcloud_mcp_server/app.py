@@ -2076,6 +2076,15 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # drive an endless scanner re-spawn/401 loop (Deck #198). The
                 # credential_cleanup_task started below repeats it on a cadence.
                 try:
+                    # Log the cohort first: the sweep makes one OCS validation
+                    # call per stored user before readiness, so the count is the
+                    # operability signal if startup latency ever climbs.
+                    stored = await token_storage.get_all_app_password_user_ids()
+                    if stored:
+                        logger.info(
+                            "Running startup credential sweep for %s stored user(s)",
+                            len(stored),
+                        )
                     removed = await token_storage.cleanup_invalid_app_passwords(
                         nextcloud_host=nextcloud_host_for_sync
                     )

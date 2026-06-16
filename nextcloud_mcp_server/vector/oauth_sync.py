@@ -136,6 +136,11 @@ async def _remove_stale_credential(user_id: str, status_code: int) -> None:
     #198). Deleting the row drops the user out of
     ``get_all_app_password_user_ids()`` so the scanner is not recreated.
 
+    Convergence: if ``user_manager_task`` already snapshotted the user IDs for
+    the current poll before this deletion, it re-spawns the scanner once more on
+    the next cycle, which fails auth and deletes again — at most one extra 401
+    per manager poll interval, versus the unbounded loop before this fix.
+
     Best-effort: a storage failure here is logged, not raised — the periodic
     ``credential_cleanup_task`` sweep (and the next startup sweep) are backstops.
     """
@@ -144,6 +149,14 @@ async def _remove_stale_credential(user_id: str, status_code: int) -> None:
         if await storage.delete_app_password(user_id):
             logger.info(
                 "[BasicAuth] Removed stale app password for %s after HTTP %s",
+                user_id,
+                status_code,
+            )
+        else:
+            # Row already gone — raced with the periodic sweep or another
+            # scanner exit. Harmless; logged for diagnostics.
+            logger.debug(
+                "[BasicAuth] No stale app password to remove for %s (HTTP %s)",
                 user_id,
                 status_code,
             )
@@ -473,12 +486,13 @@ async def credential_cleanup_task(
     task_status.started()
 
     while not shutdown_event.is_set():
-        # Sleep first — startup already swept; wake early on shutdown.
-        try:
-            with anyio.move_on_after(CREDENTIAL_CLEANUP_INTERVAL):
-                await shutdown_event.wait()
-        except anyio.get_cancelled_exc_class():
-            break
+        # Sleep first — startup already swept; wake early on shutdown. The
+        # graceful path goes through shutdown_event (move_on_after returns once
+        # teardown sets it), so we deliberately do NOT catch the cancellation
+        # exception: a task-group cancel must propagate for structured-
+        # concurrency teardown (re-swallowing it would breach anyio's contract).
+        with anyio.move_on_after(CREDENTIAL_CLEANUP_INTERVAL):
+            await shutdown_event.wait()
         if shutdown_event.is_set():
             break
 
