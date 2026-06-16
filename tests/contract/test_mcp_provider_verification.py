@@ -81,7 +81,7 @@ def _state_admin_can_purge() -> None:
     is registered so the dispatcher recognises the state by name rather than
     logging an "unhandled state" warning.
     """
-    return None
+    # Intentionally empty: no live-stack state to set up yet (phase 4).
 
 
 _PROVIDER_STATES: dict[str, Callable[[], None]] = {
