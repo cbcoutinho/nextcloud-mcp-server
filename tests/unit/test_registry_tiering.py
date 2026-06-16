@@ -4,7 +4,7 @@ Covers: default fast-tier routing, the pymupdf rollback toggle, classification
 recording derived from the extraction, and OCR escalation (on/off).
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -15,6 +15,7 @@ from nextcloud_mcp_server.document_processors.base import (
 )
 from nextcloud_mcp_server.document_processors.escalation import EscalationDecision
 from nextcloud_mcp_server.document_processors.registry import ProcessorRegistry
+from tests.fixtures.glyph_corruption import GLYPH_CORRUPT_TEXT
 
 pytestmark = pytest.mark.unit
 
@@ -24,7 +25,9 @@ class _Fake(DocumentProcessor):
         self,
         name: str,
         tier: str,
-        text: str = "clean text here",
+        # >= MIN_PAGE_CHARS of clean, whitespace-separated prose so the default
+        # classifies "fast" (a shorter string trips the near-empty OCR signal).
+        text: str = "this is clean readable prose text",
         success=True,
         pages: int = 1,
     ):
@@ -75,6 +78,7 @@ class _Settings:
         page_fraction=0.5,
         min_page_chars=16,
         detect_scanned=False,
+        glyph_corruption_ratio=0.02,
         # Guard off by default so existing tiering tests are unaffected; tests
         # that exercise the size guard pass an explicit cap.
         max_pdf_size_mb=0.0,
@@ -86,6 +90,7 @@ class _Settings:
         self.document_ocr_page_fraction = page_fraction
         self.document_ocr_min_page_chars = min_page_chars
         self.document_ocr_detect_scanned = detect_scanned
+        self.document_glyph_corruption_ratio = glyph_corruption_ratio
         self.document_max_pdf_size_mb = max_pdf_size_mb
 
 
@@ -242,6 +247,197 @@ async def test_no_ocr_escalation_when_disabled(monkeypatch):
     res = await r.process(b"%PDF-1.7", "application/pdf")
     # Fast tier is terminal when OCR is disabled.
     assert res.processor == "fast"
+
+
+# --- glyph-corruption escalation + full-ladder parity ------------------------
+
+# A fast-tier text layer that looks like words (HIGH text_quality) but leaks C0
+# control chars -- the broken-/ToUnicode signature the control-char ratio catches.
+# Shared with the classifier tests so the two can't diverge.
+_GLYPH = GLYPH_CORRUPT_TEXT
+
+
+async def test_glyph_corrupt_escalates_fast_to_structured(monkeypatch):
+    # Not gated on OCR: structured is free + in-cluster, so a glyph-corrupt layer
+    # escalates fast->structured even with OCR disabled.
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=False))
+    esc = MagicMock()
+    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
+    r = _registry(
+        (_Fake("fast", "fast", text=_GLYPH), 20),
+        (_Fake("structured", "structured", text="clean recovered prose text"), 10),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "structured"
+    esc.assert_called_once_with("fast", "structured", "corrupt_glyphs")
+
+
+async def test_glyph_corrupt_no_structured_stays_fast(monkeypatch):
+    # No structured processor registered AND OCR off -> nothing to escalate to;
+    # keep fast (the inline counterpart of the external "suppressed" outcome).
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=False))
+    r = _registry((_Fake("fast", "fast", text=_GLYPH), 20))
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "fast"
+
+
+async def test_glyph_corrupt_no_structured_falls_through_to_ocr(monkeypatch):
+    # Parity with the external path: structured unregistered but OCR enabled ->
+    # the glyph-corrupt doc falls through to OCR (not silently kept at fast).
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=True))
+    esc = MagicMock()
+    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
+    r = _registry(
+        (_Fake("fast", "fast", text=_GLYPH), 20),
+        (_Fake("ocr", "ocr", text="ocr recovered text"), 5),
+    )  # no structured registered
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "ocr"
+    esc.assert_called_once_with("fast", "ocr", "corrupt_glyphs")
+
+
+async def test_inline_lowconf_tries_structured_before_ocr(monkeypatch):
+    # Full-ladder parity with the external path: a junk-but-non-empty fast layer
+    # tries structured (fast->structured) BEFORE any OCR, even with OCR enabled.
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=True))
+    esc = MagicMock()
+    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
+    r = _registry(
+        (_Fake("fast", "fast", text="x" * 40), 20),  # one long token -> quality ~0
+        (_Fake("structured", "structured", text="clean recovered prose text here"), 10),
+        (_Fake("ocr", "ocr", text="ocr text"), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "structured"
+    esc.assert_called_once_with("fast", "structured", "low_confidence")
+
+
+async def test_inline_empty_skips_structured_straight_to_ocr(monkeypatch):
+    # The one intended shortcut: a scanned/no-text-layer doc (total_chars == 0)
+    # skips structured (it cannot extract text from a raster) and goes to OCR.
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=True))
+    esc = MagicMock()
+    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
+    r = _registry(
+        (_Fake("fast", "fast", text=""), 20),
+        (_Fake("structured", "structured", text="should not run"), 10),
+        (_Fake("ocr", "ocr", text="ocr text"), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "ocr"
+    esc.assert_called_once_with("fast", "ocr", "empty_text")
+
+
+async def test_inline_fast_structured_ocr_cascade(monkeypatch):
+    # Full cascade: a junk-but-non-empty fast layer hops to structured, the
+    # structured re-extract is empty (a doc that was ALSO scanned), so it then
+    # hops to OCR. The second hop must be attributed from_tier="structured",
+    # NOT a second "fast" escalation.
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=True))
+    esc = MagicMock()
+    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
+    r = _registry(
+        (_Fake("fast", "fast", text="x" * 40), 20),  # quality ~0, non-empty
+        (_Fake("structured", "structured", text=""), 10),  # re-extract empty
+        (_Fake("ocr", "ocr", text="ocr recovered text"), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "ocr"
+    assert esc.call_args_list == [
+        call("fast", "structured", "low_confidence"),
+        call("structured", "ocr", "empty_text"),
+    ]
+
+
+async def test_inline_structured_still_corrupt_escalates_to_ocr(monkeypatch):
+    # Edge: the structured re-extract is ALSO glyph-corrupt (pymupdf also failed to
+    # decode). Re-classification stays "structured", so the OCR gate fires --
+    # attributed from_tier="structured" with reason corrupt_glyphs.
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=True))
+    esc = MagicMock()
+    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
+    r = _registry(
+        (_Fake("fast", "fast", text=_GLYPH), 20),
+        (_Fake("structured", "structured", text=_GLYPH), 10),  # still corrupt
+        (_Fake("ocr", "ocr", text="ocr recovered text"), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "ocr"
+    assert esc.call_args_list == [
+        call("fast", "structured", "corrupt_glyphs"),
+        call("structured", "ocr", "corrupt_glyphs"),
+    ]
+
+
+def test_evaluate_escalation_glyph_corrupt_goes_structured(monkeypatch):
+    # External path mirrors the inline path: glyph-corrupt -> structured, never OCR.
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("structured", "structured"), 10),
+        (_Fake("ocr", "ocr"), 5),
+    )
+    res = ProcessingResult(
+        text=_GLYPH,
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [
+                {"page": 1, "start_offset": 0, "end_offset": len(_GLYPH)}
+            ],
+        },
+        processor="fast",
+    )
+    decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True))
+    assert decision == EscalationDecision("hop", "structured", "corrupt_glyphs")
+
+
+def test_evaluate_escalation_glyph_corrupt_no_structured_falls_through_to_ocr(
+    monkeypatch,
+):
+    # External path with structured unregistered: next_available_tier skips the
+    # missing rung and lands on OCR, keeping the corrupt_glyphs reason.
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("ocr", "ocr"), 5),
+    )  # no structured registered
+    res = ProcessingResult(
+        text=_GLYPH,
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [
+                {"page": 1, "start_offset": 0, "end_offset": len(_GLYPH)}
+            ],
+        },
+        processor="fast",
+    )
+    decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True))
+    assert decision == EscalationDecision("hop", "ocr", "corrupt_glyphs")
+
+
+def test_evaluate_escalation_glyph_corrupt_no_structured_ocr_disabled_suppressed(
+    monkeypatch,
+):
+    # Structured unregistered AND OCR registered-but-disabled: the would-be OCR
+    # fallthrough is suppressed, and it carries the corrupt_glyphs reason (so the
+    # "what-if OCR" counter can show latent glyph-corruption demand).
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("ocr", "ocr"), 5),
+    )  # structured not registered; ocr registered but disabled below
+    res = ProcessingResult(
+        text=_GLYPH,
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [
+                {"page": 1, "start_offset": 0, "end_offset": len(_GLYPH)}
+            ],
+        },
+        processor="fast",
+    )
+    decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=False))
+    assert decision == EscalationDecision("suppressed", "ocr", "corrupt_glyphs")
 
 
 # --- Per-tier external path (Deck #323) -------------------------------------

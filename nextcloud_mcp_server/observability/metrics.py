@@ -272,7 +272,7 @@ document_bytes_processed_total = Counter(
 document_escalation_total = Counter(
     "astrolabe_document_escalation_total",
     "Total document parse escalations between tiers",
-    # reason: low_confidence | empty_text | unsupported | error | forced
+    # reason: low_confidence | empty_text | corrupt_glyphs | unsupported | error | forced
     ["from_tier", "to_tier", "reason"],
 )
 
@@ -287,7 +287,10 @@ document_escalation_total = Counter(
 document_escalation_suppressed_total = Counter(
     "astrolabe_document_escalation_suppressed_total",
     "Would-be tier escalations suppressed because the target tier is disabled",
-    # reason: low_confidence | empty_text
+    # reason: low_confidence | empty_text | corrupt_glyphs. (corrupt_glyphs lands
+    # here only in the narrow case where the structured tier is unregistered AND
+    # OCR is registered-but-disabled: evaluate_escalation follows minimum="structured"
+    # past the missing rung to OCR, which is gated off -> suppressed{to_tier="ocr"}.)
     ["from_tier", "to_tier", "reason"],
 )
 
@@ -332,7 +335,7 @@ document_classifier_flag_total = Counter(
     # so flag{image_heavy} is expected to exceed classified{recommended_tier=ocr}.
     "astrolabe_document_classifier_flag_total",
     "Tier-0 classifier flags raised on documents",
-    ["flag"],  # image_heavy | scanned | bad_text_layer
+    ["flag"],  # image_heavy | scanned | bad_text_layer | corrupt_glyphs
 )
 
 document_text_quality = Histogram(
@@ -754,7 +757,7 @@ def record_document_escalation(from_tier: str, to_tier: str, reason: str) -> Non
     Args:
         from_tier: Tier that could not satisfactorily parse the document
         to_tier: Tier the document was escalated to
-        reason: low_confidence | empty_text | unsupported | error | forced
+        reason: low_confidence | empty_text | corrupt_glyphs | unsupported | error | forced
     """
     document_escalation_total.labels(
         from_tier=from_tier, to_tier=to_tier, reason=reason

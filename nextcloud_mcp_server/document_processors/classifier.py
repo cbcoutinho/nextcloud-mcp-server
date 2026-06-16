@@ -27,9 +27,10 @@ Two entry points:
 
 Recommended tier:
   * ``ocr``  -- scanned / no-usable-text-layer (route to tier 3, when enabled)
+  * ``structured`` -- a text layer that is present but glyph-corrupt (the fast
+    extractor leaked raw glyph codes; high C0-control-char ratio). A different
+    in-cluster extractor (the pymupdf ``structured`` tier) recovers it -- no OCR.
   * ``fast`` -- a usable digital text layer (stay on tier 1)
-
-``structured`` (tier 2 / docling) is a separate service, not produced here.
 """
 
 import logging
@@ -56,8 +57,19 @@ MIN_TEXT_QUALITY = 0.5
 OCR_PAGE_FRACTION = 0.5
 # A page with fewer extracted chars than this has effectively no text layer.
 MIN_PAGE_CHARS = 16
+# Doc-level control-character ratio above which the text layer is treated as
+# glyph-corrupt and routed to the ``structured`` (pymupdf) tier, which re-extracts
+# such PDFs correctly. Kept in sync with the DOCUMENT_GLYPH_CORRUPTION_RATIO
+# setting default (the registry passes the per-tenant value). See
+# ``_control_char_ratio``.
+GLYPH_CORRUPTION_RATIO = 0.02
 
 _WORD_RE = re.compile(r"\S+")
+
+# Whitespace control characters that legitimately appear in extracted text
+# (tab / newline / carriage-return / form-feed / vertical-tab). Every OTHER C0
+# control char is a corruption signal -- see ``_control_char_ratio``.
+_TEXT_WHITESPACE_CONTROLS = frozenset("\t\n\r\f\v")
 
 
 @dataclass
@@ -67,6 +79,7 @@ class PageSignals:
     image_coverage: float  # 0..1 of page area covered by images
     text_quality: float  # 0..1; low = mashed/space-less/garbage layer
     needs_ocr: bool  # scanned or unusable text layer
+    control_ratio: float = 0.0  # 0..1; high = corrupt/glyph-leak text layer
 
 
 @dataclass
@@ -76,10 +89,11 @@ class DocClassification:
     total_chars: int
     mean_text_quality: float
     ocr_page_fraction: float  # fraction of sampled pages flagged needs_ocr
-    recommended_tier: str  # "fast" | "ocr"
+    recommended_tier: str  # "fast" | "structured" | "ocr"
+    mean_control_ratio: float = 0.0  # doc-level C0-control-char ratio (glyph-leak)
     flags: set[str] = field(
         default_factory=set
-    )  # scanned | bad_text_layer | image_heavy
+    )  # scanned | bad_text_layer | image_heavy | corrupt_glyphs
     pages: list[PageSignals] = field(default_factory=list)
 
 
@@ -116,6 +130,25 @@ def _text_quality(text: str) -> float:
     return round(ws_score * len_score * overlong_score * merge_score, 3)
 
 
+def _control_char_ratio(text: str) -> float:
+    """Fraction of C0 control characters (excluding whitespace controls) in ``text``.
+
+    Near 0 for clean text in ANY script; elevated when the extractor leaked raw
+    glyph codes instead of Unicode -- the broken-/ToUnicode failure mode where a
+    subset font's character codes are returned uniformly offset (e.g. "WKH" for
+    "THE"). This is the language-agnostic counterpart to :func:`_text_quality`: a
+    uniform glyph/Caesar offset preserves whitespace and token lengths (so every
+    ``_text_quality`` factor scores it ~1.0), but it litters the text with C0
+    controls -- digits/punctuation map to bytes below 0x20 -- which clean prose
+    never contains. Unlike a dictionary or stop-word probe it makes no assumption
+    about the document's language.
+    """
+    if not text:
+        return 0.0
+    bad = sum(1 for c in text if ord(c) < 0x20 and c not in _TEXT_WHITESPACE_CONTROLS)
+    return bad / len(text)
+
+
 def _sample_indices(page_count: int) -> list[int]:
     if page_count <= MAX_SAMPLED_PAGES:
         return list(range(page_count))
@@ -141,6 +174,64 @@ def _page_image_coverage(page: Any) -> float:
         for rect in page.get_image_rects(img[0]):
             img_area += abs(rect.width * rect.height)
     return min(img_area / page_area, 1.0)
+
+
+def _route_from_signals(
+    *,
+    total_chars: int,
+    ocr_frac: float,
+    mean_quality: float,
+    control_ratio: float,
+    image_heavy: bool,
+    page_fraction: float,
+    min_text_quality: float,
+    glyph_corruption_ratio: float,
+) -> tuple[set[str], str]:
+    """Shared flag-set + recommended-tier decision for both classifier paths.
+
+    Routing precedence (cheapest correct fix first):
+      1. scanned / no text layer (``ocr_frac >= fraction`` AND ``total_chars == 0``)
+         -> ``"ocr"``
+      2. glyph-corrupt text layer (``control_ratio > glyph_corruption_ratio``)
+         -> ``"structured"``. pypdfium2 leaked glyph codes; the pymupdf
+         ``structured`` tier re-extracts these correctly, so no paid OCR is
+         needed. The registry re-classifies the structured output, so a doc that
+         is ALSO partly scanned can still escalate to OCR from there.
+      3. junk/mashed text layer (``ocr_frac >= fraction``) -> ``"ocr"``
+      4. otherwise -> ``"fast"``
+
+    Flags are diagnostic and independent of the verdict (e.g. ``image_heavy``
+    fires on ANY image-heavy page; the OCR route needs a page FRACTION).
+    """
+    # glyph_corruption_ratio <= 0 disables the signal (a ratio of 0 would otherwise
+    # fire on any single C0 control byte). total_chars > 0 also guarantees this
+    # never overlaps the scanned branch (total_chars == 0), so a doc is never both
+    # glyph-corrupt and "scanned".
+    glyph_corrupt = (
+        glyph_corruption_ratio > 0
+        and total_chars > 0
+        and control_ratio > glyph_corruption_ratio
+    )
+
+    flags: set[str] = set()
+    if ocr_frac >= page_fraction and total_chars == 0:
+        flags.add("scanned")
+    elif ocr_frac >= page_fraction and mean_quality < min_text_quality:
+        flags.add("bad_text_layer")
+    if glyph_corrupt:
+        flags.add("corrupt_glyphs")
+    if image_heavy:
+        flags.add("image_heavy")
+
+    if ocr_frac >= page_fraction and total_chars == 0:
+        recommended = "ocr"
+    elif glyph_corrupt:
+        recommended = "structured"
+    elif ocr_frac >= page_fraction:
+        recommended = "ocr"
+    else:
+        recommended = "fast"
+    return flags, recommended
 
 
 def classify_pdf(content: bytes) -> DocClassification:
@@ -171,7 +262,14 @@ def classify_pdf(content: bytes) -> DocClassification:
             # raises the diagnostic image_heavy flag below.
             needs_ocr = quality < MIN_TEXT_QUALITY or len(text.strip()) < MIN_PAGE_CHARS
             pages.append(
-                PageSignals(n, len(text), round(coverage, 3), quality, needs_ocr)
+                PageSignals(
+                    n,
+                    len(text),
+                    round(coverage, 3),
+                    quality,
+                    needs_ocr,
+                    round(_control_char_ratio(text), 4),
+                )
             )
 
     sampled = len(pages)
@@ -180,25 +278,28 @@ def classify_pdf(content: bytes) -> DocClassification:
         round(sum(p.text_quality for p in pages) / sampled, 3) if sampled else 0.0
     )
     ocr_frac = (sum(p.needs_ocr for p in pages) / sampled) if sampled else 0.0
+    # Char-weighted doc-level control-char ratio (p.control_ratio * char_count is
+    # the per-page bad-char count). The glyph-leak signal -- see _control_char_ratio.
+    # NOTE: this is over the <=MAX_SAMPLED_PAGES sample, so unlike classify_from_text
+    # (which scans the whole full_text) this diagnostic path can under-detect
+    # corruption concentrated outside the sampled pages. Acceptable here: the hot
+    # path is classify_from_text; this standalone pass is for diagnostics.
+    control_ratio = (
+        sum(p.control_ratio * p.char_count for p in pages) / total_chars
+        if total_chars
+        else 0.0
+    )
 
-    # Flags are diagnostic signals, intentionally independent of the routing
-    # verdict: image_heavy fires if ANY page is image-heavy, while the OCR route
-    # needs a FRACTION of pages (OCR_PAGE_FRACTION). So a mostly-digital doc with
-    # one full-page photo is flagged image_heavy yet still routes "fast" -- the
-    # flag_total{image_heavy} count is expected to exceed classified{ocr}.
-    flags: set[str] = set()
-    if any(p.image_coverage >= IMAGE_HEAVY_THRESHOLD for p in pages):
-        flags.add("image_heavy")
-    if (
-        ocr_frac >= OCR_PAGE_FRACTION
-        and total_chars
-        and mean_quality < MIN_TEXT_QUALITY
-    ):
-        flags.add("bad_text_layer")
-    if ocr_frac >= OCR_PAGE_FRACTION and total_chars == 0:
-        flags.add("scanned")
-
-    recommended = "ocr" if ocr_frac >= OCR_PAGE_FRACTION else "fast"
+    flags, recommended = _route_from_signals(
+        total_chars=total_chars,
+        ocr_frac=ocr_frac,
+        mean_quality=mean_quality,
+        control_ratio=control_ratio,
+        image_heavy=any(p.image_coverage >= IMAGE_HEAVY_THRESHOLD for p in pages),
+        page_fraction=OCR_PAGE_FRACTION,
+        min_text_quality=MIN_TEXT_QUALITY,
+        glyph_corruption_ratio=GLYPH_CORRUPTION_RATIO,
+    )
 
     return DocClassification(
         page_count=page_count,
@@ -207,6 +308,7 @@ def classify_pdf(content: bytes) -> DocClassification:
         mean_text_quality=mean_quality,
         ocr_page_fraction=round(ocr_frac, 3),
         recommended_tier=recommended,
+        mean_control_ratio=round(control_ratio, 4),
         flags=flags,
         pages=pages,
     )
@@ -239,6 +341,7 @@ def classify_from_text(
     min_text_quality: float = MIN_TEXT_QUALITY,
     min_page_chars: int = MIN_PAGE_CHARS,
     page_fraction: float = OCR_PAGE_FRACTION,
+    glyph_corruption_ratio: float = GLYPH_CORRUPTION_RATIO,
     image_coverage: list[float] | None = None,
 ) -> DocClassification:
     """Classify from text already extracted by tier-1 -- no PDF re-open by default.
@@ -246,9 +349,13 @@ def classify_from_text(
     The hot-path classifier. A page is OCR-worthy when its text is near-empty
     (``< min_page_chars``) or its text-quality is junk (``< min_text_quality`` --
     the word-merging signal). The doc recommends ``ocr`` once
-    ``ocr_frac >= page_fraction``. Thresholds are passed in by the registry from
-    per-tenant settings. ``image_coverage`` (when supplied) only feeds the
-    ``image_heavy`` diagnostic flag -- it does NOT route (see module docstring).
+    ``ocr_frac >= page_fraction``. A doc whose text layer is present but
+    glyph-corrupt (doc-level C0-control-char ratio ``> glyph_corruption_ratio``,
+    the broken-/ToUnicode failure mode) instead recommends ``structured`` -- the
+    pymupdf tier re-extracts it correctly, no OCR needed. Thresholds are passed in
+    by the registry from per-tenant settings. ``image_coverage`` (when supplied)
+    only feeds the ``image_heavy`` diagnostic flag -- it does NOT route (see
+    module docstring).
 
     ``page_boundaries`` are ``{page, start_offset, end_offset}`` indexing into
     ``full_text``; ``image_coverage[i]`` (if given) aligns with the i-th boundary.
@@ -293,7 +400,14 @@ def classify_from_text(
         # ``cov`` still feeds the diagnostic ``image_heavy`` flag below.
         needs_ocr = len(seg.strip()) < min_page_chars or quality < min_text_quality
         pages.append(
-            PageSignals(b["page"], len(seg), round(cov, 3), quality, needs_ocr)
+            PageSignals(
+                b["page"],
+                len(seg),
+                round(cov, 3),
+                quality,
+                needs_ocr,
+                round(_control_char_ratio(seg), 4),
+            )
         )
 
     sampled = len(pages)
@@ -305,23 +419,24 @@ def classify_from_text(
     # page_count guard also skips escalation; defaulting to 0.0 keeps the
     # recorded classification metric accurate rather than a misleading "ocr").
     ocr_frac = (sum(p.needs_ocr for p in pages) / sampled) if sampled else 0.0
+    # Doc-level control-char ratio -- the glyph-leak signal that routes to the
+    # structured tier. Computed over the WHOLE full_text (all pages), unlike
+    # classify_pdf which char-weights the up-to-MAX_SAMPLED_PAGES sample; the two
+    # are therefore not numerically identical for a >24-page doc with corruption
+    # concentrated outside the sample. full_text is used here because it is exactly
+    # the text that gets chunked + indexed and is robust to boundary edge cases.
+    control_ratio = _control_char_ratio(full_text)
 
-    # Flags gated on ocr_frac >= page_fraction (matching classify_pdf): a doc that
-    # routes "fast" must not carry a junk-layer flag just because a few isolated
-    # pages are bad -- otherwise the metric diverges from classify_pdf.
-    flags: set[str] = set()
-    if sampled and ocr_frac >= page_fraction:
-        if total_chars == 0:
-            # "scanned" (not "no_text_layer"): same name + meaning as classify_pdf
-            # so astrolabe_document_classifier_flag_total isn't split across two
-            # labels for the empty-text-layer case.
-            flags.add("scanned")
-        elif mean_quality < min_text_quality:
-            flags.add("bad_text_layer")
-    if any(p.image_coverage >= IMAGE_HEAVY_THRESHOLD for p in pages):
-        flags.add("image_heavy")
-
-    recommended = "ocr" if ocr_frac >= page_fraction else "fast"
+    flags, recommended = _route_from_signals(
+        total_chars=total_chars,
+        ocr_frac=ocr_frac,
+        mean_quality=mean_quality,
+        control_ratio=control_ratio,
+        image_heavy=any(p.image_coverage >= IMAGE_HEAVY_THRESHOLD for p in pages),
+        page_fraction=page_fraction,
+        min_text_quality=min_text_quality,
+        glyph_corruption_ratio=glyph_corruption_ratio,
+    )
 
     return DocClassification(
         page_count=len(page_boundaries),
@@ -330,6 +445,7 @@ def classify_from_text(
         mean_text_quality=mean_quality,
         ocr_page_fraction=round(ocr_frac, 3),
         recommended_tier=recommended,
+        mean_control_ratio=round(control_ratio, 4),
         flags=flags,
         pages=pages,
     )

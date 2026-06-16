@@ -266,6 +266,30 @@ class TestChunkConfigValidation:
             _reload_config()
             assert get_settings().document_max_pdf_size_mb == pytest.approx(12.5)
 
+    def test_glyph_corruption_ratio_default_and_env_override(self):
+        """document_glyph_corruption_ratio defaults to 0.02 and reads its env var.
+
+        Guards the _DEFAULTS-key-must-match-env-var footgun.
+        """
+        assert Settings().document_glyph_corruption_ratio == pytest.approx(0.02)
+        with patch.dict(
+            os.environ, {"DOCUMENT_GLYPH_CORRUPTION_RATIO": "0.05"}, clear=True
+        ):
+            _reload_config()
+            assert get_settings().document_glyph_corruption_ratio == pytest.approx(0.05)
+
+    @patch.dict(
+        os.environ,
+        {"DOCUMENT_GLYPH_CORRUPTION_RATIO": "1.5"},
+        clear=True,
+    )
+    def test_glyph_corruption_ratio_out_of_range_raises_error(self):
+        """The ratio must be within [0, 1]."""
+        from dynaconf import ValidationError
+
+        with pytest.raises(ValidationError, match="DOCUMENT_GLYPH_CORRUPTION_RATIO"):
+            _reload_config()
+
     def test_valid_chunk_settings(self):
         """Test valid chunk size and overlap configuration."""
         settings = Settings(
