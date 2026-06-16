@@ -326,6 +326,13 @@ def configure_semantic_tools(mcp: FastMCP):
         # this tool queries Qdrant directly. ``None`` = no restriction
         # (fail-open / Astrolabe predating this feature). An empty allow-set
         # means the admin disabled every source.
+        #
+        # Perf trade-off (accepted): when Astrolabe is present and the caller
+        # passed no doc_types, narrowing turns ``None`` into a concrete list, so
+        # the search takes the per-type query branch (N queries) instead of the
+        # single cross-type query. N is the count of admin-approved types
+        # (typically 1-4), so the overhead is small; left as-is rather than
+        # adding a "search all approved in one query" fast path.
         allowed = await allowed_doc_types(client, username)
         if allowed is not None:
             doc_types = _consent_narrowed_doc_types(doc_types, allowed)

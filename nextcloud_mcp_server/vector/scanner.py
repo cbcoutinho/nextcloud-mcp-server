@@ -280,6 +280,16 @@ def _app_enabled(app_id: str, enabled_apps: set[str] | None) -> bool:
     return enabled_apps is None or app_id in enabled_apps
 
 
+def _should_scan(
+    app_id: str,
+    doc_type: str,
+    enabled_apps: set[str] | None,
+    allowed: frozenset[str] | None,
+) -> bool:
+    """Whether to scan ``app_id``: installed for the user AND admin-approved."""
+    return _app_enabled(app_id, enabled_apps) and is_doc_type_allowed(doc_type, allowed)
+
+
 # Text doc types whose deletion-tracking lives *inside* their scan_* function,
 # so skipping that function (when admin-disabled) leaves indexed points with no
 # grace-period backstop. Derived from INDEXED_DOC_TYPES so a newly-indexed type
@@ -525,7 +535,7 @@ async def scan_user_documents(
             user_id, send_stream, allowed, scan_id
         )
 
-        if _app_enabled("notes", enabled_apps) and is_doc_type_allowed("note", allowed):
+        if _should_scan("notes", "note", enabled_apps, allowed):
             try:
                 queued += await scan_notes(
                     user_id=user_id,
@@ -877,9 +887,7 @@ async def scan_user_documents(
 
         # Scan News items (starred + unread)
         news_queued = 0
-        if _app_enabled("news", enabled_apps) and is_doc_type_allowed(
-            "news_item", allowed
-        ):
+        if _should_scan("news", "news_item", enabled_apps, allowed):
             try:
                 news_queued = await scan_news_items(
                     user_id=user_id,
@@ -900,9 +908,7 @@ async def scan_user_documents(
 
         # Scan Deck cards
         deck_queued = 0
-        if _app_enabled("deck", enabled_apps) and is_doc_type_allowed(
-            "deck_card", allowed
-        ):
+        if _should_scan("deck", "deck_card", enabled_apps, allowed):
             try:
                 deck_queued = await scan_deck_cards(
                     user_id=user_id,
