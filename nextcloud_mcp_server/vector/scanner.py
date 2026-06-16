@@ -302,6 +302,74 @@ _consent_backstop_done: dict[tuple[str, str], None] = {}
 _CONSENT_BACKSTOP_MAX = 50_000
 
 
+def _mark_backstop_done(key: tuple[str, str]) -> None:
+    """Record a one-shot backstop marker, evicting oldest entries on overflow.
+
+    Evicts oldest-first down to half capacity (insertion-ordered dict) rather
+    than clearing wholesale, so a bound hit re-fires the backstop only for the
+    oldest markers, not the whole fleet. A re-fire is idempotent regardless.
+    """
+    if len(_consent_backstop_done) >= _CONSENT_BACKSTOP_MAX:
+        overage = len(_consent_backstop_done) - _CONSENT_BACKSTOP_MAX // 2
+        logger.info(
+            "consent backstop tracking hit %d entries; evicting %d oldest",
+            _CONSENT_BACKSTOP_MAX,
+            overage,
+        )
+        for stale_key in list(_consent_backstop_done)[:overage]:
+            del _consent_backstop_done[stale_key]
+    _consent_backstop_done[key] = None
+
+
+async def _backstop_delete_doc_type(
+    user_id: str,
+    send_stream: TaskProducer,
+    doc_type: str,
+    qdrant_client: AsyncQdrantClient,
+    collection: str,
+    scan_id: int,
+) -> int:
+    """Enqueue delete tasks for every indexed point of one disabled doc_type.
+
+    Returns the number of delete tasks enqueued.
+    """
+    points = await _scroll_all_points(
+        qdrant_client,
+        collection_name=collection,
+        scroll_filter=Filter(
+            must=[
+                FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
+            ]
+        ),
+        payload_fields=["doc_id"],
+    )
+    doc_ids = {
+        str(p.payload["doc_id"])
+        for p in points
+        if p.payload is not None and "doc_id" in p.payload
+    }
+    if doc_ids:
+        logger.info(
+            "[SCAN-%s] %s disabled by admin for %s; enqueueing %d delete(s) (backstop)",
+            scan_id,
+            doc_type,
+            user_id,
+            len(doc_ids),
+        )
+    for doc_id in doc_ids:
+        await send_stream.send(
+            DocumentTask(
+                user_id=user_id,
+                doc_id=doc_id,
+                doc_type=doc_type,
+                operation="delete",
+                modified_at=0,
+            )
+        )
+    return len(doc_ids)
+
+
 async def _enqueue_deletes_for_disabled_types(
     user_id: str,
     send_stream: TaskProducer,
@@ -337,59 +405,12 @@ async def _enqueue_deletes_for_disabled_types(
     collection = get_settings().get_collection_name()
     queued = 0
     for doc_type in disabled:
-        points = await _scroll_all_points(
-            qdrant_client,
-            collection_name=collection,
-            scroll_filter=Filter(
-                must=[
-                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-                    FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
-                ]
-            ),
-            payload_fields=["doc_id"],
+        queued += await _backstop_delete_doc_type(
+            user_id, send_stream, doc_type, qdrant_client, collection, scan_id
         )
-        doc_ids = {
-            str(p.payload["doc_id"])
-            for p in points
-            if p.payload is not None and "doc_id" in p.payload
-        }
-        if doc_ids:
-            logger.info(
-                "[SCAN-%s] %s disabled by admin for %s; enqueueing %d delete(s) (backstop)",
-                scan_id,
-                doc_type,
-                user_id,
-                len(doc_ids),
-            )
-        for doc_id in doc_ids:
-            await send_stream.send(
-                DocumentTask(
-                    user_id=user_id,
-                    doc_id=doc_id,
-                    doc_type=doc_type,
-                    operation="delete",
-                    modified_at=0,
-                )
-            )
-            queued += 1
-        # Mark this (user, doc_type) backstopped for the current disable episode
-        # so subsequent scans don't re-enqueue the same idempotent deletes.
-        if len(_consent_backstop_done) >= _CONSENT_BACKSTOP_MAX:
-            # Evict oldest-first down to half capacity (insertion-ordered dict),
-            # so overflow re-fires the backstop for only the oldest markers
-            # rather than the whole fleet at once. Placed inside the per-doc_type
-            # loop: markers added earlier in *this* call are the newest, so they
-            # survive eviction; only genuinely old entries are dropped (and a
-            # re-fire is idempotent regardless).
-            overage = len(_consent_backstop_done) - _CONSENT_BACKSTOP_MAX // 2
-            logger.info(
-                "consent backstop tracking hit %d entries; evicting %d oldest",
-                _CONSENT_BACKSTOP_MAX,
-                overage,
-            )
-            for stale_key in list(_consent_backstop_done)[:overage]:
-                del _consent_backstop_done[stale_key]
-        _consent_backstop_done[(user_id, doc_type)] = None
+        # Mark backstopped (even when nothing was found) so subsequent scans
+        # don't re-scroll/re-enqueue for this disable episode.
+        _mark_backstop_done((user_id, doc_type))
     return queued
 
 
