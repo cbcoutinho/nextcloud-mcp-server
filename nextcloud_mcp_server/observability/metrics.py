@@ -272,7 +272,7 @@ document_bytes_processed_total = Counter(
 document_escalation_total = Counter(
     "astrolabe_document_escalation_total",
     "Total document parse escalations between tiers",
-    # reason: low_confidence | empty_text | unsupported | error | forced
+    # reason: low_confidence | empty_text | corrupt_glyphs | unsupported | error | forced
     ["from_tier", "to_tier", "reason"],
 )
 
@@ -754,7 +754,7 @@ def record_document_escalation(from_tier: str, to_tier: str, reason: str) -> Non
     Args:
         from_tier: Tier that could not satisfactorily parse the document
         to_tier: Tier the document was escalated to
-        reason: low_confidence | empty_text | unsupported | error | forced
+        reason: low_confidence | empty_text | corrupt_glyphs | unsupported | error | forced
     """
     document_escalation_total.labels(
         from_tier=from_tier, to_tier=to_tier, reason=reason

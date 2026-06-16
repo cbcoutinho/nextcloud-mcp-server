@@ -320,3 +320,63 @@ def test_scan_coverage_shorter_than_pages_aligns_without_crash():
     assert all(p.needs_ocr is False for p in c.pages)  # coverage no longer routes
     assert "image_heavy" in c.flags  # but page 0 still flags image_heavy
     assert c.recommended_tier == "fast"
+
+
+# --- glyph-corruption signal (broken /ToUnicode -> structured escalation) -----
+
+# pypdfium2-style leak: a uniform glyph/Caesar offset turns clean prose into
+# alphabetic-but-wrong tokens (normal spacing + token length => HIGH text_quality)
+# while digits/punctuation map to C0 control bytes. The control-char ratio is the
+# only signal that catches this; _text_quality scores it ~1.0.
+_GLYPH_CORRUPT = "WKH \x0f TXLFN \x10 EURZQ \x11 IRA MXPSV \x0f RYHU \x10 GRJ " * 6
+
+
+def test_control_char_ratio_clean_is_zero():
+    assert clf._control_char_ratio("the quick brown fox") == 0.0
+    # legitimate whitespace controls (tab/newline/CR/form-feed/vtab) don't count
+    assert clf._control_char_ratio("a\tb\nc\r\nd\f\ve") == 0.0
+
+
+def test_control_char_ratio_detects_glyph_leak():
+    assert clf._control_char_ratio(_GLYPH_CORRUPT) > clf.GLYPH_CORRUPTION_RATIO
+
+
+def test_clean_text_not_flagged_corrupt():
+    txt = "the quick brown fox jumps over the lazy dog " * 3
+    c = clf.classify_from_text(
+        txt, [{"page": 1, "start_offset": 0, "end_offset": len(txt)}]
+    )
+    assert "corrupt_glyphs" not in c.flags
+    assert c.mean_control_ratio == pytest.approx(0.0)
+    assert c.recommended_tier == "fast"
+
+
+def test_glyph_corrupt_routes_structured_not_ocr():
+    full = _GLYPH_CORRUPT
+    c = clf.classify_from_text(
+        full, [{"page": 1, "start_offset": 0, "end_offset": len(full)}]
+    )
+    assert c.recommended_tier == "structured"
+    assert "corrupt_glyphs" in c.flags
+    # The point: it is NOT a low-quality signal -- the cipher scores high, so only
+    # the control-char ratio diverts it (to structured, the free pymupdf re-parse).
+    assert c.mean_text_quality >= clf.MIN_TEXT_QUALITY
+    assert c.mean_control_ratio > clf.GLYPH_CORRUPTION_RATIO
+
+
+def test_glyph_corruption_ratio_override_disables_trigger():
+    full = _GLYPH_CORRUPT
+    bounds = [{"page": 1, "start_offset": 0, "end_offset": len(full)}]
+    # A threshold of 1.0 can never be exceeded => not treated as corrupt => the
+    # other (high-quality) signals win => fast.
+    c = clf.classify_from_text(full, bounds, glyph_corruption_ratio=1.0)
+    assert c.recommended_tier == "fast"
+    assert "corrupt_glyphs" not in c.flags
+
+
+def test_empty_doc_routes_ocr_not_structured():
+    # Precedence: a scanned/empty doc (no text layer) has no control chars to leak,
+    # so it must stay an OCR case, never structured.
+    c = clf.classify_from_text("", [{"page": 1, "start_offset": 0, "end_offset": 0}])
+    assert c.recommended_tier == "ocr"
+    assert "corrupt_glyphs" not in c.flags

@@ -171,6 +171,12 @@ _DEFAULTS: dict[str, Any] = {
     "document_ocr_page_fraction": 0.5,
     "document_ocr_min_page_chars": 16,
     "document_ocr_detect_scanned": True,
+    # Tier-0 glyph-corruption trigger. When the fast (pypdfium2) extraction's
+    # doc-level C0-control-char ratio exceeds this, the text layer is treated as
+    # glyph-corrupt (a broken /ToUnicode mapping leaking raw glyph codes) and the
+    # doc escalates fast->structured (pymupdf re-extracts it correctly -- no OCR).
+    # 0 disables. Clean docs sit ~0; affected PDFs measured ~1-11% in testing.
+    "document_glyph_corruption_ratio": 0.02,
     # OCR backend request timeout (seconds). Slow scanned newspapers can take
     # 20-60s; raise/lower per tenant. Configurable so a tenant isn't stuck with
     # the 180s default when its gateway has its own shorter ceiling.
@@ -384,6 +390,7 @@ _dynaconf = Dynaconf(
         Validator("DOCUMENT_OCR_MIN_TEXT_QUALITY", gte=0, lte=1),
         Validator("DOCUMENT_OCR_PAGE_FRACTION", gte=0, lte=1),
         Validator("DOCUMENT_OCR_MIN_PAGE_CHARS", gte=0),
+        Validator("DOCUMENT_GLYPH_CORRUPTION_RATIO", gte=0, lte=1),
         # Non-negative
         Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
         # Non-empty strings
@@ -896,6 +903,10 @@ class Settings:
     document_ocr_page_fraction: float = 0.5
     document_ocr_min_page_chars: int = 16
     document_ocr_detect_scanned: bool = True
+    # Tier-0 glyph-corruption trigger: doc-level C0-control-char ratio above which
+    # the fast (pypdfium2) text layer is treated as glyph-corrupt and escalated
+    # fast->structured (pymupdf). 0 disables. See classifier._control_char_ratio.
+    document_glyph_corruption_ratio: float = 0.02
 
     # Observability settings
     metrics_enabled: bool = True
@@ -1532,6 +1543,7 @@ def get_settings() -> Settings:
         "document_ocr_page_fraction": "DOCUMENT_OCR_PAGE_FRACTION",
         "document_ocr_min_page_chars": "DOCUMENT_OCR_MIN_PAGE_CHARS",
         "document_ocr_detect_scanned": "DOCUMENT_OCR_DETECT_SCANNED",
+        "document_glyph_corruption_ratio": "DOCUMENT_GLYPH_CORRUPTION_RATIO",
         # Observability settings
         "metrics_enabled": "METRICS_ENABLED",
         "metrics_port": "METRICS_PORT",

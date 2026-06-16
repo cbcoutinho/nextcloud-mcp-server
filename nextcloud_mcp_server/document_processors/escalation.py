@@ -49,7 +49,7 @@ class EscalationDecision:
 
     kind: Literal["hop", "suppressed"]
     to_tier: str
-    reason: Literal["empty_text", "low_confidence"]
+    reason: Literal["empty_text", "low_confidence", "corrupt_glyphs"]
 
 
 def next_tier(current: str) -> str | None:
@@ -80,10 +80,11 @@ class EscalateError(Exception):
     the junk text is never indexed, and it must never be swallowed by a broad
     ``except Exception`` on the indexing path.
 
-    ``reason`` uses the existing escalation label vocabulary. This PR raises
-    ``empty_text`` (scanned / no text layer) and ``low_confidence`` (junk text
-    layer); ``unsupported`` and ``forced`` are reserved for future callers and
-    not raised yet.
+    ``reason`` uses the existing escalation label vocabulary: ``empty_text``
+    (scanned / no text layer), ``low_confidence`` (junk text layer), and
+    ``corrupt_glyphs`` (a usable-looking layer whose extractor leaked raw glyph
+    codes -- the broken-/ToUnicode case -- recovered by a different in-cluster
+    extractor); ``unsupported`` and ``forced`` are reserved for future callers.
     """
 
     def __init__(self, *, from_tier: str, to_tier: str, reason: str) -> None:

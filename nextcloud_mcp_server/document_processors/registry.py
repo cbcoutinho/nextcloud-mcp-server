@@ -247,6 +247,63 @@ class ProcessorRegistry:
             result, content, settings, record=True, filename=filename
         )
 
+        # Escalate a poor fast extraction up the ladder (fast -> structured -> ocr),
+        # mirroring the external per-tier path so both modes behave identically. A
+        # glyph-corrupt layer (the extractor leaked raw glyph codes -- the
+        # broken-/ToUnicode case) OR a low-quality-but-non-empty layer first tries
+        # the structured (pymupdf) tier: free, in-cluster, and able to recover both.
+        # Only a scanned / no-text-layer doc (total_chars == 0) skips structured --
+        # a text extractor cannot conjure text from a pure raster -- and drops
+        # straight to OCR via the gate below. Structured is therefore NOT gated on
+        # document_ocr_enabled. Its output is re-classified (record=False -- the doc
+        # was already counted at the fast tier) so a doc that is ALSO partly scanned
+        # still reaches the OCR gate.
+        if (
+            classification is not None
+            and classification.page_count > 0
+            and (
+                classification.recommended_tier == "structured"
+                or (
+                    classification.recommended_tier == "ocr"
+                    and classification.total_chars > 0
+                )
+            )
+        ):
+            structured = self._pdf_processor_for_tier("structured")
+            if structured is not None:
+                reason = (
+                    "corrupt_glyphs"
+                    if classification.recommended_tier == "structured"
+                    else "low_confidence"
+                )
+                record_document_escalation("fast", "structured", reason)
+                logger.info(
+                    "Escalating %s fast->structured (reason=%s)",
+                    filename or "<bytes>",
+                    reason,
+                )
+                structured_result = await self._run_processor(
+                    structured,
+                    content,
+                    content_type,
+                    filename,
+                    options,
+                    progress_callback,
+                    escalated=True,
+                )
+                if structured_result.success:
+                    result = structured_result
+                    classification = self._classify_result(
+                        result, content, settings, record=False, filename=filename
+                    )
+                else:
+                    logger.warning(
+                        "structured escalation did not succeed for %s (%s); keeping "
+                        "the tier-1 result",
+                        filename or "<bytes>",
+                        structured_result.metadata.get("parse_failed_reason", "error"),
+                    )
+
         # NOTE: the suppressed-escalation metric (document_escalation_suppressed_total,
         # the "what-if OCR" signal; Deck #324) is intentionally NOT emitted on this
         # inline/memory path -- it is instrumented only on the per-tier external
@@ -379,6 +436,7 @@ class ProcessorRegistry:
                 min_text_quality=settings.document_ocr_min_text_quality,
                 min_page_chars=settings.document_ocr_min_page_chars,
                 page_fraction=settings.document_ocr_page_fraction,
+                glyph_corruption_ratio=settings.document_glyph_corruption_ratio,
                 image_coverage=image_coverage,
             )
         except Exception:
@@ -520,6 +578,9 @@ class ProcessorRegistry:
         - ``total_chars == 0`` (scanned / no text layer) -> target the ``ocr``
           tier directly. Text-extractor tiers (``structured``) cannot conjure
           text from a pure raster scan, so a structured hop would just be wasted.
+        - glyph-corrupt text layer (``recommended_tier == "structured"``) -> target
+          the ``structured`` tier; pymupdf re-extracts a broken-/ToUnicode layer
+          correctly, so OCR is never the target for this case.
         - low-confidence but non-empty layer -> escalate to the next rung, so a
           different in-cluster extractor can try before paying for OCR.
 
@@ -538,13 +599,23 @@ class ProcessorRegistry:
             record=(current_tier == TIER_LADDER[0]),
             filename=filename,
         )
-        if classification is None or classification.recommended_tier != "ocr":
+        if classification is None or classification.recommended_tier not in (
+            "structured",
+            "ocr",
+        ):
             return None
         # A zero-page (empty/corrupt) PDF gains nothing from any tier.
         if classification.page_count <= 0:
             return None
-        if classification.total_chars == 0:
-            minimum: str | None = "ocr"
+        minimum: str | None
+        if classification.recommended_tier == "structured":
+            # Glyph-corrupt text layer (the extractor leaked glyph codes): a
+            # different in-cluster extractor (the structured/pymupdf tier) recovers
+            # it -- never pay for OCR here. Target the structured rung specifically.
+            minimum = "structured"
+            reason = "corrupt_glyphs"
+        elif classification.total_chars == 0:
+            minimum = "ocr"
             reason = "empty_text"
         else:
             minimum = None
