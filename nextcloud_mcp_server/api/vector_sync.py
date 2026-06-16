@@ -80,6 +80,9 @@ async def purge_doc_types_route(request: Request) -> JSONResponse:
     if not isinstance(raw, list) or not all(isinstance(d, str) for d in raw):
         return _bad_request("doc_types must be a list of strings")
     doc_types = [d for d in raw if d]
+    # No whitelist against INDEXED_DOC_TYPES on purpose: an unknown type yields a
+    # zero-match Qdrant filter (harmless no-op), and the canonical set lives with
+    # the indexer — the route shouldn't need a server update to purge a new type.
     # Bound the batch: there are only a handful of real indexed types, so a huge
     # list is abuse — cap it rather than fan out unbounded count+delete calls.
     if len(doc_types) > _MAX_PURGE_DOC_TYPES:

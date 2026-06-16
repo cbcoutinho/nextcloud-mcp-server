@@ -2435,6 +2435,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     methods=["POST"],
                 )
             )
+            logger.info("Vector-sync admin endpoint enabled: /api/v1/vector-sync/purge")
         # Access and scope management endpoints (ADR-022)
         routes.append(
             Route(
@@ -2457,7 +2458,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             "/api/v1/users/{user_id}/app-password, /api/v1/users/{user_id}/access, "
             "/api/v1/users/{user_id}/scopes, /api/v1/scopes, "
             "/api/v1/vector-viz/search, /api/v1/search, /api/v1/apps, "
-            "/api/v1/webhooks, /api/v1/vector-sync/purge, /api/v1/pdf-preview"
+            "/api/v1/webhooks, /api/v1/pdf-preview"
         )
 
     # Note: Metrics endpoint is NOT exposed on main HTTP port for security reasons.
