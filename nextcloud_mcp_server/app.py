@@ -130,6 +130,7 @@ from nextcloud_mcp_server.server.oauth_tools import register_oauth_tools
 from nextcloud_mcp_server.vector.metrics_publisher import vector_sync_metrics_task
 from nextcloud_mcp_server.vector.oauth_sync import (
     ProvisionSignal,
+    credential_cleanup_task,
     oauth_processor_task,
     user_manager_task,
 )
@@ -2067,20 +2068,34 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 # how many per-user scanners the user-manager later starts.
                 await _sweep_orphan_placeholders_if_enabled()
 
-                # Clean up stale app passwords at startup (BasicAuth mode only)
-                if not oauth_enabled:
-                    try:
-                        removed = await token_storage.cleanup_invalid_app_passwords(
-                            nextcloud_host=nextcloud_host_for_sync
+                # Clean up stale app passwords at startup. All deployment modes
+                # now authenticate background sync via locally-stored app
+                # passwords (the OAuth refresh-token path was removed), so this
+                # must run regardless of oauth_enabled — login_flow tenants were
+                # previously skipped, letting deleted-user credentials linger and
+                # drive an endless scanner re-spawn/401 loop (Deck #198). The
+                # credential_cleanup_task started below repeats it on a cadence.
+                try:
+                    # Log the cohort first: the sweep makes one OCS validation
+                    # call per stored user before readiness, so the count is the
+                    # operability signal if startup latency ever climbs.
+                    stored = await token_storage.get_all_app_password_user_ids()
+                    if stored:
+                        logger.info(
+                            "Running startup credential sweep for %s stored user(s)",
+                            len(stored),
                         )
-                        if removed:
-                            logger.info(
-                                "Cleaned up %s stale app password(s): %s",
-                                len(removed),
-                                removed,
-                            )
-                    except Exception as e:
-                        logger.warning("App password cleanup failed (non-fatal): %s", e)
+                    removed = await token_storage.cleanup_invalid_app_passwords(
+                        nextcloud_host=nextcloud_host_for_sync
+                    )
+                    if removed:
+                        logger.info(
+                            "Cleaned up %s stale app password(s): %s",
+                            len(removed),
+                            removed,
+                        )
+                except Exception as e:
+                    logger.warning("App password cleanup failed (non-fatal): %s", e)
 
                 # Initialize the ingest transport. INGEST_QUEUE selects the
                 # backend (Deck #183, ADR-028): ``memory`` builds an in-process
@@ -2132,6 +2147,16 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         user_states,
                         tg,
                         provision_signal,
+                    )
+
+                    # Periodic backstop sweep removing app passwords that no
+                    # longer authenticate (deleted/disabled users), complementing
+                    # the per-scanner self-heal in user_scanner_task (Deck #198).
+                    await tg.start(
+                        credential_cleanup_task,
+                        token_storage,
+                        shutdown_event,
+                        nextcloud_host_for_sync,
                     )
 
                     # In-process consumer pool. ``run_consumers`` is a no-op for
