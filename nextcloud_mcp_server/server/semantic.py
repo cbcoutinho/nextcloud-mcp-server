@@ -20,6 +20,7 @@ from mcp.types import (
 from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.capabilities import allowed_doc_types
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.semantic import (
@@ -54,6 +55,25 @@ logger = logging.getLogger(__name__)
 # a single JSONB row from ballooning. 16 is generous headroom over the handful
 # of real indexed doc types.
 _USAGE_METADATA_MAX_DOC_TYPES = 16
+
+
+def _consent_narrowed_doc_types(
+    doc_types: list[str] | None, allowed: frozenset[str]
+) -> list[str]:
+    """Apply the admin allow-set to a requested ``doc_types`` filter.
+
+    Caller has already established ``allowed is not None`` (a concrete allow-set;
+    ``None`` means "no restriction" and is handled by skipping this call). When
+    no explicit ``doc_types`` are requested, restrict to the full allow-set
+    (returned ``sorted`` for determinism only — order is a filter, not a ranking
+    hint); otherwise intersect (preserving the caller's order). An empty result
+    means nothing the caller asked for is admin-approved — the caller
+    short-circuits to an empty response rather than falling through to an
+    all-types search.
+    """
+    if doc_types is None:
+        return sorted(allowed)
+    return [dt for dt in doc_types if dt in allowed]
 
 
 async def record_search_usage(
@@ -299,6 +319,37 @@ def configure_semantic_tools(mcp: FastMCP):
         # owners have shared with them without having to re-index those
         # files under their own user_id.
         accessible_owners = await list_accessible_owners(client.sharing, username)
+
+        # Admin consent gate: restrict to source types the Astrolabe admin has
+        # approved (and that are installed for this user). This mirrors
+        # Astrolabe's own server-side enforcement but is independent because
+        # this tool queries Qdrant directly. ``None`` = no restriction
+        # (fail-open / Astrolabe predating this feature). An empty allow-set
+        # means the admin disabled every source.
+        #
+        # Perf trade-off (accepted): when Astrolabe is present and the caller
+        # passed no doc_types, narrowing turns ``None`` into a concrete list, so
+        # the search takes the per-type query branch (N queries) instead of the
+        # single cross-type query. N is the count of admin-approved types
+        # (typically 1-4), so the overhead is small; left as-is rather than
+        # adding a "search all approved in one query" fast path.
+        allowed = await allowed_doc_types(client, username)
+        if allowed is not None:
+            doc_types = _consent_narrowed_doc_types(doc_types, allowed)
+            if not doc_types:
+                logger.info(
+                    "Semantic search short-circuited for user %s: no requested "
+                    "doc_type is admin-approved for semantic search",
+                    username,
+                )
+                return SemanticSearchResponse(
+                    results=[],
+                    query=query,
+                    total_found=0,
+                    search_method=f"bm25_hybrid_{fusion}",
+                    verified_chunk_count=0,
+                    dropped_document_count=0,
+                )
 
         try:
             # The nc_semantic_search tool deliberately uses BM25-hybrid (dense +

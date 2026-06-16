@@ -72,7 +72,7 @@ def test_nested_exception_group_descends_to_leaf():
 def test_qdrant_namespace_classified():
     from qdrant_client.http.exceptions import UnexpectedResponse
 
-    exc = UnexpectedResponse(500, "err", b"", headers=None)
+    exc = UnexpectedResponse(500, "err", b"", headers=httpx.Headers())
     assert processor._drop_reason(exc) == "qdrant"
 
 
@@ -109,3 +109,71 @@ async def test_process_document_records_drop_on_exhausted_retries(mocker):
         await processor.process_document(doc_task, mocker.MagicMock(), max_retries=1)
 
     rec.assert_called_once_with("connection")
+
+
+@pytest.mark.unit
+async def test_process_document_drops_admin_disabled_index_task(mocker):
+    """A near-real-time index task for an admin-disabled doc_type is dropped
+    before indexing, and recorded under the ``admin_disabled`` reason."""
+    from nextcloud_mcp_server.vector.scanner import DocumentTask
+
+    doc_task = DocumentTask(
+        user_id="alice",
+        doc_id="42",
+        doc_type="note",
+        operation="index",
+        modified_at=0,
+        file_path="/x.md",  # set so the tag-reconcile branch is skipped
+    )
+
+    mocker.patch.object(
+        processor,
+        "get_qdrant_client",
+        mocker.AsyncMock(return_value=mocker.MagicMock()),
+    )
+    # Admin disabled everything → note is not allowed.
+    mocker.patch.object(
+        processor, "allowed_doc_types", mocker.AsyncMock(return_value=frozenset())
+    )
+    index = mocker.patch.object(processor, "_index_document")
+    rec = mocker.patch.object(processor, "record_ingest_dropped")
+
+    await processor.process_document(doc_task, mocker.MagicMock(), max_retries=1)
+
+    index.assert_not_called()
+    rec.assert_called_once_with("admin_disabled")
+
+
+@pytest.mark.unit
+async def test_process_document_allows_when_doc_type_approved(mocker):
+    """The consent gate does not drop an index task for an allowed doc_type."""
+    from nextcloud_mcp_server.vector.scanner import DocumentTask
+
+    doc_task = DocumentTask(
+        user_id="alice",
+        doc_id="42",
+        doc_type="note",
+        operation="index",
+        modified_at=0,
+        file_path="/x.md",
+    )
+
+    mocker.patch.object(
+        processor,
+        "get_qdrant_client",
+        mocker.AsyncMock(return_value=mocker.MagicMock()),
+    )
+    mocker.patch.object(
+        processor,
+        "allowed_doc_types",
+        mocker.AsyncMock(return_value=frozenset({"note"})),
+    )
+    index = mocker.patch.object(
+        processor, "_index_document", mocker.AsyncMock(return_value=1)
+    )
+    rec = mocker.patch.object(processor, "record_ingest_dropped")
+
+    await processor.process_document(doc_task, mocker.MagicMock(), max_retries=1)
+
+    index.assert_awaited()  # indexing proceeded
+    rec.assert_not_called()

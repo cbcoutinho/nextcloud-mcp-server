@@ -36,6 +36,9 @@ from nextcloud_mcp_server.api.passwords import (
     get_app_password_status,
     provision_app_password,
 )
+from nextcloud_mcp_server.api.vector_sync import (
+    purge_doc_types_route,
+)
 from nextcloud_mcp_server.api.visualization import (
     get_chunk_context,
     get_pdf_preview,
@@ -78,6 +81,8 @@ __all__ = [
     "list_webhooks",
     "create_webhook",
     "delete_webhook",
+    # Vector-sync admin endpoints (from vector_sync.py)
+    "purge_doc_types_route",
     # Visualization endpoints (from visualization.py)
     "unified_search",
     "vector_search",

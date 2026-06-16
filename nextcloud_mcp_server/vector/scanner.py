@@ -16,6 +16,7 @@ from httpx import HTTPStatusError
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue, Record
 
+from nextcloud_mcp_server.capabilities import allowed_doc_types, is_doc_type_allowed
 from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.client.news import NewsItemType
 from nextcloud_mcp_server.config import get_settings
@@ -279,6 +280,150 @@ def _app_enabled(app_id: str, enabled_apps: set[str] | None) -> bool:
     return enabled_apps is None or app_id in enabled_apps
 
 
+def _should_scan(
+    app_id: str,
+    doc_type: str,
+    enabled_apps: set[str] | None,
+    allowed: frozenset[str] | None,
+) -> bool:
+    """Whether to scan ``app_id``: installed for the user AND admin-approved."""
+    return _app_enabled(app_id, enabled_apps) and is_doc_type_allowed(doc_type, allowed)
+
+
+# Text doc types whose deletion-tracking lives *inside* their scan_* function,
+# so skipping that function (when admin-disabled) leaves indexed points with no
+# grace-period backstop. Derived from INDEXED_DOC_TYPES so a newly-indexed type
+# automatically gets the backstop. ``file`` is excluded: its scan path empties
+# discovery and lets the existing reconcile loop purge on disable.
+_TEXT_BACKSTOP_DOC_TYPES: tuple[str, ...] = tuple(sorted(INDEXED_DOC_TYPES - {"file"}))
+
+# Per-process record of (user_id, doc_type) whose consent backstop deletes have
+# already been enqueued, so a *standing* admin-disable doesn't re-flood the
+# processor with idempotent deletes on every scan tick. An entry is cleared once
+# the type is allowed again, so a later re-disable re-triggers the backstop.
+# A dict (not a set) so it stays insertion-ordered for oldest-first eviction.
+_consent_backstop_done: dict[tuple[str, str], None] = {}
+
+# Safety bound on the tracking dict so a long-running multi-tenant process with
+# heavy user churn (deprovisioned users leave stale entries) can't grow it
+# without limit. At <= len(INDEXED_DOC_TYPES) entries per user this is generous;
+# on overflow we evict the *oldest* entries down to half capacity (not a full
+# clear) so the backstop re-fires for only those, avoiding a fleet-wide burst.
+_CONSENT_BACKSTOP_MAX = 50_000
+
+
+def _mark_backstop_done(key: tuple[str, str]) -> None:
+    """Record a one-shot backstop marker, evicting oldest entries on overflow.
+
+    Evicts oldest-first down to half capacity (insertion-ordered dict) rather
+    than clearing wholesale, so a bound hit re-fires the backstop only for the
+    oldest markers, not the whole fleet. A re-fire is idempotent regardless.
+    """
+    if len(_consent_backstop_done) >= _CONSENT_BACKSTOP_MAX:
+        overage = len(_consent_backstop_done) - _CONSENT_BACKSTOP_MAX // 2
+        logger.info(
+            "consent backstop tracking hit %d entries; evicting %d oldest",
+            _CONSENT_BACKSTOP_MAX,
+            overage,
+        )
+        for stale_key in list(_consent_backstop_done)[:overage]:
+            del _consent_backstop_done[stale_key]
+    _consent_backstop_done[key] = None
+
+
+async def _backstop_delete_doc_type(
+    user_id: str,
+    send_stream: TaskProducer,
+    doc_type: str,
+    qdrant_client: AsyncQdrantClient,
+    collection: str,
+    scan_id: int,
+) -> int:
+    """Enqueue delete tasks for every indexed point of one disabled doc_type.
+
+    Returns the number of delete tasks enqueued.
+    """
+    points = await _scroll_all_points(
+        qdrant_client,
+        collection_name=collection,
+        scroll_filter=Filter(
+            must=[
+                FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
+            ]
+        ),
+        payload_fields=["doc_id"],
+    )
+    doc_ids = {
+        str(p.payload["doc_id"])
+        for p in points
+        if p.payload is not None and "doc_id" in p.payload
+    }
+    if doc_ids:
+        logger.info(
+            "[SCAN-%s] %s disabled by admin for %s; enqueueing %d delete(s) (backstop)",
+            scan_id,
+            doc_type,
+            user_id,
+            len(doc_ids),
+        )
+    for doc_id in doc_ids:
+        await send_stream.send(
+            DocumentTask(
+                user_id=user_id,
+                doc_id=doc_id,
+                doc_type=doc_type,
+                operation="delete",
+                modified_at=0,
+            )
+        )
+    return len(doc_ids)
+
+
+async def _enqueue_deletes_for_disabled_types(
+    user_id: str,
+    send_stream: TaskProducer,
+    allowed: frozenset[str] | None,
+    scan_id: int,
+) -> int:
+    """Enqueue delete tasks for indexed text-source points the admin disabled.
+
+    Backstop for a failed eager purge: scrolls this user's indexed points for
+    each admin-disallowed text doc_type and queues a delete. No-op when
+    ``allowed`` is ``None`` (fail-open — never delete on a transient capability
+    read failure). Returns the number of delete tasks enqueued.
+    """
+    if allowed is None:
+        return 0
+
+    # Re-enabled types: clear their one-shot marker so a later re-disable
+    # re-triggers the backstop.
+    for doc_type in _TEXT_BACKSTOP_DOC_TYPES:
+        if doc_type in allowed:
+            _consent_backstop_done.pop((user_id, doc_type), None)
+
+    # Disabled types not yet backstopped this episode.
+    disabled = [
+        dt
+        for dt in _TEXT_BACKSTOP_DOC_TYPES
+        if dt not in allowed and (user_id, dt) not in _consent_backstop_done
+    ]
+    if not disabled:
+        return 0
+
+    qdrant_client = await get_qdrant_client()
+    collection = get_settings().get_collection_name()
+    queued = 0
+    for doc_type in disabled:
+        queued += await _backstop_delete_doc_type(
+            user_id, send_stream, doc_type, qdrant_client, collection, scan_id
+        )
+        # Mark backstopped (even when nothing was found) so subsequent scans
+        # don't re-scroll/re-enqueue for this disable episode.
+        _mark_backstop_done((user_id, doc_type))
+    return queued
+
+
 async def scan_user_documents(
     user_id: str,
     send_stream: TaskProducer,
@@ -365,6 +510,13 @@ async def scan_user_documents(
         # detection failed: fall back to scanning every app (prior behaviour).
         enabled_apps = await _get_enabled_apps_or_none(nc_client, user_id, scan_id)
 
+        # Admin consent gate (Astrolabe): only index sources the admin has
+        # approved for semantic search. ``None`` = no restriction (fail-open /
+        # older Astrolabe), so a transient capabilities failure never silently
+        # halts (or worse, mass-deletes) indexing. This is independent of
+        # ``enabled_apps``, which reflects only what the user has installed.
+        allowed = await allowed_doc_types(nc_client, user_id)
+
         # Notes (isolated so an uninstalled or disabled Notes app — whose API
         # returns 404 — cannot abort scanning of the other apps; this mirrors the
         # per-app try/except guards already wrapping files/news/deck below).
@@ -373,7 +525,17 @@ async def scan_user_documents(
         current_time = time.time()
         queued = 0
 
-        if _app_enabled("notes", enabled_apps):
+        # Backstop purge for admin-disabled text sources. Their deletion-
+        # tracking lives inside the scan_* function we skip below, so (unlike
+        # files, whose discovery-empties-then-reconcile path purges on disable)
+        # they'd linger if Astrolabe's eager purge failed. Enqueue deletes for
+        # any indexed points of a now-disallowed type. Gated on a concrete
+        # allow-set, so a fail-open None never triggers deletion.
+        queued += await _enqueue_deletes_for_disabled_types(
+            user_id, send_stream, allowed, scan_id
+        )
+
+        if _should_scan("notes", "note", enabled_apps, allowed):
             try:
                 queued += await scan_notes(
                     user_id=user_id,
@@ -454,9 +616,24 @@ async def scan_user_documents(
             # folder applies to every PDF beneath it.
             settings = get_settings()
             tag_name = settings.vector_sync_pdf_tag
-            tagged_files = await nc_client.find_files_by_tag(
-                tag_name, mime_type_filter="application/pdf"
-            )
+            if is_doc_type_allowed("file", allowed):
+                tagged_files = await nc_client.find_files_by_tag(
+                    tag_name, mime_type_filter="application/pdf"
+                )
+            else:
+                # Files disabled by admin: discover nothing so no new file is
+                # indexed. The deletion-reconcile below then sees every indexed
+                # file as "missing" and purges it after the grace period — the
+                # backstop for the eager purge Astrolabe runs on disable.
+                # Asymmetry (intentional): files purge up to 1.5x scan_interval
+                # later than text types, which get immediate one-shot backstop
+                # deletes via _enqueue_deletes_for_disabled_types.
+                logger.debug(
+                    "[SCAN-%s] Files disabled by admin for %s; skipping tagged-file discovery",
+                    scan_id,
+                    user_id,
+                )
+                tagged_files = []
 
             # Apply EXCLUDED_TAGS as defense-in-depth: a folder marked
             # off-limits via the exclusion tag must not be indexed even if
@@ -710,7 +887,7 @@ async def scan_user_documents(
 
         # Scan News items (starred + unread)
         news_queued = 0
-        if _app_enabled("news", enabled_apps):
+        if _should_scan("news", "news_item", enabled_apps, allowed):
             try:
                 news_queued = await scan_news_items(
                     user_id=user_id,
@@ -731,7 +908,7 @@ async def scan_user_documents(
 
         # Scan Deck cards
         deck_queued = 0
-        if _app_enabled("deck", enabled_apps):
+        if _should_scan("deck", "deck_card", enabled_apps, allowed):
             try:
                 deck_queued = await scan_deck_cards(
                     user_id=user_id,

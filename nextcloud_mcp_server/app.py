@@ -47,6 +47,7 @@ from nextcloud_mcp_server.api import (
     list_supported_scopes,
     list_webhooks,
     provision_app_password,
+    purge_doc_types_route,
     revoke_user_access,
     unified_search,
     update_user_scopes,
@@ -2422,6 +2423,19 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         routes.append(
             Route("/api/v1/webhooks/{webhook_id}", delete_webhook, methods=["DELETE"])
         )
+        # Vector-sync admin: purge indexed vectors by doc type (admin consent —
+        # called by Astrolabe when a source is disabled for semantic search).
+        # Gated on vector_sync_enabled: without it there is no Qdrant client, so
+        # the purge would 500 rather than no-op.
+        if settings.vector_sync_enabled:
+            routes.append(
+                Route(
+                    "/api/v1/vector-sync/purge",
+                    purge_doc_types_route,
+                    methods=["POST"],
+                )
+            )
+            logger.info("Vector-sync admin endpoint enabled: /api/v1/vector-sync/purge")
         # Access and scope management endpoints (ADR-022)
         routes.append(
             Route(
