@@ -5,6 +5,28 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.120.0 (2026-06-16)
+
+### Feat
+
+- **vector-sync**: honor Astrolabe admin consent for searchable sources
+
+### Fix
+
+- **vector-sync**: address round-7 — only log purge endpoint when enabled
+- **vector-sync**: address round-6 review — rename shadowed var, add test
+- **vector-sync**: address round-5 review — partial-failure signal, markers
+- **vector-sync**: address round-4 review — processor test, partial eviction
+- **vector-sync**: address round-3 review — gate purge route, bound set, nits
+- **vector-sync**: address round-2 review — one-shot backstop, helper, caps
+- **vector-sync**: address PR review — dict guard, symmetric backstop, metrics
+
+### Refactor
+
+- **scanner**: _should_scan helper to cut scan_user_documents complexity
+- **scanner**: cut backstop cognitive complexity (SonarQube S3776)
+- **vector-sync**: dedupe "Bad request" 400s via a helper (SonarCloud S1192)
+
 ## v0.119.0 (2026-06-15)
 
 ### Feat
