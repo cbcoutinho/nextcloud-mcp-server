@@ -4,7 +4,7 @@ Covers: default fast-tier routing, the pymupdf rollback toggle, classification
 recording derived from the extraction, and OCR escalation (on/off).
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -15,6 +15,7 @@ from nextcloud_mcp_server.document_processors.base import (
 )
 from nextcloud_mcp_server.document_processors.escalation import EscalationDecision
 from nextcloud_mcp_server.document_processors.registry import ProcessorRegistry
+from tests.fixtures.glyph_corruption import GLYPH_CORRUPT_TEXT
 
 pytestmark = pytest.mark.unit
 
@@ -250,10 +251,10 @@ async def test_no_ocr_escalation_when_disabled(monkeypatch):
 
 # --- glyph-corruption escalation + full-ladder parity ------------------------
 
-# A fast-tier text layer that looks like words (normal spacing/token lengths ->
-# HIGH text_quality) but leaks C0 control chars: the broken-/ToUnicode signature
-# the control-char ratio catches. Decodes to a pangram under a -3 shift.
-_GLYPH = "WKH \x0f TXLFN \x10 EURZQ \x11 IRA MXPSV \x0f RYHU \x10 GRJ " * 6
+# A fast-tier text layer that looks like words (HIGH text_quality) but leaks C0
+# control chars -- the broken-/ToUnicode signature the control-char ratio catches.
+# Shared with the classifier tests so the two can't diverge.
+_GLYPH = GLYPH_CORRUPT_TEXT
 
 
 async def test_glyph_corrupt_escalates_fast_to_structured(monkeypatch):
@@ -309,6 +310,27 @@ async def test_inline_empty_skips_structured_straight_to_ocr(monkeypatch):
     res = await r.process(b"%PDF-1.7", "application/pdf")
     assert res.processor == "ocr"
     esc.assert_called_once_with("fast", "ocr", "empty_text")
+
+
+async def test_inline_fast_structured_ocr_cascade(monkeypatch):
+    # Full cascade: a junk-but-non-empty fast layer hops to structured, the
+    # structured re-extract is empty (a doc that was ALSO scanned), so it then
+    # hops to OCR. The second hop must be attributed from_tier="structured",
+    # NOT a second "fast" escalation.
+    monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=True))
+    esc = MagicMock()
+    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
+    r = _registry(
+        (_Fake("fast", "fast", text="x" * 40), 20),  # quality ~0, non-empty
+        (_Fake("structured", "structured", text=""), 10),  # re-extract empty
+        (_Fake("ocr", "ocr", text="ocr recovered text"), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "ocr"
+    assert esc.call_args_list == [
+        call("fast", "structured", "low_confidence"),
+        call("structured", "ocr", "empty_text"),
+    ]
 
 
 def test_evaluate_escalation_glyph_corrupt_goes_structured(monkeypatch):

@@ -407,9 +407,12 @@ def classify_from_text(
     # page_count guard also skips escalation; defaulting to 0.0 keeps the
     # recorded classification metric accurate rather than a misleading "ocr").
     ocr_frac = (sum(p.needs_ocr for p in pages) / sampled) if sampled else 0.0
-    # Doc-level (char-weighted) control-char ratio -- the glyph-leak signal that
-    # routes to the structured tier. Computed over full_text so it is robust to
-    # boundary edge cases.
+    # Doc-level control-char ratio -- the glyph-leak signal that routes to the
+    # structured tier. Computed over the WHOLE full_text (all pages), unlike
+    # classify_pdf which char-weights the up-to-MAX_SAMPLED_PAGES sample; the two
+    # are therefore not numerically identical for a >24-page doc with corruption
+    # concentrated outside the sample. full_text is used here because it is exactly
+    # the text that gets chunked + indexed and is robust to boundary edge cases.
     control_ratio = _control_char_ratio(full_text)
 
     flags, recommended = _route_from_signals(

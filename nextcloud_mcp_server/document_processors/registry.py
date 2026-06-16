@@ -247,6 +247,12 @@ class ProcessorRegistry:
             result, content, settings, record=True, filename=filename
         )
 
+        # The tier whose output produced the current ``classification`` -- used as
+        # ``from_tier`` for a subsequent OCR hop so a fast->structured->ocr cascade
+        # is attributed correctly (the OCR hop is from ``structured``, not a second
+        # ``fast`` escalation).
+        from_tier = "fast"
+
         # Escalate a poor fast extraction up the ladder (fast -> structured -> ocr),
         # mirroring the external per-tier path so both modes behave identically. A
         # glyph-corrupt layer (the extractor leaked raw glyph codes -- the
@@ -293,6 +299,7 @@ class ProcessorRegistry:
                 )
                 if structured_result.success:
                     result = structured_result
+                    from_tier = "structured"
                     classification = self._classify_result(
                         result, content, settings, record=False, filename=filename
                     )
@@ -331,10 +338,11 @@ class ProcessorRegistry:
                     if classification.total_chars == 0
                     else "low_confidence"
                 )
-                record_document_escalation("fast", "ocr", reason)
+                record_document_escalation(from_tier, "ocr", reason)
                 logger.info(
-                    "Escalating %s fast->ocr (reason=%s)",
+                    "Escalating %s %s->ocr (reason=%s)",
                     filename or "<bytes>",
+                    from_tier,
                     reason,
                 )
                 ocr_result = await self._run_processor(

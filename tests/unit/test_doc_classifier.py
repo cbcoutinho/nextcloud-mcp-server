@@ -14,6 +14,7 @@ import pymupdf
 import pytest
 
 from nextcloud_mcp_server.document_processors import classifier as clf
+from tests.fixtures.glyph_corruption import GLYPH_CORRUPT_TEXT
 
 pytestmark = pytest.mark.unit
 
@@ -324,17 +325,17 @@ def test_scan_coverage_shorter_than_pages_aligns_without_crash():
 
 # --- glyph-corruption signal (broken /ToUnicode -> structured escalation) -----
 
-# pypdfium2-style leak: a uniform glyph/Caesar offset turns clean prose into
-# alphabetic-but-wrong tokens (normal spacing + token length => HIGH text_quality)
-# while digits/punctuation map to C0 control bytes. The control-char ratio is the
-# only signal that catches this; _text_quality scores it ~1.0.
-_GLYPH_CORRUPT = "WKH \x0f TXLFN \x10 EURZQ \x11 IRA MXPSV \x0f RYHU \x10 GRJ " * 6
+# A uniform glyph/Caesar offset turns clean prose into alphabetic-but-wrong tokens
+# (normal spacing + token length => HIGH text_quality) while digits/punctuation map
+# to C0 control bytes. The control-char ratio is the only signal that catches this;
+# _text_quality scores it ~1.0. Shared with the registry tiering tests.
+_GLYPH_CORRUPT = GLYPH_CORRUPT_TEXT
 
 
 def test_control_char_ratio_clean_is_zero():
-    assert clf._control_char_ratio("the quick brown fox") == 0.0
+    assert clf._control_char_ratio("the quick brown fox") == pytest.approx(0.0)
     # legitimate whitespace controls (tab/newline/CR/form-feed/vtab) don't count
-    assert clf._control_char_ratio("a\tb\nc\r\nd\f\ve") == 0.0
+    assert clf._control_char_ratio("a\tb\nc\r\nd\f\ve") == pytest.approx(0.0)
 
 
 def test_control_char_ratio_detects_glyph_leak():
