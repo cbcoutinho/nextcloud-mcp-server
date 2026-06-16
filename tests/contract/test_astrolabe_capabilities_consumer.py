@@ -36,7 +36,14 @@ pytestmark = pytest.mark.contract
 
 
 def _ocs_capabilities(enabled_doc_types: list[str]) -> dict:
-    """Minimal OCS envelope carrying just astrolabe's semantic_search block."""
+    """Minimal OCS envelope carrying just astrolabe's semantic_search block.
+
+    Intentionally omits the rest of a real OCS response (other apps'
+    capabilities, ``meta.statuscode``/``message``, etc.): Pact V4 allows extra
+    provider-side keys, so pinning only the block this consumer reads keeps the
+    contract focused on what astrolabe owns without coupling to Nextcloud-core
+    envelope fields.
+    """
     return {
         "ocs": {
             "meta": {"status": "ok"},

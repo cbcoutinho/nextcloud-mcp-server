@@ -117,7 +117,7 @@ def test_verify_astrolabe_consumer_pacts() -> None:
     verifier = Verifier(PROVIDER_NAME).add_transport(url=_PROVIDER_URL)
     verifier.state_handler(_dispatch_state, teardown=True)
 
-    if _BROKER_URL and _BROKER_USERNAME and _BROKER_PASSWORD:
+    if _BROKER_READY:
         # selector=True to opt into pending pacts: a new/authenticated contract
         # (e.g. the consent-purge endpoint) reports as *pending* instead of
         # failing this build until provider verification of the authenticated
