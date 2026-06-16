@@ -125,6 +125,47 @@ class UserSyncState:
     started_at: float = field(default_factory=time.time)
 
 
+async def _remove_stale_credential(user_id: str, status_code: int) -> None:
+    """Delete a user's stored app password after a hard auth failure.
+
+    A 401/403 from Nextcloud means the stored app password is no longer usable —
+    the user was deleted, disabled, or revoked the password. Without removing it
+    the credential lingers in storage and ``user_manager_task`` re-spawns this
+    scanner on its next poll (the user is still "provisioned"), only to fail auth
+    again — an endless re-spawn/401 loop that keeps hammering Nextcloud (Deck
+    #198). Deleting the row drops the user out of
+    ``get_all_app_password_user_ids()`` so the scanner is not recreated.
+
+    Convergence: if ``user_manager_task`` already snapshotted the user IDs for
+    the current poll before this deletion, it re-spawns the scanner once more on
+    the next cycle, which fails auth and deletes again — at most one extra 401
+    per manager poll interval, versus the unbounded loop before this fix.
+
+    Best-effort: a storage failure here is logged, not raised — the periodic
+    ``credential_cleanup_task`` sweep (and the next startup sweep) are backstops.
+    """
+    try:
+        storage = await _get_initialized_basic_auth_storage()
+        if await storage.delete_app_password(user_id):
+            logger.info(
+                "[BasicAuth] Removed stale app password for %s after HTTP %s",
+                user_id,
+                status_code,
+            )
+        else:
+            # Row already gone — raced with the periodic sweep or another
+            # scanner exit. Harmless; logged for diagnostics.
+            logger.debug(
+                "[BasicAuth] No stale app password to remove for %s (HTTP %s)",
+                user_id,
+                status_code,
+            )
+    except Exception as e:
+        logger.warning(
+            "[BasicAuth] Failed to remove stale app password for %s: %s", user_id, e
+        )
+
+
 async def get_user_client_basic_auth(
     user_id: str,
     nextcloud_host: str,
@@ -215,10 +256,12 @@ async def user_scanner_task(
         except HTTPStatusError as e:
             if e.response.status_code in (401, 403):
                 logger.warning(
-                    "[BasicAuth] Credential validation failed for %s (HTTP %s), not starting scan loop",
+                    "[BasicAuth] Credential validation failed for %s (HTTP %s), "
+                    "removing stale credential and not starting scan loop",
                     user_id,
                     e.response.status_code,
                 )
+                await _remove_stale_credential(user_id, e.response.status_code)
                 return
             raise
         finally:
@@ -262,10 +305,12 @@ async def user_scanner_task(
             status_code = e.response.status_code
             if status_code in (401, 403):
                 logger.warning(
-                    "[BasicAuth] Scanner auth failed for %s (HTTP %s), stopping scanner. User may need to re-provision credentials.",
+                    "[BasicAuth] Scanner auth failed for %s (HTTP %s), removing stale "
+                    "credential and stopping scanner. User must re-provision to resume sync.",
                     user_id,
                     status_code,
                 )
+                await _remove_stale_credential(user_id, status_code)
                 break
             elif status_code == 429:
                 retry_after = min(int(e.response.headers.get("Retry-After", "60")), 300)
@@ -408,6 +453,64 @@ async def multi_user_processor_task(
 
 # Backward compatibility alias
 oauth_processor_task = multi_user_processor_task
+
+
+# Backstop sweep cadence for cleanup_invalid_app_passwords (seconds). The
+# per-scanner 401 deletion (_remove_stale_credential) is the primary self-heal;
+# this periodic sweep is defense-in-depth for credentials whose scanner never
+# ran or whose in-scanner deletion failed. One hour keeps the per-user OCS
+# validation load negligible.
+CREDENTIAL_CLEANUP_INTERVAL = 3600
+
+
+async def credential_cleanup_task(
+    storage: "RefreshTokenStorage",
+    shutdown_event: anyio.Event,
+    nextcloud_host: str,
+    *,
+    task_status: TaskStatus = anyio.TASK_STATUS_IGNORED,
+) -> None:
+    """Periodically remove app passwords that no longer authenticate.
+
+    Backstop for the per-scanner self-heal (``_remove_stale_credential``):
+    validates every stored app password against Nextcloud and deletes the ones
+    that return 401/403, so credentials for deleted/disabled users cannot
+    accumulate even if their scanner never ran (Deck #198). Runs on a fixed
+    cadence until ``shutdown_event`` is set. A fresh sweep already runs once at
+    startup (app lifespan), so this sleeps first.
+    """
+    logger.info(
+        "[BasicAuth] Credential cleanup task started (interval: %ss)",
+        CREDENTIAL_CLEANUP_INTERVAL,
+    )
+    task_status.started()
+
+    while not shutdown_event.is_set():
+        # Sleep first — startup already swept; wake early on shutdown. The
+        # graceful path goes through shutdown_event (move_on_after returns once
+        # teardown sets it), so we deliberately do NOT catch the cancellation
+        # exception: a task-group cancel must propagate for structured-
+        # concurrency teardown (re-swallowing it would breach anyio's contract).
+        with anyio.move_on_after(CREDENTIAL_CLEANUP_INTERVAL):
+            await shutdown_event.wait()
+        if shutdown_event.is_set():
+            break
+
+        try:
+            removed = await storage.cleanup_invalid_app_passwords(nextcloud_host)
+            if removed:
+                logger.info(
+                    "[BasicAuth] Periodic cleanup removed %s stale app password(s): %s",
+                    len(removed),
+                    removed,
+                )
+        except Exception as e:
+            logger.warning(
+                "[BasicAuth] Periodic credential cleanup failed (non-fatal): %s",
+                format_exception_group(e),
+            )
+
+    logger.info("[BasicAuth] Credential cleanup task stopped")
 
 
 async def _run_user_scanner_with_scope(
