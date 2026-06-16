@@ -5,6 +5,15 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.120.3 (2026-06-16)
+
+### Fix
+
+- **document-processors**: make glyph-corruption ratio of 0 disable the signal
+- **document-processors**: inline/external parity when structured tier is absent
+- **document-processors**: correct cascade escalation metric + review nits
+- **document-processors**: escalate glyph-corrupt PDFs to the structured tier
+
 ## v0.120.2 (2026-06-16)
 
 ### Refactor
