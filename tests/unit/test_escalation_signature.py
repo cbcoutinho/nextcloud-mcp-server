@@ -42,6 +42,14 @@ def test_enabling_ocr_changes_signature() -> None:
     ) != escalation_tiers_signature(_settings(ocr=True))
 
 
+def test_enabling_ocr_incluster_changes_signature() -> None:
+    # Enabling the in-cluster (tier2) rung adds an escalation tier independently of
+    # the upstream rung -> previously dead-lettered scanned docs become retryable.
+    assert escalation_tiers_signature(
+        _settings(ocr=False, ocr_incluster=False)
+    ) != escalation_tiers_signature(_settings(ocr=False, ocr_incluster=True))
+
+
 def test_tier1_engine_change_changes_signature() -> None:
     assert escalation_tiers_signature(
         _settings(ocr=False, engine="pypdfium2")

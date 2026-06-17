@@ -45,6 +45,7 @@ class TestLadder:
         assert TIER_LADDER == ("fast", "structured", "ocr-incluster", "ocr-upstream")
 
     def test_tier_for_queue(self):
+        assert pq.tier_for_queue(pq.INGEST_QUEUE_OCR_INCLUSTER) == "ocr-incluster"
         assert pq.tier_for_queue(pq.INGEST_QUEUE_OCR_UPSTREAM) == "ocr-upstream"
         assert pq.tier_for_queue(pq.INGEST_QUEUE_STRUCTURED) == "structured"
         # Legacy / unknown / None all fall back to the cheapest tier.
@@ -63,6 +64,16 @@ class TestTieredEscalationStrategy:
         decision = self._strategy().get_retry_decision(exception=exc, job=_job())
         assert decision is not None
         assert decision.queue == pq.INGEST_QUEUE_OCR_UPSTREAM
+
+    def test_escalate_hops_to_incluster_queue(self):
+        # tier2 in-cluster (Deck #353): structured -> ocr-incluster lands on the
+        # in-cluster queue the GPU sentinel watches, not the paid upstream queue.
+        exc = EscalateError(
+            from_tier="structured", to_tier="ocr-incluster", reason="empty_text"
+        )
+        decision = self._strategy().get_retry_decision(exception=exc, job=_job())
+        assert decision is not None
+        assert decision.queue == pq.INGEST_QUEUE_OCR_INCLUSTER
 
     def test_escalate_to_structured(self):
         exc = EscalateError(

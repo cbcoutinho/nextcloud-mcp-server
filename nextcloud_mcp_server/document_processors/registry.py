@@ -458,7 +458,13 @@ class ProcessorRegistry:
             return None
         try:
             image_coverage = None
-            if settings.document_ocr_enabled and settings.document_ocr_detect_scanned:
+            # Scan detection feeds either OCR rung (tier2 in-cluster or tier3
+            # upstream), so run it whenever EITHER is enabled — a tenant with
+            # only in-cluster OCR on still needs image-coverage scan signals.
+            ocr_any_enabled = (
+                settings.document_ocr_enabled or settings.document_ocr_incluster_enabled
+            )
+            if ocr_any_enabled and settings.document_ocr_detect_scanned:
                 try:
                     image_coverage = image_coverage_per_page(content)
                 except Exception:

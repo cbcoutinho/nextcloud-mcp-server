@@ -437,7 +437,14 @@ class OcrProcessor(DocumentProcessor):
     async def _get_batch_client(self) -> "GatewayBatchOcrClient | None":
         """Cached gateway batch client (or ``None`` when batch isn't applicable —
         provider=mistral / no gateway). Resolved once under the backend lock so the
-        token provider's M2M cache survives across documents."""
+        token provider's M2M cache survives across documents.
+
+        The in-cluster (``gateway_only``) rung never uses batch mode: it targets
+        the on-demand GPU, which is synchronous/low-latency, while batch OCR is the
+        upstream (Mistral) async-job path. So even with ``DOCUMENT_OCR_MODE=batch``
+        set globally, the in-cluster tier stays on the synchronous backend."""
+        if self._gateway_only:
+            return None
         if not self._batch_client_resolved:
             if self._batch_client_lock is None:
                 self._batch_client_lock = anyio.Lock()

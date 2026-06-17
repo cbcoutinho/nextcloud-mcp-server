@@ -743,3 +743,138 @@ def test_evaluate_escalation_empty_suppressed_even_when_structured_registered(
     )
     decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=False))
     assert decision == EscalationDecision("suppressed", "ocr-upstream", "empty_text")
+
+
+# --- tier2 in-cluster OCR rung (Deck #353) -----------------------------------
+
+
+async def test_inline_empty_routes_to_ocr_incluster_before_upstream(monkeypatch):
+    """Both OCR rungs enabled + registered: an empty text layer hops to the
+    in-cluster (tier2) rung FIRST, never straight to the paid upstream rung."""
+    monkeypatch.setattr(
+        reg_mod, "get_settings", lambda: _Settings(ocr=True, ocr_incluster=True)
+    )
+    esc = MagicMock()
+    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
+    r = _registry(
+        (_Fake("fast", "fast", text=""), 20),
+        (_Fake("structured", "structured", text="should not run"), 10),
+        (_Fake("ocr-incluster", "ocr-incluster", text="incluster ocr text"), 6),
+        (_Fake("ocr-upstream", "ocr-upstream", text="upstream ocr text"), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "ocr-incluster"
+    esc.assert_called_once_with("fast", "ocr-incluster", "empty_text")
+
+
+async def test_inline_only_incluster_enabled_routes_to_incluster(monkeypatch):
+    """Tenant with ONLY in-cluster OCR on (upstream off): empty text still hops
+    to the in-cluster rung (its own enable flag gates it, independent of upstream)."""
+    monkeypatch.setattr(
+        reg_mod, "get_settings", lambda: _Settings(ocr=False, ocr_incluster=True)
+    )
+    esc = MagicMock()
+    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
+    r = _registry(
+        (_Fake("fast", "fast", text=""), 20),
+        (_Fake("ocr-incluster", "ocr-incluster", text="incluster ocr text"), 6),
+        (_Fake("ocr-upstream", "ocr-upstream", text="upstream ocr text"), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "ocr-incluster"
+    esc.assert_called_once_with("fast", "ocr-incluster", "empty_text")
+
+
+async def test_inline_incluster_disabled_skips_to_upstream(monkeypatch):
+    """In-cluster registered but DISABLED, upstream enabled: the disabled tier2
+    rung is skipped and the job escalates to the upstream rung."""
+    monkeypatch.setattr(
+        reg_mod, "get_settings", lambda: _Settings(ocr=True, ocr_incluster=False)
+    )
+    esc = MagicMock()
+    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
+    r = _registry(
+        (_Fake("fast", "fast", text=""), 20),
+        (_Fake("ocr-incluster", "ocr-incluster", text="incluster ocr text"), 6),
+        (_Fake("ocr-upstream", "ocr-upstream", text="upstream ocr text"), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "ocr-upstream"
+    esc.assert_called_once_with("fast", "ocr-upstream", "empty_text")
+
+
+def _empty_result() -> ProcessingResult:
+    return ProcessingResult(
+        text="",
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [{"page": 1, "start_offset": 0, "end_offset": 0}],
+        },
+        processor="fast",
+    )
+
+
+def test_evaluate_escalation_empty_text_hops_to_incluster(monkeypatch):
+    """External path: empty text targets the cheapest OCR rung (in-cluster, tier2)
+    when it is enabled + registered."""
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("structured", "structured"), 10),
+        (_Fake("ocr-incluster", "ocr-incluster"), 6),
+        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+    )
+    decision = r.evaluate_escalation(
+        _empty_result(), b"%PDF", "fast", _Settings(ocr=True, ocr_incluster=True)
+    )
+    assert decision == EscalationDecision("hop", "ocr-incluster", "empty_text")
+
+
+def test_evaluate_escalation_incluster_disabled_hops_to_upstream(monkeypatch):
+    """External path: in-cluster disabled -> next_available_tier falls through to
+    the upstream rung (a real hop, not a suppression, since upstream is on)."""
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("ocr-incluster", "ocr-incluster"), 6),
+        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+    )
+    decision = r.evaluate_escalation(
+        _empty_result(), b"%PDF", "fast", _Settings(ocr=True, ocr_incluster=False)
+    )
+    assert decision == EscalationDecision("hop", "ocr-upstream", "empty_text")
+
+
+def test_next_available_tier_walks_full_four_rung_ladder():
+    """next_available_tier walks fast -> structured -> ocr-incluster ->
+    ocr-upstream when every rung is registered + enabled."""
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("structured", "structured"), 10),
+        (_Fake("ocr-incluster", "ocr-incluster"), 6),
+        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+    )
+    s = _Settings(ocr=True, ocr_incluster=True)
+    assert r.next_available_tier("fast", s) == "structured"
+    assert r.next_available_tier("structured", s) == "ocr-incluster"
+    assert r.next_available_tier("ocr-incluster", s) == "ocr-upstream"
+    assert r.next_available_tier("ocr-upstream", s) is None
+    # minimum pins the floor: from fast with minimum=ocr-incluster skips structured.
+    assert r.next_available_tier("fast", s, minimum="ocr-incluster") == "ocr-incluster"
+
+
+def test_next_available_tier_incluster_disabled_skips_to_upstream():
+    """A disabled in-cluster rung is skipped; the walk lands on the upstream rung."""
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("structured", "structured"), 10),
+        (_Fake("ocr-incluster", "ocr-incluster"), 6),
+        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+    )
+    s = _Settings(ocr=True, ocr_incluster=False)
+    assert r.next_available_tier("structured", s) == "ocr-upstream"
+    # ...but the *ideal* target ignoring the enable gate is still in-cluster.
+    assert (
+        r.next_available_tier("structured", s, ignore_ocr_enabled=True)
+        == "ocr-incluster"
+    )

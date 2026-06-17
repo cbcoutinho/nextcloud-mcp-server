@@ -435,6 +435,43 @@ def _wire_batch(monkeypatch, *, client, store, settings=None):
     monkeypatch.setattr(_bos.BatchOcrJobStore, "shared", classmethod(_shared))
 
 
+async def test_gateway_only_processor_never_uses_batch_mode(monkeypatch):
+    """The in-cluster (gateway_only) rung targets the synchronous GPU; batch mode
+    is the upstream Mistral async-job path. _get_batch_client returns None and
+    never builds a batch client even with DOCUMENT_OCR_MODE=batch set globally —
+    while the upstream (gateway_only=False) processor still resolves one."""
+    called = {"n": 0}
+
+    def _spy(settings, **kw):
+        called["n"] += 1
+        return _FakeBatchClient()
+
+    monkeypatch.setattr(
+        ocr,
+        "get_settings",
+        lambda: _settings(
+            document_ocr_mode="batch",
+            document_ocr_provider="gateway",
+            embedding_gateway_url="https://gw",
+            document_ocr_incluster_model="surya/surya-ocr-2",
+        ),
+    )
+    monkeypatch.setattr(ocr, "build_gateway_batch_client", _spy)
+
+    incluster = ocr.OcrProcessor(
+        name="ocr-incluster",
+        tier="ocr-incluster",
+        model_setting="document_ocr_incluster_model",
+        gateway_only=True,
+    )
+    assert await incluster._get_batch_client() is None
+    assert called["n"] == 0  # short-circuited before building anything
+
+    upstream = ocr.OcrProcessor()  # gateway_only=False
+    assert await upstream._get_batch_client() is not None
+    assert called["n"] == 1
+
+
 async def test_batch_first_run_submits_and_returns_pending_sentinel(monkeypatch):
     client = _FakeBatchClient()
     store = _FakeStore()

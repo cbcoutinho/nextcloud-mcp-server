@@ -354,8 +354,9 @@ def worker(concurrency: int | None, tier: str | None):
 
     \b
     With --tier the worker drains only that tier's queue (``ingest-<tier>``), so
-    a CPU-bound ``fast`` fleet, an in-cluster ``structured`` fleet, and a paid
-    ``ocr`` fleet scale independently. Without it, all tier queues are drained in
+    a CPU-bound ``fast`` fleet, an in-cluster ``structured`` fleet, an on-demand
+    GPU ``ocr-incluster`` fleet, and a paid ``ocr-upstream`` fleet scale
+    independently. Without it, all tier queues are drained in
     one process (handy for dev / a single Deployment). A low-quality parse hops
     the job to the next tier's queue automatically (see TieredEscalationStrategy).
 
