@@ -1987,7 +1987,7 @@ async def playwright_oauth_token(
         # Wait for callback server to receive the auth code
         # Browser will be redirected to localhost:8081 which will capture the code
         logger.info("Waiting for callback server to receive auth code...")
-        timeout_seconds = 30
+        timeout_seconds = 60  # was 30; too tight for consent+redirect on loaded CI
         start_time = time.time()
         while state not in auth_states:
             if time.time() - start_time > timeout_seconds:
@@ -2696,7 +2696,7 @@ async def _get_oauth_token_for_user(
         logger.info(
             "Waiting for callback server to receive auth code for %s...", username
         )
-        timeout_seconds = 30
+        timeout_seconds = 60  # was 30; too tight for consent+redirect on loaded CI
         start_time = time.time()
         while state not in auth_states:
             if time.time() - start_time > timeout_seconds:

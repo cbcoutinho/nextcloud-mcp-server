@@ -161,7 +161,7 @@ async def get_oauth_token_with_client(
 
         # Wait for callback
         logger.info("Waiting for OAuth callback...")
-        timeout_seconds = 30
+        timeout_seconds = 60  # was 30; too tight for consent+redirect on loaded CI
         start_time = time.time()
         while state not in auth_states:
             if time.time() - start_time > timeout_seconds:
