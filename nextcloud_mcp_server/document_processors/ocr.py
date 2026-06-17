@@ -307,6 +307,10 @@ class OcrProcessor(DocumentProcessor):
 
     def __init__(
         self,
+        # The defaults describe the UPSTREAM (tier3) rung and exist for
+        # test/bare-construction convenience only. Application wiring
+        # (document_processors/__init__.py) ALWAYS passes every arg explicitly for
+        # both rungs — don't rely on these defaults in app code.
         *,
         name: str = "ocr-upstream",
         tier: str = "ocr-upstream",

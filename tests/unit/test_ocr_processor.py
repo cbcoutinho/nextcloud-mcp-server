@@ -57,7 +57,7 @@ def test_build_backend_none():
 
 def test_build_backend_gateway():
     b = ocr.build_ocr_backend(
-        _settings(document_ocr_provider="gateway", embedding_gateway_url="http://gw")
+        _settings(document_ocr_provider="gateway", embedding_gateway_url="https://gw")
     )
     assert isinstance(b, ocr._GatewayOcrBackend)
 
@@ -71,7 +71,7 @@ def test_build_backend_mistral():
 
 def test_build_backend_auto_prefers_gateway():
     b = ocr.build_ocr_backend(
-        _settings(embedding_gateway_url="http://gw", mistral_api_key="k")
+        _settings(embedding_gateway_url="https://gw", mistral_api_key="k")
     )
     assert isinstance(b, ocr._GatewayOcrBackend)
 
@@ -111,7 +111,7 @@ def test_build_backend_gateway_only_forces_gateway():
         _settings(
             document_ocr_provider="mistral",
             mistral_api_key="k",
-            embedding_gateway_url="http://gw",
+            embedding_gateway_url="https://gw",
         ),
         gateway_only=True,
     )
@@ -135,7 +135,7 @@ def test_build_backend_gateway_only_provider_none_warns_when_incluster_enabled(c
         b = ocr.build_ocr_backend(
             _settings(
                 document_ocr_provider="none",
-                embedding_gateway_url="http://gw",
+                embedding_gateway_url="https://gw",
                 document_ocr_incluster_enabled=True,
             ),
             gateway_only=True,
@@ -155,7 +155,7 @@ def test_build_backend_gateway_only_provider_none_silent_when_incluster_disabled
         "WARNING", logger="nextcloud_mcp_server.document_processors.ocr"
     ):
         b = ocr.build_ocr_backend(
-            _settings(document_ocr_provider="none", embedding_gateway_url="http://gw"),
+            _settings(document_ocr_provider="none", embedding_gateway_url="https://gw"),
             gateway_only=True,
         )
     assert b is None
@@ -166,7 +166,7 @@ def test_build_backend_empty_model_does_not_fall_back(caplog):
     """An empty model string must NOT silently fall back to the upstream default
     (an `or` would); the in-cluster rung keeps the empty id it was handed."""
     b = ocr.build_ocr_backend(
-        _settings(embedding_gateway_url="http://gw"),
+        _settings(embedding_gateway_url="https://gw"),
         model="",
         gateway_only=True,
     )
@@ -178,14 +178,14 @@ def test_build_backend_model_override_is_not_hardcoded():
     """The per-tier model is whatever config passes -- surya by default, but fully
     swappable (e.g. lightonocr) with no code change."""
     surya = ocr.build_ocr_backend(
-        _settings(embedding_gateway_url="http://gw"),
+        _settings(embedding_gateway_url="https://gw"),
         model="surya/surya-ocr-2",
         gateway_only=True,
     )
     assert isinstance(surya, ocr._GatewayOcrBackend)
     assert surya._model == "surya/surya-ocr-2"
     lit = ocr.build_ocr_backend(
-        _settings(embedding_gateway_url="http://gw"),
+        _settings(embedding_gateway_url="https://gw"),
         model="lightonocr/lightonocr-1b",
         gateway_only=True,
     )
@@ -213,7 +213,7 @@ async def test_incluster_processor_resolves_its_model_gateway_only(monkeypatch):
         "get_settings",
         lambda: _settings(
             document_ocr_incluster_model="surya/surya-ocr-2",
-            embedding_gateway_url="http://gw",
+            embedding_gateway_url="https://gw",
         ),
     )
     proc = ocr.OcrProcessor(
@@ -250,17 +250,17 @@ def test_build_backend_gateway_missing_m2m_raises():
         ocr.build_ocr_backend(
             _settings(
                 document_ocr_provider="gateway",
-                embedding_gateway_url="http://gw",
+                embedding_gateway_url="https://gw",
                 embedding_gateway_client_id="cid",
             )
         )
 
 
 def test_gateway_backend_url_normalization():
-    b = ocr._GatewayOcrBackend("http://gw", "mistral/mistral-ocr-latest")
-    assert b._url == "http://gw/v1/ocr"
-    b2 = ocr._GatewayOcrBackend("http://gw/v1/", "m")
-    assert b2._url == "http://gw/v1/ocr"
+    b = ocr._GatewayOcrBackend("https://gw", "mistral/mistral-ocr-latest")
+    assert b._url == "https://gw/v1/ocr"
+    b2 = ocr._GatewayOcrBackend("https://gw/v1/", "m")
+    assert b2._url == "https://gw/v1/ocr"
 
 
 # --- OcrProcessor ------------------------------------------------------------
