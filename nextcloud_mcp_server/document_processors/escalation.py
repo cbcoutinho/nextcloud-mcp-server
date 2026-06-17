@@ -144,7 +144,8 @@ class BatchPending(Exception):
     ``except Exception`` on the indexing path, never counted as a drop/parse
     error, and never marks the placeholder failed (the doc isn't done yet).
     Unlike ``EscalateError`` it does NOT change queue — the job stays on its own
-    (``ocr``) tier queue and is simply deferred.
+    (``ocr-upstream``) tier queue and is simply deferred (batch mode is the
+    upstream Mistral path only; the in-cluster rung is synchronous).
     """
 
     def __init__(self, *, retry_in: int) -> None:

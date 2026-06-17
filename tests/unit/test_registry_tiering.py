@@ -659,6 +659,31 @@ def test_evaluate_escalation_suppressed_when_ocr_disabled(monkeypatch):
     assert decision == EscalationDecision("suppressed", "ocr-upstream", "empty_text")
 
 
+def test_evaluate_escalation_suppressed_targets_incluster_four_rung(monkeypatch):
+    """Four-rung registry, BOTH OCR flags off: the suppressed what-if-OCR signal
+    names the *cheapest* ideal rung (ocr-incluster), not ocr-upstream, since the
+    ideal-target walk (ignore_ocr_enabled) picks the cheapest registered OCR rung."""
+    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast"), 20),
+        (_Fake("structured", "structured"), 10),
+        (_Fake("ocr-incluster", "ocr-incluster"), 6),
+        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+    )
+    res = ProcessingResult(
+        text="",
+        metadata={
+            "page_count": 1,
+            "page_boundaries": [{"page": 1, "start_offset": 0, "end_offset": 0}],
+        },
+        processor="fast",
+    )
+    decision = r.evaluate_escalation(
+        res, b"%PDF", "fast", _Settings(ocr=False, ocr_incluster=False)
+    )
+    assert decision == EscalationDecision("suppressed", "ocr-incluster", "empty_text")
+
+
 def test_evaluate_escalation_lowconf_suppressed_when_only_ocr_disabled(monkeypatch):
     """fast+ocr only, OCR off, junk text: the next rung is the disabled ocr, so
     the would-be hop is suppressed (not a structured hop, which isn't registered)."""
