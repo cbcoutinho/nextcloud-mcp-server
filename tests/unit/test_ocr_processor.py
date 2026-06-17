@@ -18,6 +18,7 @@ def _settings(**kw) -> Any:  # a Settings stand-in (only the read fields matter)
     base = dict(
         document_ocr_provider="auto",
         document_ocr_model="mistral/mistral-ocr-latest",
+        document_ocr_incluster_enabled=False,
         document_ocr_timeout_seconds=180.0,
         document_ocr_mode="sync",
         document_ocr_batch_poll_seconds=120,
@@ -124,6 +125,55 @@ def test_build_backend_gateway_only_no_url_disabled():
     )
 
 
+def test_build_backend_gateway_only_provider_none_warns_when_incluster_enabled(caplog):
+    """provider=none also suppresses the gateway-only in-cluster tier (it never uses
+    the mistral provider, but the global `none` gate still applies). When in-cluster
+    is enabled this is almost certainly an operator mistake -> warn so it's visible."""
+    with caplog.at_level(
+        "WARNING", logger="nextcloud_mcp_server.document_processors.ocr"
+    ):
+        b = ocr.build_ocr_backend(
+            _settings(
+                document_ocr_provider="none",
+                embedding_gateway_url="http://gw",
+                document_ocr_incluster_enabled=True,
+            ),
+            gateway_only=True,
+        )
+    assert b is None
+    assert any(
+        "DOCUMENT_OCR_PROVIDER=none disables in-cluster" in r.message
+        for r in caplog.records
+    )
+
+
+def test_build_backend_gateway_only_provider_none_silent_when_incluster_disabled(
+    caplog,
+):
+    """provider=none with in-cluster OFF is a deliberate disable -> no warning noise."""
+    with caplog.at_level(
+        "WARNING", logger="nextcloud_mcp_server.document_processors.ocr"
+    ):
+        b = ocr.build_ocr_backend(
+            _settings(document_ocr_provider="none", embedding_gateway_url="http://gw"),
+            gateway_only=True,
+        )
+    assert b is None
+    assert not any("disables in-cluster" in r.message for r in caplog.records)
+
+
+def test_build_backend_empty_model_does_not_fall_back(caplog):
+    """An empty model string must NOT silently fall back to the upstream default
+    (an `or` would); the in-cluster rung keeps the empty id it was handed."""
+    b = ocr.build_ocr_backend(
+        _settings(embedding_gateway_url="http://gw"),
+        model="",
+        gateway_only=True,
+    )
+    assert isinstance(b, ocr._GatewayOcrBackend)
+    assert b._model == ""
+
+
 def test_build_backend_model_override_is_not_hardcoded():
     """The per-tier model is whatever config passes -- surya by default, but fully
     swappable (e.g. lightonocr) with no code change."""
@@ -186,7 +236,7 @@ def test_no_surya_string_literal_in_document_processors():
     pkg = pathlib.Path(ocr.__file__).parent
     offenders = [
         f"{p.name}: {ln.strip()}"
-        for p in pkg.glob("*.py")
+        for p in pkg.rglob("*.py")  # recurse: future backends/ subdirs too
         for ln in p.read_text().splitlines()
         if '"surya' in ln.split("#", 1)[0] or "'surya" in ln.split("#", 1)[0]
     ]

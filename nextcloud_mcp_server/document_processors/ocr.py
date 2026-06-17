@@ -239,11 +239,22 @@ def build_ocr_backend(
     disabled (warn) rather than misrouted to a direct backend that can't serve it.
     """
     provider = settings.document_ocr_provider
-    model = model or settings.document_ocr_model
-    if provider == "none":
-        return None
+    # `is not None` (not truthiness): an empty model string must NOT silently fall
+    # back to the upstream default and misroute a per-tier rung.
+    model = model if model is not None else settings.document_ocr_model
 
     if gateway_only:
+        # The in-cluster tier is gateway-only and never touches the `mistral`
+        # provider, but provider=none still suppresses it. Warn so an operator who
+        # set provider=none to disable Mistral doesn't silently lose the GPU tier.
+        if provider == "none":
+            if settings.document_ocr_incluster_enabled:
+                logger.warning(
+                    "DOCUMENT_OCR_PROVIDER=none disables in-cluster OCR even with "
+                    "DOCUMENT_OCR_INCLUSTER_ENABLED=true; set it to 'gateway' or "
+                    "'auto' to keep the in-cluster tier"
+                )
+            return None
         if settings.embedding_gateway_url:
             return _GatewayOcrBackend(
                 settings.embedding_gateway_url,
@@ -254,6 +265,9 @@ def build_ocr_backend(
             "in-cluster OCR tier requires EMBEDDING_GATEWAY_URL (it routes through "
             "the gateway, never a direct backend); this OCR tier is disabled"
         )
+        return None
+
+    if provider == "none":
         return None
 
     if provider in ("gateway", "auto") and settings.embedding_gateway_url:
