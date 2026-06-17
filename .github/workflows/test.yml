@@ -59,9 +59,9 @@ jobs:
       fail-fast: false
       matrix:
         nextcloud_version:
-          - "31"
           - "32"
-          # - "33"  # Disabled until all upstream apps support NC 33
+          - "33"
+          # - "34"  # Disabled until all upstream apps support NC 34
         mode:
           - "single-user"
           - "multi-user-basic"
@@ -69,14 +69,14 @@ jobs:
           - "keycloak"
         include:
           # Version-specific image pins — Renovate updates these via customManagers in renovate.json
-          # Each entry is pinned to its major version (e.g., NC 31 only gets 31.x updates)
-          - nextcloud_version: "31"
-            nextcloud_image: "docker.io/library/nextcloud:31.0.14@sha256:07ec73cc816e58d6f45a162cd53ef886462c29271a23fc68d0124cec276e3767"
+          # Each entry is pinned to its major version (e.g., NC 32 only gets 32.x updates)
           - nextcloud_version: "32"
             nextcloud_image: "docker.io/library/nextcloud:32.0.11@sha256:3ae4045d53e890680ec35e3e4349332123d959c72808aceb44930e79f1be9b9b"
-          # Disabled until all upstream apps support NC 33
-          # - nextcloud_version: "33"
-          #   nextcloud_image: "docker.io/library/nextcloud:33.0.5@sha256:56bdc45109067500fd0832fa64832b7c77a167d9394cbf5f0f4b59740b94194d"
+          - nextcloud_version: "33"
+            nextcloud_image: "docker.io/library/nextcloud:33.0.5@sha256:56bdc45109067500fd0832fa64832b7c77a167d9394cbf5f0f4b59740b94194d"
+          # Disabled until all upstream apps support NC 34
+          # - nextcloud_version: "34"
+          #   nextcloud_image: "docker.io/library/nextcloud:34.0.0@sha256:851ca6ef9da101ce3c8a32ec7b6fc65a726b380b5f466307a54c17d32fb77c9a"
 
           # Mode-specific properties
           - mode: single-user
