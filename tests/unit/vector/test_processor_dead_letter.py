@@ -139,3 +139,54 @@ async def test_non_terminal_failure_keeps_legacy_mark(mocker):
     spies.update_ph.assert_awaited_once()  # legacy per-user failed mark
     spies.mark.assert_not_awaited()  # NOT dead-lettered (structured can still run)
     spies.dead_metric.assert_not_called()
+
+
+async def test_oversize_failure_dead_letters_regardless_of_tier(mocker):
+    """An oversize PDF is terminal at any tier (no tier can parse it) -> dead-letter
+    even though a higher tier (structured) is nominally available above 'fast'."""
+    spies = _patch_common(mocker, ocr_enabled=False)
+    mocker.patch.object(
+        processor,
+        "_parse_pdf_tier",
+        AsyncMock(
+            return_value=ProcessingResult(
+                text="",
+                metadata={"parse_failed_reason": "oversize"},
+                processor="size_guard",
+                success=False,
+                error="PDF exceeds size cap",
+            )
+        ),
+    )
+
+    result = await processor._index_document(
+        _file_task(), _nc_client(), MagicMock(), tier="fast"
+    )
+
+    assert result is False
+    spies.mark.assert_awaited_once()
+    assert spies.mark.await_args.args[4] == "oversize"  # reason
+    spies.dead_metric.assert_called_once_with("oversize")
+    spies.update_ph.assert_not_awaited()
+
+
+async def test_delete_clears_dead_letter_marker(mocker):
+    """Deleting a file must also drop its dead-letter marker, else a
+    dead-lettered-then-deleted file leaves an orphan accumulating in Qdrant
+    (release_document_for_user's filter misses the user-agnostic marker)."""
+    mocker.patch.object(processor, "get_qdrant_client", AsyncMock())
+    mocker.patch.object(processor, "release_document_for_user", AsyncMock())
+    clear = mocker.patch.object(processor, "clear_dead_letter", AsyncMock())
+
+    task = DocumentTask(
+        user_id="Demo-User",
+        doc_id="520189",
+        doc_type="file",
+        operation="delete",
+        modified_at=0,
+        file_path="/Plans/big.pdf",
+        etag="etag-1",
+    )
+    await processor.process_document(task, MagicMock(), max_retries=1)
+
+    clear.assert_awaited_once_with("520189", "file")

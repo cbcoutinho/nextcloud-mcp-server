@@ -626,6 +626,13 @@ async def process_document(
                 await release_document_for_user(
                     doc_task.doc_id, doc_task.doc_type, doc_task.user_id
                 )
+                # Drop any dead-letter marker for the file too: release only
+                # removes it when the last reader leaves (its filter misses the
+                # user-agnostic, principal-less marker), so without this a
+                # dead-lettered-then-deleted file would leave an orphan marker
+                # accumulating in Qdrant. Only files are ever dead-lettered.
+                if doc_task.doc_type == "file":
+                    await clear_dead_letter(doc_task.doc_id, doc_task.doc_type)
                 logger.info(
                     "Deleted %s_%s for %s",
                     doc_task.doc_type,
@@ -1052,8 +1059,14 @@ async def _index_document(
                     failing_tier = tier or result.metadata.get(
                         "pipeline_tier", TIER_LADDER[0]
                     )
+                    # An oversize PDF is rejected by the pre-parse size guard
+                    # before any tier runs (no pipeline_tier stamped on the inline
+                    # path) and no tier can ever parse it, so it is terminal
+                    # regardless of failing_tier. Otherwise, terminal == no higher
+                    # tier can run.
                     terminal = (
-                        registry.next_available_tier(failing_tier, settings) is None
+                        reason == "oversize"
+                        or registry.next_available_tier(failing_tier, settings) is None
                     )
                     if terminal:
                         # No higher tier can run (e.g. structured timed out with
@@ -1594,9 +1607,9 @@ async def _index_document(
     # A successful (re-)index supersedes any prior terminal failure: clear a
     # stale dead-letter marker (e.g. the file was fixed/replaced, or a new
     # escalation tier finally parsed it) so it isn't left behind. Only files are
-    # ever dead-lettered (the mark lives in the file branch), so skip the extra
-    # Qdrant round-trip for the other doc types on the hot indexing path.
-    if doc_task.doc_type == "file":
+    # ever dead-lettered, and only with a non-empty etag (is_dead_lettered
+    # early-returns without one), so skip the extra Qdrant round-trip otherwise.
+    if doc_task.doc_type == "file" and doc_task.etag:
         await clear_dead_letter(doc_task.doc_id, doc_task.doc_type)
 
     # Delete placeholder before writing real vectors

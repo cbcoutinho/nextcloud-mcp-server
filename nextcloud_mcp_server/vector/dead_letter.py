@@ -30,6 +30,7 @@ lookup degrades to "process normally", a failed write is logged, not raised.
 import logging
 import time
 import uuid
+from typing import Any
 
 from qdrant_client import models
 from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
@@ -88,7 +89,7 @@ async def mark_dead_letter(
         settings = get_settings()
         dimension = get_embedding_service().get_dimension()
 
-        payload: dict = {
+        payload: dict[str, Any] = {
             "doc_id": doc_id,
             "doc_type": doc_type,
             "is_placeholder": True,
