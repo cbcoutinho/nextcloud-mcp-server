@@ -643,7 +643,6 @@ class TestUserinfoFallback:
             result = await verifier._validate_via_userinfo("opaque-token")
         assert result is not None
         assert result["sub"] == "testuser"
-        assert result["_auth_via_userinfo"] is True
 
     async def test_validate_via_userinfo_non_200(self, userinfo_settings):
         verifier = UnifiedTokenVerifier(userinfo_settings)
@@ -685,7 +684,7 @@ class TestUserinfoFallback:
             patch.object(
                 verifier,
                 "_validate_via_userinfo",
-                AsyncMock(return_value={"sub": "testuser", "_auth_via_userinfo": True}),
+                AsyncMock(return_value={"sub": "testuser"}),
             ),
         ):
             result = await verifier.verify_token_for_management_api("opaque-token-123")
@@ -693,6 +692,54 @@ class TestUserinfoFallback:
         assert result is not None
         assert result.resource == "testuser"
         assert result.client_id == ""  # userinfo provides no client_id
+
+    async def test_introspection_cannot_forge_userinfo_bypass(
+        self, monkeypatch, userinfo_settings
+    ):
+        """A malicious `_auth_via_userinfo` claim in an introspection response
+        must NOT bypass the allowlist — the bypass flag is derived from how we
+        validated (validation_method), never from the IdP payload."""
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "astrolabe")
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+
+        malicious = {
+            "sub": "testuser",
+            "client_id": "not-allowlisted",
+            "exp": int(time.time() + 3600),
+            "_auth_via_userinfo": True,
+        }
+        with patch.object(
+            verifier, "_introspect_token", AsyncMock(return_value=malicious)
+        ):
+            result = await verifier.verify_token_for_management_api("opaque-evil")
+
+        assert result is None  # allowlist still enforced; forged flag ignored
+
+    async def test_userinfo_used_when_introspection_unconfigured(
+        self, monkeypatch, base_settings
+    ):
+        """With no introspection endpoint but a userinfo endpoint, opaque tokens
+        go straight to userinfo (introspection is not even attempted)."""
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "astrolabe")
+        base_settings.introspection_uri = None
+        base_settings.userinfo_uri = "https://idp.example.com/userinfo"
+        verifier = UnifiedTokenVerifier(base_settings)
+        assert verifier.introspection_uri is None
+
+        introspect_mock = AsyncMock(return_value=None)
+        with (
+            patch.object(verifier, "_introspect_token", introspect_mock),
+            patch.object(
+                verifier,
+                "_validate_via_userinfo",
+                AsyncMock(return_value={"sub": "testuser"}),
+            ),
+        ):
+            result = await verifier.verify_token_for_management_api("opaque-x")
+
+        assert result is not None
+        assert result.resource == "testuser"
+        introspect_mock.assert_not_called()  # skipped when unconfigured
 
     async def test_mgmt_userinfo_not_called_when_introspection_succeeds(
         self, monkeypatch, userinfo_settings
@@ -725,31 +772,37 @@ class TestUserinfoFallback:
         self, monkeypatch, userinfo_settings
     ):
         """A second call (cache hit) with a via-userinfo token still bypasses
-        the allowlist — the stamp is preserved in the cached entry."""
-        import hashlib
+        the allowlist and is served from cache (no second network probe).
 
+        Seeds the cache via a real first call rather than constructing the cache
+        key by hand, so the test exercises behavior, not cache internals."""
         monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "astrolabe")
         verifier = UnifiedTokenVerifier(userinfo_settings)
 
-        token = "opaque-token-cached"
-        cache_key = f"mgmt:{hashlib.sha256(token.encode()).hexdigest()}"
-        verifier._token_cache[cache_key] = (
-            {"sub": "testuser", "scope": "", "_auth_via_userinfo": True},
-            time.time() + 3600,
-        )
+        userinfo_mock = AsyncMock(return_value={"sub": "testuser"})
+        with (
+            patch.object(verifier, "_introspect_token", AsyncMock(return_value=None)),
+            patch.object(verifier, "_validate_via_userinfo", userinfo_mock),
+        ):
+            first = await verifier.verify_token_for_management_api("opaque-cached")
+            second = await verifier.verify_token_for_management_api("opaque-cached")
 
-        result = await verifier.verify_token_for_management_api(token)
-        assert result is not None
-        assert result.resource == "testuser"
+        assert first is not None and second is not None
+        assert second.resource == "testuser"
+        # Second call served from cache — userinfo probed only once.
+        userinfo_mock.assert_awaited_once()
 
     async def test_userinfo_token_cached_with_short_ttl(self, userinfo_settings):
-        """userinfo tokens (no exp) get the short userinfo TTL, not the 1h default."""
+        """userinfo tokens (no exp) get the short userinfo TTL, not the 1h default.
+
+        The short TTL is keyed off the explicit via_userinfo argument, not a
+        payload claim."""
         verifier = UnifiedTokenVerifier(userinfo_settings)
         verifier.userinfo_cache_ttl = 300
 
         before = time.time()
-        access_token = verifier._create_access_token(
-            "opaque-token", {"sub": "testuser", "_auth_via_userinfo": True}
+        access_token = verifier._create_access_token_with_cache_key(
+            "opaque-token", {"sub": "testuser"}, "mgmt:test", via_userinfo=True
         )
         assert access_token is not None
         # Expiry should sit within the short userinfo window, well under 1h.

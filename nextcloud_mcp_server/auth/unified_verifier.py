@@ -369,19 +369,23 @@ class UnifiedTokenVerifier(TokenVerifier):
                     record_oauth_token_validation("jwt", "invalid")
                     return None
             else:
-                # Fall back to introspection for opaque tokens
-                validation_method = "introspect"
-                payload = await self._introspect_token(token)
-                if payload:
-                    record_oauth_token_validation("introspect", "valid")
-                else:
-                    record_oauth_token_validation("introspect", "invalid")
-                    # Introspection can report opaque tokens minted for a
-                    # *different* OIDC client (e.g. Astrolabe) as inactive even
-                    # when they are live. Fall back to the userinfo endpoint,
-                    # which validates any live bearer regardless of client.
-                    # Update validation_method first so a userinfo exception
-                    # caught by the outer handler is attributed correctly.
+                # Opaque token: try introspection first (only when configured),
+                # then fall back to userinfo. userinfo validates opaque tokens
+                # minted for a *different* OIDC client (e.g. Astrolabe) that
+                # introspection reports inactive cross-client.
+                payload = None
+                if self.introspection_uri:
+                    validation_method = "introspect"
+                    payload = await self._introspect_token(token)
+                    if payload:
+                        record_oauth_token_validation("introspect", "valid")
+                    else:
+                        record_oauth_token_validation("introspect", "invalid")
+
+                if payload is None:
+                    # Introspection is unconfigured, or it reported the token
+                    # inactive. Set validation_method first so a userinfo
+                    # exception caught by the outer handler is attributed right.
                     validation_method = "userinfo"
                     payload = await self._validate_via_userinfo(token)
                     if payload:
@@ -400,8 +404,15 @@ class UnifiedTokenVerifier(TokenVerifier):
                 payload.get("sub"),
             )
 
-            # Cache and return the token
-            return self._create_access_token_with_cache_key(token, payload, cache_key)
+            # Cache and return the token. via_userinfo is derived from how we
+            # actually validated — never from a payload claim (see
+            # _create_access_token_with_cache_key).
+            return self._create_access_token_with_cache_key(
+                token,
+                payload,
+                cache_key,
+                via_userinfo=(validation_method == "userinfo"),
+            )
 
         except Exception as e:
             logger.error("Management API token verification failed: %s", e)
@@ -597,9 +608,11 @@ class UnifiedTokenVerifier(TokenVerifier):
         token for that user.
 
         Unlike introspection, userinfo returns neither ``client_id`` nor
-        ``scope``, so the returned payload is stamped with ``_auth_via_userinfo``
-        and the management-API allowlist is relaxed for this path (authorization
-        is still enforced per-user by every management endpoint).
+        ``scope``. The caller signals this path via the ``via_userinfo`` argument
+        to :meth:`_create_access_token_with_cache_key` (never inferred from a
+        payload claim, so a malicious IdP response cannot forge it), and the
+        management-API allowlist is relaxed for it (authorization is still
+        enforced per-user by every management endpoint).
 
         Security note — bounded staleness: userinfo carries no token ``exp``, so
         a validated token is cached for ``userinfo_cache_ttl`` (5 min) rather
@@ -610,10 +623,17 @@ class UnifiedTokenVerifier(TokenVerifier):
             token: Bearer token to validate.
 
         Returns:
-            Userinfo claims (with ``_auth_via_userinfo`` set) if valid, else None.
+            Userinfo claims if valid, else None.
         """
         if not self.userinfo_uri:
             logger.debug("No userinfo endpoint configured")
+            return None
+
+        # userinfo_uri comes from the OIDC discovery document (admin-configured),
+        # not from user input — but guard the scheme anyway to satisfy SSRF
+        # scanners and to fail fast on a misconfigured endpoint.
+        if not self.userinfo_uri.startswith(("https://", "http://")):
+            logger.error("Refusing non-HTTP userinfo_uri: %s", self.userinfo_uri)
             return None
 
         try:
@@ -645,9 +665,6 @@ class UnifiedTokenVerifier(TokenVerifier):
             return None
 
         logger.debug("Token validated via userinfo for user: %s", data.get("sub"))
-        # Stamp so verify_token_for_management_api can relax the client allowlist
-        # for tokens that legitimately lack a verifiable client_id.
-        data["_auth_via_userinfo"] = True
         return data
 
     def _create_access_token(
@@ -668,7 +685,12 @@ class UnifiedTokenVerifier(TokenVerifier):
         return self._create_access_token_with_cache_key(token, payload, cache_key)
 
     def _create_access_token_with_cache_key(
-        self, token: str, payload: dict[str, Any], cache_key: str
+        self,
+        token: str,
+        payload: dict[str, Any],
+        cache_key: str,
+        *,
+        via_userinfo: bool = False,
     ) -> AccessToken | None:
         """
         Create AccessToken object from validated token payload with custom cache key.
@@ -677,6 +699,10 @@ class UnifiedTokenVerifier(TokenVerifier):
             token: The bearer token
             payload: Validated token payload
             cache_key: Key to use for caching (allows separate caches for MCP vs management API)
+            via_userinfo: True when the token was validated via the userinfo
+                fallback. Sourced from the caller (how validation happened), never
+                from a payload claim — it gates the allowlist relaxation and the
+                short cache TTL, so it must not be forgeable by the IdP response.
 
         Returns:
             AccessToken object or None if required fields missing
@@ -704,7 +730,7 @@ class UnifiedTokenVerifier(TokenVerifier):
             # userinfo-validated tokens never carry exp (userinfo describes the
             # user, not the token). Cache them only briefly so a revoked/expired
             # opaque token can't be honored for the full hour-long default TTL.
-            if payload.get("_auth_via_userinfo"):
+            if via_userinfo:
                 ttl = self.userinfo_cache_ttl
                 logger.warning(
                     "Token validated via userinfo has no 'exp'; caching for %ss only",
@@ -715,12 +741,22 @@ class UnifiedTokenVerifier(TokenVerifier):
                 logger.warning("No 'exp' claim in token, using default TTL")
             exp = int(time.time() + ttl)
 
-        # Cache the result with the provided key
+        # Cache the result with the provided key. Drop any `_auth_via_userinfo`
+        # carried in the IdP payload — that flag is the allowlist-bypass signal
+        # and must originate ONLY from the trusted in-process `via_userinfo`
+        # argument, never from a (potentially malicious) introspection/userinfo
+        # claim.
         userinfo = {
             "sub": username,
             "scope": scope_string,
-            **{k: v for k, v in payload.items() if k not in ["sub", "scope"]},
+            **{
+                k: v
+                for k, v in payload.items()
+                if k not in ("sub", "scope", "_auth_via_userinfo")
+            },
         }
+        if via_userinfo:
+            userinfo["_auth_via_userinfo"] = True
         self._token_cache[cache_key] = (userinfo, exp)
 
         return AccessToken(
