@@ -704,6 +704,9 @@ class TestUserinfoFallback:
         assert result is not None
         assert result.resource == "testuser"
         assert result.client_id == ""  # userinfo provides no client_id
+        # Contract: userinfo tokens carry empty scopes — management endpoints
+        # must not gate on scopes for this path (per-user authz is the gate).
+        assert result.scopes == []
 
     async def test_introspection_cannot_forge_userinfo_bypass(
         self, monkeypatch, userinfo_settings
