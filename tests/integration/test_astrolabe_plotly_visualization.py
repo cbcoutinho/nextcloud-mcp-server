@@ -246,9 +246,12 @@ The visualization should show this document as a point in PCA-reduced space.
             await navigate_to_astrolabe_main(page)
 
             # Fill search query - find the Astrolabe search input specifically
-            # The NcTextField component wraps the input in a div with class mcp-search-input
+            # The NcTextField component wraps the input in a div with class mcp-search-input.
+            # 30s (not 10s): the Astrolabe SPA can be slow to mount its search
+            # component on a loaded CI runner (observed on nc32) — matches the
+            # loading-indicator budget below.
             search_input = page.locator(".mcp-search-input input")
-            await search_input.wait_for(timeout=10000, state="visible")
+            await search_input.wait_for(timeout=30000, state="visible")
             await search_input.fill(unique_term)
             logger.info("Entered search query: %s", unique_term)
 
