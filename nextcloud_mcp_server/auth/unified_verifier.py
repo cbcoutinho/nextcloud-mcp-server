@@ -79,8 +79,9 @@ class UnifiedTokenVerifier(TokenVerifier):
         # client, e.g. Astrolabe, which the Nextcloud oidc app's introspection
         # endpoint reports inactive cross-client). A 200 from userinfo proves
         # the bearer is a live token for its user regardless of issuing client.
-        self.userinfo_uri: str | None = getattr(settings, "userinfo_uri", None)
-        if self.userinfo_uri:
+        self.userinfo_uri: str | None = None
+        if hasattr(settings, "userinfo_uri") and settings.userinfo_uri:
+            self.userinfo_uri = settings.userinfo_uri
             logger.info(
                 "Userinfo token validation fallback enabled: %s", self.userinfo_uri
             )
@@ -99,6 +100,10 @@ class UnifiedTokenVerifier(TokenVerifier):
         # Token cache: token_hash -> (userinfo, expiry_timestamp)
         self._token_cache: dict[str, tuple[dict[str, Any], float]] = {}
         self.cache_ttl = 3600  # 1 hour default
+        # Userinfo responses carry no token `exp`, so userinfo-validated opaque
+        # tokens fall back to a TTL here. Keep it short: a revoked/expired token
+        # is still honored from cache until this window elapses (no exp to gate).
+        self.userinfo_cache_ttl = 300  # 5 minutes
 
         # NOTE: ALLOWED_MCP_CLIENTS and ALLOWED_MGMT_CLIENT are currently separate
         # env vars to keep the MCP-route and management-API auth surfaces
@@ -370,16 +375,19 @@ class UnifiedTokenVerifier(TokenVerifier):
                 if payload:
                     record_oauth_token_validation("introspect", "valid")
                 else:
+                    record_oauth_token_validation("introspect", "invalid")
                     # Introspection can report opaque tokens minted for a
                     # *different* OIDC client (e.g. Astrolabe) as inactive even
                     # when they are live. Fall back to the userinfo endpoint,
                     # which validates any live bearer regardless of client.
+                    # Update validation_method first so a userinfo exception
+                    # caught by the outer handler is attributed correctly.
+                    validation_method = "userinfo"
                     payload = await self._validate_via_userinfo(token)
                     if payload:
-                        validation_method = "userinfo"
                         record_oauth_token_validation("userinfo", "valid")
                     else:
-                        record_oauth_token_validation("introspect", "invalid")
+                        record_oauth_token_validation("userinfo", "invalid")
                         return None
 
             # Check payload is valid
@@ -593,6 +601,11 @@ class UnifiedTokenVerifier(TokenVerifier):
         and the management-API allowlist is relaxed for this path (authorization
         is still enforced per-user by every management endpoint).
 
+        Security note — bounded staleness: userinfo carries no token ``exp``, so
+        a validated token is cached for ``userinfo_cache_ttl`` (5 min) rather
+        than the 1-hour default. A revoked/expired opaque token may therefore be
+        honored from cache for up to that window before re-validation.
+
         Args:
             token: Bearer token to validate.
 
@@ -688,8 +701,19 @@ class UnifiedTokenVerifier(TokenVerifier):
         # Extract expiration
         exp = payload.get("exp")
         if not exp:
-            logger.warning("No 'exp' claim in token, using default TTL")
-            exp = int(time.time() + self.cache_ttl)
+            # userinfo-validated tokens never carry exp (userinfo describes the
+            # user, not the token). Cache them only briefly so a revoked/expired
+            # opaque token can't be honored for the full hour-long default TTL.
+            if payload.get("_auth_via_userinfo"):
+                ttl = self.userinfo_cache_ttl
+                logger.warning(
+                    "Token validated via userinfo has no 'exp'; caching for %ss only",
+                    ttl,
+                )
+            else:
+                ttl = self.cache_ttl
+                logger.warning("No 'exp' claim in token, using default TTL")
+            exp = int(time.time() + ttl)
 
         # Cache the result with the provided key
         userinfo = {

@@ -8,6 +8,7 @@ IdP connections.
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import jwt
 import pytest
 
@@ -719,3 +720,69 @@ class TestUserinfoFallback:
         assert result is not None
         assert result.client_id == "astrolabe"
         userinfo_mock.assert_not_called()
+
+    async def test_mgmt_cache_hit_also_bypasses_allowlist_for_userinfo_tokens(
+        self, monkeypatch, userinfo_settings
+    ):
+        """A second call (cache hit) with a via-userinfo token still bypasses
+        the allowlist — the stamp is preserved in the cached entry."""
+        import hashlib
+
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "astrolabe")
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+
+        token = "opaque-token-cached"
+        cache_key = f"mgmt:{hashlib.sha256(token.encode()).hexdigest()}"
+        verifier._token_cache[cache_key] = (
+            {"sub": "testuser", "scope": "", "_auth_via_userinfo": True},
+            time.time() + 3600,
+        )
+
+        result = await verifier.verify_token_for_management_api(token)
+        assert result is not None
+        assert result.resource == "testuser"
+
+    async def test_userinfo_token_cached_with_short_ttl(self, userinfo_settings):
+        """userinfo tokens (no exp) get the short userinfo TTL, not the 1h default."""
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+        verifier.userinfo_cache_ttl = 300
+
+        before = time.time()
+        access_token = verifier._create_access_token(
+            "opaque-token", {"sub": "testuser", "_auth_via_userinfo": True}
+        )
+        assert access_token is not None
+        # Expiry should sit within the short userinfo window, well under 1h.
+        assert access_token.expires_at <= int(before + 300) + 2
+        assert access_token.expires_at < int(before + verifier.cache_ttl)
+
+    async def test_validate_via_userinfo_timeout(self, userinfo_settings):
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+        with patch.object(
+            verifier.http_client,
+            "get",
+            AsyncMock(side_effect=httpx.TimeoutException("timeout")),
+        ):
+            result = await verifier._validate_via_userinfo("opaque-token")
+        assert result is None
+
+    async def test_validate_via_userinfo_request_error(self, userinfo_settings):
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+        with patch.object(
+            verifier.http_client,
+            "get",
+            AsyncMock(side_effect=httpx.ConnectError("boom")),
+        ):
+            result = await verifier._validate_via_userinfo("opaque-token")
+        assert result is None
+
+    async def test_validate_via_userinfo_malformed_json(self, userinfo_settings):
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.side_effect = ValueError("not json")
+        with patch.object(
+            verifier.http_client, "get", AsyncMock(return_value=mock_resp)
+        ):
+            result = await verifier._validate_via_userinfo("opaque-token")
+        assert result is None
