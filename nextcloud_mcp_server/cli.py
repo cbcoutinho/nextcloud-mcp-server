@@ -335,7 +335,7 @@ def _init_worker_observability(settings: Settings) -> None:
 )
 @click.option(
     "--tier",
-    type=click.Choice(["fast", "structured", "ocr"]),
+    type=click.Choice(["fast", "structured", "ocr-incluster", "ocr-upstream"]),
     default=None,
     help=(
         "Run only this extraction tier's queue (Deck #323). Omit to drain ALL "
@@ -386,21 +386,31 @@ def worker(concurrency: int | None, tier: str | None):
         ALL_INGEST_QUEUES,
         INGEST_QUEUE_MAINTENANCE,
         LEGACY_INGEST_QUEUE,
+        LEGACY_INGEST_QUEUE_OCR,
         TIER_QUEUES,
         apply_ingest_queue_schema,
         get_procrastinate_app,
     )
 
     # Which queues this process drains. A single tier -> just its queue; no tier
-    # -> every tier queue PLUS the legacy single queue, so a rolling upgrade
-    # never strands jobs deferred under the pre-#323 name. Every worker also
+    # -> every tier queue PLUS the legacy queues, so a rolling upgrade never
+    # strands jobs deferred under the pre-#323 single queue or the pre-#353 single
+    # OCR queue. The upstream OCR worker also drains the pre-split ``ingest-ocr``
+    # queue (the old single OCR tier defaulted to upstream/Mistral). Every worker
     # drains the maintenance queue so the periodic stalled-job reclaim fires
     # regardless of which tier(s) are scaled up (procrastinate dedups the
     # periodic, so multiple drainers don't multiply the reclaim).
     if tier is not None:
         queues = [TIER_QUEUES[tier], INGEST_QUEUE_MAINTENANCE]
+        if tier == "ocr-upstream":
+            queues.insert(1, LEGACY_INGEST_QUEUE_OCR)
     else:
-        queues = [*ALL_INGEST_QUEUES, LEGACY_INGEST_QUEUE, INGEST_QUEUE_MAINTENANCE]
+        queues = [
+            *ALL_INGEST_QUEUES,
+            LEGACY_INGEST_QUEUE,
+            LEGACY_INGEST_QUEUE_OCR,
+            INGEST_QUEUE_MAINTENANCE,
+        ]
 
     # This is the consumer side of the distributed (postgres) ingest backend.
     # Unlike the in-process anyio pool, the worker talks to procrastinate's App

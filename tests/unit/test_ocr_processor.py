@@ -99,6 +99,100 @@ def test_build_gateway_batch_client_gateway_only(kw, expect_client):
     assert (client is not None) is expect_client
 
 
+# --- in-cluster (tier2) backend: gateway-forced + configurable model -----------
+
+
+def test_build_backend_gateway_only_forces_gateway():
+    """The in-cluster tier is gateway-only: even with provider=mistral + a key it
+    builds the gateway backend, NEVER the direct Mistral fallback (the GPU is
+    reachable solely through the gateway)."""
+    b = ocr.build_ocr_backend(
+        _settings(
+            document_ocr_provider="mistral",
+            mistral_api_key="k",
+            embedding_gateway_url="http://gw",
+        ),
+        gateway_only=True,
+    )
+    assert isinstance(b, ocr._GatewayOcrBackend)
+
+
+def test_build_backend_gateway_only_no_url_disabled():
+    """Gateway-only with no gateway URL -> disabled (None), never a direct backend."""
+    assert (
+        ocr.build_ocr_backend(_settings(mistral_api_key="k"), gateway_only=True) is None
+    )
+
+
+def test_build_backend_model_override_is_not_hardcoded():
+    """The per-tier model is whatever config passes -- surya by default, but fully
+    swappable (e.g. lightonocr) with no code change."""
+    surya = ocr.build_ocr_backend(
+        _settings(embedding_gateway_url="http://gw"),
+        model="surya/surya-ocr-2",
+        gateway_only=True,
+    )
+    assert isinstance(surya, ocr._GatewayOcrBackend)
+    assert surya._model == "surya/surya-ocr-2"
+    lit = ocr.build_ocr_backend(
+        _settings(embedding_gateway_url="http://gw"),
+        model="lightonocr/lightonocr-1b",
+        gateway_only=True,
+    )
+    assert isinstance(lit, ocr._GatewayOcrBackend)
+    assert lit._model == "lightonocr/lightonocr-1b"  # config-driven, not hardcoded
+
+
+async def test_incluster_processor_resolves_its_model_gateway_only(monkeypatch):
+    """An OcrProcessor bound to the in-cluster rung builds its backend with its own
+    configured model (document_ocr_incluster_model) and gateway_only=True."""
+    captured: dict[str, Any] = {}
+
+    class _FakeBackend:
+        async def ocr(self, content, mime_type):
+            return "ocr text", [{"page": 1, "start_offset": 0, "end_offset": 8}]
+
+    def _spy(settings, *, model=None, gateway_only=False):
+        captured["model"] = model
+        captured["gateway_only"] = gateway_only
+        return _FakeBackend()
+
+    monkeypatch.setattr(ocr, "build_ocr_backend", _spy)
+    monkeypatch.setattr(
+        ocr,
+        "get_settings",
+        lambda: _settings(
+            document_ocr_incluster_model="surya/surya-ocr-2",
+            embedding_gateway_url="http://gw",
+        ),
+    )
+    proc = ocr.OcrProcessor(
+        name="ocr-incluster",
+        tier="ocr-incluster",
+        model_setting="document_ocr_incluster_model",
+        gateway_only=True,
+    )
+    await proc.process(b"%PDF", "application/pdf", "x.pdf")
+    assert captured == {"model": "surya/surya-ocr-2", "gateway_only": True}
+
+
+def test_no_surya_string_literal_in_document_processors():
+    """surya must be a CONFIG default only -- never a hard-coded behavioural literal
+    in the worker (it's swappable, e.g. lightonocr). Comments may mention it; code
+    string literals may not (the default lives in config.py, a different module)."""
+    import pathlib  # noqa: PLC0415
+
+    assert ocr.__file__ is not None
+    pkg = pathlib.Path(ocr.__file__).parent
+    offenders = [
+        f"{p.name}: {ln.strip()}"
+        for p in pkg.glob("*.py")
+        for ln in p.read_text().splitlines()
+        if '"surya' in ln.split("#", 1)[0] or "'surya" in ln.split("#", 1)[0]
+    ]
+    assert not offenders, offenders
+
+
 def test_build_backend_gateway_missing_m2m_raises():
     # client_id set but token_url/secret missing -> explicit ValueError (not a
     # stripped assert), surfaced on backend resolution.
@@ -126,7 +220,7 @@ async def test_processor_unsupported_when_no_backend(monkeypatch):
     monkeypatch.setattr(
         ocr, "get_settings", lambda: _settings(document_ocr_provider="none")
     )
-    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s: None)
+    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s, **kw: None)
     r = await ocr.OcrProcessor().process(b"%PDF-1.7", "application/pdf")
     assert r.success is False
     assert r.metadata["parse_failed_reason"] == "unsupported"
@@ -138,12 +232,12 @@ async def test_processor_success(monkeypatch):
             return "hello world", [{"page": 1, "start_offset": 0, "end_offset": 11}]
 
     monkeypatch.setattr(ocr, "get_settings", lambda: _settings())
-    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s: _FakeBackend())
+    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s, **kw: _FakeBackend())
     r = await ocr.OcrProcessor().process(b"%PDF-1.7", "application/pdf")
     assert r.success is True
     assert r.text == "hello world"
     assert r.metadata["page_count"] == 1
-    assert r.processor == "ocr"
+    assert r.processor == "ocr-upstream"
 
 
 async def test_processor_backend_error_returns_success_false(monkeypatch):
@@ -152,7 +246,7 @@ async def test_processor_backend_error_returns_success_false(monkeypatch):
             raise RuntimeError("api down")
 
     monkeypatch.setattr(ocr, "get_settings", lambda: _settings())
-    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s: _BoomBackend())
+    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s, **kw: _BoomBackend())
     r = await ocr.OcrProcessor().process(b"%PDF-1.7", "application/pdf")
     assert r.success is False
     assert r.metadata["parse_failed_reason"] == "error"
@@ -168,7 +262,7 @@ async def test_processor_timeout_returns_timeout_reason(monkeypatch):
     monkeypatch.setattr(
         ocr, "get_settings", lambda: _settings(document_ocr_timeout_seconds=5.0)
     )
-    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s: _TimeoutBackend())
+    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s, **kw: _TimeoutBackend())
     r = await ocr.OcrProcessor().process(b"%PDF-1.7", "application/pdf")
     assert r.success is False
     assert r.metadata["parse_failed_reason"] == "timeout"
@@ -187,7 +281,9 @@ async def test_gateway_httpx_timeout_maps_to_timeout_reason(monkeypatch):
     monkeypatch.setattr(
         ocr, "get_settings", lambda: _settings(document_ocr_timeout_seconds=5.0)
     )
-    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s: _HttpxTimeoutBackend())
+    monkeypatch.setattr(
+        ocr, "build_ocr_backend", lambda s, **kw: _HttpxTimeoutBackend()
+    )
     r = await ocr.OcrProcessor().process(b"%PDF-1.7", "application/pdf")
     assert r.success is False
     assert r.metadata["parse_failed_reason"] == "timeout"
@@ -331,7 +427,7 @@ def _wire_batch(monkeypatch, *, client, store, settings=None):
         embedding_gateway_url="https://gw",
     )
     monkeypatch.setattr(ocr, "get_settings", lambda: settings)
-    monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s: client)
+    monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s, **kw: client)
 
     async def _shared(cls):
         return store
@@ -451,8 +547,8 @@ async def test_batch_falls_back_to_sync_when_no_gateway(monkeypatch):
 
     settings = _settings(document_ocr_mode="batch", document_ocr_provider="mistral")
     monkeypatch.setattr(ocr, "get_settings", lambda: settings)
-    monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s: None)
-    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s: _FakeBackend())
+    monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s, **kw: None)
+    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s, **kw: _FakeBackend())
 
     r = await ocr.OcrProcessor().process(
         b"%PDF", "application/pdf", options=dict(_IDENTITY)
@@ -472,8 +568,8 @@ async def test_batch_falls_back_to_sync_when_no_identity(monkeypatch):
         embedding_gateway_url="https://gw",
     )
     monkeypatch.setattr(ocr, "get_settings", lambda: settings)
-    monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s: client)
-    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s: _FakeBackend())
+    monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s, **kw: client)
+    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s, **kw: _FakeBackend())
 
     # No options -> inline path -> batch inapplicable -> sync fallback.
     r = await ocr.OcrProcessor().process(b"%PDF", "application/pdf", options=None)

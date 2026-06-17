@@ -349,10 +349,18 @@ class ProcessorRegistry:
             and not structured_failed
             and classification.recommended_tier in ("ocr", "structured")
             and classification.page_count > 0
-            and settings.document_ocr_enabled
+            and (
+                settings.document_ocr_enabled or settings.document_ocr_incluster_enabled
+            )
         ):
-            ocr = self._pdf_processor_for_tier("ocr")
-            if ocr is not None:
+            # Inline (memory pool) path: no queues to hop, so pick the cheapest
+            # available OCR rung (in-cluster GPU before paid upstream) via the same
+            # availability walk the queue path uses.
+            ocr_tier = self.next_available_tier(
+                from_tier, settings, minimum="ocr-incluster"
+            )
+            ocr = self._pdf_processor_for_tier(ocr_tier) if ocr_tier else None
+            if ocr is not None and ocr_tier is not None:
                 reason = (
                     "corrupt_glyphs"
                     if classification.recommended_tier == "structured"
@@ -360,11 +368,12 @@ class ProcessorRegistry:
                     if classification.total_chars == 0
                     else "low_confidence"
                 )
-                record_document_escalation(from_tier, "ocr", reason)
+                record_document_escalation(from_tier, ocr_tier, reason)
                 logger.info(
-                    "Escalating %s %s->ocr (reason=%s)",
+                    "Escalating %s %s->%s (reason=%s)",
                     filename or "<bytes>",
                     from_tier,
+                    ocr_tier,
                     reason,
                 )
                 ocr_result = await self._run_processor(
@@ -379,13 +388,14 @@ class ProcessorRegistry:
                 # OCR is an enhancement, not a gate: if it can't run (no backend
                 # configured / API down) or returns nothing, keep the tier-1
                 # result rather than failing the document. Otherwise an operator
-                # who sets DOCUMENT_OCR_ENABLED=true without credentials would
-                # make scanned docs fail entirely -- strictly worse than off.
+                # who enables OCR without credentials would make scanned docs fail
+                # entirely -- strictly worse than off.
                 if ocr_result.success:
                     return ocr_result
                 logger.warning(
-                    "OCR escalation did not succeed for %s (%s); keeping the "
+                    "OCR escalation to %s did not succeed for %s (%s); keeping the "
                     "tier-1 result",
+                    ocr_tier,
                     filename or "<bytes>",
                     ocr_result.metadata.get("parse_failed_reason", "error"),
                 )
@@ -503,11 +513,14 @@ class ProcessorRegistry:
         """
         if self._pdf_processor_for_tier(tier) is None:
             return False
-        if (
-            not ignore_ocr_enabled
-            and tier == "ocr"
-            and not settings.document_ocr_enabled
-        ):
+        # Each OCR rung has its own opt-in flag (in-cluster vs upstream); a rung is
+        # unavailable when its flag is off (unless we're computing the what-if
+        # ideal target). Non-OCR tiers have no enabled gate.
+        ocr_enable = {
+            "ocr-incluster": settings.document_ocr_incluster_enabled,
+            "ocr-upstream": settings.document_ocr_enabled,
+        }
+        if not ignore_ocr_enabled and tier in ocr_enable and not ocr_enable[tier]:
             return False
         return True
 
@@ -645,7 +658,10 @@ class ProcessorRegistry:
             minimum = "structured"
             reason = "corrupt_glyphs"
         elif classification.total_chars == 0:
-            minimum = "ocr"
+            # Scanned / no text layer: target the cheapest OCR rung (in-cluster
+            # GPU); next_available_tier then falls through to the upstream rung if
+            # in-cluster is disabled/unregistered.
+            minimum = "ocr-incluster"
             reason = "empty_text"
         else:
             minimum = None

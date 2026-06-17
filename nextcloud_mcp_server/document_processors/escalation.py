@@ -24,9 +24,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-# Cheapest-first. ``llm`` is reserved (see base.DocumentProcessor.tier) and not
-# wired yet, so it is intentionally absent from the live ladder.
-TIER_LADDER: tuple[str, ...] = ("fast", "structured", "ocr")
+# Cheapest-first. OCR is split into two rungs: ``ocr-incluster`` (the on-demand
+# burst GPU, e.g. surya, reached via the embedding gateway over the tailnet) tried
+# BEFORE ``ocr-upstream`` (paid Mistral). ``llm`` is reserved (see
+# base.DocumentProcessor.tier) and not wired yet.
+TIER_LADDER: tuple[str, ...] = ("fast", "structured", "ocr-incluster", "ocr-upstream")
 
 
 def escalation_tiers_signature(settings: Any) -> str:
@@ -55,6 +57,7 @@ def escalation_tiers_signature(settings: Any) -> str:
     """
     return (
         f"ocr={int(bool(settings.document_ocr_enabled))};"
+        f"ocric={int(bool(settings.document_ocr_incluster_enabled))};"
         f"t1={settings.document_tier1_engine}"
     )
 

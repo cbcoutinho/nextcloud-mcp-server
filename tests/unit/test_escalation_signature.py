@@ -19,8 +19,14 @@ from nextcloud_mcp_server.document_processors.escalation import (
 pytestmark = pytest.mark.unit
 
 
-def _settings(*, ocr: bool, engine: str = "pypdfium2") -> SimpleNamespace:
-    return SimpleNamespace(document_ocr_enabled=ocr, document_tier1_engine=engine)
+def _settings(
+    *, ocr: bool, ocr_incluster: bool = False, engine: str = "pypdfium2"
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        document_ocr_enabled=ocr,
+        document_ocr_incluster_enabled=ocr_incluster,
+        document_tier1_engine=engine,
+    )
 
 
 def test_signature_is_stable_for_same_config() -> None:

@@ -66,24 +66,30 @@ logger = logging.getLogger(__name__)
 # network-bound ``ocr`` fleet scale (and fail) independently.
 INGEST_QUEUE_FAST = "ingest-fast"
 INGEST_QUEUE_STRUCTURED = "ingest-structured"
-INGEST_QUEUE_OCR = "ingest-ocr"
+# OCR split into two rungs (Deck #353): in-cluster (burst GPU via the gateway,
+# the queue the GPU autoscaler counts) tried before upstream (paid Mistral).
+INGEST_QUEUE_OCR_INCLUSTER = "ingest-ocr-incluster"
+INGEST_QUEUE_OCR_UPSTREAM = "ingest-ocr-upstream"
 
 # tier -> queue. The producer always defers onto the cheapest tier's queue; a
 # low-quality parse hops the job up the ladder via the retry strategy below.
 TIER_QUEUES: dict[str, str] = {
     "fast": INGEST_QUEUE_FAST,
     "structured": INGEST_QUEUE_STRUCTURED,
-    "ocr": INGEST_QUEUE_OCR,
+    "ocr-incluster": INGEST_QUEUE_OCR_INCLUSTER,
+    "ocr-upstream": INGEST_QUEUE_OCR_UPSTREAM,
 }
 _QUEUE_TIERS: dict[str, str] = {queue: tier for tier, queue in TIER_QUEUES.items()}
 ALL_INGEST_QUEUES: tuple[str, ...] = tuple(TIER_QUEUES.values())
-# New jobs start here; ``ocr`` is reached only by escalation.
+# New jobs start here; the OCR rungs are reached only by escalation.
 DEFAULT_INGEST_QUEUE = INGEST_QUEUE_FAST
 
-# Legacy single-queue name (pre-#323). A rolling upgrade may still have jobs
-# parked on it; a worker can be told to drain it alongside the tier queues, and
-# the job-count / reclaim helpers include it so nothing is stranded.
+# Legacy single-queue name (pre-#323) and the pre-split single OCR queue
+# (pre-#353). A rolling upgrade may still have jobs parked on either; a worker
+# can drain them alongside the tier queues, and the job-count / reclaim helpers
+# include them so nothing is stranded.
 LEGACY_INGEST_QUEUE = "ingest"
+LEGACY_INGEST_QUEUE_OCR = "ingest-ocr"
 # Back-compat alias for callers that imported the old single-queue constant.
 INGEST_QUEUE_NAME = DEFAULT_INGEST_QUEUE
 
@@ -95,8 +101,12 @@ INGEST_QUEUE_NAME = DEFAULT_INGEST_QUEUE
 # queues so tier isolation (which fleet processes which docs) is preserved.
 INGEST_QUEUE_MAINTENANCE = "ingest-maintenance"
 
-# Queues the job-count + reclaim helpers sweep (tier queues + the legacy one).
-_MANAGED_QUEUES: tuple[str, ...] = (*ALL_INGEST_QUEUES, LEGACY_INGEST_QUEUE)
+# Queues the job-count + reclaim helpers sweep (tier queues + the legacy ones).
+_MANAGED_QUEUES: tuple[str, ...] = (
+    *ALL_INGEST_QUEUES,
+    LEGACY_INGEST_QUEUE,
+    LEGACY_INGEST_QUEUE_OCR,
+)
 
 # Blueprint namespace → registered task names are prefixed ``ingest:``.
 _NAMESPACE = "ingest"
