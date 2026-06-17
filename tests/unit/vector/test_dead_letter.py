@@ -151,6 +151,7 @@ class TestIsDeadLettered:
         assert conds == {
             "doc_id": "520189",
             "doc_type": "file",
+            "is_placeholder": True,
             dl.DEAD_LETTER_KEY: True,
         }
         assert "user_id" not in conds

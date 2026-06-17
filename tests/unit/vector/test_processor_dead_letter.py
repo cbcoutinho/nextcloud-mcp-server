@@ -170,6 +170,38 @@ async def test_oversize_failure_dead_letters_regardless_of_tier(mocker):
     spies.update_ph.assert_not_awaited()
 
 
+async def test_terminal_failure_without_etag_uses_legacy_mark(mocker):
+    """A terminal failure with no etag can't be content-addressed, so fall back to
+    the legacy per-user placeholder mark instead of writing an unmatchable marker."""
+    spies = _patch_common(mocker, ocr_enabled=False)
+    mocker.patch.object(
+        processor,
+        "_parse_pdf_tier",
+        AsyncMock(
+            return_value=ProcessingResult(
+                text="",
+                metadata={
+                    "parse_failed_reason": "timeout",
+                    "pipeline_tier": "structured",
+                },
+                processor="pymupdf",
+                success=False,
+                error="isolated parse failed (timeout)",
+            )
+        ),
+    )
+    task = _file_task()
+    task.etag = None  # no content key
+
+    result = await processor._index_document(
+        task, _nc_client(), MagicMock(), tier="structured"
+    )
+
+    assert result is False
+    spies.mark.assert_not_awaited()  # no unmatchable marker written
+    spies.update_ph.assert_awaited_once()  # legacy fallback
+
+
 async def test_delete_clears_dead_letter_marker(mocker):
     """Deleting a file must also drop its dead-letter marker, else a
     dead-lettered-then-deleted file leaves an orphan accumulating in Qdrant

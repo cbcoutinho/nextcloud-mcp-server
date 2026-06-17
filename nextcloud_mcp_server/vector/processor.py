@@ -1068,7 +1068,7 @@ async def _index_document(
                         reason == "oversize"
                         or registry.next_available_tier(failing_tier, settings) is None
                     )
-                    if terminal:
+                    if terminal and doc_task.etag:
                         # No higher tier can run (e.g. structured timed out with
                         # OCR off), so retrying just re-burns the same failing
                         # parse. Dead-letter the document tenant-wide
@@ -1079,11 +1079,13 @@ async def _index_document(
                         # ping-pong the per-user "failed" mark could not: a file
                         # shared by N users has ONE user-agnostic placeholder
                         # whose user_id is overwritten by the last scanner, so
-                        # every other user re-queued it forever.
+                        # every other user re-queued it forever. Requires an etag
+                        # to content-address the marker; without one (rare) we
+                        # fall back to the legacy per-user mark below.
                         await mark_dead_letter(
                             doc_task.doc_id,
                             doc_task.doc_type,
-                            doc_task.etag or "",
+                            doc_task.etag,
                             escalation_tiers_signature(settings),
                             reason,
                             file_path=file_path,
@@ -1112,10 +1114,10 @@ async def _index_document(
                                 exc_info=True,
                             )
                     else:
-                        # A higher tier exists; parse failures don't escalate to
-                        # it today, so keep the legacy per-user "failed"
-                        # placeholder mark (not dead-lettered -- a future change
-                        # may route the failure to that tier).
+                        # Either a higher tier exists (parse failures don't
+                        # escalate to it today) or there's no etag to
+                        # content-address a dead-letter marker. Keep the legacy
+                        # per-user "failed" placeholder mark.
                         logger.warning(
                             "Permanent parse failure for %s (reason=%s); marking "
                             "failed and skipping index",

@@ -25,6 +25,16 @@ filter, plus ``dead_letter=True`` so the orphan-placeholder sweep and the scanne
 can tell it apart from a volatile in-flight placeholder. Mirrors the fail-safe
 philosophy of ``sharing_state``: a Qdrant error never aborts ingest — a failed
 lookup degrades to "process normally", a failed write is logged, not raised.
+
+TODO(deck-349): a marker for a file that is dead-lettered and *then* deleted from
+Nextcloud can be orphaned. The processor's delete path clears it, but the
+scanner's grace-period deletion tracking only sees a file via its real indexed
+points (filtered by ``user_id``); a dead-lettered file has only this
+user-agnostic marker, so its disappearance enqueues no delete task and the marker
+is never reached. Not a correctness issue (search excludes ``is_placeholder=True``
+and the etag check means a stale marker never blocks new content), but it
+accumulates. A dedicated marker sweep or a TTL payload field would close it —
+tracked as a follow-up, not done here.
 """
 
 import logging
@@ -57,11 +67,17 @@ def _generate_dead_letter_id(doc_type: str, doc_id: str) -> str:
 
 
 def _dead_letter_filter(doc_id: str, doc_type: str) -> Filter:
-    """Match the dead-letter marker for one document (tenant-wide, no user_id)."""
+    """Match the dead-letter marker for one document (tenant-wide, no user_id).
+
+    Includes ``is_placeholder=True`` (redundant with ``dead_letter=True``, which
+    nothing else sets) so Qdrant can lean on the existing ``is_placeholder``
+    payload index.
+    """
     return Filter(
         must=[
             FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
             FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
+            FieldCondition(key="is_placeholder", match=MatchValue(value=True)),
             FieldCondition(key=DEAD_LETTER_KEY, match=MatchValue(value=True)),
         ]
     )
