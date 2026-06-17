@@ -56,11 +56,11 @@ async def _poll_astrolabe_search_for_note(
 ) -> dict:
     """Poll Astrolabe's search endpoint until `note_id` shows up in results.
 
-    `wait_for_vector_sync` only waits for the total indexed count to grow —
-    it does not guarantee that *this specific* document is visible yet
-    (observed on nc32 where deck-card seed data indexes first and the new
-    note arrives in Qdrant a few seconds later). Poll until the unique term
-    returns our note, or fail loudly with the last response we saw.
+    `wait_for_vector_sync` now gates on this specific document being
+    retrievable via the MCP semantic-search tool, but Astrolabe's own search
+    endpoint is a distinct read path (its own JWT + query handler), so we still
+    poll it here until the unique term returns our note — or fail loudly with
+    the last response we saw.
     """
     deadline = time.monotonic() + timeout_seconds
     last_results: list | None = None
@@ -170,9 +170,16 @@ async def test_chunk_context_endpoint_uses_app_password(
             assert note_id is not None
 
             sync_complete, status = await wait_for_vector_sync(
-                mcp_client, initial_count, timeout_seconds=90
+                mcp_client,
+                initial_count,
+                timeout_seconds=90,
+                search_term=unique_term,
+                note_id=note_id,
             )
-            assert sync_complete, f"Vector sync did not complete: {status}"
+            assert sync_complete, (
+                f"Note {note_id} ({unique_term}) never became searchable "
+                f"within timeout. Last sync status: {status}"
+            )
 
         # Use the browser's session to drive Astrolabe end-to-end, the way a
         # real user would: this exercises astrolabe's OAuth token retrieval

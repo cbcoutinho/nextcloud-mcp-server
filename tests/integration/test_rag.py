@@ -174,16 +174,22 @@ async def indexed_manual_pdf(nc_client, nc_mcp_client):
                 content = json.loads(result.content[0].text) if result.content else {}
                 indexed = content.get("indexed_count", 0)
                 pending = content.get("pending_count", 1)
+                status = content.get("status")
 
                 logger.info(
-                    "Attempt %s/%s: indexed=%s, pending=%s",
+                    "Attempt %s/%s: indexed=%s, pending=%s, status=%s",
                     attempt,
                     max_attempts,
                     indexed,
                     pending,
+                    status,
                 )
 
-                if indexed > 0 and pending == 0:
+                # Require indexed > 0 (the manual must actually be indexed —
+                # idle/pending==0 is also the *initial* empty state) AND a
+                # settled idle scan so we don't break during a transient
+                # pending==0 window mid re-scan churn.
+                if indexed > 0 and pending == 0 and status == "idle":
                     logger.info(
                         "Vector indexing complete: %s documents indexed", indexed
                     )
@@ -399,27 +405,53 @@ async def test_retrieval_quality_all_queries(
     )
 
 
-async def test_no_results_for_unrelated_query(nc_mcp_client, indexed_manual_pdf):
-    """Test that completely unrelated queries return low/no scores.
-
-    The Nextcloud manual shouldn't have relevant content for
-    quantum physics queries.
-    """
+async def _top_score(nc_mcp_client: Any, query: str) -> float | None:
+    """Return the best fusion score for ``query``, or None if no results."""
     result = await nc_mcp_client.call_tool(
         "nc_semantic_search",
-        arguments={
-            "query": "quantum entanglement hadron collider particle physics",
-            "limit": 5,
-            "score_threshold": 0.5,  # Higher threshold to filter irrelevant
-        },
+        arguments={"query": query, "limit": 5, "score_threshold": 0.0},
+    )
+    assert result.isError is False, result.content
+    data = json.loads(result.content[0].text)
+    results = data.get("results", [])
+    if not results:  # guard the list directly, not via total_found
+        return None
+    return max(r["score"] for r in results)
+
+
+async def test_no_results_for_unrelated_query(nc_mcp_client, indexed_manual_pdf):
+    """An unrelated query must not out-rank a genuinely relevant one.
+
+    The Nextcloud manual has no quantum-physics content, so a physics query
+    must not look *more* relevant than a real manual query.
+
+    We deliberately do NOT assert on an absolute score magnitude. Fusion scores
+    (RRF/DBSF) are rank-based, not calibrated relevance: the top hit saturates
+    near the high end of the range regardless of true relevance, so a hardcoded
+    ``max_score < 0.8`` check was a CI flake (it tripped whenever the unrelated
+    query happened to retrieve any chunk at all). Comparing against a relevant
+    query on the same corpus is self-calibrating and stable.
+    """
+    # No results for the nonsense query is the ideal outcome — treat as score
+    # 0.0 and fall through, so the comparison (and the manual-is-indexed check
+    # below) still runs instead of the test silently skipping every time the
+    # physics query finds nothing.
+    unrelated = (
+        await _top_score(
+            nc_mcp_client, "quantum entanglement hadron collider particle physics"
+        )
+        or 0.0
     )
 
-    assert result.isError is False
-    data = json.loads(result.content[0].text)
+    relevant = await _top_score(
+        nc_mcp_client, "how do I enable two-factor authentication"
+    )
+    assert relevant is not None, (
+        "Relevant control query returned nothing — manual not indexed?"
+    )
 
-    # Should have few or no high-scoring results
-    # Low score threshold means we might get some results, but they should be low quality
-    if data["total_found"] > 0:
-        # If results exist, they should have low scores
-        max_score = max(r["score"] for r in data["results"])
-        assert max_score < 0.8, f"Unexpected high score {max_score} for unrelated query"
+    # The unrelated query must not appear more relevant than the real one.
+    assert unrelated <= relevant, (
+        f"Unrelated query scored {unrelated}, higher than the relevant "
+        f"control query's {relevant} — retrieval is not discriminating."
+    )

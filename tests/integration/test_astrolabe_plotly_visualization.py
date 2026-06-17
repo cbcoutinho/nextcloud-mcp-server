@@ -28,6 +28,7 @@ from playwright.async_api import Page
 
 # Import helper functions from existing test
 from tests.conftest import create_mcp_client_session
+from tests.integration._search_helpers import document_is_searchable
 from tests.integration.test_astrolabe_multi_user_background_sync import (
     complete_astrolabe_authorization,
     login_to_nextcloud,
@@ -39,14 +40,40 @@ pytestmark = [pytest.mark.integration, pytest.mark.multi_user_basic]
 
 
 async def wait_for_vector_sync(
-    mcp_client, initial_indexed_count: int, timeout_seconds: int = 60
+    mcp_client,
+    initial_indexed_count: int,
+    timeout_seconds: int = 60,
+    *,
+    search_term: str | None = None,
+    note_id: int | None = None,
 ) -> tuple[bool, dict | None]:
-    """Wait for vector sync to index new content.
+    """Wait for vector sync to index newly-created content.
+
+    Completion signal:
+
+    - When ``search_term`` is provided (preferred), poll ``nc_semantic_search``
+      until the new document is actually retrievable. This is robust against
+      full-corpus re-scan churn and doubles as a real end-to-end check — it is
+      exactly what callers assert downstream.
+    - Otherwise, fall back to the legacy gauge-delta predicate.
+
+    Why the gauge delta is unreliable: under ``VECTOR_SYNC_SCAN_INTERVAL`` the
+    background sync re-queues the whole corpus every scan, so the corpus-wide
+    ``indexed_count`` is *non-monotonic* — it can be re-counted downward
+    mid-scan. ``indexed_count > initial_indexed_count`` can therefore never hold
+    even though the new document is indexed and the status has settled to
+    ``idle`` / ``pending_count == 0``. That false failure was the dominant
+    multi-user-basic CI flake (``test_astrolabe_plotly_visualization`` /
+    ``test_astrolabe_chunk_context``).
 
     Args:
         mcp_client: MCP client session
-        initial_indexed_count: Initial indexed document count before creating content
+        initial_indexed_count: Indexed document count before creating content
+            (only used by the legacy gauge-delta fallback)
         timeout_seconds: Maximum time to wait for sync
+        search_term: Unique term contained in the new document; enables the
+            robust searchability-based completion signal
+        note_id: ID of the new document, used to match search results exactly
 
     Returns:
         Tuple of (success, status_data)
@@ -73,7 +100,14 @@ async def wait_for_vector_sync(
             status_data.get("status"),
         )
 
-        if indexed_count > initial_indexed_count and pending_count == 0:
+        if search_term is not None:
+            if await document_is_searchable(mcp_client, search_term, note_id):
+                logger.info(
+                    "✓ Sync complete: document %s retrievable via semantic search",
+                    note_id,
+                )
+                return True, status_data
+        elif indexed_count > initial_indexed_count and pending_count == 0:
             logger.info(
                 "✓ Sync complete: %s documents indexed (was %s)",
                 indexed_count,
@@ -197,24 +231,41 @@ The visualization should show this document as a point in PCA-reduced space.
 
             # Phase 4: Wait for vector indexing
             sync_complete, status = await wait_for_vector_sync(
-                alice_mcp_client, initial_count, timeout_seconds=90
+                alice_mcp_client,
+                initial_count,
+                timeout_seconds=90,
+                search_term=unique_term,
+                note_id=note_id,
             )
-            assert sync_complete, f"Vector sync did not complete in time: {status}"
+            assert sync_complete, (
+                f"Note {note_id} ({unique_term}) never became searchable "
+                f"within timeout. Last sync status: {status}"
+            )
 
             # Phase 5: Navigate to Astrolabe and perform search
             await navigate_to_astrolabe_main(page)
 
-            # Fill search query - find the Astrolabe search input specifically
-            # The NcTextField component wraps the input in a div with class mcp-search-input
-            search_input = page.locator(".mcp-search-input input")
-            await search_input.wait_for(timeout=10000, state="visible")
+            # Find the Astrolabe search field. The published app differs across
+            # the NC matrix: NC31 pulls astrolabe <=0.24 (NcTextField -> <input>,
+            # submits on Enter); NC32 pulls astrolabe >=0.25 (NcTextArea ->
+            # <textarea>, submits on Ctrl/Cmd+Enter). Match either element so the
+            # test isn't pinned to one frontend revision.
+            # 30s (not 10s): the SPA can be slow to mount on a loaded CI runner.
+            search_input = page.locator(
+                ".mcp-search-input textarea, .mcp-search-input input"
+            ).first
+            await search_input.wait_for(timeout=30000, state="visible")
             await search_input.fill(unique_term)
             logger.info("Entered search query: %s", unique_term)
 
-            # Trigger search by pressing Enter on the input field
-            # This is wired to performSearch via @keyup.enter in the Vue component
-            await search_input.press("Enter")
-            logger.info("Pressed Enter to trigger search")
+            # Trigger search. NcTextField submits on Enter; NcTextArea inserts a
+            # newline on Enter and submits on Ctrl/Cmd+Enter — so key off the tag.
+            field_tag = await search_input.evaluate("el => el.tagName.toLowerCase()")
+            if field_tag == "textarea":
+                await search_input.press("Control+Enter")
+            else:
+                await search_input.press("Enter")
+            logger.info("Triggered search via %s submit", field_tag)
 
             # Wait for loading to complete - watch for loading indicator to disappear
             loading_indicator = page.locator(".mcp-loading")
