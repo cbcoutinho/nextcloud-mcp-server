@@ -274,8 +274,12 @@ async def test_semantic_search_answer_with_limit(nc_mcp_client, temporary_note_f
         category="Development",
     )
 
-    # Wait for vector indexing to complete
-    await wait_for_vector_sync(nc_mcp_client)
+    # Wait until the batch is indexed — gate on the last note being searchable
+    # rather than a bare idle signal, which can fire before the new notes are
+    # even enqueued.
+    await wait_for_vector_sync(
+        nc_mcp_client, search_term="async context managers", note_id=_note3["id"]
+    )
 
     call_result = await nc_mcp_client.call_tool(
         "nc_semantic_search_answer",
@@ -315,8 +319,10 @@ async def test_semantic_search_answer_score_threshold(
         category="Test",
     )
 
-    # Wait for vector indexing to complete
-    await wait_for_vector_sync(nc_mcp_client)
+    # Gate on the new note being searchable (not a bare idle signal).
+    await wait_for_vector_sync(
+        nc_mcp_client, search_term="widget manufacturing", note_id=_note["id"]
+    )
 
     # Query with exact match
     call_result = await nc_mcp_client.call_tool(
@@ -362,8 +368,10 @@ async def test_semantic_search_answer_max_tokens(nc_mcp_client, temporary_note_f
         category="Test",
     )
 
-    # Wait for vector indexing to complete
-    await wait_for_vector_sync(nc_mcp_client)
+    # Gate on the new note being searchable (not a bare idle signal).
+    await wait_for_vector_sync(
+        nc_mcp_client, search_term="Long Document content", note_id=_note["id"]
+    )
 
     call_result = await nc_mcp_client.call_tool(
         "nc_semantic_search_answer",

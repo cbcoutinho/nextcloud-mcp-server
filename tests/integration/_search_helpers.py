@@ -49,9 +49,10 @@ async def document_is_searchable(
             if r.get("id") == note_id:
                 if r.get("doc_type") == "note":
                     return True
-                # id matched but not a note — surface possible schema drift
-                # rather than silently timing out.
-                logger.debug(
+                # id matched but not a note — surface possible schema drift at
+                # WARNING (CI runs --log-cli-level=WARN) instead of letting the
+                # caller time out with a generic message.
+                logger.warning(
                     "search hit id=%s has doc_type=%s (expected note)",
                     note_id,
                     r.get("doc_type"),

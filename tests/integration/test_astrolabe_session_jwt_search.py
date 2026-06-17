@@ -56,7 +56,8 @@ async def _get_with_retry(
             logger.warning(
                 "GET %s failed (attempt %s/%s): %s", url, attempt, max_attempts, e
             )
-            await anyio.sleep(2)
+            if attempt < max_attempts:
+                await anyio.sleep(2)  # no point sleeping before we give up
     assert last_exc is not None  # loop ran at least once, so this is set
     raise last_exc
 

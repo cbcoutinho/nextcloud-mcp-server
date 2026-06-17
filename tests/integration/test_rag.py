@@ -432,13 +432,16 @@ async def test_no_results_for_unrelated_query(nc_mcp_client, indexed_manual_pdf)
     query happened to retrieve any chunk at all). Comparing against a relevant
     query on the same corpus is self-calibrating and stable.
     """
-    unrelated = await _top_score(
-        nc_mcp_client, "quantum entanglement hadron collider particle physics"
+    # No results for the nonsense query is the ideal outcome — treat as score
+    # 0.0 and fall through, so the comparison (and the manual-is-indexed check
+    # below) still runs instead of the test silently skipping every time the
+    # physics query finds nothing.
+    unrelated = (
+        await _top_score(
+            nc_mcp_client, "quantum entanglement hadron collider particle physics"
+        )
+        or 0.0
     )
-    if unrelated is None:
-        # No results for the nonsense query is the ideal outcome; skip (rather
-        # than a silent pass) so the test report shows the path was taken.
-        pytest.skip("No results for nonsense physics query — the ideal outcome")
 
     relevant = await _top_score(
         nc_mcp_client, "how do I enable two-factor authentication"
