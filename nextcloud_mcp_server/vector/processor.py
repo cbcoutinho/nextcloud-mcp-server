@@ -1108,7 +1108,11 @@ async def _index_document(
                                 user_id=doc_task.user_id,
                             )
                         except Exception:
-                            logger.debug(
+                            # A real Qdrant I/O failure (not control-flow): warn so
+                            # it's observable. Non-fatal -- the durable dead-letter
+                            # marker is already written, so the leftover volatile
+                            # placeholder is merely redundant.
+                            logger.warning(
                                 "Could not delete placeholder for dead-lettered %s",
                                 doc_task.doc_id,
                                 exc_info=True,

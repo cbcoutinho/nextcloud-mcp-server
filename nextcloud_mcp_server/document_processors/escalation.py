@@ -45,6 +45,13 @@ def escalation_tiers_signature(settings: Any) -> str:
     pin (``document_tier1_engine``). Enabling OCR changes the signature, so the
     pathological-but-OCR-recoverable documents dead-lettered while OCR was off are
     re-attempted automatically.
+
+    TODO: when a future setting can make a previously-terminal document parseable,
+    fold it in here so raising it auto-retries existing dead-letters. Two known
+    candidates: a new escalation tier becoming toggleable (e.g. the reserved
+    ``llm`` rung in ``TIER_LADDER``), and a raised oversize cap (an oversize PDF is
+    always-terminal, so without the cap in this signature it stays dead-lettered
+    until its etag changes even after an operator allows bigger files).
     """
     return (
         f"ocr={int(bool(settings.document_ocr_enabled))};"
