@@ -218,6 +218,7 @@ class UnifiedTokenVerifier(TokenVerifier):
             else:
                 del self._token_cache[cache_key]
 
+        from_cache = access_token is not None
         if access_token is None:
             oauth_token_cache_hits_total.labels(hit="false").inc()
             access_token = await self._verify_without_audience_check(token, cache_key)
@@ -233,11 +234,21 @@ class UnifiedTokenVerifier(TokenVerifier):
         cached_entry = self._token_cache.get(cache_key)
         via_userinfo = bool(cached_entry and cached_entry[0].get("_auth_via_userinfo"))
         if via_userinfo:
-            logger.warning(
-                "Opaque token validated via userinfo endpoint; ALLOWED_MGMT_CLIENT "
-                "allowlist not enforced for user %s (per-user authorization applies)",
-                access_token.resource,
-            )
+            # Warn once on fresh validation; subsequent cache-hit re-validations
+            # (frequent Astrolabe polling) log at DEBUG to avoid flooding.
+            if from_cache:
+                logger.debug(
+                    "Opaque token (userinfo-validated) served from cache for "
+                    "user %s; allowlist not enforced",
+                    access_token.resource,
+                )
+            else:
+                logger.warning(
+                    "Opaque token validated via userinfo endpoint; "
+                    "ALLOWED_MGMT_CLIENT allowlist not enforced for user %s "
+                    "(per-user authorization applies)",
+                    access_token.resource,
+                )
             return access_token
 
         # Enforce ALLOWED_MGMT_CLIENT allowlist (fail-closed when unset)

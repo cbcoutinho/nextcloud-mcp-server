@@ -809,6 +809,22 @@ class TestUserinfoFallback:
         assert access_token.expires_at <= int(before + 300) + 2
         assert access_token.expires_at < int(before + verifier.cache_ttl)
 
+    async def test_userinfo_token_with_exp_uses_real_expiry(self, userinfo_settings):
+        """When userinfo (unusually) returns an exp, the real token expiry wins
+        over the short userinfo TTL."""
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+        verifier.userinfo_cache_ttl = 300
+        real_exp = int(time.time() + 4000)  # far beyond the 300s short TTL
+
+        access_token = verifier._create_access_token_with_cache_key(
+            "opaque-token",
+            {"sub": "testuser", "exp": real_exp},
+            "mgmt:test-exp",
+            via_userinfo=True,
+        )
+        assert access_token is not None
+        assert access_token.expires_at == real_exp
+
     async def test_validate_via_userinfo_timeout(self, userinfo_settings):
         verifier = UnifiedTokenVerifier(userinfo_settings)
         with patch.object(
