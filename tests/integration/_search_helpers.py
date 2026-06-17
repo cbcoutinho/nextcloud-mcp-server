@@ -23,7 +23,9 @@ async def document_is_searchable(
     try:
         search = await mcp_client.call_tool(
             "nc_semantic_search",
-            arguments={"query": search_term, "limit": 10, "score_threshold": 0.0},
+            # limit is generous: a fresh note can sit below seed data (e.g. deck
+            # cards) in a crowded corpus, and the query is cheap.
+            arguments={"query": search_term, "limit": 50, "score_threshold": 0.0},
         )
     except Exception as e:  # transient transport/availability blip — keep polling
         logger.debug("Semantic search poll failed: %s", e)
@@ -33,11 +35,15 @@ async def document_is_searchable(
         return False
 
     results = json.loads(search.content[0].text).get("results", [])
-    needle = search_term.lower()
+    # Token match (not contiguous substring) so multi-word terms work in the
+    # note_id-less fallback path.
+    tokens = search_term.lower().split()
     for r in results:
         if note_id is not None:
             if r.get("id") == note_id and r.get("doc_type") == "note":
                 return True
-        elif needle in f"{r.get('title', '')} {r.get('excerpt', '')}".lower():
-            return True
+        else:
+            haystack = f"{r.get('title', '')} {r.get('excerpt', '')}".lower()
+            if tokens and all(t in haystack for t in tokens):
+                return True
     return False
