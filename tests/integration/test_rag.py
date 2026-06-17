@@ -405,7 +405,7 @@ async def test_retrieval_quality_all_queries(
     )
 
 
-async def _top_score(nc_mcp_client, query: str) -> float | None:
+async def _top_score(nc_mcp_client: Any, query: str) -> float | None:
     """Return the best fusion score for ``query``, or None if no results."""
     result = await nc_mcp_client.call_tool(
         "nc_semantic_search",
@@ -413,9 +413,10 @@ async def _top_score(nc_mcp_client, query: str) -> float | None:
     )
     assert result.isError is False
     data = json.loads(result.content[0].text)
-    if data["total_found"] == 0:
+    results = data.get("results", [])
+    if not results:  # guard the list directly, not via total_found
         return None
-    return max(r["score"] for r in data["results"])
+    return max(r["score"] for r in results)
 
 
 async def test_no_results_for_unrelated_query(nc_mcp_client, indexed_manual_pdf):

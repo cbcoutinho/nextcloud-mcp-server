@@ -6,12 +6,13 @@ the single-user sampling tests can import it.
 
 import json
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 async def document_is_searchable(
-    mcp_client, search_term: str, note_id: int | None = None
+    mcp_client: Any, search_term: str, note_id: int | None = None
 ) -> bool:
     """Return True once a freshly-created document is retrievable.
 

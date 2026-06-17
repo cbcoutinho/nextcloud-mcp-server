@@ -57,7 +57,8 @@ async def _get_with_retry(
                 "GET %s failed (attempt %s/%s): %s", url, attempt, max_attempts, e
             )
             await anyio.sleep(2)
-    raise last_exc  # type: ignore[misc]
+    assert last_exc is not None  # loop ran at least once, so this is set
+    raise last_exc
 
 
 async def _astrolabe_configured(client: httpx.AsyncClient, auth) -> bool:
