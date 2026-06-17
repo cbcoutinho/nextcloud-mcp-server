@@ -640,6 +640,11 @@ class UnifiedTokenVerifier(TokenVerifier):
         management-API allowlist is relaxed for it (authorization is still
         enforced per-user by every management endpoint).
 
+        Caution: userinfo-validated tokens carry **empty scopes**. Callers must
+        not gate management endpoints on scopes for this path (e.g. a future
+        ``@require_scopes``) or they would silently reject valid cross-client
+        tokens; the per-user ``sub`` check is the authorization gate.
+
         Security note — bounded staleness: userinfo carries no token ``exp``, so
         a validated token is cached for ``userinfo_cache_ttl`` (5 min) rather
         than the 1-hour default. A revoked/expired opaque token may therefore be

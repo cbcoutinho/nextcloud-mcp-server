@@ -665,6 +665,18 @@ class TestUserinfoFallback:
             result = await verifier._validate_via_userinfo("opaque-token")
         assert result is None
 
+    async def test_validate_via_userinfo_rejects_non_http_scheme(
+        self, userinfo_settings
+    ):
+        """A non-http(s) userinfo_uri is refused before any request (SSRF guard)."""
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+        verifier.userinfo_uri = "ftp://evil/userinfo"
+        get_mock = AsyncMock()
+        with patch.object(verifier.http_client, "get", get_mock):
+            result = await verifier._validate_via_userinfo("opaque-token")
+        assert result is None
+        get_mock.assert_not_called()
+
     async def test_validate_via_userinfo_not_configured(self, base_settings):
         base_settings.userinfo_uri = None
         verifier = UnifiedTokenVerifier(base_settings)
