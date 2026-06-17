@@ -245,20 +245,27 @@ The visualization should show this document as a point in PCA-reduced space.
             # Phase 5: Navigate to Astrolabe and perform search
             await navigate_to_astrolabe_main(page)
 
-            # Fill search query - find the Astrolabe search input specifically
-            # The NcTextField component wraps the input in a div with class mcp-search-input.
-            # 30s (not 10s): the Astrolabe SPA can be slow to mount its search
-            # component on a loaded CI runner (observed on nc32) — matches the
-            # loading-indicator budget below.
-            search_input = page.locator(".mcp-search-input input")
+            # Find the Astrolabe search field. The published app differs across
+            # the NC matrix: NC31 pulls astrolabe <=0.24 (NcTextField -> <input>,
+            # submits on Enter); NC32 pulls astrolabe >=0.25 (NcTextArea ->
+            # <textarea>, submits on Ctrl/Cmd+Enter). Match either element so the
+            # test isn't pinned to one frontend revision.
+            # 30s (not 10s): the SPA can be slow to mount on a loaded CI runner.
+            search_input = page.locator(
+                ".mcp-search-input textarea, .mcp-search-input input"
+            ).first
             await search_input.wait_for(timeout=30000, state="visible")
             await search_input.fill(unique_term)
             logger.info("Entered search query: %s", unique_term)
 
-            # Trigger search by pressing Enter on the input field
-            # This is wired to performSearch via @keyup.enter in the Vue component
-            await search_input.press("Enter")
-            logger.info("Pressed Enter to trigger search")
+            # Trigger search. NcTextField submits on Enter; NcTextArea inserts a
+            # newline on Enter and submits on Ctrl/Cmd+Enter — so key off the tag.
+            field_tag = await search_input.evaluate("el => el.tagName.toLowerCase()")
+            if field_tag == "textarea":
+                await search_input.press("Control+Enter")
+            else:
+                await search_input.press("Enter")
+            logger.info("Triggered search via %s submit", field_tag)
 
             # Wait for loading to complete - watch for loading indicator to disappear
             loading_indicator = page.locator(".mcp-loading")
