@@ -38,15 +38,73 @@ logger = logging.getLogger(__name__)
 pytestmark = [pytest.mark.integration, pytest.mark.multi_user_basic]
 
 
+async def _document_is_searchable(
+    mcp_client, search_term: str, note_id: int | None
+) -> bool:
+    """Return True once the freshly-created document is retrievable.
+
+    Polls ``nc_semantic_search`` (hybrid: an exact unique term reliably matches
+    on the keyword side) and matches by ``note_id`` when known, otherwise by the
+    term appearing in a result's title/excerpt.
+    """
+    try:
+        search = await mcp_client.call_tool(
+            "nc_semantic_search",
+            {"query": search_term, "limit": 10, "score_threshold": 0.0},
+        )
+    except Exception as e:  # transient transport/availability blip — keep polling
+        logger.debug("Semantic search poll failed: %s", e)
+        return False
+    if search.isError:
+        logger.debug("Semantic search poll error: %s", search)
+        return False
+
+    results = json.loads(search.content[0].text).get("results", [])
+    needle = search_term.lower()
+    for r in results:
+        if note_id is not None:
+            if r.get("id") == note_id and r.get("doc_type") == "note":
+                return True
+        elif needle in f"{r.get('title', '')} {r.get('excerpt', '')}".lower():
+            return True
+    return False
+
+
 async def wait_for_vector_sync(
-    mcp_client, initial_indexed_count: int, timeout_seconds: int = 60
+    mcp_client,
+    initial_indexed_count: int,
+    timeout_seconds: int = 60,
+    *,
+    search_term: str | None = None,
+    note_id: int | None = None,
 ) -> tuple[bool, dict | None]:
-    """Wait for vector sync to index new content.
+    """Wait for vector sync to index newly-created content.
+
+    Completion signal:
+
+    - When ``search_term`` is provided (preferred), poll ``nc_semantic_search``
+      until the new document is actually retrievable. This is robust against
+      full-corpus re-scan churn and doubles as a real end-to-end check — it is
+      exactly what callers assert downstream.
+    - Otherwise, fall back to the legacy gauge-delta predicate.
+
+    Why the gauge delta is unreliable: under ``VECTOR_SYNC_SCAN_INTERVAL`` the
+    background sync re-queues the whole corpus every scan, so the corpus-wide
+    ``indexed_count`` is *non-monotonic* — it can be re-counted downward
+    mid-scan. ``indexed_count > initial_indexed_count`` can therefore never hold
+    even though the new document is indexed and the status has settled to
+    ``idle`` / ``pending_count == 0``. That false failure was the dominant
+    multi-user-basic CI flake (``test_astrolabe_plotly_visualization`` /
+    ``test_astrolabe_chunk_context``).
 
     Args:
         mcp_client: MCP client session
-        initial_indexed_count: Initial indexed document count before creating content
+        initial_indexed_count: Indexed document count before creating content
+            (only used by the legacy gauge-delta fallback)
         timeout_seconds: Maximum time to wait for sync
+        search_term: Unique term contained in the new document; enables the
+            robust searchability-based completion signal
+        note_id: ID of the new document, used to match search results exactly
 
     Returns:
         Tuple of (success, status_data)
@@ -73,7 +131,14 @@ async def wait_for_vector_sync(
             status_data.get("status"),
         )
 
-        if indexed_count > initial_indexed_count and pending_count == 0:
+        if search_term is not None:
+            if await _document_is_searchable(mcp_client, search_term, note_id):
+                logger.info(
+                    "✓ Sync complete: document %s retrievable via semantic search",
+                    note_id,
+                )
+                return True, status_data
+        elif indexed_count > initial_indexed_count and pending_count == 0:
             logger.info(
                 "✓ Sync complete: %s documents indexed (was %s)",
                 indexed_count,
@@ -197,9 +262,16 @@ The visualization should show this document as a point in PCA-reduced space.
 
             # Phase 4: Wait for vector indexing
             sync_complete, status = await wait_for_vector_sync(
-                alice_mcp_client, initial_count, timeout_seconds=90
+                alice_mcp_client,
+                initial_count,
+                timeout_seconds=90,
+                search_term=unique_term,
+                note_id=note_id,
             )
-            assert sync_complete, f"Vector sync did not complete in time: {status}"
+            assert sync_complete, (
+                f"Note {note_id} ({unique_term}) never became searchable "
+                f"within timeout. Last sync status: {status}"
+            )
 
             # Phase 5: Navigate to Astrolabe and perform search
             await navigate_to_astrolabe_main(page)

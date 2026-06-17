@@ -21,16 +21,43 @@ HTTP with BasicAuth (which establishes a Nextcloud session for the request) —
 no browser needed.
 """
 
+import logging
 import os
 
+import anyio
 import httpx
 import pytest
 
 pytestmark = [pytest.mark.integration, pytest.mark.login_flow]
 
+logger = logging.getLogger(__name__)
+
 NEXTCLOUD_URL = "http://localhost:8080"
 ASTROLABE_API = f"{NEXTCLOUD_URL}/apps/astrolabe/api"
 _HEADERS = {"OCS-APIRequest": "true"}
+
+# The first /search after container start is slow: astrolabe mints a JWT and
+# the MCP server runs a semantic search that may cold-load the embedding model.
+# A single 30s read timeout was a CI flake (httpx.ReadTimeout); give the search
+# path a generous budget and one retry on transient transport errors.
+_SEARCH_TIMEOUT = httpx.Timeout(90.0)
+
+
+async def _get_with_retry(
+    client: httpx.AsyncClient, url: str, *, retries: int = 2, **kwargs
+) -> httpx.Response:
+    """GET with retries on transient transport errors (timeouts/conn resets)."""
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            return await client.get(url, **kwargs)
+        except httpx.TransportError as e:  # covers timeouts + connect/read errors
+            last_exc = e
+            logger.warning(
+                "GET %s failed (attempt %s/%s): %s", url, attempt + 1, retries + 1, e
+            )
+            await anyio.sleep(2)
+    raise last_exc  # type: ignore[misc]
 
 
 async def _astrolabe_configured(client: httpx.AsyncClient, auth) -> bool:
@@ -66,11 +93,13 @@ async def test_session_user_searches_without_provisioning(test_users_setup):
             "precondition: bob has not opted into background indexing"
         )
 
-        resp = await client.get(
+        resp = await _get_with_retry(
+            client,
             f"{ASTROLABE_API}/search",
             params={"query": "quarterly planning", "limit": 3},
             auth=auth,
             headers=_HEADERS,
+            timeout=_SEARCH_TIMEOUT,
         )
 
     assert resp.status_code == 200, resp.text
@@ -88,11 +117,13 @@ async def test_admin_session_search_succeeds():
     async with httpx.AsyncClient(timeout=30) as client:
         if not await _astrolabe_configured(client, auth):
             pytest.skip("Astrolabe not wired to an MCP server in this stack")
-        resp = await client.get(
+        resp = await _get_with_retry(
+            client,
             f"{ASTROLABE_API}/search",
             params={"query": "infrastructure", "limit": 3},
             auth=auth,
             headers=_HEADERS,
+            timeout=_SEARCH_TIMEOUT,
         )
     assert resp.status_code == 200, resp.text
     assert resp.json()["success"] is True

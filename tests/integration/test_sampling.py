@@ -14,6 +14,7 @@ vector database with indexed test data.
 """
 
 import json
+import logging
 from unittest.mock import MagicMock
 
 import anyio
@@ -22,11 +23,31 @@ from mcp.types import CreateMessageResult, TextContent
 
 pytestmark = pytest.mark.integration
 
+logger = logging.getLogger(__name__)
+
+
+async def _note_is_searchable(nc_mcp_client, search_term: str, note_id: int) -> bool:
+    """Return True once ``note_id`` is retrievable via semantic search."""
+    try:
+        search = await nc_mcp_client.call_tool(
+            "nc_semantic_search",
+            arguments={"query": search_term, "limit": 10, "score_threshold": 0.0},
+        )
+    except Exception as e:  # transient blip — keep polling
+        logger.debug("Semantic search poll failed: %s", e)
+        return False
+    if search.isError:
+        return False
+    results = json.loads(search.content[0].text).get("results", [])
+    return any(r.get("id") == note_id and r.get("doc_type") == "note" for r in results)
+
 
 async def wait_for_vector_sync(
     nc_mcp_client,
     *,
     initial_indexed_count: int | None = None,
+    search_term: str | None = None,
+    note_id: int | None = None,
     max_wait: int = 90,
     wait_interval: int = 1,
 ) -> dict:
@@ -34,9 +55,14 @@ async def wait_for_vector_sync(
 
     Args:
         nc_mcp_client: MCP client to poll status with.
-        initial_indexed_count: If set, wait until indexed_count exceeds this
-            value and pending_count reaches 0. Otherwise wait for idle with
-            no pending work.
+        search_term/note_id: If set (preferred), wait until that specific
+            document is retrievable via ``nc_semantic_search``. This is robust
+            against full-corpus re-scan churn, where the corpus-wide
+            ``indexed_count`` gauge is non-monotonic and ``indexed_count >
+            initial`` can never hold even though the document is indexed.
+        initial_indexed_count: Legacy gauge-delta fallback when no search_term
+            is given: wait until indexed_count exceeds this value and
+            pending_count reaches 0.
         max_wait: Maximum seconds to wait before failing.
         wait_interval: Seconds between status polls.
 
@@ -51,8 +77,12 @@ async def wait_for_vector_sync(
         )
         status_data = json.loads(sync_status.content[0].text)
 
-        if initial_indexed_count is not None:
-            # Wait for new document(s) to be indexed
+        if search_term is not None and note_id is not None:
+            # Robust signal: wait for the specific document to be retrievable
+            if await _note_is_searchable(nc_mcp_client, search_term, note_id):
+                break
+        elif initial_indexed_count is not None:
+            # Legacy: wait for new document(s) to be indexed (gauge delta)
             if (
                 status_data["indexed_count"] > initial_indexed_count
                 and status_data["pending_count"] == 0
@@ -117,14 +147,6 @@ async def test_semantic_search_answer_successful_sampling(
     """
     await require_vector_sync_tools(nc_mcp_client)
 
-    # Get initial indexed count before creating note
-
-    initial_sync = await nc_mcp_client.call_tool(
-        "nc_get_vector_sync_status", arguments={}
-    )
-    initial_indexed_count = json.loads(initial_sync.content[0].text)["indexed_count"]
-    print(f"Initial indexed count: {initial_indexed_count}")
-
     # Create a note with content about Python async
     _note = await temporary_note_factory(
         title="Python Async Guide",
@@ -142,12 +164,13 @@ Avoid blocking operations in async code.""",
     )
     print(f"Created note ID: {_note['id']}")
 
-    # Wait for vector indexing to complete
-    status_data = await wait_for_vector_sync(
-        nc_mcp_client, initial_indexed_count=initial_indexed_count
-    )
-    assert status_data["indexed_count"] > initial_indexed_count, (
-        f"New note was not indexed (count stayed at {initial_indexed_count})"
+    # Wait for vector indexing to complete. Gate on the new note actually
+    # being retrievable rather than on the corpus-wide indexed_count gauge,
+    # which is non-monotonic under re-scan churn (see wait_for_vector_sync).
+    await wait_for_vector_sync(
+        nc_mcp_client,
+        search_term="Python Async Programming coroutines",
+        note_id=_note["id"],
     )
 
     # Mock the sampling call
