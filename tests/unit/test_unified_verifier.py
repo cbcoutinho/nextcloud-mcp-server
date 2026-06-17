@@ -741,6 +741,20 @@ class TestUserinfoFallback:
         assert result.resource == "testuser"
         introspect_mock.assert_not_called()  # skipped when unconfigured
 
+    async def test_opaque_rejected_when_no_validators_configured(self, base_settings):
+        """With neither introspection nor userinfo configured, an opaque token is
+        rejected without recording a misleading userinfo-failure metric."""
+        base_settings.introspection_uri = None
+        base_settings.userinfo_uri = None
+        verifier = UnifiedTokenVerifier(base_settings)
+        assert verifier.introspection_uri is None
+        assert verifier.userinfo_uri is None
+
+        result = await verifier._verify_without_audience_check(
+            "opaque-no-validator", "mgmt:none"
+        )
+        assert result is None
+
     async def test_mgmt_userinfo_not_called_when_introspection_succeeds(
         self, monkeypatch, userinfo_settings
     ):

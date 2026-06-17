@@ -231,6 +231,10 @@ class UnifiedTokenVerifier(TokenVerifier):
         # tokens are stamped with ``_auth_via_userinfo`` in the cache; for them
         # we rely on the per-user authorization every management endpoint
         # enforces (token sub == requested resource owner).
+        # Recover the via-userinfo flag from the cache entry. On a cache miss
+        # this is the entry _verify_without_audience_check just wrote (no await
+        # between that write and this read, so it is always present); on a cache
+        # hit it was written by an earlier call.
         cached_entry = self._token_cache.get(cache_key)
         via_userinfo = bool(cached_entry and cached_entry[0].get("_auth_via_userinfo"))
         if via_userinfo:
@@ -393,10 +397,16 @@ class UnifiedTokenVerifier(TokenVerifier):
                     else:
                         record_oauth_token_validation("introspect", "invalid")
 
-                if payload is None:
-                    # Introspection is unconfigured, or it reported the token
-                    # inactive. Set validation_method first so a userinfo
-                    # exception caught by the outer handler is attributed right.
+                # Fall through to userinfo when introspection is unconfigured or
+                # returned None. NOTE: _introspect_token returns None for BOTH an
+                # active=false response (the nx101294 cross-client case we must
+                # handle) AND a network/timeout error — both reach userinfo here.
+                # That is safe: userinfo is itself an authoritative live check (a
+                # revoked/invalid token gets a 401), so a flapping introspection
+                # endpoint cannot cause an invalid token to be accepted.
+                if payload is None and self.userinfo_uri:
+                    # Set validation_method first so a userinfo exception caught
+                    # by the outer handler is attributed correctly.
                     validation_method = "userinfo"
                     payload = await self._validate_via_userinfo(token)
                     if payload:
@@ -404,6 +414,11 @@ class UnifiedTokenVerifier(TokenVerifier):
                     else:
                         record_oauth_token_validation("userinfo", "invalid")
                         return None
+
+                if payload is None:
+                    # No validator was configured, or none succeeded. Don't record
+                    # a userinfo failure metric when userinfo was never attempted.
+                    return None
 
             # Check payload is valid
             if not payload:
