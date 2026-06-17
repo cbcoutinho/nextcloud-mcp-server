@@ -14,32 +14,15 @@ vector database with indexed test data.
 """
 
 import json
-import logging
 from unittest.mock import MagicMock
 
 import anyio
 import pytest
 from mcp.types import CreateMessageResult, TextContent
 
+from tests.integration._search_helpers import document_is_searchable
+
 pytestmark = pytest.mark.integration
-
-logger = logging.getLogger(__name__)
-
-
-async def _note_is_searchable(nc_mcp_client, search_term: str, note_id: int) -> bool:
-    """Return True once ``note_id`` is retrievable via semantic search."""
-    try:
-        search = await nc_mcp_client.call_tool(
-            "nc_semantic_search",
-            arguments={"query": search_term, "limit": 10, "score_threshold": 0.0},
-        )
-    except Exception as e:  # transient blip — keep polling
-        logger.debug("Semantic search poll failed: %s", e)
-        return False
-    if search.isError:
-        return False
-    results = json.loads(search.content[0].text).get("results", [])
-    return any(r.get("id") == note_id and r.get("doc_type") == "note" for r in results)
 
 
 async def wait_for_vector_sync(
@@ -55,11 +38,12 @@ async def wait_for_vector_sync(
 
     Args:
         nc_mcp_client: MCP client to poll status with.
-        search_term/note_id: If set (preferred), wait until that specific
-            document is retrievable via ``nc_semantic_search``. This is robust
-            against full-corpus re-scan churn, where the corpus-wide
-            ``indexed_count`` gauge is non-monotonic and ``indexed_count >
-            initial`` can never hold even though the document is indexed.
+        search_term: If set (preferred), wait until a document matching this
+            term is retrievable via ``nc_semantic_search``. Robust against
+            full-corpus re-scan churn, where the corpus-wide ``indexed_count``
+            gauge is non-monotonic and ``indexed_count > initial`` can never
+            hold even though the document is indexed.
+        note_id: Optional exact-match document id paired with ``search_term``.
         initial_indexed_count: Legacy gauge-delta fallback when no search_term
             is given: wait until indexed_count exceeds this value and
             pending_count reaches 0.
@@ -77,9 +61,9 @@ async def wait_for_vector_sync(
         )
         status_data = json.loads(sync_status.content[0].text)
 
-        if search_term is not None and note_id is not None:
+        if search_term is not None:
             # Robust signal: wait for the specific document to be retrievable
-            if await _note_is_searchable(nc_mcp_client, search_term, note_id):
+            if await document_is_searchable(nc_mcp_client, search_term, note_id):
                 break
         elif initial_indexed_count is not None:
             # Legacy: wait for new document(s) to be indexed (gauge delta)

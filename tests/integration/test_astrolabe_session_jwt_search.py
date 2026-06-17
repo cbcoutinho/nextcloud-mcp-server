@@ -47,7 +47,7 @@ async def _get_with_retry(
     client: httpx.AsyncClient, url: str, *, retries: int = 2, **kwargs
 ) -> httpx.Response:
     """GET with retries on transient transport errors (timeouts/conn resets)."""
-    last_exc: Exception | None = None
+    last_exc: httpx.TransportError | None = None
     for attempt in range(retries + 1):
         try:
             return await client.get(url, **kwargs)

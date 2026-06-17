@@ -28,6 +28,7 @@ from playwright.async_api import Page
 
 # Import helper functions from existing test
 from tests.conftest import create_mcp_client_session
+from tests.integration._search_helpers import document_is_searchable
 from tests.integration.test_astrolabe_multi_user_background_sync import (
     complete_astrolabe_authorization,
     login_to_nextcloud,
@@ -36,38 +37,6 @@ from tests.integration.test_astrolabe_multi_user_background_sync import (
 logger = logging.getLogger(__name__)
 
 pytestmark = [pytest.mark.integration, pytest.mark.multi_user_basic]
-
-
-async def _document_is_searchable(
-    mcp_client, search_term: str, note_id: int | None
-) -> bool:
-    """Return True once the freshly-created document is retrievable.
-
-    Polls ``nc_semantic_search`` (hybrid: an exact unique term reliably matches
-    on the keyword side) and matches by ``note_id`` when known, otherwise by the
-    term appearing in a result's title/excerpt.
-    """
-    try:
-        search = await mcp_client.call_tool(
-            "nc_semantic_search",
-            {"query": search_term, "limit": 10, "score_threshold": 0.0},
-        )
-    except Exception as e:  # transient transport/availability blip — keep polling
-        logger.debug("Semantic search poll failed: %s", e)
-        return False
-    if search.isError:
-        logger.debug("Semantic search poll error: %s", search)
-        return False
-
-    results = json.loads(search.content[0].text).get("results", [])
-    needle = search_term.lower()
-    for r in results:
-        if note_id is not None:
-            if r.get("id") == note_id and r.get("doc_type") == "note":
-                return True
-        elif needle in f"{r.get('title', '')} {r.get('excerpt', '')}".lower():
-            return True
-    return False
 
 
 async def wait_for_vector_sync(
@@ -132,7 +101,7 @@ async def wait_for_vector_sync(
         )
 
         if search_term is not None:
-            if await _document_is_searchable(mcp_client, search_term, note_id):
+            if await document_is_searchable(mcp_client, search_term, note_id):
                 logger.info(
                     "✓ Sync complete: document %s retrievable via semantic search",
                     note_id,
