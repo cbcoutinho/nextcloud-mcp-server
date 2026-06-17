@@ -2,7 +2,7 @@
 
 The escalation ladder is the cheapest-first ordering of extraction tiers:
 
-    fast  ->  structured  ->  ocr   ( ->  llm, reserved)
+    fast  ->  structured  ->  ocr-incluster  ->  ocr-upstream   ( ->  llm, reserved)
 
 It mirrors the ``tier`` vocabulary documented on
 :meth:`DocumentProcessor.tier <.base.DocumentProcessor.tier>` and the

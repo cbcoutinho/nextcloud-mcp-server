@@ -467,6 +467,24 @@ async def test_gateway_only_processor_never_uses_batch_mode(monkeypatch):
     assert await incluster._get_batch_client() is None
     assert called["n"] == 0  # short-circuited before building anything
 
+    # _process_batch returns None for the gateway-only rung WITHOUT emitting the
+    # misleading "no gateway backend" warning (the gateway IS configured; the rung
+    # is simply synchronous-only). _batch_fallback_warned stays False to prove it.
+    result = await incluster._process_batch(
+        b"%PDF-1.7",
+        "application/pdf",
+        "x.pdf",
+        dict(_IDENTITY),
+        _settings(
+            document_ocr_mode="batch",
+            document_ocr_provider="gateway",
+            embedding_gateway_url="https://gw",
+            document_ocr_incluster_model="surya/surya-ocr-2",
+        ),
+    )
+    assert result is None
+    assert incluster._batch_fallback_warned is False
+
     upstream = ocr.OcrProcessor()  # gateway_only=False
     assert await upstream._get_batch_client() is not None
     assert called["n"] == 1

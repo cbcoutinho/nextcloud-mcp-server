@@ -479,7 +479,9 @@ async def test_process_tier_oversize_fails_fast(monkeypatch):
         reg_mod, "get_settings", lambda: _Settings(max_pdf_size_mb=0.001)
     )
     r = _registry((_Fake("ocr-upstream", "ocr-upstream"), 5))
-    res = await r.process_tier(b"x" * 4096, "application/pdf", "big.pdf", "ocr")
+    res = await r.process_tier(
+        b"x" * 4096, "application/pdf", "big.pdf", "ocr-upstream"
+    )
     assert res.success is False
     assert res.metadata["parse_failed_reason"] == "oversize"
 
@@ -724,7 +726,7 @@ def test_evaluate_escalation_terminal_when_ocr_unregistered_and_off(monkeypatch)
 def test_evaluate_escalation_empty_suppressed_even_when_structured_registered(
     monkeypatch,
 ):
-    """empty_text uses minimum='ocr', so it skips structured even when structured
+    """empty_text uses minimum='ocr-incluster', so it skips structured even when structured
     IS registered: with OCR off it suppresses to ocr, never hops to structured
     (a text extractor can't conjure text from a raster scan)."""
     monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())

@@ -499,10 +499,15 @@ class OcrProcessor(DocumentProcessor):
             return None
         client = await self._get_batch_client()
         if client is None:
-            self._batch_fallback(
-                "no gateway backend (provider=mistral or EMBEDDING_GATEWAY_URL unset)",
-                filename,
-            )
+            # The in-cluster (gateway_only) rung returns None here BY DESIGN — the
+            # GPU is synchronous-only, batch is the upstream Mistral path — so don't
+            # emit the "no gateway backend" warning (the gateway IS configured; that
+            # warning would send an operator chasing a non-existent config problem).
+            if not self._gateway_only:
+                self._batch_fallback(
+                    "no gateway backend (provider=mistral or EMBEDDING_GATEWAY_URL unset)",
+                    filename,
+                )
             return None
 
         # Lazy import: keep the vector/DB stack off the document_processors load
