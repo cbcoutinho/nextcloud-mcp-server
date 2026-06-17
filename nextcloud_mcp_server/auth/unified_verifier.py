@@ -75,6 +75,16 @@ class UnifiedTokenVerifier(TokenVerifier):
             self.introspection_uri = settings.introspection_uri
             logger.info("Token introspection enabled: %s", self.introspection_uri)
 
+        # Userinfo fallback (for opaque tokens minted for a *different* OIDC
+        # client, e.g. Astrolabe, which the Nextcloud oidc app's introspection
+        # endpoint reports inactive cross-client). A 200 from userinfo proves
+        # the bearer is a live token for its user regardless of issuing client.
+        self.userinfo_uri: str | None = getattr(settings, "userinfo_uri", None)
+        if self.userinfo_uri:
+            logger.info(
+                "Userinfo token validation fallback enabled: %s", self.userinfo_uri
+            )
+
         # Build list of valid issuers (internal + public may differ in Docker)
         # AS proxy obtains tokens via internal URL (e.g. http://app:80), while
         # NEXTCLOUD_PUBLIC_ISSUER_URL is the browser-facing URL (e.g. http://localhost:8080)
@@ -209,6 +219,21 @@ class UnifiedTokenVerifier(TokenVerifier):
 
         if access_token is None:
             return None
+
+        # Opaque tokens validated via the userinfo fallback carry no verifiable
+        # client_id, so the ALLOWED_MGMT_CLIENT allowlist cannot apply. Such
+        # tokens are stamped with ``_auth_via_userinfo`` in the cache; for them
+        # we rely on the per-user authorization every management endpoint
+        # enforces (token sub == requested resource owner).
+        cached_entry = self._token_cache.get(cache_key)
+        via_userinfo = bool(cached_entry and cached_entry[0].get("_auth_via_userinfo"))
+        if via_userinfo:
+            logger.warning(
+                "Opaque token validated via userinfo endpoint; ALLOWED_MGMT_CLIENT "
+                "allowlist not enforced for user %s (per-user authorization applies)",
+                access_token.resource,
+            )
+            return access_token
 
         # Enforce ALLOWED_MGMT_CLIENT allowlist (fail-closed when unset)
         token_client_id = access_token.client_id
@@ -345,8 +370,17 @@ class UnifiedTokenVerifier(TokenVerifier):
                 if payload:
                     record_oauth_token_validation("introspect", "valid")
                 else:
-                    record_oauth_token_validation("introspect", "invalid")
-                    return None
+                    # Introspection can report opaque tokens minted for a
+                    # *different* OIDC client (e.g. Astrolabe) as inactive even
+                    # when they are live. Fall back to the userinfo endpoint,
+                    # which validates any live bearer regardless of client.
+                    payload = await self._validate_via_userinfo(token)
+                    if payload:
+                        validation_method = "userinfo"
+                        record_oauth_token_validation("userinfo", "valid")
+                    else:
+                        record_oauth_token_validation("introspect", "invalid")
+                        return None
 
             # Check payload is valid
             if not payload:
@@ -544,6 +578,64 @@ class UnifiedTokenVerifier(TokenVerifier):
         except Exception as e:
             logger.error("Unexpected error during token introspection: %s", e)
             return None
+
+    async def _validate_via_userinfo(self, token: str) -> dict[str, Any] | None:
+        """Validate an opaque token by calling the OIDC userinfo endpoint.
+
+        Fallback for opaque access tokens that the Nextcloud ``oidc`` app's
+        introspection endpoint reports ``active=false`` cross-client (i.e.
+        tokens minted for a *different* client such as Astrolabe). A 200 from
+        userinfo with a ``sub`` claim proves the bearer is a valid, unexpired
+        token for that user.
+
+        Unlike introspection, userinfo returns neither ``client_id`` nor
+        ``scope``, so the returned payload is stamped with ``_auth_via_userinfo``
+        and the management-API allowlist is relaxed for this path (authorization
+        is still enforced per-user by every management endpoint).
+
+        Args:
+            token: Bearer token to validate.
+
+        Returns:
+            Userinfo claims (with ``_auth_via_userinfo`` set) if valid, else None.
+        """
+        if not self.userinfo_uri:
+            logger.debug("No userinfo endpoint configured")
+            return None
+
+        try:
+            response = await self.http_client.get(
+                self.userinfo_uri,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        except httpx.TimeoutException:
+            logger.error("Timeout while validating token via userinfo")
+            return None
+        except httpx.RequestError as e:
+            logger.error("Network error while validating token via userinfo: %s", e)
+            return None
+
+        if response.status_code != 200:
+            logger.warning(
+                "Userinfo token validation failed: HTTP %s", response.status_code
+            )
+            return None
+
+        try:
+            data = response.json()
+        except Exception as e:
+            logger.error("Failed to parse userinfo response: %s", e)
+            return None
+
+        if not data.get("sub"):
+            logger.warning("Userinfo response missing 'sub' claim")
+            return None
+
+        logger.debug("Token validated via userinfo for user: %s", data.get("sub"))
+        # Stamp so verify_token_for_management_api can relax the client allowlist
+        # for tokens that legitimately lack a verifiable client_id.
+        data["_auth_via_userinfo"] = True
+        return data
 
     def _create_access_token(
         self, token: str, payload: dict[str, Any]

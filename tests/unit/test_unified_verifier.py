@@ -616,3 +616,106 @@ class TestManagementApiAllowlist:
 
         result = await verifier.verify_token_for_management_api(token)
         assert result is None
+
+
+class TestUserinfoFallback:
+    """Opaque tokens that introspection reports inactive fall back to userinfo.
+
+    Covers the nx101294 case: the Astrolabe OIDC client issues opaque access
+    tokens that Nextcloud's oidc app introspection reports active=false
+    cross-client. The userinfo endpoint validates them regardless of client.
+    """
+
+    @pytest.fixture
+    def userinfo_settings(self, base_settings):
+        base_settings.userinfo_uri = "https://idp.example.com/userinfo"
+        return base_settings
+
+    async def test_validate_via_userinfo_success(self, userinfo_settings):
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"sub": "testuser"}
+        with patch.object(
+            verifier.http_client, "get", AsyncMock(return_value=mock_resp)
+        ):
+            result = await verifier._validate_via_userinfo("opaque-token")
+        assert result is not None
+        assert result["sub"] == "testuser"
+        assert result["_auth_via_userinfo"] is True
+
+    async def test_validate_via_userinfo_non_200(self, userinfo_settings):
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        with patch.object(
+            verifier.http_client, "get", AsyncMock(return_value=mock_resp)
+        ):
+            result = await verifier._validate_via_userinfo("opaque-token")
+        assert result is None
+
+    async def test_validate_via_userinfo_missing_sub(self, userinfo_settings):
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"name": "no sub claim"}
+        with patch.object(
+            verifier.http_client, "get", AsyncMock(return_value=mock_resp)
+        ):
+            result = await verifier._validate_via_userinfo("opaque-token")
+        assert result is None
+
+    async def test_validate_via_userinfo_not_configured(self, base_settings):
+        base_settings.userinfo_uri = None
+        verifier = UnifiedTokenVerifier(base_settings)
+        result = await verifier._validate_via_userinfo("opaque-token")
+        assert result is None
+
+    async def test_mgmt_opaque_userinfo_fallback_accepted_despite_allowlist(
+        self, monkeypatch, userinfo_settings
+    ):
+        """Introspection inactive -> userinfo validates -> accepted even though
+        no client_id matches the allowlist (per-user authorization applies)."""
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "astrolabe")
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+
+        with (
+            patch.object(verifier, "_introspect_token", AsyncMock(return_value=None)),
+            patch.object(
+                verifier,
+                "_validate_via_userinfo",
+                AsyncMock(return_value={"sub": "testuser", "_auth_via_userinfo": True}),
+            ),
+        ):
+            result = await verifier.verify_token_for_management_api("opaque-token-123")
+
+        assert result is not None
+        assert result.resource == "testuser"
+        assert result.client_id == ""  # userinfo provides no client_id
+
+    async def test_mgmt_userinfo_not_called_when_introspection_succeeds(
+        self, monkeypatch, userinfo_settings
+    ):
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "astrolabe")
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+
+        introspection_payload = {
+            "sub": "testuser",
+            "client_id": "astrolabe",
+            "scope": "openid",
+            "exp": int(time.time() + 3600),
+        }
+        userinfo_mock = AsyncMock(return_value={"sub": "x", "_auth_via_userinfo": True})
+        with (
+            patch.object(
+                verifier,
+                "_introspect_token",
+                AsyncMock(return_value=introspection_payload),
+            ),
+            patch.object(verifier, "_validate_via_userinfo", userinfo_mock),
+        ):
+            result = await verifier.verify_token_for_management_api("opaque-token-123")
+
+        assert result is not None
+        assert result.client_id == "astrolabe"
+        userinfo_mock.assert_not_called()
