@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.120.5 (2026-06-17)
+
+### Fix
+
+- **auth**: clarify empty-allowlist startup warning when userinfo is configured
+- **auth**: quiet per-validation userinfo TTL log; test introspection-timeout fall-through
+- **auth**: document introspection-error fall-through, drop misleading userinfo metric
+- **auth**: quiet cache-hit userinfo log, test real-exp userinfo path
+- **auth**: harden userinfo fallback (anti-forgery, SSRF guard, unconfigured-introspection)
+- **auth**: tighten userinfo-token cache TTL and metric labelling
+- **auth**: validate opaque access tokens via userinfo fallback
+
 ## v0.120.4 (2026-06-17)
 
 ### Fix
