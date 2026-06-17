@@ -175,6 +175,12 @@ class UnifiedTokenVerifier(TokenVerifier):
            - Verifies token signature against Nextcloud's JWKS (cryptographic proof)
            - Verifies token is not expired
            - Extracts user identity from validated token claims
+           - NOTE: for opaque cross-client tokens (e.g. Astrolabe) that
+             introspection reports inactive, authentication falls back to the
+             userinfo endpoint — a live IdP liveness check (200 + ``sub``)
+             rather than local JWKS/expiry verification. Such tokens are stamped
+             ``_auth_via_userinfo`` and bypass the client allowlist (step 4);
+             per-user authorization (step 2) remains the security gate.
 
         2. **Authorization layer** (management API endpoints):
            - EVERY endpoint verifies: token.sub == requested_resource_owner
@@ -420,9 +426,8 @@ class UnifiedTokenVerifier(TokenVerifier):
                     # a userinfo failure metric when userinfo was never attempted.
                     return None
 
-            # Check payload is valid
-            if not payload:
-                return None
+            # Both branches above either set a populated payload or have already
+            # returned None, so payload is guaranteed truthy here.
 
             # Skip audience validation - any valid Nextcloud token is accepted
             logger.debug(

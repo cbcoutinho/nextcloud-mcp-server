@@ -780,6 +780,21 @@ class TestUserinfoFallback:
         assert result is not None
         assert result.resource == "testuser"
 
+    async def test_mcp_path_does_not_use_userinfo_for_opaque_token(
+        self, userinfo_settings
+    ):
+        """The userinfo fallback applies only to the management API path, never
+        the MCP-audience path — an opaque token there is still rejected."""
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+        userinfo_mock = AsyncMock(return_value={"sub": "testuser"})
+        with (
+            patch.object(verifier, "_introspect_token", AsyncMock(return_value=None)),
+            patch.object(verifier, "_validate_via_userinfo", userinfo_mock),
+        ):
+            result = await verifier.verify_token("opaque-astrolabe-token")
+        assert result is None
+        userinfo_mock.assert_not_called()
+
     async def test_opaque_rejected_when_no_validators_configured(self, base_settings):
         """With neither introspection nor userinfo configured, an opaque token is
         rejected without recording a misleading userinfo-failure metric."""
