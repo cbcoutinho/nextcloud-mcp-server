@@ -44,17 +44,17 @@ _SEARCH_TIMEOUT = httpx.Timeout(90.0)
 
 
 async def _get_with_retry(
-    client: httpx.AsyncClient, url: str, *, retries: int = 2, **kwargs
+    client: httpx.AsyncClient, url: str, *, max_attempts: int = 3, **kwargs
 ) -> httpx.Response:
-    """GET with retries on transient transport errors (timeouts/conn resets)."""
+    """GET, retrying on transient transport errors (timeouts/conn resets)."""
     last_exc: httpx.TransportError | None = None
-    for attempt in range(retries + 1):
+    for attempt in range(1, max_attempts + 1):
         try:
             return await client.get(url, **kwargs)
         except httpx.TransportError as e:  # covers timeouts + connect/read errors
             last_exc = e
             logger.warning(
-                "GET %s failed (attempt %s/%s): %s", url, attempt + 1, retries + 1, e
+                "GET %s failed (attempt %s/%s): %s", url, attempt, max_attempts, e
             )
             await anyio.sleep(2)
     raise last_exc  # type: ignore[misc]

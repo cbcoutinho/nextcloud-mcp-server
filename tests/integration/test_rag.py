@@ -174,16 +174,22 @@ async def indexed_manual_pdf(nc_client, nc_mcp_client):
                 content = json.loads(result.content[0].text) if result.content else {}
                 indexed = content.get("indexed_count", 0)
                 pending = content.get("pending_count", 1)
+                status = content.get("status")
 
                 logger.info(
-                    "Attempt %s/%s: indexed=%s, pending=%s",
+                    "Attempt %s/%s: indexed=%s, pending=%s, status=%s",
                     attempt,
                     max_attempts,
                     indexed,
                     pending,
+                    status,
                 )
 
-                if indexed > 0 and pending == 0:
+                # Require indexed > 0 (the manual must actually be indexed —
+                # idle/pending==0 is also the *initial* empty state) AND a
+                # settled idle scan so we don't break during a transient
+                # pending==0 window mid re-scan churn.
+                if indexed > 0 and pending == 0 and status == "idle":
                     logger.info(
                         "Vector indexing complete: %s documents indexed", indexed
                     )
