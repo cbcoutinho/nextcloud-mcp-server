@@ -741,6 +741,33 @@ class TestUserinfoFallback:
         assert result.resource == "testuser"
         introspect_mock.assert_not_called()  # skipped when unconfigured
 
+    async def test_introspection_timeout_falls_through_to_userinfo(
+        self, monkeypatch, userinfo_settings
+    ):
+        """A real introspection timeout (caught inside _introspect_token, which
+        returns None) falls through to userinfo — the authoritative live check —
+        exercising the whole chain, not just a mocked _introspect_token."""
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "astrolabe")
+        verifier = UnifiedTokenVerifier(userinfo_settings)
+
+        userinfo_resp = MagicMock()
+        userinfo_resp.status_code = 200
+        userinfo_resp.json.return_value = {"sub": "testuser"}
+        with (
+            patch.object(
+                verifier.http_client,
+                "post",
+                AsyncMock(side_effect=httpx.TimeoutException("introspect down")),
+            ),
+            patch.object(
+                verifier.http_client, "get", AsyncMock(return_value=userinfo_resp)
+            ),
+        ):
+            result = await verifier.verify_token_for_management_api("opaque-timeout")
+
+        assert result is not None
+        assert result.resource == "testuser"
+
     async def test_opaque_rejected_when_no_validators_configured(self, base_settings):
         """With neither introspection nor userinfo configured, an opaque token is
         rejected without recording a misleading userinfo-failure metric."""

@@ -758,7 +758,10 @@ class UnifiedTokenVerifier(TokenVerifier):
             # opaque token can't be honored for the full hour-long default TTL.
             if via_userinfo:
                 ttl = self.userinfo_cache_ttl
-                logger.warning(
+                # userinfo never returns exp, so this fires on every fresh
+                # userinfo validation — keep it at DEBUG (the bounded-staleness
+                # window is documented on _validate_via_userinfo).
+                logger.debug(
                     "Token validated via userinfo has no 'exp'; caching for %ss only",
                     ttl,
                 )
