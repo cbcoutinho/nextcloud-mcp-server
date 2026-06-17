@@ -35,14 +35,27 @@ async def document_is_searchable(
         logger.debug("Semantic search poll error: %s", search)
         return False
 
-    results = json.loads(search.content[0].text).get("results", [])
+    try:
+        results = json.loads(search.content[0].text).get("results", [])
+    except (IndexError, ValueError) as e:  # empty content / malformed JSON
+        logger.debug("Semantic search parse failed: %s", e)
+        return False
+
     # Token match (not contiguous substring) so multi-word terms work in the
     # note_id-less fallback path.
     tokens = search_term.lower().split()
     for r in results:
         if note_id is not None:
-            if r.get("id") == note_id and r.get("doc_type") == "note":
-                return True
+            if r.get("id") == note_id:
+                if r.get("doc_type") == "note":
+                    return True
+                # id matched but not a note — surface possible schema drift
+                # rather than silently timing out.
+                logger.debug(
+                    "search hit id=%s has doc_type=%s (expected note)",
+                    note_id,
+                    r.get("doc_type"),
+                )
         else:
             haystack = f"{r.get('title', '')} {r.get('excerpt', '')}".lower()
             if tokens and all(t in haystack for t in tokens):

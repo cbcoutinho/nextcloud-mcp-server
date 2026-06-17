@@ -44,7 +44,7 @@ _SEARCH_TIMEOUT = httpx.Timeout(90.0)
 
 
 async def _get_with_retry(
-    client: httpx.AsyncClient, url: str, *, max_attempts: int = 3, **kwargs
+    client: httpx.AsyncClient, url: str, *, max_attempts: int = 2, **kwargs
 ) -> httpx.Response:
     """GET, retrying on transient transport errors (timeouts/conn resets)."""
     last_exc: httpx.TransportError | None = None
@@ -74,6 +74,7 @@ async def _astrolabe_configured(client: httpx.AsyncClient, auth) -> bool:
     return bool(resp.json().get("success"))
 
 
+@pytest.mark.timeout(300)  # cold model load + retry can exceed the 180s default
 async def test_session_user_searches_without_provisioning(test_users_setup):
     """A non-admin session user searches with no OAuth/provisioning step.
 
@@ -111,6 +112,7 @@ async def test_session_user_searches_without_provisioning(test_users_setup):
     assert "results" in body and "algorithm_used" in body
 
 
+@pytest.mark.timeout(300)  # cold model load + retry can exceed the 180s default
 async def test_admin_session_search_succeeds():
     """The same JWT-mint path works for the admin session user."""
     admin_pw = os.environ["NEXTCLOUD_PASSWORD"]
