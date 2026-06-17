@@ -246,8 +246,14 @@ async def _complete_login_flow_v2(browser, login_url: str) -> None:
         await page.goto(login_url, wait_until="networkidle", timeout=60000)
         logger.info("Step 1 - Current URL: %s", page.url)
 
-        # Step 1: "Connect to your account" page - click "Log in"
-        login_btn = page.get_by_role("button", name="Log in")
+        # Step 1: "Connect to your account" page - click "Log in".
+        # exact=True is required: NC33's connect page also renders an
+        # "Alternative log in using app password" button, and a non-exact
+        # "Log in" name substring-matches both -> Playwright strict-mode error
+        # that was silently swallowed below, leaving the flow stuck on the
+        # connect page (every login-flow test then times out "Login Flow v2 did
+        # not complete"). NC32 has a single match, so exact=True is safe there.
+        login_btn = page.get_by_role("button", name="Log in", exact=True)
         try:
             await login_btn.wait_for(timeout=10000)
             await login_btn.click()
@@ -803,8 +809,14 @@ async def _complete_login_flow_v2_as_user(
         await page.goto(login_url, wait_until="networkidle", timeout=60000)
         logger.info("[%s] Step 1 - Current URL: %s", username, page.url)
 
-        # Step 1: "Connect to your account" page - click "Log in"
-        login_btn = page.get_by_role("button", name="Log in")
+        # Step 1: "Connect to your account" page - click "Log in".
+        # exact=True is required: NC33's connect page also renders an
+        # "Alternative log in using app password" button, and a non-exact
+        # "Log in" name substring-matches both -> Playwright strict-mode error
+        # that was silently swallowed below, leaving the flow stuck on the
+        # connect page (every login-flow test then times out "Login Flow v2 did
+        # not complete"). NC32 has a single match, so exact=True is safe there.
+        login_btn = page.get_by_role("button", name="Log in", exact=True)
         try:
             await login_btn.wait_for(timeout=10000)
             await login_btn.click()
