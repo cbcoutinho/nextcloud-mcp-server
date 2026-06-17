@@ -397,6 +397,13 @@ async def sweep_orphan_placeholders(
         orphan_ids = []
         for point in points:
             payload = point.payload or {}
+            # Dead-letter markers (vector/dead_letter.py) reuse is_placeholder=True
+            # for the search exclusion but are DURABLE terminal-state records, not
+            # in-flight placeholders -- they carry no/foreign instance_id and must
+            # survive a Pod restart, so never sweep them as orphans.
+            if payload.get("dead_letter") is True:
+                kept += 1
+                continue
             point_instance = payload.get("instance_id")
             if point_instance == _INSTANCE_ID:
                 kept += 1

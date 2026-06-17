@@ -22,11 +22,34 @@ mapping lives in the queue layer, which imports :class:`EscalateError` from here
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 # Cheapest-first. ``llm`` is reserved (see base.DocumentProcessor.tier) and not
 # wired yet, so it is intentionally absent from the live ladder.
 TIER_LADDER: tuple[str, ...] = ("fast", "structured", "ocr")
+
+
+def escalation_tiers_signature(settings: Any) -> str:
+    """A stable string fingerprint of the runtime escalation-tier configuration.
+
+    Used by the document dead-letter marker (``vector/dead_letter.py``) as part of
+    its content key: a document that fails its terminal tier is dead-lettered until
+    either its content (etag) OR this signature changes. The signature therefore
+    captures every setting that can make a *new* escalation tier become available
+    at runtime — flip it and previously dead-lettered documents become retryable.
+
+    Derived purely from settings (not the live ``ProcessorRegistry``) so it is
+    identical across the API/scanner and worker roles: the *registered* processor
+    set is build-constant, so the only runtime variables are the OCR-enabled gate
+    (``document_ocr_enabled`` — the single tier toggle today) and the tier-1 engine
+    pin (``document_tier1_engine``). Enabling OCR changes the signature, so the
+    pathological-but-OCR-recoverable documents dead-lettered while OCR was off are
+    re-attempted automatically.
+    """
+    return (
+        f"ocr={int(bool(settings.document_ocr_enabled))};"
+        f"t1={settings.document_tier1_engine}"
+    )
 
 
 @dataclass(frozen=True)

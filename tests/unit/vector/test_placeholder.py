@@ -111,6 +111,26 @@ async def test_keeps_own_pod_placeholders(monkeypatch):
 
 
 @pytest.mark.unit
+async def test_keeps_dead_letter_markers(monkeypatch):
+    """Dead-letter markers (vector/dead_letter.py) reuse is_placeholder=True for
+    the search exclusion but are DURABLE terminal-state records, not in-flight
+    placeholders. They carry a foreign/absent instance_id, so without the
+    carve-out the sweep would delete them on every Pod restart and the
+    dead-lettered document would loop again. They MUST be kept."""
+    monkeypatch.setattr(placeholder_module, "_INSTANCE_ID", "pod-new")
+    marker = SimpleNamespace(
+        id="dl-1",
+        payload={"is_placeholder": True, "dead_letter": True, "instance_id": "pod-old"},
+    )
+    client = _make_client([([marker], None)])
+
+    swept, kept = await sweep_orphan_placeholders(client, "nextcloud_content")
+
+    assert (swept, kept) == (0, 1)
+    client.delete.assert_not_awaited()
+
+
+@pytest.mark.unit
 async def test_noop_when_no_placeholders_exist(monkeypatch):
     """Cold-boot tenant with an empty collection — sweep does NOT
     issue a delete request, so a trivially-empty batch can't trip
