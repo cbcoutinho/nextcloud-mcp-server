@@ -804,6 +804,11 @@ def record_document_parse_failed(reason: str) -> None:
 def record_document_dead_lettered(reason: str) -> None:
     """Record a document dead-lettered after a terminal parse failure.
 
+    Counts the dead-letter *attempt*: it is incremented alongside the
+    ``mark_dead_letter`` call, which is fail-safe (a Qdrant write error is logged,
+    not raised), so a transient write failure can leave this counter marginally
+    above the live marker count in Qdrant.
+
     Args:
         reason: ``timeout`` | ``oom`` | ``error`` (the terminal parse failure
             reason carried from the isolated worker) or ``oversize`` (rejected by
