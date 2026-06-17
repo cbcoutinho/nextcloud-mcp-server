@@ -51,6 +51,10 @@ class TestLadder:
         # Legacy / unknown / None all fall back to the cheapest tier.
         assert pq.tier_for_queue(pq.LEGACY_INGEST_QUEUE) == "fast"
         assert pq.tier_for_queue(None) == "fast"
+        # The pre-split legacy OCR queue also resolves to fast (NOT ocr-upstream):
+        # stranded in-flight jobs re-extract empty and re-escalate via the ladder
+        # to the cheap ocr-incluster rung, never straight to paid upstream.
+        assert pq.tier_for_queue(pq.LEGACY_INGEST_QUEUE_OCR) == "fast"
 
 
 class TestTieredEscalationStrategy:

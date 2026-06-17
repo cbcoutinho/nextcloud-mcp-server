@@ -287,7 +287,9 @@ def build_ocr_backend(
 
 
 class OcrProcessor(DocumentProcessor):
-    """Tier-3 OCR processor (gateway or direct Mistral backend)."""
+    """OCR processor for both OCR rungs — tier2 in-cluster (gateway-only GPU) and
+    tier3 upstream (gateway or direct Mistral backend). One class, two registered
+    instances bound to different ``(tier, model_setting, gateway_only)``."""
 
     def __init__(
         self,
@@ -303,6 +305,11 @@ class OcrProcessor(DocumentProcessor):
         # gateway-only (its model, e.g. surya, is reachable solely via the
         # gateway); the upstream rung keeps the configurable gateway/mistral
         # selection. surya is NEVER hard-coded here — only a config default.
+        # Fail fast on a misconfigured model_setting (a typo in a constructor call)
+        # so it surfaces at startup, not as an AttributeError mid-OCR. The string
+        # only ever comes from hardcoded defaults in __init__.py, never user input.
+        if not hasattr(Settings, model_setting):
+            raise ValueError(f"Unknown model_setting: {model_setting!r}")
         self._name = name
         self._tier = tier
         self._model_setting = model_setting
@@ -450,9 +457,10 @@ class OcrProcessor(DocumentProcessor):
                 self._batch_client_lock = anyio.Lock()
             async with self._batch_client_lock:
                 if not self._batch_client_resolved:  # double-checked
+                    settings = get_settings()
                     self._batch_client = build_gateway_batch_client(
-                        get_settings(),
-                        model=getattr(get_settings(), self._model_setting),
+                        settings,
+                        model=getattr(settings, self._model_setting),
                     )
                     self._batch_client_resolved = True
         return self._batch_client

@@ -119,6 +119,15 @@ def tier_for_queue(queue: str | None) -> str:
     The queue-aware task uses this to pick which single tier to parse with: the
     job's current queue *is* its tier. A job on the legacy ``ingest`` queue (or
     any unrecognised queue) defaults to the cheapest tier.
+
+    The pre-split legacy OCR queue ``ingest-ocr`` (``LEGACY_INGEST_QUEUE_OCR``)
+    is deliberately NOT mapped here, so it also resolves to ``fast``. These are
+    in-flight jobs enqueued before the tier2/tier3 split; running them at fast
+    re-extracts (an empty layer for a scanned doc), which re-enters the ladder
+    and naturally re-escalates to ``ocr-incluster`` (the cheap GPU rung) — one
+    extra cheap hop, but it keeps stranded legacy OCR jobs OFF the paid upstream
+    rung rather than mapping them straight to ``ocr-upstream``. The set is
+    transient (only during a single rollout window).
     """
     return _QUEUE_TIERS.get(queue or "", "fast")
 

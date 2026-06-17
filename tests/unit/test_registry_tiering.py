@@ -803,6 +803,26 @@ async def test_inline_incluster_disabled_skips_to_upstream(monkeypatch):
     esc.assert_called_once_with("fast", "ocr-upstream", "empty_text")
 
 
+async def test_inline_incluster_failure_falls_back_to_fast_not_upstream(monkeypatch):
+    """CURRENT behavior (pins the known follow-up gap): when the chosen in-cluster
+    rung runs but FAILS (e.g. GPU 503 -> success=False), the inline path keeps the
+    tier-1 result rather than cascading to the paid upstream rung. OCR is an
+    enhancement, not a gate. (A future change will escalate transient GPU failures
+    to ocr-upstream; this test makes that diff explicit.)"""
+    monkeypatch.setattr(
+        reg_mod, "get_settings", lambda: _Settings(ocr=True, ocr_incluster=True)
+    )
+    monkeypatch.setattr(reg_mod, "record_document_escalation", MagicMock())
+    r = _registry(
+        (_Fake("fast", "fast", text=""), 20),
+        (_Fake("ocr-incluster", "ocr-incluster", text="", success=False), 6),
+        (_Fake("ocr-upstream", "ocr-upstream", text="upstream ocr text"), 5),
+    )
+    res = await r.process(b"%PDF-1.7", "application/pdf")
+    assert res.processor == "fast"
+    assert res.success is True
+
+
 def _empty_result() -> ProcessingResult:
     return ProcessingResult(
         text="",

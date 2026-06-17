@@ -360,6 +360,10 @@ class ProcessorRegistry:
                 from_tier, settings, minimum="ocr-incluster"
             )
             ocr = self._pdf_processor_for_tier(ocr_tier) if ocr_tier else None
+            # `ocr is not None` already implies `ocr_tier is not None` at runtime,
+            # but the type checker can't infer that across the conditional above,
+            # so the explicit guard narrows `ocr_tier` to `str` for the
+            # record_document_escalation(from_tier, ocr_tier, reason) call below.
             if ocr is not None and ocr_tier is not None:
                 reason = (
                     "corrupt_glyphs"
@@ -514,8 +518,8 @@ class ProcessorRegistry:
         ``ignore_ocr_enabled`` drops only the OCR-enabled gate (not the registered-
         processor requirement): it answers "would this tier run if OCR were turned
         on?" — used to compute the *ideal* escalation target for the what-if-OCR
-        suppressed-escalation signal. (Today only ``ocr`` has an enabled gate; a
-        future per-tier gate would extend the condition below.)
+        suppressed-escalation signal. (Both OCR rungs — ``ocr-incluster`` and
+        ``ocr-upstream`` — have their own enabled gate; non-OCR tiers have none.)
         """
         if self._pdf_processor_for_tier(tier) is None:
             return False
@@ -624,9 +628,11 @@ class ProcessorRegistry:
 
         Target-tier routing:
 
-        - ``total_chars == 0`` (scanned / no text layer) -> target the ``ocr``
-          tier directly. Text-extractor tiers (``structured``) cannot conjure
-          text from a pure raster scan, so a structured hop would just be wasted.
+        - ``total_chars == 0`` (scanned / no text layer) -> target the cheapest
+          OCR rung (``ocr-incluster``) directly; ``next_available_tier`` falls
+          through to ``ocr-upstream`` if in-cluster is disabled/unregistered.
+          Text-extractor tiers (``structured``) cannot conjure text from a pure
+          raster scan, so a structured hop would just be wasted.
         - glyph-corrupt text layer (``recommended_tier == "structured"``) -> target
           the ``structured`` tier; pymupdf re-extracts a broken-/ToUnicode layer
           correctly, so OCR is never the target for this case.
