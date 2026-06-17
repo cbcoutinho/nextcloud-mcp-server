@@ -115,10 +115,20 @@ class UnifiedTokenVerifier(TokenVerifier):
             if entry.strip()
         )
         if not self._allowed_mgmt_clients:
-            logger.warning(
-                "ALLOWED_MGMT_CLIENT is unset or empty: management API will reject "
-                "all requests until configured."
-            )
+            if self.userinfo_uri:
+                # An empty allowlist is NOT a kill switch when userinfo is
+                # configured: opaque tokens validated via the userinfo fallback
+                # bypass ALLOWED_MGMT_CLIENT (per-user authz still applies).
+                logger.warning(
+                    "ALLOWED_MGMT_CLIENT is unset: JWT/introspection management "
+                    "tokens will be rejected, but opaque tokens may still be "
+                    "accepted via the userinfo fallback."
+                )
+            else:
+                logger.warning(
+                    "ALLOWED_MGMT_CLIENT is unset or empty: management API will "
+                    "reject all requests until configured."
+                )
         else:
             logger.info(
                 "Management API allowlist: %s", sorted(self._allowed_mgmt_clients)
