@@ -1615,6 +1615,9 @@ async def _index_document(
     # escalation tier finally parsed it) so it isn't left behind. Only files are
     # ever dead-lettered, and only with a non-empty etag (is_dead_lettered
     # early-returns without one), so skip the extra Qdrant round-trip otherwise.
+    # Cleared before the real-chunk upsert below: if that upsert then fails
+    # transiently, the document is re-queued and re-parses once on the next scan
+    # (an extra parse, never a silent drop) -- the safe ordering.
     if doc_task.doc_type == "file" and doc_task.etag:
         await clear_dead_letter(doc_task.doc_id, doc_task.doc_type)
 

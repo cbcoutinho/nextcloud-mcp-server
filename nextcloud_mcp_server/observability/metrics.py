@@ -316,7 +316,7 @@ document_parse_failed_total = Counter(
 document_dead_lettered_total = Counter(
     "astrolabe_document_dead_lettered_total",
     "Documents dead-lettered after a terminal parse failure (no escalation tier)",
-    ["reason"],  # reason: timeout | oom | error
+    ["reason"],  # reason: timeout | oom | error | oversize
 )
 
 # Documents dropped after exhausting in-process indexing retries (the scanner
@@ -806,7 +806,8 @@ def record_document_dead_lettered(reason: str) -> None:
 
     Args:
         reason: ``timeout`` | ``oom`` | ``error`` (the terminal parse failure
-            reason carried from the isolated worker).
+            reason carried from the isolated worker) or ``oversize`` (rejected by
+            the pre-parse size guard, which no tier can ever parse).
     """
     document_dead_lettered_total.labels(reason=reason).inc()
 

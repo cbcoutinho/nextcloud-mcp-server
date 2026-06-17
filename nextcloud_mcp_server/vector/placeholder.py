@@ -402,6 +402,8 @@ async def sweep_orphan_placeholders(
             # in-flight placeholders -- they carry no/foreign instance_id and must
             # survive a Pod restart, so never sweep them as orphans.
             if payload.get("dead_letter") is True:
+                # Tenant-wide and always kept (not Pod-scoped); counted under
+                # ``kept`` only because the sweep's tally has no separate bucket.
                 kept += 1
                 continue
             point_instance = payload.get("instance_id")
