@@ -75,6 +75,17 @@ class UnifiedTokenVerifier(TokenVerifier):
             self.introspection_uri = settings.introspection_uri
             logger.info("Token introspection enabled: %s", self.introspection_uri)
 
+        # Userinfo fallback (for opaque tokens minted for a *different* OIDC
+        # client, e.g. Astrolabe, which the Nextcloud oidc app's introspection
+        # endpoint reports inactive cross-client). A 200 from userinfo proves
+        # the bearer is a live token for its user regardless of issuing client.
+        self.userinfo_uri: str | None = None
+        if hasattr(settings, "userinfo_uri") and settings.userinfo_uri:
+            self.userinfo_uri = settings.userinfo_uri
+            logger.info(
+                "Userinfo token validation fallback enabled: %s", self.userinfo_uri
+            )
+
         # Build list of valid issuers (internal + public may differ in Docker)
         # AS proxy obtains tokens via internal URL (e.g. http://app:80), while
         # NEXTCLOUD_PUBLIC_ISSUER_URL is the browser-facing URL (e.g. http://localhost:8080)
@@ -89,6 +100,10 @@ class UnifiedTokenVerifier(TokenVerifier):
         # Token cache: token_hash -> (userinfo, expiry_timestamp)
         self._token_cache: dict[str, tuple[dict[str, Any], float]] = {}
         self.cache_ttl = 3600  # 1 hour default
+        # Userinfo responses carry no token `exp`, so userinfo-validated opaque
+        # tokens fall back to a TTL here. Keep it short: a revoked/expired token
+        # is still honored from cache until this window elapses (no exp to gate).
+        self.userinfo_cache_ttl = 300  # 5 minutes
 
         # NOTE: ALLOWED_MCP_CLIENTS and ALLOWED_MGMT_CLIENT are currently separate
         # env vars to keep the MCP-route and management-API auth surfaces
@@ -100,10 +115,20 @@ class UnifiedTokenVerifier(TokenVerifier):
             if entry.strip()
         )
         if not self._allowed_mgmt_clients:
-            logger.warning(
-                "ALLOWED_MGMT_CLIENT is unset or empty: management API will reject "
-                "all requests until configured."
-            )
+            if self.userinfo_uri:
+                # An empty allowlist is NOT a kill switch when userinfo is
+                # configured: opaque tokens validated via the userinfo fallback
+                # bypass ALLOWED_MGMT_CLIENT (per-user authz still applies).
+                logger.warning(
+                    "ALLOWED_MGMT_CLIENT is unset: JWT/introspection management "
+                    "tokens will be rejected, but opaque tokens may still be "
+                    "accepted via the userinfo fallback."
+                )
+            else:
+                logger.warning(
+                    "ALLOWED_MGMT_CLIENT is unset or empty: management API will "
+                    "reject all requests until configured."
+                )
         else:
             logger.info(
                 "Management API allowlist: %s", sorted(self._allowed_mgmt_clients)
@@ -160,6 +185,12 @@ class UnifiedTokenVerifier(TokenVerifier):
            - Verifies token signature against Nextcloud's JWKS (cryptographic proof)
            - Verifies token is not expired
            - Extracts user identity from validated token claims
+           - NOTE: for opaque cross-client tokens (e.g. Astrolabe) that
+             introspection reports inactive, authentication falls back to the
+             userinfo endpoint — a live IdP liveness check (200 + ``sub``)
+             rather than local JWKS/expiry verification. Such tokens are stamped
+             ``_auth_via_userinfo`` and bypass the client allowlist (step 4);
+             per-user authorization (step 2) remains the security gate.
 
         2. **Authorization layer** (management API endpoints):
            - EVERY endpoint verifies: token.sub == requested_resource_owner
@@ -203,12 +234,42 @@ class UnifiedTokenVerifier(TokenVerifier):
             else:
                 del self._token_cache[cache_key]
 
+        from_cache = access_token is not None
         if access_token is None:
             oauth_token_cache_hits_total.labels(hit="false").inc()
             access_token = await self._verify_without_audience_check(token, cache_key)
 
         if access_token is None:
             return None
+
+        # Opaque tokens validated via the userinfo fallback carry no verifiable
+        # client_id, so the ALLOWED_MGMT_CLIENT allowlist cannot apply. Such
+        # tokens are stamped with ``_auth_via_userinfo`` in the cache; for them
+        # we rely on the per-user authorization every management endpoint
+        # enforces (token sub == requested resource owner).
+        # Recover the via-userinfo flag from the cache entry. On a cache miss
+        # this is the entry _verify_without_audience_check just wrote (no await
+        # between that write and this read, so it is always present); on a cache
+        # hit it was written by an earlier call.
+        cached_entry = self._token_cache.get(cache_key)
+        via_userinfo = bool(cached_entry and cached_entry[0].get("_auth_via_userinfo"))
+        if via_userinfo:
+            # Warn once on fresh validation; subsequent cache-hit re-validations
+            # (frequent Astrolabe polling) log at DEBUG to avoid flooding.
+            if from_cache:
+                logger.debug(
+                    "Opaque token (userinfo-validated) served from cache for "
+                    "user %s; allowlist not enforced",
+                    access_token.resource,
+                )
+            else:
+                logger.warning(
+                    "Opaque token validated via userinfo endpoint; "
+                    "ALLOWED_MGMT_CLIENT allowlist not enforced for user %s "
+                    "(per-user authorization applies)",
+                    access_token.resource,
+                )
+            return access_token
 
         # Enforce ALLOWED_MGMT_CLIENT allowlist (fail-closed when unset)
         token_client_id = access_token.client_id
@@ -339,18 +400,44 @@ class UnifiedTokenVerifier(TokenVerifier):
                     record_oauth_token_validation("jwt", "invalid")
                     return None
             else:
-                # Fall back to introspection for opaque tokens
-                validation_method = "introspect"
-                payload = await self._introspect_token(token)
-                if payload:
-                    record_oauth_token_validation("introspect", "valid")
-                else:
-                    record_oauth_token_validation("introspect", "invalid")
+                # Opaque token: try introspection first (only when configured),
+                # then fall back to userinfo. userinfo validates opaque tokens
+                # minted for a *different* OIDC client (e.g. Astrolabe) that
+                # introspection reports inactive cross-client.
+                payload = None
+                if self.introspection_uri:
+                    validation_method = "introspect"
+                    payload = await self._introspect_token(token)
+                    if payload:
+                        record_oauth_token_validation("introspect", "valid")
+                    else:
+                        record_oauth_token_validation("introspect", "invalid")
+
+                # Fall through to userinfo when introspection is unconfigured or
+                # returned None. NOTE: _introspect_token returns None for BOTH an
+                # active=false response (the nx101294 cross-client case we must
+                # handle) AND a network/timeout error — both reach userinfo here.
+                # That is safe: userinfo is itself an authoritative live check (a
+                # revoked/invalid token gets a 401), so a flapping introspection
+                # endpoint cannot cause an invalid token to be accepted.
+                if payload is None and self.userinfo_uri:
+                    # Set validation_method first so a userinfo exception caught
+                    # by the outer handler is attributed correctly.
+                    validation_method = "userinfo"
+                    payload = await self._validate_via_userinfo(token)
+                    if payload:
+                        record_oauth_token_validation("userinfo", "valid")
+                    else:
+                        record_oauth_token_validation("userinfo", "invalid")
+                        return None
+
+                if payload is None:
+                    # No validator was configured, or none succeeded. Don't record
+                    # a userinfo failure metric when userinfo was never attempted.
                     return None
 
-            # Check payload is valid
-            if not payload:
-                return None
+            # Both branches above either set a populated payload or have already
+            # returned None, so payload is guaranteed truthy here.
 
             # Skip audience validation - any valid Nextcloud token is accepted
             logger.debug(
@@ -358,8 +445,15 @@ class UnifiedTokenVerifier(TokenVerifier):
                 payload.get("sub"),
             )
 
-            # Cache and return the token
-            return self._create_access_token_with_cache_key(token, payload, cache_key)
+            # Cache and return the token. via_userinfo is derived from how we
+            # actually validated — never from a payload claim (see
+            # _create_access_token_with_cache_key).
+            return self._create_access_token_with_cache_key(
+                token,
+                payload,
+                cache_key,
+                via_userinfo=(validation_method == "userinfo"),
+            )
 
         except Exception as e:
             logger.error("Management API token verification failed: %s", e)
@@ -545,6 +639,83 @@ class UnifiedTokenVerifier(TokenVerifier):
             logger.error("Unexpected error during token introspection: %s", e)
             return None
 
+    async def _validate_via_userinfo(self, token: str) -> dict[str, Any] | None:
+        """Validate an opaque token by calling the OIDC userinfo endpoint.
+
+        Fallback for opaque access tokens that the Nextcloud ``oidc`` app's
+        introspection endpoint reports ``active=false`` cross-client (i.e.
+        tokens minted for a *different* client such as Astrolabe). A 200 from
+        userinfo with a ``sub`` claim proves the bearer is a valid, unexpired
+        token for that user.
+
+        Unlike introspection, userinfo returns neither ``client_id`` nor
+        ``scope``. The caller signals this path via the ``via_userinfo`` argument
+        to :meth:`_create_access_token_with_cache_key` (never inferred from a
+        payload claim, so a malicious IdP response cannot forge it), and the
+        management-API allowlist is relaxed for it (authorization is still
+        enforced per-user by every management endpoint).
+
+        Caution: userinfo-validated tokens carry **empty scopes**. Callers must
+        not gate management endpoints on scopes for this path (e.g. a future
+        ``@require_scopes``) or they would silently reject valid cross-client
+        tokens; the per-user ``sub`` check is the authorization gate.
+
+        Security note — bounded staleness: userinfo carries no token ``exp``, so
+        a validated token is cached for ``userinfo_cache_ttl`` (5 min) rather
+        than the 1-hour default. A revoked/expired opaque token may therefore be
+        honored from cache for up to that window before re-validation.
+
+        Args:
+            token: Bearer token to validate.
+
+        Returns:
+            Userinfo claims if valid, else None.
+        """
+        # Defensive: the management-API caller already gates on
+        # self.userinfo_uri before invoking this, but the guard keeps the method
+        # safe to call directly (e.g. in unit tests).
+        if not self.userinfo_uri:
+            logger.debug("No userinfo endpoint configured")
+            return None
+
+        # userinfo_uri comes from the OIDC discovery document (admin-configured),
+        # not from user input — but guard the scheme anyway to satisfy SSRF
+        # scanners and to fail fast on a misconfigured endpoint.
+        if not self.userinfo_uri.startswith(("https://", "http://")):
+            logger.error("Refusing non-HTTP userinfo_uri: %s", self.userinfo_uri)
+            return None
+
+        try:
+            response = await self.http_client.get(
+                self.userinfo_uri,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        except httpx.TimeoutException:
+            logger.error("Timeout while validating token via userinfo")
+            return None
+        except httpx.RequestError as e:
+            logger.error("Network error while validating token via userinfo: %s", e)
+            return None
+
+        if response.status_code != 200:
+            logger.warning(
+                "Userinfo token validation failed: HTTP %s", response.status_code
+            )
+            return None
+
+        try:
+            data = response.json()
+        except Exception as e:
+            logger.error("Failed to parse userinfo response: %s", e)
+            return None
+
+        if not data.get("sub"):
+            logger.warning("Userinfo response missing 'sub' claim")
+            return None
+
+        logger.debug("Token validated via userinfo for user: %s", data.get("sub"))
+        return data
+
     def _create_access_token(
         self, token: str, payload: dict[str, Any]
     ) -> AccessToken | None:
@@ -563,7 +734,12 @@ class UnifiedTokenVerifier(TokenVerifier):
         return self._create_access_token_with_cache_key(token, payload, cache_key)
 
     def _create_access_token_with_cache_key(
-        self, token: str, payload: dict[str, Any], cache_key: str
+        self,
+        token: str,
+        payload: dict[str, Any],
+        cache_key: str,
+        *,
+        via_userinfo: bool = False,
     ) -> AccessToken | None:
         """
         Create AccessToken object from validated token payload with custom cache key.
@@ -572,6 +748,10 @@ class UnifiedTokenVerifier(TokenVerifier):
             token: The bearer token
             payload: Validated token payload
             cache_key: Key to use for caching (allows separate caches for MCP vs management API)
+            via_userinfo: True when the token was validated via the userinfo
+                fallback. Sourced from the caller (how validation happened), never
+                from a payload claim — it gates the allowlist relaxation and the
+                short cache TTL, so it must not be forgeable by the IdP response.
 
         Returns:
             AccessToken object or None if required fields missing
@@ -596,15 +776,39 @@ class UnifiedTokenVerifier(TokenVerifier):
         # Extract expiration
         exp = payload.get("exp")
         if not exp:
-            logger.warning("No 'exp' claim in token, using default TTL")
-            exp = int(time.time() + self.cache_ttl)
+            # userinfo-validated tokens never carry exp (userinfo describes the
+            # user, not the token). Cache them only briefly so a revoked/expired
+            # opaque token can't be honored for the full hour-long default TTL.
+            if via_userinfo:
+                ttl = self.userinfo_cache_ttl
+                # userinfo never returns exp, so this fires on every fresh
+                # userinfo validation — keep it at DEBUG (the bounded-staleness
+                # window is documented on _validate_via_userinfo).
+                logger.debug(
+                    "Token validated via userinfo has no 'exp'; caching for %ss only",
+                    ttl,
+                )
+            else:
+                ttl = self.cache_ttl
+                logger.warning("No 'exp' claim in token, using default TTL")
+            exp = int(time.time() + ttl)
 
-        # Cache the result with the provided key
+        # Cache the result with the provided key. Drop any `_auth_via_userinfo`
+        # carried in the IdP payload — that flag is the allowlist-bypass signal
+        # and must originate ONLY from the trusted in-process `via_userinfo`
+        # argument, never from a (potentially malicious) introspection/userinfo
+        # claim.
         userinfo = {
             "sub": username,
             "scope": scope_string,
-            **{k: v for k, v in payload.items() if k not in ["sub", "scope"]},
+            **{
+                k: v
+                for k, v in payload.items()
+                if k not in ("sub", "scope", "_auth_via_userinfo")
+            },
         }
+        if via_userinfo:
+            userinfo["_auth_via_userinfo"] = True
         self._token_cache[cache_key] = (userinfo, exp)
 
         return AccessToken(
