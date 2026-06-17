@@ -833,7 +833,7 @@ class TestUserinfoFallback:
         # Second call served from cache — userinfo probed only once.
         userinfo_mock.assert_awaited_once()
 
-    async def test_userinfo_token_cached_with_short_ttl(self, userinfo_settings):
+    def test_userinfo_token_cached_with_short_ttl(self, userinfo_settings):
         """userinfo tokens (no exp) get the short userinfo TTL, not the 1h default.
 
         The short TTL is keyed off the explicit via_userinfo argument, not a
@@ -850,7 +850,7 @@ class TestUserinfoFallback:
         assert access_token.expires_at <= int(before + 300) + 2
         assert access_token.expires_at < int(before + verifier.cache_ttl)
 
-    async def test_userinfo_token_with_exp_uses_real_expiry(self, userinfo_settings):
+    def test_userinfo_token_with_exp_uses_real_expiry(self, userinfo_settings):
         """When userinfo (unusually) returns an exp, the real token expiry wins
         over the short userinfo TTL."""
         verifier = UnifiedTokenVerifier(userinfo_settings)

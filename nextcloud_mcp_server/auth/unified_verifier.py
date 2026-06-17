@@ -651,6 +651,9 @@ class UnifiedTokenVerifier(TokenVerifier):
         Returns:
             Userinfo claims if valid, else None.
         """
+        # Defensive: the management-API caller already gates on
+        # self.userinfo_uri before invoking this, but the guard keeps the method
+        # safe to call directly (e.g. in unit tests).
         if not self.userinfo_uri:
             logger.debug("No userinfo endpoint configured")
             return None
