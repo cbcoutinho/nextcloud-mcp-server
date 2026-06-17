@@ -27,6 +27,7 @@ from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
     is_path_excluded,
 )
+from nextcloud_mcp_server.vector.dead_letter import is_dead_lettered
 from nextcloud_mcp_server.vector.placeholder import (
     query_document_metadata,
     write_placeholder_point,
@@ -664,6 +665,16 @@ async def scan_user_documents(
                         skipped,
                     )
 
+            # Escalation-tier fingerprint for the dead-letter skip below, computed
+            # once per scan. Lazy import: document_processors.__init__ pulls the
+            # heavy parse stack (pymupdf/_isolation, Unix-only ``resource``; #877),
+            # which the scanner (API role) must not load at module import.
+            from nextcloud_mcp_server.document_processors.escalation import (  # noqa: PLC0415
+                escalation_tiers_signature,
+            )
+
+            tiers_sig = escalation_tiers_signature(get_settings())
+
             for file_info in tagged_files:
                 # Files are already filtered by MIME type in find_files_by_tag()
                 file_count += 1
@@ -700,6 +711,24 @@ async def scan_user_documents(
                         file_path,
                         file_id,
                         user_id,
+                    )
+                    continue
+
+                # Tenant-wide dead-letter skip: a document that terminally failed
+                # parsing (no escalation tier) is recorded user-agnostically, so
+                # EVERY user's scan skips re-queuing it until its content (etag) or
+                # the escalation-tier set (tiers_sig, e.g. OCR enabled) changes.
+                # Unlike the per-user placeholder "failed" mark this is not
+                # defeated by a file shared across users -- whose single
+                # user-agnostic placeholder's user_id is overwritten by the last
+                # scanner, so every other user re-queued it on a loop.
+                if etag and await is_dead_lettered(file_id, "file", etag, tiers_sig):
+                    _potentially_deleted.pop((user_id, file_id), None)
+                    logger.debug(
+                        "Skipping dead-lettered file %s (ID: %s) until content/"
+                        "tier change",
+                        file_path,
+                        file_id,
                     )
                     continue
 

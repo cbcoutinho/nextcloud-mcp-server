@@ -28,6 +28,7 @@ from nextcloud_mcp_server.embedding import get_bm25_service, get_embedding_servi
 from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.observability.metrics import (
     record_document_chunks,
+    record_document_dead_lettered,
     record_document_escalation,
     record_document_escalation_suppressed,
     record_document_parse_failed,
@@ -43,6 +44,10 @@ from nextcloud_mcp_server.search.pdf_highlighter import PDFHighlighter
 from nextcloud_mcp_server.usage import UsageEventStore
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector._errors import format_exception_group
+from nextcloud_mcp_server.vector.dead_letter import (
+    clear_dead_letter,
+    mark_dead_letter,
+)
 from nextcloud_mcp_server.vector.document_chunker import (
     DocumentChunker,
     PageAwareChunker,
@@ -621,6 +626,13 @@ async def process_document(
                 await release_document_for_user(
                     doc_task.doc_id, doc_task.doc_type, doc_task.user_id
                 )
+                # Drop any dead-letter marker for the file too: release only
+                # removes it when the last reader leaves (its filter misses the
+                # user-agnostic, principal-less marker), so without this a
+                # dead-lettered-then-deleted file would leave an orphan marker
+                # accumulating in Qdrant. Only files are ever dead-lettered.
+                if doc_task.doc_type == "file":
+                    await clear_dead_letter(doc_task.doc_id, doc_task.doc_type)
                 logger.info(
                     "Deleted %s_%s for %s",
                     doc_task.doc_type,
@@ -993,8 +1005,10 @@ async def _index_document(
                 get_registry,
             )
             from nextcloud_mcp_server.document_processors.escalation import (  # noqa: PLC0415
+                TIER_LADDER,
                 BatchPending,
                 EscalateError,
+                escalation_tiers_signature,
             )
 
             registry = get_registry()
@@ -1035,34 +1049,101 @@ async def _index_document(
                 # A permanent parse failure (e.g. an isolated-worker OOM/timeout
                 # on a pathological PDF) returns success=False rather than
                 # raising -- there is nothing to index and retrying would just
-                # fail again. Mark the placeholder "failed" so the scanner stops
-                # re-queuing it (until the file changes) and return False so the
-                # caller skips the success metrics (it was not indexed).
+                # fail again.
                 if not result.success:
                     reason = result.metadata.get("parse_failed_reason", "error")
                     record_document_parse_failed(reason)
-                    logger.warning(
-                        "Permanent parse failure for %s (reason=%s); marking "
-                        "failed and skipping index",
-                        file_path,
-                        reason,
+                    # The tier that produced this failed result: the worker's own
+                    # tier on the per-tier path, else the deepest tier the inline
+                    # pipeline reached (recorded as ``pipeline_tier``).
+                    failing_tier = tier or result.metadata.get(
+                        "pipeline_tier", TIER_LADDER[0]
                     )
-                    try:
-                        await update_placeholder_status(
-                            doc_id=doc_task.doc_id,
-                            doc_type=doc_task.doc_type,
-                            user_id=doc_task.user_id,
-                            status="failed",
-                        )
-                    except Exception:
-                        # Best-effort: a transient Qdrant error here only means
-                        # the placeholder isn't marked, so the scanner retries
-                        # the (still un-indexable) file later -- not fatal.
-                        logger.debug(
-                            "Could not mark placeholder failed for %s",
+                    # An oversize PDF is rejected by the pre-parse size guard
+                    # before any tier runs (no pipeline_tier stamped on the inline
+                    # path) and no tier can ever parse it, so it is terminal
+                    # regardless of failing_tier. Otherwise, terminal == no higher
+                    # tier can run.
+                    terminal = (
+                        reason == "oversize"
+                        or registry.next_available_tier(failing_tier, settings) is None
+                    )
+                    if terminal and doc_task.etag:
+                        # No higher tier can run (e.g. structured timed out with
+                        # OCR off), so retrying just re-burns the same failing
+                        # parse. Dead-letter the document tenant-wide
+                        # (content-addressed, user-agnostic) so EVERY user's scan
+                        # stops re-queuing it until its content (etag) or the
+                        # escalation-tier set (e.g. OCR enabled -> new tiers_sig)
+                        # changes. This fixes the multi-user placeholder
+                        # ping-pong the per-user "failed" mark could not: a file
+                        # shared by N users has ONE user-agnostic placeholder
+                        # whose user_id is overwritten by the last scanner, so
+                        # every other user re-queued it forever. Requires an etag
+                        # to content-address the marker; without one (rare) we
+                        # fall back to the legacy per-user mark below.
+                        await mark_dead_letter(
                             doc_task.doc_id,
-                            exc_info=True,
+                            doc_task.doc_type,
+                            doc_task.etag,
+                            escalation_tiers_signature(settings),
+                            reason,
+                            file_path=file_path,
                         )
+                        record_document_dead_lettered(reason)
+                        logger.warning(
+                            "Permanent parse failure for %s (reason=%s); "
+                            "dead-lettered (terminal tier=%s, no escalation) and "
+                            "skipping index",
+                            file_path,
+                            reason,
+                            failing_tier,
+                        )
+                        # Drop the volatile in-flight placeholder; the durable
+                        # marker is now the document's terminal-state record.
+                        try:
+                            await delete_placeholder_point(
+                                doc_id=doc_task.doc_id,
+                                doc_type=doc_task.doc_type,
+                                user_id=doc_task.user_id,
+                            )
+                        except Exception:
+                            # A real Qdrant I/O failure (not control-flow): warn so
+                            # it's observable. Non-fatal -- the durable dead-letter
+                            # marker is already written, so the leftover volatile
+                            # placeholder is merely redundant.
+                            logger.warning(
+                                "Could not delete placeholder for dead-lettered %s",
+                                doc_task.doc_id,
+                                exc_info=True,
+                            )
+                    else:
+                        # Either a higher tier exists (parse failures don't
+                        # escalate to it today) or there's no etag to
+                        # content-address a dead-letter marker. Keep the legacy
+                        # per-user "failed" placeholder mark.
+                        logger.warning(
+                            "Permanent parse failure for %s (reason=%s); marking "
+                            "failed and skipping index",
+                            file_path,
+                            reason,
+                        )
+                        try:
+                            await update_placeholder_status(
+                                doc_id=doc_task.doc_id,
+                                doc_type=doc_task.doc_type,
+                                user_id=doc_task.user_id,
+                                status="failed",
+                            )
+                        except Exception:
+                            # Best-effort: a transient Qdrant error here only
+                            # means the placeholder isn't marked, so the scanner
+                            # retries the (still un-indexable) file later.
+                            logger.debug(
+                                "Could not mark placeholder failed for %s",
+                                doc_task.doc_id,
+                                exc_info=True,
+                            )
                     return False
 
                 content = result.text
@@ -1528,6 +1609,17 @@ async def _index_document(
                 },
             )
         )
+
+    # A successful (re-)index supersedes any prior terminal failure: clear a
+    # stale dead-letter marker (e.g. the file was fixed/replaced, or a new
+    # escalation tier finally parsed it) so it isn't left behind. Only files are
+    # ever dead-lettered, and only with a non-empty etag (is_dead_lettered
+    # early-returns without one), so skip the extra Qdrant round-trip otherwise.
+    # Cleared before the real-chunk upsert below: if that upsert then fails
+    # transiently, the document is re-queued and re-parses once on the next scan
+    # (an extra parse, never a silent drop) -- the safe ordering.
+    if doc_task.doc_type == "file" and doc_task.etag:
+        await clear_dead_letter(doc_task.doc_id, doc_task.doc_type)
 
     # Delete placeholder before writing real vectors
     # This prevents duplicates and cleans up the placeholder state

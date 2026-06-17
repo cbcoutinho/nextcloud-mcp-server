@@ -305,6 +305,20 @@ document_parse_failed_total = Counter(
     ["reason"],  # reason: timeout | oom | error
 )
 
+# Documents dead-lettered after a terminal parse failure: the failing tier had
+# no higher escalation tier available (e.g. structured timed out with OCR off),
+# so the document is recorded as permanently failed for this content-version and
+# stops being re-queued (vector/dead_letter.py). Distinct from
+# ``document_parse_failed_total`` (which counts every failed parse attempt,
+# including the ones that will be retried) -- this fires once when a document
+# is given up on, and clears implicitly when its etag or the escalation-tier set
+# changes and it is re-attempted.
+document_dead_lettered_total = Counter(
+    "astrolabe_document_dead_lettered_total",
+    "Documents dead-lettered after a terminal parse failure (no escalation tier)",
+    ["reason"],  # reason: timeout | oom | error | oversize
+)
+
 # Documents dropped after exhausting in-process indexing retries (the scanner
 # re-picks them on a later full scan, so this is "dropped for this cycle", not
 # "lost forever"). Labelled by classified cause so the embed-drop rate from a
@@ -785,6 +799,22 @@ def record_document_parse_failed(reason: str) -> None:
         reason: ``timeout`` | ``oom`` | ``error``
     """
     document_parse_failed_total.labels(reason=reason).inc()
+
+
+def record_document_dead_lettered(reason: str) -> None:
+    """Record a document dead-lettered after a terminal parse failure.
+
+    Counts the dead-letter *attempt*: it is incremented alongside the
+    ``mark_dead_letter`` call, which is fail-safe (a Qdrant write error is logged,
+    not raised), so a transient write failure can leave this counter marginally
+    above the live marker count in Qdrant.
+
+    Args:
+        reason: ``timeout`` | ``oom`` | ``error`` (the terminal parse failure
+            reason carried from the isolated worker) or ``oversize`` (rejected by
+            the pre-parse size guard, which no tier can ever parse).
+    """
+    document_dead_lettered_total.labels(reason=reason).inc()
 
 
 def record_ingest_dropped(reason: str) -> None:
