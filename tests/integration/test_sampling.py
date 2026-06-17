@@ -59,7 +59,12 @@ async def wait_for_vector_sync(
         sync_status = await nc_mcp_client.call_tool(
             "nc_get_vector_sync_status", arguments={}
         )
-        status_data = json.loads(sync_status.content[0].text)
+        try:
+            status_data = json.loads(sync_status.content[0].text)
+        except (AttributeError, IndexError, ValueError):
+            # transient empty/error response — keep polling. .get() defaults
+            # below also keep an empty dict from triggering a false break.
+            status_data = {}
 
         if search_term is not None:
             # Robust signal: wait for the specific document to be retrievable
@@ -68,13 +73,18 @@ async def wait_for_vector_sync(
         elif initial_indexed_count is not None:
             # Legacy: wait for new document(s) to be indexed (gauge delta)
             if (
-                status_data["indexed_count"] > initial_indexed_count
-                and status_data["pending_count"] == 0
+                status_data.get("indexed_count", 0) > initial_indexed_count
+                and status_data.get("pending_count", 1) == 0
             ):
                 break
         else:
-            # Wait for all pending work to complete
-            if status_data["status"] == "idle" and status_data["pending_count"] == 0:
+            # NOTE: idle + pending==0 is also the *initial empty* state, so this
+            # can break before a caller's work is even enqueued — prefer passing
+            # search_term. Kept only for callers that just need a settled corpus.
+            if (
+                status_data.get("status") == "idle"
+                and status_data.get("pending_count", 1) == 0
+            ):
                 break
 
         await anyio.sleep(wait_interval)
