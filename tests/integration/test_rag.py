@@ -411,7 +411,7 @@ async def _top_score(nc_mcp_client: Any, query: str) -> float | None:
         "nc_semantic_search",
         arguments={"query": query, "limit": 5, "score_threshold": 0.0},
     )
-    assert result.isError is False
+    assert result.isError is False, result.content
     data = json.loads(result.content[0].text)
     results = data.get("results", [])
     if not results:  # guard the list directly, not via total_found
@@ -436,7 +436,9 @@ async def test_no_results_for_unrelated_query(nc_mcp_client, indexed_manual_pdf)
         nc_mcp_client, "quantum entanglement hadron collider particle physics"
     )
     if unrelated is None:
-        return  # No results for nonsense query — the ideal outcome.
+        # No results for the nonsense query is the ideal outcome; skip (rather
+        # than a silent pass) so the test report shows the path was taken.
+        pytest.skip("No results for nonsense physics query — the ideal outcome")
 
     relevant = await _top_score(
         nc_mcp_client, "how do I enable two-factor authentication"
