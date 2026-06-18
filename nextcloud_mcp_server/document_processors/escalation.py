@@ -2,7 +2,7 @@
 
 The escalation ladder is the cheapest-first ordering of extraction tiers:
 
-    fast  ->  structured  ->  ocr   ( ->  llm, reserved)
+    fast  ->  structured  ->  ocr-incluster  ->  ocr-upstream   ( ->  llm, reserved)
 
 It mirrors the ``tier`` vocabulary documented on
 :meth:`DocumentProcessor.tier <.base.DocumentProcessor.tier>` and the
@@ -24,9 +24,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-# Cheapest-first. ``llm`` is reserved (see base.DocumentProcessor.tier) and not
-# wired yet, so it is intentionally absent from the live ladder.
-TIER_LADDER: tuple[str, ...] = ("fast", "structured", "ocr")
+# Cheapest-first. OCR is split into two rungs: ``ocr-incluster`` (the on-demand
+# burst GPU, e.g. surya, reached via the embedding gateway over the tailnet) tried
+# BEFORE ``ocr-upstream`` (paid Mistral). ``llm`` is reserved (see
+# base.DocumentProcessor.tier) and not wired yet.
+TIER_LADDER: tuple[str, ...] = ("fast", "structured", "ocr-incluster", "ocr-upstream")
 
 
 def escalation_tiers_signature(settings: Any) -> str:
@@ -55,6 +57,7 @@ def escalation_tiers_signature(settings: Any) -> str:
     """
     return (
         f"ocr={int(bool(settings.document_ocr_enabled))};"
+        f"ocric={int(bool(settings.document_ocr_incluster_enabled))};"
         f"t1={settings.document_tier1_engine}"
     )
 
@@ -141,7 +144,8 @@ class BatchPending(Exception):
     ``except Exception`` on the indexing path, never counted as a drop/parse
     error, and never marks the placeholder failed (the doc isn't done yet).
     Unlike ``EscalateError`` it does NOT change queue — the job stays on its own
-    (``ocr``) tier queue and is simply deferred.
+    (``ocr-upstream``) tier queue and is simply deferred (batch mode is the
+    upstream Mistral path only; the in-cluster rung is synchronous).
     """
 
     def __init__(self, *, retry_in: int) -> None:

@@ -19,8 +19,14 @@ from nextcloud_mcp_server.document_processors.escalation import (
 pytestmark = pytest.mark.unit
 
 
-def _settings(*, ocr: bool, engine: str = "pypdfium2") -> SimpleNamespace:
-    return SimpleNamespace(document_ocr_enabled=ocr, document_tier1_engine=engine)
+def _settings(
+    *, ocr: bool, ocr_incluster: bool = False, engine: str = "pypdfium2"
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        document_ocr_enabled=ocr,
+        document_ocr_incluster_enabled=ocr_incluster,
+        document_tier1_engine=engine,
+    )
 
 
 def test_signature_is_stable_for_same_config() -> None:
@@ -34,6 +40,14 @@ def test_enabling_ocr_changes_signature() -> None:
     assert escalation_tiers_signature(
         _settings(ocr=False)
     ) != escalation_tiers_signature(_settings(ocr=True))
+
+
+def test_enabling_ocr_incluster_changes_signature() -> None:
+    # Enabling the in-cluster (tier2) rung adds an escalation tier independently of
+    # the upstream rung -> previously dead-lettered scanned docs become retryable.
+    assert escalation_tiers_signature(
+        _settings(ocr=False, ocr_incluster=False)
+    ) != escalation_tiers_signature(_settings(ocr=False, ocr_incluster=True))
 
 
 def test_tier1_engine_change_changes_signature() -> None:

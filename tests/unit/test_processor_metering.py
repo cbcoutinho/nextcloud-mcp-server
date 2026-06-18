@@ -191,7 +191,7 @@ async def test_ocr_tier_records_pages_ocr(store_spy):
         token_count=900,
         total_chars=40000,
         page_count=8,
-        pipeline_tier="ocr",
+        pipeline_tier="ocr-upstream",
     )
     by_metric = {
         c.kwargs["metric"]: c.kwargs["value"]
@@ -205,7 +205,7 @@ async def test_ocr_tier_records_pages_ocr(store_spy):
     }
     # pipeline_tier is threaded into the billing metadata for CP attribution.
     for c in store_spy.record_usage_event.await_args_list:
-        assert c.kwargs["metadata"]["pipeline_tier"] == "ocr"
+        assert c.kwargs["metadata"]["pipeline_tier"] == "ocr-upstream"
 
 
 @pytest.mark.unit

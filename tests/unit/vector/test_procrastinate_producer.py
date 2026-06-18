@@ -115,7 +115,7 @@ class TestProcessDocumentTask:
         # Calling the Task runs its wrapped function in-process. The job is on the
         # ocr queue, so the queue-aware task must derive tier="ocr".
         await pq.process_document_task(
-            _ctx(pq.INGEST_QUEUE_OCR),
+            _ctx(pq.INGEST_QUEUE_OCR_UPSTREAM),
             user_id="alice",
             doc_id="42",
             doc_type="note",
@@ -131,7 +131,7 @@ class TestProcessDocumentTask:
         # Worker disables the in-process retry loop; durable retry is the queue's.
         assert captured["max_retries"] == 1
         # Tier is derived from the job's queue (escalation enabled by default).
-        assert captured["tier"] == "ocr"
+        assert captured["tier"] == "ocr-upstream"
         fake_client.close.assert_awaited_once()
 
     async def test_pipeline_error_propagates_and_closes_client(self, monkeypatch):

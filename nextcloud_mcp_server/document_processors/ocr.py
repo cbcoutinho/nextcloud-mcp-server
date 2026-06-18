@@ -203,11 +203,16 @@ def _build_gateway_token_provider(settings: Settings) -> Any:
     )
 
 
-def build_gateway_batch_client(settings: Settings) -> "GatewayBatchOcrClient | None":
+def build_gateway_batch_client(
+    settings: Settings, *, model: str | None = None
+) -> "GatewayBatchOcrClient | None":
     """Build a ``GatewayBatchOcrClient`` when the gateway is the OCR backend, else
     ``None`` (so batch mode falls back to sync for provider=mistral / no gateway).
     Batch OCR is gateway-only — Mistral's Batch API is reached *through* the
-    gateway's batch routes, never directly from the pod."""
+    gateway's batch routes, never directly from the pod.
+
+    ``model`` overrides ``settings.document_ocr_model`` so a per-tier OCR rung
+    (e.g. the in-cluster tier) submits its own provider-namespaced model id."""
     if settings.document_ocr_provider not in ("gateway", "auto"):
         return None
     if not settings.embedding_gateway_url:
@@ -216,28 +221,66 @@ def build_gateway_batch_client(settings: Settings) -> "GatewayBatchOcrClient | N
 
     return GatewayBatchOcrClient(
         settings.embedding_gateway_url,
-        settings.document_ocr_model,
+        model or settings.document_ocr_model,
         _build_gateway_token_provider(settings),
     )
 
 
-def build_ocr_backend(settings: Settings) -> _OcrBackend | None:
-    """Select an OCR backend from settings, or None when none is available."""
+def build_ocr_backend(
+    settings: Settings, *, model: str | None = None, gateway_only: bool = False
+) -> _OcrBackend | None:
+    """Select an OCR backend from settings, or None when none is available.
+
+    ``model`` overrides ``settings.document_ocr_model`` so a per-tier OCR rung
+    binds its own provider-namespaced model id. ``gateway_only`` forces the
+    gateway backend (never the direct Mistral fallback) — used by the **in-cluster**
+    OCR tier, whose backend (e.g. surya on the burst GPU) is reachable ONLY through
+    the embedding gateway over the tailnet; with no gateway URL the tier is
+    disabled (warn) rather than misrouted to a direct backend that can't serve it.
+    """
     provider = settings.document_ocr_provider
+    # `is not None` (not truthiness): an empty model string must NOT silently fall
+    # back to the upstream default and misroute a per-tier rung.
+    model = model if model is not None else settings.document_ocr_model
+
+    if gateway_only:
+        # The in-cluster tier is gateway-only and never touches the `mistral`
+        # provider, but provider=none still suppresses it. Warn so an operator who
+        # set provider=none to disable Mistral doesn't silently lose the GPU tier.
+        if provider == "none":
+            if settings.document_ocr_incluster_enabled:
+                logger.warning(
+                    "DOCUMENT_OCR_PROVIDER=none disables in-cluster OCR even with "
+                    "DOCUMENT_OCR_INCLUSTER_ENABLED=true; set it to 'gateway' or "
+                    "'auto' to keep the in-cluster tier"
+                )
+            return None
+        if settings.embedding_gateway_url:
+            return _GatewayOcrBackend(
+                settings.embedding_gateway_url,
+                model,
+                _build_gateway_token_provider(settings),
+            )
+        logger.warning(
+            "in-cluster OCR tier requires EMBEDDING_GATEWAY_URL (it routes through "
+            "the gateway, never a direct backend); this OCR tier is disabled"
+        )
+        return None
+
     if provider == "none":
         return None
 
     if provider in ("gateway", "auto") and settings.embedding_gateway_url:
         return _GatewayOcrBackend(
             settings.embedding_gateway_url,
-            settings.document_ocr_model,
+            model,
             _build_gateway_token_provider(settings),
         )
 
     if provider in ("mistral", "auto") and settings.mistral_api_key:
         return _MistralOcrBackend(
             settings.mistral_api_key,
-            settings.document_ocr_model,
+            model,
             settings.mistral_base_url,
         )
 
@@ -258,9 +301,37 @@ def build_ocr_backend(settings: Settings) -> _OcrBackend | None:
 
 
 class OcrProcessor(DocumentProcessor):
-    """Tier-3 OCR processor (gateway or direct Mistral backend)."""
+    """OCR processor for both OCR rungs — tier2 in-cluster (gateway-only GPU) and
+    tier3 upstream (gateway or direct Mistral backend). One class, two registered
+    instances bound to different ``(tier, model_setting, gateway_only)``."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        # The defaults describe the UPSTREAM (tier3) rung and exist for
+        # test/bare-construction convenience only. Application wiring
+        # (document_processors/__init__.py) ALWAYS passes every arg explicitly for
+        # both rungs — don't rely on these defaults in app code.
+        *,
+        name: str = "ocr-upstream",
+        tier: str = "ocr-upstream",
+        model_setting: str = "document_ocr_model",
+        gateway_only: bool = False,
+    ) -> None:
+        # One OcrProcessor class serves BOTH OCR rungs; instances are bound to a
+        # tier + the settings attribute holding their provider-namespaced model id
+        # (+ whether the backend is gateway-only). The in-cluster rung is
+        # gateway-only (its model, e.g. surya, is reachable solely via the
+        # gateway); the upstream rung keeps the configurable gateway/mistral
+        # selection. surya is NEVER hard-coded here — only a config default.
+        # Fail fast on a misconfigured model_setting (a typo in a constructor call)
+        # so it surfaces at startup, not as an AttributeError mid-OCR. The string
+        # only ever comes from hardcoded defaults in __init__.py, never user input.
+        if not hasattr(Settings, model_setting):
+            raise ValueError(f"Unknown model_setting: {model_setting!r}")
+        self._name = name
+        self._tier = tier
+        self._model_setting = model_setting
+        self._gateway_only = gateway_only
         # Resolve the backend once and reuse it: rebuilding per call would create
         # a fresh GatewayTokenProvider each time (discarding its M2M-token cache
         # -> a token fetch per document) and a new Mistral SDK client per call.
@@ -283,11 +354,11 @@ class OcrProcessor(DocumentProcessor):
 
     @property
     def name(self) -> str:
-        return "ocr"
+        return self._name
 
     @property
     def tier(self) -> str:
-        return "ocr"
+        return self._tier
 
     @property
     def supported_mime_types(self) -> set[str]:
@@ -327,7 +398,11 @@ class OcrProcessor(DocumentProcessor):
                 self._backend_lock = anyio.Lock()
             async with self._backend_lock:
                 if not self._backend_resolved:  # double-checked
-                    self._backend = build_ocr_backend(settings)
+                    self._backend = build_ocr_backend(
+                        settings,
+                        model=getattr(settings, self._model_setting),
+                        gateway_only=self._gateway_only,
+                    )
                     self._backend_resolved = True
         backend = self._backend
         if backend is None:
@@ -387,13 +462,24 @@ class OcrProcessor(DocumentProcessor):
     async def _get_batch_client(self) -> "GatewayBatchOcrClient | None":
         """Cached gateway batch client (or ``None`` when batch isn't applicable —
         provider=mistral / no gateway). Resolved once under the backend lock so the
-        token provider's M2M cache survives across documents."""
+        token provider's M2M cache survives across documents.
+
+        The in-cluster (``gateway_only``) rung never uses batch mode: it targets
+        the on-demand GPU, which is synchronous/low-latency, while batch OCR is the
+        upstream (Mistral) async-job path. So even with ``DOCUMENT_OCR_MODE=batch``
+        set globally, the in-cluster tier stays on the synchronous backend."""
+        if self._gateway_only:
+            return None
         if not self._batch_client_resolved:
             if self._batch_client_lock is None:
                 self._batch_client_lock = anyio.Lock()
             async with self._batch_client_lock:
                 if not self._batch_client_resolved:  # double-checked
-                    self._batch_client = build_gateway_batch_client(get_settings())
+                    settings = get_settings()
+                    self._batch_client = build_gateway_batch_client(
+                        settings,
+                        model=getattr(settings, self._model_setting),
+                    )
                     self._batch_client_resolved = True
         return self._batch_client
 
@@ -431,10 +517,15 @@ class OcrProcessor(DocumentProcessor):
             return None
         client = await self._get_batch_client()
         if client is None:
-            self._batch_fallback(
-                "no gateway backend (provider=mistral or EMBEDDING_GATEWAY_URL unset)",
-                filename,
-            )
+            # The in-cluster (gateway_only) rung returns None here BY DESIGN — the
+            # GPU is synchronous-only, batch is the upstream Mistral path — so don't
+            # emit the "no gateway backend" warning (the gateway IS configured; that
+            # warning would send an operator chasing a non-existent config problem).
+            if not self._gateway_only:
+                self._batch_fallback(
+                    "no gateway backend (provider=mistral or EMBEDDING_GATEWAY_URL unset)",
+                    filename,
+                )
             return None
 
         # Lazy import: keep the vector/DB stack off the document_processors load

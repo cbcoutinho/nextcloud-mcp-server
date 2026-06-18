@@ -162,6 +162,13 @@ _DEFAULTS: dict[str, Any] = {
     # Provider-namespaced OCR model id (gateway routes on the prefix; the direct
     # mistral backend strips it).
     "document_ocr_model": "mistral/mistral-ocr-latest",
+    # In-cluster OCR tier (tier2, Deck #353): the on-demand burst GPU, reached
+    # ONLY via the embedding gateway. Off + per-tenant by default; tried before the
+    # paid upstream OCR rung. The model is a config value (the gateway routes on its
+    # "<provider>/" prefix) — surya is the current pick but swappable (e.g.
+    # "lightonocr/...") and is NEVER hard-coded, only this default.
+    "document_ocr_incluster_enabled": False,
+    "document_ocr_incluster_model": "surya/surya-ocr-2",
     # OCR escalation triggers (tier-0). A page is OCR-worthy when its text is
     # near-empty (< min_page_chars) OR low-quality (< min_text_quality) OR (when
     # detect_scanned) mostly a raster image; a doc escalates when the OCR-worthy
@@ -884,6 +891,11 @@ class Settings:
     # gateway routes on the "<provider>/" prefix; the direct mistral backend
     # strips it.
     document_ocr_model: str = "mistral/mistral-ocr-latest"
+    # In-cluster OCR tier (tier2, Deck #353): on-demand burst GPU reached ONLY via
+    # the embedding gateway; off + per-tenant, tried before the upstream rung. The
+    # model is a swappable config value (surya is the current pick, never hardcoded).
+    document_ocr_incluster_enabled: bool = False
+    document_ocr_incluster_model: str = "surya/surya-ocr-2"
     # OCR backend HTTP request timeout (seconds). float for parity with the
     # parse timeout / httpx.Timeout; per-tenant tunable so a gateway with a
     # shorter ceiling isn't masked by the 180s default.
@@ -1535,6 +1547,8 @@ def get_settings() -> Settings:
         "document_ocr_enabled": "DOCUMENT_OCR_ENABLED",
         "document_ocr_provider": "DOCUMENT_OCR_PROVIDER",
         "document_ocr_model": "DOCUMENT_OCR_MODEL",
+        "document_ocr_incluster_enabled": "DOCUMENT_OCR_INCLUSTER_ENABLED",
+        "document_ocr_incluster_model": "DOCUMENT_OCR_INCLUSTER_MODEL",
         "document_ocr_timeout_seconds": "DOCUMENT_OCR_TIMEOUT_SECONDS",
         "document_ocr_mode": "DOCUMENT_OCR_MODE",
         "document_ocr_batch_poll_seconds": "DOCUMENT_OCR_BATCH_POLL_SECONDS",
