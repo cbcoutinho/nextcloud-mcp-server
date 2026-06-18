@@ -99,7 +99,15 @@ services:
 
       # Semantic search configuration (ADR-007, ADR-021)
       - ENABLE_SEMANTIC_SEARCH=true
-      - VECTOR_SYNC_SCAN_INTERVAL=5
+      # The sync scanner runs an initial scan immediately on startup, so the
+      # corpus is indexed without waiting for the first periodic re-scan. A very
+      # short re-scan interval (was 5s) just re-queues the whole corpus faster
+      # than the workers can drain it: on a loaded CI runner pending_count
+      # snowballs (observed 1465 pending), sync never reaches idle, and the
+      # single-user vector tests (test_rag, test_sampling) time out. 30s matches
+      # the tuned multi-user-basic cadence and stays well within the tests' 90s
+      # sync-wait budget.
+      - VECTOR_SYNC_SCAN_INTERVAL=30
       - VECTOR_SYNC_PROCESSOR_WORKERS=2
       # Required to enable the /webhooks/nextcloud receiver (GHSA-8vh3-g2qg-2h2c).
       # Without it the route is not mounted and vector sync relies on polling.
