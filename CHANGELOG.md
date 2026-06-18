@@ -5,6 +5,21 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.121.0 (2026-06-18)
+
+### Feat
+
+- **ingest**: split OCR into tier2 in-cluster (GPU, gateway-only) + tier3 upstream
+
+### Fix
+
+- **ingest**: warn when provider=none disables in-cluster; precise model fallback
+- **ingest**: suppress misleading batch-fallback warn for in-cluster rung
+
+### Refactor
+
+- **ingest**: doc legacy ocr queue; fix docstrings + getattr guard
+
 ## v0.120.5 (2026-06-17)
 
 ### Fix
