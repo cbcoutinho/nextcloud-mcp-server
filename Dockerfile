@@ -23,6 +23,13 @@ COPY . .
 RUN uv sync --locked --no-dev --no-editable --no-cache --extra postgres
 
 ENV PYTHONUNBUFFERED=1
+# Dump a Python + C-level traceback to stderr on a fatal native fault
+# (SIGSEGV/SIGABRT/SIGFPE/SIGBUS). In-process native code -- pymupdf's
+# classify/metadata open and embedded Qdrant -- can segfault the interpreter
+# during indexing, and without faulthandler the container just exits 139/133
+# with no logs (see issue #926). The handler is cheap and writes nothing in
+# normal operation.
+ENV PYTHONFAULTHANDLER=1
 ENV VIRTUAL_ENV=/app/.venv
 ENV PATH=/app/.venv/bin:$PATH
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
