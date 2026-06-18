@@ -14,16 +14,16 @@
     },
     {
       "description": "Pin each Nextcloud matrix entry to its own major version",
-      "matchDepNames": ["nextcloud-31"],
-      "allowedVersions": "/^31\\./"
-    },
-    {
       "matchDepNames": ["nextcloud-32"],
       "allowedVersions": "/^32\\./"
     },
     {
       "matchDepNames": ["nextcloud-33"],
       "allowedVersions": "/^33\\./"
+    },
+    {
+      "matchDepNames": ["nextcloud-34"],
+      "allowedVersions": "/^34\\./"
     },
     {
       "description": "Pin docker-compose.yml Nextcloud image to 32.x",
