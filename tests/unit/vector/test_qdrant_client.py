@@ -1134,7 +1134,7 @@ async def test_get_qdrant_client_does_not_wrap_network_mode(
     from nextcloud_mcp_server.config import Settings
 
     settings = Settings(
-        qdrant_url="http://qdrant:6333",
+        qdrant_url="https://qdrant:6333",
         ollama_embedding_model="nomic-embed-text",
         vector_sync_enabled=False,
     )
@@ -1149,10 +1149,12 @@ async def test_get_qdrant_client_does_not_wrap_network_mode(
         lambda: embedding_service,
     )
 
-    # Drive the create path (collection "not found") so the dimension-validation
-    # branch — which would need a fully-shaped CollectionInfo — is skipped.
+    # Drive the create path via the network-mode "not found" signal — an
+    # UnexpectedResponse(404), as the real HTTP client raises (local mode's
+    # ValueError("not found") is the other branch). This skips the
+    # dimension-validation branch that would need a fully-shaped CollectionInfo.
     provisional = _stub_provisional(
-        mocker, ValueError(f"Collection {settings.get_collection_name()} not found")
+        mocker, _make_unexpected(404, b'{"status":{"error":"Not found"}}')
     )
     monkeypatch.setattr(
         "nextcloud_mcp_server.vector.qdrant_client.AsyncQdrantClient",
