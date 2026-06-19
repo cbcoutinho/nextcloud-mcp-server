@@ -1,9 +1,14 @@
 """Qdrant client wrapper."""
 
+import functools
+import inspect
 import logging
-from typing import Any
+from collections.abc import Coroutine
+from typing import Any, cast
 
 import anyio
+import anyio.to_thread
+from anyio import CapacityLimiter
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.models import (
@@ -109,6 +114,84 @@ _DOC_ID_BACKFILL_SENTINEL_PAYLOAD: dict[str, str] = {"_migration_marker": "doc_i
 # coroutines cannot both create a lock.
 _qdrant_client: AsyncQdrantClient | None = None
 _qdrant_init_lock: anyio.Lock | None = None
+
+
+def _drive_local_coroutine(coro: Coroutine[Any, Any, Any]) -> Any:
+    """Run an embedded-Qdrant coroutine to completion on the current thread.
+
+    qdrant-client's local/in-memory backend (``AsyncQdrantLocal``) exposes an
+    ``async def`` surface over purely synchronous, CPU-bound work: its
+    coroutines never await real I/O, so they complete on the first ``send``
+    (verified against qdrant-client 1.17). Driving one here — inside the worker
+    thread dispatched by :func:`anyio.to_thread.run_sync` — is what moves that
+    CPU work off the event loop.
+
+    A genuine suspension (a non-``None`` yield) would mean the backend started
+    doing real async I/O, which a plain thread cannot drive correctly. Fail
+    loudly in that case rather than spin or silently mis-drive the coroutine.
+    """
+    try:
+        while True:
+            yielded = coro.send(None)
+            if yielded is not None:
+                coro.close()
+                raise RuntimeError(
+                    "embedded Qdrant coroutine suspended unexpectedly "
+                    f"(yielded {yielded!r}); the thread-offload shim in "
+                    "vector/qdrant_client.py assumes the local backend is "
+                    "synchronous"
+                )
+    except StopIteration as exc:
+        return exc.value
+
+
+class _ThreadOffloadingQdrantClient:
+    """Run embedded-Qdrant operations on a worker thread to free the event loop.
+
+    qdrant-client's embedded backends — ``:memory:`` and ``path=`` local mode —
+    execute every operation synchronously on the calling thread despite the
+    ``AsyncQdrantClient`` surface (``AsyncQdrantLocal`` contains no
+    ``to_thread``/executor offload). A single background scan of thousands of
+    tagged files therefore pins the event loop on a CPU-constrained host, so
+    ``/health/live`` / ``/health/ready`` probes and in-flight MCP requests stall
+    until the scan finishes — the failure mode reported in issue #926.
+
+    This proxy forwards attribute access to the wrapped client and offloads
+    every coroutine-returning call to a worker thread, keeping the event loop
+    responsive. A private ``CapacityLimiter(1)`` serialises those offloads:
+    ``AsyncQdrantLocal`` is not safe for concurrent access, and today the
+    single-threaded event loop is what implicitly serialises it — the limiter
+    preserves that invariant once the work runs off-loop, while still letting
+    the loop interleave health checks and other requests between operations.
+
+    Network mode (``QDRANT_URL``) is never wrapped: there the client performs
+    real non-blocking I/O and already yields to the event loop.
+    """
+
+    def __init__(self, inner: AsyncQdrantClient) -> None:
+        self._inner = inner
+        self._limiter = CapacityLimiter(1)
+
+    def __getattr__(self, name: str) -> Any:
+        # Only reached for names absent from the instance __dict__; ``_inner``
+        # and ``_limiter`` resolve normally and never recurse through here.
+        attr = getattr(self._inner, name)
+        if not callable(attr):
+            return attr
+
+        @functools.wraps(attr)
+        def _maybe_offload(*args: Any, **kwargs: Any) -> Any:
+            result = attr(*args, **kwargs)
+            if inspect.iscoroutine(result):
+                return self._offload(result)
+            return result
+
+        return _maybe_offload
+
+    async def _offload(self, coro: Coroutine[Any, Any, Any]) -> Any:
+        return await anyio.to_thread.run_sync(
+            _drive_local_coroutine, coro, limiter=self._limiter
+        )
 
 
 async def _create_one_payload_index(
@@ -595,6 +678,19 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 # Should not happen due to __post_init__ validation, but handle gracefully
                 logger.warning("No Qdrant mode configured, defaulting to :memory:")
                 provisional = AsyncQdrantClient(":memory:")
+
+            # Embedded Qdrant (``:memory:`` / ``path=``) runs every operation
+            # synchronously on the calling thread, so without this each call —
+            # including the O(N) startup backfill scroll below and every later
+            # scan/search query — would block the event loop and stall health
+            # checks on a CPU-constrained host (issue #926). Offload local-mode
+            # work to a worker thread. Network mode (mirrors the ``if
+            # settings.qdrant_url`` branch above) already does non-blocking I/O
+            # and is left untouched.
+            if not settings.qdrant_url:
+                provisional = cast(
+                    AsyncQdrantClient, _ThreadOffloadingQdrantClient(provisional)
+                )
 
             # Get collection name (auto-generated from deployment ID + model)
             collection_name = settings.get_collection_name()

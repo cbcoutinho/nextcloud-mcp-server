@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import call
 
 import anyio
+import anyio.lowlevel
 import httpx
 import pytest
 from qdrant_client.http.exceptions import UnexpectedResponse
@@ -28,8 +29,10 @@ from nextcloud_mcp_server.vector.qdrant_client import (
     _DOC_ID_BACKFILL_SENTINEL_ID,
     _PAYLOAD_INDEX_FIELDS,
     _backfill_doc_id_to_string,
+    _drive_local_coroutine,
     _ensure_payload_indexes,
     _group_int_doc_ids,
+    _ThreadOffloadingQdrantClient,
     get_qdrant_client,
 )
 
@@ -976,7 +979,11 @@ async def test_get_qdrant_client_creates_collection_on_local_mode_value_error(
 
     client = await get_qdrant_client()
 
-    assert client is provisional
+    # Local/in-memory mode is wrapped in the thread-offload proxy (issue #926),
+    # so the returned client is the proxy over ``provisional`` rather than the
+    # bare mock; the proxy forwards every awaited call straight through to it.
+    assert isinstance(client, _ThreadOffloadingQdrantClient)
+    assert client._inner is provisional
     provisional.create_collection.assert_awaited_once()
     # The created collection should be the auto-generated name from
     # settings — guards against accidental collection-name drift.
@@ -1009,4 +1016,138 @@ async def test_get_qdrant_client_propagates_unrelated_value_error(
     with pytest.raises(ValueError, match="Bad collection_name"):
         await get_qdrant_client()
 
-    provisional.create_collection.assert_not_awaited()
+
+# ---------------------------------------------------------------------------
+# Thread-offload proxy for embedded Qdrant (issue #926)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_drive_local_coroutine_returns_value():
+    """A non-suspending coroutine is driven to completion and its value returned."""
+
+    async def _coro():
+        return 42
+
+    assert _drive_local_coroutine(_coro()) == 42
+
+
+@pytest.mark.unit
+def test_drive_local_coroutine_propagates_exception():
+    """An exception raised inside the coroutine surfaces to the driver."""
+
+    async def _coro():
+        raise ValueError("boom")
+
+    with pytest.raises(ValueError, match="boom"):
+        _drive_local_coroutine(_coro())
+
+
+@pytest.mark.unit
+def test_drive_local_coroutine_rejects_real_suspension():
+    """A coroutine that genuinely suspends (yields non-None) fails loudly.
+
+    The embedded backend is assumed synchronous; a real ``await`` of I/O would
+    mean this shim can no longer drive it from a plain thread.
+    """
+
+    class _Suspends:
+        # Mimics a real future/coroutine that yields control to the event loop.
+        def __await__(self):
+            yield "pending-future"
+
+    async def _coro():
+        await _Suspends()
+        return 1
+
+    with pytest.raises(RuntimeError, match="suspended unexpectedly"):
+        _drive_local_coroutine(_coro())
+
+
+@pytest.mark.unit
+async def test_offloading_proxy_runs_off_event_loop_thread(mocker):
+    """The proxy executes the wrapped coroutine on a worker thread, not the loop.
+
+    This is the whole point of issue #926: embedded-Qdrant CPU work must not run
+    on the event loop thread, where it would stall health checks.
+    """
+    import threading
+
+    loop_thread = threading.get_ident()
+    worker_threads: list[int] = []
+
+    inner = mocker.AsyncMock()
+
+    async def _record_thread(*args, **kwargs):
+        worker_threads.append(threading.get_ident())
+        return "ok"
+
+    inner.scroll.side_effect = _record_thread
+
+    proxy = _ThreadOffloadingQdrantClient(inner)
+    result = await proxy.scroll("collection")
+
+    assert result == "ok"
+    assert worker_threads, "wrapped coroutine never ran"
+    assert worker_threads[0] != loop_thread
+    inner.scroll.assert_awaited_once_with("collection")
+
+
+@pytest.mark.unit
+async def test_offloading_proxy_passes_through_non_callables(mocker):
+    """Non-callable attributes resolve straight to the wrapped client."""
+    inner = mocker.AsyncMock()
+    inner.collection_name = "my-collection"
+
+    proxy = _ThreadOffloadingQdrantClient(inner)
+
+    assert proxy.collection_name == "my-collection"
+
+
+@pytest.mark.unit
+async def test_get_qdrant_client_does_not_wrap_network_mode(mocker, monkeypatch):
+    """Network mode (``QDRANT_URL``) returns the bare client, never the proxy.
+
+    Remote Qdrant already does non-blocking I/O; wrapping it would needlessly
+    funnel every call through the serialising worker-thread limiter.
+    """
+    from nextcloud_mcp_server.config import Settings
+
+    settings = Settings(
+        qdrant_url="http://qdrant:6333",
+        ollama_embedding_model="nomic-embed-text",
+        vector_sync_enabled=False,
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.vector.qdrant_client.get_settings", lambda: settings
+    )
+    embedding_service = mocker.Mock()
+    embedding_service.provider = mocker.Mock(spec_set=[])
+    embedding_service.get_dimension = lambda: 4
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.embedding.get_embedding_service",
+        lambda: embedding_service,
+    )
+
+    # Drive the create path (collection "not found") so the dimension-validation
+    # branch — which would need a fully-shaped CollectionInfo — is skipped.
+    provisional = _stub_provisional(
+        mocker, ValueError(f"Collection {settings.get_collection_name()} not found")
+    )
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.vector.qdrant_client.AsyncQdrantClient",
+        lambda *a, **kw: provisional,
+    )
+
+    original_client = qdrant_module._qdrant_client
+    original_lock = qdrant_module._qdrant_init_lock
+    qdrant_module._qdrant_client = None
+    qdrant_module._qdrant_init_lock = None
+    try:
+        client = await get_qdrant_client()
+    finally:
+        qdrant_module._qdrant_client = original_client
+        qdrant_module._qdrant_init_lock = original_lock
+
+    assert client is provisional
+    assert not isinstance(client, _ThreadOffloadingQdrantClient)
