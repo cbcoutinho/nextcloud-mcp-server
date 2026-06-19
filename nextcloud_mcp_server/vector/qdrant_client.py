@@ -126,14 +126,15 @@ def _drive_local_coroutine(coro: Coroutine[Any, Any, Any]) -> Any:
     thread dispatched by :func:`anyio.to_thread.run_sync` — is what moves that
     CPU work off the event loop.
 
-    A genuine suspension (a non-``None`` yield) would mean the backend started
-    doing real async I/O, which a plain thread cannot drive correctly. Fail
-    loudly in that case rather than spin or silently mis-drive the coroutine.
-    A bare ``yield None`` (e.g. a hand-inserted ``anyio.lowlevel.checkpoint()``)
-    is deliberately treated as a non-suspension and re-driven — consistent with
-    the local backend being purely synchronous. If a qdrant adapter ever starts
-    inserting real checkpoints, prefer wrapping it in network mode over relaxing
-    this guard.
+    A genuine suspension would mean the backend started doing real async I/O,
+    which a plain thread cannot drive correctly. Any real awaitable yields a
+    non-``None`` object (an asyncio ``Future`` / a trio checkpoint), so the
+    ``yielded is not None`` guard catches it and fails loudly rather than
+    spinning or silently mis-driving the coroutine. Only a literal bare
+    ``yield`` / ``yield None`` is treated as a non-suspension and re-driven —
+    consistent with the local backend being purely synchronous. If a qdrant
+    adapter ever starts inserting real checkpoints, prefer wrapping it in
+    network mode over relaxing this guard.
     """
     try:
         while True:
