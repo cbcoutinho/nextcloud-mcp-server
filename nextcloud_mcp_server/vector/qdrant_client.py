@@ -129,6 +129,11 @@ def _drive_local_coroutine(coro: Coroutine[Any, Any, Any]) -> Any:
     A genuine suspension (a non-``None`` yield) would mean the backend started
     doing real async I/O, which a plain thread cannot drive correctly. Fail
     loudly in that case rather than spin or silently mis-drive the coroutine.
+    A bare ``yield None`` (e.g. a hand-inserted ``anyio.lowlevel.checkpoint()``)
+    is deliberately treated as a non-suspension and re-driven — consistent with
+    the local backend being purely synchronous. If a qdrant adapter ever starts
+    inserting real checkpoints, prefer wrapping it in network mode over relaxing
+    this guard.
     """
     try:
         while True:
@@ -687,6 +692,11 @@ async def get_qdrant_client() -> AsyncQdrantClient:
             # work to a worker thread. Network mode (mirrors the ``if
             # settings.qdrant_url`` branch above) already does non-blocking I/O
             # and is left untouched.
+            #
+            # Wrap here, before the ``_backfill_doc_id_to_string`` /
+            # ``_ensure_payload_indexes`` migrations below, so that the O(N)
+            # startup scroll runs off the event loop too — not just steady-state
+            # scan/search queries.
             if not settings.qdrant_url:
                 provisional = cast(
                     AsyncQdrantClient, _ThreadOffloadingQdrantClient(provisional)

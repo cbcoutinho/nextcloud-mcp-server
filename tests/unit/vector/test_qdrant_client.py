@@ -1105,7 +1105,27 @@ async def test_offloading_proxy_passes_through_non_callables(mocker):
 
 
 @pytest.mark.unit
-async def test_get_qdrant_client_does_not_wrap_network_mode(mocker, monkeypatch):
+async def test_offloading_proxy_forwards_sync_callables_directly(mocker):
+    """A callable returning a non-coroutine is forwarded without thread offload.
+
+    ``_maybe_offload`` only routes through the worker thread when the call
+    produces a coroutine; plain sync methods return their value straight
+    through.
+    """
+    inner = mocker.Mock()  # Mock (not AsyncMock): calls return plain values.
+    inner.get_fastembed_vector_params.return_value = {"size": 384}
+
+    proxy = _ThreadOffloadingQdrantClient(inner)
+    result = proxy.get_fastembed_vector_params()
+
+    assert result == {"size": 384}
+    inner.get_fastembed_vector_params.assert_called_once_with()
+
+
+@pytest.mark.unit
+async def test_get_qdrant_client_does_not_wrap_network_mode(
+    mocker, monkeypatch, reset_qdrant_singleton
+):
     """Network mode (``QDRANT_URL``) returns the bare client, never the proxy.
 
     Remote Qdrant already does non-blocking I/O; wrapping it would needlessly
@@ -1139,15 +1159,7 @@ async def test_get_qdrant_client_does_not_wrap_network_mode(mocker, monkeypatch)
         lambda *a, **kw: provisional,
     )
 
-    original_client = qdrant_module._qdrant_client
-    original_lock = qdrant_module._qdrant_init_lock
-    qdrant_module._qdrant_client = None
-    qdrant_module._qdrant_init_lock = None
-    try:
-        client = await get_qdrant_client()
-    finally:
-        qdrant_module._qdrant_client = original_client
-        qdrant_module._qdrant_init_lock = original_lock
+    client = await get_qdrant_client()
 
     assert client is provisional
     assert not isinstance(client, _ThreadOffloadingQdrantClient)
