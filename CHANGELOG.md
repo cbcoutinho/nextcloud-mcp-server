@@ -5,6 +5,25 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.122.0 (2026-06-20)
+
+### Feat
+
+- **mail**: read and index Nextcloud Mail via the Mail OCS API
+
+### Fix
+
+- **mail**: guard empty message payload in processor (PR #935 round-6)
+- **mail**: address PR #935 round-2 review
+
+### Refactor
+
+- **mail**: address PR #935 round-1 review
+
+### Perf
+
+- **mail**: batch verify-on-read; test build_mail_content; addr-recall
+
 ## v0.121.3 (2026-06-19)
 
 ### Fix
