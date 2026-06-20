@@ -18,6 +18,7 @@ from nextcloud_mcp_server.search.verification import (
     get_supported_doc_types,
     verify_search_results,
 )
+from nextcloud_mcp_server.vector.mail_content import MAIL_SCAN_MAX_PER_MAILBOX
 from nextcloud_mcp_server.vector.scanner import INDEXED_DOC_TYPES
 
 # ---------------------------------------------------------------------------
@@ -228,90 +229,111 @@ async def test_verify_notes_string_doc_id_matches_production(mocker):
 # ---------------------------------------------------------------------------
 
 
+def _mail_result(doc_id, mailbox_id=10):
+    """A mail_message SearchResult carrying mailbox_id in its metadata."""
+    return _make_result(
+        doc_id, doc_type="mail_message", metadata={"mailbox_id": mailbox_id}
+    )
+
+
 @pytest.mark.unit
-async def test_verify_mail_200_keeps_all(mocker):
-    mail_client = SimpleNamespace(get_message=mocker.AsyncMock(return_value={"id": 42}))
+async def test_verify_mail_batches_one_list_per_mailbox(mocker):
+    """The verifier lists each mailbox once (DB cache, not per-message IMAP)."""
+    list_messages = mocker.AsyncMock(
+        return_value=[{"databaseId": 10}, {"databaseId": 30}]
+    )
+    mail_client = SimpleNamespace(list_messages=list_messages)
     client = SimpleNamespace(mail=mail_client, username="alice")
 
     result = await _verify_mail_messages(
-        client, [_make_result(42, doc_type="mail_message")], _sem()
+        client,
+        [_mail_result(10), _mail_result(20), _mail_result(30)],  # all mailbox 10
+        _sem(),
     )
-    assert result == {"42"}
-    mail_client.get_message.assert_awaited_once_with(42)
+    # 10 and 30 present; 20 absent (deleted/aged out) -> dropped.
+    assert result == {"10", "30"}
+    # One DB-cached list call for the single mailbox, not one per result.
+    list_messages.assert_awaited_once_with(10, limit=MAIL_SCAN_MAX_PER_MAILBOX)
 
 
 @pytest.mark.unit
-async def test_verify_mail_404_drops(mocker):
+async def test_verify_mail_404_drops_mailbox(mocker):
     mail_client = SimpleNamespace(
-        get_message=mocker.AsyncMock(side_effect=_http_error(404))
+        list_messages=mocker.AsyncMock(side_effect=_http_error(404))
     )
     client = SimpleNamespace(mail=mail_client, username="alice")
 
-    result = await _verify_mail_messages(
-        client, [_make_result(42, doc_type="mail_message")], _sem()
-    )
+    result = await _verify_mail_messages(client, [_mail_result(42)], _sem())
     assert result == set()
 
 
 @pytest.mark.unit
-async def test_verify_mail_403_drops(mocker):
+async def test_verify_mail_403_drops_mailbox(mocker):
     mail_client = SimpleNamespace(
-        get_message=mocker.AsyncMock(side_effect=_http_error(403))
+        list_messages=mocker.AsyncMock(side_effect=_http_error(403))
     )
     client = SimpleNamespace(mail=mail_client, username="alice")
 
-    result = await _verify_mail_messages(
-        client, [_make_result(42, doc_type="mail_message")], _sem()
-    )
+    result = await _verify_mail_messages(client, [_mail_result(42)], _sem())
     assert result == set()
 
 
 @pytest.mark.unit
 async def test_verify_mail_transient_5xx_keeps(mocker):
     mail_client = SimpleNamespace(
-        get_message=mocker.AsyncMock(side_effect=_http_error(503))
+        list_messages=mocker.AsyncMock(side_effect=_http_error(503))
     )
+    client = SimpleNamespace(mail=mail_client, username="alice")
+
+    result = await _verify_mail_messages(client, [_mail_result(42)], _sem())
+    assert result == {"42"}
+
+
+@pytest.mark.unit
+async def test_verify_mail_missing_mailbox_id_keeps(mocker):
+    """A result without a usable mailbox_id is kept without any network call."""
+    list_messages = mocker.AsyncMock()
+    mail_client = SimpleNamespace(list_messages=list_messages)
     client = SimpleNamespace(mail=mail_client, username="alice")
 
     result = await _verify_mail_messages(
         client, [_make_result(42, doc_type="mail_message")], _sem()
     )
     assert result == {"42"}
+    list_messages.assert_not_awaited()
 
 
 @pytest.mark.unit
-async def test_verify_mail_non_numeric_id_keeps(mocker):
-    mail_client = SimpleNamespace(get_message=mocker.AsyncMock())
+async def test_verify_mail_non_numeric_id_kept_when_mailbox_listed(mocker):
+    """A malformed doc_id can't match the numeric listing, so it's kept."""
+    mail_client = SimpleNamespace(
+        list_messages=mocker.AsyncMock(return_value=[{"databaseId": 99}])
+    )
     client = SimpleNamespace(mail=mail_client, username="alice")
 
-    result = await _verify_mail_messages(
-        client, [_make_result("not-a-number", doc_type="mail_message")], _sem()
-    )
+    result = await _verify_mail_messages(client, [_mail_result("not-a-number")], _sem())
     assert result == {"not-a-number"}
-    # Malformed id is kept without any network call.
-    mail_client.get_message.assert_not_awaited()
 
 
 @pytest.mark.unit
-async def test_verify_mail_mixed_outcomes(mocker):
-    async def fake_get(message_id: int):
-        if message_id == 20:
-            raise _http_error(404)  # deleted
-        return {"id": message_id}
+async def test_verify_mail_partitions_distinct_mailboxes(mocker):
+    """Results in different mailboxes each get their own list call."""
 
-    mail_client = SimpleNamespace(get_message=mocker.AsyncMock(side_effect=fake_get))
+    async def list_messages(mailbox_id, *, limit):
+        return {10: [{"databaseId": 1}], 20: [{"databaseId": 2}]}[mailbox_id]
+
+    mail_client = SimpleNamespace(
+        list_messages=mocker.AsyncMock(side_effect=list_messages)
+    )
     client = SimpleNamespace(mail=mail_client, username="alice")
 
     result = await _verify_mail_messages(
         client,
-        [
-            _make_result(10, doc_type="mail_message"),
-            _make_result(20, doc_type="mail_message"),
-            _make_result(30, doc_type="mail_message"),
-        ],
+        [_mail_result(1, mailbox_id=10), _mail_result(2, mailbox_id=20)],
         _sem(),
     )
-    assert result == {"10", "30"}
+    assert result == {"1", "2"}
+    assert mail_client.list_messages.await_count == 2
 
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ from nextcloud_mcp_server.server.tag_exclusion import (
     is_path_excluded,
 )
 from nextcloud_mcp_server.vector.dead_letter import is_dead_lettered
+from nextcloud_mcp_server.vector.mail_content import MAIL_SCAN_MAX_PER_MAILBOX
 from nextcloud_mcp_server.vector.placeholder import (
     query_document_metadata,
     write_placeholder_point,
@@ -1355,13 +1356,13 @@ async def scan_news_items(
     return queued
 
 
-# Newest-N messages indexed per mailbox. The Mail app paginates by recency, so
-# this bounds the index to recent mail; older messages age out of the index as
-# newer ones arrive (and the deletion-tracking pass below evicts them, the same
-# way it handles actually-deleted messages). Raise this if deeper history is
-# wanted, at the cost of more embedding work.
-MAIL_SCAN_MAX_PER_MAILBOX = 100
-
+# Newest-N messages indexed per mailbox (= the Mail OCS per-request maximum;
+# imported from mail_content so the scanner index window and the search-time
+# verifier presence window stay identical). Older messages age out of the index
+# as newer ones arrive — the deletion-tracking pass below evicts them, the same
+# way it handles actually-deleted messages. Going beyond 100 would require
+# cursor pagination, so the value is fixed rather than configurable.
+#
 # Per-process record of (user_id, mailbox_id) for which the newest-N cap has
 # already been logged, so the "older mail not indexed" notice is emitted once at
 # info level (discoverable) rather than on every scan tick (which would flood

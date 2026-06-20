@@ -142,7 +142,10 @@ class MailClient(BaseNextcloudClient):
             List of message summary objects (keys include databaseId, subject,
             from, to, dateInt, flags, previewText, mailboxId).
         """
-        params: dict[str, Any] = {"limit": limit}
+        # The Mail OCS API clamps limit to 1..100 server-side; do it here too so
+        # the contract is enforced at the client layer with a predictable value
+        # (a limit of 0 would otherwise collapse to 1 server-side).
+        params: dict[str, Any] = {"limit": min(max(1, limit), 100)}
         if cursor is not None:
             params["cursor"] = cursor
         if search_filter is not None:
