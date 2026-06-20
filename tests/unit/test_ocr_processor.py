@@ -525,6 +525,22 @@ async def test_batch_raises_when_no_gateway(monkeypatch):
         )
 
 
+async def test_batch_raises_provider_none_names_the_real_cause(monkeypatch):
+    """provider=none in batch mode raises a message about OCR being disabled, not a
+    misleading 'gateway missing' error (the startup guard exempts provider=none)."""
+    settings = _settings(
+        document_ocr_mode="batch",
+        document_ocr_provider="none",
+        embedding_gateway_url="https://gw",
+    )
+    monkeypatch.setattr(ocr, "get_settings", lambda: settings)
+
+    with pytest.raises(ProcessorError, match="DOCUMENT_OCR_PROVIDER=none"):
+        await ocr.OcrProcessor().process(
+            b"%PDF", "application/pdf", options=dict(_IDENTITY)
+        )
+
+
 async def test_batch_raises_when_no_identity(monkeypatch):
     """batch mode on the inline path (no per-doc identity) can't defer a poll, so
     it RAISES rather than silently transcribing synchronously."""

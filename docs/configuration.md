@@ -633,6 +633,31 @@ document parse-failed. Each poll re-fetches + re-classifies the PDF (a known v1
 inefficiency, bounded by the poll cadence); one batch job is submitted per
 document (coalescing many documents per job is a planned follow-up).
 
+#### Upgrade notes: OCR-tier consolidation
+
+The two OCR rungs (`ocr-incluster` / `ocr-upstream`) were merged into one `ocr`
+tier. When upgrading from a deployment that used the split tiers:
+
+- **`DOCUMENT_OCR_INCLUSTER_ENABLED` / `DOCUMENT_OCR_INCLUSTER_MODEL` are removed.**
+  Configure the single tier with `DOCUMENT_OCR_PROVIDER` + `DOCUMENT_OCR_MODEL`
+  (the gateway routes on the model's `<provider>/` prefix, so surya is reached by
+  setting e.g. `DOCUMENT_OCR_PROVIDER=gateway` + `DOCUMENT_OCR_MODEL=surya/surya-ocr-2`).
+- **Dead-letter retry burst.** The dead-letter signature dropped its `ocric=`
+  component, so a deployment that had `DOCUMENT_OCR_INCLUSTER_ENABLED=true` will see
+  its signature change on upgrade and **automatically re-attempt** documents that
+  were dead-lettered while the in-cluster rung was on. This is intended (those docs
+  can OCR via the unified tier) but can produce a burst of OCR jobs on
+  scanned-doc-heavy instances right after deploy — expect it and scale the OCR
+  worker fleet accordingly.
+- **Batch mode now fails loud instead of downgrading to sync.** `DOCUMENT_OCR_MODE=batch`
+  requires the embedding gateway (rejected at startup without `EMBEDDING_GATEWAY_URL`)
+  and the Postgres ingest queue. On the in-process (`INGEST_QUEUE=memory`) path —
+  which can't defer a poll — batch raises at ingest time rather than silently
+  transcribing synchronously; use `DOCUMENT_OCR_MODE=sync` there.
+- **In-flight jobs are drained.** Jobs still parked on the old `ingest-ocr-incluster`
+  / `ingest-ocr-upstream` queues during a rolling upgrade are processed by the new
+  `ocr` worker and routed back to the single `ocr` tier — nothing is stranded.
+
 ### Embedding Service Configuration
 
 The server picks an embedding provider via auto-detection. Priority order

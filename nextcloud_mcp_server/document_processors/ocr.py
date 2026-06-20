@@ -480,14 +480,20 @@ class OcrProcessor(DocumentProcessor):
         """
         client = await self._get_batch_client()
         if client is None:
-            # No batch path from the pod: batch OCR routes through the embedding
-            # gateway, and either OCR is disabled (provider=none) or no gateway is
+            # No batch path from the pod. Two distinct causes — name the real one so
+            # an operator isn't sent chasing a gateway problem when OCR is simply off.
+            if settings.document_ocr_provider == "none":
+                raise ProcessorError(
+                    "DOCUMENT_OCR_PROVIDER=none disables OCR, so batch OCR cannot "
+                    "run. Set DOCUMENT_OCR_PROVIDER to gateway/auto (with "
+                    "EMBEDDING_GATEWAY_URL) to use DOCUMENT_OCR_MODE=batch."
+                )
+            # Otherwise: batch OCR routes through the embedding gateway, which isn't
             # configured. Fail loud rather than transcribe synchronously.
             raise ProcessorError(
                 "DOCUMENT_OCR_MODE=batch requires the embedding gateway: set "
-                "EMBEDDING_GATEWAY_URL (and an enabled DOCUMENT_OCR_PROVIDER) so "
-                "batch OCR can route through the gateway's async Batch API, or use "
-                "DOCUMENT_OCR_MODE=sync."
+                "EMBEDDING_GATEWAY_URL so batch OCR can route through the gateway's "
+                "async Batch API, or use DOCUMENT_OCR_MODE=sync."
             )
         # Per-doc identity is threaded via ``options`` only on the per-tier
         # procrastinate path; the inline/memory pool omits it and can't defer a
