@@ -192,7 +192,7 @@ async def test_incremental_reappeared_message_clears_grace(mocker):
     _patch_incremental(
         mocker, indexed_ids=["100"], existing_metadata={"modified_at": 1700000000}
     )
-    scanner_module._potentially_deleted[("alice", "100")] = 123.0
+    scanner_module._potentially_deleted[("alice", "100", "mail_message")] = 123.0
     nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
 
     stream = _CollectingStream()
@@ -206,14 +206,14 @@ async def test_incremental_reappeared_message_clears_grace(mocker):
 
     assert queued == 0
     assert stream.tasks == []
-    assert ("alice", "100") not in scanner_module._potentially_deleted
+    assert ("alice", "100", "mail_message") not in scanner_module._potentially_deleted
 
 
 async def test_incremental_deletes_after_grace_period(mocker):
     """An indexed message gone from Nextcloud past the grace period is deleted."""
     _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=None)
     # Seed the grace period far in the past so the delta exceeds grace_period.
-    scanner_module._potentially_deleted[("alice", "999")] = 0.0
+    scanner_module._potentially_deleted[("alice", "999", "mail_message")] = 0.0
     # Mailbox now returns no messages, so 999 is missing.
     nc_client = _single_message_client([])
 
@@ -228,7 +228,11 @@ async def test_incremental_deletes_after_grace_period(mocker):
 
     assert queued == 1
     assert [(t.doc_id, t.operation) for t in stream.tasks] == [("999", "delete")]
-    assert ("alice", "999") not in scanner_module._potentially_deleted
+    assert (
+        "alice",
+        "999",
+        "mail_message",
+    ) not in scanner_module._potentially_deleted
 
 
 async def test_incremental_first_missing_starts_grace(mocker):
@@ -249,4 +253,32 @@ async def test_incremental_first_missing_starts_grace(mocker):
     # First miss only starts the grace period — nothing queued, nothing deleted.
     assert queued == 0
     assert stream.tasks == []
-    assert ("alice", "999") in scanner_module._potentially_deleted
+    assert ("alice", "999", "mail_message") in scanner_module._potentially_deleted
+
+
+async def test_grace_key_isolated_by_doc_type(mocker):
+    """A mail message reappearing must not clear a same-id note's grace period.
+
+    Regression for Deck #376: the grace-period key includes doc_type, so a
+    note 42 and a mail_message 42 for one user no longer collide.
+    """
+    # Mail message 42 is indexed and up-to-date (so it isn't re-queued), and is
+    # present in Nextcloud (so the reappeared-clear path runs for mail).
+    _patch_incremental(
+        mocker, indexed_ids=["42"], existing_metadata={"modified_at": 1700000000}
+    )
+    # A note 42 is mid-grace-period for the same user.
+    scanner_module._potentially_deleted[("alice", "42", "note")] = 123.0
+    nc_client = _single_message_client([{"databaseId": 42, "dateInt": 1700000000}])
+
+    stream = _CollectingStream()
+    await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    # The note's grace entry is untouched by the mail scan (no cross-type stomp).
+    assert ("alice", "42", "note") in scanner_module._potentially_deleted

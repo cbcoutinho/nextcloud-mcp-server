@@ -130,8 +130,10 @@ class DocumentTask:
 
 
 # Track documents potentially deleted (grace period before actual deletion)
-# Format: {(user_id, doc_id): first_missing_timestamp}
-_potentially_deleted: dict[tuple[str, str], float] = {}
+# Format: {(user_id, doc_id, doc_type): first_missing_timestamp}. doc_type is
+# part of the key so the same numeric id under different doc types (a note 42
+# and a mail_message 42 for one user) tracks grace periods independently.
+_potentially_deleted: dict[tuple[str, str, str], float] = {}
 
 
 async def get_last_indexed_timestamp(user_id: str) -> int | None:
@@ -705,7 +707,7 @@ async def scan_user_documents(
                 if etag and await claim_existing_index(
                     file_id, "file", etag, user_id, current_path=file_path
                 ):
-                    _potentially_deleted.pop((user_id, file_id), None)
+                    _potentially_deleted.pop((user_id, file_id, "file"), None)
                     logger.debug(
                         "Dedup: file %s (ID: %s) already indexed in tenant; "
                         "granted access to %s without reprocessing",
@@ -724,7 +726,7 @@ async def scan_user_documents(
                 # user-agnostic placeholder's user_id is overwritten by the last
                 # scanner, so every other user re-queued it on a loop.
                 if etag and await is_dead_lettered(file_id, "file", etag, tiers_sig):
-                    _potentially_deleted.pop((user_id, file_id), None)
+                    _potentially_deleted.pop((user_id, file_id, "file"), None)
                     logger.debug(
                         "Skipping dead-lettered file %s (ID: %s) until content/"
                         "tier change",
@@ -758,7 +760,7 @@ async def scan_user_documents(
                 else:
                     # Incremental sync: check if file exists and compare modified_at
                     # If file reappeared, remove from potentially_deleted
-                    file_key = (user_id, file_id)
+                    file_key = (user_id, file_id, "file")
                     if file_key in _potentially_deleted:
                         logger.debug(
                             "File %s (ID: %s) reappeared, removing from deletion grace period",
@@ -876,7 +878,7 @@ async def scan_user_documents(
             if not initial_sync:
                 for file_id in indexed_file_ids:
                     if file_id not in nextcloud_file_ids:
-                        file_key = (user_id, file_id)
+                        file_key = (user_id, file_id, "file")
 
                         if file_key in _potentially_deleted:
                             # Check if grace period elapsed
@@ -1048,7 +1050,7 @@ async def scan_notes(
         else:
             # Incremental sync: check if document exists and compare modified_at
             # If document reappeared, remove from potentially_deleted
-            doc_key = (user_id, doc_id)
+            doc_key = (user_id, doc_id, "note")
             if doc_key in _potentially_deleted:
                 logger.debug(
                     "Document %s reappeared, removing from deletion grace period",
@@ -1123,7 +1125,7 @@ async def scan_notes(
     # Use grace period: only delete after 2 consecutive scans confirm absence
     for doc_id in indexed_doc_ids:
         if doc_id not in nextcloud_doc_ids:
-            doc_key = (user_id, doc_id)
+            doc_key = (user_id, doc_id, "note")
 
             if doc_key in _potentially_deleted:
                 # Already marked as potentially deleted, check if grace period elapsed
@@ -1258,7 +1260,7 @@ async def scan_news_items(
             queued += 1
         else:
             # Incremental sync: check if item exists and compare modified_at
-            doc_key = (user_id, doc_id)
+            doc_key = (user_id, doc_id, "news_item")
             if doc_key in _potentially_deleted:
                 logger.debug(
                     "News item %s reappeared, removing from deletion grace period",
@@ -1322,7 +1324,7 @@ async def scan_news_items(
 
         for doc_id in indexed_item_ids:
             if doc_id not in nextcloud_item_ids:
-                doc_key = (user_id, doc_id)
+                doc_key = (user_id, doc_id, "news_item")
 
                 if doc_key in _potentially_deleted:
                     first_missing_time = _potentially_deleted[doc_key]
@@ -1531,7 +1533,7 @@ async def scan_mail_messages(
                     )
                     queued += 1
                 else:
-                    doc_key = (user_id, doc_id)
+                    doc_key = (user_id, doc_id, "mail_message")
                     if doc_key in _potentially_deleted:
                         logger.debug(
                             "Mail message %s reappeared, removing from deletion "
@@ -1606,7 +1608,7 @@ async def scan_mail_messages(
 
         for doc_id in indexed_message_ids:
             if doc_id not in nextcloud_message_ids:
-                doc_key = (user_id, doc_id)
+                doc_key = (user_id, doc_id, "mail_message")
 
                 if doc_key in _potentially_deleted:
                     first_missing_time = _potentially_deleted[doc_key]
@@ -1751,7 +1753,7 @@ async def scan_deck_cards(
                     queued += 1
                 else:
                     # Incremental sync: check if card exists and compare modified_at
-                    doc_key = (user_id, doc_id)
+                    doc_key = (user_id, doc_id, "deck_card")
                     if doc_key in _potentially_deleted:
                         logger.debug(
                             "Deck card %s reappeared, removing from deletion grace period",
@@ -1815,7 +1817,7 @@ async def scan_deck_cards(
 
         for doc_id in indexed_card_ids:
             if doc_id not in nextcloud_card_ids:
-                doc_key = (user_id, doc_id)
+                doc_key = (user_id, doc_id, "deck_card")
 
                 if doc_key in _potentially_deleted:
                     first_missing_time = _potentially_deleted[doc_key]
