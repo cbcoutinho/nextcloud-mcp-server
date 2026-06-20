@@ -196,6 +196,25 @@ async def test_get_attachment_unwraps_json(mocker):
     assert args == ("GET", "/ocs/v2.php/apps/mail/api/message/100/attachment/1.2")
 
 
+async def test_get_attachment_url_encodes_attachment_id(mocker):
+    """A traversal-style attachment_id is percent-encoded in the URL path."""
+    mock_response = _ocs_response({"name": "x", "content": "y"})
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        MailClient, "_make_request", return_value=mock_response
+    )
+
+    client = MailClient(mock_client, "testuser")
+    await client.get_attachment(100, "../../evil")
+
+    args, _ = mock_make_request.call_args
+    # The "/" and ".." are encoded, so they can't escape the attachment path.
+    assert args == (
+        "GET",
+        "/ocs/v2.php/apps/mail/api/message/100/attachment/..%2F..%2Fevil",
+    )
+
+
 async def test_empty_data_returns_empty_list(mocker):
     """A null ocs.data payload degrades to an empty list for list endpoints."""
     mock_response = _ocs_response(None)

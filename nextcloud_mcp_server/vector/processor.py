@@ -42,6 +42,7 @@ from nextcloud_mcp_server.observability.metrics import (
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.search.pdf_highlighter import PDFHighlighter
 from nextcloud_mcp_server.usage import UsageEventStore
+from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector._errors import format_exception_group
 from nextcloud_mcp_server.vector.dead_letter import (
@@ -848,6 +849,11 @@ async def _index_document(
             # Fetch the full message via the Mail OCS API. The Mail app handles
             # IMAP server-side; we only ever speak HTTP. build_mail_content is
             # shared with search/context.py so index- and query-time text match.
+            # Guard the cast before the network call (consistent with the same
+            # doc_type in search/context.py) so a malformed queue record produces
+            # a specific error rather than a bare ValueError.
+            if not is_valid_nextcloud_doc_id(doc_task.doc_id):
+                raise ValueError(f"Invalid mail_message doc_id: {doc_task.doc_id!r}")
             message = await nc_client.mail.get_message(int(doc_task.doc_id))
             content = build_mail_content(message)
 
@@ -861,6 +867,7 @@ async def _index_document(
                 "from": format_mail_addresses(message.get("from")),
                 "to": format_mail_addresses(message.get("to")),
                 "cc": format_mail_addresses(message.get("cc")),
+                "bcc": format_mail_addresses(message.get("bcc")),
                 "date_int": message.get("dateInt"),
                 "has_attachments": bool(message.get("attachments")),
                 "account_id": (doc_task.metadata or {}).get("account_id"),
@@ -1640,6 +1647,7 @@ async def _index_document(
                             "from": file_metadata.get("from"),
                             "to": file_metadata.get("to"),
                             "cc": file_metadata.get("cc"),
+                            "bcc": file_metadata.get("bcc"),
                             "date_int": file_metadata.get("date_int"),
                             "has_attachments": file_metadata.get("has_attachments"),
                             "account_id": file_metadata.get("account_id"),

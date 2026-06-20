@@ -162,7 +162,11 @@ class ListMessagesResponse(BaseResponse):
     """Response model for listing message envelopes."""
 
     results: list[MailMessageSummary] = Field(description="List of message summaries")
-    total_count: int = Field(description="Number of messages returned")
+    total_count: int = Field(
+        description="Number of messages returned in this page (NOT the mailbox "
+        "total, which isn't known without a full scan); page with cursor and "
+        "stop on an empty result"
+    )
     has_more: bool = Field(False, description="Whether more messages may exist")
 
 

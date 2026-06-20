@@ -32,6 +32,23 @@ logger = logging.getLogger(__name__)
 MAX_ATTACHMENT_CONTENT_BYTES = 5 * 1024 * 1024
 
 
+def _cap_attachment_content(content: str | None) -> str | None:
+    """Replace oversized attachment content with a size sentinel.
+
+    Measures UTF-8 byte length (what actually lands in the MCP response/LLM
+    context), not character count. Non-string content is returned unchanged.
+    """
+    if not isinstance(content, str):
+        return content
+    content_bytes = len(content.encode("utf-8"))
+    if content_bytes > MAX_ATTACHMENT_CONTENT_BYTES:
+        return (
+            f"[attachment too large to inline: {content_bytes} bytes "
+            f"(> {MAX_ATTACHMENT_CONTENT_BYTES})]"
+        )
+    return content
+
+
 def configure_mail_tools(mcp: FastMCP):
     """Configure Mail app MCP tools (read-only)."""
 
@@ -221,19 +238,11 @@ def configure_mail_tools(mcp: FastMCP):
         client = await get_client(ctx)
         try:
             data = await client.mail.get_attachment(message_id, attachment_id)
-            content = data.get("content")
-            if isinstance(content, str):
-                content_bytes = len(content.encode("utf-8"))
-                if content_bytes > MAX_ATTACHMENT_CONTENT_BYTES:
-                    content = (
-                        f"[attachment too large to inline: {content_bytes} bytes "
-                        f"(> {MAX_ATTACHMENT_CONTENT_BYTES})]"
-                    )
             return GetAttachmentResponse(
                 name=data.get("name"),
                 mime=data.get("mime"),
                 size=data.get("size"),
-                content=content,
+                content=_cap_attachment_content(data.get("content")),
             )
         except RequestError as e:
             raise McpError(

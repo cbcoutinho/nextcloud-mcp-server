@@ -80,7 +80,9 @@ class MailClient(BaseNextcloudClient):
         except (TypeError, ValueError):
             status_code = 200
         if status_code >= 400:
-            synthetic = Response(status_code=status_code, request=response.request)
+            synthetic = Response(
+                status_code=status_code, request=response.request, content=b""
+            )
             raise HTTPStatusError(
                 f"Mail OCS error {status_code} for {path}: {meta.get('message')}",
                 request=response.request,
