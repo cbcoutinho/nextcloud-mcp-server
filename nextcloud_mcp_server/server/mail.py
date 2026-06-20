@@ -143,15 +143,22 @@ def configure_mail_tools(mcp: FastMCP):
             messages; page with ``cursor`` and stop on an empty result.
         """
         client = await get_client(ctx)
+        # Clamp to the same window the client/OCS API enforce so the has_more
+        # heuristic compares against the limit actually applied (a caller passing
+        # limit<=0 otherwise gets a misleading count).
+        effective_limit = min(max(1, limit), 100)
         try:
             messages_data = await client.mail.list_messages(
-                mailbox_id, cursor=cursor, search_filter=search_filter, limit=limit
+                mailbox_id,
+                cursor=cursor,
+                search_filter=search_filter,
+                limit=effective_limit,
             )
             messages = [MailMessageSummary(**m) for m in messages_data]
             return ListMessagesResponse(
                 results=messages,
                 total_count=len(messages),
-                has_more=len(messages) == limit and limit > 0,
+                has_more=len(messages) == effective_limit,
             )
         except RequestError as e:
             raise McpError(
@@ -181,6 +188,8 @@ def configure_mail_tools(mcp: FastMCP):
 
         Returns:
             GetMessageResponse with the full message including body and attachments.
+            Attachments with ``id: null`` are inline body parts and cannot be
+            fetched via nc_mail_get_attachment (which requires a string id).
         """
         client = await get_client(ctx)
         try:

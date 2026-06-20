@@ -855,6 +855,13 @@ async def _index_document(
             if not is_valid_nextcloud_doc_id(doc_task.doc_id):
                 raise ValueError(f"Invalid mail_message doc_id: {doc_task.doc_id!r}")
             message = await nc_client.mail.get_message(int(doc_task.doc_id))
+            # An empty payload (OCS data=null with a <400 meta) would otherwise
+            # index a useless near-empty placeholder; fail loudly so the task
+            # dead-letters instead of corrupting the index.
+            if not message:
+                raise ValueError(
+                    f"mail_message {doc_task.doc_id!r} returned an empty payload"
+                )
             content = build_mail_content(message)
 
             subject = message.get("subject") or ""

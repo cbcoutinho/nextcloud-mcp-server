@@ -229,3 +229,24 @@ async def test_incremental_deletes_after_grace_period(mocker):
     assert queued == 1
     assert [(t.doc_id, t.operation) for t in stream.tasks] == [("999", "delete")]
     assert ("alice", "999") not in scanner_module._potentially_deleted
+
+
+async def test_incremental_first_missing_starts_grace(mocker):
+    """A newly-missing indexed message enters the grace period (no delete yet)."""
+    _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=None)
+    # Not previously seen as missing, and the mailbox now returns no messages.
+    nc_client = _single_message_client([])
+
+    stream = _CollectingStream()
+    queued = await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    # First miss only starts the grace period — nothing queued, nothing deleted.
+    assert queued == 0
+    assert stream.tasks == []
+    assert ("alice", "999") in scanner_module._potentially_deleted
