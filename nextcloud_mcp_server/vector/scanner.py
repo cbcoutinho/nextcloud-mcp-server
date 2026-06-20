@@ -1362,6 +1362,12 @@ async def scan_news_items(
 # wanted, at the cost of more embedding work.
 MAIL_SCAN_MAX_PER_MAILBOX = 100
 
+# Per-process record of (user_id, mailbox_id) for which the newest-N cap has
+# already been logged, so the "older mail not indexed" notice is emitted once at
+# info level (discoverable) rather than on every scan tick (which would flood
+# multi-tenant logs).
+_mail_cap_logged: set[tuple[str, int]] = set()
+
 
 async def scan_mail_messages(
     user_id: str,
@@ -1460,10 +1466,15 @@ async def scan_mail_messages(
                 )
                 continue
 
-            if len(messages) >= MAIL_SCAN_MAX_PER_MAILBOX:
-                logger.debug(
+            cap_key = (user_id, mailbox_id)
+            if len(messages) >= MAIL_SCAN_MAX_PER_MAILBOX and cap_key not in (
+                _mail_cap_logged
+            ):
+                _mail_cap_logged.add(cap_key)
+                logger.info(
                     "[SCAN-%s] Mailbox %s hit the newest-%s cap; older messages "
-                    "are not indexed",
+                    "are not indexed (set MAIL_SCAN_MAX_PER_MAILBOX higher for "
+                    "deeper history)",
                     scan_id,
                     mailbox_id,
                     MAIL_SCAN_MAX_PER_MAILBOX,

@@ -24,6 +24,13 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 
 logger = logging.getLogger(__name__)
 
+# Hard cap on inlined attachment content. The Mail OCS API returns the full
+# attachment body in the JSON response, which then has to fit in the host LLM's
+# context window; replace anything larger with a sentinel so a 20 MB design file
+# can't blow up the MCP response. Callers can still see the real size via the
+# message's attachment list.
+MAX_ATTACHMENT_CONTENT_BYTES = 5 * 1024 * 1024
+
 
 def configure_mail_tools(mcp: FastMCP):
     """Configure Mail app MCP tools (read-only)."""
@@ -161,6 +168,13 @@ def configure_mail_tools(mcp: FastMCP):
         client = await get_client(ctx)
         try:
             message_data = await client.mail.get_message(message_id)
+            # An empty payload (OCS data=null with a 200 meta) would make
+            # MailMessage(**{}) raise an uncaught ValidationError; treat it as
+            # not-found instead.
+            if not message_data:
+                raise McpError(
+                    ErrorData(code=-1, message=f"Message {message_id} not found")
+                )
             message = MailMessage(**message_data)
             return GetMessageResponse(message=message)
         except RequestError as e:
@@ -207,11 +221,17 @@ def configure_mail_tools(mcp: FastMCP):
         client = await get_client(ctx)
         try:
             data = await client.mail.get_attachment(message_id, attachment_id)
+            content = data.get("content")
+            if isinstance(content, str) and len(content) > MAX_ATTACHMENT_CONTENT_BYTES:
+                content = (
+                    f"[attachment too large to inline: {len(content)} bytes "
+                    f"(> {MAX_ATTACHMENT_CONTENT_BYTES})]"
+                )
             return GetAttachmentResponse(
                 name=data.get("name"),
                 mime=data.get("mime"),
                 size=data.get("size"),
-                content=data.get("content"),
+                content=content,
             )
         except RequestError as e:
             raise McpError(

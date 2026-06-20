@@ -6,6 +6,7 @@ accounts → mailboxes → newest-N messages — which is the bulk of the new lo
 and needs no Qdrant.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,6 +15,42 @@ from nextcloud_mcp_server.vector import scanner as scanner_module
 from nextcloud_mcp_server.vector.scanner import DocumentTask, scan_mail_messages
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _clear_scanner_module_state():
+    """Isolate the module-global grace-period / cap-log dicts per test."""
+    scanner_module._potentially_deleted.clear()
+    scanner_module._mail_cap_logged.clear()
+    yield
+    scanner_module._potentially_deleted.clear()
+    scanner_module._mail_cap_logged.clear()
+
+
+def _patch_incremental(mocker, *, indexed_ids, existing_metadata, interval=1):
+    """Patch the Qdrant-facing helpers for the incremental scan path."""
+    mocker.patch.object(scanner_module, "get_qdrant_client", new=AsyncMock())
+    mocker.patch.object(
+        scanner_module,
+        "_scroll_all_points",
+        new=AsyncMock(
+            return_value=[
+                SimpleNamespace(payload={"doc_id": doc_id}) for doc_id in indexed_ids
+            ]
+        ),
+    )
+    mocker.patch.object(
+        scanner_module,
+        "query_document_metadata",
+        new=AsyncMock(return_value=existing_metadata),
+    )
+    mocker.patch.object(scanner_module, "write_placeholder_point", new=AsyncMock())
+    mocker.patch.object(scanner_module, "record_vector_sync_scan")
+    mocker.patch.object(
+        scanner_module,
+        "get_settings",
+        return_value=MagicMock(vector_sync_scan_interval=interval),
+    )
 
 
 class _CollectingStream:
@@ -121,3 +158,74 @@ async def test_no_accounts_queues_nothing(mocker):
 
     assert queued == 0
     assert stream.tasks == []
+
+
+def _single_message_client(messages):
+    nc_client = MagicMock()
+    nc_client.mail.list_accounts = AsyncMock(return_value=[{"id": 1}])
+    nc_client.mail.get_mailboxes = AsyncMock(return_value=[{"databaseId": 10}])
+    nc_client.mail.list_messages = AsyncMock(return_value=messages)
+    return nc_client
+
+
+async def test_incremental_new_message_queued(mocker):
+    """A message absent from Qdrant (no existing metadata) is queued to index."""
+    _patch_incremental(mocker, indexed_ids=[], existing_metadata=None)
+    nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
+
+    stream = _CollectingStream()
+    queued = await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    assert queued == 1
+    assert [(t.doc_id, t.operation) for t in stream.tasks] == [("100", "index")]
+
+
+async def test_incremental_reappeared_message_clears_grace(mocker):
+    """A message back in Nextcloud is removed from the deletion grace period."""
+    # Already indexed and up-to-date, so it won't be re-queued.
+    _patch_incremental(
+        mocker, indexed_ids=["100"], existing_metadata={"modified_at": 1700000000}
+    )
+    scanner_module._potentially_deleted[("alice", "100")] = 123.0
+    nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
+
+    stream = _CollectingStream()
+    queued = await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    assert queued == 0
+    assert stream.tasks == []
+    assert ("alice", "100") not in scanner_module._potentially_deleted
+
+
+async def test_incremental_deletes_after_grace_period(mocker):
+    """An indexed message gone from Nextcloud past the grace period is deleted."""
+    _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=None)
+    # Seed the grace period far in the past so the delta exceeds grace_period.
+    scanner_module._potentially_deleted[("alice", "999")] = 0.0
+    # Mailbox now returns no messages, so 999 is missing.
+    nc_client = _single_message_client([])
+
+    stream = _CollectingStream()
+    queued = await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    assert queued == 1
+    assert [(t.doc_id, t.operation) for t in stream.tasks] == [("999", "delete")]
+    assert ("alice", "999") not in scanner_module._potentially_deleted

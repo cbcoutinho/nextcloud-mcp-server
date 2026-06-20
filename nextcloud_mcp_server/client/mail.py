@@ -71,7 +71,13 @@ class MailClient(BaseNextcloudClient):
         # instead of silently unwrapping data=null.
         ocs = body.get("ocs", {}) if isinstance(body, dict) else {}
         meta = ocs.get("meta", {})
-        status_code = int(meta.get("statuscode", 200) or 200)
+        # statuscode is spec'd as an int, but harden against a non-numeric value
+        # in a non-spec response rather than letting int() raise ValueError
+        # (which neither MCP-tool handler catches) — treat it as success.
+        try:
+            status_code = int(meta.get("statuscode", 200) or 200)
+        except (TypeError, ValueError):
+            status_code = 200
         if status_code >= 400:
             synthetic = Response(status_code=status_code, request=response.request)
             raise HTTPStatusError(
