@@ -188,9 +188,10 @@ _DEFAULTS: dict[str, Any] = {
     # OCR execution mode (Deck #332). "sync" (default) transcribes inline via the
     # backend's synchronous path. "batch" routes to the gateway's async Batch OCR
     # job (~50% cheaper, minutes-hours latency) for large-corpus backfill — opt-in
-    # and gateway-only; with the direct mistral backend or no gateway it falls
-    # back to sync. The submit->defer-poll loop runs on the per-tier procrastinate
-    # path; the inline/memory pool can't defer, so batch falls back to sync there.
+    # and gateway-routed. It requires EMBEDDING_GATEWAY_URL (rejected at startup
+    # otherwise, see __post_init__) and the per-tier procrastinate path; the
+    # inline/memory pool can't defer a poll, so batch raises there rather than
+    # silently downgrading to sync.
     "document_ocr_mode": "sync",
     # Seconds between batch-job polls (the procrastinate re-enqueue delay). Each
     # poll re-runs the tier; keep it well above a few seconds.

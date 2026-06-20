@@ -91,7 +91,7 @@ LEGACY_INGEST_QUEUE = "ingest"
 LEGACY_INGEST_QUEUE_OCR_INCLUSTER = "ingest-ocr-incluster"
 LEGACY_INGEST_QUEUE_OCR_UPSTREAM = "ingest-ocr-upstream"
 # Split OCR queues that should drain back onto the single OCR tier during rollout.
-_LEGACY_OCR_QUEUES: frozenset[str] = frozenset(
+LEGACY_OCR_QUEUES: frozenset[str] = frozenset(
     {LEGACY_INGEST_QUEUE_OCR_INCLUSTER, LEGACY_INGEST_QUEUE_OCR_UPSTREAM}
 )
 # Back-compat alias for callers that imported the old single-queue constant.
@@ -109,7 +109,7 @@ INGEST_QUEUE_MAINTENANCE = "ingest-maintenance"
 _MANAGED_QUEUES: tuple[str, ...] = (
     *ALL_INGEST_QUEUES,
     LEGACY_INGEST_QUEUE,
-    *sorted(_LEGACY_OCR_QUEUES),
+    *sorted(LEGACY_OCR_QUEUES),
 )
 
 # Blueprint namespace → registered task names are prefixed ``ingest:``.
@@ -125,7 +125,7 @@ def tier_for_queue(queue: str | None) -> str:
     any unrecognised queue) defaults to the cheapest tier.
 
     The two split OCR queues from the #353 tier2/tier3 split
-    (``_LEGACY_OCR_QUEUES``) map to the now-single ``ocr`` tier so in-flight OCR
+    (``LEGACY_OCR_QUEUES``) map to the now-single ``ocr`` tier so in-flight OCR
     jobs from a pre-consolidation deploy keep OCR'ing rather than dropping back to
     ``fast``. The set is transient (only during a single rollout window).
     """
@@ -133,7 +133,7 @@ def tier_for_queue(queue: str | None) -> str:
     tier = _QUEUE_TIERS.get(queue)
     if tier is not None:
         return tier
-    if queue in _LEGACY_OCR_QUEUES:
+    if queue in LEGACY_OCR_QUEUES:
         return "ocr"
     return "fast"
 

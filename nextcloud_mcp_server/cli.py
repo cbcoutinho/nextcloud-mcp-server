@@ -386,8 +386,7 @@ def worker(concurrency: int | None, tier: str | None):
         ALL_INGEST_QUEUES,
         INGEST_QUEUE_MAINTENANCE,
         LEGACY_INGEST_QUEUE,
-        LEGACY_INGEST_QUEUE_OCR_INCLUSTER,
-        LEGACY_INGEST_QUEUE_OCR_UPSTREAM,
+        LEGACY_OCR_QUEUES,
         TIER_QUEUES,
         apply_ingest_queue_schema,
         get_procrastinate_app,
@@ -405,16 +404,12 @@ def worker(concurrency: int | None, tier: str | None):
     if tier is not None:
         queues = [TIER_QUEUES[tier], INGEST_QUEUE_MAINTENANCE]
         if tier == "ocr":
-            queues[1:1] = [
-                LEGACY_INGEST_QUEUE_OCR_INCLUSTER,
-                LEGACY_INGEST_QUEUE_OCR_UPSTREAM,
-            ]
+            queues[1:1] = sorted(LEGACY_OCR_QUEUES)
     else:
         queues = [
             *ALL_INGEST_QUEUES,
             LEGACY_INGEST_QUEUE,
-            LEGACY_INGEST_QUEUE_OCR_INCLUSTER,
-            LEGACY_INGEST_QUEUE_OCR_UPSTREAM,
+            *sorted(LEGACY_OCR_QUEUES),
             INGEST_QUEUE_MAINTENANCE,
         ]
 

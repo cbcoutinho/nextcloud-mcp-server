@@ -708,15 +708,13 @@ def update_ingest_queue_depth(by_queue: dict[str, dict[str, int]] | None) -> Non
     from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
         ALL_INGEST_QUEUES,
         LEGACY_INGEST_QUEUE,
-        LEGACY_INGEST_QUEUE_OCR_INCLUSTER,
-        LEGACY_INGEST_QUEUE_OCR_UPSTREAM,
+        LEGACY_OCR_QUEUES,
     )
 
     for queue in (
         *ALL_INGEST_QUEUES,
         LEGACY_INGEST_QUEUE,
-        LEGACY_INGEST_QUEUE_OCR_INCLUSTER,
-        LEGACY_INGEST_QUEUE_OCR_UPSTREAM,
+        *sorted(LEGACY_OCR_QUEUES),
     ):
         for status in _INGEST_DEPTH_STATUSES:
             ingest_queue_depth.labels(queue=queue, status=status).set(0)
