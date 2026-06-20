@@ -53,6 +53,10 @@ from nextcloud_mcp_server.vector.document_chunker import (
     PageAwareChunker,
 )
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
+from nextcloud_mcp_server.vector.mail_content import (
+    build_mail_content,
+    format_mail_addresses,
+)
 from nextcloud_mcp_server.vector.placeholder import (
     delete_placeholder_point,
     update_placeholder_status,
@@ -842,50 +846,21 @@ async def _index_document(
             content_type = None
         elif doc_task.doc_type == "mail_message":
             # Fetch the full message via the Mail OCS API. The Mail app handles
-            # IMAP server-side; we only ever speak HTTP.
+            # IMAP server-side; we only ever speak HTTP. build_mail_content is
+            # shared with search/context.py so index- and query-time text match.
             message = await nc_client.mail.get_message(int(doc_task.doc_id))
-
-            def _format_addresses(addrs: list[dict] | None) -> str:
-                parts = []
-                for addr in addrs or []:
-                    label = addr.get("label")
-                    email = addr.get("email")
-                    if label and email and label != email:
-                        parts.append(f"{label} <{email}>")
-                    elif email:
-                        parts.append(email)
-                    elif label:
-                        parts.append(label)
-                return ", ".join(parts)
+            content = build_mail_content(message)
 
             subject = message.get("subject") or ""
-            from_str = _format_addresses(message.get("from"))
-            to_str = _format_addresses(message.get("to"))
-            # Body is sanitized HTML when hasHtmlBody, else plain text. Convert
-            # HTML to Markdown for better embedding; pass plain text through.
-            raw_body = message.get("body") or ""
-            body_text = (
-                html_to_markdown(raw_body) if message.get("hasHtmlBody") else raw_body
-            )
-
-            content_parts = [subject]
-            if from_str:
-                content_parts.append(f"From: {from_str}")
-            if to_str:
-                content_parts.append(f"To: {to_str}")
-            content_parts.append("")  # Blank line
-            content_parts.append(body_text)
-            content = "\n".join(content_parts)
-
             title = subject
             # Email is immutable; key change-detection on the message id so a
             # re-index is a no-op unless the id changes.
             etag = str(message.get("id") or doc_task.doc_id)
             file_metadata = {
                 "subject": subject,
-                "from": from_str,
-                "to": to_str,
-                "cc": _format_addresses(message.get("cc")),
+                "from": format_mail_addresses(message.get("from")),
+                "to": format_mail_addresses(message.get("to")),
+                "cc": format_mail_addresses(message.get("cc")),
                 "date_int": message.get("dateInt"),
                 "has_attachments": bool(message.get("attachments")),
                 "account_id": (doc_task.metadata or {}).get("account_id"),
@@ -1656,6 +1631,21 @@ async def _index_document(
                             "owner": file_metadata.get("owner"),
                         }
                         if doc_task.doc_type == "deck_card"
+                        else {}
+                    ),
+                    # Mail message-specific metadata
+                    **(
+                        {
+                            "subject": file_metadata.get("subject"),
+                            "from": file_metadata.get("from"),
+                            "to": file_metadata.get("to"),
+                            "cc": file_metadata.get("cc"),
+                            "date_int": file_metadata.get("date_int"),
+                            "has_attachments": file_metadata.get("has_attachments"),
+                            "account_id": file_metadata.get("account_id"),
+                            "mailbox_id": file_metadata.get("mailbox_id"),
+                        }
+                        if doc_task.doc_type == "mail_message"
                         else {}
                     ),
                     # Chunk bbox (PDF only) — normalized rectangles in [0,1]

@@ -98,7 +98,7 @@ def configure_mail_tools(mcp: FastMCP):
         mailbox_id: int,
         ctx: Context,
         cursor: int | None = None,
-        filter: str | None = None,
+        search_filter: str | None = None,
         limit: int = 20,
     ) -> ListMessagesResponse:
         """List message envelopes in a mailbox, newest first (requires mail.read scope).
@@ -109,16 +109,19 @@ def configure_mail_tools(mcp: FastMCP):
         Args:
             mailbox_id: Numeric mailbox id (``database_id`` from nc_mail_list_mailboxes)
             cursor: Pagination cursor from a prior page
-            filter: Optional search/filter query
+            search_filter: Optional search/filter query
             limit: Max messages to return (1-100, default 20)
 
         Returns:
-            ListMessagesResponse with message summaries.
+            ListMessagesResponse with message summaries. ``has_more`` is a
+            heuristic (true when exactly ``limit`` messages were returned), so it
+            can be a false positive when a mailbox holds exactly ``limit``
+            messages; page with ``cursor`` and stop on an empty result.
         """
         client = await get_client(ctx)
         try:
             messages_data = await client.mail.list_messages(
-                mailbox_id, cursor=cursor, filter=filter, limit=limit
+                mailbox_id, cursor=cursor, search_filter=search_filter, limit=limit
             )
             messages = [MailMessageSummary(**m) for m in messages_data]
             return ListMessagesResponse(
@@ -196,7 +199,10 @@ def configure_mail_tools(mcp: FastMCP):
             attachment_id: Attachment id (a string, from the message's attachments)
 
         Returns:
-            GetAttachmentResponse with name, mime, size, and content.
+            GetAttachmentResponse with name, mime, size, and content. ``content``
+            is the attachment body as returned by the Mail OCS API; large
+            attachments produce a correspondingly large response, so prefer the
+            ``size`` from the message's attachment list before fetching.
         """
         client = await get_client(ctx)
         try:

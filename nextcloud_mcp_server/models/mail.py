@@ -1,7 +1,5 @@
 """Pydantic models for Nextcloud Mail app responses (read-only)."""
 
-from typing import List
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from .base import BaseResponse
@@ -41,7 +39,7 @@ class MailMailbox(BaseModel):
         None, alias="displayName", description="Human-readable mailbox name"
     )
     account_id: int = Field(alias="accountId", description="Parent account ID")
-    special_use: List[str] = Field(
+    special_use: list[str] = Field(
         default_factory=list,
         alias="specialUse",
         description="Special-use roles (e.g. inbox, sent, trash)",
@@ -94,10 +92,10 @@ class MailMessageSummary(BaseModel):
     date_int: int | None = Field(
         None, alias="dateInt", description="Sent date as a Unix timestamp (seconds)"
     )
-    from_: List[MailAddress] = Field(
+    from_: list[MailAddress] = Field(
         default_factory=list, alias="from", description="Sender addresses"
     )
-    to: List[MailAddress] = Field(
+    to: list[MailAddress] = Field(
         default_factory=list, description="Recipient addresses"
     )
     mailbox_id: int | None = Field(
@@ -123,14 +121,14 @@ class MailMessage(BaseModel):
     date_int: int | None = Field(
         None, alias="dateInt", description="Sent date as a Unix timestamp (seconds)"
     )
-    from_: List[MailAddress] = Field(
+    from_: list[MailAddress] = Field(
         default_factory=list, alias="from", description="Sender addresses"
     )
-    to: List[MailAddress] = Field(
+    to: list[MailAddress] = Field(
         default_factory=list, description="Recipient addresses"
     )
-    cc: List[MailAddress] = Field(default_factory=list, description="CC addresses")
-    bcc: List[MailAddress] = Field(default_factory=list, description="BCC addresses")
+    cc: list[MailAddress] = Field(default_factory=list, description="CC addresses")
+    bcc: list[MailAddress] = Field(default_factory=list, description="BCC addresses")
     has_html_body: bool = Field(
         False, alias="hasHtmlBody", description="Whether the body is HTML"
     )
@@ -138,7 +136,7 @@ class MailMessage(BaseModel):
         None,
         description="Rendered body (sanitized HTML if hasHtmlBody, else plain text)",
     )
-    attachments: List[MailAttachment] = Field(
+    attachments: list[MailAttachment] = Field(
         default_factory=list, description="Message attachments"
     )
 
@@ -149,21 +147,21 @@ class MailMessage(BaseModel):
 class ListAccountsResponse(BaseResponse):
     """Response model for listing mail accounts."""
 
-    results: List[MailAccount] = Field(description="List of mail accounts")
+    results: list[MailAccount] = Field(description="List of mail accounts")
     total_count: int = Field(description="Total number of accounts")
 
 
 class ListMailboxesResponse(BaseResponse):
     """Response model for listing mailboxes."""
 
-    results: List[MailMailbox] = Field(description="List of mailboxes")
+    results: list[MailMailbox] = Field(description="List of mailboxes")
     total_count: int = Field(description="Total number of mailboxes")
 
 
 class ListMessagesResponse(BaseResponse):
     """Response model for listing message envelopes."""
 
-    results: List[MailMessageSummary] = Field(description="List of message summaries")
+    results: list[MailMessageSummary] = Field(description="List of message summaries")
     total_count: int = Field(description="Number of messages returned")
     has_more: bool = Field(False, description="Whether more messages may exist")
 

@@ -17,6 +17,7 @@ from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.search.access_filter import build_ownership_filter
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
+from nextcloud_mcp_server.vector.mail_content import build_mail_content
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -830,40 +831,10 @@ async def _fetch_document_text(
                     doc_id,
                 )
                 return None
-            # Reconstruct full content as indexed by the processor (subject +
-            # From + To + blank line + body) so chunk offsets align. Keep this in
-            # sync with the mail_message branch in vector/processor.py.
+            # Reconstruct full content via the shared helper so chunk offsets
+            # match what the processor indexed (single source of truth).
             message = await nc_client.mail.get_message(int(doc_id))
-
-            def _format_addresses(addrs: list[dict] | None) -> str:
-                parts = []
-                for addr in addrs or []:
-                    label = addr.get("label")
-                    email = addr.get("email")
-                    if label and email and label != email:
-                        parts.append(f"{label} <{email}>")
-                    elif email:
-                        parts.append(email)
-                    elif label:
-                        parts.append(label)
-                return ", ".join(parts)
-
-            subject = message.get("subject") or ""
-            from_str = _format_addresses(message.get("from"))
-            to_str = _format_addresses(message.get("to"))
-            raw_body = message.get("body") or ""
-            body_text = (
-                html_to_markdown(raw_body) if message.get("hasHtmlBody") else raw_body
-            )
-
-            content_parts = [subject]
-            if from_str:
-                content_parts.append(f"From: {from_str}")
-            if to_str:
-                content_parts.append(f"To: {to_str}")
-            content_parts.append("")  # Blank line
-            content_parts.append(body_text)
-            return "\n".join(content_parts)
+            return build_mail_content(message)
         else:
             logger.warning("Unsupported doc_type for context expansion: %s", doc_type)
             return None

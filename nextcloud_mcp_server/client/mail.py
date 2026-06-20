@@ -15,6 +15,8 @@ OCS API controllers (Mail 5.x / Nextcloud 32+).
 import logging
 from typing import Any
 
+from httpx import HTTPStatusError, RequestError, Response
+
 from .base import BaseNextcloudClient
 
 logger = logging.getLogger(__name__)
@@ -50,9 +52,34 @@ class MailClient(BaseNextcloudClient):
             params=query,
             headers=self._OCS_HEADERS,
         )
-        body = response.json()
-        # Standard OCS envelope: {"ocs": {"meta": {...}, "data": <payload>}}
-        return body.get("ocs", {}).get("data")
+
+        # The Mail app being absent (or a misconfigured proxy) can return HTTP
+        # 200 with an HTML body; surface that as a network-style error rather
+        # than letting json() raise an opaque JSONDecodeError to the caller.
+        try:
+            body = response.json()
+        except ValueError as e:
+            raise RequestError(
+                f"Mail OCS returned a non-JSON response for {path}: {e}",
+                request=response.request,
+            ) from e
+
+        # Standard OCS envelope: {"ocs": {"meta": {...}, "data": <payload>}}.
+        # OCS can return HTTP 200 while signalling failure (e.g. 403/404) in
+        # ocs.meta.statuscode; re-raise those as an HTTPStatusError carrying the
+        # OCS code so callers' existing 404/403 handling applies uniformly
+        # instead of silently unwrapping data=null.
+        ocs = body.get("ocs", {}) if isinstance(body, dict) else {}
+        meta = ocs.get("meta", {})
+        status_code = int(meta.get("statuscode", 200) or 200)
+        if status_code >= 400:
+            synthetic = Response(status_code=status_code, request=response.request)
+            raise HTTPStatusError(
+                f"Mail OCS error {status_code} for {path}: {meta.get('message')}",
+                request=response.request,
+                response=synthetic,
+            )
+        return ocs.get("data")
 
     # --- Accounts ---
 
@@ -87,7 +114,7 @@ class MailClient(BaseNextcloudClient):
         mailbox_id: int,
         *,
         cursor: int | None = None,
-        filter: str | None = None,
+        search_filter: str | None = None,
         limit: int = 20,
         view: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -99,7 +126,8 @@ class MailClient(BaseNextcloudClient):
         Args:
             mailbox_id: Numeric mailbox id (``databaseId`` from get_mailboxes)
             cursor: Pagination cursor (timestamp/id from a prior page)
-            filter: Optional search/filter query
+            search_filter: Optional search/filter query (maps to the OCS
+                ``filter`` query param; named to avoid shadowing ``builtins.filter``)
             limit: Max messages to return. Clamped server-side to 1..100; a
                 missing limit collapses to 1 server-side, so always pass one.
             view: ``"singleton"`` or ``"threaded"`` (default threaded)
@@ -111,8 +139,8 @@ class MailClient(BaseNextcloudClient):
         params: dict[str, Any] = {"limit": limit}
         if cursor is not None:
             params["cursor"] = cursor
-        if filter is not None:
-            params["filter"] = filter
+        if search_filter is not None:
+            params["filter"] = search_filter
         if view is not None:
             params["view"] = view
         data = await self._ocs_get(f"/mailboxes/{mailbox_id}/messages", params=params)

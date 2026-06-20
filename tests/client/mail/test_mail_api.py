@@ -108,7 +108,7 @@ async def test_list_messages_builds_params(mocker):
 
     client = MailClient(mock_client, "testuser")
     messages = await client.list_messages(
-        10, cursor=42, filter="hello", limit=50, view="threaded"
+        10, cursor=42, search_filter="hello", limit=50, view="threaded"
     )
 
     assert len(messages) == 1
@@ -204,3 +204,40 @@ async def test_empty_data_returns_empty_list(mocker):
 
     client = MailClient(mock_client, "testuser")
     assert await client.list_accounts() == []
+
+
+async def test_ocs_meta_failure_raises_httpstatuserror(mocker):
+    """HTTP 200 with an OCS meta failure code is re-raised as HTTPStatusError.
+
+    The synthetic response carries the OCS statuscode so callers' 404/403
+    handling applies (e.g. nc_mail_get_message maps 404 to 'not found').
+    """
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data={
+            "ocs": {
+                "meta": {"status": "failure", "statuscode": 404, "message": "nope"},
+                "data": None,
+            }
+        },
+    )
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mocker.patch.object(MailClient, "_make_request", return_value=mock_response)
+
+    client = MailClient(mock_client, "testuser")
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        await client.get_message(100)
+    assert excinfo.value.response.status_code == 404
+
+
+async def test_non_json_response_raises_requesterror(mocker):
+    """A non-JSON 200 body (e.g. Mail app absent) raises a RequestError."""
+    mock_response = create_mock_response(
+        status_code=200, content=b"<html>not found</html>"
+    )
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mocker.patch.object(MailClient, "_make_request", return_value=mock_response)
+
+    client = MailClient(mock_client, "testuser")
+    with pytest.raises(httpx.RequestError):
+        await client.list_accounts()
