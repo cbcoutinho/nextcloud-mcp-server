@@ -53,6 +53,7 @@ from nextcloud_mcp_server.search.algorithms import (
 )
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.eviction import delete_document_points
+from nextcloud_mcp_server.vector.mail_content import MAIL_SCAN_MAX_PER_MAILBOX
 
 logger = logging.getLogger(__name__)
 
@@ -488,11 +489,121 @@ async def _verify_news_items(
     return accessible
 
 
+async def _verify_mail_messages(
+    client: NextcloudClientProtocol,
+    results: list[SearchResult],
+    semaphore: anyio.Semaphore,
+) -> set[str]:
+    """Verify mail messages with one DB-cached list per mailbox, then intersect.
+
+    ``mail.get_message`` triggers a server-side IMAP body fetch, so a per-result
+    verify would issue one IMAP FETCH per hit — multiple seconds for an active
+    inbox. Instead we batch by ``mailbox_id`` (propagated into ``result.metadata``
+    from the Qdrant payload) and call ``mail.list_messages`` once per mailbox,
+    which reads the Mail app's DB cache (no IMAP). A message is accessible iff it
+    is present in its mailbox's newest-N listing — the same window the scanner
+    indexes, so anything aged out of the window is being evicted anyway.
+
+    Failure policy mirrors ``_verify_news_items``: a definitive 403/404 for a
+    mailbox drops all its results (eviction reclaims); transient errors keep
+    them (fail-open). Results with no/!numeric ``mailbox_id`` or a non-numeric
+    ``doc_id`` are kept (fail-open; verification can't batch them).
+    """
+    # safe: cooperative concurrency, no lock needed (see verify_search_results)
+    accessible: set[str] = set()
+
+    # Partition results by mailbox so each mailbox is listed exactly once.
+    by_mailbox: dict[int, list[SearchResult]] = {}
+    for r in results:
+        mailbox_id = (r.metadata or {}).get("mailbox_id")
+        # No usable mailbox_id (legacy payload) — can't batch via the DB cache
+        # without an IMAP-triggering per-id fetch, so keep it (fail-open).
+        if mailbox_id is None:
+            logger.warning(
+                "Mail result %s has no mailbox_id; keeping (batch verification "
+                "skipped)",
+                r.id,
+            )
+            accessible.add(r.id)
+            continue
+        try:
+            mailbox_int = int(mailbox_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Mail result %s has non-numeric mailbox_id %r; keeping "
+                "(batch verification skipped)",
+                r.id,
+                mailbox_id,
+            )
+            accessible.add(r.id)
+            continue
+        by_mailbox.setdefault(mailbox_int, []).append(r)
+
+    async def check_mailbox(mailbox_id: int, mb_results: list[SearchResult]) -> None:
+        async with semaphore:
+            try:
+                messages = await client.mail.list_messages(
+                    mailbox_id, limit=MAIL_SCAN_MAX_PER_MAILBOX
+                )
+            except HTTPStatusError as e:
+                if _is_definitive_404_or_403(e):
+                    # Mailbox/account gone — all its results are inaccessible.
+                    return
+                logger.warning(
+                    "Transient error listing mailbox %s for verification: %s %s; "
+                    "keeping its %d result(s)",
+                    mailbox_id,
+                    e.response.status_code,
+                    e,
+                    len(mb_results),
+                )
+                for r in mb_results:
+                    accessible.add(r.id)
+                return
+            except Exception as e:
+                logger.warning(
+                    "Unexpected error listing mailbox %s for verification: %s; "
+                    "keeping its %d result(s)",
+                    mailbox_id,
+                    e,
+                    len(mb_results),
+                )
+                for r in mb_results:
+                    accessible.add(r.id)
+                return
+
+        present_ids = {
+            str(m.get("databaseId"))
+            for m in messages
+            if m.get("databaseId") is not None
+        }
+        for r in mb_results:
+            if r.id in present_ids:
+                accessible.add(r.id)
+            elif not is_valid_nextcloud_doc_id(r.id):
+                # Malformed stored id can't match the numeric listing; keep it
+                # (fail-open) rather than drop a possibly-legitimate result —
+                # mirrors the notes/news posture.
+                logger.warning(
+                    "Malformed mail_message doc_id %r in verifier; keeping",
+                    r.id,
+                )
+                accessible.add(r.id)
+            # else: genuinely absent (deleted or aged out) -> drop + evict.
+
+    async with anyio.create_task_group() as tg:
+        for mailbox_id, mb_results in by_mailbox.items():
+            tg.start_soon(check_mailbox, mailbox_id, mb_results)
+
+    return accessible
+
+
 _VERIFIERS: dict[str, BatchVerifier] = {
     "note": _verify_notes,
     "file": _verify_files,
     "deck_card": _verify_deck_cards,
     "news_item": _verify_news_items,
+    "mail_message": _verify_mail_messages,
 }
 
 

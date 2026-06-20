@@ -17,6 +17,7 @@ from nextcloud_mcp_server.models.deck import DeckCard
 from nextcloud_mcp_server.search.access_filter import build_ownership_filter
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
+from nextcloud_mcp_server.vector.mail_content import build_mail_content
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -822,6 +823,22 @@ async def _fetch_document_text(
             if card.description:
                 content_parts.append(card.description)
             return "\n\n".join(content_parts)
+        elif doc_type == "mail_message":
+            # Mail message IDs are positive ASCII integers (MySQL AUTO_INCREMENT).
+            if not is_valid_nextcloud_doc_id(doc_id):
+                logger.warning(
+                    "Expected numeric mail_message doc_id, got %r — skipping document fetch",
+                    doc_id,
+                )
+                return None
+            # Reconstruct full content via the shared helper so chunk offsets
+            # match what the processor indexed (single source of truth).
+            message = await nc_client.mail.get_message(int(doc_id))
+            # Empty payload (OCS data=null with a <400 meta) -> skip context
+            # expansion, mirroring the processor's index-time guard.
+            if not message:
+                return None
+            return build_mail_content(message)
         else:
             logger.warning("Unsupported doc_type for context expansion: %s", doc_type)
             return None

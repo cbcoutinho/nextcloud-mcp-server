@@ -42,6 +42,7 @@ from nextcloud_mcp_server.observability.metrics import (
 from nextcloud_mcp_server.observability.tracing import trace_operation
 from nextcloud_mcp_server.search.pdf_highlighter import PDFHighlighter
 from nextcloud_mcp_server.usage import UsageEventStore
+from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector._errors import format_exception_group
 from nextcloud_mcp_server.vector.dead_letter import (
@@ -53,6 +54,10 @@ from nextcloud_mcp_server.vector.document_chunker import (
     PageAwareChunker,
 )
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
+from nextcloud_mcp_server.vector.mail_content import (
+    build_mail_content,
+    format_mail_addresses,
+)
 from nextcloud_mcp_server.vector.placeholder import (
     delete_placeholder_point,
     update_placeholder_status,
@@ -840,6 +845,44 @@ async def _index_document(
             file_path = None
             content_bytes = None
             content_type = None
+        elif doc_task.doc_type == "mail_message":
+            # Fetch the full message via the Mail OCS API. The Mail app handles
+            # IMAP server-side; we only ever speak HTTP. build_mail_content is
+            # shared with search/context.py so index- and query-time text match.
+            # Guard the cast before the network call (consistent with the same
+            # doc_type in search/context.py) so a malformed queue record produces
+            # a specific error rather than a bare ValueError.
+            if not is_valid_nextcloud_doc_id(doc_task.doc_id):
+                raise ValueError(f"Invalid mail_message doc_id: {doc_task.doc_id!r}")
+            message = await nc_client.mail.get_message(int(doc_task.doc_id))
+            # An empty payload (OCS data=null with a <400 meta) would otherwise
+            # index a useless near-empty placeholder; fail loudly so the task
+            # dead-letters instead of corrupting the index.
+            if not message:
+                raise ValueError(
+                    f"mail_message {doc_task.doc_id!r} returned an empty payload"
+                )
+            content = build_mail_content(message)
+
+            subject = message.get("subject") or ""
+            title = subject
+            # Email is immutable; key change-detection on the message id so a
+            # re-index is a no-op unless the id changes.
+            etag = str(message.get("id") or doc_task.doc_id)
+            file_metadata = {
+                "subject": subject,
+                "from": format_mail_addresses(message.get("from")),
+                "to": format_mail_addresses(message.get("to")),
+                "cc": format_mail_addresses(message.get("cc")),
+                "bcc": format_mail_addresses(message.get("bcc")),
+                "date_int": message.get("dateInt"),
+                "has_attachments": bool(message.get("attachments")),
+                "account_id": (doc_task.metadata or {}).get("account_id"),
+                "mailbox_id": (doc_task.metadata or {}).get("mailbox_id"),
+            }
+            file_path = None
+            content_bytes = None
+            content_type = None
         elif doc_task.doc_type == "deck_card":
             # Fetch card from Deck API
             # Use metadata from scanner if available (O(1) lookup)
@@ -1602,6 +1645,22 @@ async def _index_document(
                             "owner": file_metadata.get("owner"),
                         }
                         if doc_task.doc_type == "deck_card"
+                        else {}
+                    ),
+                    # Mail message-specific metadata
+                    **(
+                        {
+                            "subject": file_metadata.get("subject"),
+                            "from": file_metadata.get("from"),
+                            "to": file_metadata.get("to"),
+                            "cc": file_metadata.get("cc"),
+                            "bcc": file_metadata.get("bcc"),
+                            "date_int": file_metadata.get("date_int"),
+                            "has_attachments": file_metadata.get("has_attachments"),
+                            "account_id": file_metadata.get("account_id"),
+                            "mailbox_id": file_metadata.get("mailbox_id"),
+                        }
+                        if doc_task.doc_type == "mail_message"
                         else {}
                     ),
                     # Chunk bbox (PDF only) — normalized rectangles in [0,1]
