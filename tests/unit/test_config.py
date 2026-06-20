@@ -121,6 +121,9 @@ class TestGetSettings:
             "DOCUMENT_OCR_MODE": "batch",
             "DOCUMENT_OCR_BATCH_POLL_SECONDS": "45",
             "DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS": "3600",
+            # batch routes through the gateway, so it requires a gateway URL
+            # (validated in __post_init__).
+            "EMBEDDING_GATEWAY_URL": "https://gw",
         },
         clear=True,
     )
@@ -137,7 +140,11 @@ class TestGetSettings:
         assert settings.document_ocr_batch_poll_seconds == 45
         assert settings.document_ocr_batch_max_wait_seconds == 3600
 
-    @patch.dict(os.environ, {"DOCUMENT_OCR_MODE": "Batch"}, clear=True)
+    @patch.dict(
+        os.environ,
+        {"DOCUMENT_OCR_MODE": "Batch", "EMBEDDING_GATEWAY_URL": "https://gw"},
+        clear=True,
+    )
     def test_document_ocr_mode_case_normalised(self):
         """DOCUMENT_OCR_MODE is case-insensitive (normalised in __post_init__ via
         _enum_fields, like DOCUMENT_OCR_PROVIDER) — "Batch" -> "batch"."""
@@ -148,6 +155,14 @@ class TestGetSettings:
     def test_document_ocr_mode_invalid_rejected(self):
         _reload_config()
         with pytest.raises(ValueError, match="DOCUMENT_OCR_MODE"):
+            get_settings()
+
+    @patch.dict(os.environ, {"DOCUMENT_OCR_MODE": "batch"}, clear=True)
+    def test_document_ocr_mode_batch_requires_gateway(self):
+        """batch OCR routes through the embedding gateway, so mode=batch without
+        EMBEDDING_GATEWAY_URL is rejected at startup (no silent sync downgrade)."""
+        _reload_config()
+        with pytest.raises(ValueError, match="DOCUMENT_OCR_MODE=batch requires"):
             get_settings()
 
     @patch.dict(

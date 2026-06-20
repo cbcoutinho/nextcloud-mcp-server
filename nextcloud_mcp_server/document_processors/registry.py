@@ -334,7 +334,7 @@ class ProcessorRegistry:
         # is off here the would-be escalation is simply not taken (the gate below);
         # operators reading the suppressed counter are on the procrastinate fleet.
         #
-        # Escalate to OCR (tier-3) when enabled and a provider is registered. Fires
+        # Escalate to the OCR tier when enabled and a provider is registered. Fires
         # for a scanned / no-text-layer doc (recommended "ocr"), and also for an
         # unresolved "structured" recommendation -- a glyph-corrupt doc whose
         # structured rung wasn't registered -- so the inline path falls through to
@@ -349,16 +349,11 @@ class ProcessorRegistry:
             and not structured_failed
             and classification.recommended_tier in ("ocr", "structured")
             and classification.page_count > 0
-            and (
-                settings.document_ocr_enabled or settings.document_ocr_incluster_enabled
-            )
+            and settings.document_ocr_enabled
         ):
-            # Inline (memory pool) path: no queues to hop, so pick the cheapest
-            # available OCR rung (in-cluster GPU before paid upstream) via the same
-            # availability walk the queue path uses.
-            ocr_tier = self.next_available_tier(
-                from_tier, settings, minimum="ocr-incluster"
-            )
+            # Inline (memory pool) path: no queues to hop, so resolve the OCR tier
+            # via the same availability walk the queue path uses.
+            ocr_tier = self.next_available_tier(from_tier, settings, minimum="ocr")
             ocr = self._pdf_processor_for_tier(ocr_tier) if ocr_tier else None
             # `ocr is not None` already implies `ocr_tier is not None` at runtime,
             # but the type checker can't infer that across the conditional above,
@@ -462,13 +457,8 @@ class ProcessorRegistry:
             return None
         try:
             image_coverage = None
-            # Scan detection feeds either OCR rung (tier2 in-cluster or tier3
-            # upstream), so run it whenever EITHER is enabled — a tenant with
-            # only in-cluster OCR on still needs image-coverage scan signals.
-            ocr_any_enabled = (
-                settings.document_ocr_enabled or settings.document_ocr_incluster_enabled
-            )
-            if ocr_any_enabled and settings.document_ocr_detect_scanned:
+            # Scan detection feeds the OCR tier, so run it whenever OCR is enabled.
+            if settings.document_ocr_enabled and settings.document_ocr_detect_scanned:
                 try:
                     image_coverage = image_coverage_per_page(content)
                 except Exception:
@@ -518,19 +508,18 @@ class ProcessorRegistry:
         ``ignore_ocr_enabled`` drops only the OCR-enabled gate (not the registered-
         processor requirement): it answers "would this tier run if OCR were turned
         on?" — used to compute the *ideal* escalation target for the what-if-OCR
-        suppressed-escalation signal. (Both OCR rungs — ``ocr-incluster`` and
-        ``ocr-upstream`` — have their own enabled gate; non-OCR tiers have none.)
+        suppressed-escalation signal. (The ``ocr`` tier has the
+        ``document_ocr_enabled`` gate; non-OCR tiers have none.)
         """
         if self._pdf_processor_for_tier(tier) is None:
             return False
-        # Each OCR rung has its own opt-in flag (in-cluster vs upstream); a rung is
-        # unavailable when its flag is off (unless we're computing the what-if
-        # ideal target). Non-OCR tiers have no enabled gate.
-        ocr_enable = {
-            "ocr-incluster": settings.document_ocr_incluster_enabled,
-            "ocr-upstream": settings.document_ocr_enabled,
-        }
-        if not ignore_ocr_enabled and tier in ocr_enable and not ocr_enable[tier]:
+        # The OCR tier is opt-in via ``document_ocr_enabled`` (unless we're computing
+        # the what-if ideal target). Non-OCR tiers have no enabled gate.
+        if (
+            not ignore_ocr_enabled
+            and tier == "ocr"
+            and not settings.document_ocr_enabled
+        ):
             return False
         return True
 
@@ -628,15 +617,13 @@ class ProcessorRegistry:
 
         Target-tier routing:
 
-        - ``total_chars == 0`` (scanned / no text layer) -> target the cheapest
-          OCR rung (``ocr-incluster``) directly; ``next_available_tier`` falls
-          through to ``ocr-upstream`` if in-cluster is disabled/unregistered.
-          Text-extractor tiers (``structured``) cannot conjure text from a pure
-          raster scan, so a structured hop would just be wasted.
+        - ``total_chars == 0`` (scanned / no text layer) -> target the ``ocr`` tier
+          directly. Text-extractor tiers (``structured``) cannot conjure text from a
+          pure raster scan, so a structured hop would just be wasted.
         - glyph-corrupt text layer (``recommended_tier == "structured"``) -> target
           the ``structured`` tier; pymupdf re-extracts a broken-/ToUnicode layer
           correctly, so OCR is never the target for this case.
-        - low-confidence but non-empty layer -> escalate to the next rung, so a
+        - low-confidence but non-empty layer -> escalate to the next tier, so a
           different in-cluster extractor can try before paying for OCR.
 
         Hop vs suppressed: if the ideal target tier can run, return a ``"hop"``.
@@ -670,10 +657,8 @@ class ProcessorRegistry:
             minimum = "structured"
             reason = "corrupt_glyphs"
         elif classification.total_chars == 0:
-            # Scanned / no text layer: target the cheapest OCR rung (in-cluster
-            # GPU); next_available_tier then falls through to the upstream rung if
-            # in-cluster is disabled/unregistered.
-            minimum = "ocr-incluster"
+            # Scanned / no text layer: target the OCR tier.
+            minimum = "ocr"
             reason = "empty_text"
         else:
             minimum = None

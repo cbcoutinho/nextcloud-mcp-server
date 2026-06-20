@@ -335,7 +335,7 @@ def _init_worker_observability(settings: Settings) -> None:
 )
 @click.option(
     "--tier",
-    type=click.Choice(["fast", "structured", "ocr-incluster", "ocr-upstream"]),
+    type=click.Choice(["fast", "structured", "ocr"]),
     default=None,
     help=(
         "Run only this extraction tier's queue (Deck #323). Omit to drain ALL "
@@ -354,9 +354,8 @@ def worker(concurrency: int | None, tier: str | None):
 
     \b
     With --tier the worker drains only that tier's queue (``ingest-<tier>``), so
-    a CPU-bound ``fast`` fleet, an in-cluster ``structured`` fleet, an on-demand
-    GPU ``ocr-incluster`` fleet, and a paid ``ocr-upstream`` fleet scale
-    independently. Without it, all tier queues are drained in
+    a CPU-bound ``fast`` fleet, an in-cluster ``structured`` fleet, and an ``ocr``
+    fleet scale independently. Without it, all tier queues are drained in
     one process (handy for dev / a single Deployment). A low-quality parse hops
     the job to the next tier's queue automatically (see TieredEscalationStrategy).
 
@@ -387,7 +386,8 @@ def worker(concurrency: int | None, tier: str | None):
         ALL_INGEST_QUEUES,
         INGEST_QUEUE_MAINTENANCE,
         LEGACY_INGEST_QUEUE,
-        LEGACY_INGEST_QUEUE_OCR,
+        LEGACY_INGEST_QUEUE_OCR_INCLUSTER,
+        LEGACY_INGEST_QUEUE_OCR_UPSTREAM,
         TIER_QUEUES,
         apply_ingest_queue_schema,
         get_procrastinate_app,
@@ -395,21 +395,26 @@ def worker(concurrency: int | None, tier: str | None):
 
     # Which queues this process drains. A single tier -> just its queue; no tier
     # -> every tier queue PLUS the legacy queues, so a rolling upgrade never
-    # strands jobs deferred under the pre-#323 single queue or the pre-#353 single
-    # OCR queue. The upstream OCR worker also drains the pre-split ``ingest-ocr``
-    # queue (the old single OCR tier defaulted to upstream/Mistral). Every worker
-    # drains the maintenance queue so the periodic stalled-job reclaim fires
-    # regardless of which tier(s) are scaled up (procrastinate dedups the
-    # periodic, so multiple drainers don't multiply the reclaim).
+    # strands jobs deferred under the pre-#323 single queue or the pre-#353 split
+    # OCR queues (now consolidated into ``ingest-ocr``). The ``ocr`` worker also
+    # drains those two split OCR queues so in-flight OCR jobs from a pre-
+    # consolidation deploy still get processed. Every worker drains the maintenance
+    # queue so the periodic stalled-job reclaim fires regardless of which tier(s)
+    # are scaled up (procrastinate dedups the periodic, so multiple drainers don't
+    # multiply the reclaim).
     if tier is not None:
         queues = [TIER_QUEUES[tier], INGEST_QUEUE_MAINTENANCE]
-        if tier == "ocr-upstream":
-            queues.insert(1, LEGACY_INGEST_QUEUE_OCR)
+        if tier == "ocr":
+            queues[1:1] = [
+                LEGACY_INGEST_QUEUE_OCR_INCLUSTER,
+                LEGACY_INGEST_QUEUE_OCR_UPSTREAM,
+            ]
     else:
         queues = [
             *ALL_INGEST_QUEUES,
             LEGACY_INGEST_QUEUE,
-            LEGACY_INGEST_QUEUE_OCR,
+            LEGACY_INGEST_QUEUE_OCR_INCLUSTER,
+            LEGACY_INGEST_QUEUE_OCR_UPSTREAM,
             INGEST_QUEUE_MAINTENANCE,
         ]
 

@@ -572,9 +572,30 @@ A PDF larger than `DOCUMENT_MAX_PDF_SIZE_MB` fails fast with reason `oversize`
 of being handed to the tiers, where a 40+ MB scan would otherwise burn the full
 OCR timeout for zero recovered text.
 
+#### OCR tier configuration
+
+OCR is a single configurable escalation tier. Enable it and choose the backend,
+model, and execution mode:
+
+```dotenv
+DOCUMENT_OCR_ENABLED=true              # route scanned/no-text-layer PDFs to OCR (default: false)
+DOCUMENT_OCR_PROVIDER=auto            # "auto" | "gateway" | "mistral" | "none"
+DOCUMENT_OCR_MODEL=mistral/mistral-ocr-latest  # provider-namespaced model id
+```
+
+- **`DOCUMENT_OCR_PROVIDER`** selects the backend: `gateway` posts to the Astrolabe
+  Cloud model gateway's `POST /v1/ocr` (no provider keys in the pod; the gateway
+  routes on the model's `<provider>/` prefix, so it serves Mistral, surya, etc.);
+  `mistral` calls the Mistral OCR API directly (`MISTRAL_API_KEY`); `auto` prefers
+  the gateway (if `EMBEDDING_GATEWAY_URL` is set) then direct Mistral; `none`
+  disables OCR.
+- **`DOCUMENT_OCR_MODEL`** is the provider-namespaced model id — e.g.
+  `mistral/mistral-ocr-latest` (Mistral) or `surya/surya-ocr-2` (surya, via the
+  gateway). The gateway routes on the prefix; the direct Mistral backend strips it.
+
 #### OCR execution mode: synchronous vs batch (Deck #332)
 
-The tier-3 OCR processor has two execution modes, selected by `DOCUMENT_OCR_MODE`:
+The OCR tier has two execution modes, selected by `DOCUMENT_OCR_MODE`:
 
 ```dotenv
 DOCUMENT_OCR_MODE=sync                 # "sync" (default) | "batch"
@@ -591,12 +612,16 @@ DOCUMENT_OCR_BATCH_MAX_WAIT_SECONDS=86400  # give up + mark timeout after this (
   **half the OCR cost**, so it suits large-corpus backfill rather than
   interactive ingest.
 
-Batch mode is **opt-in and gateway-only**: it routes Mistral's Batch API
-*through* the gateway's batch routes (no provider keys in the pod). With the
-direct `mistral` backend, no `EMBEDDING_GATEWAY_URL`, or on the in-process
-(`INGEST_QUEUE=memory`) pipeline — which can't defer a poll — batch transparently
-**falls back to synchronous OCR**. So enabling it requires the Postgres ingest
-queue (the per-tier procrastinate workers) and the gateway embedding backend.
+Batch mode is **opt-in and gateway-routed**: the embedding gateway is the
+batching layer, so batch OCR always routes *through* the gateway's batch routes
+(no provider keys in the pod). This is how batch works even when the chosen *sync*
+backend is direct Mistral — we leverage the gateway to batch for backends that
+have no native batch path from the pod. Because it needs a gateway, `DOCUMENT_OCR_MODE=batch`
+**requires `EMBEDDING_GATEWAY_URL`**: the server rejects the combination at startup
+rather than silently downgrading to synchronous OCR. Batch also requires the
+Postgres ingest queue (the per-tier procrastinate workers); the in-process
+(`INGEST_QUEUE=memory`) pipeline can't defer a poll, so use `DOCUMENT_OCR_MODE=sync`
+there.
 
 Mechanics: the OCR tier submits the job, records its id in the `batch_ocr_jobs`
 app-DB table (keyed on the document + its etag), and raises a re-poll deferral so

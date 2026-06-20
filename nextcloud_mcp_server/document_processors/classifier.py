@@ -90,8 +90,8 @@ class DocClassification:
     mean_text_quality: float
     ocr_page_fraction: float  # fraction of sampled pages flagged needs_ocr
     # Classifier vocabulary (coarse): "fast" | "structured" | "ocr". "ocr" means
-    # "needs OCR" — the registry resolves it to a concrete rung (ocr-incluster ->
-    # ocr-upstream) via next_available_tier; it is NOT the TIER_LADDER tier name.
+    # "needs OCR" — the registry resolves it to the OCR tier via
+    # next_available_tier (the backend/model are configured, not tier-split).
     recommended_tier: str
     mean_control_ratio: float = 0.0  # doc-level C0-control-char ratio (glyph-leak)
     flags: set[str] = field(

@@ -8,29 +8,19 @@ from .registry import ProcessorRegistry, get_registry
 
 # Register processors at module initialization. The tiered PDF pipeline selects
 # by tier (not priority): Pypdfium2FastProcessor is the ``fast`` tier,
-# PyMuPDFProcessor the ``structured`` rollback, and TWO OcrProcessor instances are
-# the OCR rungs — ``ocr-incluster`` (the on-demand burst GPU, gateway-only, reached
-# via the embedding gateway over the tailnet; e.g. surya) tried before
-# ``ocr-upstream`` (paid Mistral). Each is reached only when its own opt-in flag is
-# set. OCR gets the lowest priorities so it's never the non-tiered default for PDFs.
+# PyMuPDFProcessor the ``structured`` rollback, and a single OcrProcessor is the
+# ``ocr`` tier — its backend (gateway vs direct Mistral), model (Mistral, surya,
+# …), and sync/batch mode are all chosen from settings. It is reached only when
+# ``document_ocr_enabled`` is set. OCR gets the lowest priority so it's never the
+# non-tiered default for PDFs.
 _registry = get_registry()
 _registry.register(Pypdfium2FastProcessor(), priority=20)
 _registry.register(PyMuPDFProcessor(), priority=10)
 _registry.register(
     OcrProcessor(
-        name="ocr-incluster",
-        tier="ocr-incluster",
-        model_setting="document_ocr_incluster_model",
-        gateway_only=True,
-    ),
-    priority=2,
-)
-_registry.register(
-    OcrProcessor(
-        name="ocr-upstream",
-        tier="ocr-upstream",
+        name="ocr",
+        tier="ocr",
         model_setting="document_ocr_model",
-        gateway_only=False,
     ),
     priority=1,
 )

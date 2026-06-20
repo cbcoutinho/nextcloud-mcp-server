@@ -1,4 +1,4 @@
-"""Unit tests for the tier-3 OCR processor + backend selection."""
+"""Unit tests for the OCR tier processor + backend selection."""
 
 from types import SimpleNamespace
 from typing import Any
@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from nextcloud_mcp_server.document_processors import ocr
+from nextcloud_mcp_server.document_processors.base import ProcessorError
 from nextcloud_mcp_server.embedding.gateway_batch_client import BatchPollResult
 from nextcloud_mcp_server.vector import batch_ocr_store as _bos
 
@@ -18,7 +19,6 @@ def _settings(**kw) -> Any:  # a Settings stand-in (only the read fields matter)
     base = dict(
         document_ocr_provider="auto",
         document_ocr_model="mistral/mistral-ocr-latest",
-        document_ocr_incluster_enabled=False,
         document_ocr_timeout_seconds=180.0,
         document_ocr_mode="sync",
         document_ocr_batch_poll_seconds=120,
@@ -83,147 +83,63 @@ def test_build_backend_auto_none_configured():
 @pytest.mark.parametrize(
     "kw, expect_client",
     [
-        # batch is gateway-only: the direct mistral backend never gets a client.
+        # No gateway URL -> no batch path from the pod.
         (dict(document_ocr_provider="mistral", mistral_api_key="k"), False),
-        # gateway selected but no URL -> no client (falls back to sync).
         (dict(document_ocr_provider="gateway"), False),
+        # Gateway configured -> a batch client regardless of the sync provider:
+        # batch routes through the gateway even for the direct mistral backend
+        # (we leverage the gateway to batch for backends without native batch).
         (
             dict(document_ocr_provider="gateway", embedding_gateway_url="https://gw"),
             True,
         ),
         (dict(document_ocr_provider="auto", embedding_gateway_url="https://gw"), True),
+        (
+            dict(
+                document_ocr_provider="mistral",
+                mistral_api_key="k",
+                embedding_gateway_url="https://gw",
+            ),
+            True,
+        ),
+        # OCR disabled entirely -> never a batch client.
         (dict(document_ocr_provider="none", embedding_gateway_url="https://gw"), False),
     ],
 )
-def test_build_gateway_batch_client_gateway_only(kw, expect_client):
+def test_build_gateway_batch_client(kw, expect_client):
     client = ocr.build_gateway_batch_client(_settings(**kw))
     assert (client is not None) is expect_client
 
 
-# --- in-cluster (tier2) backend: gateway-forced + configurable model -----------
+# --- model id handling (provider-namespaced, configurable) ---------------------
 
 
-def test_build_backend_gateway_only_forces_gateway():
-    """The in-cluster tier is gateway-only: even with provider=mistral + a key it
-    builds the gateway backend, NEVER the direct Mistral fallback (the GPU is
-    reachable solely through the gateway)."""
+def test_build_backend_empty_model_does_not_fall_back():
+    """An empty model string must NOT silently fall back to the configured default
+    (an `or` would); the backend keeps the empty id it was handed."""
     b = ocr.build_ocr_backend(
-        _settings(
-            document_ocr_provider="mistral",
-            mistral_api_key="k",
-            embedding_gateway_url="https://gw",
-        ),
-        gateway_only=True,
-    )
-    assert isinstance(b, ocr._GatewayOcrBackend)
-
-
-def test_build_backend_gateway_only_no_url_disabled():
-    """Gateway-only with no gateway URL -> disabled (None), never a direct backend."""
-    assert (
-        ocr.build_ocr_backend(_settings(mistral_api_key="k"), gateway_only=True) is None
-    )
-
-
-def test_build_backend_gateway_only_provider_none_warns_when_incluster_enabled(caplog):
-    """provider=none also suppresses the gateway-only in-cluster tier (it never uses
-    the mistral provider, but the global `none` gate still applies). When in-cluster
-    is enabled this is almost certainly an operator mistake -> warn so it's visible."""
-    with caplog.at_level(
-        "WARNING", logger="nextcloud_mcp_server.document_processors.ocr"
-    ):
-        b = ocr.build_ocr_backend(
-            _settings(
-                document_ocr_provider="none",
-                embedding_gateway_url="https://gw",
-                document_ocr_incluster_enabled=True,
-            ),
-            gateway_only=True,
-        )
-    assert b is None
-    assert any(
-        "DOCUMENT_OCR_PROVIDER=none disables in-cluster" in r.message
-        for r in caplog.records
-    )
-
-
-def test_build_backend_gateway_only_provider_none_silent_when_incluster_disabled(
-    caplog,
-):
-    """provider=none with in-cluster OFF is a deliberate disable -> no warning noise."""
-    with caplog.at_level(
-        "WARNING", logger="nextcloud_mcp_server.document_processors.ocr"
-    ):
-        b = ocr.build_ocr_backend(
-            _settings(document_ocr_provider="none", embedding_gateway_url="https://gw"),
-            gateway_only=True,
-        )
-    assert b is None
-    assert not any("disables in-cluster" in r.message for r in caplog.records)
-
-
-def test_build_backend_empty_model_does_not_fall_back(caplog):
-    """An empty model string must NOT silently fall back to the upstream default
-    (an `or` would); the in-cluster rung keeps the empty id it was handed."""
-    b = ocr.build_ocr_backend(
-        _settings(embedding_gateway_url="https://gw"),
+        _settings(document_ocr_provider="gateway", embedding_gateway_url="https://gw"),
         model="",
-        gateway_only=True,
     )
     assert isinstance(b, ocr._GatewayOcrBackend)
     assert b._model == ""
 
 
 def test_build_backend_model_override_is_not_hardcoded():
-    """The per-tier model is whatever config passes -- surya by default, but fully
-    swappable (e.g. lightonocr) with no code change."""
+    """The OCR model is whatever config passes -- mistral/surya by default, but
+    fully swappable (e.g. lightonocr) with no code change."""
     surya = ocr.build_ocr_backend(
-        _settings(embedding_gateway_url="https://gw"),
+        _settings(document_ocr_provider="gateway", embedding_gateway_url="https://gw"),
         model="surya/surya-ocr-2",
-        gateway_only=True,
     )
     assert isinstance(surya, ocr._GatewayOcrBackend)
     assert surya._model == "surya/surya-ocr-2"
     lit = ocr.build_ocr_backend(
-        _settings(embedding_gateway_url="https://gw"),
+        _settings(document_ocr_provider="gateway", embedding_gateway_url="https://gw"),
         model="lightonocr/lightonocr-1b",
-        gateway_only=True,
     )
     assert isinstance(lit, ocr._GatewayOcrBackend)
     assert lit._model == "lightonocr/lightonocr-1b"  # config-driven, not hardcoded
-
-
-async def test_incluster_processor_resolves_its_model_gateway_only(monkeypatch):
-    """An OcrProcessor bound to the in-cluster rung builds its backend with its own
-    configured model (document_ocr_incluster_model) and gateway_only=True."""
-    captured: dict[str, Any] = {}
-
-    class _FakeBackend:
-        async def ocr(self, content, mime_type):
-            return "ocr text", [{"page": 1, "start_offset": 0, "end_offset": 8}]
-
-    def _spy(settings, *, model=None, gateway_only=False):
-        captured["model"] = model
-        captured["gateway_only"] = gateway_only
-        return _FakeBackend()
-
-    monkeypatch.setattr(ocr, "build_ocr_backend", _spy)
-    monkeypatch.setattr(
-        ocr,
-        "get_settings",
-        lambda: _settings(
-            document_ocr_incluster_model="surya/surya-ocr-2",
-            embedding_gateway_url="https://gw",
-        ),
-    )
-    proc = ocr.OcrProcessor(
-        name="ocr-incluster",
-        tier="ocr-incluster",
-        model_setting="document_ocr_incluster_model",
-        gateway_only=True,
-    )
-    await proc.process(b"%PDF", "application/pdf", "x.pdf")
-    assert captured == {"model": "surya/surya-ocr-2", "gateway_only": True}
 
 
 def test_no_surya_string_literal_in_document_processors():
@@ -287,7 +203,7 @@ async def test_processor_success(monkeypatch):
     assert r.success is True
     assert r.text == "hello world"
     assert r.metadata["page_count"] == 1
-    assert r.processor == "ocr-upstream"
+    assert r.processor == "ocr"
 
 
 async def test_processor_backend_error_returns_success_false(monkeypatch):
@@ -485,61 +401,6 @@ def _wire_batch(monkeypatch, *, client, store, settings=None):
     monkeypatch.setattr(_bos.BatchOcrJobStore, "shared", classmethod(_shared))
 
 
-async def test_gateway_only_processor_never_uses_batch_mode(monkeypatch):
-    """The in-cluster (gateway_only) rung targets the synchronous GPU; batch mode
-    is the upstream Mistral async-job path. _get_batch_client returns None and
-    never builds a batch client even with DOCUMENT_OCR_MODE=batch set globally —
-    while the upstream (gateway_only=False) processor still resolves one."""
-    called = {"n": 0}
-
-    def _spy(settings, **kw):
-        called["n"] += 1
-        return _FakeBatchClient()
-
-    monkeypatch.setattr(
-        ocr,
-        "get_settings",
-        lambda: _settings(
-            document_ocr_mode="batch",
-            document_ocr_provider="gateway",
-            embedding_gateway_url="https://gw",
-            document_ocr_incluster_model="surya/surya-ocr-2",
-        ),
-    )
-    monkeypatch.setattr(ocr, "build_gateway_batch_client", _spy)
-
-    incluster = ocr.OcrProcessor(
-        name="ocr-incluster",
-        tier="ocr-incluster",
-        model_setting="document_ocr_incluster_model",
-        gateway_only=True,
-    )
-    assert await incluster._get_batch_client() is None
-    assert called["n"] == 0  # short-circuited before building anything
-
-    # _process_batch returns None for the gateway-only rung WITHOUT emitting the
-    # misleading "no gateway backend" warning (the gateway IS configured; the rung
-    # is simply synchronous-only). _batch_fallback_warned stays False to prove it.
-    result = await incluster._process_batch(
-        b"%PDF-1.7",
-        "application/pdf",
-        "x.pdf",
-        dict(_IDENTITY),
-        _settings(
-            document_ocr_mode="batch",
-            document_ocr_provider="gateway",
-            embedding_gateway_url="https://gw",
-            document_ocr_incluster_model="surya/surya-ocr-2",
-        ),
-    )
-    assert result is None
-    assert incluster._batch_fallback_warned is False
-
-    upstream = ocr.OcrProcessor()  # gateway_only=False
-    assert await upstream._get_batch_client() is not None
-    assert called["n"] == 1
-
-
 async def test_batch_first_run_submits_and_returns_pending_sentinel(monkeypatch):
     client = _FakeBatchClient()
     store = _FakeStore()
@@ -645,26 +506,32 @@ async def test_batch_deadline_exceeded_marks_timeout(monkeypatch):
     assert ("u1", "d1", "file", "v1") in store.deleted
 
 
-async def test_batch_falls_back_to_sync_when_no_gateway(monkeypatch):
+async def test_batch_raises_when_no_gateway(monkeypatch):
+    """batch mode with no batch-capable backend (no gateway) must RAISE, never
+    silently downgrade to synchronous OCR."""
+
     class _FakeBackend:
-        async def ocr(self, content, mime_type):
-            return "sync text", [{"page": 1, "start_offset": 0, "end_offset": 9}]
+        async def ocr(self, content, mime_type):  # pragma: no cover - must not run
+            raise AssertionError("sync backend must not be used in batch mode")
 
     settings = _settings(document_ocr_mode="batch", document_ocr_provider="mistral")
     monkeypatch.setattr(ocr, "get_settings", lambda: settings)
     monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s, **kw: None)
     monkeypatch.setattr(ocr, "build_ocr_backend", lambda s, **kw: _FakeBackend())
 
-    r = await ocr.OcrProcessor().process(
-        b"%PDF", "application/pdf", options=dict(_IDENTITY)
-    )
-    assert r.success is True and r.text == "sync text"
+    with pytest.raises(ProcessorError, match="EMBEDDING_GATEWAY_URL"):
+        await ocr.OcrProcessor().process(
+            b"%PDF", "application/pdf", options=dict(_IDENTITY)
+        )
 
 
-async def test_batch_falls_back_to_sync_when_no_identity(monkeypatch):
+async def test_batch_raises_when_no_identity(monkeypatch):
+    """batch mode on the inline path (no per-doc identity) can't defer a poll, so
+    it RAISES rather than silently transcribing synchronously."""
+
     class _FakeBackend:
-        async def ocr(self, content, mime_type):
-            return "sync text", [{"page": 1, "start_offset": 0, "end_offset": 9}]
+        async def ocr(self, content, mime_type):  # pragma: no cover - must not run
+            raise AssertionError("sync backend must not be used in batch mode")
 
     client = _FakeBatchClient()
     settings = _settings(
@@ -676,9 +543,9 @@ async def test_batch_falls_back_to_sync_when_no_identity(monkeypatch):
     monkeypatch.setattr(ocr, "build_gateway_batch_client", lambda s, **kw: client)
     monkeypatch.setattr(ocr, "build_ocr_backend", lambda s, **kw: _FakeBackend())
 
-    # No options -> inline path -> batch inapplicable -> sync fallback.
-    r = await ocr.OcrProcessor().process(b"%PDF", "application/pdf", options=None)
-    assert r.success is True and r.text == "sync text"
+    # No options -> inline path -> batch can't defer -> raise (not sync fallback).
+    with pytest.raises(ProcessorError, match="worker"):
+        await ocr.OcrProcessor().process(b"%PDF", "application/pdf", options=None)
     assert client.submitted == []  # never attempted batch
 
 

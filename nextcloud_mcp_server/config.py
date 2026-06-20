@@ -157,18 +157,15 @@ _DEFAULTS: dict[str, Any] = {
     "document_tier1_engine": "pypdfium2",
     "document_ocr_enabled": False,
     # OCR backend: "auto" picks gateway (if EMBEDDING_GATEWAY_URL) else mistral
-    # (if MISTRAL_API_KEY); "gateway"/"mistral" force one; "none" disables.
+    # (if MISTRAL_API_KEY); "gateway"/"mistral" force one; "none" disables. The
+    # gateway routes on the model's "<provider>/" prefix, so it serves Mistral,
+    # surya (in-cluster GPU over the tailnet), etc. — one configurable OCR tier.
     "document_ocr_provider": "auto",
     # Provider-namespaced OCR model id (gateway routes on the prefix; the direct
-    # mistral backend strips it).
+    # mistral backend strips it). e.g. "mistral/mistral-ocr-latest" (Mistral) or
+    # "surya/surya-ocr-2" (surya via the gateway) — never hard-coded, only this
+    # default.
     "document_ocr_model": "mistral/mistral-ocr-latest",
-    # In-cluster OCR tier (tier2, Deck #353): the on-demand burst GPU, reached
-    # ONLY via the embedding gateway. Off + per-tenant by default; tried before the
-    # paid upstream OCR rung. The model is a config value (the gateway routes on its
-    # "<provider>/" prefix) — surya is the current pick but swappable (e.g.
-    # "lightonocr/...") and is NEVER hard-coded, only this default.
-    "document_ocr_incluster_enabled": False,
-    "document_ocr_incluster_model": "surya/surya-ocr-2",
     # OCR escalation triggers (tier-0). A page is OCR-worthy when its text is
     # near-empty (< min_page_chars) OR low-quality (< min_text_quality) OR (when
     # detect_scanned) mostly a raster image; a doc escalates when the OCR-worthy
@@ -882,27 +879,24 @@ class Settings:
     # permissive license, no find_tables) is the hot path; "pymupdf" is a
     # deprecated rollback to pymupdf4llm (AGPL, graphics-limited) for one corpus.
     document_tier1_engine: str = "pypdfium2"
-    # Route scanned/no-text-layer PDFs to the tier-3 OCR provider. Off by
-    # default; when off, the fast tier is terminal.
+    # Route scanned/no-text-layer PDFs to the OCR tier. Off by default; when off,
+    # the fast tier is terminal.
     document_ocr_enabled: bool = False
-    # OCR backend selection: "auto" | "gateway" | "mistral" | "none".
+    # OCR backend selection: "auto" | "gateway" | "mistral" | "none". The gateway
+    # routes on the model's "<provider>/" prefix, so it serves Mistral, surya, etc.
     document_ocr_provider: str = "auto"
-    # Provider-namespaced OCR model id (e.g. "mistral/mistral-ocr-latest"). The
-    # gateway routes on the "<provider>/" prefix; the direct mistral backend
-    # strips it.
+    # Provider-namespaced OCR model id (e.g. "mistral/mistral-ocr-latest" or
+    # "surya/surya-ocr-2"). The gateway routes on the "<provider>/" prefix; the
+    # direct mistral backend strips it.
     document_ocr_model: str = "mistral/mistral-ocr-latest"
-    # In-cluster OCR tier (tier2, Deck #353): on-demand burst GPU reached ONLY via
-    # the embedding gateway; off + per-tenant, tried before the upstream rung. The
-    # model is a swappable config value (surya is the current pick, never hardcoded).
-    document_ocr_incluster_enabled: bool = False
-    document_ocr_incluster_model: str = "surya/surya-ocr-2"
     # OCR backend HTTP request timeout (seconds). float for parity with the
     # parse timeout / httpx.Timeout; per-tenant tunable so a gateway with a
     # shorter ceiling isn't masked by the 180s default.
     document_ocr_timeout_seconds: float = 180.0
-    # OCR execution mode: "sync" | "batch" (Deck #332). batch is opt-in,
-    # gateway-only, and used for large-corpus backfill; it falls back to sync when
-    # no gateway backend resolves or the path can't defer (inline/memory pool).
+    # OCR execution mode: "sync" | "batch" (Deck #332). batch is opt-in and routes
+    # through the embedding gateway's async Batch OCR job (large-corpus backfill).
+    # It requires a gateway: with no EMBEDDING_GATEWAY_URL, __post_init__ rejects
+    # mode=batch at startup rather than silently downgrading to sync.
     document_ocr_mode: str = "sync"
     # Batch-job poll cadence (procrastinate re-enqueue delay) and hard deadline.
     document_ocr_batch_poll_seconds: int = 120
@@ -1089,6 +1083,20 @@ class Settings:
         if self.embedding_provider == "gateway" and not self.embedding_gateway_url:
             raise ValueError(
                 "EMBEDDING_GATEWAY_URL is required when EMBEDDING_PROVIDER=gateway"
+            )
+        # Batch OCR routes through the embedding gateway's async Batch API (the only
+        # batch path from the pod), so it requires a gateway. Fail fast rather than
+        # silently downgrading to synchronous OCR at ingest time. provider=none means
+        # OCR is off entirely, so the mode is moot there.
+        if (
+            self.document_ocr_mode == "batch"
+            and self.document_ocr_provider != "none"
+            and not self.embedding_gateway_url
+        ):
+            raise ValueError(
+                "DOCUMENT_OCR_MODE=batch requires EMBEDDING_GATEWAY_URL (batch OCR "
+                "routes through the embedding gateway); use DOCUMENT_OCR_MODE=sync "
+                "for the direct backend without a gateway"
             )
         if (
             self.collection_metadata_source == "api"
@@ -1547,8 +1555,6 @@ def get_settings() -> Settings:
         "document_ocr_enabled": "DOCUMENT_OCR_ENABLED",
         "document_ocr_provider": "DOCUMENT_OCR_PROVIDER",
         "document_ocr_model": "DOCUMENT_OCR_MODEL",
-        "document_ocr_incluster_enabled": "DOCUMENT_OCR_INCLUSTER_ENABLED",
-        "document_ocr_incluster_model": "DOCUMENT_OCR_INCLUSTER_MODEL",
         "document_ocr_timeout_seconds": "DOCUMENT_OCR_TIMEOUT_SECONDS",
         "document_ocr_mode": "DOCUMENT_OCR_MODE",
         "document_ocr_batch_poll_seconds": "DOCUMENT_OCR_BATCH_POLL_SECONDS",

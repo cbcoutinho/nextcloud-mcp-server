@@ -74,7 +74,6 @@ class _Settings:
         engine="pypdfium2",
         classify=True,
         ocr=False,
-        ocr_incluster=False,
         min_text_quality=0.5,
         page_fraction=0.5,
         min_page_chars=16,
@@ -86,13 +85,10 @@ class _Settings:
     ):
         self.document_tier1_engine = engine
         self.document_classify_enabled = classify
-        # ``ocr`` enables the UPSTREAM rung (document_ocr_enabled); ``ocr_incluster``
-        # the in-cluster GPU rung (tried first). The model attrs let
-        # build_ocr_backend resolve a per-tier model id.
+        # ``ocr`` enables the single OCR tier (document_ocr_enabled). The model
+        # attr lets build_ocr_backend resolve the OCR model id.
         self.document_ocr_enabled = ocr
-        self.document_ocr_incluster_enabled = ocr_incluster
         self.document_ocr_model = "mistral/mistral-ocr-latest"
-        self.document_ocr_incluster_model = "surya/surya-ocr-2"
         self.document_ocr_min_text_quality = min_text_quality
         self.document_ocr_page_fraction = page_fraction
         self.document_ocr_min_page_chars = min_page_chars
@@ -202,10 +198,10 @@ async def test_ocr_escalation_on_empty_text(monkeypatch):
     monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
     r = _registry(
         (_Fake("fast", "fast", text=""), 20),
-        (_Fake("ocr-upstream", "ocr-upstream", text="ocr text"), 5),
+        (_Fake("ocr", "ocr", text="ocr text"), 5),
     )
     res = await r.process(b"%PDF-1.7", "application/pdf")
-    assert res.processor == "ocr-upstream"
+    assert res.processor == "ocr"
     esc.assert_called_once()
 
 
@@ -217,7 +213,7 @@ async def test_zero_page_pdf_does_not_escalate(monkeypatch):
     monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
     r = _registry(
         (_Fake("fast", "fast", text="", pages=0), 20),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+        (_Fake("ocr", "ocr"), 5),
     )
     res = await r.process(b"%PDF-1.7", "application/pdf")
     assert res.processor == "fast"
@@ -238,7 +234,7 @@ async def test_ocr_failure_falls_back_to_fast(monkeypatch):
     monkeypatch.setattr(reg_mod, "record_document_escalation", MagicMock())
     r = _registry(
         (_Fake("fast", "fast", text=""), 20),
-        (_Fake("ocr-upstream", "ocr-upstream", text="", success=False), 5),
+        (_Fake("ocr", "ocr", text="", success=False), 5),
     )
     res = await r.process(b"%PDF-1.7", "application/pdf")
     assert res.processor == "fast"
@@ -249,7 +245,7 @@ async def test_no_ocr_escalation_when_disabled(monkeypatch):
     monkeypatch.setattr(reg_mod, "get_settings", lambda: _Settings(ocr=False))
     r = _registry(
         (_Fake("fast", "fast", text=""), 20),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+        (_Fake("ocr", "ocr"), 5),
     )
     res = await r.process(b"%PDF-1.7", "application/pdf")
     # Fast tier is terminal when OCR is disabled.
@@ -296,11 +292,11 @@ async def test_glyph_corrupt_no_structured_falls_through_to_ocr(monkeypatch):
     monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
     r = _registry(
         (_Fake("fast", "fast", text=_GLYPH), 20),
-        (_Fake("ocr-upstream", "ocr-upstream", text="ocr recovered text"), 5),
+        (_Fake("ocr", "ocr", text="ocr recovered text"), 5),
     )  # no structured registered
     res = await r.process(b"%PDF-1.7", "application/pdf")
-    assert res.processor == "ocr-upstream"
-    esc.assert_called_once_with("fast", "ocr-upstream", "corrupt_glyphs")
+    assert res.processor == "ocr"
+    esc.assert_called_once_with("fast", "ocr", "corrupt_glyphs")
 
 
 async def test_inline_lowconf_tries_structured_before_ocr(monkeypatch):
@@ -312,7 +308,7 @@ async def test_inline_lowconf_tries_structured_before_ocr(monkeypatch):
     r = _registry(
         (_Fake("fast", "fast", text="x" * 40), 20),  # one long token -> quality ~0
         (_Fake("structured", "structured", text="clean recovered prose text here"), 10),
-        (_Fake("ocr-upstream", "ocr-upstream", text="ocr text"), 5),
+        (_Fake("ocr", "ocr", text="ocr text"), 5),
     )
     res = await r.process(b"%PDF-1.7", "application/pdf")
     assert res.processor == "structured"
@@ -328,11 +324,11 @@ async def test_inline_empty_skips_structured_straight_to_ocr(monkeypatch):
     r = _registry(
         (_Fake("fast", "fast", text=""), 20),
         (_Fake("structured", "structured", text="should not run"), 10),
-        (_Fake("ocr-upstream", "ocr-upstream", text="ocr text"), 5),
+        (_Fake("ocr", "ocr", text="ocr text"), 5),
     )
     res = await r.process(b"%PDF-1.7", "application/pdf")
-    assert res.processor == "ocr-upstream"
-    esc.assert_called_once_with("fast", "ocr-upstream", "empty_text")
+    assert res.processor == "ocr"
+    esc.assert_called_once_with("fast", "ocr", "empty_text")
 
 
 async def test_inline_fast_structured_ocr_cascade(monkeypatch):
@@ -346,13 +342,13 @@ async def test_inline_fast_structured_ocr_cascade(monkeypatch):
     r = _registry(
         (_Fake("fast", "fast", text="x" * 40), 20),  # quality ~0, non-empty
         (_Fake("structured", "structured", text=""), 10),  # re-extract empty
-        (_Fake("ocr-upstream", "ocr-upstream", text="ocr recovered text"), 5),
+        (_Fake("ocr", "ocr", text="ocr recovered text"), 5),
     )
     res = await r.process(b"%PDF-1.7", "application/pdf")
-    assert res.processor == "ocr-upstream"
+    assert res.processor == "ocr"
     assert esc.call_args_list == [
         call("fast", "structured", "low_confidence"),
-        call("structured", "ocr-upstream", "empty_text"),
+        call("structured", "ocr", "empty_text"),
     ]
 
 
@@ -366,13 +362,13 @@ async def test_inline_structured_still_corrupt_escalates_to_ocr(monkeypatch):
     r = _registry(
         (_Fake("fast", "fast", text=_GLYPH), 20),
         (_Fake("structured", "structured", text=_GLYPH), 10),  # still corrupt
-        (_Fake("ocr-upstream", "ocr-upstream", text="ocr recovered text"), 5),
+        (_Fake("ocr", "ocr", text="ocr recovered text"), 5),
     )
     res = await r.process(b"%PDF-1.7", "application/pdf")
-    assert res.processor == "ocr-upstream"
+    assert res.processor == "ocr"
     assert esc.call_args_list == [
         call("fast", "structured", "corrupt_glyphs"),
-        call("structured", "ocr-upstream", "corrupt_glyphs"),
+        call("structured", "ocr", "corrupt_glyphs"),
     ]
 
 
@@ -382,7 +378,7 @@ def test_evaluate_escalation_glyph_corrupt_goes_structured(monkeypatch):
     r = _registry(
         (_Fake("fast", "fast"), 20),
         (_Fake("structured", "structured"), 10),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+        (_Fake("ocr", "ocr"), 5),
     )
     res = ProcessingResult(
         text=_GLYPH,
@@ -406,7 +402,7 @@ def test_evaluate_escalation_glyph_corrupt_no_structured_falls_through_to_ocr(
     monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
     r = _registry(
         (_Fake("fast", "fast"), 20),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+        (_Fake("ocr", "ocr"), 5),
     )  # no structured registered
     res = ProcessingResult(
         text=_GLYPH,
@@ -419,7 +415,7 @@ def test_evaluate_escalation_glyph_corrupt_no_structured_falls_through_to_ocr(
         processor="fast",
     )
     decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True))
-    assert decision == EscalationDecision("hop", "ocr-upstream", "corrupt_glyphs")
+    assert decision == EscalationDecision("hop", "ocr", "corrupt_glyphs")
 
 
 def test_evaluate_escalation_glyph_corrupt_no_structured_ocr_disabled_suppressed(
@@ -431,7 +427,7 @@ def test_evaluate_escalation_glyph_corrupt_no_structured_ocr_disabled_suppressed
     monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
     r = _registry(
         (_Fake("fast", "fast"), 20),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+        (_Fake("ocr", "ocr"), 5),
     )  # structured not registered; ocr registered but disabled below
     res = ProcessingResult(
         text=_GLYPH,
@@ -444,9 +440,7 @@ def test_evaluate_escalation_glyph_corrupt_no_structured_ocr_disabled_suppressed
         processor="fast",
     )
     decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=False))
-    assert decision == EscalationDecision(
-        "suppressed", "ocr-upstream", "corrupt_glyphs"
-    )
+    assert decision == EscalationDecision("suppressed", "ocr", "corrupt_glyphs")
 
 
 # --- Per-tier external path (Deck #323) -------------------------------------
@@ -458,7 +452,7 @@ async def test_process_tier_runs_named_tier(monkeypatch):
     r = _registry(
         (_Fake("fast", "fast"), 20),
         (_Fake("structured", "structured"), 10),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+        (_Fake("ocr", "ocr"), 5),
     )
     res = await r.process_tier(b"%PDF-1.7", "application/pdf", "f.pdf", "structured")
     assert res.processor == "structured"
@@ -478,10 +472,8 @@ async def test_process_tier_oversize_fails_fast(monkeypatch):
     monkeypatch.setattr(
         reg_mod, "get_settings", lambda: _Settings(max_pdf_size_mb=0.001)
     )
-    r = _registry((_Fake("ocr-upstream", "ocr-upstream"), 5))
-    res = await r.process_tier(
-        b"x" * 4096, "application/pdf", "big.pdf", "ocr-upstream"
-    )
+    r = _registry((_Fake("ocr", "ocr"), 5))
+    res = await r.process_tier(b"x" * 4096, "application/pdf", "big.pdf", "ocr")
     assert res.success is False
     assert res.metadata["parse_failed_reason"] == "oversize"
 
@@ -490,7 +482,7 @@ def test_next_available_tier_walks_ladder():
     r = _registry(
         (_Fake("fast", "fast"), 20),
         (_Fake("structured", "structured"), 10),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+        (_Fake("ocr", "ocr"), 5),
     )
     # ocr disabled -> structured is the only target above fast.
     s = _Settings(ocr=False)
@@ -498,25 +490,24 @@ def test_next_available_tier_walks_ladder():
     assert r.next_available_tier("structured", s) is None  # ocr gated off
     # ocr enabled -> reachable; minimum skips the structured rung.
     s_ocr = _Settings(ocr=True)
-    assert r.next_available_tier("structured", s_ocr) == "ocr-upstream"
-    assert (
-        r.next_available_tier("fast", s_ocr, minimum="ocr-upstream") == "ocr-upstream"
-    )
+    assert r.next_available_tier("fast", s_ocr) == "structured"
+    assert r.next_available_tier("structured", s_ocr) == "ocr"
+    assert r.next_available_tier("fast", s_ocr, minimum="ocr") == "ocr"
+    # The OCR tier is the top of the ladder -> terminal.
+    assert r.next_available_tier("ocr", s_ocr) is None
 
 
 def test_next_available_tier_skips_unregistered():
     # No structured processor -> fast escalates straight to ocr.
-    r = _registry(
-        (_Fake("fast", "fast"), 20), (_Fake("ocr-upstream", "ocr-upstream"), 5)
-    )
-    assert r.next_available_tier("fast", _Settings(ocr=True)) == "ocr-upstream"
+    r = _registry((_Fake("fast", "fast"), 20), (_Fake("ocr", "ocr"), 5))
+    assert r.next_available_tier("fast", _Settings(ocr=True)) == "ocr"
 
 
 def test_evaluate_escalation_good_text_indexes(monkeypatch):
     monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
     r = _registry(
         (_Fake("fast", "fast", text="This is clean readable prose text."), 20),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+        (_Fake("ocr", "ocr"), 5),
     )
     res = ProcessingResult(
         text="This is clean readable prose text.",
@@ -535,7 +526,7 @@ def test_evaluate_escalation_empty_jumps_to_ocr(monkeypatch):
     r = _registry(
         (_Fake("fast", "fast"), 20),
         (_Fake("structured", "structured"), 10),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+        (_Fake("ocr", "ocr"), 5),
     )
     res = ProcessingResult(
         text="",
@@ -546,7 +537,7 @@ def test_evaluate_escalation_empty_jumps_to_ocr(monkeypatch):
         processor="fast",
     )
     decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True))
-    assert decision == EscalationDecision("hop", "ocr-upstream", "empty_text")
+    assert decision == EscalationDecision("hop", "ocr", "empty_text")
 
 
 def test_evaluate_escalation_lowconf_goes_to_structured(monkeypatch):
@@ -556,7 +547,7 @@ def test_evaluate_escalation_lowconf_goes_to_structured(monkeypatch):
     r = _registry(
         (_Fake("fast", "fast"), 20),
         (_Fake("structured", "structured"), 10),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+        (_Fake("ocr", "ocr"), 5),
     )
     res = ProcessingResult(
         text=junk,
@@ -574,9 +565,7 @@ def test_evaluate_escalation_lowconf_goes_to_structured(monkeypatch):
 
 def test_evaluate_escalation_failure_not_escalated(monkeypatch):
     monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
-    r = _registry(
-        (_Fake("fast", "fast"), 20), (_Fake("ocr-upstream", "ocr-upstream"), 5)
-    )
+    r = _registry((_Fake("fast", "fast"), 20), (_Fake("ocr", "ocr"), 5))
     res = ProcessingResult(
         text="",
         metadata={"parse_failed_reason": "error"},
@@ -607,9 +596,7 @@ def test_evaluate_escalation_terminal_when_no_higher_tier(monkeypatch):
 def test_evaluate_escalation_zero_page_does_not_escalate(monkeypatch):
     """A zero-page (empty/corrupt) PDF never escalates on the external path."""
     monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
-    r = _registry(
-        (_Fake("fast", "fast"), 20), (_Fake("ocr-upstream", "ocr-upstream"), 5)
-    )
+    r = _registry((_Fake("fast", "fast"), 20), (_Fake("ocr", "ocr"), 5))
     res = ProcessingResult(
         text="",
         metadata={"page_count": 0, "page_boundaries": []},
@@ -623,9 +610,7 @@ def test_evaluate_escalation_lowconf_to_ocr_when_no_structured(monkeypatch):
     unregistered structured rung), not to None."""
     monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
     junk = "z" * 40  # non-empty but junk -> recommended ocr, total_chars > 0
-    r = _registry(
-        (_Fake("fast", "fast"), 20), (_Fake("ocr-upstream", "ocr-upstream"), 5)
-    )
+    r = _registry((_Fake("fast", "fast"), 20), (_Fake("ocr", "ocr"), 5))
     res = ProcessingResult(
         text=junk,
         metadata={
@@ -637,16 +622,14 @@ def test_evaluate_escalation_lowconf_to_ocr_when_no_structured(monkeypatch):
         processor="fast",
     )
     decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=True))
-    assert decision == EscalationDecision("hop", "ocr-upstream", "low_confidence")
+    assert decision == EscalationDecision("hop", "ocr", "low_confidence")
 
 
 def test_evaluate_escalation_suppressed_when_ocr_disabled(monkeypatch):
     """OCR off: a scanned doc does NOT hop to ocr; it returns a 'suppressed'
     decision (the what-if-OCR signal) so the caller indexes at the current tier."""
     monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
-    r = _registry(
-        (_Fake("fast", "fast"), 20), (_Fake("ocr-upstream", "ocr-upstream"), 5)
-    )
+    r = _registry((_Fake("fast", "fast"), 20), (_Fake("ocr", "ocr"), 5))
     res = ProcessingResult(
         text="",
         metadata={
@@ -656,32 +639,7 @@ def test_evaluate_escalation_suppressed_when_ocr_disabled(monkeypatch):
         processor="fast",
     )
     decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=False))
-    assert decision == EscalationDecision("suppressed", "ocr-upstream", "empty_text")
-
-
-def test_evaluate_escalation_suppressed_targets_incluster_four_rung(monkeypatch):
-    """Four-rung registry, BOTH OCR flags off: the suppressed what-if-OCR signal
-    names the *cheapest* ideal rung (ocr-incluster), not ocr-upstream, since the
-    ideal-target walk (ignore_ocr_enabled) picks the cheapest registered OCR rung."""
-    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
-    r = _registry(
-        (_Fake("fast", "fast"), 20),
-        (_Fake("structured", "structured"), 10),
-        (_Fake("ocr-incluster", "ocr-incluster"), 6),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
-    )
-    res = ProcessingResult(
-        text="",
-        metadata={
-            "page_count": 1,
-            "page_boundaries": [{"page": 1, "start_offset": 0, "end_offset": 0}],
-        },
-        processor="fast",
-    )
-    decision = r.evaluate_escalation(
-        res, b"%PDF", "fast", _Settings(ocr=False, ocr_incluster=False)
-    )
-    assert decision == EscalationDecision("suppressed", "ocr-incluster", "empty_text")
+    assert decision == EscalationDecision("suppressed", "ocr", "empty_text")
 
 
 def test_evaluate_escalation_lowconf_suppressed_when_only_ocr_disabled(monkeypatch):
@@ -689,9 +647,7 @@ def test_evaluate_escalation_lowconf_suppressed_when_only_ocr_disabled(monkeypat
     the would-be hop is suppressed (not a structured hop, which isn't registered)."""
     monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
     junk = "q" * 40
-    r = _registry(
-        (_Fake("fast", "fast"), 20), (_Fake("ocr-upstream", "ocr-upstream"), 5)
-    )
+    r = _registry((_Fake("fast", "fast"), 20), (_Fake("ocr", "ocr"), 5))
     res = ProcessingResult(
         text=junk,
         metadata={
@@ -703,9 +659,7 @@ def test_evaluate_escalation_lowconf_suppressed_when_only_ocr_disabled(monkeypat
         processor="fast",
     )
     decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=False))
-    assert decision == EscalationDecision(
-        "suppressed", "ocr-upstream", "low_confidence"
-    )
+    assert decision == EscalationDecision("suppressed", "ocr", "low_confidence")
 
 
 def test_evaluate_escalation_structured_hop_not_suppressed_when_ocr_off(monkeypatch):
@@ -716,7 +670,7 @@ def test_evaluate_escalation_structured_hop_not_suppressed_when_ocr_off(monkeypa
     r = _registry(
         (_Fake("fast", "fast"), 20),
         (_Fake("structured", "structured"), 10),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+        (_Fake("ocr", "ocr"), 5),
     )
     res = ProcessingResult(
         text=junk,
@@ -751,15 +705,14 @@ def test_evaluate_escalation_terminal_when_ocr_unregistered_and_off(monkeypatch)
 def test_evaluate_escalation_empty_suppressed_even_when_structured_registered(
     monkeypatch,
 ):
-    """empty_text uses minimum='ocr-incluster', so it skips structured even when
-    structured IS registered: with OCR off it suppresses to the cheapest registered
-    OCR rung (here ocr-upstream, the only one registered in this test), never hops
-    to structured (a text extractor can't conjure text from a raster scan)."""
+    """empty_text uses minimum='ocr', so it skips structured even when structured
+    IS registered: with OCR off it suppresses to the OCR tier, never hops to
+    structured (a text extractor can't conjure text from a raster scan)."""
     monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
     r = _registry(
         (_Fake("fast", "fast"), 20),
         (_Fake("structured", "structured"), 10),  # registered but skipped for empty
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+        (_Fake("ocr", "ocr"), 5),
     )
     res = ProcessingResult(
         text="",
@@ -770,85 +723,10 @@ def test_evaluate_escalation_empty_suppressed_even_when_structured_registered(
         processor="fast",
     )
     decision = r.evaluate_escalation(res, b"%PDF", "fast", _Settings(ocr=False))
-    assert decision == EscalationDecision("suppressed", "ocr-upstream", "empty_text")
+    assert decision == EscalationDecision("suppressed", "ocr", "empty_text")
 
 
-# --- tier2 in-cluster OCR rung (Deck #353) -----------------------------------
-
-
-async def test_inline_empty_routes_to_ocr_incluster_before_upstream(monkeypatch):
-    """Both OCR rungs enabled + registered: an empty text layer hops to the
-    in-cluster (tier2) rung FIRST, never straight to the paid upstream rung."""
-    monkeypatch.setattr(
-        reg_mod, "get_settings", lambda: _Settings(ocr=True, ocr_incluster=True)
-    )
-    esc = MagicMock()
-    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
-    r = _registry(
-        (_Fake("fast", "fast", text=""), 20),
-        (_Fake("structured", "structured", text="should not run"), 10),
-        (_Fake("ocr-incluster", "ocr-incluster", text="incluster ocr text"), 6),
-        (_Fake("ocr-upstream", "ocr-upstream", text="upstream ocr text"), 5),
-    )
-    res = await r.process(b"%PDF-1.7", "application/pdf")
-    assert res.processor == "ocr-incluster"
-    esc.assert_called_once_with("fast", "ocr-incluster", "empty_text")
-
-
-async def test_inline_only_incluster_enabled_routes_to_incluster(monkeypatch):
-    """Tenant with ONLY in-cluster OCR on (upstream off): empty text still hops
-    to the in-cluster rung (its own enable flag gates it, independent of upstream)."""
-    monkeypatch.setattr(
-        reg_mod, "get_settings", lambda: _Settings(ocr=False, ocr_incluster=True)
-    )
-    esc = MagicMock()
-    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
-    r = _registry(
-        (_Fake("fast", "fast", text=""), 20),
-        (_Fake("ocr-incluster", "ocr-incluster", text="incluster ocr text"), 6),
-        (_Fake("ocr-upstream", "ocr-upstream", text="upstream ocr text"), 5),
-    )
-    res = await r.process(b"%PDF-1.7", "application/pdf")
-    assert res.processor == "ocr-incluster"
-    esc.assert_called_once_with("fast", "ocr-incluster", "empty_text")
-
-
-async def test_inline_incluster_disabled_skips_to_upstream(monkeypatch):
-    """In-cluster registered but DISABLED, upstream enabled: the disabled tier2
-    rung is skipped and the job escalates to the upstream rung."""
-    monkeypatch.setattr(
-        reg_mod, "get_settings", lambda: _Settings(ocr=True, ocr_incluster=False)
-    )
-    esc = MagicMock()
-    monkeypatch.setattr(reg_mod, "record_document_escalation", esc)
-    r = _registry(
-        (_Fake("fast", "fast", text=""), 20),
-        (_Fake("ocr-incluster", "ocr-incluster", text="incluster ocr text"), 6),
-        (_Fake("ocr-upstream", "ocr-upstream", text="upstream ocr text"), 5),
-    )
-    res = await r.process(b"%PDF-1.7", "application/pdf")
-    assert res.processor == "ocr-upstream"
-    esc.assert_called_once_with("fast", "ocr-upstream", "empty_text")
-
-
-async def test_inline_incluster_failure_falls_back_to_fast_not_upstream(monkeypatch):
-    """CURRENT behavior (pins the known follow-up gap): when the chosen in-cluster
-    rung runs but FAILS (e.g. GPU 503 -> success=False), the inline path keeps the
-    tier-1 result rather than cascading to the paid upstream rung. OCR is an
-    enhancement, not a gate. (A future change will escalate transient GPU failures
-    to ocr-upstream; this test makes that diff explicit.)"""
-    monkeypatch.setattr(
-        reg_mod, "get_settings", lambda: _Settings(ocr=True, ocr_incluster=True)
-    )
-    monkeypatch.setattr(reg_mod, "record_document_escalation", MagicMock())
-    r = _registry(
-        (_Fake("fast", "fast", text=""), 20),
-        (_Fake("ocr-incluster", "ocr-incluster", text="", success=False), 6),
-        (_Fake("ocr-upstream", "ocr-upstream", text="upstream ocr text"), 5),
-    )
-    res = await r.process(b"%PDF-1.7", "application/pdf")
-    assert res.processor == "fast"
-    assert res.success is True
+# --- single OCR tier (external path) -----------------------------------------
 
 
 def _empty_result() -> ProcessingResult:
@@ -862,67 +740,33 @@ def _empty_result() -> ProcessingResult:
     )
 
 
-def test_evaluate_escalation_empty_text_hops_to_incluster(monkeypatch):
-    """External path: empty text targets the cheapest OCR rung (in-cluster, tier2)
-    when it is enabled + registered."""
+def test_evaluate_escalation_empty_text_hops_to_ocr(monkeypatch):
+    """External path: empty text targets the OCR tier when it is enabled +
+    registered."""
     monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
     r = _registry(
         (_Fake("fast", "fast"), 20),
         (_Fake("structured", "structured"), 10),
-        (_Fake("ocr-incluster", "ocr-incluster"), 6),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+        (_Fake("ocr", "ocr"), 5),
     )
     decision = r.evaluate_escalation(
-        _empty_result(), b"%PDF", "fast", _Settings(ocr=True, ocr_incluster=True)
+        _empty_result(), b"%PDF", "fast", _Settings(ocr=True)
     )
-    assert decision == EscalationDecision("hop", "ocr-incluster", "empty_text")
+    assert decision == EscalationDecision("hop", "ocr", "empty_text")
 
 
-def test_evaluate_escalation_incluster_disabled_hops_to_upstream(monkeypatch):
-    """External path: in-cluster disabled -> next_available_tier falls through to
-    the upstream rung (a real hop, not a suppression, since upstream is on)."""
-    monkeypatch.setattr(reg_mod, "record_document_classification", MagicMock())
-    r = _registry(
-        (_Fake("fast", "fast"), 20),
-        (_Fake("ocr-incluster", "ocr-incluster"), 6),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
-    )
-    decision = r.evaluate_escalation(
-        _empty_result(), b"%PDF", "fast", _Settings(ocr=True, ocr_incluster=False)
-    )
-    assert decision == EscalationDecision("hop", "ocr-upstream", "empty_text")
-
-
-def test_next_available_tier_walks_full_four_rung_ladder():
-    """next_available_tier walks fast -> structured -> ocr-incluster ->
-    ocr-upstream when every rung is registered + enabled."""
+def test_evaluate_escalation_ignore_ocr_enabled_computes_ideal_target():
+    """The ideal-target walk (ignore_ocr_enabled) resolves the OCR tier even when
+    the OCR-enabled gate is off -- this is what backs the suppressed what-if-OCR
+    signal."""
     r = _registry(
         (_Fake("fast", "fast"), 20),
         (_Fake("structured", "structured"), 10),
-        (_Fake("ocr-incluster", "ocr-incluster"), 6),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
+        (_Fake("ocr", "ocr"), 5),
     )
-    s = _Settings(ocr=True, ocr_incluster=True)
-    assert r.next_available_tier("fast", s) == "structured"
-    assert r.next_available_tier("structured", s) == "ocr-incluster"
-    assert r.next_available_tier("ocr-incluster", s) == "ocr-upstream"
-    assert r.next_available_tier("ocr-upstream", s) is None
-    # minimum pins the floor: from fast with minimum=ocr-incluster skips structured.
-    assert r.next_available_tier("fast", s, minimum="ocr-incluster") == "ocr-incluster"
-
-
-def test_next_available_tier_incluster_disabled_skips_to_upstream():
-    """A disabled in-cluster rung is skipped; the walk lands on the upstream rung."""
-    r = _registry(
-        (_Fake("fast", "fast"), 20),
-        (_Fake("structured", "structured"), 10),
-        (_Fake("ocr-incluster", "ocr-incluster"), 6),
-        (_Fake("ocr-upstream", "ocr-upstream"), 5),
-    )
-    s = _Settings(ocr=True, ocr_incluster=False)
-    assert r.next_available_tier("structured", s) == "ocr-upstream"
-    # ...but the *ideal* target ignoring the enable gate is still in-cluster.
-    assert (
-        r.next_available_tier("structured", s, ignore_ocr_enabled=True)
-        == "ocr-incluster"
-    )
+    s = _Settings(ocr=False)
+    # OCR gated off -> structured is the only available target above structured's
+    # predecessor; the OCR tier is terminal when disabled.
+    assert r.next_available_tier("structured", s) is None
+    # ...but the *ideal* target ignoring the enable gate is the OCR tier.
+    assert r.next_available_tier("structured", s, ignore_ocr_enabled=True) == "ocr"

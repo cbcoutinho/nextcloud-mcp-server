@@ -29,7 +29,6 @@ pytestmark = pytest.mark.unit
 def _settings(*, ocr_enabled: bool) -> SimpleNamespace:
     return SimpleNamespace(
         document_ocr_enabled=ocr_enabled,
-        document_ocr_incluster_enabled=False,
         document_tier1_engine="pypdfium2",
         get_collection_name=lambda: "c",
     )

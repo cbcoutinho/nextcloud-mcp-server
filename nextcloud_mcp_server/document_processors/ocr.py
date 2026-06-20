@@ -1,12 +1,15 @@
-"""Tier-3 OCR processor.
+"""OCR tier processor.
 
 Routes scanned / no-text-layer PDFs (the tier-0 classifier's ``ocr`` verdict) to
-an OCR backend that returns per-page markdown. Two interchangeable backends,
-selected by ``document_ocr_provider``:
+an OCR backend that returns per-page markdown. The single ``ocr`` tier is fully
+configurable: operators enable OCR, pick the backend, the model, and sync/batch.
+
+Two interchangeable backends, selected by ``document_ocr_provider``:
 
   * ``gateway`` -- POST the document to the Astrolabe Cloud model gateway's
     ``POST /v1/ocr`` (the same M2M-authenticated gateway as embeddings; NO
-    provider keys in the pod). The platform default.
+    provider keys in the pod). The gateway routes on the ``<provider>/`` model
+    prefix, so one backend serves Mistral, surya, etc. The platform default.
   * ``mistral`` -- call the Mistral OCR API directly from the pod
     (``MISTRAL_API_KEY``), for self-hosters / deployments without the gateway.
 
@@ -14,6 +17,12 @@ selected by ``document_ocr_provider``:
 Mistral (if ``MISTRAL_API_KEY``). Both return GitHub-flavoured markdown + exact
 ``page_boundaries``; bbox is re-derived from the PDF bytes + boundaries by
 ``search/pdf_highlighter``, as for the other tiers.
+
+Batch mode (``document_ocr_mode=batch``) always routes through the embedding
+gateway's async Batch OCR job — the gateway is the batching layer, so it works
+even when the chosen sync backend is direct Mistral (or, in principle, any
+backend that lacks a native batch API). With no gateway configured there is no
+batch path from the pod, and ``Settings`` rejects ``mode=batch`` at startup.
 """
 
 import base64
@@ -28,7 +37,7 @@ import httpx
 
 from nextcloud_mcp_server.config import Settings, get_settings
 
-from .base import DocumentProcessor, ProcessingResult
+from .base import DocumentProcessor, ProcessingResult, ProcessorError
 
 if TYPE_CHECKING:
     # Annotation-only import (the runtime import is lazy, inside
@@ -206,14 +215,19 @@ def _build_gateway_token_provider(settings: Settings) -> Any:
 def build_gateway_batch_client(
     settings: Settings, *, model: str | None = None
 ) -> "GatewayBatchOcrClient | None":
-    """Build a ``GatewayBatchOcrClient`` when the gateway is the OCR backend, else
-    ``None`` (so batch mode falls back to sync for provider=mistral / no gateway).
-    Batch OCR is gateway-only — Mistral's Batch API is reached *through* the
-    gateway's batch routes, never directly from the pod.
+    """Build a ``GatewayBatchOcrClient`` for batch OCR, or ``None`` when batch is
+    not possible (OCR disabled, or no gateway configured).
 
-    ``model`` overrides ``settings.document_ocr_model`` so a per-tier OCR rung
-    (e.g. the in-cluster tier) submits its own provider-namespaced model id."""
-    if settings.document_ocr_provider not in ("gateway", "auto"):
+    The embedding gateway is the batching layer: batch OCR is always reached
+    *through* the gateway's ``/v1/ocr/batch`` routes (the model's namespaced prefix
+    picks the upstream — Mistral's Batch API, surya, etc.). So batch works even
+    when the chosen *sync* backend is direct Mistral — we leverage the gateway to
+    batch for backends that have no native batch path from the pod. With no
+    ``EMBEDDING_GATEWAY_URL`` there is no batch path, and ``Settings`` rejects
+    ``document_ocr_mode=batch`` at startup; this returns ``None`` defensively.
+
+    ``model`` overrides ``settings.document_ocr_model``."""
+    if settings.document_ocr_provider == "none":
         return None
     if not settings.embedding_gateway_url:
         return None
@@ -227,45 +241,21 @@ def build_gateway_batch_client(
 
 
 def build_ocr_backend(
-    settings: Settings, *, model: str | None = None, gateway_only: bool = False
+    settings: Settings, *, model: str | None = None
 ) -> _OcrBackend | None:
-    """Select an OCR backend from settings, or None when none is available.
+    """Select the synchronous OCR backend from settings, or None when none is
+    available.
 
-    ``model`` overrides ``settings.document_ocr_model`` so a per-tier OCR rung
-    binds its own provider-namespaced model id. ``gateway_only`` forces the
-    gateway backend (never the direct Mistral fallback) — used by the **in-cluster**
-    OCR tier, whose backend (e.g. surya on the burst GPU) is reachable ONLY through
-    the embedding gateway over the tailnet; with no gateway URL the tier is
-    disabled (warn) rather than misrouted to a direct backend that can't serve it.
+    ``model`` overrides ``settings.document_ocr_model`` (rarely needed; the OCR
+    tier binds its own provider-namespaced model id). Backend selection is purely
+    provider/model-driven: ``gateway``/``auto`` use the gateway (which routes on the
+    model's ``<provider>/`` prefix — Mistral, surya, etc.), ``mistral``/``auto`` use
+    the direct Mistral API, and ``none`` disables OCR.
     """
     provider = settings.document_ocr_provider
     # `is not None` (not truthiness): an empty model string must NOT silently fall
-    # back to the upstream default and misroute a per-tier rung.
+    # back to the upstream default.
     model = model if model is not None else settings.document_ocr_model
-
-    if gateway_only:
-        # The in-cluster tier is gateway-only and never touches the `mistral`
-        # provider, but provider=none still suppresses it. Warn so an operator who
-        # set provider=none to disable Mistral doesn't silently lose the GPU tier.
-        if provider == "none":
-            if settings.document_ocr_incluster_enabled:
-                logger.warning(
-                    "DOCUMENT_OCR_PROVIDER=none disables in-cluster OCR even with "
-                    "DOCUMENT_OCR_INCLUSTER_ENABLED=true; set it to 'gateway' or "
-                    "'auto' to keep the in-cluster tier"
-                )
-            return None
-        if settings.embedding_gateway_url:
-            return _GatewayOcrBackend(
-                settings.embedding_gateway_url,
-                model,
-                _build_gateway_token_provider(settings),
-            )
-        logger.warning(
-            "in-cluster OCR tier requires EMBEDDING_GATEWAY_URL (it routes through "
-            "the gateway, never a direct backend); this OCR tier is disabled"
-        )
-        return None
 
     if provider == "none":
         return None
@@ -301,37 +291,30 @@ def build_ocr_backend(
 
 
 class OcrProcessor(DocumentProcessor):
-    """OCR processor for both OCR rungs — tier2 in-cluster (gateway-only GPU) and
-    tier3 upstream (gateway or direct Mistral backend). One class, two registered
-    instances bound to different ``(tier, model_setting, gateway_only)``."""
+    """The single configurable OCR tier. Backend (gateway vs direct Mistral),
+    model, and sync/batch are all chosen from settings; one registered instance
+    serves the ``ocr`` tier."""
 
     def __init__(
         self,
-        # The defaults describe the UPSTREAM (tier3) rung and exist for
-        # test/bare-construction convenience only. Application wiring
-        # (document_processors/__init__.py) ALWAYS passes every arg explicitly for
-        # both rungs — don't rely on these defaults in app code.
+        # The defaults describe the ``ocr`` tier; the keyword args exist for
+        # test/bare-construction convenience. Application wiring
+        # (document_processors/__init__.py) passes them explicitly.
         *,
-        name: str = "ocr-upstream",
-        tier: str = "ocr-upstream",
+        name: str = "ocr",
+        tier: str = "ocr",
         model_setting: str = "document_ocr_model",
-        gateway_only: bool = False,
     ) -> None:
-        # One OcrProcessor class serves BOTH OCR rungs; instances are bound to a
-        # tier + the settings attribute holding their provider-namespaced model id
-        # (+ whether the backend is gateway-only). The in-cluster rung is
-        # gateway-only (its model, e.g. surya, is reachable solely via the
-        # gateway); the upstream rung keeps the configurable gateway/mistral
-        # selection. surya is NEVER hard-coded here — only a config default.
-        # Fail fast on a misconfigured model_setting (a typo in a constructor call)
-        # so it surfaces at startup, not as an AttributeError mid-OCR. The string
-        # only ever comes from hardcoded defaults in __init__.py, never user input.
+        # The instance is bound to a tier + the settings attribute holding its
+        # provider-namespaced model id. Fail fast on a misconfigured model_setting
+        # (a typo in a constructor call) so it surfaces at startup, not as an
+        # AttributeError mid-OCR. The string only ever comes from hardcoded defaults
+        # in __init__.py, never user input.
         if not hasattr(Settings, model_setting):
             raise ValueError(f"Unknown model_setting: {model_setting!r}")
         self._name = name
         self._tier = tier
         self._model_setting = model_setting
-        self._gateway_only = gateway_only
         # Resolve the backend once and reuse it: rebuilding per call would create
         # a fresh GatewayTokenProvider each time (discarding its M2M-token cache
         # -> a token fetch per document) and a new Mistral SDK client per call.
@@ -345,12 +328,10 @@ class OcrProcessor(DocumentProcessor):
         self._backend_lock: anyio.Lock | None = None
         # Batch-mode (Deck #332): the gateway batch client is cached like the sync
         # backend so its GatewayTokenProvider keeps its M2M-token cache across
-        # documents. ``_batch_fallback_warned`` rate-limits the "can't batch,
-        # using sync" warning to once per pod.
+        # documents.
         self._batch_client_resolved = False
         self._batch_client: GatewayBatchOcrClient | None = None
         self._batch_client_lock: anyio.Lock | None = None
-        self._batch_fallback_warned = False
 
     @property
     def name(self) -> str:
@@ -377,21 +358,20 @@ class OcrProcessor(DocumentProcessor):
         settings = get_settings()
 
         # Batch mode (Deck #332): submit to the gateway's async Batch OCR job and
-        # poll across procrastinate retries. Returns a result (incl. the
-        # "pending" sentinel) when handled, or None to fall back to the
-        # synchronous path below (no gateway backend, or no per-doc identity — the
-        # inline/memory pool can't defer a poll).
+        # poll across procrastinate retries. ``_process_batch`` always handles the
+        # document — it returns a result (incl. the "pending" sentinel) or RAISES.
+        # It never silently downgrades to synchronous OCR: if no batch-capable
+        # backend is configured the operator opted into a mode that can't run, and
+        # the failure is surfaced (``Settings`` also rejects this at startup) rather
+        # than quietly transcribing synchronously.
         #
         # A transport error from _process_batch (e.g. the gateway briefly down)
         # is intentionally NOT caught here: it propagates to procrastinate for a
-        # durable retry rather than silently falling back to sync. If you've opted
-        # into batch mode you want the retry, not an unexpected sync transcription.
+        # durable retry.
         if settings.document_ocr_mode == "batch":
-            batch_result = await self._process_batch(
+            return await self._process_batch(
                 content, content_type, filename, options, settings
             )
-            if batch_result is not None:
-                return batch_result
 
         if not self._backend_resolved:
             if self._backend_lock is None:
@@ -401,7 +381,6 @@ class OcrProcessor(DocumentProcessor):
                     self._backend = build_ocr_backend(
                         settings,
                         model=getattr(settings, self._model_setting),
-                        gateway_only=self._gateway_only,
                     )
                     self._backend_resolved = True
         backend = self._backend
@@ -460,16 +439,14 @@ class OcrProcessor(DocumentProcessor):
         )
 
     async def _get_batch_client(self) -> "GatewayBatchOcrClient | None":
-        """Cached gateway batch client (or ``None`` when batch isn't applicable —
-        provider=mistral / no gateway). Resolved once under the backend lock so the
+        """Cached gateway batch client (or ``None`` when batch isn't possible — OCR
+        disabled, or no gateway configured). Resolved once under its own lock so the
         token provider's M2M cache survives across documents.
 
-        The in-cluster (``gateway_only``) rung never uses batch mode: it targets
-        the on-demand GPU, which is synchronous/low-latency, while batch OCR is the
-        upstream (Mistral) async-job path. So even with ``DOCUMENT_OCR_MODE=batch``
-        set globally, the in-cluster tier stays on the synchronous backend."""
-        if self._gateway_only:
-            return None
+        Batch OCR always routes through the embedding gateway (the batching layer),
+        so this is non-``None`` whenever a gateway is configured, regardless of the
+        chosen *sync* backend — that is how we batch for direct backends that lack a
+        native batch API."""
         if not self._batch_client_resolved:
             if self._batch_client_lock is None:
                 self._batch_client_lock = anyio.Lock()
@@ -483,15 +460,6 @@ class OcrProcessor(DocumentProcessor):
                     self._batch_client_resolved = True
         return self._batch_client
 
-    def _batch_fallback(self, reason: str, filename: str | None) -> None:
-        """Warn once that batch mode is falling back to the synchronous path."""
-        if not self._batch_fallback_warned:
-            logger.warning(
-                "DOCUMENT_OCR_MODE=batch but %s; falling back to synchronous OCR",
-                reason,
-            )
-            self._batch_fallback_warned = True
-
     async def _process_batch(
         self,
         content: bytes,
@@ -499,34 +467,39 @@ class OcrProcessor(DocumentProcessor):
         filename: str | None,
         options: dict[str, Any] | None,
         settings: Settings,
-    ) -> ProcessingResult | None:
+    ) -> ProcessingResult:
         """Submit + poll a one-document batch OCR job.
 
-        Returns a :class:`ProcessingResult` when batch handled the document — the
-        terminal success/failure result, or the *pending sentinel* (``success=False``
-        + ``OCR_BATCH_PENDING_KEY`` metadata) that ``_parse_pdf_tier`` turns into a
-        ``BatchPending`` re-poll. Returns ``None`` to fall back to synchronous OCR
-        (no gateway backend, or no per-doc identity — the inline pool can't defer).
+        Always handles the document in batch mode: returns a terminal
+        :class:`ProcessingResult` (success/failure), or the *pending sentinel*
+        (``success=False`` + ``OCR_BATCH_PENDING_KEY`` metadata) that
+        ``_parse_pdf_tier`` turns into a ``BatchPending`` re-poll. It NEVER falls
+        back to synchronous OCR — when batch can't run it raises
+        :class:`ProcessorError` rather than silently downgrading (``Settings`` also
+        rejects ``mode=batch`` without a gateway at startup).
         """
-        # Per-doc identity is threaded via ``options`` only on the per-tier
-        # procrastinate path; the inline/memory pool omits it and can't defer a
-        # poll, so batch is inapplicable there.
-        identity = _batch_identity(options)
-        if identity is None:
-            self._batch_fallback("no per-document identity (inline path)", filename)
-            return None
         client = await self._get_batch_client()
         if client is None:
-            # The in-cluster (gateway_only) rung returns None here BY DESIGN — the
-            # GPU is synchronous-only, batch is the upstream Mistral path — so don't
-            # emit the "no gateway backend" warning (the gateway IS configured; that
-            # warning would send an operator chasing a non-existent config problem).
-            if not self._gateway_only:
-                self._batch_fallback(
-                    "no gateway backend (provider=mistral or EMBEDDING_GATEWAY_URL unset)",
-                    filename,
-                )
-            return None
+            # No batch path from the pod: batch OCR routes through the embedding
+            # gateway, and either OCR is disabled (provider=none) or no gateway is
+            # configured. Fail loud rather than transcribe synchronously.
+            raise ProcessorError(
+                "DOCUMENT_OCR_MODE=batch requires the embedding gateway: set "
+                "EMBEDDING_GATEWAY_URL (and an enabled DOCUMENT_OCR_PROVIDER) so "
+                "batch OCR can route through the gateway's async Batch API, or use "
+                "DOCUMENT_OCR_MODE=sync."
+            )
+        # Per-doc identity is threaded via ``options`` only on the per-tier
+        # procrastinate path; the inline/memory pool omits it and can't defer a
+        # poll, so batch cannot run there.
+        identity = _batch_identity(options)
+        if identity is None:
+            raise ProcessorError(
+                "DOCUMENT_OCR_MODE=batch is only supported on the worker (postgres) "
+                "ingest path, which defers the batch poll across retries; the "
+                "inline/memory pool cannot. Use DOCUMENT_OCR_MODE=sync for in-process "
+                "ingestion."
+            )
 
         # Lazy import: keep the vector/DB stack off the document_processors load
         # path (mirrors the EscalateError lazy import in vector/processor).
