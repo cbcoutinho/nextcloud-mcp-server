@@ -1549,6 +1549,16 @@ async def scan_mail_messages(
                         needs_indexing = True
                     elif existing_metadata.get("modified_at", 0) < modified_at:
                         needs_indexing = True
+                    elif existing_metadata.get("status") == "failed":
+                        # A permanent processing failure — don't re-queue an
+                        # unchanged message that will just fail again; the
+                        # modified_at branch above retries once it changes
+                        # (mirrors the file scanner's failed-placeholder guard).
+                        logger.debug(
+                            "Skipping mail message %s: previous processing "
+                            "failed permanently",
+                            doc_id,
+                        )
                     elif existing_metadata.get("is_placeholder", False):
                         queued_at = existing_metadata.get("queued_at", 0)
                         placeholder_age = time.time() - queued_at

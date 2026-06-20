@@ -834,6 +834,10 @@ async def _fetch_document_text(
             # Reconstruct full content via the shared helper so chunk offsets
             # match what the processor indexed (single source of truth).
             message = await nc_client.mail.get_message(int(doc_id))
+            # Empty payload (OCS data=null with a <400 meta) -> skip context
+            # expansion, mirroring the processor's index-time guard.
+            if not message:
+                return None
             return build_mail_content(message)
         else:
             logger.warning("Unsupported doc_type for context expansion: %s", doc_type)

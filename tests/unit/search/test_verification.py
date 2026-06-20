@@ -304,6 +304,22 @@ async def test_verify_mail_missing_mailbox_id_keeps(mocker):
 
 
 @pytest.mark.unit
+async def test_verify_mail_non_numeric_mailbox_id_keeps(mocker):
+    """A non-numeric mailbox_id in metadata is kept without a list call."""
+    list_messages = mocker.AsyncMock()
+    mail_client = SimpleNamespace(list_messages=list_messages)
+    client = SimpleNamespace(mail=mail_client, username="alice")
+
+    result = await _verify_mail_messages(
+        client,
+        [_make_result(42, doc_type="mail_message", metadata={"mailbox_id": "bad"})],
+        _sem(),
+    )
+    assert result == {"42"}
+    list_messages.assert_not_awaited()
+
+
+@pytest.mark.unit
 async def test_verify_mail_non_numeric_id_kept_when_mailbox_listed(mocker):
     """A malformed doc_id can't match the numeric listing, so it's kept."""
     mail_client = SimpleNamespace(
