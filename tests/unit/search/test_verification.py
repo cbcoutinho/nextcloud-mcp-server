@@ -12,6 +12,7 @@ from nextcloud_mcp_server.search.algorithms import SearchResult
 from nextcloud_mcp_server.search.verification import (
     _verify_deck_cards,
     _verify_files,
+    _verify_mail_messages,
     _verify_news_items,
     _verify_notes,
     get_supported_doc_types,
@@ -220,6 +221,97 @@ async def test_verify_notes_string_doc_id_matches_production(mocker):
     assert result == {"42"}
     # The API call still uses the int form internally.
     notes_client.get_note.assert_awaited_once_with(42)
+
+
+# ---------------------------------------------------------------------------
+# Mail verifier (per-id, mirrors the note verifier)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_verify_mail_200_keeps_all(mocker):
+    mail_client = SimpleNamespace(get_message=mocker.AsyncMock(return_value={"id": 42}))
+    client = SimpleNamespace(mail=mail_client, username="alice")
+
+    result = await _verify_mail_messages(
+        client, [_make_result(42, doc_type="mail_message")], _sem()
+    )
+    assert result == {"42"}
+    mail_client.get_message.assert_awaited_once_with(42)
+
+
+@pytest.mark.unit
+async def test_verify_mail_404_drops(mocker):
+    mail_client = SimpleNamespace(
+        get_message=mocker.AsyncMock(side_effect=_http_error(404))
+    )
+    client = SimpleNamespace(mail=mail_client, username="alice")
+
+    result = await _verify_mail_messages(
+        client, [_make_result(42, doc_type="mail_message")], _sem()
+    )
+    assert result == set()
+
+
+@pytest.mark.unit
+async def test_verify_mail_403_drops(mocker):
+    mail_client = SimpleNamespace(
+        get_message=mocker.AsyncMock(side_effect=_http_error(403))
+    )
+    client = SimpleNamespace(mail=mail_client, username="alice")
+
+    result = await _verify_mail_messages(
+        client, [_make_result(42, doc_type="mail_message")], _sem()
+    )
+    assert result == set()
+
+
+@pytest.mark.unit
+async def test_verify_mail_transient_5xx_keeps(mocker):
+    mail_client = SimpleNamespace(
+        get_message=mocker.AsyncMock(side_effect=_http_error(503))
+    )
+    client = SimpleNamespace(mail=mail_client, username="alice")
+
+    result = await _verify_mail_messages(
+        client, [_make_result(42, doc_type="mail_message")], _sem()
+    )
+    assert result == {"42"}
+
+
+@pytest.mark.unit
+async def test_verify_mail_non_numeric_id_keeps(mocker):
+    mail_client = SimpleNamespace(get_message=mocker.AsyncMock())
+    client = SimpleNamespace(mail=mail_client, username="alice")
+
+    result = await _verify_mail_messages(
+        client, [_make_result("not-a-number", doc_type="mail_message")], _sem()
+    )
+    assert result == {"not-a-number"}
+    # Malformed id is kept without any network call.
+    mail_client.get_message.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_verify_mail_mixed_outcomes(mocker):
+    async def fake_get(message_id: int):
+        if message_id == 20:
+            raise _http_error(404)  # deleted
+        return {"id": message_id}
+
+    mail_client = SimpleNamespace(get_message=mocker.AsyncMock(side_effect=fake_get))
+    client = SimpleNamespace(mail=mail_client, username="alice")
+
+    result = await _verify_mail_messages(
+        client,
+        [
+            _make_result(10, doc_type="mail_message"),
+            _make_result(20, doc_type="mail_message"),
+            _make_result(30, doc_type="mail_message"),
+        ],
+        _sem(),
+    )
+    assert result == {"10", "30"}
 
 
 # ---------------------------------------------------------------------------

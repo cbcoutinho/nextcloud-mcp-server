@@ -488,11 +488,68 @@ async def _verify_news_items(
     return accessible
 
 
+async def _verify_mail_messages(
+    client: NextcloudClientProtocol,
+    results: list[SearchResult],
+    semaphore: anyio.Semaphore,
+) -> set[str]:
+    """Verify mail messages per-id via the Mail OCS ``get_message`` endpoint.
+
+    Mirrors ``_verify_notes``: a definitive 403/404 (message deleted, account
+    removed, or Mail app disabled) drops the result and schedules eviction;
+    transient errors and non-numeric ids fail open (keep the result).
+    """
+    # safe: cooperative concurrency, no lock needed (see verify_search_results)
+    accessible: set[str] = set()
+
+    async def check(result: SearchResult) -> None:
+        doc_id = result.id
+        try:
+            message_id_int = int(doc_id)
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                "Non-numeric mail message id %r: %s; keeping result",
+                doc_id,
+                e,
+            )
+            accessible.add(doc_id)
+            return
+
+        async with semaphore:
+            try:
+                await client.mail.get_message(message_id_int)
+                accessible.add(doc_id)
+            except HTTPStatusError as e:
+                if _is_definitive_404_or_403(e):
+                    return
+                logger.warning(
+                    "Transient error verifying mail message %s: %s %s; keeping result",
+                    doc_id,
+                    e.response.status_code,
+                    e,
+                )
+                accessible.add(doc_id)
+            except Exception as e:
+                logger.warning(
+                    "Unexpected error verifying mail message %s: %s; keeping result",
+                    doc_id,
+                    e,
+                )
+                accessible.add(doc_id)
+
+    async with anyio.create_task_group() as tg:
+        for r in results:
+            tg.start_soon(check, r)
+
+    return accessible
+
+
 _VERIFIERS: dict[str, BatchVerifier] = {
     "note": _verify_notes,
     "file": _verify_files,
     "deck_card": _verify_deck_cards,
     "news_item": _verify_news_items,
+    "mail_message": _verify_mail_messages,
 }
 
 

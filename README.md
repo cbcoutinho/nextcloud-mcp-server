@@ -70,7 +70,7 @@ For Kubernetes, see [cbcoutinho/helm-charts](https://github.com/cbcoutinho/helm-
 
 - **110+ MCP Tools** - Comprehensive API coverage across 10 Nextcloud apps
 - **MCP Resources** - Structured data URIs for browsing Nextcloud data
-- **Semantic Search (Experimental)** - Optional vector-powered search for Notes, Files, News items, and Deck cards (requires Qdrant + Ollama)
+- **Semantic Search (Experimental)** - Optional vector-powered search for Notes, Files, News items, Deck cards, and Mail messages (requires Qdrant + Ollama)
 - **Document Processing** - OCR and text extraction from PDFs, DOCX, images with progress notifications
 - **Flexible Deployment** - Docker, Kubernetes ([Helm chart](https://github.com/cbcoutinho/helm-charts)), VM, or local installation
 - **Production-Ready Auth** - Basic Auth with app passwords; multi-user via Login Flow v2 — MCP clients authenticate via OAuth, the server handles Nextcloud app passwords transparently
@@ -90,9 +90,10 @@ For Kubernetes, see [cbcoutinho/helm-charts](https://github.com/cbcoutinho/helm-
 | **Tables** | 5 | Row operations on Nextcloud Tables |
 | **Sharing** | 10+ | Create and manage shares |
 | **News** | 8 | Feeds, folders, items, feed health monitoring |
+| **Mail** | 5 | Read-only: accounts, mailboxes, messages, attachments (via Mail app's OCS API) |
 | **Collectives** | 16 | Full CRUD on collectives, pages, and tags |
 | **Talk (spreed)** | 6 | List conversations, read/post messages, mark as read, list participants |
-| **Semantic Search** | 2+ | Vector search for Notes, Files, News items, and Deck cards (experimental, opt-in, requires infrastructure) |
+| **Semantic Search** | 2+ | Vector search for Notes, Files, News items, Deck cards, and Mail messages (experimental, opt-in, requires infrastructure) |
 
 Want to see another Nextcloud app supported? [Open an issue](https://github.com/cbcoutinho/nextcloud-mcp-server/issues) or contribute a pull request!
 

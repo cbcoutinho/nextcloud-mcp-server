@@ -74,6 +74,7 @@ ALL_SUPPORTED_SCOPES: frozenset[str] = frozenset(
         "sharing.write",
         "news.read",
         "news.write",
+        "mail.read",
         "collectives.read",
         "collectives.write",
     }

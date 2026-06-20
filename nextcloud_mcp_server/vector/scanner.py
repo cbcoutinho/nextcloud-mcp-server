@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # same PR that adds a new indexed doc_type, or accept ghost-record exposure for
 # that type (see ADR-019).
 INDEXED_DOC_TYPES: frozenset[str] = frozenset(
-    {"note", "file", "deck_card", "news_item"}
+    {"note", "file", "deck_card", "news_item", "mail_message"}
 )
 
 
@@ -956,13 +956,36 @@ async def scan_user_documents(
                 user_id,
             )
 
+        # Scan Mail messages (newest per mailbox)
+        mail_queued = 0
+        if _should_scan("mail", "mail_message", enabled_apps, allowed):
+            try:
+                mail_queued = await scan_mail_messages(
+                    user_id=user_id,
+                    send_stream=send_stream,
+                    nc_client=nc_client,
+                    initial_sync=initial_sync,
+                    scan_id=scan_id,
+                )
+                queued += mail_queued
+            except Exception as e:
+                logger.warning("Failed to scan mail messages for %s: %s", user_id, e)
+        else:
+            logger.debug(
+                "[SCAN-%s] Mail app not enabled for %s; skipping mail messages",
+                scan_id,
+                user_id,
+            )
+
         if queued > 0:
             logger.info(
-                "Sent %s documents (%s files, %s news items, %s deck cards) for incremental sync: %s",
+                "Sent %s documents (%s files, %s news items, %s deck cards, "
+                "%s mail messages) for incremental sync: %s",
                 queued,
                 file_queued,
                 news_queued,
                 deck_queued,
+                mail_queued,
                 user_id,
             )
         else:
@@ -1325,6 +1348,253 @@ async def scan_news_items(
                 else:
                     logger.debug(
                         "News item %s missing for first time, starting grace period",
+                        doc_id,
+                    )
+                    _potentially_deleted[doc_key] = current_time
+
+    return queued
+
+
+# Newest-N messages indexed per mailbox. The Mail app paginates by recency, so
+# this bounds the index to recent mail; older messages age out of the index as
+# newer ones arrive (and the deletion-tracking pass below evicts them, the same
+# way it handles actually-deleted messages). Raise this if deeper history is
+# wanted, at the cost of more embedding work.
+MAIL_SCAN_MAX_PER_MAILBOX = 100
+
+
+async def scan_mail_messages(
+    user_id: str,
+    send_stream: TaskProducer,
+    nc_client: NextcloudClient,
+    initial_sync: bool,
+    scan_id: int,
+) -> int:
+    """
+    Scan a user's Mail messages and queue changed messages for indexing.
+
+    Enumerates accounts → mailboxes → newest ``MAIL_SCAN_MAX_PER_MAILBOX``
+    messages per mailbox. Email is immutable, so a message's ``dateInt`` (sent
+    timestamp) is used as the change-detection ``modified_at`` — a message is
+    indexed once and not re-sent. Messages that drop out of the newest-N window
+    (or are deleted) are evicted via the deletion-tracking pass, keeping the
+    index bounded to recent mail.
+
+    The MCP server never speaks IMAP: listing reads the Mail app's DB-cached
+    envelopes, and the body fetch (in the processor) goes through the Mail app's
+    OCS API, which handles IMAP server-side.
+
+    Args:
+        user_id: User to scan
+        send_stream: Stream to send changed documents to processors
+        nc_client: Authenticated Nextcloud client
+        initial_sync: If True, send all documents (first-time sync)
+        scan_id: Scan identifier for logging
+
+    Returns:
+        Number of messages queued for processing
+    """
+    settings = get_settings()
+    queued = 0
+
+    # Get indexed mail message IDs from Qdrant (for deletion tracking)
+    indexed_message_ids: set[str] = set()
+    if not initial_sync:
+        qdrant_client = await get_qdrant_client()
+        points = await _scroll_all_points(
+            qdrant_client,
+            collection_name=settings.get_collection_name(),
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    FieldCondition(
+                        key="doc_type", match=MatchValue(value="mail_message")
+                    ),
+                ]
+            ),
+            payload_fields=["doc_id"],
+        )
+        indexed_message_ids = {
+            str(point.payload["doc_id"])
+            for point in points
+            if point.payload is not None and "doc_id" in point.payload
+        }
+        logger.debug(
+            "Found %s indexed mail messages in Qdrant", len(indexed_message_ids)
+        )
+
+    # Enumerate accounts → mailboxes → newest-N messages.
+    accounts = await nc_client.mail.list_accounts()
+    nextcloud_message_ids: set[str] = set()
+    message_count = 0
+
+    for account in accounts:
+        account_id = account.get("id")
+        if account_id is None:
+            continue
+        try:
+            mailboxes = await nc_client.mail.get_mailboxes(account_id)
+        except Exception as e:
+            logger.warning(
+                "[SCAN-%s] Failed to list mailboxes for account %s: %s",
+                scan_id,
+                account_id,
+                e,
+            )
+            continue
+
+        for mailbox in mailboxes:
+            mailbox_id = mailbox.get("databaseId")
+            if mailbox_id is None:
+                continue
+            try:
+                messages = await nc_client.mail.list_messages(
+                    mailbox_id, limit=MAIL_SCAN_MAX_PER_MAILBOX
+                )
+            except Exception as e:
+                logger.warning(
+                    "[SCAN-%s] Failed to list messages for mailbox %s: %s",
+                    scan_id,
+                    mailbox_id,
+                    e,
+                )
+                continue
+
+            if len(messages) >= MAIL_SCAN_MAX_PER_MAILBOX:
+                logger.debug(
+                    "[SCAN-%s] Mailbox %s hit the newest-%s cap; older messages "
+                    "are not indexed",
+                    scan_id,
+                    mailbox_id,
+                    MAIL_SCAN_MAX_PER_MAILBOX,
+                )
+
+            for message in messages:
+                msg_db_id = message.get("databaseId")
+                if msg_db_id is None:
+                    continue
+                doc_id = str(msg_db_id)
+                nextcloud_message_ids.add(doc_id)
+                message_count += 1
+
+                modified_at = message.get("dateInt", 0) or 0
+                task_metadata: dict[str, int | str] = {
+                    "account_id": account_id,
+                    "mailbox_id": mailbox_id,
+                }
+
+                if initial_sync:
+                    await write_placeholder_point(
+                        doc_id=doc_id,
+                        doc_type="mail_message",
+                        user_id=user_id,
+                        modified_at=modified_at,
+                    )
+                    await send_stream.send(
+                        DocumentTask(
+                            user_id=user_id,
+                            doc_id=doc_id,
+                            doc_type="mail_message",
+                            operation="index",
+                            modified_at=modified_at,
+                            metadata=task_metadata,
+                        )
+                    )
+                    queued += 1
+                else:
+                    doc_key = (user_id, doc_id)
+                    if doc_key in _potentially_deleted:
+                        logger.debug(
+                            "Mail message %s reappeared, removing from deletion "
+                            "grace period",
+                            doc_id,
+                        )
+                        del _potentially_deleted[doc_key]
+
+                    existing_metadata = await query_document_metadata(
+                        doc_id=doc_id, doc_type="mail_message", user_id=user_id
+                    )
+
+                    needs_indexing = False
+                    if existing_metadata is None:
+                        needs_indexing = True
+                    elif existing_metadata.get("modified_at", 0) < modified_at:
+                        needs_indexing = True
+                    elif existing_metadata.get("is_placeholder", False):
+                        queued_at = existing_metadata.get("queued_at", 0)
+                        placeholder_age = time.time() - queued_at
+                        stale_threshold = settings.vector_sync_scan_interval * 5
+                        if placeholder_age > stale_threshold:
+                            logger.debug(
+                                "Found stale placeholder for mail message %s "
+                                "(age=%ss), requeuing",
+                                doc_id,
+                                format(placeholder_age, ".1f"),
+                            )
+                            needs_indexing = True
+
+                    if needs_indexing:
+                        await write_placeholder_point(
+                            doc_id=doc_id,
+                            doc_type="mail_message",
+                            user_id=user_id,
+                            modified_at=modified_at,
+                        )
+                        await send_stream.send(
+                            DocumentTask(
+                                user_id=user_id,
+                                doc_id=doc_id,
+                                doc_type="mail_message",
+                                operation="index",
+                                modified_at=modified_at,
+                                metadata=task_metadata,
+                            )
+                        )
+                        queued += 1
+
+    logger.info(
+        "[SCAN-%s] Found %s mail messages for %s",
+        scan_id,
+        message_count,
+        user_id,
+    )
+    record_vector_sync_scan(message_count)
+
+    # Check for deleted / aged-out messages (not initial sync)
+    if not initial_sync:
+        grace_period = settings.vector_sync_scan_interval * 1.5
+        current_time = time.time()
+
+        for doc_id in indexed_message_ids:
+            if doc_id not in nextcloud_message_ids:
+                doc_key = (user_id, doc_id)
+
+                if doc_key in _potentially_deleted:
+                    first_missing_time = _potentially_deleted[doc_key]
+                    time_missing = current_time - first_missing_time
+
+                    if time_missing >= grace_period:
+                        logger.info(
+                            "Mail message %s missing for %ss (>%ss grace period), "
+                            "sending deletion",
+                            doc_id,
+                            format(time_missing, ".1f"),
+                            format(grace_period, ".1f"),
+                        )
+                        await send_stream.send(
+                            DocumentTask(
+                                user_id=user_id,
+                                doc_id=doc_id,
+                                doc_type="mail_message",
+                                operation="delete",
+                                modified_at=0,
+                            )
+                        )
+                        queued += 1
+                        del _potentially_deleted[doc_key]
+                else:
+                    logger.debug(
+                        "Mail message %s missing for first time, starting grace period",
                         doc_id,
                     )
                     _potentially_deleted[doc_key] = current_time

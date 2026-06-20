@@ -104,7 +104,9 @@ async def test_noop_when_allowed_is_none(monkeypatch):
 
 async def test_noop_when_all_text_types_allowed(monkeypatch):
     send = AsyncMock()
-    allowed = frozenset({"note", "news_item", "deck_card", "file"})
+    # Derive from INDEXED_DOC_TYPES so a newly-indexed text type doesn't make
+    # this "all allowed" set silently incomplete (and trip the backstop).
+    allowed = frozenset(scanner_module.INDEXED_DOC_TYPES)
     queued = await _enqueue_deletes_for_disabled_types(
         "alice", _producer(send), allowed, 1
     )

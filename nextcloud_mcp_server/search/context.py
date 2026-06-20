@@ -822,6 +822,48 @@ async def _fetch_document_text(
             if card.description:
                 content_parts.append(card.description)
             return "\n\n".join(content_parts)
+        elif doc_type == "mail_message":
+            # Mail message IDs are positive ASCII integers (MySQL AUTO_INCREMENT).
+            if not is_valid_nextcloud_doc_id(doc_id):
+                logger.warning(
+                    "Expected numeric mail_message doc_id, got %r — skipping document fetch",
+                    doc_id,
+                )
+                return None
+            # Reconstruct full content as indexed by the processor (subject +
+            # From + To + blank line + body) so chunk offsets align. Keep this in
+            # sync with the mail_message branch in vector/processor.py.
+            message = await nc_client.mail.get_message(int(doc_id))
+
+            def _format_addresses(addrs: list[dict] | None) -> str:
+                parts = []
+                for addr in addrs or []:
+                    label = addr.get("label")
+                    email = addr.get("email")
+                    if label and email and label != email:
+                        parts.append(f"{label} <{email}>")
+                    elif email:
+                        parts.append(email)
+                    elif label:
+                        parts.append(label)
+                return ", ".join(parts)
+
+            subject = message.get("subject") or ""
+            from_str = _format_addresses(message.get("from"))
+            to_str = _format_addresses(message.get("to"))
+            raw_body = message.get("body") or ""
+            body_text = (
+                html_to_markdown(raw_body) if message.get("hasHtmlBody") else raw_body
+            )
+
+            content_parts = [subject]
+            if from_str:
+                content_parts.append(f"From: {from_str}")
+            if to_str:
+                content_parts.append(f"To: {to_str}")
+            content_parts.append("")  # Blank line
+            content_parts.append(body_text)
+            return "\n".join(content_parts)
         else:
             logger.warning("Unsupported doc_type for context expansion: %s", doc_type)
             return None

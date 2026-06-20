@@ -840,6 +840,60 @@ async def _index_document(
             file_path = None
             content_bytes = None
             content_type = None
+        elif doc_task.doc_type == "mail_message":
+            # Fetch the full message via the Mail OCS API. The Mail app handles
+            # IMAP server-side; we only ever speak HTTP.
+            message = await nc_client.mail.get_message(int(doc_task.doc_id))
+
+            def _format_addresses(addrs: list[dict] | None) -> str:
+                parts = []
+                for addr in addrs or []:
+                    label = addr.get("label")
+                    email = addr.get("email")
+                    if label and email and label != email:
+                        parts.append(f"{label} <{email}>")
+                    elif email:
+                        parts.append(email)
+                    elif label:
+                        parts.append(label)
+                return ", ".join(parts)
+
+            subject = message.get("subject") or ""
+            from_str = _format_addresses(message.get("from"))
+            to_str = _format_addresses(message.get("to"))
+            # Body is sanitized HTML when hasHtmlBody, else plain text. Convert
+            # HTML to Markdown for better embedding; pass plain text through.
+            raw_body = message.get("body") or ""
+            body_text = (
+                html_to_markdown(raw_body) if message.get("hasHtmlBody") else raw_body
+            )
+
+            content_parts = [subject]
+            if from_str:
+                content_parts.append(f"From: {from_str}")
+            if to_str:
+                content_parts.append(f"To: {to_str}")
+            content_parts.append("")  # Blank line
+            content_parts.append(body_text)
+            content = "\n".join(content_parts)
+
+            title = subject
+            # Email is immutable; key change-detection on the message id so a
+            # re-index is a no-op unless the id changes.
+            etag = str(message.get("id") or doc_task.doc_id)
+            file_metadata = {
+                "subject": subject,
+                "from": from_str,
+                "to": to_str,
+                "cc": _format_addresses(message.get("cc")),
+                "date_int": message.get("dateInt"),
+                "has_attachments": bool(message.get("attachments")),
+                "account_id": (doc_task.metadata or {}).get("account_id"),
+                "mailbox_id": (doc_task.metadata or {}).get("mailbox_id"),
+            }
+            file_path = None
+            content_bytes = None
+            content_type = None
         elif doc_task.doc_type == "deck_card":
             # Fetch card from Deck API
             # Use metadata from scanner if available (O(1) lookup)

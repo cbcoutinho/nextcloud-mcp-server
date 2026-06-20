@@ -76,6 +76,11 @@ class NextcloudClientProtocol(Protocol):
         """News client for accessing news item documents."""
         ...
 
+    @property
+    def mail(self) -> Any:
+        """Mail client for accessing mail message documents."""
+        ...
+
     # Top-level client helper (not a sub-client) used by verify-on-read to
     # gate file results on current vector-index tag membership.
     async def find_files_by_tag(
