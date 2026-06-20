@@ -222,11 +222,13 @@ def configure_mail_tools(mcp: FastMCP):
         try:
             data = await client.mail.get_attachment(message_id, attachment_id)
             content = data.get("content")
-            if isinstance(content, str) and len(content) > MAX_ATTACHMENT_CONTENT_BYTES:
-                content = (
-                    f"[attachment too large to inline: {len(content)} bytes "
-                    f"(> {MAX_ATTACHMENT_CONTENT_BYTES})]"
-                )
+            if isinstance(content, str):
+                content_bytes = len(content.encode("utf-8"))
+                if content_bytes > MAX_ATTACHMENT_CONTENT_BYTES:
+                    content = (
+                        f"[attachment too large to inline: {content_bytes} bytes "
+                        f"(> {MAX_ATTACHMENT_CONTENT_BYTES})]"
+                    )
             return GetAttachmentResponse(
                 name=data.get("name"),
                 mime=data.get("mime"),

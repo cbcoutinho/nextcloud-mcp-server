@@ -14,6 +14,7 @@ OCS API controllers (Mail 5.x / Nextcloud 32+).
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from httpx import HTTPStatusError, RequestError, Response
 
@@ -188,5 +189,10 @@ class MailClient(BaseNextcloudClient):
         Returns:
             Attachment object with name, mime, size, content.
         """
-        data = await self._ocs_get(f"/message/{message_id}/attachment/{attachment_id}")
+        # URL-encode the caller-supplied attachment id (defense-in-depth: keeps
+        # a value like "../.." from being normalised into a different path).
+        safe_attachment_id = quote(attachment_id, safe="")
+        data = await self._ocs_get(
+            f"/message/{message_id}/attachment/{safe_attachment_id}"
+        )
         return data or {}

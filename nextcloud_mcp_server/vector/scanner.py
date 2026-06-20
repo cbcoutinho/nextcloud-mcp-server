@@ -1366,8 +1366,26 @@ async def scan_news_items(
 # Per-process record of (user_id, mailbox_id) for which the newest-N cap has
 # already been logged, so the "older mail not indexed" notice is emitted once at
 # info level (discoverable) rather than on every scan tick (which would flood
-# multi-tenant logs).
-_mail_cap_logged: set[tuple[str, int]] = set()
+# multi-tenant logs). Insertion-ordered dict + bounded eviction (mirrors
+# _consent_backstop_done) so a long-running multi-tenant process can't leak it.
+_mail_cap_logged: dict[tuple[str, int], None] = {}
+_MAIL_CAP_LOGGED_MAX = 50_000
+
+
+def _mark_mail_cap_logged(key: tuple[str, int]) -> bool:
+    """Record a one-shot cap-log marker; return True if this is the first time.
+
+    Evicts oldest-first to half capacity on overflow (a re-log after eviction is
+    a harmless info line), so the dedup set stays bounded.
+    """
+    if key in _mail_cap_logged:
+        return False
+    if len(_mail_cap_logged) >= _MAIL_CAP_LOGGED_MAX:
+        overage = len(_mail_cap_logged) - _MAIL_CAP_LOGGED_MAX // 2
+        for stale_key in list(_mail_cap_logged)[:overage]:
+            del _mail_cap_logged[stale_key]
+    _mail_cap_logged[key] = None
+    return True
 
 
 async def scan_mail_messages(
@@ -1467,17 +1485,16 @@ async def scan_mail_messages(
                 )
                 continue
 
-            cap_key = (user_id, mailbox_id)
-            if len(messages) >= MAIL_SCAN_MAX_PER_MAILBOX and cap_key not in (
-                _mail_cap_logged
+            if len(messages) >= MAIL_SCAN_MAX_PER_MAILBOX and _mark_mail_cap_logged(
+                (user_id, mailbox_id)
             ):
-                _mail_cap_logged.add(cap_key)
                 logger.info(
-                    "[SCAN-%s] Mailbox %s hit the newest-%s cap; older messages "
-                    "are not indexed (set MAIL_SCAN_MAX_PER_MAILBOX higher for "
-                    "deeper history)",
+                    "[SCAN-%s] Mailbox %s contains more than %s messages; only "
+                    "the newest %s are indexed (cursor pagination not yet "
+                    "implemented)",
                     scan_id,
                     mailbox_id,
+                    MAIL_SCAN_MAX_PER_MAILBOX,
                     MAIL_SCAN_MAX_PER_MAILBOX,
                 )
 

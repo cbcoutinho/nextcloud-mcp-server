@@ -19,7 +19,13 @@ MAIL_SCAN_MAX_PER_MAILBOX = 100
 
 
 def format_mail_addresses(addrs: list[dict[str, Any]] | None) -> str:
-    """Render a list of {label, email} address objects as a display string."""
+    """Render a list of {label, email} address objects as a display string.
+
+    ``None`` and address objects with neither ``label`` nor ``email`` are
+    skipped (yielding ``""`` for an all-empty list) — IMAP envelope addresses
+    effectively always carry at least an email, so this only drops malformed
+    entries rather than losing real recipients.
+    """
     parts: list[str] = []
     for addr in addrs or []:
         label = addr.get("label")
