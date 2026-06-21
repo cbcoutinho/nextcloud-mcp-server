@@ -70,8 +70,11 @@ def _dead_letter_filter(doc_id: str, doc_type: str) -> Filter:
     """Match the dead-letter marker for one document (tenant-wide, no user_id).
 
     Includes ``is_placeholder=True`` (redundant with ``dead_letter=True``, which
-    nothing else sets) so Qdrant can lean on the existing ``is_placeholder``
-    payload index.
+    nothing else sets) to inherit the search exclusion. Note both fields must be
+    payload-indexed: Qdrant strict mode requires an index for *every* condition
+    in a filter, so ``dead_letter`` carries its own index (registered in
+    ``qdrant_client._PAYLOAD_INDEX_FIELDS``) — without it this scroll 400s and
+    ``is_dead_lettered`` fail-opens, re-queuing the document forever.
     """
     return Filter(
         must=[

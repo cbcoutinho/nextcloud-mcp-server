@@ -54,6 +54,19 @@ _PAYLOAD_INDEX_FIELDS: dict[str, PayloadSchemaType] = {
     "owner_id": PayloadSchemaType.KEYWORD,
     "doc_type": PayloadSchemaType.KEYWORD,
     "is_placeholder": PayloadSchemaType.BOOL,
+    # dead_letter is the bool used by the durable terminal-failure marker lookup
+    # (see vector/dead_letter.py: ``_dead_letter_filter`` ANDs
+    # ``FieldCondition(key="dead_letter", match=True)`` onto the is_placeholder
+    # condition). Qdrant strict mode requires an index for *every* field in a
+    # filter, not just one, so reusing the is_placeholder index is not enough:
+    # without a dead_letter index the scroll 400s ("Index required but not found
+    # for dead_letter") on Qdrant Cloud / network mode. ``is_dead_lettered`` then
+    # fail-opens to "process normally", so the scanner re-queues every file every
+    # cycle and no document is ever recognised as dead-lettered — an ingest loop.
+    # BOOL (the value is a literal True on every marker point); idempotent startup
+    # migration like the fields above, so existing collections gain it with no
+    # content re-index and no operator action.
+    "dead_letter": PayloadSchemaType.BOOL,
     "chunk_index": PayloadSchemaType.INTEGER,
     "chunk_start_offset": PayloadSchemaType.INTEGER,
     "chunk_end_offset": PayloadSchemaType.INTEGER,
