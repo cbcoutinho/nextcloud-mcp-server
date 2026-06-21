@@ -156,6 +156,18 @@ def _pages_to_text(
                 continue
             pos = markdown.find(text, cursor)
             if pos < 0:
+                # Block text not in the page markdown at/after the cursor — the
+                # join invariant (markdown == block texts joined by \n\n) didn't
+                # hold for this block (e.g. gateway reformatting / version drift).
+                # Skip it (that region falls back to pymupdf); log so a systematic
+                # break is diagnosable rather than silently losing highlights.
+                logger.debug(
+                    "OCR block text %r not found in page %s markdown at cursor %s; "
+                    "skipping its bbox",
+                    text[:40],
+                    index + 1,
+                    cursor,
+                )
                 continue
             cursor = pos + len(text)
             block_spans.append(

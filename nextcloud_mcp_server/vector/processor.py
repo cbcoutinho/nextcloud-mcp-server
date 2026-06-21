@@ -1499,8 +1499,14 @@ async def _index_document(
                     len(spans),
                     len(chunks),
                 )
-            # OCR'd (scanned) docs have no text layer, so pymupdf can't help — do
-            # NOT fall through to it even when attribution found nothing.
+            # One path for the WHOLE document: when the OCR tier ran, surya OCRs
+            # every rendered page, so its blocks cover the whole doc — pymupdf has
+            # no text layer to add (a scanned doc) and we do NOT fall through to it,
+            # even when attribution found nothing. Caveat: a mixed native+OCR PDF
+            # gets OCR geometry only; native-page chunks won't also get pymupdf
+            # highlights. That's acceptable — escalation to OCR is a whole-document
+            # decision, so a mixed doc is rare, and unmatched blocks are logged in
+            # _pages_to_text for diagnosis.
             return
 
         with trace_operation(
