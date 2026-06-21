@@ -50,6 +50,7 @@ from nextcloud_mcp_server.vector.dead_letter import (
     mark_dead_letter,
 )
 from nextcloud_mcp_server.vector.document_chunker import (
+    ChunkWithPosition,
     DocumentChunker,
     PageAwareChunker,
 )
@@ -215,7 +216,7 @@ async def _parse_pdf_tier(
 
 
 def _ocr_chunk_bboxes(
-    chunks, block_spans: list[dict[str, Any]]
+    chunks: list[ChunkWithPosition], block_spans: list[dict[str, Any]]
 ) -> dict[int, list[tuple[float, float, float, float]]]:
     """Attribute OCR block bboxes to chunks by char-span overlap.
 
@@ -1483,12 +1484,21 @@ async def _index_document(
             # stored either way; the payload gates on `i in chunk_bboxes`).
             if attributed:
                 bbox_source = "ocr"
-            logger.info(
-                "Attributed OCR bboxes for %s/%s chunks (%s blocks)",
-                len(attributed),
-                len(chunks),
-                len(spans),
-            )
+                logger.info(
+                    "Attributed OCR bboxes for %s/%s chunks (%s blocks)",
+                    len(attributed),
+                    len(chunks),
+                    len(spans),
+                )
+            else:
+                # OCR returned geometry but none overlapped a chunk — unexpected
+                # (offset accounting / empty chunks); warn so it's visible.
+                logger.warning(
+                    "OCR returned %s blocks but none overlapped any of %s chunks; "
+                    "no pre-computed bboxes stored",
+                    len(spans),
+                    len(chunks),
+                )
             # OCR'd (scanned) docs have no text layer, so pymupdf can't help — do
             # NOT fall through to it even when attribution found nothing.
             return
