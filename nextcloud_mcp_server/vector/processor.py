@@ -356,15 +356,11 @@ async def record_indexing_usage(
                 metadata=metadata,
                 enabled=True,
             )
-            # Paid-OCR pages are metered as a SEPARATE line (Deck #323) so the
-            # expensive tier's cost is billable independently of CPU-cheap parsing
-            # -- pages_embedded counts all parsed pages, pages_ocr only the paid
-            # OCR tier's. After the OCR split (Deck #353) "paid" = the UPSTREAM
-            # (Mistral) rung; the in-cluster GPU rung's cost is recovered via the
-            # burst lifecycle, not per-page, so it is NOT metered here (separate
-            # per-tier OCR metering is a billing follow-up). Gated on the tier so
-            # it's emitted exactly when the doc hit upstream OCR.
-            if pipeline_tier == "ocr-upstream":
+            # OCR pages are metered as a SEPARATE line (Deck #323) so the OCR
+            # tier's cost is billable independently of CPU-cheap parsing --
+            # pages_embedded counts all parsed pages, pages_ocr only the OCR tier's.
+            # Gated on the tier so it's emitted exactly when the doc hit OCR.
+            if pipeline_tier == "ocr":
                 await store.record_usage_event(
                     metric="pages_ocr",
                     value=page_count,

@@ -2,7 +2,7 @@
 
 The escalation ladder is the cheapest-first ordering of extraction tiers:
 
-    fast  ->  structured  ->  ocr-incluster  ->  ocr-upstream   ( ->  llm, reserved)
+    fast  ->  structured  ->  ocr   ( ->  llm, reserved)
 
 It mirrors the ``tier`` vocabulary documented on
 :meth:`DocumentProcessor.tier <.base.DocumentProcessor.tier>` and the
@@ -24,11 +24,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-# Cheapest-first. OCR is split into two rungs: ``ocr-incluster`` (the on-demand
-# burst GPU, e.g. surya, reached via the embedding gateway over the tailnet) tried
-# BEFORE ``ocr-upstream`` (paid Mistral). ``llm`` is reserved (see
-# base.DocumentProcessor.tier) and not wired yet.
-TIER_LADDER: tuple[str, ...] = ("fast", "structured", "ocr-incluster", "ocr-upstream")
+# Cheapest-first. ``ocr`` is the single configurable OCR tier: the backend (direct
+# Mistral vs the embedding gateway, which can route Mistral, surya, etc.) and the
+# model are chosen by ``document_ocr_provider`` + ``document_ocr_model``. ``llm`` is
+# reserved (see base.DocumentProcessor.tier) and not wired yet.
+TIER_LADDER: tuple[str, ...] = ("fast", "structured", "ocr")
 
 
 def escalation_tiers_signature(settings: Any) -> str:
@@ -43,7 +43,7 @@ def escalation_tiers_signature(settings: Any) -> str:
     Derived purely from settings (not the live ``ProcessorRegistry``) so it is
     identical across the API/scanner and worker roles: the *registered* processor
     set is build-constant, so the only runtime variables are the OCR-enabled gate
-    (``document_ocr_enabled`` — the single tier toggle today) and the tier-1 engine
+    (``document_ocr_enabled`` — the single OCR-tier toggle) and the tier-1 engine
     pin (``document_tier1_engine``). Enabling OCR changes the signature, so the
     pathological-but-OCR-recoverable documents dead-lettered while OCR was off are
     re-attempted automatically.
@@ -57,7 +57,6 @@ def escalation_tiers_signature(settings: Any) -> str:
     """
     return (
         f"ocr={int(bool(settings.document_ocr_enabled))};"
-        f"ocric={int(bool(settings.document_ocr_incluster_enabled))};"
         f"t1={settings.document_tier1_engine}"
     )
 
@@ -144,8 +143,8 @@ class BatchPending(Exception):
     ``except Exception`` on the indexing path, never counted as a drop/parse
     error, and never marks the placeholder failed (the doc isn't done yet).
     Unlike ``EscalateError`` it does NOT change queue — the job stays on its own
-    (``ocr-upstream``) tier queue and is simply deferred (batch mode is the
-    upstream Mistral path only; the in-cluster rung is synchronous).
+    (``ocr``) tier queue and is simply deferred (batch mode routes through the
+    embedding gateway's async Batch OCR job).
     """
 
     def __init__(self, *, retry_in: int) -> None:

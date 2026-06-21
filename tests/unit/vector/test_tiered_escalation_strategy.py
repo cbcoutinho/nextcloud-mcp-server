@@ -36,25 +36,23 @@ def _job(queue: str = pq.INGEST_QUEUE_FAST, attempts: int = 1) -> Job:
 class TestLadder:
     def test_next_tier_ordering(self):
         assert next_tier("fast") == "structured"
-        assert next_tier("structured") == "ocr-incluster"
-        assert next_tier("ocr-incluster") == "ocr-upstream"
-        assert next_tier("ocr-upstream") is None  # terminal
+        assert next_tier("structured") == "ocr"
+        assert next_tier("ocr") is None  # terminal
         assert next_tier("unknown") is None
 
     def test_ladder_is_cheapest_first(self):
-        assert TIER_LADDER == ("fast", "structured", "ocr-incluster", "ocr-upstream")
+        assert TIER_LADDER == ("fast", "structured", "ocr")
 
     def test_tier_for_queue(self):
-        assert pq.tier_for_queue(pq.INGEST_QUEUE_OCR_INCLUSTER) == "ocr-incluster"
-        assert pq.tier_for_queue(pq.INGEST_QUEUE_OCR_UPSTREAM) == "ocr-upstream"
+        assert pq.tier_for_queue(pq.INGEST_QUEUE_OCR) == "ocr"
         assert pq.tier_for_queue(pq.INGEST_QUEUE_STRUCTURED) == "structured"
         # Legacy / unknown / None all fall back to the cheapest tier.
         assert pq.tier_for_queue(pq.LEGACY_INGEST_QUEUE) == "fast"
         assert pq.tier_for_queue(None) == "fast"
-        # The pre-split legacy OCR queue also resolves to fast (NOT ocr-upstream):
-        # stranded in-flight jobs re-extract empty and re-escalate via the ladder
-        # to the cheap ocr-incluster rung, never straight to paid upstream.
-        assert pq.tier_for_queue(pq.LEGACY_INGEST_QUEUE_OCR) == "fast"
+        # The two pre-consolidation split OCR queues resolve to the single ``ocr``
+        # tier so in-flight OCR jobs from an older deploy keep OCR'ing during rollout.
+        assert pq.tier_for_queue(pq.LEGACY_INGEST_QUEUE_OCR_INCLUSTER) == "ocr"
+        assert pq.tier_for_queue(pq.LEGACY_INGEST_QUEUE_OCR_UPSTREAM) == "ocr"
 
 
 class TestTieredEscalationStrategy:
@@ -62,22 +60,10 @@ class TestTieredEscalationStrategy:
         return pq.TieredEscalationStrategy(max_transient_attempts=max_transient)
 
     def test_escalate_hops_to_target_queue(self):
-        exc = EscalateError(
-            from_tier="fast", to_tier="ocr-upstream", reason="empty_text"
-        )
+        exc = EscalateError(from_tier="fast", to_tier="ocr", reason="empty_text")
         decision = self._strategy().get_retry_decision(exception=exc, job=_job())
         assert decision is not None
-        assert decision.queue == pq.INGEST_QUEUE_OCR_UPSTREAM
-
-    def test_escalate_hops_to_incluster_queue(self):
-        # tier2 in-cluster (Deck #353): structured -> ocr-incluster lands on the
-        # in-cluster queue the GPU sentinel watches, not the paid upstream queue.
-        exc = EscalateError(
-            from_tier="structured", to_tier="ocr-incluster", reason="empty_text"
-        )
-        decision = self._strategy().get_retry_decision(exception=exc, job=_job())
-        assert decision is not None
-        assert decision.queue == pq.INGEST_QUEUE_OCR_INCLUSTER
+        assert decision.queue == pq.INGEST_QUEUE_OCR
 
     def test_escalate_to_structured(self):
         exc = EscalateError(
@@ -93,13 +79,11 @@ class TestTieredEscalationStrategy:
         assert decision is None
 
     def test_escalate_unwraps_exception_group(self):
-        exc = EscalateError(
-            from_tier="fast", to_tier="ocr-upstream", reason="empty_text"
-        )
+        exc = EscalateError(from_tier="fast", to_tier="ocr", reason="empty_text")
         group = ExceptionGroup("wrapped", [exc])
         decision = self._strategy().get_retry_decision(exception=group, job=_job())
         assert decision is not None
-        assert decision.queue == pq.INGEST_QUEUE_OCR_UPSTREAM
+        assert decision.queue == pq.INGEST_QUEUE_OCR
 
     def test_transient_retries_same_queue_under_cap(self):
         decision = self._strategy(max_transient=5).get_retry_decision(
@@ -147,7 +131,7 @@ class TestTieredEscalationStrategy:
         before = datetime.now(timezone.utc)
         decision = self._strategy().get_retry_decision(
             exception=BatchPending(retry_in=120),
-            job=_job(queue=pq.INGEST_QUEUE_OCR_UPSTREAM),
+            job=_job(queue=pq.INGEST_QUEUE_OCR),
         )
         after = datetime.now(timezone.utc)
         assert decision is not None
