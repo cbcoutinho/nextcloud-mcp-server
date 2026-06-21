@@ -50,6 +50,7 @@ from nextcloud_mcp_server.vector.dead_letter import (
     mark_dead_letter,
 )
 from nextcloud_mcp_server.vector.document_chunker import (
+    ChunkWithPosition,
     DocumentChunker,
     PageAwareChunker,
 )
@@ -212,6 +213,31 @@ async def _parse_pdf_tier(
                     from_tier=tier, to_tier=decision.to_tier, reason=decision.reason
                 )
     return result
+
+
+def _ocr_chunk_bboxes(
+    chunks: list[ChunkWithPosition], block_spans: list[dict[str, Any]]
+) -> dict[int, list[tuple[float, float, float, float]]]:
+    """Attribute OCR block bboxes to chunks by char-span overlap.
+
+    ``block_spans`` is the OCR tier's per-block geometry (``OCR_BLOCK_SPANS_KEY``):
+    each ``{"bbox": [x0,y0,x1,y1] normalized, "start_offset", "end_offset", ...}``.
+    A block belongs to chunk *i* when their char spans intersect (half-open
+    overlap: ``block.start < chunk.end and block.end > chunk.start``). Returns
+    ``chunk_index -> [bbox, ...]`` (a chunk spanning N blocks gets N bboxes, in the
+    spans' reading order), omitting chunks with no overlapping block. Pure +
+    module-level so the interval-overlap predicate is unit-testable in isolation."""
+    out: dict[int, list[tuple[float, float, float, float]]] = {}
+    for i, chunk in enumerate(chunks):
+        boxes = [
+            (s["bbox"][0], s["bbox"][1], s["bbox"][2], s["bbox"][3])
+            for s in block_spans
+            if s["start_offset"] < chunk.end_offset
+            and s["end_offset"] > chunk.start_offset
+        ]
+        if boxes:
+            out[i] = boxes
+    return out
 
 
 def assign_page_numbers(chunks, page_boundaries):
@@ -1311,6 +1337,9 @@ async def _index_document(
     # `chunk.page_number` (offset-based) and stored as `page_number`
     # in the Qdrant payload, so we don't carry an `actual_page_num` here.
     chunk_bboxes: dict[int, list[tuple[float, float, float, float]]] = {}
+    # Where the bboxes came from — "ocr" (gateway-provided per-block geometry) or
+    # "pymupdf" (local text-search). Stamped on each chunk payload that has a bbox.
+    bbox_source: str | None = None
 
     # Determine if we need PDF highlighting
     is_pdf = doc_task.doc_type == "file" and content_type == "application/pdf"
@@ -1423,13 +1452,62 @@ async def _index_document(
             )
 
     async def generate_highlights():
-        """Compute chunk bounding boxes for PDF chunks (CPU-bound, no rendering)."""
-        nonlocal chunk_bboxes
+        """Compute chunk bounding boxes for PDF chunks (CPU-bound, no rendering).
+
+        Prefers OCR-provided geometry: when the OCR tier returned per-block bboxes
+        (surya via the gateway, normalized [0,1] — ``OCR_BLOCK_SPANS_KEY`` in
+        metadata), a chunk's bbox is the set of blocks whose char span it overlaps,
+        and ``bbox_source`` is ``"ocr"``. This is the ONLY viable source for an
+        OCR'd (scanned) doc — its PDF has no text layer for pymupdf to search. When
+        no OCR geometry is present (fast/structured tiers, Mistral OCR), fall back
+        to the pymupdf text-search path (``bbox_source="pymupdf"``)."""
+        nonlocal chunk_bboxes, bbox_source
         if not is_pdf:
             return
 
         # Type narrowing: content_bytes is set for PDF files
         assert content_bytes is not None
+
+        # Lazy import (mirrors _parse_pdf_tier): keep the document stack off the
+        # module load path; this runs only for PDFs on the indexing path.
+        from nextcloud_mcp_server.document_processors.ocr import (  # noqa: PLC0415
+            OCR_BLOCK_SPANS_KEY,
+        )
+
+        ocr_block_spans = file_metadata.get(OCR_BLOCK_SPANS_KEY)
+        if ocr_block_spans:
+            spans = cast(list[dict[str, Any]], ocr_block_spans)
+            attributed = _ocr_chunk_bboxes(chunks, spans)
+            chunk_bboxes.update(attributed)
+            # Only stamp "ocr" when something was actually attributed — a non-empty
+            # spans list that overlaps no chunk leaves the source unset (nothing is
+            # stored either way; the payload gates on `i in chunk_bboxes`).
+            if attributed:
+                bbox_source = "ocr"
+                logger.info(
+                    "Attributed OCR bboxes for %s/%s chunks (%s blocks)",
+                    len(attributed),
+                    len(chunks),
+                    len(spans),
+                )
+            else:
+                # OCR returned geometry but none overlapped a chunk — unexpected
+                # (offset accounting / empty chunks); warn so it's visible.
+                logger.warning(
+                    "OCR returned %s blocks but none overlapped any of %s chunks; "
+                    "no pre-computed bboxes stored",
+                    len(spans),
+                    len(chunks),
+                )
+            # One path for the WHOLE document: when the OCR tier ran, surya OCRs
+            # every rendered page, so its blocks cover the whole doc — pymupdf has
+            # no text layer to add (a scanned doc) and we do NOT fall through to it,
+            # even when attribution found nothing. Caveat: a mixed native+OCR PDF
+            # gets OCR geometry only; native-page chunks won't also get pymupdf
+            # highlights. That's acceptable — escalation to OCR is a whole-document
+            # decision, so a mixed doc is rare, and unmatched blocks are logged in
+            # _pages_to_text for diagnosis.
+            return
 
         with trace_operation(
             "vector_sync.compute_chunk_bboxes",
@@ -1466,6 +1544,8 @@ async def _index_document(
 
             for chunk_index, (bboxes, _) in batch_results.items():
                 chunk_bboxes[chunk_index] = bboxes
+            if chunk_bboxes:
+                bbox_source = "pymupdf"
 
             logger.info(
                 "Computed bboxes for %s/%s chunks", len(chunk_bboxes), len(chunks)
@@ -1663,7 +1743,13 @@ async def _index_document(
                     # relative to page width/height. Replaces the legacy
                     # `highlighted_page_image` (Deck #76). The page number
                     # comes from `page_number` (set above for PDF chunks).
-                    **({"chunk_bbox": chunk_bboxes[i]} if i in chunk_bboxes else {}),
+                    # ``bbox_source`` records provenance ("ocr" = gateway-provided
+                    # surya geometry, "pymupdf" = local text-search).
+                    **(
+                        {"chunk_bbox": chunk_bboxes[i], "bbox_source": bbox_source}
+                        if i in chunk_bboxes
+                        else {}
+                    ),
                 },
             )
         )

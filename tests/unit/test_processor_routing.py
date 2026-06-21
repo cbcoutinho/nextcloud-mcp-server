@@ -60,3 +60,47 @@ class TestShouldUsePageAware:
             )
             is False
         )
+
+
+class TestOcrChunkBboxes:
+    """`_ocr_chunk_bboxes` attributes OCR block bboxes to chunks by char-span overlap."""
+
+    @staticmethod
+    def _chunk(start, end):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(start_offset=start, end_offset=end)
+
+    @staticmethod
+    def _span(start, end, bbox):
+        return {"start_offset": start, "end_offset": end, "bbox": bbox}
+
+    def test_single_block_per_chunk(self):
+        from nextcloud_mcp_server.vector.processor import _ocr_chunk_bboxes
+
+        chunks = [self._chunk(0, 10), self._chunk(10, 20)]
+        spans = [
+            self._span(0, 8, [0.1, 0.1, 0.4, 0.2]),
+            self._span(10, 18, [0.1, 0.3, 0.5, 0.4]),
+        ]
+        out = _ocr_chunk_bboxes(chunks, spans)
+        assert out == {0: [(0.1, 0.1, 0.4, 0.2)], 1: [(0.1, 0.3, 0.5, 0.4)]}
+
+    def test_chunk_spanning_two_blocks_gets_two_bboxes(self):
+        from nextcloud_mcp_server.vector.processor import _ocr_chunk_bboxes
+
+        # One chunk [0,20) overlaps both blocks -> two bboxes in reading order.
+        chunks = [self._chunk(0, 20)]
+        spans = [
+            self._span(0, 8, [0.1, 0.1, 0.4, 0.2]),
+            self._span(10, 18, [0.1, 0.3, 0.5, 0.4]),
+        ]
+        out = _ocr_chunk_bboxes(chunks, spans)
+        assert out == {0: [(0.1, 0.1, 0.4, 0.2), (0.1, 0.3, 0.5, 0.4)]}
+
+    def test_no_overlap_yields_empty(self):
+        from nextcloud_mcp_server.vector.processor import _ocr_chunk_bboxes
+
+        # Chunk [50,60) overlaps no block -> omitted (pymupdf fallback territory).
+        out = _ocr_chunk_bboxes([self._chunk(50, 60)], [self._span(0, 8, [0, 0, 1, 1])])
+        assert out == {}
