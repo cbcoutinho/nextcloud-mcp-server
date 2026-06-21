@@ -107,6 +107,27 @@ def test_pages_to_text_skips_blocks_without_bbox_or_unmatched_text():
     assert spans == []
 
 
+def test_normalize_bbox_shape_and_range():
+    """Valid normalized bbox passes; wrong arity, non-numbers, bools, and
+    out-of-range (unnormalized/pixel) coords all degrade to None (pymupdf fallback)."""
+    assert ocr._normalize_bbox([0.1, 0.2, 0.3, 0.4]) == [0.1, 0.2, 0.3, 0.4]
+    assert ocr._normalize_bbox([0.0, 0.0, 1.0, 1.0]) == [0.0, 0.0, 1.0, 1.0]
+    assert ocr._normalize_bbox([0.1, 0.2, 0.3]) is None  # wrong arity
+    assert ocr._normalize_bbox([0.1, 0.2, 0.3, "x"]) is None  # non-number
+    assert ocr._normalize_bbox([True, 0.2, 0.3, 0.4]) is None  # bool excluded
+    # Unnormalized pixel coords (gateway contract drift) are dropped, not stored.
+    assert ocr._normalize_bbox([0.0, 800.0, 1200.0, 1600.0]) is None
+    assert ocr._normalize_bbox([-0.1, 0.2, 0.3, 0.4]) is None
+
+
+def test_pages_to_text_drops_unnormalized_block_bbox():
+    """A block whose bbox is out of [0,1] (unnormalized) yields no span — the
+    page falls back to pymupdf rather than storing off-page geometry."""
+    pages = [(0, "Heading", [{"html": "<h1>Heading</h1>", "bbox": [0, 100, 500, 200]}])]
+    _text, _b, spans = ocr._pages_to_text(pages)
+    assert spans == []
+
+
 # --- backend selection -------------------------------------------------------
 
 
@@ -267,6 +288,26 @@ async def test_processor_success(monkeypatch):
     assert r.text == "hello world"
     assert r.metadata["page_count"] == 1
     assert r.processor == "ocr"
+    # Empty block_spans -> the OCR_BLOCK_SPANS_KEY metadata is omitted entirely.
+    assert ocr.OCR_BLOCK_SPANS_KEY not in r.metadata
+
+
+async def test_processor_success_with_blocks_sets_block_spans(monkeypatch):
+    """When the backend returns non-empty block spans (surya layout), they're
+    surfaced under OCR_BLOCK_SPANS_KEY for generate_highlights to attribute."""
+    spans = [
+        {"page": 1, "bbox": [0.1, 0.1, 0.4, 0.2], "start_offset": 0, "end_offset": 5}
+    ]
+
+    class _FakeBackend:
+        async def ocr(self, content, mime_type):
+            return ("hello", [{"page": 1, "start_offset": 0, "end_offset": 5}], spans)
+
+    monkeypatch.setattr(ocr, "get_settings", lambda: _settings())
+    monkeypatch.setattr(ocr, "build_ocr_backend", lambda s, **kw: _FakeBackend())
+    r = await ocr.OcrProcessor().process(b"%PDF-1.7", "application/pdf")
+    assert r.success is True
+    assert r.metadata[ocr.OCR_BLOCK_SPANS_KEY] == spans
 
 
 async def test_processor_backend_error_returns_success_false(monkeypatch):
@@ -502,7 +543,9 @@ async def test_batch_existing_pending_polls_and_defers(monkeypatch):
 async def test_batch_succeeded_returns_indexed_result(monkeypatch):
     preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
     client = _FakeBatchClient(
-        poll=BatchPollResult(status="succeeded", pages=[(0, "# One"), (1, "## Two")])
+        poll=BatchPollResult(
+            status="succeeded", pages=[(0, "# One", None), (1, "## Two", None)]
+        )
     )
     store = _FakeStore(preset=preset)
     _wire_batch(monkeypatch, client=client, store=store)
@@ -515,6 +558,29 @@ async def test_batch_succeeded_returns_indexed_result(monkeypatch):
     assert r.text == "# One\n\n## Two"
     assert r.metadata["page_count"] == 2
     assert ("u1", "d1", "file", "v1") in store.deleted  # row cleaned up
+
+
+async def test_batch_succeeded_with_blocks_sets_block_spans(monkeypatch):
+    """A layout-aware batch backend (surya) returns 3-tuple pages with blocks; the
+    OCR processor must thread them into OCR_BLOCK_SPANS_KEY (the batch->bbox path,
+    distinct from the sync path) so a scanned PDF gets pre-computed highlights."""
+    preset = SimpleNamespace(job_id="mistral/j", submitted_at=1000)
+    pages = [
+        (0, "Heading", [{"html": "<h1>Heading</h1>", "bbox": [0.1, 0.1, 0.4, 0.2]}])
+    ]
+    client = _FakeBatchClient(poll=BatchPollResult(status="succeeded", pages=pages))
+    store = _FakeStore(preset=preset)
+    _wire_batch(monkeypatch, client=client, store=store)
+
+    r = await ocr.OcrProcessor().process(
+        b"%PDF", "application/pdf", options=dict(_IDENTITY)
+    )
+
+    assert r.success is True and r.text == "Heading"
+    spans = r.metadata[ocr.OCR_BLOCK_SPANS_KEY]
+    assert len(spans) == 1
+    assert spans[0]["bbox"] == [0.1, 0.1, 0.4, 0.2]
+    assert r.text[spans[0]["start_offset"] : spans[0]["end_offset"]] == "Heading"
 
 
 async def test_batch_failed_marks_parse_error(monkeypatch):

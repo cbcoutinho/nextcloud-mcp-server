@@ -1454,12 +1454,12 @@ async def _index_document(
             for i, chunk in enumerate(chunks):
                 # Interval overlap: a block belongs to the chunk if their char spans
                 # intersect. Preserve reading order (spans are already ordered).
+                # ``s["bbox"]`` is a validated 4-element normalized list (_normalize_bbox).
                 boxes = [
-                    (b[0], b[1], b[2], b[3])
+                    (s["bbox"][0], s["bbox"][1], s["bbox"][2], s["bbox"][3])
                     for s in spans
                     if s["start_offset"] < chunk.end_offset
                     and s["end_offset"] > chunk.start_offset
-                    and (b := s["bbox"])
                 ]
                 if boxes:
                     chunk_bboxes[i] = boxes

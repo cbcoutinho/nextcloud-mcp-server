@@ -50,10 +50,14 @@ async def test_sync_ocr_returns_pages_with_bboxes(gateway_consumer_pact):
         .with_body(
             {
                 "model": match.string(_SURYA_MODEL),
+                # TWO blocks on one page, so the contract makes the join-order
+                # invariant explicit: page markdown == block texts joined by "\n\n"
+                # in reading order, which is what _pages_to_text relies on to locate
+                # each block and emit its char span.
                 "pages": [
                     {
                         "index": match.integer(0),
-                        "markdown": "Heading",
+                        "markdown": "Heading\n\nBody text",
                         "blocks": [
                             {
                                 # Fixed-length [x0,y0,x1,y1] normalized [0,1] — a
@@ -66,7 +70,16 @@ async def test_sync_ocr_returns_pages_with_bboxes(gateway_consumer_pact):
                                     match.number(0.13),
                                 ],
                                 "html": "<h1>Heading</h1>",
-                            }
+                            },
+                            {
+                                "bbox": [
+                                    match.number(0.11),
+                                    match.number(0.2),
+                                    match.number(0.6),
+                                    match.number(0.23),
+                                ],
+                                "html": "<p>Body text</p>",
+                            },
                         ],
                     }
                 ],
@@ -80,13 +93,17 @@ async def test_sync_ocr_returns_pages_with_bboxes(gateway_consumer_pact):
             str(srv.url), _SURYA_MODEL
         ).ocr(_DOC, "application/pdf")
 
-    assert text == "Heading"
-    # The block's stripped-html text was located in the page markdown -> one span
-    # carrying the normalized bbox.
-    assert len(block_spans) == 1
-    span = block_spans[0]
-    assert len(span["bbox"]) == 4
-    assert text[span["start_offset"] : span["end_offset"]] == "Heading"
+    assert text == "Heading\n\nBody text"
+    # Both blocks located in reading order -> two spans, each mapping back onto its
+    # own text slice (proves the join-order dependency holds end-to-end).
+    assert len(block_spans) == 2
+    assert (
+        text[block_spans[0]["start_offset"] : block_spans[0]["end_offset"]] == "Heading"
+    )
+    assert (
+        text[block_spans[1]["start_offset"] : block_spans[1]["end_offset"]]
+        == "Body text"
+    )
 
 
 async def test_sync_ocr_without_blocks_falls_back(gateway_consumer_pact):

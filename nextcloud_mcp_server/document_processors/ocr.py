@@ -80,11 +80,13 @@ def _strip_html(html: str) -> str:
 
 
 def _normalize_bbox(raw: Any) -> list[float] | None:
-    """A ``[x0, y0, x1, y1]`` bbox of four finite floats, or ``None`` if malformed.
+    """A ``[x0, y0, x1, y1]`` bbox of four floats in [0, 1], or ``None`` if malformed.
 
-    The gateway returns normalized [0,1] coords (astrolabe-cloud-website#414); we
-    don't re-scale, only validate shape so a malformed block degrades to no-bbox
-    (pymupdf fallback) rather than corrupting a stored highlight."""
+    The gateway returns normalized [0,1] coords (astrolabe-cloud-website#414). We
+    validate shape AND range: a value outside [0, 1] means the gateway sent
+    unnormalized (e.g. pixel) coords — a contract drift (API/version skew) — so we
+    drop the bbox (-> pymupdf fallback) rather than storing geometry that would
+    render off-page. Either malformed shape or out-of-range degrades to no-bbox."""
     if not isinstance(raw, (list, tuple)) or len(raw) != 4:
         return None
     out: list[float] = []
@@ -92,6 +94,9 @@ def _normalize_bbox(raw: Any) -> list[float] | None:
         if not isinstance(v, (int, float)) or isinstance(v, bool):
             return None
         out.append(float(v))
+    if not all(0.0 <= v <= 1.0 for v in out):
+        logger.debug("dropping out-of-range OCR bbox (expected normalized): %s", out)
+        return None
     return out
 
 

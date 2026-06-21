@@ -58,11 +58,11 @@ class BatchPollResult:
     """
 
     status: str
-    # Per-page ``(index, markdown)`` or ``(index, markdown, blocks)`` — ``blocks``
-    # carries surya's per-block layout (normalized [0,1] bbox) when the backend
-    # provides it, ``None`` for markdown-only backends (Mistral). Threaded straight
-    # into ``_pages_to_text``, which turns blocks into per-block char spans.
-    pages: list[tuple[Any, ...]]
+    # Per-page ``(index, markdown, blocks)`` — ``blocks`` carries surya's per-block
+    # layout (normalized [0,1] bbox) when the backend provides it, ``None`` for
+    # markdown-only backends (Mistral). Threaded straight into ``_pages_to_text``,
+    # which turns blocks into per-block char spans.
+    pages: list[tuple[int, str, list[dict[str, Any]] | None]]
     error: str | None = None
 
     @property
