@@ -26,10 +26,12 @@ batch path from the pod, and ``Settings`` rejects ``mode=batch`` at startup.
 """
 
 import base64
+import html as _html
 import logging
+import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -58,25 +60,71 @@ _OCR_CONNECT_TIMEOUT_SECONDS = 10.0
 OCR_BATCH_PENDING_KEY = "ocr_batch_pending"
 OCR_BATCH_RETRY_IN_KEY = "ocr_batch_retry_in"
 
+# Metadata key carrying per-block geometry from a layout-aware OCR backend (surya
+# via the gateway). A list of ``{"page", "bbox", "start_offset", "end_offset"}``:
+# the block's normalized [0,1] ``bbox`` plus its char span in the document text,
+# so ``vector/processor.generate_highlights`` can attribute a chunk to the blocks
+# it covers and store a pre-computed chunk bbox (else it falls back to pymupdf).
+OCR_BLOCK_SPANS_KEY = "ocr_block_spans"
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html(html: str) -> str:
+    """Plain text of a block's ``html`` (tags removed, entities unescaped).
+
+    surya emits per-block ``html`` (e.g. ``<h1>Title</h1>``); the page markdown is
+    those texts joined by ``\\n\\n``, so the stripped text appears verbatim in the
+    page markdown — which is how a block is located within the text (below)."""
+    return _html.unescape(_TAG_RE.sub("", html)).strip()
+
+
+def _normalize_bbox(raw: Any) -> list[float] | None:
+    """A ``[x0, y0, x1, y1]`` bbox of four finite floats, or ``None`` if malformed.
+
+    The gateway returns normalized [0,1] coords (astrolabe-cloud-website#414); we
+    don't re-scale, only validate shape so a malformed block degrades to no-bbox
+    (pymupdf fallback) rather than corrupting a stored highlight."""
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        return None
+    out: list[float] = []
+    for v in raw:
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            return None
+        out.append(float(v))
+    return out
+
 
 def _pages_to_text(
-    pages: list[tuple[int, str]],
-) -> tuple[str, list[dict[str, Any]]]:
-    """Join per-page markdown (ordered by index) into one string + boundaries.
+    pages: Sequence[tuple[Any, ...]],
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Join per-page markdown (ordered by index) into one string + boundaries, and
+    compute per-block char spans when the page carries layout ``blocks``.
 
-    Pages are joined with a blank line. Boundaries are kept CONTIGUOUS (each
-    page owns its leading ``\\n\\n`` separator) so they index exactly into the
+    Each page is ``(index, markdown)`` or ``(index, markdown, blocks)`` where
+    ``blocks`` is the gateway's raw block list (each ``{"html", "bbox", …}``) or
+    ``None``. Pages are joined with a blank line. Boundaries are kept CONTIGUOUS
+    (each page owns its leading ``\\n\\n`` separator) so they index exactly into the
     returned text and ``boundaries[-1]["end_offset"] == len(text)`` -- the
-    ``search/pdf_highlighter`` contract. Consequence: a page's range starts at
-    its separator, not its first glyph (the fast pypdfium2 path joins with no
-    separator, so its ranges are glyph-tight). The 2-char offset is immaterial
-    to page-level chunk attribution.
+    ``search/pdf_highlighter`` contract. Consequence: a page's range starts at its
+    separator, not its first glyph (the fast pypdfium2 path joins with no
+    separator, so its ranges are glyph-tight). The 2-char offset is immaterial to
+    page-level chunk attribution.
+
+    Block spans: within a page, each block's stripped-html text is located in the
+    page markdown in ``reading_order`` (advancing a cursor), giving a doc-absolute
+    char span paired with the block's normalized bbox. A block whose text isn't
+    found verbatim, or has no usable bbox, is skipped (that region falls back to
+    pymupdf) rather than guessed at.
     """
     sep = "\n\n"
     parts: list[str] = []
     boundaries: list[dict[str, Any]] = []
+    block_spans: list[dict[str, Any]] = []
     offset = 0
-    for i, (index, markdown) in enumerate(sorted(pages, key=lambda p: p[0])):
+    for i, page in enumerate(sorted(pages, key=lambda p: p[0])):
+        index, markdown = page[0], page[1]
+        blocks = page[2] if len(page) > 2 else None
         chunk = markdown if i == 0 else sep + markdown
         start = offset
         offset += len(chunk)
@@ -84,7 +132,31 @@ def _pages_to_text(
         boundaries.append(
             {"page": index + 1, "start_offset": start, "end_offset": offset}
         )
-    return "".join(parts), boundaries
+        if not blocks:
+            continue
+        # markdown begins after this page's leading separator (none for page 0).
+        md_start = start + (0 if i == 0 else len(sep))
+        cursor = 0
+        for raw in blocks:
+            if not isinstance(raw, dict):
+                continue
+            bbox = _normalize_bbox(raw.get("bbox"))
+            text = _strip_html(raw.get("html") or "")
+            if bbox is None or not text:
+                continue
+            pos = markdown.find(text, cursor)
+            if pos < 0:
+                continue
+            cursor = pos + len(text)
+            block_spans.append(
+                {
+                    "page": index + 1,
+                    "bbox": bbox,
+                    "start_offset": md_start + pos,
+                    "end_offset": md_start + pos + len(text),
+                }
+            )
+    return "".join(parts), boundaries, block_spans
 
 
 def _batch_identity(
@@ -109,7 +181,10 @@ class _OcrBackend(ABC):
     @abstractmethod
     async def ocr(
         self, content: bytes, mime_type: str
-    ) -> tuple[str, list[dict[str, Any]]]: ...
+    ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+        """Return ``(text, page_boundaries, block_spans)``. ``block_spans`` is empty
+        for backends without layout geometry (Mistral)."""
+        ...
 
 
 class _GatewayOcrBackend(_OcrBackend):
@@ -125,7 +200,7 @@ class _GatewayOcrBackend(_OcrBackend):
 
     async def ocr(
         self, content: bytes, mime_type: str
-    ) -> tuple[str, list[dict[str, Any]]]:
+    ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
         headers: dict[str, str] = {}
         if self._token_provider is not None:
             headers["Authorization"] = (
@@ -146,7 +221,13 @@ class _GatewayOcrBackend(_OcrBackend):
             resp = await client.post(self._url, json=payload, headers=headers)
             resp.raise_for_status()
             body = resp.json()
-        pages = [(p["index"], p.get("markdown", "")) for p in body.get("pages", [])]
+        # ``blocks`` carries per-block layout + normalized bbox from a layout-aware
+        # backend (surya); ``None`` for markdown-only backends (Mistral) — threaded
+        # to _pages_to_text, which turns it into per-block char spans.
+        pages = [
+            (p["index"], p.get("markdown", ""), p.get("blocks"))
+            for p in body.get("pages", [])
+        ]
         return _pages_to_text(pages)
 
 
@@ -163,7 +244,7 @@ class _MistralOcrBackend(_OcrBackend):
 
     async def ocr(
         self, content: bytes, mime_type: str
-    ) -> tuple[str, list[dict[str, Any]]]:
+    ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
         data_url = (
             f"data:{mime_type};base64,{base64.b64encode(content).decode('ascii')}"
         )
@@ -398,7 +479,7 @@ class OcrProcessor(DocumentProcessor):
                 error="no OCR backend configured",
             )
         try:
-            text, boundaries = await backend.ocr(
+            text, boundaries, block_spans = await backend.ocr(
                 content, content_type.split(";")[0].strip().lower()
             )
         except (TimeoutError, httpx.TimeoutException):
@@ -434,6 +515,9 @@ class OcrProcessor(DocumentProcessor):
                 "page_count": len(boundaries),
                 "page_boundaries": boundaries,
                 "file_size": len(content),
+                # Only when the backend returned layout geometry (surya); absent for
+                # markdown-only backends so generate_highlights uses pymupdf.
+                **({OCR_BLOCK_SPANS_KEY: block_spans} if block_spans else {}),
             },
             processor=self.name,
         )
@@ -597,13 +681,17 @@ class OcrProcessor(DocumentProcessor):
                 success=False,
                 error=f"unexpected batch status: {result.status}",
             )
-        text, boundaries = _pages_to_text(result.pages)
+        # Block spans are populated when the batch backend returned layout geometry
+        # (surya via the gateway's batch route, normalized [0,1]); empty for
+        # markdown-only backends (Mistral), where bbox falls back to pymupdf.
+        text, boundaries, block_spans = _pages_to_text(result.pages)
         return ProcessingResult(
             text=text,
             metadata={
                 "page_count": len(boundaries),
                 "page_boundaries": boundaries,
                 "file_size": len(content),
+                **({OCR_BLOCK_SPANS_KEY: block_spans} if block_spans else {}),
             },
             processor=self.name,
         )

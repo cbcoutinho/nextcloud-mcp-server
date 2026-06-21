@@ -58,7 +58,11 @@ class BatchPollResult:
     """
 
     status: str
-    pages: list[tuple[int, str]]
+    # Per-page ``(index, markdown)`` or ``(index, markdown, blocks)`` — ``blocks``
+    # carries surya's per-block layout (normalized [0,1] bbox) when the backend
+    # provides it, ``None`` for markdown-only backends (Mistral). Threaded straight
+    # into ``_pages_to_text``, which turns blocks into per-block char spans.
+    pages: list[tuple[Any, ...]]
     error: str | None = None
 
     @property
@@ -193,7 +197,10 @@ def _result_from_success(body: dict[str, Any]) -> BatchPollResult:
         )
     # Defensive on both fields (the page index falls back to position) so a
     # malformed page object degrades rather than raising KeyError mid-parse.
+    # ``blocks`` (surya layout + normalized bbox) is carried through when present;
+    # ``None`` for markdown-only backends.
     pages = [
-        (p.get("index", i), p.get("markdown", "")) for i, p in enumerate(item["pages"])
+        (p.get("index", i), p.get("markdown", ""), p.get("blocks"))
+        for i, p in enumerate(item["pages"])
     ]
     return BatchPollResult(status=_SUCCEEDED, pages=pages)

@@ -1311,6 +1311,9 @@ async def _index_document(
     # `chunk.page_number` (offset-based) and stored as `page_number`
     # in the Qdrant payload, so we don't carry an `actual_page_num` here.
     chunk_bboxes: dict[int, list[tuple[float, float, float, float]]] = {}
+    # Where the bboxes came from — "ocr" (gateway-provided per-block geometry) or
+    # "pymupdf" (local text-search). Stamped on each chunk payload that has a bbox.
+    bbox_source: str | None = None
 
     # Determine if we need PDF highlighting
     is_pdf = doc_task.doc_type == "file" and content_type == "application/pdf"
@@ -1423,13 +1426,51 @@ async def _index_document(
             )
 
     async def generate_highlights():
-        """Compute chunk bounding boxes for PDF chunks (CPU-bound, no rendering)."""
-        nonlocal chunk_bboxes
+        """Compute chunk bounding boxes for PDF chunks (CPU-bound, no rendering).
+
+        Prefers OCR-provided geometry: when the OCR tier returned per-block bboxes
+        (surya via the gateway, normalized [0,1] — ``OCR_BLOCK_SPANS_KEY`` in
+        metadata), a chunk's bbox is the set of blocks whose char span it overlaps,
+        and ``bbox_source`` is ``"ocr"``. This is the ONLY viable source for an
+        OCR'd (scanned) doc — its PDF has no text layer for pymupdf to search. When
+        no OCR geometry is present (fast/structured tiers, Mistral OCR), fall back
+        to the pymupdf text-search path (``bbox_source="pymupdf"``)."""
+        nonlocal chunk_bboxes, bbox_source
         if not is_pdf:
             return
 
         # Type narrowing: content_bytes is set for PDF files
         assert content_bytes is not None
+
+        # Lazy import (mirrors _parse_pdf_tier): keep the document stack off the
+        # module load path; this runs only for PDFs on the indexing path.
+        from nextcloud_mcp_server.document_processors.ocr import (  # noqa: PLC0415
+            OCR_BLOCK_SPANS_KEY,
+        )
+
+        ocr_block_spans = file_metadata.get(OCR_BLOCK_SPANS_KEY)
+        if ocr_block_spans:
+            spans = cast(list[dict[str, Any]], ocr_block_spans)
+            for i, chunk in enumerate(chunks):
+                # Interval overlap: a block belongs to the chunk if their char spans
+                # intersect. Preserve reading order (spans are already ordered).
+                boxes = [
+                    (b[0], b[1], b[2], b[3])
+                    for s in spans
+                    if s["start_offset"] < chunk.end_offset
+                    and s["end_offset"] > chunk.start_offset
+                    and (b := s["bbox"])
+                ]
+                if boxes:
+                    chunk_bboxes[i] = boxes
+            bbox_source = "ocr"
+            logger.info(
+                "Attributed OCR bboxes for %s/%s chunks (%s blocks)",
+                len(chunk_bboxes),
+                len(chunks),
+                len(spans),
+            )
+            return
 
         with trace_operation(
             "vector_sync.compute_chunk_bboxes",
@@ -1466,6 +1507,8 @@ async def _index_document(
 
             for chunk_index, (bboxes, _) in batch_results.items():
                 chunk_bboxes[chunk_index] = bboxes
+            if chunk_bboxes:
+                bbox_source = "pymupdf"
 
             logger.info(
                 "Computed bboxes for %s/%s chunks", len(chunk_bboxes), len(chunks)
@@ -1663,7 +1706,13 @@ async def _index_document(
                     # relative to page width/height. Replaces the legacy
                     # `highlighted_page_image` (Deck #76). The page number
                     # comes from `page_number` (set above for PDF chunks).
-                    **({"chunk_bbox": chunk_bboxes[i]} if i in chunk_bboxes else {}),
+                    # ``bbox_source`` records provenance ("ocr" = gateway-provided
+                    # surya geometry, "pymupdf" = local text-search).
+                    **(
+                        {"chunk_bbox": chunk_bboxes[i], "bbox_source": bbox_source}
+                        if i in chunk_bboxes
+                        else {}
+                    ),
                 },
             )
         )

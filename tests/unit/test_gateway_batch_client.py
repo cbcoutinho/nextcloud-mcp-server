@@ -120,8 +120,28 @@ async def test_poll_succeeded_maps_pages(monkeypatch):
     _patch_transport(monkeypatch, lambda r: httpx.Response(200, json=body))
     result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
     assert result.is_succeeded
-    # Order is preserved as returned; _pages_to_text sorts downstream.
-    assert result.pages == [(1, "two"), (0, "one")]
+    # Order is preserved as returned; _pages_to_text sorts downstream. The third
+    # tuple element is the per-page ``blocks`` (None here — markdown-only backend).
+    assert result.pages == [(1, "two", None), (0, "one", None)]
+
+
+async def test_poll_succeeded_carries_blocks(monkeypatch):
+    """surya-style ``blocks`` (layout + normalized bbox) are threaded through the
+    poll result so the OCR processor can compute per-block char spans."""
+    blocks = [{"html": "<p>two</p>", "bbox": [0.1, 0.2, 0.3, 0.4]}]
+    body = {
+        "status": "succeeded",
+        "results": [
+            {
+                "custom_id": "d",
+                "pages": [{"index": 0, "markdown": "two", "blocks": blocks}],
+            }
+        ],
+    }
+    _patch_transport(monkeypatch, lambda r: httpx.Response(200, json=body))
+    result = await gbc.GatewayBatchOcrClient("https://gw", "m").poll("mistral/j")
+    assert result.is_succeeded
+    assert result.pages == [(0, "two", blocks)]
 
 
 async def test_poll_failed_surfaces_error(monkeypatch):

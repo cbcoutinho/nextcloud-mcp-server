@@ -121,7 +121,62 @@ async def test_poll_succeeded_returns_pages(gateway_consumer_pact):
         )
 
     assert result.is_succeeded
-    assert result.pages == [(0, "# Page one")]
+    # pages are (index, markdown, blocks) — blocks is None for a markdown-only
+    # backend (Mistral) that emits no layout geometry.
+    assert result.pages == [(0, "# Page one", None)]
+
+
+async def test_poll_succeeded_returns_pages_with_bboxes(gateway_consumer_pact):
+    """A layout-aware backend (surya) returns per-block ``bbox`` (normalized [0,1])
+    in each page's ``blocks``; the client carries them through for chunk attribution.
+    Pins that the optional geometry is present + shaped as the consumer reads it."""
+    (
+        gateway_consumer_pact.upon_receiving(
+            "a poll for a succeeded batch OCR job with layout bboxes"
+        )
+        .given("a succeeded batch OCR job mistral/job-bbox with layout blocks exists")
+        .with_request("GET", "/v1/ocr/batch/mistral/job-bbox")
+        .will_respond_with(200)
+        .with_body(
+            {
+                "status": "succeeded",
+                "results": [
+                    {
+                        "custom_id": "0",
+                        "pages": [
+                            {
+                                "index": match.integer(0),
+                                "markdown": match.string("Heading"),
+                                "blocks": match.each_like(
+                                    {
+                                        # Fixed-length [x0,y0,x1,y1] normalized [0,1].
+                                        "bbox": [
+                                            match.number(0.11),
+                                            match.number(0.1),
+                                            match.number(0.4),
+                                            match.number(0.13),
+                                        ],
+                                        "html": match.string("<h1>Heading</h1>"),
+                                    }
+                                ),
+                            }
+                        ],
+                    }
+                ],
+            },
+            content_type="application/json",
+        )
+    )
+
+    with gateway_consumer_pact.serve() as srv:
+        result = await GatewayBatchOcrClient(str(srv.url), _MODEL).poll(
+            "mistral/job-bbox"
+        )
+
+    assert result.is_succeeded
+    # One page carrying its blocks list (third tuple element).
+    idx, markdown, blocks = result.pages[0]
+    assert idx == 0 and blocks and len(blocks[0]["bbox"]) == 4
 
 
 async def test_poll_failed_surfaces_error(gateway_consumer_pact):

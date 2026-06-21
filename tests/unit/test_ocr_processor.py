@@ -39,13 +39,72 @@ def _settings(**kw) -> Any:  # a Settings stand-in (only the read fields matter)
 
 
 def test_pages_to_text_orders_and_exact_boundaries():
-    text, boundaries = ocr._pages_to_text([(1, "B"), (0, "A")])  # out of order
+    text, boundaries, block_spans = ocr._pages_to_text(
+        [(1, "B"), (0, "A")]
+    )  # unordered
     assert text == "A\n\nB"
     assert boundaries[0] == {"page": 1, "start_offset": 0, "end_offset": 1}
     assert boundaries[1]["page"] == 2
     # contiguous + offsets index exactly into the text
     assert boundaries[0]["end_offset"] <= boundaries[1]["start_offset"]
     assert boundaries[-1]["end_offset"] == len(text)
+    # No layout blocks supplied -> no block spans.
+    assert block_spans == []
+
+
+def test_pages_to_text_computes_block_spans_from_blocks():
+    """With surya-style blocks, each block's stripped-html text is located in the
+    page markdown and paired with its normalized bbox as a doc-absolute char span."""
+    pages = [
+        (
+            0,
+            "Invoice Summary\n\nTotal due: 42.00 USD",
+            [
+                {"html": "<h1>Invoice Summary</h1>", "bbox": [0.1, 0.1, 0.4, 0.13]},
+                {
+                    "html": "<p>Total due: 42.00 USD</p>",
+                    "bbox": [0.1, 0.16, 0.31, 0.18],
+                },
+            ],
+        ),
+        (
+            1,
+            "Terms",
+            [{"html": "<h1>Terms</h1>", "bbox": [0.1, 0.1, 0.2, 0.12]}],
+        ),
+    ]
+    text, boundaries, spans = ocr._pages_to_text(pages)
+    assert len(spans) == 3
+    # First block span maps exactly onto "Invoice Summary" at the doc start.
+    s0 = spans[0]
+    assert s0["page"] == 1 and s0["bbox"] == [0.1, 0.1, 0.4, 0.13]
+    assert text[s0["start_offset"] : s0["end_offset"]] == "Invoice Summary"
+    # Second block onto the page-1 body text.
+    s1 = spans[1]
+    assert text[s1["start_offset"] : s1["end_offset"]] == "Total due: 42.00 USD"
+    # Page-2 block span lands on page 2's text.
+    s2 = spans[2]
+    assert s2["page"] == 2 and text[s2["start_offset"] : s2["end_offset"]] == "Terms"
+
+
+def test_pages_to_text_skips_blocks_without_bbox_or_unmatched_text():
+    """A block with no bbox, or whose text isn't in the markdown, is skipped
+    (that region falls back to pymupdf) rather than guessed."""
+    pages = [
+        (
+            0,
+            "real text here",
+            [
+                {"html": "<p>real text here</p>"},  # no bbox -> skip
+                {
+                    "html": "<p>not in markdown</p>",
+                    "bbox": [0.1, 0.1, 0.2, 0.2],
+                },  # unmatched
+            ],
+        )
+    ]
+    _text, _b, spans = ocr._pages_to_text(pages)
+    assert spans == []
 
 
 # --- backend selection -------------------------------------------------------
@@ -195,7 +254,11 @@ async def test_processor_unsupported_when_no_backend(monkeypatch):
 async def test_processor_success(monkeypatch):
     class _FakeBackend:
         async def ocr(self, content, mime_type):
-            return "hello world", [{"page": 1, "start_offset": 0, "end_offset": 11}]
+            return (
+                "hello world",
+                [{"page": 1, "start_offset": 0, "end_offset": 11}],
+                [],
+            )
 
     monkeypatch.setattr(ocr, "get_settings", lambda: _settings())
     monkeypatch.setattr(ocr, "build_ocr_backend", lambda s, **kw: _FakeBackend())
