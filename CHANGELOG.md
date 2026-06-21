@@ -5,6 +5,13 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.122.1 (2026-06-21)
+
+### Refactor
+
+- **ocr**: fix stale batch comment, single-source legacy OCR queues (PR #938 round-2)
+- **ocr**: consolidate the two OCR tiers into one configurable tier
+
 ## v0.122.0 (2026-06-20)
 
 ### Feat
