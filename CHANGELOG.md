@@ -5,6 +5,12 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.122.2 (2026-06-21)
+
+### Fix
+
+- **vector**: key _potentially_deleted by doc_type to avoid cross-type collisions
+
 ## v0.122.1 (2026-06-21)
 
 ### Refactor
