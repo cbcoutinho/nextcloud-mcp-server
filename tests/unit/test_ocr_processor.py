@@ -118,6 +118,25 @@ def test_normalize_bbox_shape_and_range():
     # Unnormalized pixel coords (gateway contract drift) are dropped, not stored.
     assert ocr._normalize_bbox([0.0, 800.0, 1200.0, 1600.0]) is None
     assert ocr._normalize_bbox([-0.1, 0.2, 0.3, 0.4]) is None
+    # Degenerate zero/negative-area boxes (invisible highlight) are dropped.
+    assert ocr._normalize_bbox([0.0, 0.0, 0.0, 0.0]) is None
+    assert ocr._normalize_bbox([0.5, 0.5, 0.5, 0.6]) is None  # zero width
+    assert ocr._normalize_bbox([0.4, 0.5, 0.3, 0.6]) is None  # x1 < x0
+
+
+@pytest.mark.parametrize(
+    "html, expected",
+    [
+        ("<h1>Heading</h1>", "Heading"),
+        ("<p>Total due: 42.00 USD</p>", "Total due: 42.00 USD"),
+        ("<p>a <b>bold</b> word</p>", "a bold word"),  # nested tags stripped
+        ("AT&amp;T &lt;x&gt;", "AT&T <x>"),  # entities unescaped
+        ("  <p>  trim  </p>  ", "trim"),  # outer whitespace stripped
+        ("", ""),
+    ],
+)
+def test_strip_html(html, expected):
+    assert ocr._strip_html(html) == expected
 
 
 def test_pages_to_text_drops_unnormalized_block_bbox():

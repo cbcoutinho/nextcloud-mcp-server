@@ -214,6 +214,31 @@ async def _parse_pdf_tier(
     return result
 
 
+def _ocr_chunk_bboxes(
+    chunks, block_spans: list[dict[str, Any]]
+) -> dict[int, list[tuple[float, float, float, float]]]:
+    """Attribute OCR block bboxes to chunks by char-span overlap.
+
+    ``block_spans`` is the OCR tier's per-block geometry (``OCR_BLOCK_SPANS_KEY``):
+    each ``{"bbox": [x0,y0,x1,y1] normalized, "start_offset", "end_offset", ...}``.
+    A block belongs to chunk *i* when their char spans intersect (half-open
+    overlap: ``block.start < chunk.end and block.end > chunk.start``). Returns
+    ``chunk_index -> [bbox, ...]`` (a chunk spanning N blocks gets N bboxes, in the
+    spans' reading order), omitting chunks with no overlapping block. Pure +
+    module-level so the interval-overlap predicate is unit-testable in isolation."""
+    out: dict[int, list[tuple[float, float, float, float]]] = {}
+    for i, chunk in enumerate(chunks):
+        boxes = [
+            (s["bbox"][0], s["bbox"][1], s["bbox"][2], s["bbox"][3])
+            for s in block_spans
+            if s["start_offset"] < chunk.end_offset
+            and s["end_offset"] > chunk.start_offset
+        ]
+        if boxes:
+            out[i] = boxes
+    return out
+
+
 def assign_page_numbers(chunks, page_boundaries):
     """Assign page numbers to chunks based on page boundaries.
 
@@ -1451,25 +1476,21 @@ async def _index_document(
         ocr_block_spans = file_metadata.get(OCR_BLOCK_SPANS_KEY)
         if ocr_block_spans:
             spans = cast(list[dict[str, Any]], ocr_block_spans)
-            for i, chunk in enumerate(chunks):
-                # Interval overlap: a block belongs to the chunk if their char spans
-                # intersect. Preserve reading order (spans are already ordered).
-                # ``s["bbox"]`` is a validated 4-element normalized list (_normalize_bbox).
-                boxes = [
-                    (s["bbox"][0], s["bbox"][1], s["bbox"][2], s["bbox"][3])
-                    for s in spans
-                    if s["start_offset"] < chunk.end_offset
-                    and s["end_offset"] > chunk.start_offset
-                ]
-                if boxes:
-                    chunk_bboxes[i] = boxes
-            bbox_source = "ocr"
+            attributed = _ocr_chunk_bboxes(chunks, spans)
+            chunk_bboxes.update(attributed)
+            # Only stamp "ocr" when something was actually attributed — a non-empty
+            # spans list that overlaps no chunk leaves the source unset (nothing is
+            # stored either way; the payload gates on `i in chunk_bboxes`).
+            if attributed:
+                bbox_source = "ocr"
             logger.info(
                 "Attributed OCR bboxes for %s/%s chunks (%s blocks)",
-                len(chunk_bboxes),
+                len(attributed),
                 len(chunks),
                 len(spans),
             )
+            # OCR'd (scanned) docs have no text layer, so pymupdf can't help — do
+            # NOT fall through to it even when attribution found nothing.
             return
 
         with trace_operation(

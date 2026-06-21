@@ -97,6 +97,11 @@ def _normalize_bbox(raw: Any) -> list[float] | None:
     if not all(0.0 <= v <= 1.0 for v in out):
         logger.debug("dropping out-of-range OCR bbox (expected normalized): %s", out)
         return None
+    # Degenerate (zero/negative-area) boxes render as an invisible highlight — drop
+    # them so a chunk falls back to pymupdf rather than storing a useless rect.
+    if out[2] <= out[0] or out[3] <= out[1]:
+        logger.debug("dropping zero/negative-area OCR bbox: %s", out)
+        return None
     return out
 
 
@@ -228,10 +233,12 @@ class _GatewayOcrBackend(_OcrBackend):
             body = resp.json()
         # ``blocks`` carries per-block layout + normalized bbox from a layout-aware
         # backend (surya); ``None`` for markdown-only backends (Mistral) — threaded
-        # to _pages_to_text, which turns it into per-block char spans.
+        # to _pages_to_text, which turns it into per-block char spans. ``index``
+        # falls back to position (defensive, matching the batch client) so a missing
+        # field degrades to ordered pages rather than a KeyError.
         pages = [
-            (p["index"], p.get("markdown", ""), p.get("blocks"))
-            for p in body.get("pages", [])
+            (p.get("index", i), p.get("markdown", ""), p.get("blocks"))
+            for i, p in enumerate(body.get("pages", []))
         ]
         return _pages_to_text(pages)
 
