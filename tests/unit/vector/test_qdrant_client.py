@@ -98,6 +98,19 @@ def test_file_path_indexed_as_text():
     assert _PAYLOAD_INDEX_FIELDS.get("file_path") == PayloadSchemaType.TEXT
 
 
+@pytest.mark.unit
+def test_dead_letter_indexed_as_bool():
+    """The dead-letter lookup (vector/dead_letter.py) filters on dead_letter=True.
+
+    Qdrant strict mode requires an index for every field in a filter, so reusing
+    the is_placeholder index is not enough — without a dead_letter index the
+    scroll 400s, ``is_dead_lettered`` fail-opens, and the scanner re-queues every
+    document forever (the ingest loop this registry entry prevents). BOOL because
+    the marker payload stores a literal True.
+    """
+    assert _PAYLOAD_INDEX_FIELDS.get("dead_letter") == PayloadSchemaType.BOOL
+
+
 # ---------------------------------------------------------------------------
 # _ensure_payload_indexes
 # ---------------------------------------------------------------------------
