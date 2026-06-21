@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.123.0 (2026-06-21)
+
+### Feat
+
+- **ocr**: store + expose gateway-provided OCR bounding boxes
+
+### Refactor
+
+- **ocr**: address PR #940 round-4 review (no blockers)
+- **ocr**: address PR #940 round-3 review
+- **ocr**: address PR #940 round-2 review
+- **ocr**: address PR #940 round-1 review
+
 ## v0.122.2 (2026-06-21)
 
 ### Fix
