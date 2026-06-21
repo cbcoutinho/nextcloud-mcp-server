@@ -889,6 +889,7 @@ async def test_ensure_payload_indexes_summarises_failed_fields(mocker, caplog):
     assert "doc_id" in summary[0]
     assert "doc_type" in summary[0]
     assert "is_placeholder" in summary[0]
+    assert "dead_letter" in summary[0]
     assert "chunk_index" in summary[0]
     assert "chunk_start_offset" in summary[0]
     assert "chunk_end_offset" in summary[0]
