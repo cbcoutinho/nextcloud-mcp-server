@@ -928,7 +928,7 @@ class PDFHighlighter:
 
             # Group chunks by their target page for efficient rendering
             # We'll render each page only once with all its highlights
-            chunks_by_page: dict[int, list[tuple[int, dict, str]]] = defaultdict(list)
+            chunks_by_page: dict[int, list[tuple[int, str]]] = defaultdict(list)
 
             for chunk_tuple in chunks:
                 # Unpack chunk tuple - chunk_text is now passed directly
@@ -1007,10 +1007,10 @@ class PDFHighlighter:
                     len(page_chunks),
                 )
 
-                for chunk_index, chunk_text in page_chunks:
+                for chunk_index, page_relative_text in page_chunks:
                     try:
                         # Find chunk bounding box via word-level matching
-                        bbox = PDFHighlighter._find_chunk_bbox(page, chunk_text)
+                        bbox = PDFHighlighter._find_chunk_bbox(page, page_relative_text)
 
                         if bbox is None:
                             logger.warning("Chunk %s: could not find bbox", chunk_index)
