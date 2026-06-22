@@ -5,7 +5,8 @@ tier has NO higher escalation tier available (e.g. ``structured`` with OCR off),
 ``_index_document`` records a durable, content-addressed dead-letter marker
 instead of the per-user ``status="failed"`` placeholder mark — the latter could
 not stop the multi-user re-queue loop. A failure that still has a higher tier
-keeps the legacy per-user mark.
+available now ESCALATES to it (#399) — e.g. a structured-tier timeout hops to OCR
+— rather than being marked failed and re-queued into the same tier forever.
 
 The real ``ProcessorRegistry`` singleton is used so the terminal decision
 (``next_available_tier``) is exercised faithfully; only the parse itself, the
@@ -20,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nextcloud_mcp_server.document_processors.base import ProcessingResult
+from nextcloud_mcp_server.document_processors.escalation import EscalateError
 from nextcloud_mcp_server.vector import processor
 from nextcloud_mcp_server.vector.scanner import DocumentTask
 
@@ -72,6 +74,8 @@ def _patch_common(mocker, *, ocr_enabled: bool):
         update_ph=mocker.patch.object(
             processor, "update_placeholder_status", AsyncMock()
         ),
+        escalation=mocker.patch.object(processor, "record_document_escalation"),
+        parse_failed=mocker.patch.object(processor, "record_document_parse_failed"),
     )
     return spies
 
@@ -112,10 +116,18 @@ async def test_terminal_failure_dead_letters(mocker):
     spies.dead_metric.assert_called_once_with("timeout")
     spies.delete_ph.assert_awaited_once()  # volatile placeholder dropped
     spies.update_ph.assert_not_awaited()  # NOT the legacy per-user failed mark
+    # Terminal failure still counts as a parse failure and does not escalate.
+    spies.parse_failed.assert_called_once_with("timeout")
+    spies.escalation.assert_not_called()
 
 
-async def test_non_terminal_failure_keeps_legacy_mark(mocker):
-    """fast tier fails while structured is still available -> legacy failed mark."""
+async def test_non_terminal_failure_escalates_to_next_tier(mocker):
+    """fast tier fails while structured is still available -> escalate (#399).
+
+    A hard parse failure is no longer dropped when a higher tier can still run:
+    it hops to the next tier instead of being marked failed and re-queued onto
+    the same failing tier forever.
+    """
     spies = _patch_common(mocker, ocr_enabled=False)
     mocker.patch.object(
         processor,
@@ -131,14 +143,62 @@ async def test_non_terminal_failure_keeps_legacy_mark(mocker):
         ),
     )
 
-    result = await processor._index_document(
-        _file_task(), _nc_client(), MagicMock(), tier="fast"
+    with pytest.raises(EscalateError) as ei:
+        await processor._index_document(
+            _file_task(), _nc_client(), MagicMock(), tier="fast"
+        )
+
+    assert ei.value.from_tier == "fast"
+    assert ei.value.to_tier == "structured"
+    assert ei.value.reason == "error"
+    spies.escalation.assert_called_once_with("fast", "structured", "error")
+    # An escalation is NOT a parse failure: it must not inflate the failure panel
+    # nor mark/dead-letter the doc.
+    spies.parse_failed.assert_not_called()
+    spies.update_ph.assert_not_awaited()
+    spies.mark.assert_not_awaited()
+    spies.dead_metric.assert_not_called()
+
+
+async def test_structured_timeout_escalates_to_ocr_when_enabled(mocker):
+    """The 406-105 case: structured pymupdf timeout + OCR enabled -> hop to OCR.
+
+    Previously this marked the doc 'failed' and the scanner re-queued it into the
+    structured tier forever (the retry loop). Now it escalates to OCR, where surya
+    rasterizes + reads the rendered glyphs.
+    """
+    spies = _patch_common(mocker, ocr_enabled=True)
+    mocker.patch.object(
+        processor,
+        "_parse_pdf_tier",
+        AsyncMock(
+            return_value=ProcessingResult(
+                text="",
+                metadata={
+                    "parse_failed_reason": "timeout",
+                    "pipeline_tier": "structured",
+                },
+                processor="pymupdf",
+                success=False,
+                error="isolated parse failed (timeout)",
+            )
+        ),
     )
 
-    assert result is False
-    spies.update_ph.assert_awaited_once()  # legacy per-user failed mark
-    spies.mark.assert_not_awaited()  # NOT dead-lettered (structured can still run)
-    spies.dead_metric.assert_not_called()
+    with pytest.raises(EscalateError) as ei:
+        await processor._index_document(
+            _file_task(), _nc_client(), MagicMock(), tier="structured"
+        )
+
+    assert (ei.value.from_tier, ei.value.to_tier, ei.value.reason) == (
+        "structured",
+        "ocr",
+        "timeout",
+    )
+    spies.escalation.assert_called_once_with("structured", "ocr", "timeout")
+    spies.parse_failed.assert_not_called()
+    spies.mark.assert_not_awaited()
+    spies.update_ph.assert_not_awaited()
 
 
 async def test_oversize_failure_dead_letters_regardless_of_tier(mocker):

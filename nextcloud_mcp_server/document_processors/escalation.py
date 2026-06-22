@@ -7,8 +7,9 @@ The escalation ladder is the cheapest-first ordering of extraction tiers:
 It mirrors the ``tier`` vocabulary documented on
 :meth:`DocumentProcessor.tier <.base.DocumentProcessor.tier>` and the
 observability label set. On the *external* (procrastinate) ingest path each tier
-runs on its own queue + worker fleet; a document that a tier cannot parse well is
-**requeued onto the next tier's queue** rather than escalated inline. The
+runs on its own queue + worker fleet; a document that a tier cannot parse well --
+or cannot parse at all (a hard timeout/OOM failure, #399) -- is **requeued onto
+the next tier's queue** rather than dropped or escalated inline. The
 mechanism is a raised :class:`EscalateError` that the procrastinate retry
 strategy turns into a native ``RetryDecision(queue=<next-tier queue>)`` queue-hop
 (see ``vector/queue/procrastinate.py``).
@@ -112,11 +113,19 @@ class EscalateError(Exception):
     the junk text is never indexed, and it must never be swallowed by a broad
     ``except Exception`` on the indexing path.
 
-    ``reason`` uses the existing escalation label vocabulary: ``empty_text``
+    ``reason`` uses the post-parse quality vocabulary: ``empty_text``
     (scanned / no text layer), ``low_confidence`` (junk text layer), and
     ``corrupt_glyphs`` (a usable-looking layer whose extractor leaked raw glyph
     codes -- the broken-/ToUnicode case -- recovered by a different in-cluster
     extractor); ``unsupported`` and ``forced`` are reserved for future callers.
+
+    A second caller (``vector/processor._index_document``, #399) reuses this
+    signal to escalate a *hard parse failure* -- an isolated-worker timeout/OOM
+    on a pathological PDF -- up the ladder instead of dropping the document, so
+    ``reason`` may also carry a ``parse_failed_reason`` value (``timeout``,
+    ``oom``, ``error``). The ``from_tier``/``to_tier`` hop is identical; only the
+    reason label widens, which surfaces on
+    ``astrolabe_document_escalation_total{reason}``.
     """
 
     def __init__(self, *, from_tier: str, to_tier: str, reason: str) -> None:
