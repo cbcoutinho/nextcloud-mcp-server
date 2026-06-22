@@ -342,9 +342,9 @@ async def record_indexing_usage(
       (card #282).
     - ``bytes_ingested`` — the raw source size at ingestion time, recorded for
       *every* embedded document. For files this is the raw binary size fetched
-      from WebDAV; for text doc types (note, deck card, news item — no binary)
-      it is the UTF-8 size of the extracted text. The caller resolves the right
-      source per ``doc_type`` (see the call site).
+      from WebDAV; for text doc types (note, deck card, news item, mail message
+      — no binary) it is the UTF-8 size of the extracted text. The caller
+      resolves the right source per ``doc_type`` (see the call site).
     - ``bytes_stored`` — the UTF-8 byte size of the chunk texts persisted as
       Qdrant payload excerpts, recorded for *every* embedded document. Reflects
       the indexed footprint and so includes chunk-overlap duplication; it is
