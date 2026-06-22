@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.124.2 (2026-06-22)
+
+### Fix
+
+- **search**: word-level pymupdf chunk bboxes (coverage + per-line geometry)
+
+### Refactor
+
+- **search**: fix chunks_by_page type annotation + loop var name (#945 r4)
+- **search**: address #945 round-3 review (docstring + boundary lookup)
+- **search**: address #945 round-2 review (stale docstring, dead params)
+- **search**: address #945 review nits (dead params, clamp, docs)
+
 ## v0.124.1 (2026-06-22)
 
 ### Fix
