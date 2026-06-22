@@ -173,6 +173,8 @@ def _pages_to_text(
         # dropped ~40% of blocks -> missing/disconnected highlights. We search the
         # whitespace-free projection and map hits back to real offsets via norm_idx.
         norm_md, norm_idx = _ws_index_map(markdown)
+        # ncursor advances only on a successful match (below), never on a skip — so
+        # a dropped block can't cause later in-order blocks to be missed.
         ncursor = 0
         for raw in blocks:
             if not isinstance(raw, dict):

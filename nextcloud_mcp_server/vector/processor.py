@@ -234,6 +234,9 @@ def _ocr_chunk_bboxes(
     no-op), but the page-agnostic char-based chunker can straddle a page break: on
     Student 147, 9/16 char-based chunks pulled blocks from two pages. When a chunk
     has no ``page_number`` (no page boundaries), fall back to overlap-only.
+    Conversely, a span without a ``page`` key is excluded from any chunk that has a
+    ``page_number`` — ``_pages_to_text`` always stamps ``page`` on OCR spans, so this
+    only affects externally-built spans.
 
     Returns ``chunk_index -> [bbox, ...]`` (a chunk spanning N blocks gets N bboxes,
     in the spans' reading order), omitting chunks with no overlapping block. Pure +

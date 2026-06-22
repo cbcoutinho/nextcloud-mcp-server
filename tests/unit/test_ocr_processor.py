@@ -132,6 +132,21 @@ def test_pages_to_text_matches_blocks_ignoring_whitespace():
     assert spans[1]["bbox"] == [0.1, 0.1, 1.0, 0.24]
 
 
+def test_ws_index_map_strips_whitespace_and_maps_indices():
+    """The projection drops whitespace; the index list maps each kept char back to
+    its original position, so a normalized hit resolves to a real offset."""
+    s, idx = ocr._ws_index_map("hello world")
+    assert s == "helloworld"
+    assert idx == [0, 1, 2, 3, 4, 6, 7, 8, 9, 10]
+    # Leading/trailing spaces, tabs and newlines are all dropped; indices stay
+    # aligned so idx can be used to slice the original string back out.
+    original = "  a\tb\nc "
+    s2, idx2 = ocr._ws_index_map(original)
+    assert s2 == "abc"
+    assert idx2 == [2, 4, 6]
+    assert "".join(original[i] for i in idx2) == "abc"
+
+
 def test_pages_to_text_skips_blocks_without_bbox_or_unmatched_text():
     """A block with no bbox, or whose text isn't in the markdown, is skipped
     (that region falls back to pymupdf) rather than guessed."""
