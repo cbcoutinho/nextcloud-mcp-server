@@ -1120,22 +1120,59 @@ async def _index_document(
                 # fail again.
                 if not result.success:
                     reason = result.metadata.get("parse_failed_reason", "error")
-                    record_document_parse_failed(reason)
                     # The tier that produced this failed result: the worker's own
                     # tier on the per-tier path, else the deepest tier the inline
                     # pipeline reached (recorded as ``pipeline_tier``).
                     failing_tier = tier or result.metadata.get(
                         "pipeline_tier", TIER_LADDER[0]
                     )
-                    # An oversize PDF is rejected by the pre-parse size guard
-                    # before any tier runs (no pipeline_tier stamped on the inline
-                    # path) and no tier can ever parse it, so it is terminal
-                    # regardless of failing_tier. Otherwise, terminal == no higher
-                    # tier can run.
-                    terminal = (
-                        reason == "oversize"
-                        or registry.next_available_tier(failing_tier, settings) is None
+                    # The next tier that can still run above the failing one
+                    # (``None`` == terminal). An oversize PDF is rejected by the
+                    # pre-parse size guard before any tier runs (no pipeline_tier
+                    # stamped on the inline path) and no tier can ever parse it, so
+                    # it is terminal regardless of failing_tier.
+                    next_avail = (
+                        None
+                        if reason == "oversize"
+                        else registry.next_available_tier(failing_tier, settings)
                     )
+                    # #399: a hard parse failure (an isolated-worker timeout/OOM on
+                    # a pathological PDF) is not necessarily terminal. On the
+                    # per-tier path, if a higher tier can still run, ESCALATE the
+                    # failure to it rather than dropping the doc -- e.g. a
+                    # structured-tier pymupdf timeout on a garbled/huge plan hops to
+                    # OCR, where surya rasterizes + reads the rendered glyphs.
+                    # Without this the doc was marked "failed" and the scanner
+                    # re-queued it into the same failing tier forever (the retry
+                    # loop seen on 406-105-style plans). The inline pipeline (tier
+                    # is None) already ran every tier in one call, so it never hops
+                    # here -- its failures fall through to the terminal handling.
+                    if tier is not None and next_avail is not None:
+                        # Mirror the quality-gate hop in _parse_pdf_tier: record the
+                        # escalation + raise so the retry strategy requeues onto the
+                        # next tier's queue. Deliberately NOT counted as a parse
+                        # failure (no record_document_parse_failed / failed mark) --
+                        # that would both inflate the hard-parse-failure panel and
+                        # lose a document OCR can still read.
+                        record_document_escalation(failing_tier, next_avail, reason)
+                        logger.info(
+                            "Parse failure for %s at tier=%s (reason=%s); "
+                            "escalating to %s",
+                            file_path,
+                            failing_tier,
+                            reason,
+                            next_avail,
+                        )
+                        raise EscalateError(
+                            from_tier=failing_tier,
+                            to_tier=next_avail,
+                            reason=reason,
+                        )
+                    # Terminal: oversize, the inline pipeline exhausted every tier,
+                    # or the deepest per-tier rung failed. Count the failure and
+                    # dead-letter / mark it below.
+                    record_document_parse_failed(reason)
+                    terminal = next_avail is None
                     if terminal and doc_task.etag:
                         # No higher tier can run (e.g. structured timed out with
                         # OCR off), so retrying just re-burns the same failing
